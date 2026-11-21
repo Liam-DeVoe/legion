@@ -408,3 +408,20 @@ func (c *Client) RepositoryIdentity(ctx context.Context, token, owner, repo, eta
 	}
 	return RepositoryAnswer{FullName: repository.FullName, ID: repository.ID, ETag: answerETag}, nil
 }
+
+// CurrentRepository is the repository the name owner/repo reaches on GitHub now, read as
+// Dispatch's App: the installation token for that name (RepositoryToken) and then the repository
+// itself (RepositoryIdentity), unconditional and not cached. GitHub answers an old name of a
+// renamed or transferred repository with the repository it moved to, until another repository
+// takes the name, so the answer is the id and full name of the repository a person naming
+// owner/repo now means. ctx must not be held to a repository (HoldToRepository): the read follows
+// GitHub's redirect, which is how it learns the id. A repository the App is not installed on is
+// ErrNoInstallation, a rate limit a *RateLimitError, and a nil client ErrNoAppKey, as each read
+// answers them.
+func (c *Client) CurrentRepository(ctx context.Context, owner, repo string) (RepositoryAnswer, error) {
+	token, err := c.RepositoryToken(ctx, owner, repo)
+	if err != nil {
+		return RepositoryAnswer{}, err
+	}
+	return c.RepositoryIdentity(ctx, token, owner, repo, "")
+}

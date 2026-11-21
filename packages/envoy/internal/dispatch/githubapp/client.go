@@ -73,18 +73,24 @@ var (
 // heldRepositoryKey keys the repository HoldToRepository holds a context's requests to.
 type heldRepositoryKey struct{}
 
-// heldRepository is the owner and name HoldToRepository holds a context's requests to.
-type heldRepository struct{ owner, repo string }
+// heldRepository is the owner, name and GitHub id HoldToRepository holds a context's requests to.
+type heldRepository struct {
+	owner, repo string
+	id          int64
+}
 
 // HoldToRepository is ctx with every request the client sends on it held to the repository
-// owner/repo: a redirect GitHub answers one with is followed only to that same repository, owner
-// and name compared without case under the request's own API origin and prefix, and any other
-// redirect fails the request with ErrRedirectedOffRepository before the redirected request is sent.
-// The GitHub proxy holds its reads to the repository its gate passed (githubapi.ProxyREST), so an
-// old name the gate shows never reads the repository GitHub moved it to. A context not held follows
-// GitHub's redirects as the standard client does.
-func HoldToRepository(ctx context.Context, owner, repo string) context.Context {
-	return context.WithValue(ctx, heldRepositoryKey{}, heldRepository{owner: owner, repo: repo})
+// owner/repo, whose GitHub id is id (0 for one not known): a redirect GitHub answers one with is
+// followed only to that same repository, owner and name compared without case, or to that id, under
+// the request's own API origin and prefix, and any other redirect fails the request with
+// ErrRedirectedOffRepository before the redirected request is sent. GitHub answers an old name of a
+// renamed or transferred repository with a redirect to the repository by its id, so a read the
+// gate passed by the id it read for the name follows it there and nowhere else. The GitHub proxy
+// holds its reads to the repository its gate passed (githubapi.ProxyREST), so an old name the gate
+// shows never reads a repository GitHub moved another way. A context not held follows GitHub's
+// redirects as the standard client does.
+func HoldToRepository(ctx context.Context, owner, repo string, id int64) context.Context {
+	return context.WithValue(ctx, heldRepositoryKey{}, heldRepository{owner: owner, repo: repo, id: id})
 }
 
 // checkRedirect is the client's redirect policy: the standard client's (at most ten redirects),
@@ -103,8 +109,9 @@ func checkRedirect(request *http.Request, via []*http.Request) error {
 // sameRepository reports whether target, a redirect of sent, names the repository held: the same
 // scheme and host, and a path that is sent's own prefix (the API origin's path, empty on
 // api.github.com) then /repos/<owner>/<repo>, alone or followed by "/", owner and name compared
-// without case. A redirect naming the repository by its numeric id names no owner and name, so it
-// is not the same repository.
+// without case, or, for a held repository whose id is known, /repositories/<id> alone or followed
+// by "/". A redirect naming a repository by an id that is not the held one, or by an id where none
+// is known, is not the same repository.
 func sameRepository(sent, target *url.URL, held heldRepository) bool {
 	if !strings.EqualFold(sent.Scheme, target.Scheme) || !strings.EqualFold(sent.Host, target.Host) {
 		return false
@@ -114,9 +121,10 @@ func sameRepository(sent, target *url.URL, held heldRepository) bool {
 	if at < 0 {
 		return false
 	}
-	want := strings.ToLower(sent.Path[:at]) + named
+	prefix := strings.ToLower(sent.Path[:at])
 	path := strings.ToLower(target.Path)
-	return path == want || strings.HasPrefix(path, want+"/")
+	under := func(want string) bool { return path == want || strings.HasPrefix(path, want+"/") }
+	return under(prefix+named) || (held.id != 0 && under(prefix+"/repositories/"+strconv.FormatInt(held.id, 10)))
 }
 
 // responseLimit caps a GitHub API response body; a blob response is read

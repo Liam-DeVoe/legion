@@ -126,7 +126,7 @@ func TestOneRuleGivesEveryReaderTheSameRepositoriesOfAProject(t *testing.T) {
 			}
 		}
 		olga := refs.VisibilityArg(model.Actor{Viewer: &model.Viewer{Person: "olga", Open: true, Sees: others, AnyPrivate: true}})
-		if got := oneRuleRead(t, pool, olga, `not `+refs.RepositoryClause("pr.repo", "$1")); !slices.Equal(got, want) {
+		if got := oneRuleRead(t, pool, olga, `not `+refs.RepositoryClause("pr.repo", "null", "$1")); !slices.Equal(got, want) {
 			t.Errorf("while %s is private, olga, open and seeing %q, is hidden %q by the rule, want %q", project, others, got, want)
 		}
 		if got := oneRuleRead(t, pool, olga, `not `+pullRequestShownSQL("pr", "i", "$1")); !slices.Equal(got, want) {
@@ -139,7 +139,7 @@ func TestOneRuleGivesEveryReaderTheSameRepositoriesOfAProject(t *testing.T) {
 // rule, sorted.
 func oneRuleShown(t *testing.T, pool *store.Pool, viewer any) []string {
 	t.Helper()
-	return oneRuleRead(t, pool, viewer, refs.RepositoryClause("pr.repo", "$1"))
+	return oneRuleRead(t, pool, viewer, refs.RepositoryClause("pr.repo", "null", "$1"))
 }
 
 // oneRuleRead is the repositories whose issue-less pull request the condition rule, over the

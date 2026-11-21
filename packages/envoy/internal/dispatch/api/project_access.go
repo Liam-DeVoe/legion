@@ -220,6 +220,13 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			if !s.privateProjectProvisioned(key) {
 				return model.ProjectAccess{}, nil, fmt.Errorf("%s %w", key, errPrivateProjectNotProvisioned)
 			}
+			// Every repository name the project's own issues and default hold carries its GitHub
+			// id before the project turns private, so the GitHub proxy can tell its repositories
+			// from ones that take their names later (refuseUnconfirmedRepositories): read under the
+			// owner lock ownerWrite holds, which every repository write of the project takes too.
+			if err := refuseUnconfirmedRepositories(ctx, tx, key); err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
 			if err := privateProjectIncomplete(ctx, tx, key); err != nil {
 				return model.ProjectAccess{}, nil, err
 			}
@@ -421,6 +428,15 @@ func ownerName(owner *string) string {
 // writeAccessError answers one refusal of the access package by its code, and any other error as
 // the handlers answer every error.
 func (s *server) writeAccessError(w http.ResponseWriter, err error) {
+	// A switch that waits for its owner's confirmations names the repositories it waits for, beside
+	// the code a switch the deployment does not provision answers.
+	var unconfirmed *unconfirmedRepositoriesError
+	if errors.As(err, &unconfirmed) {
+		WriteJSON(w, http.StatusConflict, unconfirmedRepositoriesRefusal{
+			Code: "PRIVATE_PROJECT_NOT_PROVISIONED", Error: unconfirmed.Error(), UnconfirmedRepositories: unconfirmed.names,
+		})
+		return
+	}
 	for _, refusal := range []struct {
 		match  error
 		code   string

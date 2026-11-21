@@ -93,7 +93,7 @@ func TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt(t *testing.T
 		t.Errorf("RepositoryClause(ACME/Priv) for bob = false, want true: GitHub spells a name in any case")
 	}
 	var answered *bool
-	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryClause("null::text", "$1"),
+	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryClause("null::text", "null", "$1"),
 		VisibilityArg(model.Actor{})).Scan(&answered); err != nil || answered == nil || *answered {
 		t.Errorf("RepositoryClause over no repository for the closed viewer = %v (%v), want false and never null", answered, err)
 	}
@@ -103,7 +103,7 @@ func TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt(t *testing.T
 func repositoryPasses(t *testing.T, database *store.Store, who model.Actor, repository string) bool {
 	t.Helper()
 	var passes bool
-	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryClause("$2::text", "$1"),
+	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryClause("$2::text", "null", "$1"),
 		VisibilityArg(who), repository).Scan(&passes); err != nil {
 		t.Fatalf("RepositoryClause(%s): %v", repository, err)
 	}
@@ -337,7 +337,7 @@ func TestRepositoryClauseWalksNoIssueWhereNoProjectIsPrivate(t *testing.T) {
 // one a clause adds there does (#3178 at 0f8b389c); no plan of this seed hashes them without it.
 func TestRepositoryClauseProbesEachRepositoryWithoutAHashedSubplan(t *testing.T) {
 	database := seedRepositoryIssues(t)
-	statement := `select asked.repo, ` + RepositoryClause("asked.repo", "$1") + ` from unnest($2::text[]) as asked(repo)`
+	statement := `select asked.repo, ` + RepositoryClause("asked.repo", "null", "$1") + ` from unnest($2::text[]) as asked(repo)`
 	for _, viewer := range []struct {
 		name string
 		who  model.Actor
@@ -357,7 +357,7 @@ func TestRepositoryClauseProbesEachRepositoryWithoutAHashedSubplan(t *testing.T)
 func issueScanLoops(t *testing.T, database *store.Store, who model.Actor, repository string) int {
 	t.Helper()
 	var plan []map[string]any
-	if err := database.Pool.QueryRow(context.Background(), `explain (analyze, costs off, timing off, format json) select `+RepositoryClause("$2::text", "$1"),
+	if err := database.Pool.QueryRow(context.Background(), `explain (analyze, costs off, timing off, format json) select `+RepositoryClause("$2::text", "null", "$1"),
 		VisibilityArg(who), repository).Scan(&plan); err != nil {
 		t.Fatalf("explain RepositoryClause(%s): %v", repository, err)
 	}

@@ -8,9 +8,9 @@ import (
 )
 
 // ProjectRepositoriesSQL is the server's one rule of which GitHub repositories each project owns,
-// as a query of the rows (project text, issue text, number bigint, repo text), one for each issue
-// of the projects it passes that resolves to a repository: a project owns every repository an
-// issue of it resolves to by the server's one rule (IssueRepoTerms, IssueRepoJoin,
+// as a query of the rows (project text, issue text, number bigint, repo text, repo_id bigint), one
+// for each issue of the projects it passes that resolves to a repository: a project owns every
+// repository an issue of it resolves to by the server's one rule (IssueRepoTerms, IssueRepoJoin,
 // IssueRepoResolved: the issue's own repository, else its nearest parent's, else its project's
 // default), whether the issue is open or done. Issues are a repository's only owners: a repository
 // mapping gives no project a repository, and no recorded rename is read. An issue's own repository
@@ -26,8 +26,10 @@ import (
 // repositories never leaves out one its unread ancestors may name.
 //
 // repo is the resolved name lower-cased, as GitHub spells an owner and a name as their owners do,
-// so a caller compares it with lower() of the name it holds. A project that owns a repository
-// several times over (two issues) answers a row for each.
+// so a caller compares it with lower() of the name it holds. repo_id is the GitHub id recorded
+// beside that name on the row that gave it (IssueRepoResolvedID), null where that row holds none
+// and for an unresolved chain. A project that owns a repository several times over (two issues)
+// answers a row for each.
 //
 // projects narrows the rows to the projects it passes: a SQL boolean over the bare column
 // project_key, the project a row would answer, true or false and never null. Only the issues of
@@ -50,7 +52,8 @@ func ProjectRepositoriesSQL(projects string) string {
 			select i.key from issues i where ` + projects + `
 		), ` + IssueRepoTerms + `
 		select i.project_key as project, i.key as issue, i.number as number,
-			case when ` + IssueRepoTooDeep + ` then null else lower(` + IssueRepoResolved + `) end as repo
+			case when ` + IssueRepoTooDeep + ` then null else lower(` + IssueRepoResolved + `) end as repo,
+			case when ` + IssueRepoTooDeep + ` then null else ` + IssueRepoResolvedID + ` end as repo_id
 		from subjects s join issues i on i.key = s.key ` + IssueRepoJoin + `
 		where ` + IssueRepoResolved + ` is not null or ` + IssueRepoTooDeep
 }
@@ -105,8 +108,9 @@ func ProjectRepositories(ctx context.Context, q Queryer, project string) ([]stri
 	return repositories, nil
 }
 
-// RepositoryClause passes the GitHub repository repoExpr names, as owner/name, to the viewer bound
-// at viewerParam (VisibilityArg). A repository passes in two cases, and fails in every other:
+// RepositoryClause passes the GitHub repository repoExpr names, as owner/name, whose GitHub id is
+// idExpr, to the viewer bound at viewerParam (VisibilityArg). A repository passes in two cases, and
+// fails in every other:
 //
 //   - an issue of a project the viewer sees resolves to it (ProjectRepositoriesSQL), whatever other
 //     project, private ones included, owns it too: where issues of a private project and of a
@@ -114,9 +118,23 @@ func ProjectRepositories(ctx context.Context, q Queryer, project string) ([]stri
 //   - the viewer is open, and no private project the viewer does not see owns it.
 //
 // So a viewer who is not open, a restricted member or a credential that lists projects, reads
-// only a repository an issue of a project it sees resolves to. A repository is held by its name
-// alone: once GitHub renames a private project's repository or moves it to another owner, an open
-// viewer reads it under the new name until an issue of that project resolves to the new name.
+// only a repository an issue of a project it sees resolves to.
+//
+// A repository is its GitHub id, not its name: GitHub renames a repository or moves it to another
+// owner and keeps its id, and answers each old name with the repository it moved to, so the id the
+// caller read for the name it was asked (idExpr) is the repository that name reaches now. An issue
+// resolves to it by the id recorded beside its resolved name (IssueRepoResolvedID), whatever that
+// name is, so a private project's repository stays held under every name it ever had. An issue
+// whose resolved name holds no id, one written before Dispatch recorded ids or whose write could
+// not read GitHub, resolves to it by its name, case aside; but such an issue of a project the
+// viewer sees gives the viewer nothing that the id shows a private project the viewer does not see
+// to hold (repositoryIDHeld), because the name may be one the repository took after that issue
+// named another. That is the one case where an issue the viewer sees does not show a repository
+// it names. A repository's own name decides nothing once the id is known: a name another
+// repository took later reaches that other repository, whose id no issue holds.
+//
+// idExpr null is a repository whose id the caller did not read: every comparison is then by name,
+// over every issue whatever id it holds, which hides at least what the id would.
 //
 // The server's own viewer passes every repository, and so does an open viewer of a deployment with
 // no private project, which reads no issue for it (R9). For an open viewer the private projects it
@@ -126,39 +144,45 @@ func ProjectRepositories(ctx context.Context, q Queryer, project string) ([]stri
 // pull requests that name no issue and runs that name none (api, delivery) each hold a repository
 // to it.
 //
-// repoExpr is spliced more than once, so it must be a column, a bound parameter or another
-// side-effect-free expression, not a bare column named repo or project, nor name the aliases owned,
-// own_named, own_project, own_top, own_child or own_parent, nor repo_default; the clause answers
-// true or false, never null.
-func RepositoryClause(repoExpr, viewerParam string) string {
+// repoExpr and idExpr are spliced more than once, so each must be a column, a bound parameter or
+// another side-effect-free expression, not a bare column named repo, repo_id or project, nor name
+// the aliases owned, own_named, own_project, own_top, own_child or own_parent, nor repo_default; the
+// clause answers true or false, never null.
+func RepositoryClause(repoExpr, idExpr, viewerParam string) string {
 	open := access.ViewerFlag(viewerParam, "open")
 	return `(` + access.ViewerFlag(viewerParam, "all") + ` or (` + open + ` and not ` + access.ViewerFlag(viewerParam, "private") + `) or case
-		when ` + open + ` and not ` + repositoryHeld(repoExpr, viewerParam) + ` then true
-		else ` + repositorySeen(repoExpr, viewerParam) + `
+		when ` + open + ` and not ` + repositoryHeld(repoExpr, idExpr, viewerParam) + ` then true
+		else ` + repositorySeen(repoExpr, idExpr, viewerParam) + `
 	end)`
 }
 
 // RepositoryHidden is RepositoryClause's negation: true where the GitHub proxy hides the
-// repository repoExpr names from the viewer bound at viewerParam, false where it shows it, never
-// null. A write that would give a repository to the people of a project its writer sees holds the
-// repository to it with the writer as the viewer (api's refuseRepoHidden: an issue's own
-// repository, a project's default), so a writer gives no project a repository the proxy would not
-// show the writer, and the write and the proxy cannot come to different answers. repoExpr is
-// spliced as RepositoryClause's.
-func RepositoryHidden(repoExpr, viewerParam string) string {
-	return `(not ` + RepositoryClause(repoExpr, viewerParam) + `)`
+// repository repoExpr names, whose GitHub id is idExpr, from the viewer bound at viewerParam, false
+// where it shows it, never null. A write that would give a repository to the people of a project
+// its writer sees holds the repository to it with the writer as the viewer and the id the write read
+// (api's refuseRepoHidden: an issue's own repository, a project's default), so a writer gives no
+// project a repository the proxy would not show the writer, and the write and the proxy cannot come
+// to different answers. repoExpr and idExpr are spliced as RepositoryClause's.
+func RepositoryHidden(repoExpr, idExpr, viewerParam string) string {
+	return `(not ` + RepositoryClause(repoExpr, idExpr, viewerParam) + `)`
 }
 
+// repositoryID is idExpr as the clause compares it.
+func repositoryID(idExpr string) string { return `((` + idExpr + `)::bigint)` }
+
 // repositorySeen is whether an issue of a project the viewer sees resolves to the repository
-// repoExpr names (ProjectRepositoriesSQL). It asks three questions, each cheaper than a walk of
-// every issue the viewer sees, and between them they find every such issue:
+// repoExpr names, whose id is idExpr (ProjectRepositoriesSQL): by the id recorded beside its
+// resolved name, or by that name where it holds no id and the id is held by no private project the
+// viewer does not see (RepositoryClause). It asks its questions by id first and then by name, each
+// cheaper than a walk of every issue the viewer sees, and between them they find every such issue:
 //
-//   - is there a seen issue whose own repository is that name? It resolves to it. Issue
-//     repositories are stored lower-cased, so the issues_repo index answers first; a name stored
-//     under another case is read by a scan only when the index finds none.
-//   - is there a seen project whose default is that name and which holds an issue that names no
+//   - is there a seen issue whose own repository is that one? It resolves to it. Ids are indexed
+//     (issues_repo_id); issue repositories are stored lower-cased, so the issues_repo index answers
+//     by name first, and a name stored under another case is read by a scan only when the index
+//     finds none.
+//   - is there a seen project whose default is that one and which holds an issue that names no
 //     repository and has no parent? That issue resolves to the default.
-//   - does ProjectRepositoriesSQL resolve to that name a seen issue that names no repository and
+//   - does ProjectRepositoriesSQL resolve to that one a seen issue that names no repository and
 //     whose parent is of another project? Those are the only issues the first two can miss: an
 //     issue whose chain stays in its own project resolves to the own repository of an issue above
 //     it in that project, which the first question finds, or to its project's default through a
@@ -168,31 +192,59 @@ func RepositoryHidden(repoExpr, viewerParam string) string {
 //     project (api/issue_parent.go), so a deployment whose rows only the API wrote holds none, and
 //     the walk reads no issue.
 //
+// Between the two kinds of question it reads, once, whether a private project the viewer does not
+// see holds the id (repositoryIDHeld): where one does, no question by name is asked. With idExpr
+// null no question by id is asked, and the questions by name read every issue whatever id it holds.
+//
 // It sits under RepositoryClause's CASE, so each `exists` ends in `offset 0`, as every `exists` a
 // clause adds there does (#3178 at 0f8b389c).
-func repositorySeen(repoExpr, viewerParam string) string {
+func repositorySeen(repoExpr, idExpr, viewerParam string) string {
 	named := `lower((` + repoExpr + `)::text)`
-	return `(case when exists (select from issues own_named where own_named.repo = ` + named + `
-			and ` + access.ProjectClause("own_named.project_key", viewerParam) + ` offset 0) then true
-		when exists (select from issues own_named where own_named.repo is not null and lower(own_named.repo) = ` + named + `
-			and ` + access.ProjectClause("own_named.project_key", viewerParam) + ` offset 0) then true
-		when exists (select from projects own_project where ` + access.ProjectClause("own_project.key", viewerParam) + `
-			and lower(` + projectDefaultRepoSQL("own_project.key") + `) = ` + named + `
-			and exists (select from issues own_top where own_top.project_key = own_project.key and own_top.parent_key is null and own_top.repo is null
-				and ` + access.ProjectClause("own_top.project_key", viewerParam) + ` offset 0)
-			offset 0) then true
-		else exists (select from (` + ProjectRepositoriesSQL(access.ProjectClause("project_key", viewerParam)+` and key in (
+	id := repositoryID(idExpr)
+	// unrecorded is whether a row whose recorded id is column answers by its name: every row where
+	// the id was not read, and otherwise a row that holds none.
+	unrecorded := func(column string) string { return `(` + id + ` is null or ` + column + ` is null)` }
+	crossProject := ProjectRepositoriesSQL(access.ProjectClause("project_key", viewerParam) + ` and key in (
 				select own_child.key from issues own_child join issues own_parent on own_parent.key = own_child.parent_key
 				where own_child.repo is null and own_parent.project_key <> own_child.project_key
-					and `+access.ProjectClause("own_child.project_key", viewerParam)+`)`) + `) owned
-			where owned.repo = ` + named + `
+					and ` + access.ProjectClause("own_child.project_key", viewerParam) + `)`)
+	topIssue := `exists (select from issues own_top where own_top.project_key = own_project.key and own_top.parent_key is null and own_top.repo is null
+				and ` + access.ProjectClause("own_top.project_key", viewerParam) + ` offset 0)`
+	return `(case when ` + id + ` is not null and exists (select from issues own_named where own_named.repo_id = ` + id + `
+			and ` + access.ProjectClause("own_named.project_key", viewerParam) + ` offset 0) then true
+		when ` + id + ` is not null and exists (select from projects own_project where ` + access.ProjectClause("own_project.key", viewerParam) + `
+			and ` + projectDefaultRepoIDSQL("own_project.key") + ` = ` + id + ` and ` + topIssue + `
+			offset 0) then true
+		when ` + id + ` is not null and exists (select from (` + crossProject + `) owned where owned.repo_id = ` + id + ` offset 0) then true
+		when ` + id + ` is not null and ` + repositoryIDHeld(idExpr, viewerParam) + ` then false
+		when exists (select from issues own_named where own_named.repo = ` + named + ` and ` + unrecorded("own_named.repo_id") + `
+			and ` + access.ProjectClause("own_named.project_key", viewerParam) + ` offset 0) then true
+		when exists (select from issues own_named where own_named.repo is not null and lower(own_named.repo) = ` + named + `
+			and ` + unrecorded("own_named.repo_id") + ` and ` + access.ProjectClause("own_named.project_key", viewerParam) + ` offset 0) then true
+		when exists (select from projects own_project where ` + access.ProjectClause("own_project.key", viewerParam) + `
+			and lower(` + projectDefaultRepoSQL("own_project.key") + `) = ` + named + `
+			and ` + unrecorded(projectDefaultRepoIDSQL("own_project.key")) + ` and ` + topIssue + `
+			offset 0) then true
+		else exists (select from (` + crossProject + `) owned
+			where owned.repo = ` + named + ` and ` + unrecorded("owned.repo_id") + `
 			offset 0) end)`
 }
 
 // repositoryHeld is whether a private project the viewer does not see owns the repository repoExpr
-// names: an issue of it resolves to the name. It ends in `offset 0`, as repositorySeen does.
-func repositoryHeld(repoExpr, viewerParam string) string {
+// names, whose id is idExpr: an issue of it resolves to that id, or to that name with no id
+// recorded beside it; with idExpr null, to that name whatever id it holds. It ends in `offset 0`,
+// as repositorySeen does.
+func repositoryHeld(repoExpr, idExpr, viewerParam string) string {
+	id := repositoryID(idExpr)
 	return `exists (select from (` + ProjectRepositoriesSQL(access.HiddenPrivateProjectClause("project_key", viewerParam)) + `) owned
-		where owned.repo = lower((` + repoExpr + `)::text)
+		where owned.repo_id = ` + id + ` or ((` + id + ` is null or owned.repo_id is null) and owned.repo = lower((` + repoExpr + `)::text))
+		offset 0)`
+}
+
+// repositoryIDHeld is whether an issue of a private project the viewer does not see resolves to
+// the GitHub id idExpr by the id recorded beside its name; false for a null id.
+func repositoryIDHeld(idExpr, viewerParam string) string {
+	return `exists (select from (` + ProjectRepositoriesSQL(access.HiddenPrivateProjectClause("project_key", viewerParam)) + `) owned
+		where owned.repo_id = ` + repositoryID(idExpr) + `
 		offset 0)`
 }

@@ -70,7 +70,7 @@ func proxyShows(t *testing.T, database *store.Store, login, repository string) b
 		t.Fatalf("resolve what %s sees: %v", login, err)
 	}
 	var shown bool
-	if err := database.Pool.QueryRow(context.Background(), `select `+refs.RepositoryClause("$2", "$1"),
+	if err := database.Pool.QueryRow(context.Background(), `select `+refs.RepositoryClause("$2", "null", "$1"),
 		refs.VisibilityArg(model.Actor{Viewer: &viewer}), repository).Scan(&shown); err != nil {
 		t.Fatalf("read whether %s sees %s: %v", login, repository, err)
 	}

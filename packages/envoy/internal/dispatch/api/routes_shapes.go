@@ -616,8 +616,15 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/projects/{key}/default-assignee": {
 		Status: http.StatusOK, Response: projectDefaultAssignee{}, Request: projectDefaultAssigneeInput{},
 	},
-	"GET /api/v1/projects/{key}/access":                   {Status: http.StatusOK, Response: model.ProjectAccess{}},
-	"PATCH /api/v1/projects/{key}/access":                 {Status: http.StatusOK, Response: model.ProjectAccess{}, Request: projectAccessInput{}},
+	"GET /api/v1/projects/{key}/access": {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"PATCH /api/v1/projects/{key}/access": {
+		Status: http.StatusOK, Response: model.ProjectAccess{}, Request: projectAccessInput{},
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: unconfirmedRepositoriesRefusal{}}},
+	},
+	"GET /api/v1/projects/{key}/repositories": {Status: http.StatusOK, Response: projectRepositories{}},
+	"POST /api/v1/projects/{key}/repositories/confirm": {
+		Status: http.StatusOK, Response: projectRepositories{}, Request: confirmRepositoryInput{},
+	},
 	"PUT /api/v1/projects/{key}/access/people/{email}":    {Status: http.StatusOK, Response: model.ProjectAccess{}},
 	"DELETE /api/v1/projects/{key}/access/people/{email}": {Status: http.StatusOK, Response: model.ProjectAccess{}},
 	"PUT /api/v1/projects/{key}/access/groups/{name}":     {Status: http.StatusOK, Response: model.ProjectAccess{}},

@@ -109,7 +109,14 @@ func proxy(client *githubapp.Client, method, target string) *httptest.ResponseRe
 	return proxyAs(client, method, target, func(string, string) (Gate, error) { return Gate{}, nil })
 }
 
+// proxyAs proxies target as a gate that decides without the repository's id, the gate of a viewer
+// whose answer turns on no id; proxyIdentifying gives the gate the id read.
 func proxyAs(client *githubapp.Client, method, target string, gate func(owner, repo string) (Gate, error)) *httptest.ResponseRecorder {
+	return proxyIdentifying(client, method, target, func(owner, repo string, _ Identify) (Gate, error) { return gate(owner, repo) })
+}
+
+// proxyIdentifying proxies target through gate, which may read the repository's id.
+func proxyIdentifying(client *githubapp.Client, method, target string, gate func(owner, repo string, identify Identify) (Gate, error)) *httptest.ResponseRecorder {
 	response := httptest.NewRecorder()
 	ProxyREST(response, httptest.NewRequest(method, target, nil), client, gate)
 	return response

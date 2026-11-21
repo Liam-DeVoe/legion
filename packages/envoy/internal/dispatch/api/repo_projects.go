@@ -125,6 +125,21 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The GitHub id of the repository, read before the transaction so no lock waits on GitHub, for
+	// a write that makes the mapping its project's default where it is not that already: a write
+	// that leaves a default as it was keeps the row's id, or its lack of one, and reads nothing
+	// (writtenRepository). The mapping is read here with nothing locked, as the caller sees it, and
+	// again below under the mapping's locks, which decide.
+	written := s.writtenRepository(repo)
+	if input.Default != nil && *input.Default {
+		var mapped string
+		var wasDefault bool
+		err := s.deps.Store.Pool.QueryRow(r.Context(), `select project, is_default from repo_projects where repo = $1 and `+
+			access.ProjectClause("project", "$2"), repo, refs.VisibilityArg(who)).Scan(&mapped, &wasDefault)
+		if err != nil || mapped != input.Project || !wasDefault {
+			written.id(r.Context())
+		}
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -142,13 +157,34 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	if input.Default != nil {
 		isDefault = *input.Default
 	}
-	// A project's default is the repository each of its issues that names none resolves to, so a
-	// mapping this write leaves as a default is held to the rule an issue's own repository is
-	// (refuseRepoHidden), under the mapping's locks and before anything is written.
-	if isDefault {
-		if err := refuseRepoHidden(r.Context(), tx, who, &repo); err != nil {
+	// The id the default records: the one the mapping holds where it stays its project's default,
+	// and else GitHub's, read above or, where the mapping changed since, now.
+	keepRepoID := isDefault && previous != nil && !moved && previous.Default
+	var repoID *int64
+	switch {
+	case keepRepoID:
+		if err := tx.QueryRow(r.Context(), `select repo_id from repo_projects where repo = $1`, repo).Scan(&repoID); err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+	case isDefault:
+		repoID = written.id(r.Context())
+	}
+	// A project's default is the repository each of its issues that names none resolves to, so a
+	// mapping this write leaves as a default is held to the rule an issue's own repository is
+	// (refuseRepoHidden), judged by that id, under the mapping's locks and before anything is
+	// written; and a private project's default takes no new name without its id
+	// (refuseUnidentifiedRepository), read under the project's owner lock those locks hold.
+	if isDefault {
+		if err := refuseRepoHidden(r.Context(), tx, who, &repo, repoID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !keepRepoID {
+			if err := refuseUnidentifiedRepository(r.Context(), tx, input.Project, &repo, repoID); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 	}
 	// An absent or null renamed_to keeps the pair the mapping already holds, and a row this
@@ -182,11 +218,12 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	mapping, err := scanRepoProject(tx.QueryRow(r.Context(), `
-		insert into repo_projects (repo, project, created_by, is_default, renamed_to)
-		values ($1, $2, $3, $4, $5)
+		insert into repo_projects (repo, project, created_by, is_default, renamed_to, repo_id)
+		values ($1, $2, $3, $4, $5, $6)
 		on conflict (repo) do update set project = excluded.project, created_by = excluded.created_by,
-			is_default = excluded.is_default, renamed_to = excluded.renamed_to
-		returning `+repoProjectColumns, repo, input.Project, actorJSON, isDefault, renamedTo))
+			is_default = excluded.is_default, renamed_to = excluded.renamed_to,
+			repo_id = case when $7 then repo_projects.repo_id else excluded.repo_id end
+		returning `+repoProjectColumns, repo, input.Project, actorJSON, isDefault, renamedTo, repoID, keepRepoID))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

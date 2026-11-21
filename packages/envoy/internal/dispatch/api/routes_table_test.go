@@ -640,6 +640,10 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"DELETE /api/v1/projects/{key}/access/people/{email}",
 		"PUT /api/v1/projects/{key}/access/groups/{name}",
 		"DELETE /api/v1/projects/{key}/access/groups/{name}",
+		// The repositories a project's rows name, and the owner's confirmation of each before the
+		// project turns private, are the owner's alone, as its access is.
+		"GET /api/v1/projects/{key}/repositories",
+		"POST /api/v1/projects/{key}/repositories/confirm",
 		"GET /api/v1/access-groups",
 		"PUT /api/v1/access-groups/{name}",
 		"DELETE /api/v1/access-groups/{name}",

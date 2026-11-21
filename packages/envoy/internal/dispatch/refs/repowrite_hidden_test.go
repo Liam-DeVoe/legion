@@ -12,7 +12,7 @@ import (
 // one statement, each as a pointer so a null answer is seen; repository nil binds a null name.
 func repositoryHiddenAndShown(t *testing.T, database *store.Store, who model.Actor, repository *string) (hidden, shown *bool) {
 	t.Helper()
-	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryHidden("$2::text", "$1")+`, `+RepositoryClause("$2::text", "$1"),
+	if err := database.Pool.QueryRow(context.Background(), `select `+RepositoryHidden("$2::text", "null", "$1")+`, `+RepositoryClause("$2::text", "null", "$1"),
 		VisibilityArg(who), repository).Scan(&hidden, &shown); err != nil {
 		t.Fatalf("RepositoryHidden(%v): %v", repository, err)
 	}

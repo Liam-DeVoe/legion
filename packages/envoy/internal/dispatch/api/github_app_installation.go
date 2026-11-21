@@ -70,8 +70,11 @@ func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 
 // repositoriesHiddenQuery is refs.RepositoryClause over each repository of an array, the reader's
 // visibility argument bound at $1 and the repositories at $2, each answered with whether it is
-// hidden. Neither placeholder differs between reads, so the text is built once.
-var repositoriesHiddenQuery = `select asked.repo, not ` + refs.RepositoryClause("asked.repo", "$1") + ` from unnest($2::text[]) as asked(repo)`
+// hidden. Each is judged by its name (the clause's null id), which hides every name a private
+// project the reader does not see holds, whatever id it recorded: a pull request row holds no
+// GitHub id, and the App-installation route asks GitHub nothing for a repository it hides. Neither
+// placeholder differs between reads, so the text is built once.
+var repositoriesHiddenQuery = `select asked.repo, not ` + refs.RepositoryClause("asked.repo", "null", "$1") + ` from unnest($2::text[]) as asked(repo)`
 
 // repositoriesHidden answers, for each of repositories (owner/name), whether reader may not see it:
 // whether it fails refs.RepositoryClause, read in one statement and keyed by the name as given. A

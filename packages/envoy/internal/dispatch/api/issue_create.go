@@ -306,6 +306,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The GitHub id of the repository the body names, read before the transaction so no lock waits
+	// on GitHub: a create's name is new to its row, so the id GitHub answers now is the one the
+	// creator means (writtenRepository).
+	var repoID *int64
+	if repo != nil {
+		repoID = s.writtenRepository(*repo).id(r.Context())
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -381,9 +388,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A repository the GitHub proxy hides from the creator is not theirs to name
-	// (refuseRepoHidden): read once the project and the parent are read as the creator reads them,
-	// before the project's owner lock and before anything is written.
-	if err := refuseRepoHidden(r.Context(), tx, who, repo); err != nil {
+	// (refuseRepoHidden), judged by the id the create read: read once the project and the parent
+	// are read as the creator reads them, before the project's owner lock and before anything is
+	// written.
+	if err := refuseRepoHidden(r.Context(), tx, who, repo, repoID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -392,6 +400,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if err := store.LockOwnerAndRead(r.Context(), tx, store.ProjectOwner(input.Project), `
 		select next_number, gen_random_uuid()::text from projects where key = $1 and `+access.ProjectClause("key", "$2")+`
 	`, []any{input.Project, refs.VisibilityArg(who)}, &number, &artifactID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// A private project's issue names no repository without its GitHub id
+	// (refuseUnidentifiedRepository), read under the project's owner lock this create holds, which a
+	// switch to private holds too.
+	if err := refuseUnidentifiedRepository(r.Context(), tx, input.Project, repo, repoID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -523,9 +538,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := tx.Exec(r.Context(), `
-		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, key, input.Project, number, input.Title, parentRef, actorJSON, labels, priority, issueRank, assignee, repo); err != nil {
+		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo, repo_id)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+	`, key, input.Project, number, input.Title, parentRef, actorJSON, labels, priority, issueRank, assignee, repo, repoID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

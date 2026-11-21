@@ -509,9 +509,10 @@ func MarkPullRequestUnfetchable(ctx context.Context, pool *store.Pool, repo stri
 // (access.ProjectClause), and one that names no issue, or a key no issue row holds, for an open
 // viewer alone (access.OpenClause), and only when its repository is not hidden from that viewer
 // (refs.RepositoryClause), so a pull request of a repository a private project the viewer does
-// not see owns is never shown for naming no issue.
+// not see owns is never shown for naming no issue. A pull request row names its repository and no
+// GitHub id, so the repository is judged by its name (the clause's null id).
 func pullRequestShownSQL(prAlias, issueAlias, viewerParam string) string {
-	return `case when ` + issueAlias + `.key is null then (` + access.OpenClause(viewerParam) + ` and ` + refs.RepositoryClause(prAlias+`.repo`, viewerParam) + `)` +
+	return `case when ` + issueAlias + `.key is null then (` + access.OpenClause(viewerParam) + ` and ` + refs.RepositoryClause(prAlias+`.repo`, "null", viewerParam) + `)` +
 		` else ` + access.ProjectClause(issueAlias+`.project_key`, viewerParam) + ` end`
 }
 
@@ -653,7 +654,7 @@ func ReadRunShown(ctx context.Context, pool *store.Pool, repo string, runID int6
 			where j.repo = asked.repo and j.run_id = asked.run_id and `+shippingJobSQL("$3", "$4")+` and j.completed_at is not null
 		) own
 		cross join lateral (
-			select `+access.OpenClause("$5")+` and `+refs.RepositoryClause("asked.repo", "$5")+` as shown
+			select `+access.OpenClause("$5")+` and `+refs.RepositoryClause("asked.repo", "null", "$5")+` as shown
 		) unnamed
 		where asked.repo = $1 and asked.run_id = $2 and case
 			when asked.kind = 'pr_checks' then coalesce((

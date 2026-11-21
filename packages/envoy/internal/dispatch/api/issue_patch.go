@@ -172,6 +172,20 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := r.PathValue("key")
+	// The GitHub id of the repository the body names, read before the transaction so no lock waits
+	// on GitHub, and only where the issue does not store that name already: a write that carries the
+	// stored name keeps the row's id, or its lack of one, and reads nothing (writtenRepository). The
+	// stored name is read here as the caller sees the issue, with nothing locked, and read again
+	// below under the issue's owner lock, which decides.
+	var written *writtenRepository
+	if repo != nil {
+		written = s.writtenRepository(*repo)
+		var stored *string
+		if err := s.deps.Store.Pool.QueryRow(r.Context(), `select repo from issues where key = $1 and `+
+			access.ProjectClause("project_key", "$2"), key, refs.VisibilityArg(who)).Scan(&stored); err == nil && !sameRepositoryName(stored, *repo) {
+			written.id(r.Context())
+		}
+	}
 	// Whether the write closes the issue (closing) waits for the issue's owner lock; whether it
 	// asks to is known now.
 	closes := input.Status != nil && status == "done"
@@ -283,12 +297,36 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The id the write records beside its repository: the one the issue stores, under its owner
+	// lock, where the body carries the name it stores, and else GitHub's for the new name, read above
+	// or, where the issue's name changed since, now.
+	var repoID *int64
+	keepRepoID := false
+	if repo != nil {
+		if sameRepositoryName(before.Repo, *repo) {
+			keepRepoID = true
+			if err := tx.QueryRow(r.Context(), `select repo_id from issues where key = $1 and `+
+				access.ProjectClause("project_key", "$2"), key, refs.VisibilityArg(who)).Scan(&repoID); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		} else {
+			repoID = written.id(r.Context())
+		}
+	}
 	// A repository the GitHub proxy hides from the writer is not theirs to name
-	// (refuseRepoHidden): read once the issue is read as the writer reads it, under its owner lock,
-	// and before the first row is written.
-	if err := refuseRepoHidden(r.Context(), tx, who, repo); err != nil {
+	// (refuseRepoHidden), judged by that id: read once the issue is read as the writer reads it,
+	// under its owner lock, and before the first row is written. A private project's issue then
+	// takes no new name without its id (refuseUnidentifiedRepository).
+	if err := refuseRepoHidden(r.Context(), tx, who, repo, repoID); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if !keepRepoID {
+		if err := refuseUnidentifiedRepository(r.Context(), tx, before.Project, repo, repoID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// The `advances` revision rule is decided here, beside the other refusals of this handler
 	// and before the first row is written: a refused write leaves the issue exactly as it was.
@@ -388,6 +426,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if repoProvided {
 		set("repo", repo)
+		if !keepRepoID {
+			set("repo_id", repoID)
+		}
 	}
 	changed := len(sets) > 0 || componentsProvided || input.BlockedBy != nil || input.Advances != nil
 	// The close's and the reopen's document work (prepareWithdrawal, prepareRestoration): it reads
