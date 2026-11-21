@@ -5067,6 +5067,78 @@ and no agent runs: each claim is launched by the package's fake runtime, which p
 The issues, pull requests, slots and the claims the boot relaunches are seeded through the store, as every daemon test seeds its fixture.
 `HANDOFF_RECORDS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
+## check-states.sh
+
+```sh
+LEGION_OMP_PATH=/opt/omp/bin/omp \
+  LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [CHECK_STATES_E2E_CASES=<case>[,<case>...]] [LEGION_E2E_NATS_BIN=<nats-server>] \
+  bash scripts/e2e/check-states.sh     # → "check states e2e: PASS in <n>s", exit 0
+```
+
+The live proof that the tester's move is decided by the check results in Dispatch and by nothing else, on the real Dispatch, the real daemon and a real tester's pane.
+The tester records its results with the real `dispatch result`, and its real `legion` tool completes testing with no verdict.
+Dispatch publishes each change of a check's state as a `check.state_changed` event on the run's own broker.
+The daemon takes those events and reads nothing else of the results.
+It moves the issue to `reviewing` when every check reads yes at the head the tester's test record names.
+Otherwise it sends the issue back to `implementing`, with a task that names each check that does not pass, with its state and its reason.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)).
+It needs no Docker, no cluster, no tmux, no GitHub and no deployed Dispatch.
+`LEGION_OMP_PATH` is required and means what it means for [`late-completion.sh`](#late-completionsh).
+`LEGION_TEST_PG_DSN` is required, as for [`handoff-records.sh`](#handoff-recordssh), and is the one database variable the script reads.
+Its host must be loopback, and the driver also makes Dispatch's own database on that server, so the DSN's role must be allowed to create databases and the server must offer `pgvector`.
+The runs of the change passed `DISPATCH_TEST_DATABASE_URL` beside it, naming the same server, and the script reads nothing of it.
+The broker is the run's own: Dispatch publishes its events on it, and the daemon consumes them from it.
+A whole run of the seven cases took 82 s on a shared devbox with a warm Go build cache: 6 s building the driver and 74 s of proof, most of it the panes' start and completion-before-event's 10 s hold.
+The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
+Before them the script refuses a host with no `jj`, no `git`, no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`.
+It also exports `nats_pid`, the variable in which that file holds the pid of the broker it starts, so the case `completion-before-event` stops that broker by the pid the run started it with.
+Each Oh My Pi starts threads by the CPUs it may run on: one measured 595 threads on a host of 288 CPUs, 49 with 16 and 22 with 4.
+A run starts up to twenty, so under a cap on tasks (systemd's `TasksMax`) pin it to a set of CPUs, for example with `taskset -c`, or raise the cap.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestCheckStatesLive` (`internal/daemon/check_states_live_test.go`, `-tags e2e`) |
+| `proof` | each chosen case below, printing what it drove and read between its own `== <case>` and `ok <case>`; the first that fails ends the run, naming the case and the assertion (`FAIL <case> at <assertion>: …`), and a read that finds nothing it could judge says `UNKNOWN` and what it could not read, and fails its case |
+
+Nothing between the tester and the move is stood in for.
+Dispatch is the real server this checkout builds, run as [`handoff-records.sh`](#handoff-recordssh) runs it, on a database of its own, but with its events on, published on the run's broker (`NATS_URLS`).
+The daemon is the whole daemon (`run`, the function `legion start` calls), with `dispatch_url` at that server and its durable consumer of Dispatch's issue events on the same broker.
+Each tester is a real `omp --mode rpc` under the real `legion worker-shim`, started by the package's local runtime (`internal/daemon/localruntime_live_test.go`).
+It runs this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own.
+Every result and every test record is written with the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts`), as the session the tester's pane registered.
+Each issue is seeded in `testing`, its tester mid-launch with its testing task.
+The tester's pane takes that task and ends the turn with a line starting `WAITING`.
+A case then gives that pane an operator's task (`legion claims deliver`).
+The pane's model stand-in answers that task's turn with one `tool_use` block that calls the `legion` tool's `handoff_complete` with a summary and no verdict (`late_completion_live_test.go`'s `completionStandin`).
+So the completion the daemon answers is the request the shipped plugin builds.
+Each case reads:
+- the daemon's phase from `GET /legion/v1/state`;
+- the implementer's task from the claim's pending delivery in the daemon's store, which the implementers' stand-in keeps pending by holding the turn;
+- the results, retractions and published states from Dispatch's own database.
+
+| case | driven by | read back as |
+| :--- | :--- | :--- |
+| `one-record` | the tester's pass of k1 and fail of k2 at the head, its test record, and its completion with the summary `Every check passes.`; then the same with passes of both, on an issue of its own | the first issue in `implementing` and the second in `reviewing`, each within 10 s of the completion |
+| `daemon-records-nothing` | the two runs of `one-record`, on issues of their own | every request of Dispatch's access log that records or retracts a result names a tester's or an implementer's session of the run, and every row of `check_results`, `ci_check_results` and their retraction tables is written under such a session, never the daemon's `legion-daemon:<PROJECT>` |
+| `dispatch-tells` | the tester's fail of k1 at the head | within 10 s the daemon's log holds `workflow: a check state is held` for the issue, k1, the head, `no` and `fail` |
+| `pass-goes-to-review` | the implementer's and the tester's passes of k1 and k2, the test record and the completion | the issue in `reviewing` within 10 s, and its reviewer started |
+| `no-check` | an issue with no Verification document, which Dispatch tells as a head with no check (the set form); the test record and the completion, with no result | the issue in `reviewing` within 10 s, and its reviewer started |
+| `fail-sends-back` | the tester's pass of k1 and fail of k2; then, on a second issue, a pass and a fail of k1 and a pass of k2 | each issue in `implementing` within 10 s; the first task names `k2: no (fail)` and no k1, the second `k1: unknown (pass_and_fail)` and no k2 |
+| `completion-before-event` | with the states from before the results held by the daemon, the run's `nats-server` stopped (`SIGSTOP`, by the pid the run started it with, which must be a `nats-server` holding the socket on the run's port); the tester's passes, test record and completion; after 10 s, `SIGCONT` | for 10 s the issue stays in `testing` and the daemon starts no worker; the architect has one `phase-finished` notice saying the move waits for Dispatch's check states at the head; within 10 s of `SIGCONT` the issue is in `reviewing` |
+
+A watchdog continues the stopped broker after a minute, whatever happens to the driver: the cleanup of `lib/live-daemon-proof.sh` sends the broker `TERM` and waits for it.
+What the proof stands in for lies outside the move:
+- Each issue's open pull request is staged in Dispatch's database as the `pull_request` envelope Envoy relays would have stored it: one `pull_request_heads` row, attributed to the issue and read just now. The trigger on that table marks the issue owed, as the envelope's own write does.
+- GitHub's REST API, as the daemon reads it, is the driver's stand-in for those pull requests.
+- Envoy's listener is the package's `noticeListener`.
+- The Apps' tokens are placeholders.
+- Every pane but a tester's talks to a model stand-in that answers text.
+The issues, pull requests, slots and the testers' claims are seeded through the store, as every daemon test seeds its fixture.
+`CHECK_STATES_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`), each pane's (`panes/`) and the driver's output.
+
 ## step-records.sh
 
 ```sh

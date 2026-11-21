@@ -162,6 +162,8 @@ type statesIssue struct {
 	key, title, head string
 	number           int
 	tester           string
+	// staged is whether the issue's pull request is staged in Dispatch's database (stageHead).
+	staged bool
 }
 
 // statesProof is one run of the proof: the booted daemon over the real Dispatch, the issues of the
@@ -751,6 +753,10 @@ func (r *statesProof) until(assertion, what string, within time.Duration, want f
 // GitHub again. The table's trigger marks the issue owed, as the envelope's own write does.
 func (r *statesProof) stageHead(issue *statesIssue) {
 	r.t.Helper()
+	if issue.staged {
+		return
+	}
+	issue.staged = true
 	if _, err := r.dispatchDB.Exec(context.Background(), `
 		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
 			title, url, event_at, checked_at)
