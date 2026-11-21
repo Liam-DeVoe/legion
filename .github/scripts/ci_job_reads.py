@@ -1671,21 +1671,6 @@ def race_step(job):
     return step_run(job.job, job.step, race_text(job), ENVOY, race_pkgs(job), race=True)
 
 
-# envoy-go-race-api is a matrix whose legs each run one shard of the package (the job's comment
-# in its workflow file gives the numbers): .github/scripts/go-test-shards.py
-# builds the race test binary, splits its tests across the legs by name, proves every test is in
-# exactly one leg and prints this leg's -run, which the step assigns on a line of its own. That
-# substitution, the two matrix expressions and the quoted -run are outside the simple form, so
-# the step is pinned whole, its text built from the lane's own entry. A -run moves no closure:
-# the whole package compiles whichever tests it selects, and the script's `go test -c` is that
-# same race build of that same package, so the step's one Run is the plain race go test.
-RACE_API = RACE_JOBS["envoy-go-race-api"]
-RACE_API_PKGS = " ".join(race_pkgs(RACE_API))
-RACE_API_SCRIPT = (
-    f"pattern=$(../../{GO_TEST_SHARDS} pattern ${{{{ strategy.job-index }}}} ${{{{ strategy.job-total }}}} "
-    f"-race {RACE_API_PKGS})\n" + race_text(RACE_API, '-run "$pattern"'))
-
-
 # The architecture-note and spec-file rules and the commands that run them, which envoy-go-checks
 # tests in a step of their own: they need no database, so they run there on every push, and that
 # step is their one run. Both that step's package list and the unit step's exclusion of them are
@@ -1805,6 +1790,27 @@ UNIT_TEST_PATTERN = "|".join(
     + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES]
     + [f"/{DATABASE_SKIPS_TREE}($|/)", f"/{DATABASE_SKIPS_COMMAND}$"]
     + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
+
+# envoy-go-race-api is a matrix whose legs each run one shard of the package (the job's comment
+# in its workflow file gives the numbers): .github/scripts/go-test-shards.py builds the race test
+# binary, splits its tests across the legs by name, proves every test is in exactly one leg and
+# prints this leg's -run, which the step assigns on a line of its own. The leg then runs its shard
+# through database-skips.sh with that pattern as --run, which counts the skips of that same run,
+# so the package's contract tests, which skip without BROKER_TEST_DATABASE_URL, and the rest,
+# which skip without DISPATCH_TEST_DATABASE_URL, cannot skip unseen in a step that runs without
+# -v; the counter holds each leg to the expected skips of the tests its pattern selects. That
+# substitution, the two matrix expressions and the quoted pattern are outside the simple form, so
+# the step is pinned whole, its text built from the lane's own entry: the race job's packages, and
+# its -timeout as the counter's --timeout. A -run moves no closure: the whole package compiles
+# whichever tests it selects, and the two scripts' `go test -c` are that same race build of that
+# same package, so the step's one Run is the counter's race go test.
+RACE_API = RACE_JOBS["envoy-go-race-api"]
+RACE_API_PKGS = " ".join(race_pkgs(RACE_API))
+RACE_API_SCRIPT = (
+    f"pattern=$(../../{GO_TEST_SHARDS} pattern ${{{{ strategy.job-index }}}} ${{{{ strategy.job-total }}}} "
+    f"-race {RACE_API_PKGS})\n"
+    "scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL "
+    f'--race --timeout {RACE_API.timeout} --run "$pattern" {RACE_API_PKGS}')
 
 
 # ---------------------------------------------------------------- the web app's display fixture
@@ -2604,7 +2610,7 @@ SCRIPT_TEST_GATES = [
         (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its two-steps case reads this file's own go test line, the GODEBUG one"),
         (".github/workflows/ci-job-envoy-go.yaml", "its audited-step case reads this file's step that runs database-skips.sh"),
         (".github/workflows/ci-job-envoy-go-race-api.yaml",
-         "its matrix case reads this file's job and step as legs, each assigning its -run from the shard script"),
+         "its matrix and audited-step cases read this file's job and step as legs, each assigning its -run from the shard script and running database-skips.sh with it"),
         (".github/workflows/ci-job-*.yaml", "its step-reader case reads every go test step of each workflow a job of ci.yaml calls, as the module's documents() loads them"),
         (".github/workflows/browser-image.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
         (".github/workflows/dispatch-browser.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
@@ -3519,19 +3525,21 @@ GATES = [
     # envoy-go unit step and its plain companion are built from too. Two steps are not race_step's
     # text, and each gate pins its whole step while the lane table still names the package, which is
     # what keeps it out of the unit step: envoy-go-race-api's runs one shard of its package per leg
-    # of a matrix (RACE_API_SCRIPT says why), and envoy-go-race-docs' runs the package under
-    # .github/scripts/race_memory.py (dispatch://INFRA-1085).
+    # of a matrix through database-skips.sh (RACE_API_SCRIPT says why), and envoy-go-race-docs'
+    # runs the package under .github/scripts/race_memory.py (dispatch://INFRA-1085).
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
          reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-go-race-api")], exact=[
         pinned_step("envoy-go-race-api", RACE_API.step, ENVOY, RACE_API_SCRIPT, [
             (ENVOY, race_pkgs(RACE_API),
-             f"go test -race -count=1 -timeout {RACE_API.timeout} {RACE_API_PKGS}, and "
-             f"{GO_TEST_SHARDS}'s go test -c -race of the same package", {"race": True}),
+             f"{DATABASE_SKIPS_SCRIPT}'s go test -json -race -timeout {RACE_API.timeout} -run of the leg's shard of "
+             f"{RACE_API_PKGS}, and the go test -c -race of the same package that it and {GO_TEST_SHARDS} each "
+             "list it with", {"race": True}),
         ]),
     ], reads=reads(
         (GO_TEST_SHARDS, f"{at('envoy-go-race-api', RACE_API.step)} takes its -run from it"),
+        (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go-race-api', RACE_API.step)} runs the leg's shard through it"),
     ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[

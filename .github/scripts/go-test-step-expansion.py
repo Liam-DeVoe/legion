@@ -104,7 +104,8 @@ How it reads a step:
     `${{ matrix.<key> }}`, `${{ strategy.job-index }}` and `${{ strategy.job-total }}` are that
     leg's values in the step's name and script, and each leg is a step of its own, so a test two
     legs run is a pair two steps run (envoy-go-race-api's legs each run one shard of
-    internal/dispatch/api through go-test-shards.py). A matrix of any other shape is refused;
+    internal/dispatch/api, the pattern go-test-shards.py prints, through database-skips.sh). A
+    matrix of any other shape is refused;
   * a `-skip '^(Name|Name|…)$'` names tests the step leaves out, which are subtracted from what
     the step runs and left in what it compiles, since the binary holds a skipped test and never
     runs it; every other `-skip` pattern is refused rather than read (SKIP_ALTERNATION says why);
@@ -128,12 +129,14 @@ How it reads a step:
     tuple does not name are refused rather than guessed at;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
     (`packages/envoy/scripts/database-skips.sh`, `packages/envoy/scripts/backend-count.sh`), alone
-    or followed by one of the argument lists
-    its entry reads, is read as the `go test` command that entry gives for those arguments, in
-    the module it names. A step whose run: holds that script's file name anywhere else, or with
-    arguments its entry does not list, is refused, since each entry reads its script only as
-    called with what it lists; the test is on the run's raw text, so no quoting, substitution or
-    comment hides the script from it. A
+    or followed by one of the argument lists its entry reads, is read as the `go test` command that
+    entry gives for those arguments, in the module it names. Lines before it that each assign a
+    variable from a `$(…)` call of a RUN_LISTERS script (envoy-go-race-api's `pattern=$(…)`, which
+    its `--run "$pattern"` reads) are kept before that command, and run as a go test line's are,
+    where the step runs in the entry's module. A step whose run: holds that script's file name
+    anywhere else, or with arguments its entry does not list, is refused, since each entry reads its
+    script only as called with what it lists; the test is on the run's raw text, so no quoting,
+    substitution or comment hides the script from it. A
     name the shell builds at run time (from a variable, or quoted in pieces) is not in the text,
     and no reading of the text sees it; This script reads no shell script itself: what a script runs
     depends on its control flow, which a line-by-line reading cannot see (a `go test` under
@@ -410,11 +413,15 @@ AUDITED_SCRIPTS = {
     # DEFAULT_EXCEPT's `grep -Ev '/internal/cipher/natscallout$'` takes out of `go list` of them (the
     # race lane's packages under the tree, ci_job_reads.DATABASE_SKIPS_PATTERN), with no -tags,
     # -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces
-    # those packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the -timeout,
-    # and `--var NAME` decides only whether it runs at all. With `--report FILE` it reads a report
-    # and runs no test. envoy-go's count step passes the first argument list below, whose command
-    # is that run in the listing form this script reads, and envoy-go-race-api's race step the
-    # second. The first's --skip leaves out the backend count's test of ./internal/cipher/api/.
+    # those packages, `--race` adds -race, `--skip P` adds -skip P, `--run P` adds -run P,
+    # `--timeout D` sets the -timeout, and `--var NAME` decides only whether it runs at all. Under
+    # `--run` it first builds the package's test binary with `go test -c` under the same flags and
+    # lists it (-test.list), which compiles what the run compiles and runs no test. With
+    # `--report FILE` it reads a report and runs no test. envoy-go's count step passes the first
+    # argument list below, whose command is that run in the listing form this script reads, and
+    # each leg of envoy-go-race-api's race step the second, after the line that assigns the leg's
+    # pattern from go-test-shards.py. The first's --skip leaves out the backend count's test of
+    # ./internal/cipher/api/.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
@@ -422,10 +429,10 @@ AUDITED_SCRIPTS = {
                 "go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | "
                 "xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
                 "-timeout 20m",
-            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
-                "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
+            '--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m --run "$pattern" ./internal/dispatch/api/':
+                'go test -json -count=1 -race -run "$pattern" -timeout 70m ./internal/dispatch/api/',
         },
-        sha256="668c7223b926bbad0066b0866b8f308f7c08db55ae4db167ea33bf8769401e6d",
+        sha256="8ce8912795f3b4768e5e1dc0c9f3a715e56bc2f4a47fc1366d69a78345d6bc5f",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -596,10 +603,10 @@ def substitute(text: str, values: dict[str, str]) -> str:
 
 def steps_of(found: dict) -> list[Step]:
     """Every step of those documents whose run: holds a `go test` and whose directory is one of
-    the three modules, once per leg of its job's matrix (legs() says how). The directory and the
-    comment-free lines are read with check-ci-filters.sh's own helpers
-    (ci_filter_coverage.step_workdir, script_lines), so this tool and the gate agree on what a step
-    runs and where."""
+    the three modules, or whose run: names an AUDITED_SCRIPTS script (audited_step reads it), once
+    per leg of its job's matrix (legs() says how). The directory and the comment-free lines are
+    read with check-ci-filters.sh's own helpers (ci_filter_coverage.step_workdir, script_lines), so
+    this tool and the gate agree on what a step runs and where."""
     steps = []
     for path, document in found.items():
         for job, body in (document.get("jobs") or {}).items():
@@ -609,17 +616,17 @@ def steps_of(found: dict) -> list[Step]:
                     continue
                 workdir = step_workdir(document, body, step)
                 name = step.get("name") or f"step {index + 1}"
-                audited = audited_step(path, job, name, workdir, script)
-                if audited is not None:
-                    steps.append(audited)
-                    continue
-                if workdir not in MODULE_DIRS:
-                    continue
-                if not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script))):
+                audited = any(Path(audited_script).name in script for audited_script in AUDITED_SCRIPTS)
+                if not audited and (workdir not in MODULE_DIRS
+                                    or not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script)))):
                     continue
                 for suffix, values in legs(f"{path}'s {job} / {name}", body):
-                    steps.append(Step(workflow=path, job=job, name=substitute(name, values) + suffix,
-                                      workdir=workdir, script=substitute(script, values)))
+                    leg_name, leg_script = substitute(name, values) + suffix, substitute(script, values)
+                    if audited:
+                        steps.append(audited_step(path, job, leg_name, workdir, leg_script))
+                    else:
+                        steps.append(Step(workflow=path, job=job, name=leg_name, workdir=workdir,
+                                          script=leg_script))
     return steps
 
 
@@ -639,29 +646,36 @@ def spellings(path: str, workdir: str) -> set[str]:
 def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) -> Step | None:
     """The step a run: that is the path of an AUDITED_SCRIPTS script makes, alone or followed by
     an argument list its entry reads, read as that entry's command for those arguments in its
-    module, or None where the run's text holds no such script's file name. A run whose text holds
-    one anywhere else - an operator, another command, a `$(…)`, a comment, another line, an
-    argument list the entry does not read - is refused rather than read or skipped: the test is
-    on the raw text, before any shell reading, so no quoting or substitution hides the script
-    from it. So is a script whose text no longer has its entry's SHA-256."""
+    module, or None where the run's text holds no such script's file name. Lines before that one
+    may each assign a variable from a `$(…)` call of a RUN_LISTERS script, as a go test line's
+    `-run "$pattern"` may take it, where the step runs in the entry's module; they are kept before
+    the command, and read_block runs them. A run whose text holds the script anywhere else - an
+    operator, another command, a `$(…)`, a comment, a line of any other kind, an argument list the
+    entry does not read - is refused rather than read or skipped: the test is on the raw text,
+    before any shell reading, so no quoting or substitution hides the script from it. So is a
+    script whose text no longer has its entry's SHA-256."""
     label = f"{workflow}'s {job} / {name}"
     named = [path for path in AUDITED_SCRIPTS if Path(path).name in script]
     if not named:
         return None
     # Only the shell's own blanks and the line's end: Python's strip() also takes Unicode spaces,
     # which bash reads as part of the name.
-    alone = script.strip(" \t\n")
+    *before, alone = [line.strip(" \t") for line in script.strip(" \t\n").split("\n")]
     # The path is the text up to the first space, and the arguments the text after it, compared
     # with each listed argument list as written: one space between words, nothing else.
     spelled, _, arguments = alone.partition(" ")
     # The literal spelling, compared with no path normalization: `path/` and `path/.` resolve to
     # the file in Python and name nothing the shell can run.
     matches = [path for path in named if spelled in spellings(path, workdir)]
+    assigned = all((found := ASSIGNMENT.match(line)) and any(lister in found.group(2) for lister in RUN_LISTERS)
+                   and not any(Path(path).name in line for path in named) for line in before)
     if (len(named) != 1 or len(matches) != 1 or any(c.isspace() for c in spelled)
-            or arguments not in AUDITED_SCRIPTS[matches[0]].commands):
+            or arguments not in AUDITED_SCRIPTS[matches[0]].commands or not assigned
+            or (before and workdir != AUDITED_SCRIPTS[matches[0]].module)):
         raise Refused(f"{label}: names {', '.join(named)} in a form no AUDITED_SCRIPTS entry "
                       "reads: an entry reads a run: that is that one path, alone or followed by "
-                      "an argument list the entry lists")
+                      "an argument list the entry lists, after any lines that each assign a "
+                      f"variable from a $(…) call of {' or '.join(RUN_LISTERS)} in the entry's module")
     path = matches[0]
     entry = AUDITED_SCRIPTS[path]
     digest = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
@@ -669,7 +683,8 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) 
         raise Refused(f"{label}: {path} has SHA-256 {digest}, and its AUDITED_SCRIPTS entry was "
                       f"read from {entry.sha256}; read the script again and update the entry's "
                       "commands and digest")
-    return Step(workflow=workflow, job=job, name=name, workdir=entry.module, script=entry.commands[arguments])
+    return Step(workflow=workflow, job=job, name=name, workdir=entry.module,
+                script="\n".join([*before, entry.commands[arguments]]))
 
 
 def commands_of(step: Step) -> list[GoTest]:

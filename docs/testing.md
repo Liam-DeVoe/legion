@@ -416,7 +416,10 @@ that ran the whole package had, so no one runner carries the whole package, whic
 minutes there. A test's shard is
 `crc32(name) mod` the leg count, which `.github/scripts/go-test-shards.py` computes from the race
 test binary's own list, and the script fails the leg, naming the test, when the legs' `-run`
-patterns leave a test out or run one twice. A test you add needs no edit there. `envoy-go`
+patterns leave a test out or run one twice. A test you add needs no edit there. Each leg runs its
+shard through `packages/envoy/scripts/database-skips.sh --run`, which fails the leg on a skipped
+test but the expected skips (its `EXPECTED_SKIPS`) of the tests that leg's pattern selects, so a
+test that skips for want of a database fails the leg it lands in. `envoy-go`
 leaves the package out of its unit step, and `text-checks` runs its fifteen source-guard tests by
 name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60 minutes.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone

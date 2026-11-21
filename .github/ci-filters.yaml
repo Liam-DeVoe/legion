@@ -2755,6 +2755,7 @@ envoy_go_race_api:
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-go-race-api.yaml'
   - *go_workspace
+  - 'packages/envoy/scripts/database-skips.sh'
   - '.github/scripts/go-test-shards.py'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/going/*'
