@@ -173,7 +173,7 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 		// admits abort on that row alone (holdrecord's Request.RowReleased, which Admit sets from the
 		// row); it deletes the cohort record, which the route deletes on that row too, and its done
 		// entry ends the journal. Its rerun after a crash is admitted on its own pending intent.
-		if !ended(d) && !latestIs(d, holdrecord.CommandSet, holdrecord.StateDone) {
+		if !holdEnded(d) && !latestIs(d, holdrecord.CommandSet, holdrecord.StateDone) {
 			return abortReleasedPrepare(ctx, records, row, o, stdout)
 		}
 		// An abort killed between its move and its done entry left its intent pending: the rerun
@@ -322,9 +322,9 @@ func latestIs(d holdrecord.Done, command, state string) bool {
 	return ok && e.State == state
 }
 
-// ended reports whether the hold has ended: a done `hold release` or `hold abort` (holdrecord's
-// EndIsFinal), after which the table admits no command in it.
-func ended(d holdrecord.Done) bool {
+// holdEnded reports whether the hold has ended: a done `hold release` or `hold abort`
+// (holdrecord's EndIsFinal), after which the table admits no command in it.
+func holdEnded(d holdrecord.Done) bool {
 	_, released := d.Latest(holdrecord.CommandRelease, holdrecord.StateDone)
 	_, aborted := d.Latest(holdrecord.CommandAbort, holdrecord.StateDone)
 	return released || aborted

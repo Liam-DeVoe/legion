@@ -343,7 +343,7 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 		if err != nil {
 			return err
 		}
-		if !ended(d) {
+		if !holdEnded(d) {
 			holdID = o.holdID
 		}
 	}
