@@ -34,6 +34,12 @@ body: |-
   project; a claim, a role lookup, a publish to `notifications.role.PRIV.lead-reviewer` and the
   role lane all resolve it. Before, `POST /v1/roles/set` refused it 400 and a message to its lane
   reached the holder of the bare name. Every other role name keeps the bare key it had.
+
+  A role message on a lane that names a project, for a Legion role of another project
+  (`notifications.role.PRIV.legion-infra-reviewer`), now reaches no holder: the role lane drops
+  it and `POST /v1/messages/publish` refuses it 400, as `POST /v1/roles/set` refuses the claim.
+  Before, the role lane and the publish route resolved the bare role name and reached the holder
+  of the role's own project.
 time: 2026-11-20T19:26:22Z
 custom:
     Issue: listener-edge-mode
