@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { act, render } from "@testing-library/react";
 import { createElement } from "react";
 
+import { PANEL_ATTRIBUTE } from "../../components/key-targets";
 import { KeymapProvider } from "./KeymapProvider";
 import {
   actionBinding,
@@ -11,7 +12,6 @@ import {
   DIALOG_SCOPE,
   type KeyBinding,
   type Keymap,
-  PANEL_ATTRIBUTE,
   useKeymap,
   useKeymapScope,
 } from "./keymap";

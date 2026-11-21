@@ -1,9 +1,9 @@
 import { type FocusEvent, type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
-import { commitsOnBlur, PANEL_ATTRIBUTE, takesText } from "../features/shell/keymap";
 import { focusOnDocument } from "../features/shell/roving";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
+import { commitsOnBlur, PANEL_ATTRIBUTE, takesText } from "./key-targets";
 import { ROW_SELECTOR } from "./row-marker";
 
 /**
@@ -161,7 +161,7 @@ export function useFocusPlace(
 
 /** A dialog, modal or not - the search bar, the Inbox drawer, every `useDialog` dialog, and the
  *  panel a `PanelTrigger` opens - or any other panel an `AnchoredPanel` draws, which carries the
- *  keymap's `PANEL_ATTRIBUTE`: a `MultiSelect` list's, which has no role of its own. Each is a
+ *  `PANEL_ATTRIBUTE` (`key-targets.ts`): a `MultiSelect` list's, which has no role of its own. Each is a
  *  region of its own, and a press inside it is a press in it, and on the trigger that names it
  *  where one does (`openerOf`). Once it has gone with the element the press landed on, the press
  *  reads as one on the control it was opened from as well (`pressedOn`), since the focus goes

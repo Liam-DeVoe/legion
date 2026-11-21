@@ -2,10 +2,11 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { renderHook, waitFor } from "@testing-library/react";
 
 import { KeymapProvider } from "../features/shell/KeymapProvider";
-import { PANEL_ATTRIBUTE, useKeymap } from "../features/shell/keymap";
+import { useKeymap } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
 import { useFocusRescue } from "./focus-place";
+import { PANEL_ATTRIBUTE } from "./key-targets";
 import { ROW_MARKER_ATTRIBUTE } from "./row-marker";
 
 // The page's focus rescue, read in happy-dom with the page built by hand. A focused element taken

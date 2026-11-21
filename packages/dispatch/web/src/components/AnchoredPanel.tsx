@@ -12,8 +12,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import { PANEL_ATTRIBUTE } from "../features/shell/keymap";
 import { focusableIn } from "./focus-place";
+import { PANEL_ATTRIBUTE } from "./key-targets";
 
 /** The panel's widest, before the 8 px margin it keeps from each viewport edge. */
 const PANEL_WIDTH = 256;
@@ -107,7 +107,7 @@ export function noteOpenedFrom(anchor: HTMLElement): void {
  * the panel they picked it from. Escape and Tab stay each panel's own, so Escape in the inner
  * list closes that list alone.
  *
- * The panel's element carries the keymap's `PANEL_ATTRIBUTE`, so a key pressed anywhere inside
+ * The panel's element carries `PANEL_ATTRIBUTE` (`key-targets.ts`), so a key pressed anywhere inside
  * it fires only the page's bindings that fire in a text field (`inEditable`): a radio or a
  * checkbox here stands where a select used to, and `j` on it must not walk the table behind.
  *

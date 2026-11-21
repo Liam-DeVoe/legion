@@ -4,7 +4,7 @@ import { fireEvent, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, type RefObject } from "react";
 
-import { PANEL_ATTRIBUTE } from "./keymap";
+import { PANEL_ATTRIBUTE } from "../../components/key-targets";
 import { type AnchorRow, ViewportAnchor } from "./ViewportAnchor";
 
 const ROW_HEIGHT = 50;
