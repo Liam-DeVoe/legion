@@ -54,8 +54,8 @@ type Row struct {
 	Resolved []string
 	// SlackChannels are the Slack channel ids the project's owner named. A real Dispatch always
 	// carries the key, empty when the project names none, so this stand-in does too — unless
-	// OmitSlackChannels, which is a Dispatch from before dispatch://INFRA-3862's #t-a-31 and
-	// carries no such key at all.
+	// OmitSlackChannels, which is a Dispatch from before the project route answered Slack channels
+	// and carries no such key at all.
 	SlackChannels []string
 	// OmitSlackChannels makes this project's answer carry no slack_channels key, the shape a
 	// Dispatch from before #t-a-31 answers.
