@@ -623,13 +623,19 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 // recording one for the address, it is true for a token that recorded another account at its mint,
 // and for one that recorded none and was made before people recorded the address's account
 // (agent_tokens.created_at before people.sub_recorded_at, both from Dispatch's own clock): an
-// account that held the address before may have minted it. A token made after the recording, an
-// address recording no account or no recording time, and a deployment whose sign-in records none
-// are not replaced.
+// account that held the address before may have minted it. It is true too for a token that
+// recorded none and was made at or after a replacement of the address's account the database kept
+// while the binding was off (account_binding_replacements, migration 20261121121717): the replaced
+// account may have minted it then, through either build, so it is refused from the moment the
+// binding holds, before the catch-up revokes it (store.CatchUpAccountBinding). A token made after
+// the recording with no such replacement kept, an address recording no account or no recording
+// time, and a deployment whose sign-in records none are not replaced.
 func tokenAccountReplaced(recordsAccounts string) string {
 	return "coalesce(people.sub is not null and (" +
 		"(agent_tokens.subject is not null and agent_tokens.subject <> people.sub)" +
-		" or (agent_tokens.subject is null and people.sub_recorded_at is not null and agent_tokens.created_at < people.sub_recorded_at))" +
+		" or (agent_tokens.subject is null and people.sub_recorded_at is not null and agent_tokens.created_at < people.sub_recorded_at)" +
+		" or (agent_tokens.subject is null and exists (select from account_binding_replacements" +
+		" where account_binding_replacements.email = people.email and agent_tokens.created_at >= account_binding_replacements.replaced_at)))" +
 		" and " + recordsAccounts + ", false)"
 }
 
