@@ -6,17 +6,15 @@ import (
 	"testing"
 )
 
-// stopNoSpace is the detail of the rule stop-no-space for word, with both ways out.
+// stopNoSpace is the detail of the rule stop-no-space for word.
 func stopNoSpace(word string) string {
-	return stopNoSpaceAnd(word, ". Put a space after the stop, or put the name in code font")
+	return fmt.Sprintf("a stop in %q has no space after it, so Dispatch cannot find the end of the sentence", word)
 }
 
-// stopNoSpaceAnd is the detail of the rule stop-no-space for word, with the ways out that ways
-// says: a space after the stop makes a statement of two sentences three, and a sentence of 50
-// words one of 26, so those findings give only the way out that passes, or none.
-func stopNoSpaceAnd(word, ways string) string {
-	return fmt.Sprintf("a stop in %q has no space after it, so Dispatch cannot find the end of the sentence%s", word, ways)
-}
+// bothStopWays is the words of both ways out of the rule stop-no-space (Finding.Ways). A space
+// after the stop makes a statement of two sentences three, and a sentence of 50 words one of 26,
+// so those findings give only the way out that passes, or none.
+const bothStopWays = "Put a space after the stop, or put the name in code font"
 
 // checkStatement is the findings of Check for one statement of body.
 func checkStatement(body string) (Text, []Finding) {
@@ -59,7 +57,7 @@ func TestANameWithAStopInsideEndsNoSentence(t *testing.T) {
 	if want := []Finding{finding(control, "sentences", "it has 3 sentences, and a statement has one or two")}; !sameFindings(got, want) {
 		t.Fatalf("control: Check = %#v, want %#v", got, want)
 	}
-	const codeFont = ". Put the name in code font"
+	const codeFont = "Put the name in code font"
 	for _, test := range []struct {
 		body  string
 		words []string
@@ -68,22 +66,18 @@ func TestANameWithAStopInsideEndsNoSentence(t *testing.T) {
 		{"Dispatch keeps each record in the U.S. region.", nil, ""},
 		{"Dispatch keeps each record in the U.S. region. Dispatch copies each record each night.", nil, ""},
 		{"Dispatch reads the file Web.Config at boot. Legion writes it.", []string{"Web.Config"}, codeFont},
-		{"Dispatch reads the file Web.Config at boot.", []string{"Web.Config"}, ""},
+		{"Dispatch reads the file Web.Config at boot.", []string{"Web.Config"}, bothStopWays},
 		{"Dispatch ships the release v1.2.Next to each server. Legion waits for it.", []string{"v1.2.Next"}, codeFont},
 		{"Dispatch keeps each comment.Dispatch indexes each comment.Dispatch shows each comment.", []string{"comment.Dispatch"}, codeFont},
 		{"Dispatch stops!Dispatch starts?Dispatch waits.", []string{"stops!Dispatch", "starts?Dispatch"}, codeFont},
 		{"Dispatch runs each job on .NET and on Go.", nil, ""},
-		{`Dispatch prints "Start."Dispatch stops.`, []string{`"Start."Dispatch`}, ""},
+		{`Dispatch prints "Start."Dispatch stops.`, []string{`"Start."Dispatch`}, bothStopWays},
 		{"Dispatch reads the file `Web.Config` at boot. Legion writes it.", nil, ""},
 	} {
 		text, got := checkStatement(test.body)
 		var want []Finding
 		for _, word := range test.words {
-			detail := stopNoSpace(word)
-			if test.ways != "" {
-				detail = stopNoSpaceAnd(word, test.ways)
-			}
-			want = append(want, finding(text, "stop-no-space", detail))
+			want = append(want, findingWays(text, "stop-no-space", stopNoSpace(word), test.ways))
 		}
 		if !sameFindings(got, want) {
 			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
@@ -114,13 +108,13 @@ func TestTheWordRuleReadsEachSentenceAfterTheWriterPutsTheSpaceIn(t *testing.T) 
 		name, second, ways string
 	}{
 		{"joined", w26, ""},
-		{"joined 25 and 25", other25, ". Put a space after the stop"},
+		{"joined 25 and 25", other25, "Put a space after the stop"},
 	} {
 		// The stop joins the last word of w25 and the first of the second sentence into one word.
 		words := 24 + len(strings.Fields(test.second))
 		joined := statement(w25 + test.second)
 		if got, want := Check(planted(), Input{Texts: []Text{joined}}), cut(
-			finding(joined, "stop-no-space", stopNoSpaceAnd("project.Dispatch", test.ways)),
+			findingWays(joined, "stop-no-space", stopNoSpace("project.Dispatch"), test.ways),
 			finding(joined, "sentence-words", fmt.Sprintf(`a sentence has %d words, and a sentence has at most 25: "Dispatch shows the person each question of each"`, words)),
 			finding(joined, "ste100-long-sentence", fmt.Sprintf(`ASD-STE100 does not permit a sentence of more than 25 words: "%d words"`, words)),
 		); !sameFindings(got, want) {

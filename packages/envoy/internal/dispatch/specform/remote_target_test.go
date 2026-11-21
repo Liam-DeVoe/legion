@@ -46,8 +46,8 @@ func TestAnAddressOfAMachineWithNoPathIsReadAsAPersonWithItsWayOut(t *testing.T)
 		}
 		refusal := Message(ActRequest, findings, len(findings), "").Refusal
 		for _, way := range ways {
-			if !strings.Contains(found.Detail, way) || !strings.Contains(refusal, way) {
-				t.Errorf("%s: the finding %q and the refusal %q do not give the way out %q", form, found.Detail, refusal, way)
+			if !strings.Contains(found.Ways, way) || !strings.Contains(refusal, way) {
+				t.Errorf("%s: the ways out %q of the finding and the refusal %q do not give the way out %q", form, found.Ways, refusal, way)
 			}
 		}
 	}

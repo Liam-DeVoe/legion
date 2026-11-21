@@ -73,7 +73,7 @@ func refusal(head string, findings []Finding, total int, more string, notes []st
 	fmt.Fprintf(&out, "%s, because %s the form of The Spec.", head, count)
 	listed := findings[:min(len(findings), listedFindings)]
 	for _, finding := range listed {
-		fmt.Fprintf(&out, "\n- %s %s in %s: %s.", finding.Kind, finding.Node, finding.Where, finding.Detail)
+		fmt.Fprintf(&out, "\n- %s %s in %s: %s.", finding.Kind, finding.Node, finding.Where, finding.Said())
 	}
 	if rest := total - len(listed); rest > 0 {
 		if more == "" {

@@ -134,7 +134,7 @@ func (j *footnoteJudge) judgment(note *Footnote) *footnoteJudgment {
 	if judged, ok := j.judged[note]; ok {
 		return judged
 	}
-	judged := &footnoteJudgment{judge: newWayJudge(j.c, j.people, kindFootnote)}
+	judged := &footnoteJudgment{judge: newWayJudge(j.c, j.people, kindFootnote, note.Held.Shown != "")}
 	judged.judge.survey(func() { j.find(note, judged) })
 	j.judged[note] = judged
 	return judged

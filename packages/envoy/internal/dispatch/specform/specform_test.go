@@ -28,6 +28,29 @@ func finding(text Text, rule Rule, detail string) Finding {
 	return Finding{Node: text.Node, Kind: text.Kind, Where: text.Where, Rule: rule, Detail: detail, Excerpt: text.Body}
 }
 
+// findingWays is finding with the words of the ways out that it gives (Finding.Ways).
+func findingWays(text Text, rule Rule, detail, ways string) Finding {
+	found := finding(text, rule, detail)
+	found.Ways = ways
+	return found
+}
+
+// brokenFinding is the finding of Check for found, a break of text.
+func brokenFinding(text Text, found broken) Finding {
+	return findingWays(text, found.rule, found.detail, found.waysSaid)
+}
+
+// saidFindings is findings with each one's detail as a refusal writes it, its ways out after it
+// (Finding.Said), for a test that states each finding as the one line of the refusal.
+func saidFindings(findings []Finding) []Finding {
+	said := make([]Finding, len(findings))
+	for index, found := range findings {
+		found.Detail, found.Ways = found.Said(), ""
+		said[index] = found
+	}
+	return said
+}
+
 func sameFindings(got, want []Finding) bool {
 	if len(got) == 0 && len(want) == 0 {
 		return true
@@ -226,7 +249,7 @@ func TestCheckFindsAnAddressAndAHandle(t *testing.T) {
 		{"Dispatch asks @ada about each change.", "@ada"},
 	} {
 		text := statement(test.body)
-		want := []Finding{finding(text, "person", personBreak(test.name, offer{ways: personWays(test.name)}).detail)}
+		want := []Finding{brokenFinding(text, personBreak(test.name, offer{ways: personWays(test.name)}))}
 		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
 		}

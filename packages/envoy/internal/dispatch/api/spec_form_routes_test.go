@@ -159,14 +159,15 @@ func answerFormApproval(t *testing.T, handler http.Handler, ask, selected, text 
 
 // formFault is one of the seven fixture texts of v-form (formFaults), or of the two texts of a
 // procedure (procedureFaults), with a clean text of the same node that a new version can break, and
-// the rule and detail its finding names. A text that ste-lint reads as a sentence of more than 25
-// words has a second finding, ste-lint's long-sentence, whose detail is steLong.
+// the rule and detail its finding names, with the words of the ways out that it gives (ways). A
+// text that ste-lint reads as a sentence of more than 25 words has a second finding, ste-lint's
+// long-sentence, whose detail is steLong.
 type formFault struct {
-	name, node    string
-	kind          specform.Kind
-	clean, broken string
-	rule, detail  string
-	steLong       string
+	name, node         string
+	kind               specform.Kind
+	clean, broken      string
+	rule, detail, ways string
+	steLong            string
 }
 
 var formFaults = []formFault{
@@ -212,8 +213,8 @@ var procedureFaults = []formFault{
 	{name: "a procedure of two instructions", node: "read-requests", kind: specform.KindProcedure,
 		clean:  "Read each open approval request.",
 		broken: "Read each open approval request and record its version.",
-		rule:   "instructions", detail: `a sentence gives two instructions, and a sentence of a procedure gives one: "record its version". ` +
-			`Write each instruction in a sentence of its own, as in "Read each open approval request. Record its version.", ` +
+		rule:   "instructions", detail: `a sentence gives two instructions, and a sentence of a procedure gives one: "record its version"`,
+		ways: `Write each instruction in a sentence of its own, as in "Read each open approval request. Record its version.", ` +
 			`or, if "record" is no verb here, write "that" before the clause after it`},
 }
 
@@ -245,9 +246,14 @@ func (f formFault) revise(t *testing.T, handler http.Handler, issue formIssue) {
 	waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 2)
 }
 
-// lines is the refusal's line of each finding of the broken text at version of spec.md.
+// lines is the refusal's line of each finding of the broken text at version of spec.md: its detail,
+// then the ways out that it gives.
 func (f formFault) lines(version int) []string {
-	lines := []string{fmt.Sprintf("- %s %s in spec.md version %d: %s.", f.kind, f.node, version, f.detail)}
+	said := f.detail
+	if f.ways != "" {
+		said += ". " + f.ways
+	}
+	lines := []string{fmt.Sprintf("- %s %s in spec.md version %d: %s.", f.kind, f.node, version, said)}
 	if f.steLong != "" {
 		lines = append(lines, fmt.Sprintf("- %s %s in spec.md version %d: %s.", f.kind, f.node, version, f.steLong))
 	}
@@ -256,18 +262,18 @@ func (f formFault) lines(version int) []string {
 
 // findings is each finding the broken text at version of the issue's spec gives.
 func (f formFault) findings(issue formIssue, version int) []specFormFinding {
-	finding := func(rule specform.Rule, detail string) specFormFinding {
+	finding := func(rule specform.Rule, detail, ways string) specFormFinding {
 		return specFormFinding{
 			Document: "spec.md", ArtifactID: issue.PrimaryArtifactID, Version: version,
 			Finding: specform.Finding{
 				Node: f.node, Kind: f.kind, Where: fmt.Sprintf("spec.md version %d", version),
-				Rule: rule, Detail: detail, Excerpt: f.broken,
+				Rule: rule, Detail: detail, Ways: ways, Excerpt: f.broken,
 			},
 		}
 	}
-	findings := []specFormFinding{finding(specform.Rule(f.rule), f.detail)}
+	findings := []specFormFinding{finding(specform.Rule(f.rule), f.detail, f.ways)}
 	if f.steLong != "" {
-		findings = append(findings, finding("ste100-long-sentence", f.steLong))
+		findings = append(findings, finding("ste100-long-sentence", f.steLong, ""))
 	}
 	return findings
 }

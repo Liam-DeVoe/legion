@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  Each finding of a `409 SPEC_FORM` refusal and of `GET /api/v1/artifacts/{id}/spec-form` carries
+  its ways out in their own field, `ways`, and its `detail` holds the rule's words at its place
+  only. A line of `error` and of `refusal` still writes the detail, then the ways out. A way out is
+  judged at each place of its finding's words in a sentence, and a finding of the words that the
+  page shows is judged in the sentence of the text as the rules of the form read it, code font and
+  all.
+time: 2026-11-21T08:59:19Z
+custom:
+    Issue: pr4179

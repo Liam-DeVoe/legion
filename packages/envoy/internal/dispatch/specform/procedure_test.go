@@ -150,7 +150,7 @@ func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testi
 			[]Finding{finding(procedure("Run the tests against the server with the race detector on and with a timeout of ten minutes for each run here."),
 				ruleSentenceWords, `a sentence has 22 words, and an instruction has at most 20: "Run the tests against the server with the"`)}},
 	} {
-		if got := Check(planted(), Input{Texts: []Text{test.text}}); !sameFindings(got, test.want) {
+		if got := saidFindings(Check(planted(), Input{Texts: []Text{test.text}})); !sameFindings(got, test.want) {
 			t.Errorf("%s: Check = %#v, want %#v", test.name, got, test.want)
 		}
 	}
@@ -211,9 +211,9 @@ func TestAProcedureOfOneInstructionIsTakenWhateverWordStandsAfterACommaOrAnd(t *
 		}
 	}
 	two := Text{Node: "v-run", Kind: KindProcedure, Body: "Read the log and record the date.", Where: where}
-	if got := Check(planted(), Input{Texts: []Text{two}}); !sameFindings(got, []Finding{finding(two, ruleInstructions,
-		`a sentence gives two instructions, and a sentence of a procedure gives one: "record the date". `+
-			`Write each instruction in a sentence of its own, as in "Read the log. Record the date.", `+
+	if got := Check(planted(), Input{Texts: []Text{two}}); !sameFindings(got, []Finding{findingWays(two, ruleInstructions,
+		`a sentence gives two instructions, and a sentence of a procedure gives one: "record the date"`,
+		`Write each instruction in a sentence of its own, as in "Read the log. Record the date.", `+
 			`or, if "record" is no verb here, write "that" before the clause after it`)}) {
 		t.Errorf("a procedure of two instructions: Check = %#v, want the one finding of the rule instructions", got)
 	}

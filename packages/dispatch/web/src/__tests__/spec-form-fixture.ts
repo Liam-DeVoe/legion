@@ -28,6 +28,7 @@ export const specFormRefusalBody = {
       rule: "sentences",
       version: 12,
       where: "spec.md version 12",
+      ways: "",
     },
     {
       artifact_id: "artifact-1",
@@ -39,6 +40,7 @@ export const specFormRefusalBody = {
       rule: "ste100-semicolon",
       version: 12,
       where: "spec.md version 12",
+      ways: "",
     },
   ],
   findings_total: 2,

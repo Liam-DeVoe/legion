@@ -89,7 +89,7 @@ func (e *UnreadableError) Unwrap() error { return e.Err }
 func (e *UnreadableError) Finding() Finding {
 	return Finding{
 		Node: e.Document, Kind: KindDocument, Where: fmt.Sprintf("%s version %d", e.Document, e.Version), Rule: ruleUnreadable,
-		Detail: fmt.Sprintf("Dispatch cannot read this version (%v), so it cannot judge its texts. Write a new version of the document", e.Err),
+		Detail: fmt.Sprintf("Dispatch cannot read this version (%v), so it cannot judge its texts", e.Err), Ways: "Write a new version of the document",
 	}
 }
 
@@ -597,6 +597,62 @@ func codeSpan(code string) string {
 		return fence + " " + code + " " + fence
 	}
 	return fence + code + fence
+}
+
+// withoutCodeFont is words, the words of a text with code in code font (Text.Body), as the page
+// shows them (Held.Shown): each span of code in code font as its characters alone, as inline
+// writes them beside the words that codeSpan writes. A span is a run of backticks, its code, and
+// the next run of as many, and a space at each end of the code is part of the run when the code
+// is more than spaces; a run that no such run closes is text.
+func withoutCodeFont(words string) string {
+	var out strings.Builder
+	for at := 0; at < len(words); {
+		if words[at] != '`' {
+			next := strings.IndexByte(words[at:], '`')
+			if next < 0 {
+				next = len(words) - at
+			}
+			out.WriteString(words[at : at+next])
+			at += next
+			continue
+		}
+		fence := backticksAt(words, at)
+		closing := -1
+		for search := at + fence; search < len(words); {
+			next := strings.IndexByte(words[search:], '`')
+			if next < 0 {
+				break
+			}
+			search += next
+			if run := backticksAt(words, search); run == fence {
+				closing = search
+				break
+			} else {
+				search += run
+			}
+		}
+		if closing < 0 {
+			out.WriteString(words[at : at+fence])
+			at += fence
+			continue
+		}
+		code := words[at+fence : closing]
+		if len(code) > 1 && code[0] == ' ' && code[len(code)-1] == ' ' && strings.Trim(code, " ") != "" {
+			code = code[1 : len(code)-1]
+		}
+		out.WriteString(code)
+		at = closing + fence
+	}
+	return out.String()
+}
+
+// backticksAt is how many backticks words holds in a row from at.
+func backticksAt(words string, at int) int {
+	run := 0
+	for at+run < len(words) && words[at+run] == '`' {
+		run++
+	}
+	return run
 }
 
 func hasMark(node *pmdoc.Node, markType string) bool {

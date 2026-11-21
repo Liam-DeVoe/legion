@@ -245,10 +245,10 @@ func TestALineUnderTermsThatIsNoTermLineIsAFinding(t *testing.T) {
 	if got.Counts[line] != 2 || got.Counts[KindDefinition] != 2 {
 		t.Errorf("Counts = %v, want 2 lines and 2 definitions", got.Counts)
 	}
-	detail := `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
-		`Move a line that defines no term, such as an example or a note, out from under the heading Terms. ` +
+	detail := `it is no term line, and a term line has the form "- **<term>**: <definition>"`
+	ways := `Move a line that defines no term, such as an example or a note, out from under the heading Terms. ` +
 		`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`
-	want := []Finding{finding(prose, "term-line", detail), finding(drift, "term-line", detail)}
+	want := []Finding{findingWays(prose, "term-line", detail, ways), findingWays(drift, "term-line", detail, ways)}
 	if findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, want) {
 		t.Fatalf("Check =\n%#v\nwant\n%#v", findings, want)
 	}
@@ -281,7 +281,7 @@ func TestADecisionBlockUnderTermsIsAFindingThatNamesTheWayOut(t *testing.T) {
 		var nodes []string
 		for _, finding := range findings {
 			nodes = append(nodes, finding.Node)
-			if finding.Rule != "term-line" || !strings.Contains(finding.Detail, "Put a decision block above the heading Terms") {
+			if finding.Rule != "term-line" || !strings.Contains(finding.Ways, "Put a decision block above the heading Terms") {
 				t.Errorf("%s: finding %#v, want rule term-line with the way out for a decision block", test.name, finding)
 			}
 		}

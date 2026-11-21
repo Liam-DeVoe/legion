@@ -106,17 +106,18 @@ func instructionBreaks(line string, judge *wayJudge) []broken {
 		given := judge.offered(original, false, ruleInstructions, original, ways)
 		quoted := strings.TrimRight(said(sentence[second:min(len(sentence), second+instructionQuote)]), ".!?")
 		found = append(found, broken{rule: ruleInstructions, ways: given.ways,
-			detail: given.said(instructionsDetail(quoted, words[second], keep, given.ways))})
+			detail:   fmt.Sprintf("a sentence gives two instructions, and a sentence of a procedure gives one: %q", quoted),
+			waysSaid: given.said(instructionsWays(words[second], keep, given.ways))})
 	}
 	return found
 }
 
-// instructionsDetail is the detail of a finding of the rule instructions whose second instruction
-// starts with quoted and its word verb, written from the ways out that the finding gives (ways):
+// instructionsWays is the words of the ways out of a finding of the rule instructions whose second
+// instruction starts with the word verb, written from the ways out that the finding gives (ways):
 // each instruction in a sentence of its own, as in the split, or, where the split would change what
 // the sentence means, with the words that each sentence must keep (keep, splitKeepsMeaning); "that"
 // before the clause; and the condition as a sentence of its own.
-func instructionsDetail(quoted, verb string, keep []string, ways [maxWays]wayOut) string {
+func instructionsWays(verb string, keep []string, ways [maxWays]wayOut) string {
 	own := "write each instruction in a sentence of its own"
 	switch {
 	case ways[0] != (wayOut{}):
@@ -131,8 +132,7 @@ func instructionsDetail(quoted, verb string, keep []string, ways [maxWays]wayOut
 	if ways[2] != (wayOut{}) {
 		options = append(options, fmt.Sprintf("if the words before it are part of the condition, write the condition as a sentence of its own, as in %q", ways[2].to))
 	}
-	return fmt.Sprintf("a sentence gives two instructions, and a sentence of a procedure gives one: %q. %s",
-		quoted, capitalized(strings.Join(options, ", or, ")))
+	return capitalized(strings.Join(options, ", or, "))
 }
 
 // splitKeepsMeaning is what the sentences that splitInstructions writes would lose of what the
@@ -229,8 +229,12 @@ func conditionSentence(sentence, words []string, commas []bool) ([]string, bool)
 	return changed, true
 }
 
-// capitalized is word with its first letter in upper case; a span in code font stays as it is.
+// capitalized is word with its first letter in upper case, and "" for no word; a span in code font
+// stays as it is.
 func capitalized(word string) string {
+	if word == "" {
+		return ""
+	}
 	first, size := utf8.DecodeRuneInString(word)
 	return string(unicode.ToUpper(first)) + word[size:]
 }

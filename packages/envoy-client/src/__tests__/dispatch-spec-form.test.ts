@@ -179,14 +179,15 @@ function summaryBody(issue: StubIssue) {
   };
 }
 
-/** One finding as the read route and the refusal carry it. */
+/** One finding as the read route and the refusal carry it, with the ways out it gives (`ways`). */
 function finding(
   artifactID: string,
   document: string,
   version: number,
   node: string,
   kind: string,
-  detail: string
+  detail: string,
+  ways = ""
 ): SpecFormFinding {
   return {
     document,
@@ -197,6 +198,7 @@ function finding(
     where: `${document} version ${version}`,
     rule: "sentences",
     detail,
+    ways,
     excerpt: "Dispatch stores each comment. Dispatch indexes it. Dispatch shows it.",
   };
 }
@@ -459,6 +461,24 @@ describe("dispatch spec-form", () => {
       "Dispatch refuses an approval request of spec.md version 2, because 1 text breaks the form of The Spec.",
       `- statement ship-at-head: ${THREE_SENTENCES}.`,
       `- statement ship-at-head: ${LONG_SENTENCE}.`,
+      "",
+    ]);
+  });
+
+  test("a finding that gives ways out prints its detail, then its ways out, as the server's refusal writes them", async () => {
+    const stop =
+      'a stop in "Web.Config" has no space after it, so Dispatch cannot find the end of the sentence';
+    const ways = "Put a space after the stop, or put the name in code font";
+    forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 1 }, [
+      finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", stop, ways),
+    ]);
+
+    const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
+
+    expect(code).toBe(0);
+    expect(stdout.split("\n")).toEqual([
+      "Dispatch refuses an approval request of spec.md version 2, because 1 text breaks the form of The Spec.",
+      `- statement ship-at-head: ${stop}. ${ways}.`,
       "",
     ]);
   });

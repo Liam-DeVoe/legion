@@ -92,6 +92,15 @@ function textsBreaking(findings: readonly SpecFormFinding[]): number {
 }
 
 /**
+ * One finding as the server's refusal writes it (`Finding.Said` in
+ * packages/envoy/internal/dispatch/specform/specform.go): its detail, the rule's words at its
+ * place, then the ways out it gives, which are no part of the finding.
+ */
+function findingSaid({ detail, ways }: SpecFormFinding): string {
+  return ways === "" ? detail : `${detail}. ${ways}`;
+}
+
+/**
  * The form of one document as Dispatch read it. A document an approval request is judged on
  * (`in_scope`) gets the line that says Dispatch refuses its approval and each finding, or the
  * line of what Dispatch read. One out of scope first says why Dispatch refuses nothing for it,
@@ -100,7 +109,9 @@ function textsBreaking(findings: readonly SpecFormFinding[]): number {
  */
 function documentLines(form: SpecFormRead): string[] {
   const findings = form.findings ?? [];
-  const listed = findings.map((finding) => `- ${finding.kind} ${finding.node}: ${finding.detail}.`);
+  const listed = findings.map(
+    (finding) => `- ${finding.kind} ${finding.node}: ${findingSaid(finding)}.`
+  );
   const read = readLine(form.texts, (form.terms ?? []).length, form.name, form.version);
   const unread = unreadLines(form.unread);
   if (!form.in_scope) {

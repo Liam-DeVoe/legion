@@ -5232,7 +5232,11 @@ Each item below names a path with its method and identity, then its purpose.
       No rule compares the texts of that version, so its component names are no nouns of the system.
       The way out of both is a new version of that document, and for the approved document its approval.
 
-    - What a refusal holds: a request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written, `{code, error, refusal, next_step, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
+    - What a refusal holds: a request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written, `{code, error, refusal, next_step, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, ways, excerpt}`.
+      A finding is its rule and its `detail`, the rule's words at its place.
+      `ways` holds the words of the ways out that the finding gives, or is empty.
+      So a way out that changes only what another finding offers changes no finding.
+      Each line of `error` writes a finding as its `detail`, then its `ways`.
       `error` is `refusal`, then `next_step` on a line of its own, so a client with a next step of its own shows `refusal` beside that step.
       `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
       The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.

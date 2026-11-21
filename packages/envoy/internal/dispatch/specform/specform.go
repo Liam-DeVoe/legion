@@ -147,14 +147,25 @@ type Input struct {
 }
 
 // Finding is one break of the form: the text, by its node, kind and place, the rule it breaks,
-// the detail of the break and the start of the text.
+// the detail of the break, the ways out that it gives and the start of the text. The detail is
+// the rule's words at the place of the break, and Ways the words that give its ways out, which
+// change with what the other findings of a sentence offer and are no part of the finding (Said).
 type Finding struct {
 	Node    string `json:"node"`
 	Kind    Kind   `json:"kind"`
 	Where   string `json:"where"`
 	Rule    Rule   `json:"rule"`
 	Detail  string `json:"detail"`
+	Ways    string `json:"ways"`
 	Excerpt string `json:"excerpt"`
+}
+
+// Said is the finding as a refusal writes it: its detail, then the ways out that it gives.
+func (f Finding) Said() string {
+	if f.Ways == "" {
+		return f.Detail
+	}
+	return f.Detail + ". " + f.Ways
 }
 
 // excerptRunes is how many characters of a text a finding carries.
@@ -180,7 +191,7 @@ func Check(c Context, in Input) []Finding {
 		for _, broken := range breaks(c, people, text, notes) {
 			findings = append(findings, Finding{
 				Node: text.Node, Kind: text.Kind, Where: text.Where,
-				Rule: broken.rule, Detail: broken.detail, Excerpt: excerpt(text.Body),
+				Rule: broken.rule, Detail: broken.detail, Ways: broken.waysSaid, Excerpt: excerpt(text.Body),
 			})
 		}
 	}

@@ -34,12 +34,14 @@ const ruleTermLine Rule = "term-line"
 const ruleUnreadable Rule = "unreadable"
 
 // termLineDetail is the detail of a line under Terms that is no term line: it shows the one form
-// of a term line, and the two ways out. A line that defines no term, such as an example or a note,
-// moves out from under the heading. A decision block, whose question line is such a line, stands
-// above the heading, and the chosen definition goes under it after the answer.
-const termLineDetail = `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
-	`Move a line that defines no term, such as an example or a note, out from under the heading Terms. ` +
-	`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`
+// of a term line. termLineWays is its two ways out. A line that defines no term, such as an
+// example or a note, moves out from under the heading. A decision block, whose question line is
+// such a line, stands above the heading, and the chosen definition goes under it after the answer.
+const (
+	termLineDetail = `it is no term line, and a term line has the form "- **<term>**: <definition>"`
+	termLineWays   = `Move a line that defines no term, such as an example or a note, out from under the heading Terms. ` +
+		`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`
+)
 
 // maxWords is R49's bound on a sentence, which is also ste-lint's.
 const maxWords = 25
@@ -177,13 +179,16 @@ const addressEnd = `\s\v\x{85}\p{Z}\p{Pe}\p{Pf},;!?`
 // broken is one rule a text breaks, the detail of the break, and for a break of the rule
 // dispatch-link the record of Dispatch that it names and how the text names it (named), so that
 // one link gives one finding (heldBreaks) and that finding's detail says each form from its parts.
-// ways is each way out that the detail gives, which the detail is written from.
+// The detail is the rule's words at the place of the break, and no more: ways is each way out
+// that the finding gives, and waysSaid the words that give them, which are written from them and
+// are no part of the finding (Finding.Ways).
 type broken struct {
-	rule   Rule
-	detail string
-	record text.Ref
-	named  naming
-	ways   [maxWays]wayOut
+	rule     Rule
+	detail   string
+	record   text.Ref
+	named    naming
+	ways     [maxWays]wayOut
+	waysSaid string
 }
 
 // maxWays is the most ways out that one finding gives: the rule person gives three.
@@ -254,10 +259,10 @@ func prose(kind Kind) bool {
 // each place of each finding of the text (survey).
 func breaks(c Context, people [][]string, text Text, notes *footnoteJudge) []broken {
 	if text.Kind == KindLine {
-		return []broken{{rule: ruleTermLine, detail: termLineDetail}}
+		return []broken{{rule: ruleTermLine, detail: termLineDetail, waysSaid: termLineWays}}
 	}
 	var found []broken
-	judge := newWayJudge(c, people, text.Kind)
+	judge := newWayJudge(c, people, text.Kind, text.Held.Shown != "")
 	held := notes.held(text)
 	find := func() {
 		found = found[:0]
@@ -290,7 +295,8 @@ func breaks(c Context, people [][]string, text Text, notes *footnoteJudge) []bro
 // words name the record of an address also by a part of what the address names (namedBy): the
 // key of its issue, or its id. Where the words name it in another form, the address's finding
 // names that form too, said from the parts of each naming. judge judges the ways out of each
-// finding (wayJudge).
+// finding (wayJudge), a finding of the shown words in the sentence of body that holds it, as the
+// rules of the form read body, code font and all (sentencePlaces).
 func heldBreaks(c Context, people [][]string, body string, held Held, judge *wayJudge) []broken {
 	var addressed []broken
 	// gave is each record whose finding an address gave, and linked the finding of the address of
@@ -317,13 +323,18 @@ func heldBreaks(c Context, people [][]string, body string, held Held, judge *way
 	if shown == "" {
 		shown = body
 	}
+	line := oneLine(shown)
+	var places *sentencePlaces
+	if judge != nil {
+		places = &sentencePlaces{words: oneLine(body), shown: line}
+	}
 	var found []broken
 	type also struct {
 		finding int
 		named   naming
 	}
 	var named map[also]bool
-	for _, each := range referenceBreaks(c, people, oneLine(shown), false, judge) {
+	for _, each := range referenceBreaks(c, people, line, false, judge, places) {
 		index, ok := linked[each.record]
 		if each.rule != ruleDispatchLink || !ok {
 			found = append(found, each)
@@ -338,7 +349,12 @@ func heldBreaks(c Context, people [][]string, body string, held Held, judge *way
 		}
 	}
 	for _, title := range held.Titles {
-		found = append(found, referenceBreaks(c, people, oneLine(title), false, judge)...)
+		line := oneLine(title)
+		var places *sentencePlaces
+		if judge != nil {
+			places = &sentencePlaces{words: line, shown: line}
+		}
+		found = append(found, referenceBreaks(c, people, line, false, judge, places)...)
 	}
 	return append(found, addressed...)
 }
@@ -367,10 +383,10 @@ func namedBy(record text.Ref) []text.Ref {
 func addressBreaks(c Context, people [][]string, address string, judge *wayJudge) []broken {
 	record, page := serverPage(c, address)
 	if !page {
-		return referenceBreaks(c, people, address, true, judge)
+		return referenceBreaks(c, people, address, true, judge, nil)
 	}
 	found := []broken{recordBreak(byLink, address, record)}
-	for _, each := range referenceBreaks(c, people, address, true, judge) {
+	for _, each := range referenceBreaks(c, people, address, true, judge, nil) {
 		if each.rule != ruleDispatchLink {
 			found = append(found, each)
 		}
@@ -568,8 +584,9 @@ func (c covered) holds(at int) bool {
 // of a name that only words have, such as "#12" or "Ada Lovelace", names nothing in an address,
 // nor in a reference that words hold, such as "https://example.com/guide#12". A "#12" in the name
 // of an incident names no pull request. judge judges the ways out of each person (wayJudge): in the
-// sentence of line that names the person, or in the whole address.
-func referenceBreaks(c Context, people [][]string, line string, address bool, judge *wayJudge) []broken {
+// whole address, or in the sentence that places finds for the place of line that names the person
+// (sentencePlaces), which a caller with a judge gives for a line that is no address.
+func referenceBreaks(c Context, people [][]string, line string, address bool, judge *wayJudge, places *sentencePlaces) []broken {
 	var links []span
 	references := newCovered(line)
 	for _, located := range text.ExtractAt(line, c.ServerURL) {
@@ -631,14 +648,10 @@ func referenceBreaks(c Context, people [][]string, line string, address bool, ju
 	} else {
 		names = personNames(people, line, references)
 	}
-	var places *sentencePlaces
 	for _, each := range names {
 		name, unit := line[each.start:each.end], line
 		if judge != nil && !address {
-			if places == nil {
-				places = &sentencePlaces{line: line, sentences: sentencesOf(line)}
-			}
-			unit = places.of(each.start)
+			unit = places.of(each.start, name)
 		}
 		found = append(found, personBreak(name, judge.offered(unit, address, rulePerson, name, personWays(name))))
 	}
@@ -658,9 +671,9 @@ func personWays(name string) [maxWays]wayOut {
 
 // personBreak is the break of the rule person for name. An email address is the one form of both
 // a person and the user and host of a remote command with no path, such as "scp report.txt
-// deploy@build.example.com:", so its detail says so and gives the ways out of a remote path of the
-// offer that it is given (personWays, wayJudge.offered), written from them: a path after the colon,
-// or the user and the host apart.
+// deploy@build.example.com:", so its detail says so, and the words of its ways out give the ways
+// out of a remote path of the offer that it is given (personWays, wayJudge.offered), written from
+// them: a path after the colon, or the user and the host apart.
 func personBreak(name string, given offer) broken {
 	user, _, found := strings.Cut(name, "@")
 	if !found || user == "" {
@@ -679,10 +692,11 @@ func personBreak(name string, given offer) broken {
 	if given.ways[2] != (wayOut{}) {
 		options = append(options, "write the user and the host apart, such as "+given.ways[2].to)
 	}
+	ways := ""
 	if len(options) > 0 {
-		detail += ". For a remote path, " + strings.Join(options, ", or ")
+		ways = "For a remote path, " + strings.Join(options, ", or ")
 	}
-	return broken{rule: rulePerson, ways: given.ways, detail: given.said(detail)}
+	return broken{rule: rulePerson, ways: given.ways, detail: detail, waysSaid: given.said(ways)}
 }
 
 // referenceAt is the reference that starts at offset of line, as the server's reference grammar
