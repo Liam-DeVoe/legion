@@ -2,7 +2,6 @@ package holdtest
 
 import (
 	"context"
-	"crypto/ed25519"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
-	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/internal/holdrecord/holdrecordtest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -143,12 +141,12 @@ func StartWith(t testing.TB, opts Options) *Stack {
 		}
 		return path
 	}
-	pool := broker.Pool
-	holdRead := func(ctx context.Context) (natshold.Reading, bool, error) {
-		return natshold.Read(ctx, pool, schema)
-	}
-	if opts.NoHoldRead {
-		holdRead = nil
+	// The auth service's hold view reads the broker's tables and shares the first broker process's
+	// floor of the row with its routes, as cmd/cipherd wires one process (holdrecordtest's
+	// HoldView); with the hold read off it reads nothing.
+	var hold *natscallout.HoldView
+	if !opts.NoHoldRead {
+		hold = broker.HoldView(false)
 	}
 	auth, err := natscallout.Start(context.Background(), natscallout.Settings{
 		URLs:           cluster.URLs(),
@@ -158,7 +156,7 @@ func StartWith(t testing.TB, opts Options) *Stack {
 		Services:       services,
 	}, natscallout.Deps{
 		ServiceToken: tokens.verify,
-		Hold:         natscallout.NewHoldView(holdRead, []ed25519.PublicKey{broker.VerifyKey}, nil),
+		Hold:         hold,
 	})
 	if err != nil {
 		t.Fatalf("holdtest: start the auth service: %v", err)

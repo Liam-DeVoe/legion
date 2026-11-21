@@ -22,8 +22,10 @@ import (
 func TestTheStreamsWordsRefuseASeedAndNameThemselves(t *testing.T) {
 	seed, _ := testnats.User(t)
 	unreachable := streamsEnv{env: env{
-		records: func(context.Context, options, bool) (*holdrecord.Client, error) { return nil, errors.New("no broker here") },
-		hub:     func(context.Context, options) (*Operator, error) { return nil, errors.New("no hub here") },
+		records: func(context.Context, options, bool) (*holdrecord.Client, error) {
+			return nil, errors.New("no broker here")
+		},
+		hub: func(context.Context, options) (*Operator, error) { return nil, errors.New("no hub here") },
 	}}
 	run := func(args ...string) (int, string) {
 		full := append(append([]string{}, args...), commonArgs...)

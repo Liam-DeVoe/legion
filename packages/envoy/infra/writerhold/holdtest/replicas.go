@@ -94,13 +94,15 @@ func (s *Stack) StartReplica(t testing.TB, cfg ReplicaConfig) *Replica {
 		if keys == nil {
 			keys = []ed25519.PublicKey{s.Broker.VerifyKey}
 		}
+		// A replica of the auth service alone, beside no routes of its own, keeps a floor of its own
+		// (nil), as natscallout's own replica tests do.
 		deps.Hold = natscallout.NewHoldView(func(ctx context.Context) (natshold.Reading, bool, error) {
 			reading, found, err := read(ctx)
 			r.mu.Lock()
 			r.readings = append(r.readings, Reading{Phase: reading.Phase, Found: found, Err: err})
 			r.mu.Unlock()
 			return reading, found, err
-		}, keys, deps.Metrics)
+		}, keys, nil, deps.Metrics)
 	}
 	dir := t.TempDir()
 	write := func(name, seed string) string {

@@ -382,18 +382,12 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 			if err != nil {
 				return nil, nil, err
 			}
-			// The fresh names are read before anything is removed: with no reader, or one that
-			// cannot read a store, the census is UNKNOWN and removes nothing. The daemons'
-			// Deployments, which both readers of the daemon stores check each store's address
-			// against, are listed with the hold's own Kubernetes client.
-			if e.readers.FreshNames == nil {
-				return nil, nil, unknownf(StepPostcheck, ErrNoFreshNamesReader, "read the recorded fresh consumer names")
-			}
+			// The fresh names are read by streams.Census itself, after its phase and convert checks
+			// and its barrier on the selection bucket, so a record written before the barrier is
+			// read: with no reader, or one that cannot read a store, the census is UNKNOWN and
+			// removes nothing. The daemons' Deployments, which both readers of the daemon stores
+			// check each store's address against, are listed with the hold's own Kubernetes client.
 			deployments := KubeDaemonDeployments(op.Hub.Client)
-			fresh, err := e.readers.FreshNames(ctx, nc, deployments, families, o.dispatchDatabaseFile, o.daemonDatabases)
-			if err != nil {
-				return nil, nil, unknownf(StepPostcheck, err, "read the recorded fresh consumer names")
-			}
 			barriers := map[string]uint64{}
 			r, err := streams.Census(ctx, nc, streams.CensusInput{
 				Settings: settings,
@@ -424,8 +418,13 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 					}
 					return e.readers.Recorded(ctx, nc)
 				},
-				RecordedFreshNames: fresh.Names,
-				GoneNames:          fresh.Gone,
+				RecordedFreshNames: func(ctx context.Context) (map[string][]string, map[string]string, error) {
+					if e.readers.FreshNames == nil {
+						return nil, nil, ErrNoFreshNamesReader
+					}
+					fresh, err := e.readers.FreshNames(ctx, nc, deployments, families, o.dispatchDatabaseFile, o.daemonDatabases)
+					return fresh.Names, fresh.Gone, err
+				},
 			})
 			result, reported = r, madeReport(r, err)
 			changes := streamChanges(r)
