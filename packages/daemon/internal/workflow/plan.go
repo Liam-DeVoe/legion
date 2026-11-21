@@ -116,27 +116,24 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return err
 	}
-	takesNone := takesNoPlan(group)
-	var owners []record.PlanVersion
-	switch {
-	case takesNone:
-		if owners, stored, err = e.passOverOwners(ctx, tx, issue, stored); err != nil {
+	if takesNoPlan(group) {
+		owners, stored, err := e.passOverOwners(ctx, tx, issue, stored)
+		if err != nil {
 			return err
 		}
-	case stored == nil:
+		// The group's one notice tells the earlier owners' versions with its owner's, so the plans of
+		// earlier owners go to tellNotTaken and none to tellPassedOver, whose text offers register_plan.
+		if err := e.takeFirstPlan(ctx, tx, issue, stored, nil); err != nil {
+			return err
+		}
+		return e.tellNotTaken(ctx, tx, issue, group, append(earlier, owners...))
+	}
+	if stored == nil {
 		if stored, err = e.store.OwnersNewestPlan(ctx, tx, issue); err != nil {
 			return err
 		}
 	}
-	if !takesNone {
-		return e.takeFirstPlan(ctx, tx, issue, stored, earlier)
-	}
-	// The group's one notice tells the earlier owners' versions with its owner's, so the plans of
-	// earlier owners go to tellNotTaken and none to tellPassedOver, whose text offers register_plan.
-	if err := e.takeFirstPlan(ctx, tx, issue, stored, nil); err != nil {
-		return err
-	}
-	return e.tellNotTaken(ctx, tx, issue, group, append(earlier, owners...))
+	return e.takeFirstPlan(ctx, tx, issue, stored, earlier)
 }
 
 // takeFirstPlan writes stored, the plan the first step of issue's run walks, at the run's
