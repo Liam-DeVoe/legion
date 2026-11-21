@@ -291,9 +291,18 @@ async function listen(server: Server, socket: string): Promise<void> {
 function proxyServer(run: DispatchProxyRun, tally: Tally): Server {
   const server = createServer((request, response) => {
     serve(request, response, run, tally).catch((error: unknown) => {
-      // As in giveBack's catch: `response.destroy()` would drop headers queued but not yet sent.
-      if (response.headersSent) response.socket?.destroy();
-      else answerRefusal(response, DISPATCH_UNREACHABLE, messageFor(error));
+      if (!response.headersSent) {
+        answerRefusal(response, DISPATCH_UNREACHABLE, messageFor(error));
+        return;
+      }
+      // An answer the proxy cannot finish: Dispatch's broke off, or the tool hung up. Under Bun,
+      // destroying the socket sends what is queued on it, then closes the connection, so the tool
+      // reads Dispatch's status line, its headers and the body bytes the fetch yielded, then the
+      // close; `response.destroy()` would drop what is queued. A response queued behind an earlier
+      // answer on a pipelined connection has no socket until its turn, so it is destroyed itself:
+      // it drops what it holds, and the tool reads the earlier answer whole, then the close.
+      if (response.socket) response.socket.destroy();
+      else response.destroy();
     });
   });
   server.on("connect", (_request: IncomingMessage, socket: Duplex) => {
@@ -567,10 +576,19 @@ async function serve(
  * (`/api/v1/going/requests/{id}/stream`). {@link answeredHeaders} gives back Dispatch's
  * `Content-Length` whatever the `Content-Encoding`, and leaves it out only where the answer also
  * carries `Transfer-Encoding`: a body with that length goes out unchunked, and any other body goes
- * out chunked. The status line and the headers go out before the body is read, so a body that
- * breaks off, before its first byte or after it, leaves Dispatch's status, its headers and a short
- * body on the socket, then a close: the tool reads a cut answer as one. A redirect is given back,
- * never followed.
+ * out chunked. A redirect is given back, never followed.
+ *
+ * The status line and the headers go out before the body is read. A body that breaks off, before
+ * its first byte or after it, throws to {@link proxyServer}'s catch, which closes the connection,
+ * so the tool reads a cut answer as one: Dispatch's status line and headers, a short body (fewer
+ * bytes than its `Content-Length`, or chunks with no last chunk), then the close. The short body
+ * holds the bytes Dispatch sent before the break-off, but most often none of those that arrive in
+ * the same read as Dispatch's close, which Bun's fetch does not yield; so it can be empty although
+ * Dispatch sent some. A response queued behind an earlier answer on a pipelined connection holds
+ * its status line, its headers and its body until its turn, so where it breaks off before then,
+ * the tool reads the earlier answer whole, then the close, and nothing of this one. Where the tool
+ * hangs up, `serve` stops the fetch, and the loop below ends by the same throw or at the next
+ * chunk.
  */
 async function giveBack(answer: Response, response: ServerResponse): Promise<void> {
   response.writeHead(answer.status, answeredHeaders(answer.headers));
@@ -581,18 +599,9 @@ async function giveBack(answer: Response, response: ServerResponse): Promise<voi
   // Bun's `node:http` puts nothing on the wire until the first write. The status line and the
   // headers are queued now, so a body that breaks off before its first byte still has them sent.
   response.flushHeaders();
-  try {
-    for await (const chunk of answer.body) {
-      if (response.destroyed) return;
-      if (!response.write(chunk)) await drained(response);
-    }
-  } catch {
-    // Dispatch's answer broke off, or the tool hung up. Under Bun, destroying the socket sends
-    // what is queued, the status line and the headers among it, then closes the connection, so
-    // the tool reads Dispatch's status, a short body and a close. `response.destroy()` would drop
-    // what is not on the wire yet: the tool would read nothing, or a stock `200 OK` of Bun's.
-    response.socket?.destroy();
-    return;
+  for await (const chunk of answer.body) {
+    if (response.destroyed) return;
+    if (!response.write(chunk)) await drained(response);
   }
   response.end();
 }
