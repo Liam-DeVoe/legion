@@ -2125,6 +2125,37 @@ describe("cmd_batch", () => {
     );
   });
 
+  // Catches: a writer of a task that reads the task words inside another command's argument, where
+  // a failure of that read ends only its own subshell, so the run writes the task without the words
+  // and launches its role as if the label had none. A bun that exits 37 stands for any failure of
+  // the read: each writer then fails, names the label, and writes no task.
+  test("a failure to read a label's task words fails the reviewer's and the architect's task writers", () => {
+    const run = freshDir("task-words-fail-run");
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({ title: "A usage page", test: { version: 3 }, review: { version: 4 } })
+    );
+    for (const fnName of ["reviewer_prompt", "architect_prompt"]) {
+      rmSync(path.join(run, "prompt.txt"), { force: true });
+      const result = bash(
+        [
+          fn("fail"),
+          fn("task_words"),
+          fn(fnName),
+          "bun() { return 37; }",
+          `R=$1 here=${path.join(root, "packages/pi-legion/scripts/skill-scenarios")} worker_key=LWEVAL-9 label=ablate-states-read`,
+          fnName,
+          `echo "${fnName} returned"`,
+        ].join("\n"),
+        [run]
+      );
+      expect(result.code).toBe(1);
+      expect(result.stdout).not.toContain(`${fnName} returned`);
+      expect(result.stderr).toContain("ablate-states-read");
+      expect(existsSync(path.join(run, "prompt.txt"))).toBe(false);
+    }
+  });
+
   // Catches: a -hidden label run in a scenario that never turns the switch on, so its agent sees
   // all that Dispatch computes; and a refusal that comes only after the batch started its services.
   test("a -hidden label is refused by any scenario but the heads scenarios, before a batch starts anything", () => {

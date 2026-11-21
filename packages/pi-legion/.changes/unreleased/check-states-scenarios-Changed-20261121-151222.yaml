@@ -9,7 +9,8 @@ body: |-
   world, whose runs keep their names. The ablate label `ablate-states-read`, searched over the
   texts of the reviewer and of the architect together, cuts each sentence that sends either role to
   the state of its head in `dispatch results` and writes `Tester's verdict: pass.` back into both
-  roles' tasks, from its rule's new `taskWords`.
+  roles' tasks, from its rule's new `taskWords`; a run whose task words cannot be read fails before
+  its role starts.
 time: 2026-11-21T15:12:22Z
 custom:
     Issue: check-states-scenarios

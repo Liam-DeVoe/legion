@@ -2316,13 +2316,16 @@ ${line:-- Check k1 (before_merge): not yet run}
 # record seed.ts heads-events wrote, so the record it names exists. That task names no verdict of
 # the tester; a label whose rule (label-rules.ts) carries task words has them before the task's
 # `Pull request:` sentence, where the daemon of the release before wrote the tester's verdict
-# (task_words).
+# (task_words). The words are read in a command of their own, checked, before the task is written: a
+# substitution inside printf's arguments would end only its own subshell on a failed read, and the
+# run would launch its role with a task that lacks the label's words.
 reviewer_prompt() {
-  local title version
+  local title version words
   title=$(jq -r .title "$R/fixture.json")
   version=$(jq -r .test.version "$R/fixture.json")
+  words=$(task_words) || fail "no task for the reviewer: the task words of label '${label:-}' could not be read"
   printf 'Continue %s. Issue: %s. Phase: reviewing. Handoff: test version %s (dispatch handoff-read --issue %s --phase test --version %s).%s Pull request: #702.\n' \
-    "$title" "$worker_key" "$version" "$worker_key" "$version" "$(task_words)" >"$R/prompt.txt"
+    "$title" "$worker_key" "$version" "$worker_key" "$version" "$words" >"$R/prompt.txt"
 }
 
 # task_words prints the words the run's label writes into its role's task, each after one space:
@@ -2416,12 +2419,14 @@ run_reviewer_pass_and_fail() {
 # architect_prompt writes $R/prompt.txt: the session of the daemon's catch-up of a tree in
 # `accepting` (QueueCatchUp, packages/daemon/internal/workflow/catch_up.go) with the Handoff and
 # Pull request words of the daemon's task after it, naming the review record seed.ts heads-events
-# wrote, and between them the label's task words (task_words), as reviewer_prompt has them.
+# wrote, and between them the label's task words (task_words), read and checked as reviewer_prompt
+# reads them.
 architect_prompt() {
-  local version
+  local version words
   version=$(jq -r .review.version "$R/fixture.json")
+  words=$(task_words) || fail "no task for the architect: the task words of label '${label:-}' could not be read"
   printf 'the tree of %s at generation 1 as the daemon records it now; start or resume it as your role says; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move). Handoff: review version %s (dispatch handoff-read --issue %s --phase review --version %s).%s Pull request: #702.\n' \
-    "$worker_key" "$worker_key" "$version" "$worker_key" "$version" "$(task_words)" >"$R/prompt.txt"
+    "$worker_key" "$worker_key" "$version" "$worker_key" "$version" "$words" >"$R/prompt.txt"
 }
 
 # architect-pass-and-fail: the tree's root architect, in accepting (architect_prompt), judges #702,
