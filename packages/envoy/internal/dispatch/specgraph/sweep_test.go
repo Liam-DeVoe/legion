@@ -92,8 +92,10 @@ func notRepoPaths(path string) []string {
 // writes it at another place, under another key or under another file name, changes another place
 // of the file too, or changes the value or the place that it is handed, before or after a right
 // write, fails by name, and one that keeps what it was handed and changes it in a later call
-// changes no input; and each sweep reads at least its floor of inputs of each base (sweepFloors), so
-// that a fault that drops inputs fails by name too. One right, which sweepInputs gives
+// changes no input; and each sweep derives at least its floors of inputs of each base, of those
+// that the reader reads and of those that it refuses (sweepFloors), so that a fault that drops
+// inputs, a sweep that does not derive an input that it built, and a fault that moves inputs from
+// one kind to the other fail by name too. One right, which sweepInputs gives
 // the input where it writes it: a repository path of a tree written " " is a real path, since git
 // holds a file of that name (git ls-tree of a tree that holds one lists the path " "), so the tree
 // changed at a path that a tie covers, and a result there, a failure among them, carries no more
@@ -118,7 +120,7 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 				t.Fatalf("each JSON file of the scenario written again by the sweep does not read as the scenario: %v", err)
 			}
 			n := sweepAgainst(t, base, inputs)
-			atFloor(t, "tree", name, n.inputs)
+			atFloor(t, "tree", name, n)
 			legs := 0 // the inputs that write the leg of no matrix at the leg of a record
 			for _, in := range inputs {
 				if strings.HasSuffix(in.what, `/leg as ""`) {
@@ -141,9 +143,11 @@ func baseStates(t *testing.T, base fs.FS) map[string]string {
 	return whole
 }
 
-// sweepCount is what a sweep read: its inputs, how many the reader or the derivation refused, how
-// many read as the base, how many read another state, and how many of those moved a state toward
-// true by a right that the sweep gives, with what each of them changed.
+// sweepCount is what a sweep read: the inputs that it built, and of those that sweepAgainst
+// derived, how many the reader or the derivation refused, how many read as the base, how many read
+// another state, and how many of those moved a state toward true by a right that the sweep gives,
+// with what each of them changed. The floors (atFloor) count the inputs derived, not those built,
+// so that a sweep that skips an input that it built fails by name.
 type sweepCount struct {
 	inputs, refused, same, moved, byRight int
 	rights                                []string
@@ -261,7 +265,7 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 				}
 			}
 			n := sweepAgainst(t, base, inputs)
-			atFloor(t, "refusals", name, n.inputs)
+			atFloor(t, "refusals", name, n)
 			t.Logf("%d refusals added: %d refused, %d read as the base, %d read another state, %d of them toward true by right: %q",
 				n.inputs, n.refused, n.same, n.moved, n.byRight, n.rights)
 		})
@@ -468,7 +472,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 				}
 			}
 			n := sweepAgainst(t, base, inputs)
-			atFloor(t, "members", name, n.inputs)
+			atFloor(t, "members", name, n)
 			t.Logf("%d members added: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
 		})
 	}

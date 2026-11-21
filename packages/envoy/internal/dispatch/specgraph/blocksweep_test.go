@@ -30,7 +30,8 @@ import (
 // place in the block of approved.json and at each place of the same opening line in the spec files
 // (attributeLeftOut); each with each other file unchanged (filesRead). Each writer is a function of
 // the package (valueAt, textWritten, attributeOutOfFiles), handed a tree or files and copies of its
-// own, and each of the two sweeps reads at least its floor of inputs of each base (sweepFloors).
+// own, and each of the two sweeps derives at least its floors of inputs of each base, of those that
+// the reader reads and of those that it refuses (sweepFloors).
 func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -83,10 +84,10 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 				}
 			}
 			n := sweepAgainst(t, base, inputs)
-			atFloor(t, "texts", name, n.inputs)
+			atFloor(t, "texts", name, n)
 			t.Logf("%d texts inside a block: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
 			n = sweepAgainst(t, base, leftOutAttributes(t, base, tree))
-			atFloor(t, "attributes", name, n.inputs)
+			atFloor(t, "attributes", name, n)
 			t.Logf("%d attributes left out: %d refused, %d read as the base, %d read another state, %d of them toward true by right: %q",
 				n.inputs, n.refused, n.same, n.moved, n.byRight, n.rights)
 		})
