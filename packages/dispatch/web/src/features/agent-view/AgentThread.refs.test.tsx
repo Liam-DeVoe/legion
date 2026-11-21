@@ -81,7 +81,7 @@ const messageBlocks: GraphReferences = {
 /** The one file the planner's conversation holds. */
 const shot: ArtifactWithTrees = {
   created_at: "2026-11-01T00:00:00Z",
-  created_by: { id: "alice@theorem.dev", kind: "user" },
+  created_by: { id: "alice@example.com", kind: "user" },
   id: "artifact-shot",
   issue_key: null,
   kind: "image",
@@ -150,7 +150,7 @@ function Harness({
 
 function renderThread(commands?: AgentStreamCommand[]): HTMLTextAreaElement {
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
-  const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice@theorem.dev" }]);
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice@example.com" }]);
   const search = spyOn(api, "search").mockImplementation(async (query: string) =>
     searchResponse(
       hitRows.filter((hit) => hit.snippet.toLowerCase().includes(query.toLowerCase())),
@@ -222,7 +222,7 @@ test("each of the three doors opens the picker over the live composer", async ()
 
   await type(user, input, "@");
   await waitFor(() =>
-    expect(drawnRows()).toEqual(["People: alice@theorem.dev", "Agents: Planner", "Roles: planner"])
+    expect(drawnRows()).toEqual(["People: alice@example.com", "Agents: Planner", "Roles: planner"])
   );
 
   // `#` and `[[` reach the same rows; the searched kinds need two characters typed.
