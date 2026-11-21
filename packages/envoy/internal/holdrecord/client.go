@@ -12,14 +12,17 @@
 // entries in order, and its completion. A command's admission and its `intent` entry are one
 // compare-and-swap write (Admit), so of two processes racing for one admission one is admitted
 // and the other refused, and Decide refuses ErrBusy while another command's intent is pending, so
-// at most one command is past its intent at any time. A command whose own check refuses after its
-// intent writes a `stop` entry (AppendStop, AppendStopLeft), which ends the intent and records what
-// the command left; `hold release` follows only a complete record or one whose stops all left
-// nothing changed (LeftUnchanged), and `hold abort` is every workflow's way out once a command has
-// stopped and no intent is pending, so a command that can never succeed cannot hold the hold. The
+// at most one command is past its intent at any time. Every command is Stoppable: one whose own
+// check refuses after its intent writes a `stop` entry (AppendStop, AppendStopLeft), which ends the
+// intent and records what the command left. `hold release` follows only a complete record or one
+// whose stops all left nothing changed (LeftUnchanged), and `hold abort` is every workflow's way
+// out once a command has stopped and no intent is pending, so a command that can never succeed
+// cannot hold the hold. The one exception is hub-restore's own rule: after a done `hold prove`
+// abort is excluded, so a census that stops there is ended by another prove and census. The
 // workflow table and Decide are the ones model_test.go explores: every workflow from its true
 // start, with crashes between any two writes, two operator processes, restores landing outside the
-// hold, the row lost and restored, and a buckets command that fails for good after its intent.
+// hold, the row lost and restored, and any command of a workflow but hub-restore failing for good
+// after its intent.
 package holdrecord
 
 import (

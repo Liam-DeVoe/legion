@@ -30,14 +30,19 @@ type rules struct {
 	// entry is a stop and no intent is pending, so a command that fails for good after its intent
 	// cannot hold the hold.
 	WayOut bool
+	// EveryCommandStoppable: every command of every workflow is Stoppable, not the buckets
+	// commands alone, since any command's own check can refuse after its intent (a streams update
+	// that differs otherwise, a census that cannot read a stream), and a command that cannot stop
+	// holds its intent pending for good: ErrBusy then refuses release and abort alike.
+	EveryCommandStoppable bool
 }
 
 // currentRules are the hold's rules as its design stands: the frozen model's v62 (every fix, with
-// no account move) and WayOut, added since.
+// no account move) and the rules added since, WayOut and EveryCommandStoppable.
 var currentRules = rules{Name: "v63", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true,
 	AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true, AtomicAdmit: true, Serialize: true,
 	StopEntries: true, SetCommand: true, Step1Whole: true, ExpectedMap: true, ConvertStoppable: true,
-	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, WayOut: true}
+	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, WayOut: true, EveryCommandStoppable: true}
 
 var current = tableFor(currentRules)
 
@@ -98,6 +103,13 @@ func tableFor(r rules) table {
 		for w := range rows {
 			if w != WorkflowHubRestore {
 				rows[w] = append(rows[w], entry{name: CommandAbort, final: true, stoppable: stop})
+			}
+		}
+	}
+	if r.EveryCommandStoppable {
+		for _, entries := range rows {
+			for i := range entries {
+				entries[i].stoppable = stop
 			}
 		}
 	}

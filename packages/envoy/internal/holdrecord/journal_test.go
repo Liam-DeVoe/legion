@@ -930,6 +930,34 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 	})
 
+	// Not only the buckets commands: every command whose own check can refuse after its intent
+	// stops, recording what it left, and hold abort then ends the hold.
+	t.Run("a streams update that fails for good stops, and hold abort ends the hold", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-update", holdrecord.WorkflowStreamsUpdate, nil)
+		if _, err := c.Admit(ctx, "h-update", cmd("streams update"), nil); err != nil {
+			t.Fatal(err)
+		}
+		const left = "changed: ENVOY_NOTIFICATIONS replicas 3, KV_envoy_roles not updated"
+		if err := c.AppendStopLeft(ctx, "h-update", "streams update", "KV_envoy_roles differs otherwise", left); err != nil {
+			t.Fatalf("the update's stop: %v", err)
+		}
+		if _, err := c.Admit(ctx, "h-update", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("hold abort after the update's stop: %v", err)
+		}
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, "h-update", "aborted"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendDone(ctx, "h-update", holdrecord.CommandAbort, nil); err != nil {
+			t.Fatal(err)
+		}
+		if d, _ := journal(t, c, "h-update"); !d.Complete {
+			t.Fatal("hold abort's done entry did not complete the record")
+		}
+	})
+
 	t.Run("hold release follows a stop that left nothing changed", func(t *testing.T) {
 		r := newRig(t)
 		c := r.client(t)
