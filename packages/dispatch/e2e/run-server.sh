@@ -217,14 +217,16 @@ if [ "${DISPATCH_E2E_EMBEDDER:-}" = "fake" ]; then
   )
 fi
 
-# The membership answer's reader, read before the sweep below: DISPATCH_E2E_ACCESS_ISSUER=1
-# (e2e/harness-access.ts) has the harness start e2e/run-access-issuer.sh before this server, a dev
-# OIDC issuer on DISPATCH_E2E_ACCESS_ISSUER_PORT that keeps the secrets broker's projected
-# service-account token in the file the harness exports as DISPATCH_E2E_ACCESS_TOKEN_FILE. The
-# server verifies that issuer's tokens for the audience e2e/access-account.sh names and lists that
-# file's account in DISPATCH_ACCESS_ACCOUNTS, so a driver reads the three routes of the membership
-# answer with the file's token. Unset, the server verifies no service-account token, and those
-# routes refuse every caller, as a deployment that names no access account does.
+# The reader of the membership answer and the repository answer, read before the sweep below:
+# DISPATCH_E2E_ACCESS_ISSUER=1 (e2e/harness-access.ts) has the harness start
+# e2e/run-access-issuer.sh before this server, a dev OIDC issuer on DISPATCH_E2E_ACCESS_ISSUER_PORT
+# that keeps the secrets broker's projected service-account token in the file the harness exports
+# as DISPATCH_E2E_ACCESS_TOKEN_FILE. The server verifies that issuer's tokens for the audience
+# e2e/access-account.sh names and lists that file's account in DISPATCH_ACCESS_ACCOUNTS, so a
+# driver reads the three routes of the membership answer and the repository answer's
+# (GET /api/v1/access/projects/{key}/repositories) with the file's token. Unset, the server
+# verifies no service-account token, and those routes refuse every caller, as a deployment that
+# names no access account does.
 access_env=()
 if [ "${DISPATCH_E2E_ACCESS_ISSUER:-}" = "1" ]; then
   : "${DISPATCH_E2E_ACCESS_ISSUER_PORT:?DISPATCH_E2E_ACCESS_ISSUER_PORT must name the dev OIDC issuer (e2e/run-access-issuer.sh) DISPATCH_E2E_ACCESS_ISSUER=1 verifies tokens from}"
