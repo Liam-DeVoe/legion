@@ -6,6 +6,15 @@
 // last before it commits, and the outbox to hold private projects' events while the last proof
 // failed (Ready); neither caller is wired at this head.
 //
+// A hub's entry names every server of the hub, each by its own name: a clustered hub's servers each
+// by their pod's name in the headless Service (<pod>.<name>-headless.<namespace>.svc.cluster.local),
+// never the Service that balances over them. A cluster's server tags are each server's own, so a
+// proof through a Service would reach whichever server it picked and say nothing of the others; the
+// proof refuses a server of a cluster that its URL does not name (bus.Client.ProveAdmission). It
+// cannot see whether an entry names every server, since a clustered hub advertises none to its
+// clients: that the list is whole is the render's to make true, which sets each hub's entry from
+// the hub's replica count.
+//
 // It writes nothing, on the bus or anywhere else, and reads no project: Dispatch's database is the
 // one record of which projects are private, and every listener reads it at each decision, so no
 // copy of it exists for the proof to keep.
@@ -78,14 +87,18 @@ type hub struct {
 }
 
 // NewHubAdmission is the admission over conns, one client per hub of DISPATCH_PRIVATE_HUBS,
-// Dispatch's own hub first, each connecting as Dispatch with its hub-admission token. With no
-// client it answers nil, the deployment with no private hub. Each proof dials a new connection
-// from a client's servers and credential (bus.Client.ProveAdmission) and never tests the client's
-// own connection: the auth service decides a connection once, when it connects, so a connection
-// it admitted earlier proves nothing about now. A client's connection events wake Run for a
-// proof. Each client should be built WithInboxPrefix, naming its grant's own reply inboxes, and
-// WithoutStreamSubjects, since the hub-admission grant lets it subscribe nothing else and publish
-// nothing but its ping (busprojectstest.ProofClient builds one so).
+// Dispatch's own hub first, each connecting as Dispatch with its hub-admission token. Each client's
+// servers are every server of its hub, each named on its own: a clustered hub's per-pod names
+// (<pod>.<name>-headless.<namespace>.svc.cluster.local), all of them, never its Service; the proof
+// refuses a server of a cluster that its URL does not name, and cannot tell a list that leaves a
+// server out (the package's doc). With no client it answers nil, the deployment with no private
+// hub. Each proof dials a new connection to each of a client's servers with the client's
+// credential (bus.Client.ProveAdmission) and never tests the client's own connection: the auth
+// service decides a connection once, when it connects, so a connection it admitted earlier proves
+// nothing about now. A client's connection events wake Run for a proof. Each client should be
+// built WithInboxPrefix, naming its grant's own reply inboxes, and WithoutStreamSubjects, since
+// the hub-admission grant lets it subscribe nothing else and publish nothing but its ping
+// (busprojectstest.ProofClient builds one so).
 func NewHubAdmission(conns []*bus.Client) *HubAdmission {
 	if len(conns) == 0 {
 		return nil
@@ -104,10 +117,12 @@ func NewHubAdmission(conns []*bus.Client) *HubAdmission {
 
 // SetListeners gives the admission the listener workloads that serve its hubs
 // (DISPATCH_PRIVATE_LISTENERS) and the client that reads their replicas, which presents Dispatch's
-// own credential; nil is http.DefaultClient. The proof reads through a copy of the client that
-// follows no redirect, so a replica's 3xx is its answer, and fails it: what the address a redirect
-// names answers is no read of the replica, and a transport that adds the credential would send it
-// there too.
+// own credential; nil is http.DefaultClient. The proof reads every replica but a loopback one over
+// https, so the credential and the answer never cross a network in the clear; the client's
+// transport is the one that verifies the replica's certificate. The proof reads through a copy of
+// the client that follows no redirect, so a replica's 3xx is its answer, and fails it: what the
+// address a redirect names answers is no read of the replica, and a transport that adds the
+// credential would send it there too.
 // Until it is called, and after a call that gives no workload, every proof fails with
 // ErrNoListenerInventory. A new inventory sets Ready false and the report to unknown until a
 // proof under it ends, and wakes Run for that proof. It needs a non-nil admission: a deployment
@@ -130,13 +145,15 @@ func (a *HubAdmission) SetListeners(inv []ListenerTarget, client *http.Client) {
 
 // Ready reports whether the last proof succeeded: false before the first proof ends, while the
 // last one failed for any hub or listener replica, and from SetListeners until a proof under the
-// new inventory ends. A nil admission is ready: it has no hub to prove, and a switch to private is
-// refused there (ErrNoBus). That rests on the deployment, since Dispatch's database, not
-// DISPATCH_PRIVATE_HUBS, is the record of which projects are private: a project can still be
-// private when the setting is emptied, and Ready true then lets its events go with no proof. They
-// stay apart only while its hub is still rendered private, so a deployment must not stop
-// rendering a hub private while Dispatch's database holds a private project. The outbox is to
-// hold private projects' events while Ready is false; at this head nothing reads it, since
+// new inventory ends. A nil admission is ready, as the approved plan's contract has it (K7): the
+// deployment names no private hub, and a hub carries a private project only once it is rendered
+// private (R9), so false would hold only private projects' events, of which such a deployment has
+// none, and a switch to private is refused there (ErrNoBus). That rests on the deployment, since
+// Dispatch's database, not DISPATCH_PRIVATE_HUBS, is the record of which projects are private: a
+// project can still be private when the setting is emptied, and Ready true then lets its events go
+// with no proof. They stay apart only while its hub is still rendered private, so a deployment must
+// not stop rendering a hub private while Dispatch's database holds a private project. The outbox
+// is to hold private projects' events while Ready is false; at this head nothing reads it, since
 // outbox.Deps has no field its caller sets from it.
 func (a *HubAdmission) Ready() bool {
 	if a == nil {

@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testsocks5"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -402,4 +403,82 @@ func refusingServer(t *testing.T, advertised string) (string, func() int) {
 		}
 	}()
 	return "nats://" + listener.Addr().String(), func() int { return int(refused.Load()) }
+}
+
+// TestAClusteredHubIsProvedOnEachServerItsEntryNames: a clustered hub's servers each report the
+// cluster and their own name, and a cluster's tags are each server's own. The hub's servers are
+// reached through a proxy that resolves the cluster's DNS: the Service's name routes to server 0,
+// as a Service balancing over the servers picks one, and each per-pod name to its pod's server.
+//
+//   - An entry that names the Service fails the proof, naming the hub and the server it reached,
+//     though that server is tagged: its admission says nothing of the other servers.
+//   - An entry that names every pod is proved on each server, each admitting one proof
+//     connection.
+//   - With one server untagged, as in the middle of a render that rolls the servers one at a
+//     time, the per-pod entry fails naming that server's pod.
+//
+// Control: drop bus.Client.ProveAdmission's cluster check (urlNamesServer); the Service entry's
+// proof reaches tagged server 0 and passes, and the first row fails.
+func TestAClusteredHubIsProvedOnEachServerItsEntryNames(t *testing.T) {
+	const name, namespace = "envoy-hub", "envoy"
+	servers := busprojectstest.StartClusteredHub(t, name, true, true, true)
+	service := fmt.Sprintf("%s.%s.svc.cluster.local:4222", name, namespace)
+	pods := make([]string, len(servers))
+	routes := map[string]string{service: hostOfURL(t, servers[0].URL)}
+	for i, server := range servers {
+		pods[i] = fmt.Sprintf("nats://%s-%d.%s-headless.%s.svc.cluster.local:4222", name, i, name, namespace)
+		routes[strings.TrimPrefix(pods[i], "nats://")] = hostOfURL(t, server.URL)
+	}
+	proxy := testsocks5.StartRouted(t, routes)
+	admissionOf := func(t *testing.T, urls ...string) (*busprojects.HubAdmission, *bus.Client) {
+		t.Helper()
+		client := busprojectstest.ProofClientThrough(t, proxy.Addr, urls, proofToken())
+		awaitConnected(t, client)
+		a := busprojects.NewHubAdmission([]*bus.Client{client})
+		require.NotNil(t, a)
+		busprojects.SetLookup(a, resolveWorkload)
+		a.SetListeners(busprojectstest.ReadyListener(t))
+		return a, client
+	}
+
+	t.Run("an entry naming the hub's Service", func(t *testing.T) {
+		a, _ := admissionOf(t, "nats://"+service)
+		err := a.Prove(t.Context())
+		require.Error(t, err, "the proof passed through the Service %s, which reached tagged server %s-0 alone", service, name)
+		require.ErrorContains(t, err, "admission proof: nats://"+service+": ")
+		require.ErrorContains(t, err, fmt.Sprintf("the URL reached server %q of cluster %q, which it does not name", name+"-0", name))
+		require.False(t, a.Ready())
+		require.Equal(t, busprojects.AdmissionRefused, a.Report().Hubs[0].Admission)
+	})
+
+	t.Run("an entry naming every pod", func(t *testing.T) {
+		a, _ := admissionOf(t, pods...)
+		before := make([]int, len(servers))
+		for i, server := range servers {
+			before[i] = server.Admitted()
+		}
+		require.NoError(t, a.Prove(t.Context()))
+		require.True(t, a.Ready())
+		for i, server := range servers {
+			require.Greater(t, server.Admitted(), before[i], "the proof admitted no connection on server %s-%d, which %s names", name, i, pods[i])
+		}
+	})
+
+	t.Run("an entry naming every pod, one server untagged", func(t *testing.T) {
+		servers[1].Retag(t, false)
+		a, _ := admissionOf(t, pods...)
+		err := a.Prove(t.Context())
+		require.Error(t, err, "the proof passed with server %s-1 untagged", name)
+		require.ErrorContains(t, err, "admission proof: "+pods[1]+": ")
+		require.Contains(t, servers[1].Refusals(), busprojectstest.RefusedUntagged)
+		require.False(t, a.Ready())
+	})
+}
+
+// hostOfURL is the host:port of the server at raw, a NATS URL.
+func hostOfURL(t *testing.T, raw string) string {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	require.NoError(t, err)
+	return parsed.Host
 }

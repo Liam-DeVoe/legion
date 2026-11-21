@@ -128,9 +128,11 @@ func unknownWorkload(target ListenerTarget, why string) replicaEntry {
 
 // readReplica asks one replica for a fresh privacy read, GET ReadinessPath at its address and
 // its workload's port with its workload's Host, and passes only a 200 whose body says the replica
-// runs in required privacy mode, reads the workload's source, and that its read answered. A 3xx
-// fails it: client follows no redirect (SetListeners), since the address a redirect names is not
-// the replica. The report carries what the replica said of itself whenever its body parsed.
+// runs in required privacy mode, reads the workload's source, and that its read answered. The read
+// goes over https to every address but a loopback one (readinessScheme), since the client presents
+// Dispatch's credential with it (SetListeners). A 3xx fails it: client follows no redirect
+// (SetListeners), since the address a redirect names is not the replica. The report carries what
+// the replica said of itself whenever its body parsed.
 func readReplica(ctx context.Context, client *http.Client, slot replicaSlot) (ReplicaReport, error) {
 	report := ReplicaReport{Workload: slot.target.Name, Address: slot.address, Read: ReadFailed}
 	fail := func(format string, args ...any) (ReplicaReport, error) {
@@ -138,7 +140,7 @@ func readReplica(ctx context.Context, client *http.Client, slot replicaSlot) (Re
 		report.Error = why
 		return report, fmt.Errorf("busprojects: listener %s replica %s: %s", slot.target.Name, slot.address, why)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(slot.address, slot.port)+ReadinessPath, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, readinessScheme(slot.address)+"://"+net.JoinHostPort(slot.address, slot.port)+ReadinessPath, nil)
 	if err != nil {
 		return fail("the request cannot be made: %v", err)
 	}
@@ -178,4 +180,15 @@ func readReplica(ctx context.Context, client *http.Client, slot replicaSlot) (Re
 	}
 	report.Read = ReadAnswered
 	return report, nil
+}
+
+// readinessScheme is the scheme of a read of the replica at address: https, unless address is a
+// loopback IP address, where http is (a test's replica). A read carries Dispatch's credential and
+// decides whether a replica runs in required privacy mode, so neither may cross a network in the
+// clear, where anyone on the path could take the credential or answer for the replica.
+func readinessScheme(address string) string {
+	if ip := net.ParseIP(address); ip != nil && ip.IsLoopback() {
+		return "http"
+	}
+	return "https"
 }

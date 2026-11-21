@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -211,6 +212,36 @@ func TestAReplicaThatRedirectsFailsTheProof(t *testing.T) {
 	require.Zero(t, followed.Load(), "the proof followed replica %s's redirect to %s", replicaBroken, replicaHealthy1)
 	require.False(t, a.Ready())
 	require.Equal(t, busprojects.ReadFailed, replica(t, a.Report(), replicaBroken).Read)
+}
+
+// TestAReplicaOffLoopbackIsReadOverHTTPS: the read carries Dispatch's credential and decides
+// whether a replica runs in required mode, so the proof reads a replica at an address off loopback
+// over https, and only a loopback one, a test's, over http.
+//
+// Control: have readinessScheme answer http for every address; the replica off loopback is read
+// over http, and the test fails naming it.
+func TestAReplicaOffLoopbackIsReadOverHTTPS(t *testing.T) {
+	hub := busprojectstest.StartHub(t, true)
+	a, clients := admissionOver(t, hub)
+	awaitConnected(t, clients[0])
+	var mu sync.Mutex
+	schemes := map[string]string{}
+	client := &http.Client{Transport: transport(func(r *http.Request) (*http.Response, error) {
+		mu.Lock()
+		schemes[r.URL.Hostname()] = r.URL.Scheme
+		mu.Unlock()
+		return respond(r, http.StatusOK, answered("envoy-listener-a").body), nil
+	})}
+	a.SetListeners([]busprojects.ListenerTarget{
+		{Name: workload, Source: workloadSource, Host: workloadHost, Instances: net.JoinHostPort(replicaHealthy1, "9020")},
+		{Name: "loopback-" + workload, Source: workloadSource, Host: workloadHost, Instances: net.JoinHostPort("127.0.0.1", "9020")},
+	}, client)
+
+	require.NoError(t, a.Prove(t.Context()))
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, map[string]string{replicaHealthy1: "https", "127.0.0.1": "http"}, schemes,
+		"replica %s, off loopback, was not read over https alone", replicaHealthy1)
 }
 
 // TestANoInventoryProofRefuses: an admission whose listeners were never set answers

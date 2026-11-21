@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -69,6 +70,9 @@ type Hub struct {
 
 	keys    testnats.CalloutKeys
 	service *natsgo.Conn
+	// identity is the configuration lines that name the server and its cluster, which every start
+	// of the server keeps (StartClusteredHub), or "" for a lone hub.
+	identity string
 
 	mu       sync.Mutex
 	refusals []string
@@ -79,7 +83,30 @@ type Hub struct {
 // Both stop when the test ends.
 func StartHub(t testing.TB, tagged bool) *Hub {
 	t.Helper()
-	h := &Hub{keys: testnats.NewCalloutKeys(t)}
+	return startHub(t, tagged, "")
+}
+
+// StartClusteredHub starts the servers of a clustered hub called name, one per entry of tagged,
+// tagged or not as it says, each a Hub with a stand-in auth service of its own. Server i is named
+// <name>-<i>, after its pod, and reports cluster name in its INFO with no other server, as a
+// clustered hub's server does: the hub's cluster advertises no server to its clients
+// (no_advertise), so a client's INFO from any server names only that server and the cluster. The
+// servers are not routed to each other: a client sees nothing of the routes, and the proof reads
+// only the INFO. All stop when the test ends.
+func StartClusteredHub(t testing.TB, name string, tagged ...bool) []*Hub {
+	t.Helper()
+	hubs := make([]*Hub, len(tagged))
+	for i, tag := range tagged {
+		hubs[i] = startHub(t, tag, fmt.Sprintf("server_name: %q\ncluster { name: %q }\n", fmt.Sprintf("%s-%d", name, i), name))
+	}
+	return hubs
+}
+
+// startHub is StartHub with identity, configuration lines naming the server and its cluster, in
+// every start of the server.
+func startHub(t testing.TB, tagged bool, identity string) *Hub {
+	t.Helper()
+	h := &Hub{keys: testnats.NewCalloutKeys(t), identity: identity}
 	h.Server, h.URL = testnats.StartWithCalloutConfig(t, h.keys, h.config(tagged))
 	curve, err := nkeys.FromCurveSeed([]byte(h.keys.XKeySeed))
 	if err != nil {
@@ -105,7 +132,7 @@ func StartHub(t testing.TB, tagged bool) *Hub {
 }
 
 func (h *Hub) config(tagged bool) string {
-	config := testnats.CalloutConfig(h.keys)
+	config := testnats.CalloutConfig(h.keys) + h.identity
 	if tagged {
 		config += fmt.Sprintf("server_tags: [%q]\n", natsgrant.PrivateProjectsServerTag)
 	}
@@ -290,11 +317,34 @@ func ProofClient(t testing.TB, url, token string) *bus.Client {
 // grant refuses (bus.WithoutStreamSubjects). A client it builds closes when the test ends.
 func NewProofClient(t testing.TB, servers []string, token string) (*bus.Client, error) {
 	t.Helper()
+	return newProofClient(t, servers, token, nil)
+}
+
+// ProofClientThrough is ProofClient for the hub whose servers are servers, reached through the
+// SOCKS5 proxy at proxy (bus.SOCKS5ProxyEnvVar, with bus.AllowRemoteEnvVar set), which resolves
+// each server's name: a test names a hub's servers by names no resolver knows and has the proxy
+// route each one (testsocks5.StartRouted).
+func ProofClientThrough(t testing.TB, proxy string, servers []string, token string) *bus.Client {
+	t.Helper()
+	client, err := newProofClient(t, servers, token, map[string]string{bus.SOCKS5ProxyEnvVar: proxy, bus.AllowRemoteEnvVar: "1"})
+	if err != nil {
+		t.Fatalf("make the hub-admission client of %v through %s: %v", servers, proxy, err)
+	}
+	return client
+}
+
+// newProofClient is NewProofClient with environment's variables set besides the token file's.
+func newProofClient(t testing.TB, servers []string, token string, environment map[string]string) (*bus.Client, error) {
+	t.Helper()
 	file := filepath.Join(t.TempDir(), "hub-admission-token")
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatalf("write the hub-admission token: %v", err)
 	}
-	environment := map[string]string{bus.ServiceTokenFileEnvVar: file}
+	environment = maps.Clone(environment)
+	if environment == nil {
+		environment = map[string]string{}
+	}
+	environment[bus.ServiceTokenFileEnvVar] = file
 	client, err := bus.Connect(servers,
 		bus.WithName("envoy-dispatch-hub-admission"),
 		bus.WithEnvironment(func(name string) (string, bool) { value, ok := environment[name]; return value, ok }),

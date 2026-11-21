@@ -165,6 +165,20 @@ func natsURLHost(raw string) (string, error) {
 	return strings.TrimSuffix(parsed.Hostname(), "."), nil
 }
 
+// urlNamesServer reports whether raw, a NATS server URL read as LocalNATSURL reads it, names the
+// server called server: the first DNS label of its host is server, case aside. A clustered hub's
+// per-pod name does (<pod>.<name>-headless.<namespace>.svc.cluster.local, the server named after
+// its pod); a Service's name, an IP address, or a URL that does not parse does not, and neither
+// does any URL for a server with no name.
+func urlNamesServer(raw, server string) bool {
+	host, err := natsURLHost(raw)
+	if err != nil || host == "" || server == "" {
+		return false
+	}
+	label, _, _ := strings.Cut(host, ".")
+	return strings.EqualFold(label, server)
+}
+
 // natsURLWithoutUserinfo renders raw, a configured NATS server URL, for a log line or an error
 // that is logged, with no userinfo at all. nats.go authenticates with the URL's userinfo
 // (connectProto, nats.go v1.55.0 nats.go:3133-3143): a user name alone is a token and
