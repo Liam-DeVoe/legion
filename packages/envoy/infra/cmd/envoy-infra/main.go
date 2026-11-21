@@ -90,6 +90,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores se
 	buckets.Command(ctx, []string{"--help"}, stdout, stderr)
 	writerhold.Command(ctx, []string{"--help"}, stdout, stderr)
 	streams.Command(ctx, []string{"--help"}, stdout, stderr)
+	writerhold.StreamsCommand(ctx, []string{"--help"}, stdout, stderr, writerhold.CensusReaders{})
 	consumernames.Command(ctx, []string{"--help"}, stdout, stderr)
 	if help {
 		return 0
