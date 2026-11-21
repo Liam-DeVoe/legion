@@ -57,7 +57,7 @@ if [ -z "$SIGNING_SECRET" ]; then
 elif [ -z "$GSA" ]; then
   CHECK_MISSING[signing]="no --gsa: the signing key's one reader, the operator's Google service account, is not named"
 fi
-CHECK_STEP[fleet]="live: who can register a cluster to the fleet of project ${POOL_PROJECT:-?}"
+CHECK_STEP[fleet]="live: who can register a cluster to, or write namespaces and RBAC on, the fleet of project ${POOL_PROJECT:-?}"
 CHECK_RESOURCE[fleet]="//cloudresourcemanager.googleapis.com/projects/$POOL_PROJECT"
 CHECK_PERMS[fleet]="${FLEET_PERMISSIONS[*]}"
 # The pool project's own IAM writers, when it is not --project's, whose are the GKE IAM step's.

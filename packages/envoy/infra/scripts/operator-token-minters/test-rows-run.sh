@@ -43,10 +43,10 @@ if row a; then
     "live: minters of $gsa" "live: minters of the broker account $broker" "live: hold writers: Cloud SQL users of example-instance" \
     "live: hold writers: Secret example-db/broker-db-login" "live: hold writers: the broker program's state in gs://example-state" \
     "live: hold writers: the signing key hold-signing-example" "admin tag of ENVOY_OPERATOR" \
-    "live: who can register a cluster to the fleet of project $project" "live: who can set IAM on organizations/100"; do
+    "live: who can register a cluster to, or write namespaces and RBAC on, the fleet of project $project" "live: who can set IAM on organizations/100"; do
     want_text "PASS $step: " "a clean world's $step"
   done
-  want_line "PASS live: Workload Identity: the fleet of project $project: 1 membership(s) listed, every location reached: 1 the operator's cluster, 0 read above as clusters of the project, 0 read here" \
+  want_line "PASS live: Workload Identity: the fleet of project $project: 1 membership(s) listed, every location reached: 1 the operator's cluster, 0 read above as clusters of the project, 0 read here, and the fleet holds no scope" \
     "a clean world's fleet"
   passed "(a) people, the system namespaces and the Workload Identity member alone exit 0, and a project with the operator's cluster alone says so"
 fi

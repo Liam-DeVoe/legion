@@ -101,6 +101,9 @@ live_iam() {
     return
   fi
   mark
+  # The GKE IAM step's holders: who may impersonate one of them, by name, takes its IAM permissions
+  # on the clusters (named_rights asks it).
+  [ "$check" != gke ] || cp "$WORK/analysis.rec" "$WORK/gke-analysis.rec"
   if [ "$check" = dbsecret ] && [ "$RBAC_OK" != true ]; then
     unknown "$step" "the RBAC step's principals' reviews for get on it could not be made (live: RBAC)"
   fi

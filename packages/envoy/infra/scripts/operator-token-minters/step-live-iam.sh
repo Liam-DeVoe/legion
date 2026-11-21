@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2004,SC2034,SC2153,SC2154 # globals set and read across the sourced files, in operator-token-minters.sh's order; CHECK_* are associative (checks.sh declares them), which this file alone cannot show
 # operator-token-minters/step-live-iam.sh: the live IAM steps after Workload Identity: the fleet
-# members' projects, the projects' ancestors, fleet registration and the hold writers. Sourced by
+# members' projects, the minters of each Google service account an RBAC finding names, the
+# projects' ancestors, fleet registration and the hold writers. Sourced by
 # operator-token-minters.sh, whose header says what each step checks.
 # --- live: GKE IAM on the projects of the fleet's other GKE members. GKE authorizes IAM beside
 # RBAC, so a holder there of a guard right's container.* permission (a guarded namespace,
@@ -14,6 +15,27 @@ for other in $(printf '%s\n' ${OTHER_PROJECTS[@]+"${!OTHER_PROJECTS[@]}"} | sort
   CHECK_RESOURCE[$check]="//cloudresourcemanager.googleapis.com/projects/$other"
   CHECK_PERMS[$check]="${MEMBER_PERMISSIONS[*]}"
   scope_of "$other"
+  CHECK_SCOPE[$check]="$SCOPE_OF" CHECK_SCOPE_FLAG[$check]="$SCOPE_OF_FLAG" CHECK_SCOPE_ERROR[$check]="$SCOPE_OF_ERROR"
+  live_iam "$check"
+done
+
+# --- live: minters of each Google service account an RBAC finding names (on a cluster, a fleet
+# member, or in the renders). Who can mint its token, sign as it or act as it holds what the finding
+# gives it, so its holders of the Google service account permissions are judged as the operator's
+# own account's are: once the finding is accepted, an agent that can become the account must still
+# be reported. ---
+declare -A RBAC_ACCOUNTS=()
+for entry in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
+  IFS=$'\t' read -r principal _ _ resource _ <<<"$entry"
+  case "$principal:$resource" in serviceAccount:*:cluster:* | serviceAccount:*:membership:*) RBAC_ACCOUNTS[${principal#serviceAccount:}]=1 ;; esac
+done
+for email in $(printf '%s\n' ${RBAC_ACCOUNTS[@]+"${!RBAC_ACCOUNTS[@]}"} | sort); do
+  account_project "$email"
+  check="rbac-account:$email"
+  CHECK_STEP[$check]="live: minters of $email, which an RBAC finding names"
+  CHECK_RESOURCE[$check]="//iam.googleapis.com/projects/$ACCOUNT_PROJECT/serviceAccounts/$email"
+  CHECK_PERMS[$check]="${GSA_PERMISSIONS[*]} iam.serviceAccounts.setIamPolicy"
+  scope_of "$ACCOUNT_PROJECT"
   CHECK_SCOPE[$check]="$SCOPE_OF" CHECK_SCOPE_FLAG[$check]="$SCOPE_OF_FLAG" CHECK_SCOPE_ERROR[$check]="$SCOPE_OF_ERROR"
   live_iam "$check"
 done
@@ -66,8 +88,9 @@ for anc_project in "${ancestor_projects[@]}"; do
   done 8<"$WORK/ancestors.list"
 done
 
-# --- live: who can register a cluster to the pool project's fleet. A registered cluster shares the
-# pool's Workload Identity, so whoever registers one makes the operator's member on it. ---
+# --- live: who can register a cluster to the pool project's fleet, or write the namespaces and RBAC
+# its scopes put on the fleet's members. A registered cluster shares the pool's Workload Identity, so
+# whoever registers one makes the operator's member on it. ---
 live_iam fleet
 
 # --- live: hold writers ---
