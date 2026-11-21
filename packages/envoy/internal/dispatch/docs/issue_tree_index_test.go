@@ -247,12 +247,13 @@ func drainOwed(t *testing.T, database *store.Store, service *Service) {
 // owedCount is how many documents owe their block index, by either mark the reconciliation lists
 // a document by: a null version, or this release's own mark (store_owed_at), which the backfill
 // sets. It counts refs.OwedBlockIndexDebts, the one text both readers of the backlog derive it
-// from.
+// from, at this build's marking rule (refs.BlockIndexMarkingRule), the rule the reconciliation's
+// tick and `census --store --sizing` bind to it.
 func owedCount(t *testing.T, database *store.Store) int {
 	t.Helper()
 	var owed int
 	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from (`+refs.OwedBlockIndexDebts+`) owed`).Scan(&owed); err != nil {
+		`select count(*) from (`+refs.OwedBlockIndexDebts+`) owed`, refs.BlockIndexMarkingRule).Scan(&owed); err != nil {
 		t.Fatalf("count the documents owed a block index: %v", err)
 	}
 	return owed
