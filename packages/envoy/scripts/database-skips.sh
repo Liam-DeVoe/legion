@@ -65,8 +65,8 @@ cd "$(dirname "$0")/.."
 # as DATABASE_SKIPS_PATTERN and refuses this script when DEFAULT_EXCEPT says otherwise): the auth
 # service's natscallout, the one today, opens no database, and envoy-go-race runs it under the
 # detector, so a run here would be its second in the same CI run.
-DEFAULT_PACKAGES=(./internal/broker/... ./cmd/broker/)
-DEFAULT_EXCEPT='/internal/broker/natscallout$'
+DEFAULT_PACKAGES=(./internal/cipher/... ./cmd/cipherd/)
+DEFAULT_EXCEPT='/internal/cipher/natscallout$'
 
 # EXPECTED_SKIPS: PACKAGE TEST REASON, one per line: a test that skips in every run that sets the
 # database variables, and why. A skip of a test it names is not counted; a line whose package is
@@ -76,9 +76,9 @@ DEFAULT_EXCEPT='/internal/broker/natscallout$'
 # needs a PostgreSQL built with ICU, which CI's image is). The closing quote stands on a line of
 # its own, so a copy with any one line of the table deleted is still a whole script
 # (database-skips.test.sh's control 5 deletes one).
-EXPECTED_SKIPS='github.com/sjawhar/envoy/internal/broker/airlock FuzzAirlock needs AIRLOCK_MODEL, a built Lean model of the airlock, which the airlock-lean job builds and runs it with
-github.com/sjawhar/envoy/internal/broker/airlock TestModelAgreesOnHostShapes needs AIRLOCK_MODEL, as FuzzAirlock does
-github.com/sjawhar/envoy/internal/broker/airlock TestTheModelReadsAHostlessEntryWithGuidance needs AIRLOCK_MODEL, as FuzzAirlock does
+EXPECTED_SKIPS='github.com/sjawhar/envoy/internal/cipher/proxyrules FuzzAirlock needs AIRLOCK_MODEL, a built Lean model of the airlock, which the airlock-lean job builds and runs it with
+github.com/sjawhar/envoy/internal/cipher/proxyrules TestModelAgreesOnHostShapes needs AIRLOCK_MODEL, as FuzzAirlock does
+github.com/sjawhar/envoy/internal/cipher/proxyrules TestTheModelReadsAHostlessEntryWithGuidance needs AIRLOCK_MODEL, as FuzzAirlock does
 github.com/sjawhar/envoy/internal/dispatch/api TestGrowsLinearlyRejectsQuadraticFinalRungHelper is a subprocess helper, which its parent test starts with GROWS_LINEARLY_SLOW_FIRST set
 '
 
@@ -90,7 +90,7 @@ go_test_exit=""
 
 # by_run is the report's events in order, each event of a test given `_run`: its package, its name
 # and which run of it this is. A test binary can run a test more than once under one name (-count,
-# or a TestMain that calls m.Run twice, as internal/broker/airlockproxy's does, once per protocol),
+# or a TestMain that calls m.Run twice, as internal/cipher/proxy's does, once per protocol),
 # and test2json reports every run under that one name, so what a run did is read by that key and
 # not by the name: read by the name, a test that failed in one run and passed in the other counted
 # as passed, and the failure's own lines were left out.

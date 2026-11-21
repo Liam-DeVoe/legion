@@ -25,7 +25,7 @@ import (
 // them: a change that refuses the test's file or its runtime's options fails this package's tests,
 // not the live test the next time a kind cluster runs it.
 
-// controllerSweepKindProject is the test's project. Dispatch maps it no repository.
+// controllerSweepKindProject is the test's project. No record of it names a repository.
 const controllerSweepKindProject = "CSWEEP"
 
 // controllerSweepKindStub is the agent the controller's shim wraps: it sleeps, so the pod stays up
@@ -91,7 +91,7 @@ github_apps:
 // (sandboxRuntime) on listener and st, which also registers the runtime's launcher acceptor, and
 // reads the shared public leak check cfg names (leak_check) at githubAPI ("" is GitHub's). What
 // the test stands in for: the agent is a sleep stub, the App tokens are placeholders
-// (outboxTokens), and no repository is mapped, so the controller's gh files name no owner.
+// (outboxTokens), and no repository is served, so the controller's gh files name no owner.
 func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener *stream.Listener, st *store.Store, githubAPI string, log *slog.Logger) (runtime.Runtime, error) {
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
@@ -107,14 +107,13 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}
 	opts.Agent = controllerSweepKindStub
-	repos := func() []ghrepo.Repository { return nil }
-	// The test maps no repository and configures no rename, so the mapping's rule
+	// The test has prepared no repository and configures no rename, so the rename rule
 	// (repositories.serving) answers every provisioning token's repository as it is recorded.
-	serving := newRepositories(cfg.Project, ghrepo.Renames{}).serving
+	repos := newRepositories(cfg.Project, ghrepo.Renames{})
 	// The test applies no fact of a pod's volume and no memory guard kill, so the trimmer's
 	// reports and the guard's reach holders nothing filled, which drop them
 	// (volumeTrimReports.report, memoryGuardKills.killed).
-	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), githubAPI, &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
+	return sandboxRuntime(rc, opts, repos.servesRepository, repos.serving, ghrepo.Renames{}, appauth.NewInstalled(), appauth.NewLeftOut(), githubAPI, &memoryGuardKills{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
 }
 
 // controllerSweepKindSpec is the project controller's launch as the test makes it: the

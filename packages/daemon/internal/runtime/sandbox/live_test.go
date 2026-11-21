@@ -67,9 +67,9 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/sjawhar/envoy/brokertest"
+	"github.com/sjawhar/envoy/ciphertest"
 	"github.com/sjawhar/envoy/testprereq"
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fakegithub"
@@ -111,7 +111,7 @@ type liveGroup struct {
 // launch makes. Every other check puts each claim it starts from where it needs it itself
 // (ensureRunning, ensureSuspended), or launches one no check before it in its group launched. A
 // group that does not hold root-ready redoes first what root-ready leaves every later launch on
-// the run's repository (mapRunRepository), and roles, whose checks start from the run's first
+// the run's repository (cacheRunRepository), and roles, whose checks start from the run's first
 // issue, what root-ready and worker-shares-issue-pod leave them too (runFirstIssue).
 var liveGroups = []liveGroup{
 	// root: the run's first issue pod — its launch, which makes the run's repository's cache, the
@@ -157,7 +157,7 @@ var liveGroups = []liveGroup{
 		{"cleanup-reaps-the-issue", (*liveRig).checkCleanupReapsTheIssue, nil},
 	}},
 	// image: the worker image's probe and its three refusals.
-	{name: "image", setup: (*liveRig).mapRunRepository, checks: []liveCheck{
+	{name: "image", setup: (*liveRig).cacheRunRepository, checks: []liveCheck{
 		{"image-probe", (*liveRig).checkImageProbe, nil},
 		{"image-probe-negative", (*liveRig).checkImageProbeRefusal, nil},
 		{"image-probe-capability-negative", (*liveRig).checkImageProbeCapabilityRefusal, nil},
@@ -167,7 +167,7 @@ var liveGroups = []liveGroup{
 	// pod's replacement displaces, a resume from the session table alone, and an issue closed and
 	// resumed. The image's checks were this group's until the two together ran past the part
 	// budget (1,463 s and 1,520 s of 1,461 in CI runs 44766893801 and 44744458379).
-	{name: "issues", setup: (*liveRig).mapRunRepository, checks: []liveCheck{
+	{name: "issues", setup: (*liveRig).cacheRunRepository, checks: []liveCheck{
 		{"second-owner", (*liveRig).checkSecondOwner, nil},
 		{"displaced", (*liveRig).checkDisplaced, nil},
 		{"postgres-resume", (*liveRig).checkPostgresResume, nil},
@@ -175,7 +175,7 @@ var liveGroups = []liveGroup{
 	}},
 	// pod-update: the update round over one drifted issue pod, and over two issues' pods a change
 	// drifts at once.
-	{name: "pod-update", setup: (*liveRig).mapRunRepository, checks: []liveCheck{
+	{name: "pod-update", setup: (*liveRig).cacheRunRepository, checks: []liveCheck{
 		{"pod-update", (*liveRig).checkPodUpdate, nil},
 		{"pod-update-fleet", (*liveRig).checkPodUpdateFleet, nil},
 	}},
@@ -216,20 +216,20 @@ func liveRepositoryCache() RepositoryCache {
 	}
 }
 
-// mappedRepositories is the run's mapping as the runtime reads it.
-func (r *liveRig) mappedRepositories() []ghrepo.Repository {
-	r.mappedMu.Lock()
-	defer r.mappedMu.Unlock()
-	return slices.Clone(r.mapped)
+// cacheRepositories is the run's cache set as the runtime reads it (Options.CacheRepositories).
+func (r *liveRig) cacheRepositories() []ghrepo.Repository {
+	r.cachedMu.Lock()
+	defer r.cachedMu.Unlock()
+	return slices.Clone(r.cached)
 }
 
-// mapRepository adds repo to the run's mapping, as Dispatch's mapping names a repository before
-// any issue of it launches.
-func (r *liveRig) mapRepository(repo ghrepo.Repository) {
-	r.mappedMu.Lock()
-	defer r.mappedMu.Unlock()
-	if !slices.Contains(r.mapped, repo) {
-		r.mapped = append(r.mapped, repo)
+// cacheRepository adds repo to the run's cache set, as the daemon's cache set gains a
+// repository at the commit of the first record that names it, before any issue of it launches.
+func (r *liveRig) cacheRepository(repo ghrepo.Repository) {
+	r.cachedMu.Lock()
+	defer r.cachedMu.Unlock()
+	if !slices.Contains(r.cached, repo) {
+		r.cached = append(r.cached, repo)
 	}
 }
 
@@ -484,7 +484,7 @@ func newKindLiveEnv(t *testing.T, rig *kindtest.Rig) liveEnv {
 
 	startLiveBroker(t, rig, &env, sessions.Host)
 	env.agentSecretsBin = filepath.Join(env.scratch, "agent-secrets")
-	build := exec.Command("go", "build", "-o", env.agentSecretsBin, "./cmd/agent-secrets")
+	build := exec.Command("go", "build", "-o", env.agentSecretsBin, "./cmd/cipher")
 	build.Dir = filepath.Join(root, "packages", "envoy")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build agent-secrets from the checkout: %v: %s", err, out)
@@ -493,7 +493,7 @@ func newKindLiveEnv(t *testing.T, rig *kindtest.Rig) liveEnv {
 	return env
 }
 
-// startLiveBroker starts this repository's own broker in this process (brokertest), at the kind
+// startLiveBroker starts this repository's own broker in this process (ciphertest), at the kind
 // network's gateway where the pods reach it, on the rig's PostgreSQL as this process dials it
 // (dsn), verifying the cluster's own tokens for liveAgentSecretsAudience: the daemon's login as
 // liveDaemonAccount, which logs in as the legion-daemon service, and the pods of liveWorkerAccount,
@@ -505,12 +505,12 @@ func startLiveBroker(t *testing.T, rig *kindtest.Rig, env *liveEnv, dsn string) 
 	t.Helper()
 	t.Setenv("BROKER_TEST_DATABASE_URL", dsn)
 	account := func(name string) string { return "system:serviceaccount:" + env.namespace + ":" + name }
-	broker := brokertest.NewRig(t, brokertest.WithListen(net.JoinHostPort(rig.Gateway, "0")),
-		brokertest.WithClusterIssuer(rig.Issuer, liveAgentSecretsAudience, rig.IssuerClient(t),
+	broker := ciphertest.NewRig(t, ciphertest.WithListen(net.JoinHostPort(rig.Gateway, "0")),
+		ciphertest.WithClusterIssuer(rig.Issuer, liveAgentSecretsAudience, rig.IssuerClient(t),
 			map[string]string{account(liveDaemonAccount): "legion-daemon"}, map[string]string{account(liveWorkerAccount): "legion-daemon"}))
 	auto := randomHex(t, 16)
-	broker.PutSecret(t, "LEGION_E2E_AUTO", brokertest.OwnerShared, brokertest.TierAgent, auto)
-	broker.PutSecret(t, "LEGION_E2E_APPROVAL", liveApprovalOwner, brokertest.TierHuman, randomHex(t, 16))
+	broker.PutSecret(t, "LEGION_E2E_AUTO", ciphertest.OwnerShared, ciphertest.TierAgent, auto)
+	broker.PutSecret(t, "LEGION_E2E_APPROVAL", liveApprovalOwner, ciphertest.TierHuman, randomHex(t, 16))
 	sum := sha256.Sum256([]byte(auto))
 	env.agentSecretsURL, env.agentSecretsAutoSHA = broker.URL, hex.EncodeToString(sum[:])
 	env.agentSecretsTokenFile = filepath.Join(env.scratch, "agent-secrets-token")
@@ -901,11 +901,12 @@ type liveRig struct {
 	// trees is the durable state every runtime of the run reads (Options.Store): every tree live
 	// until a check records its cleanup confirmed.
 	trees *fakeStore
-	// mapped is the repositories the run maps (Options.Mapped): each added just before its first
-	// issue pod launches (root-ready, second-owner, or the setup of a group that does not hold
-	// root-ready), so no sweep makes a cache the run's first launch of that repository is to make.
-	mappedMu sync.Mutex
-	mapped   []ghrepo.Repository
+	// cached is the run's cache set (Options.CacheRepositories): each repository added just
+	// before its first issue pod launches (root-ready, second-owner, or the setup of a group that
+	// does not hold root-ready), so no sweep makes a cache the run's first launch of that repository
+	// is to make.
+	cachedMu sync.Mutex
+	cached   []ghrepo.Repository
 
 	// The current runtime instance and its listener; stop ends both.
 	rt      *Runtime
@@ -938,7 +939,7 @@ type liveRig struct {
 	// enrollments is the harness's own enrollment of each claim's running pod, as the daemon's
 	// machine holds it; grants and requests are what checkSecretsAutomaticGrant records for
 	// checkSecretsCrossPodNegative to attack.
-	secrets            *agentsecrets.Client
+	secrets            *cipher.Client
 	secretsBlockReason string
 	enrollments        map[claim.Token]liveEnrollment
 	grants             map[claim.Token]string
@@ -1052,7 +1053,7 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 	r.leakCheck, r.leakCheckSetting = kindtest.LeakCheck(t), kindtest.LeakCheckSetting(t)
 	// The run logs in as the daemon does, with legion-daemon's token for the broker; no person
 	// approves it, and the client keeps logging in for as long as the run lasts.
-	client := &agentsecrets.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}
+	client := &cipher.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}
 	if err := client.Start(r.ctx); err != nil {
 		r.secretsBlockReason = fmt.Sprintf("the broker at %s refused %s's token login: %v", env.agentSecretsURL, liveDaemonAccount, err)
 	} else {
@@ -1193,7 +1194,7 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		Log:                   r.log,
 		SessionStore:          r.sessionStore,
 		RepositoryCache:       liveRepositoryCache(),
-		Mapped:                r.mappedRepositories,
+		CacheRepositories:     r.cacheRepositories,
 		LeakCheck:             r.leakCheck,
 		LeakCheckSetting:      r.leakCheckSetting,
 		AgentSecrets:          &AgentSecrets{URL: r.env.agentSecretsURL, Audience: liveAgentSecretsAudience, TokenExpiry: time.Hour},
@@ -1714,23 +1715,24 @@ func (r *liveRig) ensureSuspended(c *liveClaim) error {
 	return nil
 }
 
-// mapRunRepository is what root-ready leaves every later launch on the run's repository, which a
+// cacheRunRepository is what root-ready leaves every later launch on the run's repository, which a
 // group that does not hold root-ready redoes first: the runtime running, and the repository in the
-// run's mapping, as Dispatch's mapping names a repository before any issue of it launches.
-func (r *liveRig) mapRunRepository() error {
+// run's cache set, as the daemon's cache set gains a repository at the commit of the first record
+// that names it, before any issue of it launches.
+func (r *liveRig) cacheRunRepository() error {
 	if err := r.startRuntimeOnce(); err != nil {
 		return err
 	}
-	r.mapRepository(r.env.repo)
-	note("runtime", "setup: %s mapped", r.env.repo)
+	r.cacheRepository(r.env.repo)
+	note("runtime", "setup: %s in the cache set", r.env.repo)
 	return nil
 }
 
 // runFirstIssue is what root-ready and worker-shares-issue-pod leave the checks of the run's first
-// issue after them, which the roles group redoes first: mapRunRepository's, then the root running,
+// issue after them, which the roles group redoes first: cacheRunRepository's, then the root running,
 // whose launch makes the run's repository's cache, and the worker running beside it in its pod.
 func (r *liveRig) runFirstIssue() error {
-	if err := r.mapRunRepository(); err != nil {
+	if err := r.cacheRunRepository(); err != nil {
 		return err
 	}
 	for _, name := range []string{"root", "worker"} {

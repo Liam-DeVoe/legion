@@ -31,9 +31,9 @@ name: Dispatch unit suite repeated
 # it.
 #
 # Why 20 reruns a web or harness leg and three legs a lane. Under one seed every rerun repeats one
-# order (Bun 1.4.4, measured for dispatch://INFRA-1511). So the reruns find a row that fails one
-# run in twenty, and the three rounds give three orders a week. 60 runs a lane a week find such a
-# row with probability 1 - 0.95^60, about 95 per cent, against about 64 per cent for 20 runs. More
+# order (Bun 1.4.4, measured when this workflow was written). So the reruns find a row that fails
+# one run in twenty, and the three rounds give three orders a week. 60 runs a lane a week find such
+# a row with probability 1 - 0.95^60, about 95 per cent, against about 64 per cent for 20 runs. More
 # reruns under one seed buy no new order. More legs buy both.
 #
 # What the web-cold leg finds, and why it runs once. It finds a row that reads text or a part that
@@ -66,9 +66,9 @@ name: Dispatch unit suite repeated
 # What a red run does, and what it does not. The leg fails, and its report and its artifact stay
 # on the run. GitHub's "Events that trigger workflows" page says: "Notifications for scheduled
 # workflows are sent to the user who last modified the cron syntax in the workflow file."
-# Nothing else is told: no check on any pull request, no issue, no message. dispatch://INFRA-1066's
-# R22 owns a reader of scheduled results, as dispatch-browser-nightly.yaml's head says of its own,
-# and this workflow builds no second one.
+# Nothing else is told: no check on any pull request, no issue, no message. A reader of scheduled
+# results is a separate piece of work, as dispatch-browser-nightly.yaml's head says of its own, and
+# this workflow builds no second one.
 #
 # How a row is reproduced. The report gives each failing row its file, the leg's seed and the
 # command that runs it again from packages/dispatch, as docs/testing.md ("A Dispatch unit test
@@ -131,13 +131,13 @@ jobs:
     # The test step's budget is the matrix's step_minutes. The steps without one, measured together
     # over every completed leg of the runs the test step's comment names, took at most 37 s in a
     # web leg (run 44097039165, round 2), 29 s in a web-cold leg (run 44449111716, round 2) and
-    # 151 s in a harness leg (run 44473658176, round 3), 125 s of which was a zsh install the leg
-    # no longer makes, so 1, 1 and 1 minutes. A harness leg adds the five steps that give
+    # 151 s in a harness leg (run 44473658176, round 3, whose zsh install took 125 s), so 1, 1 and
+    # 3 minutes. A harness leg adds the five steps that give
     # second-global-setup.test.ts its stacks: Go's setup (2), the binaries' build (10), the
     # connections read (2) and the Chromium install (4) carry budgets of their own, and the image's
     # pull, which has none, counts at the 120 s dispatch-browser.yaml's multiprocess job counts its
     # pull of the same digest at. So 16 + 1 = 17 minutes for a web leg, 2 + 1 = 3 for a web-cold
-    # leg and 40 + 2 + 10 + 2 + 4 minutes plus 26 s and 120 s, 61 minutes, for a harness leg, the
+    # leg and 40 + 2 + 10 + 2 + 4 minutes plus 151 s and 120 s, 63 minutes, for a harness leg, the
     # matrix's job_minutes. The slowest whole jobs took 845 s for a web leg (run 44465013263, round
     # 3), 125 s for a web-cold leg (run 44360597415, round 1) and 1,575 s for a harness leg (run
     # 44389203951, round 1), before the harness leg ran that file.
@@ -164,13 +164,20 @@ jobs:
           - lane: harness
             reruns: 20
             step_minutes: 40
-            job_minutes: 61
+            job_minutes: 63
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      # As ci-job-dispatch-ui.yaml's step of this name, for its reason:
+      # e2e/__tests__/outside-edge-refusals-input.test.ts runs the edge-refusal check under zsh,
+      # which must refuse to run and name bash, and skips that row where zsh is missing. The runner
+      # image has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh).
+      - name: Install zsh
+        if: matrix.lane == 'harness'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
       # The harness rows that need a PostgreSQL run here, as they run in a pod and in the
       # postgres-rows job of .github/workflows/dispatch-browser.yaml, which ci-job-dispatch-ui.yaml
       # leaves them to: on GitHub Actions their gates fail the file rather than skip it
@@ -224,7 +231,8 @@ jobs:
         timeout-minutes: 10
         run: |
           mkdir -p out/dispatch-e2e-broker
-          CGO_ENABLED=0 go build -o out/dispatch-e2e-broker/ ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+          CGO_ENABLED=0 go build -o out/dispatch-e2e-broker/ ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+          CGO_ENABLED=0 go build -o out/dispatch-e2e-broker/broker ./cmd/cipherd
         working-directory: packages/envoy
       # As the multiprocess job's step of this name, for the reason and the budget
       # .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is

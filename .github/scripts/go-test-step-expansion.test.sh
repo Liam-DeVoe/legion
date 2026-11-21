@@ -158,7 +158,7 @@ else:
     print(read.workdir, read.script)' "$@"; }
 check "envoy-go's count runs the broker's packages less the race lane's, and its command, less the backend count's test" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Count the database broker suites' skips" "")" \
-    "packages/envoy go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$' -timeout 20m")"
+    "packages/envoy go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$' -timeout 20m")"
 check "envoy-go-race-api's race step runs the API package under -race through the counter" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" \
     "packages/envoy go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/")"
@@ -182,8 +182,8 @@ if not found:
 else:
     command, = steps.commands_of(found[0], lambda step, text: "(not-run)")
     print(command.step.workdir, " ".join(command.packages), command.run)')" \
-    "packages/envoy ./cmd/agent-secrets/ ./internal/broker/api/ ^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestUseCommandOutsideASessionReachesTheMachineSource|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$")"
-check "the unit step skips the four of cmd/agent-secrets and the database-skips step the one of internal/broker/api" \
+    "packages/envoy ./cmd/cipher/ ./internal/cipher/api/ ^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestUseCommandOutsideASessionReachesTheMachineSource|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)\$")"
+check "the unit step skips the four of cmd/cipher and the database-skips step the one of internal/cipher/api" \
   "$(is "$(py 'found = {step.key: step for step in steps.steps_of(steps.documents())}
 skipping = {name: {test for command in steps.commands_of(found[(".github/workflows/ci-job-envoy-go.yaml", name)],
                                                           lambda step, text: "(not-run)")

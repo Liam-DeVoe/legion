@@ -151,9 +151,9 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service"),
+            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/natscallout",
+        package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
         requirement=(
             "c-callout-available (the NATS auth service's verification): five hundred "
@@ -219,7 +219,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-airlock-lean.yaml", "Fuzz the Go airlock against the model"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("FuzzAirlock",),
         requirement=(
             "R3 (dispatch://INFRA-1408/spec): airlock-lean holds the Go airlock to its Lean model, "
@@ -239,7 +239,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestModelAgreesOnHostShapes",),
         requirement=(
             "The same reason as FuzzAirlock above: airlock-lean's corpus comparison runs the host "
@@ -257,7 +257,7 @@ EXCEPTIONS = (
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestTheModelReadsAHostlessEntryWithGuidance",),
         requirement=(
             "The same reason as TestModelAgreesOnHostShapes above: airlock-lean's corpus "

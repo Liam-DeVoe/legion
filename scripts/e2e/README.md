@@ -294,7 +294,7 @@ Two notes on what the script had to learn about its own surface:
 On every pull request whose diff selects them, the `typecheck` job of `.github/workflows/ci.yaml` runs `go vet ./...` in `packages/daemon`, and its `daemon-go` job installs `tmux` — the tmux runtime's tests drive a real tmux server and skip without one, and the daemon refuses to start without it
 — and the pinned `jj` (through mise, as the pi-legion job does)
 — the workspace tests drive a real jj, and the daemon resolves jj at boot and refuses to start without it
-— then runs `go test ./...` against its Postgres service (`LEGION_TEST_PG_DSN`, and `BROKER_TEST_DATABASE_URL` for the real broker that `internal/agentsecrets`'s contract tests drive, which fail there rather than skip without it), then this script with `LEGION_E2E_PG_DSN` pointing at the same service, so the script runs no docker of its own there.
+— then runs `go test ./...` against its Postgres service (`LEGION_TEST_PG_DSN`, and `BROKER_TEST_DATABASE_URL` for the real broker that `internal/cipher`'s contract tests drive, which fail there rather than skip without it), then this script with `LEGION_E2E_PG_DSN` pointing at the same service, so the script runs no docker of its own there.
 `daemon-go` is the Go daemon's own job: that suite left the `test` job in dispatch://INFRA-1413, where one filter had to cover both it and the shell-script harnesses.
 
 ## stage2-tmux-supervision.sh
@@ -492,7 +492,7 @@ Each item below names a check, then what it holds, with 4b.5's acceptance item i
 ## dispatch-user-turns.sh
 
 LEGION-394's acceptance: a person's direct Send or Aside from Dispatch's conversation page is the session's own user turn, and everything else keeps its Envoy card.
-One real session — the Oh My Pi `LEGION_TEST_OMP` names (the build `.omp-pin` pins) with this checkout's Envoy plugin in an isolated profile, in a tmux pane, its cwd under `/tmp` — registers with a real Envoy listener and natsd, built from this checkout.
+One real session — the Oh My Pi `LEGION_TEST_OMP` names (the build `.omp-pin` pins) with this checkout's Envoy plugin in an isolated profile, in a tmux pane, launched under `env` with [`omp_session_unsets`](#libomp-homesh), the run's own `HOME` and `OMP_PROFILE`, and the run's Envoy, NATS and Dispatch addresses and token files, its cwd under `/tmp` — registers with a real Envoy listener and natsd, built from this checkout.
 The profile's model route shuts Oh My Pi's first-run setup wizard ([`omp_setup_wizard_off`](#libomp-homesh)), which a fresh profile's first launch otherwise sits in.
 Dispatch, built from the checkout with NATS on and its trusted identity header and on a database of the run's own in `LEGION_TEST_PG_DSN`, serves the SPA this checkout builds, and Playwright drives the conversation page in its own Chromium as the person the header names.
 The session's model is [`lib/user-turns-model.ts`](lib/user-turns-model.ts), a stand-in on [`lib/messages-standin.ts`](lib/messages-standin.ts) whose scripted answers make the tool calls the spec-edit checks need (`dispatch issue`, then `dispatch doc-edit` after the person's edit) and name the code word each prompt carries.
@@ -2104,7 +2104,7 @@ A session of its own (`setsid`, or `Bun.spawn`'s `detached`) is the wrong tool: 
 `untilRunning(pid, program)` resolves once `pid` runs `program` (its `/proc/<pid>/exe`), and fails naming both and what the pid ran instead when it does not within 10 s: a sweep row waits on it, since a sweep that stopped the perl before its `setpgrp` would stop a member of the runner's own group.
 `lib/own-group.test.ts` holds that a wrapped shell leads its own group under the runner and has the same traps, blocked and ignored signals and environment as a plain one, and that `untilRunning` fails at its bound naming the pid and the program.
 It reads the ignored signals through the shell's own `trap -p` of each signal, and the blocked set through a perl the shell starts (`sigprocmask`; perl itself ignores SIGFPE, so its `%SIG` could not tell one it was handed), not `/proc/<pid>/status`, which a Legion pod's kernel writes no `Sig*` line to, and it fails where either shell's read prints no line.
-`lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/controller-start-guards.test.ts`, the skill-scenario rig's sweep rows and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts` use `ownGroup`, and skip by name where the host has no perl
+`lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/leftovers.test.ts`, `lib/unread-proc.test.ts`, `lib/controller-start-guards.test.ts`, the skill-scenario rig's sweep rows and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts` use `ownGroup`, and skip by name where the host has no perl
 
 ## lib/arg-max-force.sh
 
@@ -2160,7 +2160,8 @@ A walk or a read that cannot see the processes it reads says why and fails with 
   `stop_pid` sends TERM, then KILL after 10 s, and `signal_group` sends SIGNAL to the group PID leads, each through `freeze_if` held to that recorded start, so a pid whose process ended and passed to another since gets no signal; a pid with no recorded start is named and left alone, and one recorded `gone`, whose process ended before its start was read, is left alone with no word.
   A leader that has gone takes its group's signal with it: a `signal_group` after `stop_pid` of the same leader sends nothing.
   A member that outlived its leader is the run's sweep's (`stop_marked_processes`), which the clean-session-stop cleanup runs.
-  `lib/unread-proc.test.ts` holds `stop_pid` and `signal_group` with a start that is not the process's own and with a pid recorded `gone`, and, where `sudo -n` can make a pid namespace whose `pid_max` is 2400, `stop_pid` with a daemon that ended and a stranger that took its pid.
+  `lib/unread-proc.test.ts` holds `stop_pid` and `signal_group` with a start that is not the process's own where the host has perl, since `ownGroup`'s perl starts that process; a host without perl skips that row by name.
+  It also holds them with a pid recorded `gone`, and, where `sudo -n` can make a pid namespace whose `pid_max` is 2400, `stop_pid` with a daemon that ended and a stranger that took its pid.
   That row runs only on Linux 6.14 or later, where a pid namespace's `pid_max` is its own: on an older kernel the write would set the host's, so there it is skipped by that name; and the row fails if the host's `pid_max` ever moves across it, naming the value it read, the restore's exit status and stderr, and the value it reads after the restore
 
 - `signalable PID`
@@ -2275,9 +2276,9 @@ It does not see a `docker run` continued over lines, `podman` or a launcher that
 ## lib/omp-home.sh
 
 The run's own `HOME` for Oh My Pi, so a script's isolated profile lives in its work directory and the operator's `~/.omp/profiles` is never written or deleted.
-Stage 2, `controller-start-tmux.sh` and `dispatch-user-turns.sh` source it, and so do the two model-route libraries ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh) and [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)) for `omp_setup_wizard_off`.
+Stage 2, `controller-start-tmux.sh`, `dispatch-user-turns.sh`, the operator walkthrough's `record-casts.sh` and pi-legion's skill-scenario rig source it, and so do the two model-route libraries ([`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh) and [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)) for `omp_setup_wizard_off`.
 
-```sh
+```bash
 . "$root/scripts/e2e/lib/omp-home.sh"     # sourced, never run
 make_omp_home "$work/omp-home"
 omp_setup_wizard_off "$work/omp-home/.omp/profiles/$profile/agent/config.yml"
@@ -2314,6 +2315,7 @@ An interactive Oh My Pi in a terminal, such as the one `legion controller start`
 `startup.setupWizard: false` shuts the wizard whatever setup version the build counts to; an Oh My Pi in `--mode rpc`, as every daemon pane runs, never opens it.
 A named profile's own settings file is its `agent/config.yml`, and it inherits no other `config.yml` of the home (`getProfileConfigRoot`, `@oh-my-pi/pi-utils` `dirs.ts`).
 Only the working directory's project settings and `PI_CONFIG_FILES` overlays merge over it, so each profile the run writes carries the line itself.
+`lib/omp-home.test.ts` reads back, as one YAML document, what `omp_setup_wizard_off` and the controller proof's profile writer (`write_controller_profile`) write, and each model-route library's own test reads `startup.setupWizard` from the `config.yml` it writes.
 
 `omp_session_unsets` is the one list of the operator's own Oh My Pi session variables that no Oh My Pi a rig starts from that session may inherit, as `env` options:
 `-u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH -u OMP_SESSION_EXCLUSIVE`.

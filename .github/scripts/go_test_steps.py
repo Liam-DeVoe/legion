@@ -87,26 +87,26 @@ AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1` over its packages, its stdout through tee into the report and through jq to the
     # log, then counts the skips in its report. With no package argument it
-    # runs its DEFAULT_PACKAGES, ./internal/broker/... and ./cmd/broker/, less the import paths its
-    # DEFAULT_EXCEPT's `grep -Ev '/internal/broker/natscallout$'` takes out of `go list` of them (the
+    # runs its DEFAULT_PACKAGES, ./internal/cipher/... and ./cmd/cipherd/, less the import paths its
+    # DEFAULT_EXCEPT's `grep -Ev '/internal/cipher/natscallout$'` takes out of `go list` of them (the
     # race lane's packages under the tree, ci_job_reads.DATABASE_SKIPS_PATTERN), with no -tags,
     # -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces
     # those packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the -timeout,
     # and `--var NAME` decides only whether it runs at all. With `--report FILE` it reads a report
     # and runs no test. envoy-go's count step passes the first argument list below, whose command
     # is that run in the listing form this module reads, and envoy-go-race-api's race step the
-    # second. The first's --skip leaves out the backend count's test of ./internal/broker/api/.
+    # second. The first's --skip leaves out the backend count's test of ./internal/cipher/api/.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
             "--timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'":
-                "go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | "
+                "go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | "
                 "xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
                 "-timeout 20m",
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="4200acaf42c44cc31bae4024e92930421961a0aefca4056f20eec0fc763c3f15",
+        sha256="0cebbf7338939ae971410db78bbfc77aecfbe701f20bff12654d4547c111d50e",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -117,11 +117,11 @@ AUDITED_SCRIPTS = {
     "packages/envoy/scripts/backend-count.sh": AuditedScript(
         module="packages/envoy",
         commands={
-            "./cmd/agent-secrets/ ./internal/broker/api/ -- " + " ".join(BACKEND_COUNT_TESTS):
+            "./cmd/cipher/ ./internal/cipher/api/ -- " + " ".join(BACKEND_COUNT_TESTS):
                 f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
-                "./cmd/agent-secrets/ ./internal/broker/api/",
+                "./cmd/cipher/ ./internal/cipher/api/",
         },
-        sha256="315c12e15699049b9bc8583ddd1f6af4f21aa6ceddcc74216a3e052c2927f516",
+        sha256="aa38059ddcceec956439d50c373969648085ebfc5c4e658b03e1ad60fcfc20cc",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

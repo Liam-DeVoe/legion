@@ -101,7 +101,7 @@ fixture() {
     "$root/packages/envoy/docker" "$root/packages/envoy/infra/host/heldportwrapper" \
     "$root/packages/daemon/docker" "$root/packages/daemon/internal/testnats" \
     "$root/packages/envoy/internal/testnats" "$root/packages/envoy/internal/testpg" \
-    "$root/packages/envoy/internal/tests3" "$root/packages/envoy/cmd/agent-secrets" \
+    "$root/packages/envoy/internal/tests3" "$root/packages/envoy/cmd/cipher" \
     "$root/packages/envoy-client/src/__tests__" \
     "$root/scripts/e2e/lib" "$root/packages/dispatch/e2e" \
     "$root/packages/pi-legion/scripts/skill-scenarios" "$root/packages/envoy/deploy/scripts" \
@@ -210,7 +210,7 @@ YAML
   local go_file
   for go_file in packages/daemon/internal/testnats/nats.go \
     packages/envoy/internal/testnats/nats.go packages/envoy/internal/testpg/testpg.go \
-    packages/envoy/internal/tests3/seaweedfs.go packages/envoy/cmd/agent-secrets/secret_moto_test.go; do
+    packages/envoy/internal/tests3/seaweedfs.go packages/envoy/cmd/cipher/secret_moto_test.go; do
     cat > "$root/$go_file" <<YAML
 package testimage
 

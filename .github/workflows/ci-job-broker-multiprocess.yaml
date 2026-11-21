@@ -63,8 +63,8 @@ jobs:
           cache: false
       - name: Two-process tests of the secrets broker
         run: |
-          pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/broker)
-          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/broker
+          pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/cipherd)
+          go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/cipherd
         working-directory: packages/envoy
       # Check k9 of the airlock's verification document (dispatch://INFRA-1352): under ten minutes
       # of generated load no call fails, the proxy adds at most 100 ms at the median, and each

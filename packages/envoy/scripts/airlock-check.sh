@@ -24,10 +24,10 @@
 #
 # The document's other checks are Go tests: k3, k4, k5 and k8a are
 # TestAMethodOrPathTheEntryDoesNotAllowIsRefused and TestTheProxyRefusesTheAddressesItMustNeverDial
-# (internal/broker/airlockproxy), TestARereadOfASecretReachesTheAirlocksProxy and
-# TestAirlockCheckRefusesAFileTheBrokerWouldNotServe (cmd/broker); k1's memory and file scan is a
-# row of TestExecFormRunsACommandForANameBehindTheAirlock (cmd/agent-secrets); the swaps k6 and
-# k7 drove real clients through are airlockproxy's Azure, AWS, GitHub App and gRPC tests; k15 is
+# (internal/cipher/proxy), TestARereadOfASecretReachesTheAirlocksProxy and
+# TestAirlockCheckRefusesAFileTheBrokerWouldNotServe (cmd/cipherd); k1's memory and file scan is a
+# row of TestExecFormRunsACommandForANameBehindTheAirlock (cmd/cipher); the swaps k6 and
+# k7 drove real clients through are the proxy's Azure, AWS, GitHub App and gRPC tests; k15 is
 # the airlock-lean job and scripts/airlock-mutants.sh. k2 was a one-time check of a release from
 # before the airlock.
 #

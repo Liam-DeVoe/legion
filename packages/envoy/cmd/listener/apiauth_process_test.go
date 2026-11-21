@@ -106,34 +106,28 @@ func TestTheListenerBinaryHoldsProjectedTokensToItsListAndCountsThem(t *testing.
 	}
 }
 
-// The listener reads its issuer's discovery document at boot, so an issuer that does not answer
-// stops the start: the binary exits 1, naming that issuer, and serves nothing. Once the issuer
-// answers, the same settings start a listener that admits a token the issuer signed for the
-// listener's audience and refuses one it signed for another audience, as Dispatch's is. Dispatch
-// takes the other course and starts while its issuer is down, discovering it in the background
-// (TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLater, cmd/dispatch).
-func TestTheListenerBinaryRefusesToStartWhileItsIssuerDoesNotAnswer(t *testing.T) {
+// The settings' audience reaches the handler the listener binary serves: started with an issuer and
+// ENVOY_OIDC_AUDIENCE, the binary admits a token the issuer signed for the listener's audience and
+// refuses one it signed for another audience, as Dispatch's is. The listener reads its issuer in
+// the background and starts while that issuer is down (TestTheListenerServesWhileItsIssuersCannotBeDiscovered),
+// as Dispatch does (TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLater,
+// cmd/dispatch), so this listener waits for the issuer's read before it is called.
+func TestTheListenerBinaryAdmitsATokenForItsAudienceAndRefusesAnother(t *testing.T) {
 	issuer := oidctest.New(t)
-	key := issuer.PublishKey(t, "listener-issuer-down-key")
-	issuer.FailDiscovery(http.StatusServiceUnavailable)
-	binary := cmdtest.Build(t, "envoy-listener")
-	uri := testnats.URL(t)
-	pair := []string{"ENVOY_OIDC_ISSUER=" + issuer.URL(), "ENVOY_OIDC_AUDIENCE=" + listenerTestAudience}
-
-	cmd := exec.Command(binary)
-	cmd.Env = append([]string{
-		"PORT=0", "ENVOY_LISTEN_HOST=127.0.0.1", "ENVOY_MACHINE_ID=oidc-issuer-down", "NATS_URLS=" + uri,
-		"ENVOY_API_TOKEN=" + listenerTestToken,
-	}, pair...)
-	refused := refusedStart(t, cmd)
-	if output := refused.Output.String(); !strings.Contains(output, "oidc: discovering issuer "+issuer.URL()) {
-		t.Fatalf("the listener's refused start does not name the issuer %s that did not answer:\n%s", issuer.URL(), output)
-	}
-
-	issuer.FailDiscovery(0)
-	listener := startListenerProcess(t, binary, uri, "oidc-issuer-answers", pair...)
+	key := issuer.PublishKey(t, "listener-audience-key")
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), testnats.URL(t), "oidc-audience",
+		"ENVOY_OIDC_ISSUER="+issuer.URL(), "ENVOY_OIDC_AUDIENCE="+listenerTestAudience)
 	listener.waitHealthy(t)
-	sessions := "http://127.0.0.1:" + strconv.Itoa(listener.port) + "/v1/sessions"
+	base := "http://127.0.0.1:" + strconv.Itoa(listener.port)
+	for deadline := time.Now().Add(45 * time.Second); ; time.Sleep(250 * time.Millisecond) {
+		_, scraped := do(t, mustRequest(t, http.MethodGet, base+"/metrics"))
+		if strings.Contains(scraped, `envoy_listener_oidc_issuer_discovered{issuer="`+issuerCluster+`"} 1`+"\n") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the listener did not read its issuer %s within 45 s:\n%s", issuer.URL(), listener.Output.String())
+		}
+	}
 	for _, tc := range []struct {
 		name, audience string
 		want           int
@@ -141,10 +135,10 @@ func TestTheListenerBinaryRefusesToStartWhileItsIssuerDoesNotAnswer(t *testing.T
 		{"a token for the listener's audience", listenerTestAudience, http.StatusOK},
 		{"a token for Dispatch's audience", "dispatch", http.StatusUnauthorized},
 	} {
-		request := mustRequest(t, http.MethodGet, sessions)
+		request := mustRequest(t, http.MethodGet, base+"/v1/sessions")
 		request.Header.Set("Authorization", "Bearer "+issuer.Mint(t, key, issuer.Claims(listenerListedSubject, tc.audience)))
 		if status, body := do(t, request); status != tc.want {
-			t.Errorf("%s once the issuer answers: status %d %s, want %d", tc.name, status, body, tc.want)
+			t.Errorf("%s: status %d %s, want %d", tc.name, status, body, tc.want)
 		}
 	}
 }

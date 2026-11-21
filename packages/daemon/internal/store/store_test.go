@@ -39,7 +39,8 @@ import (
 // cycle in this package's test binary. internal/testpg/testdb imports no package of this module,
 // so this package's own tests take from it what every other package's tests take: DSN, whose skip
 // holds the whole recipe and the image to run and which fails the test on GitHub Actions, and
-// Drop, which waits an autovacuum worker out and is the one copy of that wait.
+// Drop, which waits out an autovacuum worker and a backend that has not exited yet and is the one
+// copy of that wait.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	return testdb.DSN(t)

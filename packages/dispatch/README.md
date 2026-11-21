@@ -454,6 +454,22 @@ It sources `e2e/acceptance/lib.sh`, a preamble that refuses an unset input or a 
 with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing
 it, unsetting both so no process the script starts inherits it.
 
+`e2e/acceptance/outside-edge-refusals.sh` is the HTTPS refusal check of an outside edge: it asks the
+edge's one IPv4 address, on 443, for each path and Host the edge must not forward, and reads
+whether one of the edge's routes took the request, by the `X-Outside-Edge-Backend` marker every
+route sets: an address that answers on 443 forwards by path and by Host there, which a TCP
+connect cannot see. It needs bash 3.2 or later, curl 8.4.0 or later, `mktemp`, and
+`sha256sum` or `shasum`, and reads PASS (exit 0), FAIL (exit 1) or UNKNOWN (exit 2):
+
+```bash
+OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
+  OUTSIDE_EDGE_REFUSALS=refusals.txt bash outside-edge-refusals.sh
+```
+
+[`e2e/acceptance/outside-edge-refusals.md`](e2e/acceptance/outside-edge-refusals.md) says what its
+inputs are, how it reads an answer, when a signal ends it, and what its three test files hold;
+`cd packages/dispatch && bun test e2e/__tests__/outside-edge-refusals` runs them.
+
 ## Acceptance run against the deployed image
 
 The `dispatch.acceptance.compose.yml` Compose file builds a Dispatch image from this tree and runs

@@ -122,7 +122,7 @@ func (r *liveRig) checkSetupNegative() error {
 		return err
 	}
 	c := r.claim("setup-negative")
-	r.mapRepository(r.env.repo)
+	r.cacheRepository(r.env.repo)
 	name := SandboxName(c.token)
 	cleaned := false
 	defer func() {

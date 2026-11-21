@@ -343,7 +343,7 @@ REACH = (
     "packages/envoy/internal/testnats/nats.go",
     "packages/envoy/internal/testpg/testpg.go",
     "packages/envoy/internal/tests3/seaweedfs.go",
-    "packages/envoy/cmd/agent-secrets/secret_moto_test.go",
+    "packages/envoy/cmd/cipher/secret_moto_test.go",
     "packages/envoy-client/src/__tests__/nats-server.ts",
     "scripts/e2e/lib/nats-stream.test.ts",
     ".github/scripts/dispatch-browser-visual-suite.sh",
@@ -362,7 +362,7 @@ IMAGE_FROM = {
         "each image is read from a Go string constant the caller's `consts:` input names "
         "(packages/daemon/internal/testnats/nats.go, packages/envoy/internal/testnats/nats.go, "
         "packages/envoy/internal/testpg/testpg.go, packages/envoy/internal/tests3/seaweedfs.go, "
-        "packages/envoy/cmd/agent-secrets/secret_moto_test.go), "
+        "packages/envoy/cmd/cipher/secret_moto_test.go), "
         "or comes from the `images:` input, which ci.yaml's envoy-smoke job fills with the FROM "
         "arguments of packages/envoy/docker/Dockerfile; every one of those files is in the reach "
         "above, and this check reads the references in them"
@@ -395,7 +395,11 @@ FETCHES_NOTHING = "a CI job runs it, and it fetches nothing"
 # installs a fake `docker` on PATH; the load test's cluster copy (packages/envoy/loadtest/cluster/),
 # whose cluster.test.sh the envoy-go-checks job runs with a fake `kubectl` on PATH, sources
 # cluster.sh, templates nats.yaml and runs render-nats.sh --pin-from, which takes each digest from
-# the committed nats.yaml; the images are pulled only by a cluster an operator points cluster.sh at.
+# the committed nats.yaml; the images are pulled only by a cluster an operator points cluster.sh at;
+# and the legacy-subjects gate (packages/envoy/scripts/legacy-subjects-gate.sh), whose
+# legacy-subjects-gate.test.sh the envoy-go-checks job runs with a fake `kubectl` on PATH, so the
+# nats-box digest the gate writes into its Job (the deployment's own moveImage pin) is pulled only
+# by the cluster an operator runs the gate against.
 EXCEPTIONS = {
     "docs/kubernetes.md": NO_CI_JOB,
     "docs/plans/2026-10-14-dispatch-gcp-plan.md": NO_CI_JOB,
@@ -415,6 +419,8 @@ EXCEPTIONS = {
     "packages/envoy/loadtest/cluster/render-nats.sh": FETCHES_NOTHING,
     "packages/envoy/loadtest/vm/vm.test.sh": FETCHES_NOTHING,
     "packages/envoy/loadtest/vm/deployment.example.json": FETCHES_NOTHING,
+    "packages/envoy/scripts/legacy-subjects-gate.sh": FETCHES_NOTHING,
+    "packages/envoy/scripts/legacy-subjects-gate.test.sh": FETCHES_NOTHING,
 }
 
 # ---------------------------------------------------------------- reference grammar

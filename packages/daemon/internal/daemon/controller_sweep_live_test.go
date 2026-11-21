@@ -7,7 +7,8 @@
 // the keeper launches the controller reads them, and the store holds the controller's claim
 // launching, as the supervisor stores it before the launch begins. What the test stands in for lies
 // outside the sweep: the agent is a sleep stub (no model, Dispatch or NATS), the App tokens are
-// placeholders, the shared public leak check is the rig's stand-in, and no repository is mapped.
+// placeholders, the shared public leak check is the rig's stand-in, and no record names a
+// repository.
 package daemon
 
 import (

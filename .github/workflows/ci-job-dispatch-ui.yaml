@@ -60,6 +60,11 @@ jobs:
       - name: Typecheck dispatch dashboard
         run: bun run typecheck
         working-directory: packages/dispatch
+      # e2e/__tests__/outside-edge-refusals-input.test.ts runs the edge-refusal check under zsh,
+      # which must refuse to run and name bash, and skips that row where zsh is missing; the runner
+      # image has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh).
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
       # `bun run test` leaves out the three files of e2e/__tests__ whose rows need a PostgreSQL:
       # psql-session.test.ts and the psql row of harness-stacks.test.ts, which read a server
       # LEGION_TEST_PG_DSN names, and second-global-setup.test.ts, which starts two stacks'
