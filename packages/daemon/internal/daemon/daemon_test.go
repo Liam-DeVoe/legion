@@ -160,7 +160,7 @@ func randomSuffix(t *testing.T) string {
 // at bind time; the daemon still ends up serving a real, dialable address.
 func TestThePortsHandedToADaemonCannotBeTakenBeforeItBinds(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
-	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
+	onKubernetes(t, &cfg)
 	address := net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port))
 	if thief, err := net.Listen("tcp", address); err == nil {
 		_ = thief.Close()

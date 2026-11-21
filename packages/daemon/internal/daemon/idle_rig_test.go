@@ -165,7 +165,8 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 		Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
 		SessionStore: ompsessions.Store{Kind: ompsessions.StoreCloudSQLIAM,
 			Database: ompsessions.Database{Instance: "legion-test:us-central1:sessions", Name: idleRigDatabase(t, pool), User: idleRigUser(t, pool)}},
-		IdleRelease: config.IdleReleaseConfig{IdleMinutes: idleRigIdleMinutes, BackstopMinutes: idleRigBackstopMinutes},
+		IdleRelease:  config.IdleReleaseConfig{IdleMinutes: idleRigIdleMinutes, BackstopMinutes: idleRigBackstopMinutes},
+		AgentSecrets: stubBroker(t),
 	}}
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {

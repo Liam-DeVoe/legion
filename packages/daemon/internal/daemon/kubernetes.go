@@ -358,12 +358,8 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, cred
 	if err != nil {
 		return sandbox.Options{}, err
 	}
-	// Nil only for a Kubernetes block built by hand with no agent_secrets, as the daemon test rigs
-	// that boot with no broker build one: the loader never yields one, and sandbox.New refuses it.
-	var agentSecrets *sandbox.AgentSecrets
-	if a := k.AgentSecrets; a != nil {
-		agentSecrets = &sandbox.AgentSecrets{URL: a.URL, Audience: a.Audience, TokenExpiry: time.Duration(a.TokenExpirySeconds) * time.Second, ExchangeAudience: a.ExchangeAudience}
-	}
+	a := k.AgentSecrets
+	agentSecrets := &sandbox.AgentSecrets{URL: a.URL, Audience: a.Audience, TokenExpiry: time.Duration(a.TokenExpirySeconds) * time.Second, ExchangeAudience: a.ExchangeAudience}
 	cache, err := repositoryCache(k.RepositoryCache)
 	if err != nil {
 		return sandbox.Options{}, err
@@ -478,12 +474,11 @@ func providersSecrets(cfg config.Config, lookup func(string) (string, bool)) []s
 // which registers each role's session for its pod. The client itself is returned too,
 // read-only, so the state route can show the login's current status (source.State,
 // cipher.Client.LoginStatus). Never part of launchSecrets, so no pod is ever handed the
-// daemon's key, token or credential. Nil, nil, nil under runtime: tmux, which enrolls nothing, and
-// for a Kubernetes block with no agent_secrets: the loader never yields one (checkKubernetesKeys),
-// but the daemon test rigs that boot runtime: kubernetes with no broker build one by hand.
+// daemon's key, token or credential. Nil, nil, nil under runtime: tmux, which enrolls nothing;
+// runtime: kubernetes always names the block (config's checkKubernetesKeys).
 func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, supervise.Registrar, *cipher.Client) {
 	k := cfg.Runtime.Kubernetes
-	if k == nil || k.AgentSecrets == nil {
+	if k == nil {
 		return nil, nil, nil
 	}
 	// Every call this client makes to the broker carries a Proof header of its own, so a 3xx

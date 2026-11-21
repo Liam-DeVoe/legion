@@ -42,17 +42,30 @@ import (
 )
 
 // kubernetesConfig is testConfig under runtime: kubernetes, its client a kubeconfig whose current
-// context points at server, and every role's reservation at the loader's defaults, as a loaded
-// configuration holds them.
+// context points at server, every role's reservation at the loader's defaults, the secrets broker
+// the loader requires there with the daemon pod's identity at it (stubBroker), and a listener that
+// answers the boot's role lookup (roleListener), as a loaded configuration and a daemon pod hold
+// them.
 func kubernetesConfig(t *testing.T, server string) config.Config {
 	t.Helper()
 	cfg := testConfig(t)
+	cfg.EnvoyURL = roleListener(t)
 	cfg.Runtime = config.Runtime{Name: "kubernetes", Kubernetes: &config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Kubeconfig: writeKubeconfig(t, server, "test"),
 		Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+		AgentSecrets: stubBroker(t),
 	}}
 	return cfg
+}
+
+// onKubernetes moves cfg to runtime: kubernetes as kubernetesConfig builds it, keeping everything
+// else of cfg: the runtime block, its broker with the daemon pod's identity, and the listener that
+// answers the boot's role lookup.
+func onKubernetes(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	k := kubernetesConfig(t, "https://127.0.0.1:1")
+	cfg.Runtime, cfg.EnvoyURL = k.Runtime, k.EnvoyURL
 }
 
 // defaultReservations are both pods' container requirements at the daemon's defaults, translated as
@@ -355,7 +368,7 @@ func TestAKubernetesDaemonServesItsWorkerStreamOnTCPAndRunsNoHostPaneMachinery(t
 			}
 		})
 	})
-	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
+	onKubernetes(t, &cfg)
 	tokens := &workflowTokenRecorder{}
 	record := &built{}
 	o := fakeRuntime(fake.NewRuntime(), record)
@@ -498,7 +511,7 @@ func TestShimAddressSubstitutesAdvertiseHostsHostKeepingTheBoundPort(t *testing.
 // port reaches it: the port is the stream listener's own.
 func TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
-	cfg.Runtime = kubernetesConfig(t, "https://127.0.0.1:1").Runtime
+	onKubernetes(t, &cfg)
 	cfg.Bind, cfg.AdvertiseHost = "0.0.0.0", "legion-daemon-legsmoke.legion.svc"
 	cfg.Port = holdPortOn(t, "0.0.0.0")
 	cfg.DaemonURL = "http://127.0.0.1:" + strconv.Itoa(cfg.Port)
@@ -643,6 +656,7 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 	k := config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+		AgentSecrets: stubBroker(t),
 	}
 	want := []string{"/bin/sh", "-c", "omp plugin install agent-skills"}
 	k.Setup = want
@@ -673,6 +687,7 @@ func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
 	k := config.Kubernetes{
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+		AgentSecrets: stubBroker(t),
 	}
 	k.Sandbox = config.SandboxConfig{
 		Type: config.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
