@@ -701,6 +701,11 @@ func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	}
 	urls := make([]string, 0, len(read))
 	for index, raw := range read {
+		// A comma first, so an entry that lists two servers, or a credential holding a comma, gets
+		// the comma's reason, which says how to write it, whatever else of it would not parse.
+		if strings.Contains(raw, ",") {
+			return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, index+1, natsurl.CommaReason)
+		}
 		if _, err := endpointURL(raw, key); err != nil {
 			return nil, fmt.Errorf("%s entry %d%s", key, index+1, strings.TrimPrefix(err.Error(), key))
 		}

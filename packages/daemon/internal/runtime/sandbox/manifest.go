@@ -1181,21 +1181,24 @@ func (r *Runtime) providersEntries() []string {
 	return entries
 }
 
-// providersEntryOf is the setting whose key of the providers Secret is key, by providersEntries'
-// names, or "" when none is.
+// providersEntryOf is the settings whose key of the providers Secret is key, by providersEntries'
+// names, sorted and joined with " and ", so two provider_keys variables that read one key are
+// both named the same way each run; or "" when none is.
 func (r *Runtime) providersEntryOf(key string) string {
+	var entries []string
 	for variable, secretKey := range r.providerKeys {
 		if secretKey == key {
-			return "provider_keys." + variable
+			entries = append(entries, "provider_keys."+variable)
 		}
 	}
 	if slices.Contains(r.providersSecrets, key) {
-		return key
+		entries = append(entries, key)
 	}
 	if dsn := r.sessionStore.DSNSecretKey(); dsn != "" && dsn == key {
-		return "runtime.kubernetes.session_dsn_secret"
+		entries = append(entries, "runtime.kubernetes.session_dsn_secret")
 	}
-	return ""
+	slices.Sort(entries)
+	return strings.Join(entries, " and ")
 }
 
 // sessionDSNPointer is OMP_SESSION_SQL_DSN_FILE naming the mounted session database URL, none

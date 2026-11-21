@@ -1158,6 +1158,14 @@ func TestLoadRefuses(t *testing.T) {
 			want: `nats_urls entry 1 cannot be read: it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`,
 		},
 		{
+			// Two servers with a space after the comma, which endpointURL alone refuses as no valid
+			// URL: the comma is tested first, so the reason still says how to list them.
+			name: "nats_urls entry that lists two servers with a space after the comma",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222, nats://127.0.0.1:4223"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
 			// A websocket entry whose path stops parsing once decoded, as the NATS client's handshake
 			// decodes it: it loaded before and the daemon's connect then refused it; the loader now
 			// refuses it with natsurl's reason.

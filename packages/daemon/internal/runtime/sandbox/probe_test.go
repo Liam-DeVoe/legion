@@ -1041,6 +1041,17 @@ func TestProbeImageRefusesAProvidersSecretThePodCannotMount(t *testing.T) {
 	}
 }
 
+// Two provider_keys variables that read one key of the providers Secret are both named, sorted, so
+// the refusal is the same on every run, whatever order the map yields them in.
+func TestAMissingKeyNamesEveryVariableThatReadsIt(t *testing.T) {
+	r := &Runtime{providerKeys: map[string]string{"OPENAI_API_KEY": "shared", "ANTHROPIC_API_KEY": "shared", "GEMINI_API_KEY": "gemini"}}
+	for range 20 {
+		if got := r.providersMountFault(missingSecretKey + "shared"); got != "the kubelet reports the Secret holds no key for provider_keys.ANTHROPIC_API_KEY and provider_keys.OPENAI_API_KEY" {
+			t.Fatalf("providersMountFault = %q", got)
+		}
+	}
+}
+
 // An operator volume the kubelet cannot mount — a ConfigMap or Secret runtime.kubernetes.pod.volumes
 // gives the pod — leaves the probe pod Pending, never Failed: a FailedMount event saying the
 // ConfigMap or Secret, or one of the keys the volume asks of it, is missing is the answer, a
