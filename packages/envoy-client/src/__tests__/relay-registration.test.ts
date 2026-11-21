@@ -10,7 +10,7 @@ import { NoRelaySubjectError, registerWithRelay } from "../relay-registration";
 import { EnvoyApiError } from "../transport";
 
 const AGENT = "notifications.agent.ses_a";
-const ISSUE_TOPIC = "notifications.dispatch.issue.INFRA-1.>";
+const ISSUE_TOPIC = "notifications.dispatch.issue.DSP-1.>";
 
 describe("one registration", () => {
   const UNCAPTURED = "notifications.team";
@@ -49,7 +49,7 @@ describe("one registration", () => {
       relay,
       ownAgentSubject: AGENT,
       // The bare base a stored row or a transcript brings back: the listener stores it for no
-      // session and warns about it, so it never goes out (INFRA-771 review).
+      // session and warns about it, so it never goes out.
       followed: [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
       outage: inboundUnavailable(
         (why) => told.push(why),
