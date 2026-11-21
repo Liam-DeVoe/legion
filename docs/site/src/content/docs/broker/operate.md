@@ -1071,12 +1071,19 @@ checks (revoked, expired, its proof) and before it opens a transaction:
   15 seconds;
 - a decision on the approval page, answering a `403` page that decides nothing;
 - introspection, which answers the token active with `held: true`, so Dispatch and the Envoy
-  listener refuse it `401 MEMBERSHIP_HELD`.
+  listener refuse it `401 MEMBERSHIP_HELD`;
+- a session's connection to the NATS hub, where the broker runs the hub's auth service: it is
+  refused, counted under the reason `membership_held`, and so is one whose person's not-held answer
+  has passed its deadline (`deadline_passed`) or whose hold cannot be read (`hold_uncheckable`, not
+  `broker_unreachable`). A connection admitted before a deadline expires at it, if that comes
+  before its token's expiry; a connection already open when the hold begins stays open until its
+  user expires, at its token's expiry, at most an hour.
 
-Each refusal names the person and what ends the hold: "`<person>`'s credentials are held by
-Dispatch; they work again when `<person>` signs in to Dispatch, or when Dispatch can confirm
-`<person>` with Google again", or, with `BROKER_HOLD_REQUIRES_DEADLINE` set, "Google's Workspace
-Directory no longer confirms `<person>`; their credentials work again once it does".
+Each refusal but the NATS hub's, whose words name no person, names the person and what ends the
+hold: "`<person>`'s credentials are held by Dispatch; they work again when `<person>` signs in to
+Dispatch, or when Dispatch can confirm `<person>` with Google again", or, with
+`BROKER_HOLD_REQUIRES_DEADLINE` set, "Google's Workspace Directory no longer confirms `<person>`;
+their credentials work again once it does".
 
 Not refused: the upkeep that keeps a held credential alive (a machine login's refresh grant and a
 session's lease renewal), so no login lapses and no session ends because of a hold; the calls that
