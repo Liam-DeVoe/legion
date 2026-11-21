@@ -3223,6 +3223,12 @@ label `dispatch-loadtest/run=<run id>`. The copy holds the harness's synthetic s
 replay, INFRA-639's seed of LINUX (The replay on the copy, below). It takes no production
 credential: every token and password is random and made for the run.
 
+Dispatch serves `/metrics` at `DISPATCH_METRICS_ADDR` (`:6062`, the Service `dispatch-metrics`),
+and every `loadgen` command of the copy is given it as `-metrics`, so each step's `samples.json`
+and tables carry the per-pool and admission series (admitted units in flight, the queues, the
+request pool's in-use and waiting). A Dispatch build without that setting serves nothing there,
+and those columns stay empty for its steps.
+
 ### Prerequisites
 
 - **A namespace.** `--namespace` names it on every subcommand. There is no default: a Legion pod's
@@ -3275,7 +3281,7 @@ credential: every token and password is random and made for the run.
   their own (the heartbeat once the lock is gone, the sampler once that heartbeat is). A
   `state.json` from before `pid_ns` is not checked.
 - **The quota.** The copy at the 16-vCPU tier requests 47.2 CPUs, 121.25Gi of memory, 14.25Gi of
-  ephemeral storage, 8 pods, 6 Services, and 4 claims on `--storage-class`: NATS's three of 20Gi
+  ephemeral storage, 8 pods, 7 Services, and 4 claims on `--storage-class`: NATS's three of 20Gi
   (60Gi) and Postgres's data volume, `up --pg-volume` (default `100Gi`), 160Gi in all. The
   namespace's quota allows `requests.storage` 300Gi over 10 claims, so `up` refuses a
   `--pg-volume` above 240Gi. At the

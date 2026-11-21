@@ -864,7 +864,9 @@ loadgen_local() { LOADTEST_ROOT=$RUN_DIR "$LOADGEN" "$@"; }
 # JOB.<random>, so two starts of one job name, of this command or of another one of the run, never
 # share one. The three credentials are their -…-file forms, naming the files runner_start -c and
 # replay_checksum write there (RUNNER_CREDENTIALS), so no credential is an argument of kubectl here
-# or of anything in the runner pod.
+# or of anything in the runner pod. -metrics is Dispatch's DISPATCH_METRICS_ADDR
+# (manifests/dispatch.yaml), whose series each step's samples.json reads; a build that serves none
+# leaves those samples' metrics empty.
 endpoints() {
   JOB_SECRETS=$RUNNER_SECRETS/$1.$(random_hex 8)
   [[ $JOB_SECRETS =~ ^/work/secrets/[A-Za-z0-9._-]+$ ]] || die "the runner job name '$1' is not letters, digits, '.', '_' and '-' alone"
@@ -872,7 +874,8 @@ endpoints() {
     -url "http://dispatch.$NS.svc:8766" -token-file "$JOB_SECRETS/dispatch-token"
     -listener "http://listener.$NS.svc:9020" -listener-token-file "$JOB_SECRETS/listener-token"
     -nats "nats://nats.$NS.svc:4222" -nats-mon "http://nats-0.nats-headless.$NS.svc:8222"
-    -pprof "http://dispatch-pprof.$NS.svc:6061" -pg-file "$JOB_SECRETS/pg-url" -nats-server-name nats-0
+    -pprof "http://dispatch-pprof.$NS.svc:6061" -metrics "http://dispatch-metrics.$NS.svc:6062"
+    -pg-file "$JOB_SECRETS/pg-url" -nats-server-name nats-0
   )
 }
 

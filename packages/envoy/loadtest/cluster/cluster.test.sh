@@ -1645,7 +1645,8 @@ grep -qF 'stored-order: open database: failed to connect' "$run_dir/steps/r16/st
 start=$(grep '^replay-r16 ' "$fake/runner-starts") || fail "replay r16 started no loadgen run in the runner"
 for want in "env LOADTEST_ROOT=/work/root LOADTEST_GOMAXPROCS=16 /work/loadgen run -allow-foreign -source replay " \
   "-events 0 -requests 0 -replay-inputs /work/bundle -replay-rate 1 -replay-from 0 -replay-to 39m -rng-seed 1 -warmup 30s " \
-  "-copy-meta /work/meta/r16.json" "-pprof http://dispatch-pprof.$ns.svc:6061" "-nats-server-name nats-0"; do
+  "-copy-meta /work/meta/r16.json" "-pprof http://dispatch-pprof.$ns.svc:6061" "-metrics http://dispatch-metrics.$ns.svc:6062" \
+  "-nats-server-name nats-0"; do
   [[ $start == *"$want"* ]] || fail "replay r16's loadgen run lacks '$want': $start"
 done
 [[ $start =~ \ -token-file\ (/work/secrets/replay-r16\.[0-9a-f]+)/dispatch-token\  ]] || fail "replay r16's loadgen run has no -token-file of a directory of its own: $start"
