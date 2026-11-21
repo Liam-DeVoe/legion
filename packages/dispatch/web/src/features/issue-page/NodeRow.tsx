@@ -38,8 +38,9 @@ import { useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { usePlainHeadline } from "../refs/plain-text";
 import { ReferenceHostIs } from "../refs/reference-host";
-import { blockLineReading, useReadingName } from "../refs/reference-names";
+import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference, referenceHref } from "../refs/routes";
+import { referenceTargetKind } from "../refs/target-id";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import type { PointMark } from "./current-point";
@@ -47,20 +48,11 @@ import { DecisionActions } from "./DecisionActions";
 import { useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
-import {
-  chipName,
-  drawnLine,
-  firstLineOf,
-  isStatement,
-  lineReading,
-  type NodeAnswer,
-  type NodeChip,
-  type ParentLine,
-  type TreeNode,
-} from "./issue-tree";
+import { chipName, isStatement, type NodeAnswer, type NodeChip, type TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
+import { FirstLine, ParentLink } from "./node-line";
 import { documentWord } from "./node-row-chip";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
@@ -462,61 +454,6 @@ export function NodeRow({
         {threadRead === undefined || oneLine ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>
-  );
-}
-
-/**
- * A node's one line (R1), as every place that draws one draws it - a folded branch's line, a
- * parent's line under a filter and a crumb above a zoom (`IssueTree.tsx`): its node's first line,
- * projected from its words by the shared plain-text projection (`lineReading`) and cut by R1's
- * first-line rule (`firstLineOf`), with an ellipsis only where the cut ended inside a sentence
- * (`drawnLine`), so a heading never runs into the paragraph after it. A reference in it reads as
- * the same reference in the node's row does (`RowText.tsx`): as its target's current name once it
- * resolves, and as the words its author wrote until then (R8, INFRA-1196 decision 350); and a
- * numbered step keeps its number (decisions 66 and 88). The issue's own line is its key, which
- * the page writes before its projected title and R1's rule reads a label after
- * (`LineReading.key`). Each role is read by the issue the node's record is on. `line` is
- * `undefined` until the projection has answered, which is one pre-paint commit on a page whose
- * engine is loaded, and `""` for a node whose words hold none.
- * `reads` draws nothing and the caller mounts it where it draws the line.
- */
-export function useNodeLine(
-  node: Pick<TreeNode, "id" | "source" | "text" | "tree" | "type">,
-  {
-    surface,
-  }: { readonly surface: "node-row-first-line" | "node-row-parent-line" | "outline-crumb" }
-): { line: string | undefined; reads: ReactNode } {
-  const { id, source, text: stored, tree, type } = node;
-  const reading = useMemo(
-    () => lineReading({ id, text: stored, tree, type }),
-    [id, stored, tree, type]
-  );
-  const { reads, text } = usePlainHeadline(
-    "tree" in reading ? reading.tree : undefined,
-    "markdown" in reading ? reading.markdown : undefined,
-    { firstLine: "markdown" in reading, issue: source?.issue, surface }
-  );
-  const words = "none" in reading ? "" : text?.text;
-  const key = "key" in reading ? reading.key : undefined;
-  const line = words === undefined || key === undefined ? words : `${key} ${words}`.trimEnd();
-  return { line: line === undefined ? undefined : drawnLine(firstLineOf(line, key)), reads };
-}
-
-/** The words a place that names a node by its one line draws where it must name it by
- *  something (`ParentLink`): the line (`useNodeLine`), and the page's word for the node's kind
- *  where its words hold none (R22). Nothing until the projection has answered. */
-export function lineOrKindWord(line: string | undefined, type: NodeType): string {
-  return line === "" ? NODE_TYPE_NAMES[type] : (line ?? "");
-}
-
-/** A folded branch's one line (`useNodeLine`): empty until the projection has answered. */
-function FirstLine({ node }: { node: TreeNode }): ReactNode {
-  const { line, reads } = useNodeLine(node, { surface: "node-row-first-line" });
-  return (
-    <span data-node-first-line="" {...authorText}>
-      {reads}
-      {line ?? ""}
-    </span>
   );
 }
 
@@ -1289,8 +1226,9 @@ export function NodeEdges({
  * Stand the harness up." keeps its number (decisions 66 and 88); a party by its own name (R5),
  * its role read by the issue the node's record is on (`issue`); and an issue by its key and
  * title. A block is the one target a chip names by other words than a link does: by the first
- * block of its words that holds any, from the reading the chip carries (`blockLineReading`),
- * projected as the page's names are (`useReadingName`), so a decision's chip is its heading. A
+ * block of its words that holds any, the line the names store projects beside the block's name
+ * from the reading the page published for it (`KnownReferences.lines`), as a block drawn as a
+ * chip in place in a node's words reads it (`RowText.tsx`), so a decision's chip is its heading. A
  * chip whose target has no name yet draws nothing until it has one - "the names come last and
  * all at once" (`useIssueTree.ts`) - which the projection's own answer says
  * (`MarkdownHeadline.named`): a chip draws no address.
@@ -1319,16 +1257,21 @@ function Chip({
   const carried =
     chip.reading !== undefined && "words" in chip.reading ? chip.reading.words : undefined;
   const word = anyDocument === undefined ? undefined : (carried ?? anyDocument);
-  // A block by its first block of words, from the reading the chip carries, with no read made.
-  const lineReading = useMemo(
-    () => (ambiguous || gone ? undefined : blockLineReading(chip.ref, chip.reading)),
-    [ambiguous, chip.reading, chip.ref, gone]
-  );
-  const line = useReadingName(lineReading, Number.POSITIVE_INFINITY);
+  // A block by its first block of words, the line the store projected from the reading the page
+  // published for it, which the chip carries: such a chip waits on that line and reads nothing.
+  const { lines } = useKnownReferences();
+  const blockLine =
+    !ambiguous &&
+    !gone &&
+    target !== undefined &&
+    referenceTargetKind(target) === "block" &&
+    chip.reading !== undefined &&
+    "tree" in chip.reading;
+  const line = blockLine ? lines.get(chip.ref) : undefined;
   // The address as one text run, which the projection reads as the reference it is.
   const address = useMemo(() => titleReading(chip.ref), [chip.ref]);
   const { reads, text } = usePlainHeadline(
-    ambiguous || gone || word !== undefined || lineReading !== undefined ? undefined : address,
+    ambiguous || gone || word !== undefined || blockLine ? undefined : address,
     undefined,
     { issue, surface: "node-row-chip" }
   );
@@ -1374,36 +1317,6 @@ function Chip({
         </Link>
       )}
     </span>
-  );
-}
-
-/** The parent's own first line, as every one line of a node is drawn (`useNodeLine`), and the
- *  page's word for its kind where its words hold none (R22): as the link a reader follows to
- *  that node where the model gives it an address (R18, and R26: a step's row reaches the
- *  statement it serves), and as words with no link where that address names a person, whom no
- *  page shows (R5). Out of the tab order, as every other control inside a row is, unless
- *  `tabStops` holds: `f` steps to it and Enter follows it. */
-function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
-  const parent = line.reference === undefined ? undefined : parseNodeReference(line.reference);
-  const href = parent === undefined ? undefined : referenceHref(parent);
-  const { line: drawn, reads } = useNodeLine(line, { surface: "node-row-parent-line" });
-  // Nothing until the projection answers, one pre-paint commit on a page whose engine is loaded.
-  const words = lineOrKindWord(drawn, line.type);
-  return href === undefined ? (
-    <span className="min-w-0 break-words" {...authorText}>
-      {reads}
-      {words}
-    </span>
-  ) : (
-    <Link
-      className={`dispatch-inline-link min-w-0 break-words underline decoration-page-bullet underline-offset-[3px] ${pageQuietText}`}
-      tabIndex={tabStops ? undefined : -1}
-      to={href}
-      {...authorText}
-    >
-      {reads}
-      {words}
-    </Link>
   );
 }
 
