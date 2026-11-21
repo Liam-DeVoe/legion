@@ -2,12 +2,14 @@ package supervise
 
 // What would let a live process go while its held stop waits for the copy its turn's end started
 // (R1 of dispatch://INFRA-1117): a stale-plugin relaunch, a stale address, the turn of a wake the
-// pacing parked over that process, and the agent's ready said again. Each would run or end the
-// held stop while the copy still asks the process's shim, so each waits for that copy as the stop
-// does.
+// pacing parked over that process, the agent's ready said again, the stall backstop over a turn
+// the agent started since, and a registration on another plugin contract. Each would run or end
+// the held stop while the copy still asks the process's shim, so each waits for that copy as the
+// stop does.
 
 import (
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -144,6 +146,63 @@ func TestAReadySaidAgainWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 
 	h.must(RequestReady{Claim: h.token, Generation: h.generation(), Session: session})
 
+	waitsOnItsProcess(t, h, loc)
+	stopsAfterTheCopy(t, h, copies, loc)
+}
+
+// The agent can start a turn of its own while its held stop waits for the copy of the turn before
+// it, and the copy's end then leaves the stop to this turn's end (endTurnCopyWait). The stall
+// backstop over this turn replaces the process, which ends the hold (endHeld) while the copy still
+// asks the process's shim. So the backstop leaves the turn alone while the stop waits for the
+// copy, and the sweep's next post, once the copy has ended, ends the stalled turn as before. The
+// bound the backstop carries is the daemon's to choose; a short one here reaches the wait.
+//
+// The control is the backstop acting whatever the stop waits for: the claim is then suspended at
+// the first post, while the copy is still being taken, and the test fails there.
+func TestTheStallBackstopWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
+	h, copies, loc := copyWaiting(t)
+	h.must(StreamTurnStart{Claim: h.token})
+	h.stepped("bash", "toolu_own_turn_0", toolArgs, false)
+	last := h.clock.Now()
+	h.advance(2 * time.Minute)
+	backstop := StallBackstop{Claim: h.token, Bound: time.Minute, Deadline: last.Add(time.Minute), Step: h.store.step(h.token)}
+
+	h.must(backstop)
+
+	h.wantState(StateWorking)
+	h.wantCalls("Suspend", 0)
+	if c := h.claim(); !c.SuspensionHeld || c.Locator == nil || *c.Locator != loc {
+		t.Fatalf("the claim is %+v, want it working on its process %+v, holding the stop that waits for the copy", c, loc)
+	}
+	h.must(copies.copied(t, 0))
+	h.wantState(StateWorking)
+	h.wantCalls("Suspend", 0)
+
+	h.must(backstop)
+
+	h.wantState(StateSuspended)
+	h.wantCalls("Suspend", 1)
+}
+
+// A registration on another plugin contract over a live claim relaunches its process onto this
+// daemon's plugin (staleRegistration), which ends a held stop (endHeld) while the copy still asks
+// the process's shim. While the stop waits for the copy the registration is refused as stale and
+// nothing is relaunched: the copy's end runs the stop, which takes the stale process with it.
+//
+// The control is the relaunch made whatever the stop waits for: the claim is then suspended at the
+// registration, while the copy is still being taken, and the test fails there.
+func TestAStaleRegistrationWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
+	h, copies, loc := copyWaiting(t)
+	stale := h.claim().PluginContract
+	h.deps.PluginContract, h.m.deps.PluginContract = refreshContract, refreshContract
+	h.m.deps.PluginRelaunchable = true
+
+	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
+		CapabilityHash: []byte("capability"), PluginContract: stale})
+
+	if err == nil {
+		t.Fatal("the registration on another plugin contract was answered nil, want it refused as stale")
+	}
 	waitsOnItsProcess(t, h, loc)
 	stopsAfterTheCopy(t, h, copies, loc)
 }

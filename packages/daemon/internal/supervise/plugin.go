@@ -509,6 +509,15 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "due", m.wake.at)
 		return claim.StalePluginContract(got, m.deps.PluginContract)
 	}
+	// A held stop that waits for the copy its turn's end started takes this process at the copy's
+	// end or the wait's bound (waitForTurnCopy), and its let-go ends the stale process with it, so
+	// the claim's next launch is a resume onto this daemon's plugin. A relaunch here would end that
+	// hold now (relaunchStale, replaceNow, endHeld), while the copy still asks the process's shim.
+	if m.stopWaitsForTurnCopy() {
+		m.log.Info("supervise: a registration on another plugin contract reached a claim whose held stop waits for the copy of its turn's end; that stop takes this process and nothing is relaunched or charged here",
+			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "copy", m.turnCopy.seq)
+		return claim.StalePluginContract(got, m.deps.PluginContract)
+	}
 	var err error
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
 		err = m.relaunchAfterFailure(ctx, CauseStalePlugin, endStalePlugin)
