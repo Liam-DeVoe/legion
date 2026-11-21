@@ -1,5 +1,10 @@
 package replay
 
+import (
+	"fmt"
+	"strings"
+)
+
 // Branch is one value of each knob of a replay that the record does not give, so that a result
 // that rests on one is run under each of its values and read side by side. A knob's values are
 // words, each named below with the assumption of the spec it stands for. The slowdown factor f,
@@ -40,4 +45,27 @@ var MainBranch = Branch{
 	FirstStarts:   "recorded",
 	NeverStarted:  "none",
 	Merges:        "fitted",
+}
+
+// BranchNamed is the branch name names: "main", the main branch, or "main+<knob>=<value>", the
+// main branch with the one knob whose JSON name is <knob> set to <value>. It refuses any other
+// name, and a knob no Branch holds.
+func BranchNamed(name string) (Branch, error) {
+	branch := MainBranch
+	if name == MainBranch.Name {
+		return branch, nil
+	}
+	change, ok := strings.CutPrefix(name, MainBranch.Name+"+")
+	knob, value, set := strings.Cut(change, "=")
+	if !ok || !set || value == "" {
+		return Branch{}, fmt.Errorf("replay: the branch %q is neither main nor main+<knob>=<value>", name)
+	}
+	knobs := map[string]*string{"timing": &branch.Timing, "answer": &branch.Answer, "afterSendBack": &branch.AfterSendBack,
+		"firstStarts": &branch.FirstStarts, "neverStarted": &branch.NeverStarted, "merges": &branch.Merges}
+	field, known := knobs[knob]
+	if !known {
+		return Branch{}, fmt.Errorf("replay: the branch %q names no knob of a replay's branch", name)
+	}
+	*field, branch.Name = value, name
+	return branch, nil
 }

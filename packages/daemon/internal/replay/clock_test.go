@@ -77,9 +77,16 @@ func TestReplayWritesNoWallClockTime(t *testing.T) {
 		read++
 		var count int64
 		var earliest, latest *time.Time
+		// A column declared `default '0001-01-01 00:00:00+00'` holds that value for "no time yet", the
+		// daemon's own sentinel (a phase not completed, a pull request whose review was never seen):
+		// it is no clock's reading, so it is left out; every other value must be the simulated clock's.
+		noTime := ""
+		if column.zeroDefault {
+			noTime = ` and ` + pgx.Identifier{column.name}.Sanitize() + `::timestamptz <> '0001-01-01 00:00:00+00'::timestamptz`
+		}
 		if err := conn.QueryRow(ctx, fmt.Sprintf(`select count(*), min(%[2]s::timestamptz), max(%[2]s::timestamptz) from %[1]s
-			where %[2]s::timestamptz < $1 or %[2]s::timestamptz > $2`,
-			pgx.Identifier{column.table}.Sanitize(), pgx.Identifier{column.name}.Sanitize()), low, high).Scan(&count, &earliest, &latest); err != nil {
+			where (%[2]s::timestamptz < $1 or %[2]s::timestamptz > $2)%[3]s`,
+			pgx.Identifier{column.table}.Sanitize(), pgx.Identifier{column.name}.Sanitize(), noTime), low, high).Scan(&count, &earliest, &latest); err != nil {
 			t.Fatalf("read %s.%s: %v", column.table, column.name, err)
 		}
 		if count > 0 {
@@ -120,16 +127,21 @@ func TestReplayWritesNoWallClockTime(t *testing.T) {
 	}
 }
 
-// timeColumn is one column of a table of the replay's database.
+// timeColumn is one column of a table of the replay's database, and whether the migrations declare
+// it with the year-1 default that stands for "no time yet" (zeroDefault).
 type timeColumn struct {
 	table, name string
+	zeroDefault bool
 }
 
 // timeColumns is every timestamp and timestamptz column of every table of conn's schema, read
-// from information_schema.columns, so the list is the database's and not this test's.
+// from information_schema.columns, so the list is the database's and not this test's; a column
+// whose declared default is the year-1 instant is marked zeroDefault.
 func timeColumns(t *testing.T, conn *pgx.Conn) []timeColumn {
 	t.Helper()
-	rows, err := conn.Query(context.Background(), `select c.table_name, c.column_name from information_schema.columns c
+	rows, err := conn.Query(context.Background(), `select c.table_name, c.column_name,
+			coalesce(c.column_default like '''0001-01-01 00:00:00%', false)
+		from information_schema.columns c
 		join information_schema.tables tables on tables.table_schema = c.table_schema and tables.table_name = c.table_name
 		where c.table_schema = current_schema() and tables.table_type = 'BASE TABLE'
 			and c.data_type in ('timestamp with time zone', 'timestamp without time zone')
@@ -139,7 +151,7 @@ func timeColumns(t *testing.T, conn *pgx.Conn) []timeColumn {
 	}
 	columns, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (timeColumn, error) {
 		var column timeColumn
-		err := row.Scan(&column.table, &column.name)
+		err := row.Scan(&column.table, &column.name, &column.zeroDefault)
 		return column, err
 	})
 	if err != nil {

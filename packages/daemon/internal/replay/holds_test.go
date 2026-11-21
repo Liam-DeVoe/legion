@@ -298,7 +298,7 @@ func designGateWindow(t *testing.T) Window {
 	b.registered(clock(9, 20), "ACME-1", false)
 	b.approves(clock(10, 20), "ACME-1", "")
 	b.info(clock(10, 20), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-1", "tree", "ACME-1",
-		"generation", 1, "children", []string{"ACME-2"})
+		"generation", 1, "children", 1)
 	b.info(clock(10, 20), "workflow: design gate opened", "issue", "ACME-1", "artifact", b.artifact("ACME-1"), "event", "approved", "version", 1)
 	b.slotReleased(clock(10, 20), "ACME-1")
 	b.childStarts(clock(10, 20), "ACME-2")
@@ -340,9 +340,9 @@ func childrenFirstWindow(t *testing.T) Window {
 	b.turnEnds(clock(9, 20), "ACME-1", claim.RoleArchitect)
 	b.registered(clock(9, 20), "ACME-1", true)
 	b.info(clock(9, 20), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-1", "tree", "ACME-1",
-		"generation", 1, "children", []string{"ACME-2"})
+		"generation", 1, "children", 1)
 	b.info(clock(9, 20), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-2", "tree", "ACME-1",
-		"generation", 1, "children", []string{"ACME-3"})
+		"generation", 1, "children", 1)
 	b.slotReleased(clock(9, 20), "ACME-1")
 	b.childStarts(clock(9, 20), "ACME-3")
 	b.edit(clock(10, 20), "ACME-3", setStatus("icebox"))

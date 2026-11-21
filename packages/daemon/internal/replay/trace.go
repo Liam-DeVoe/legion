@@ -131,6 +131,14 @@ const (
 	phaseHeldLine      = "workflow: a phase is held"
 )
 
+// reconcileHoldingLine and consumerCaughtUpLine are the msgs of the two lines of a boot's hold on
+// the listing's summaries (ReconcileHolding, ConsumerCaughtUp), which a replay reads the hold's
+// beginning and end from.
+const (
+	reconcileHoldingLine = "admission reconcile: holding roots for the Dispatch consumer to reach a stream position"
+	consumerCaughtUpLine = "admission: the Dispatch consumer has caught up; releasing held roots"
+)
+
 // LineHead is what every daemon log line the trace reads carries whatever its kind: the msg the
 // daemon wrote it under and the time the daemon wrote it, the line's own time attribute. A Cloud
 // Logging export's timestamp is when the log store took the line in, a moment later, and is not
@@ -463,6 +471,64 @@ type PhaseHeld struct {
 	Reason      string
 }
 
+// ProcessStop is one of the lines a daemon process writes as it stops (internal/daemon's run and
+// its stop): `legion daemon stopping`, as it begins to stop, and `legion daemon stopped`, its last
+// line. The trace reads the downtime before the next process from the first of them, so a quiet
+// stretch of a running daemon is not taken for a daemon down.
+type ProcessStop struct {
+	LineHead
+	Project string
+}
+
+// ReconcileHolding is an `admission reconcile: holding roots for the Dispatch consumer to reach a
+// stream position` line (admit's Reconcile): a boot's listing found Count issues ahead of the
+// record while the Dispatch consumer stood at AckFloor, below the stream's Target, so admission
+// holds their summaries until the consumer reaches it (admit.Admission's pending hold). A replay
+// holds them from its own boot's reconcile to the release the record shows (ConsumerCaughtUp).
+type ReconcileHolding struct {
+	LineHead
+	Count    int
+	Target   int64
+	AckFloor int64
+}
+
+// ConsumerCaughtUp is an `admission: the Dispatch consumer has caught up; releasing held roots`
+// line (admit's release): the consumer reached the position a boot's hold waited for, and the
+// pass applied the Count held summaries, admitting Admitted of them.
+type ConsumerCaughtUp struct {
+	LineHead
+	Count    int
+	AckFloor int64
+	Idle     bool
+	Admitted int
+}
+
+// PauseBegan is a `pause: the project is paused` line (internal/pause's Pause): the project's pause
+// Pause began, for Reason, and from then no admission pass promotes anything until it ends
+// (PauseEnded).
+type PauseBegan struct {
+	LineHead
+	Pause  int64
+	Reason string
+}
+
+// PauseEnded is a `pause: the project is resumed` line (internal/pause's Resume): the pause Pause
+// ended, and the resume's own pass (intake.ProjectResumed) promotes what the pause held.
+type PauseEnded struct {
+	LineHead
+	Pause int64
+}
+
+// RootJoined is a `workflow: a queued root joined a live tree` or `workflow: a closed tree's
+// member joined a live tree` line (workflow's adoption): Issue, recorded as a root of its own or
+// as a member of a closed tree, joined Tree at Generation, an architect's release of it into its
+// tree (intake.ChildAdoption), which a replay applies again at its offset in the architect's work.
+type RootJoined struct {
+	LineHead
+	Issue, Tree string
+	Generation  uint64
+}
+
 // ParseLogLine reads one daemon log line as the daemon's JSON handler writes it on stderr (one
 // JSON object of time, level, msg and the attributes; a Cloud Logging export's jsonPayload) as the
 // type of its kind. A line of a msg the trace does not read is nil with no error: the trace skips
@@ -612,6 +678,31 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	},
 	"workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once": func(h LineHead, a *lineAttrs) LogLine {
 		return QueueLeftReadOnce{LineHead: h, Issue: a.str("issue"), PullRequest: a.count("pullRequest"), HeadSHA: a.str("head")}
+	},
+	"legion daemon stopping": func(h LineHead, a *lineAttrs) LogLine {
+		return ProcessStop{LineHead: h, Project: a.str("project")}
+	},
+	"legion daemon stopped": func(h LineHead, a *lineAttrs) LogLine {
+		return ProcessStop{LineHead: h, Project: a.str("project")}
+	},
+	reconcileHoldingLine: func(h LineHead, a *lineAttrs) LogLine {
+		return ReconcileHolding{LineHead: h, Count: a.count("count"), Target: a.seq("target"), AckFloor: a.seq("ack_floor")}
+	},
+	consumerCaughtUpLine: func(h LineHead, a *lineAttrs) LogLine {
+		return ConsumerCaughtUp{LineHead: h, Count: a.count("count"), AckFloor: a.seq("ack_floor"), Idle: a.flag("idle"),
+			Admitted: a.count("admitted")}
+	},
+	"pause: the project is paused": func(h LineHead, a *lineAttrs) LogLine {
+		return PauseBegan{LineHead: h, Pause: a.seq("pause"), Reason: a.str("reason")}
+	},
+	"pause: the project is resumed": func(h LineHead, a *lineAttrs) LogLine {
+		return PauseEnded{LineHead: h, Pause: a.seq("pause")}
+	},
+	"workflow: a queued root joined a live tree": func(h LineHead, a *lineAttrs) LogLine {
+		return RootJoined{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), Generation: a.generation("generation")}
+	},
+	"workflow: a closed tree's member joined a live tree": func(h LineHead, a *lineAttrs) LogLine {
+		return RootJoined{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), Generation: a.generation("generation")}
 	},
 }
 

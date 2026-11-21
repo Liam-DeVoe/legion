@@ -24,13 +24,14 @@ import (
 // recorded window of a daemon's project through the daemon's own admission pass under a named
 // slot rule (internal/replay), so a rule is judged by the daemon's own decisions over a window it
 // lived through. Its commands collect a window (collect, collect-merges), neutralize one for the
-// repository's test data (neutralize) and name the rules a replay can run (rules). None of them
-// reaches a daemon.
+// repository's test data (neutralize), replay one (run) and name the rules a replay can run
+// (rules). None of them reaches a daemon.
 func newReplayCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "replay", Short: "replay a recorded window of a daemon's project through the daemon's own admission pass under a named slot rule (a developer's tool)"},
 		newReplayCollectCommand(stdout, stderr),
 		newReplayCollectMergesCommand(stdout, stderr),
 		newReplayNeutralizeCommand(stdout, stderr),
+		newReplayRunCommand(stdout, stderr),
 		newReplayRulesCommand(stdout, stderr),
 	)
 }
@@ -224,6 +225,99 @@ anywhere fails the run.`,
 		}
 		fmt.Fprintf(stdout, "legion replay neutralize: wrote %s, with %d issue keys and %d people renamed; the map is %s\n",
 			*out, len(names.Keys), len(names.People), *mapFile)
+		return 0
+	})
+	return cmd
+}
+
+// replayRunLong is `legion replay run --help`'s description.
+const replayRunLong = `Replay the recorded window in --window through the daemon's own handler chain (the Dispatch
+mirror, the workflow engine and the admission pass) under the slot rule --rule names, on a
+simulated clock, in a database of the replay's own that it makes on the Postgres server
+--pg-dsn names (from template1, with the daemon's migrations) and drops at the end unless
+--keep-db. It writes nothing to the database --pg-dsn names itself, and refuses a server it
+cannot make a database on, with the server's reason.
+
+The window's Dispatch events, its recorded phase moves, ticks and boots are applied at their
+recorded times or offsets, a worker stub runs the outbox rows the daemon's lanes would take after
+each fact, and each work segment runs its recorded length times f^((n − m)/42) at --slowdown f.
+Nothing outside is asked: no Dispatch, no GitHub, no NATS.
+
+--out receives log.jsonl (the daemon's lines on the simulated clock), scorecard.json, run.json
+(what ran and what it counted) and, with --trace-segments, segments.jsonl. The output names each
+assumption the run rests on and the scenario it gave the work of an issue that never started.`
+
+// newReplayRunCommand is `legion replay run` (replay.Run).
+func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "run --window <dir> --rule <name> --pg-dsn <dsn> --out <dir> [--branch <name>] [--seed <n>] [--slowdown <f>] [--keep-db] [--trace-segments]",
+		Short: "replay a recorded window under a slot rule, in a database of its own, and write what it ran and counted",
+		Long:  replayRunLong,
+		Args:  noArguments,
+	}
+	flags := cmd.Flags()
+	windowDir := flags.String("window", "", "the directory of the recorded window (required)")
+	ruleName := flags.String("rule", "", "the slot rule to replay under, as legion replay rules names it (required)")
+	branchName := flags.String("branch", replay.MainBranch.Name, "the branch: main, or main+<knob>=<value>")
+	seed := flags.Int64("seed", 1, "the seed of every draw the replay makes")
+	slowdown := flags.Float64("slowdown", 1, "the factor f a segment's recorded length is scaled by for each 42 issues in flight above the record's")
+	dsn := flags.String("pg-dsn", "", "a Postgres server the replay makes its own database on (required)")
+	out := flags.String("out", "", "the directory the run's output is written to (required)")
+	keepDB := flags.Bool("keep-db", false, "keep the replay's database after the run")
+	traceSegments := flags.Bool("trace-segments", false, "write each work segment's n, m and length to segments.jsonl")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		if missing := missingFlag(cmd, "window", "rule", "pg-dsn", "out"); missing != "" {
+			return refuse(cmd, "--%s is required", missing)
+		}
+		rule, ok := record.SlotRuleNamed(*ruleName)
+		if !ok {
+			return refuse(cmd, "--rule %q names no slot rule; `legion replay rules` lists them", *ruleName)
+		}
+		branch, err := replay.BranchNamed(*branchName)
+		if err != nil {
+			return refuse(cmd, "--branch: %v", err)
+		}
+		if *slowdown <= 0 {
+			return refuse(cmd, "--slowdown %v: the factor must be above zero", *slowdown)
+		}
+		window, err := replay.ReadWindow(*windowDir)
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay run: %v\n", err)
+			return 1
+		}
+		result, err := replay.Run(ctx, replay.RunConfig{Window: window, Rule: rule, Branch: branch, Seed: *seed, Slowdown: *slowdown,
+			PGDSN: *dsn, Out: *out, KeepDB: *keepDB, TraceSegments: *traceSegments})
+		if err != nil {
+			fmt.Fprintf(stderr, "legion replay run: %v\n", err)
+			return 1
+		}
+		kept := "dropped"
+		if *keepDB {
+			kept = "kept"
+		}
+		counted := result.Divergence
+		fmt.Fprintf(stdout, "legion replay run: replayed %s under the rule %s on the branch %s (seed %d, f %v) in the database %s (%s); wrote %s\n",
+			*windowDir, rule.Name, branch.Name, *seed, *slowdown, result.Database, kept, *out)
+		fmt.Fprintf(stdout, "legion replay run: %d moves refused, %d reassertion starts, %d events fenced, %d starts with no segment left, %d segments passed over, %d unplaced issues\n",
+			len(counted.Refused), counted.Reassertions, counted.Fenced, counted.NoSegment, counted.SkippedSegments, len(result.Unplaced))
+		for _, refused := range counted.Refused {
+			fmt.Fprintf(stdout, "legion replay run: refused %s %s→%s by %s at %s: %s\n", refused.Issue, refused.From, refused.To, refused.Trigger,
+				refused.At.Format(time.RFC3339), refused.Reason)
+		}
+		fmt.Fprintf(stdout, "legion replay run: the scenario of the work of an issue that never started: %s\n", result.Scorecard.Scenario)
+		fmt.Fprintln(stdout, "legion replay run: the assumptions it rests on:")
+		for _, number := range result.Assumptions {
+			for _, assumption := range replay.Assumptions {
+				if assumption.Number != number {
+					continue
+				}
+				if finished := counted.Finished[number]; finished > 0 {
+					fmt.Fprintf(stdout, "  %d. %s (%d outbox rows finished under it)\n", number, assumption.Text, finished)
+				} else {
+					fmt.Fprintf(stdout, "  %d. %s\n", number, assumption.Text)
+				}
+			}
+		}
 		return 0
 	})
 	return cmd

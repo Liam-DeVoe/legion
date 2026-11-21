@@ -55,6 +55,8 @@ type Trace struct {
 	// Ticks is each controller tick the daemon ran: a minute after each boot and every
 	// TickInterval after that, until the next boot or To.
 	Ticks []time.Time
+	// Pauses is each pause of the project the log shows, in order.
+	Pauses []PauseSpan
 	// Unplaced is each issue or line the trace could not place, with the reason: a line that
 	// disagrees with what the trace already holds, a move whose trigger has no source, a turn end
 	// with no start. The trace still places what it can of it.
@@ -415,6 +417,23 @@ type Boot struct {
 	Seen    bool
 	Started time.Time
 	Cap     int
+	// Stopped is when the process began to stop, where its `legion daemon stopping` or `legion
+	// daemon stopped` line says (ProcessStop); zero where the log shows neither.
+	Stopped time.Time
+	// Holding is when the boot's reconcile held the summaries its listing found ahead of the
+	// record (ReconcileHolding), and CaughtUp when the Dispatch consumer reached the position that
+	// hold waited for and the pass released them (ConsumerCaughtUp); each zero where the log shows
+	// none.
+	Holding, CaughtUp time.Time
+}
+
+// PauseSpan is one pause of the project the log shows: its id, its reason, when it began and when
+// it ended (zero while it stands at the window's end). No admission pass promotes anything while
+// it stands.
+type PauseSpan struct {
+	Pause    int64
+	Reason   string
+	From, To time.Time
 }
 
 // Downtime is a stretch with no daemon process: from the last line of one process to the start of
@@ -809,6 +828,28 @@ func (b *traceBuilder) onLine(line LogLine) {
 		b.queueLeft(l.Issue, at, l.Msg, l.PullRequest)
 	case QueueLeftReadOnce:
 		b.queueLeft(l.Issue, at, l.Msg, l.PullRequest)
+	case ProcessStop:
+		if boot := &b.t.Boots[len(b.t.Boots)-1]; boot.Stopped.IsZero() {
+			boot.Stopped = at
+		}
+	case ReconcileHolding:
+		if boot := &b.t.Boots[len(b.t.Boots)-1]; boot.Holding.IsZero() {
+			boot.Holding = at
+		}
+	case ConsumerCaughtUp:
+		if boot := &b.t.Boots[len(b.t.Boots)-1]; !boot.Holding.IsZero() && boot.CaughtUp.IsZero() {
+			boot.CaughtUp = at
+		} else {
+			b.unplaced("", at, "%s at %s releases a hold no boot of the trace holds", l.Msg, stamp(at))
+		}
+	case PauseBegan:
+		b.t.Pauses = append(b.t.Pauses, PauseSpan{Pause: l.Pause, Reason: l.Reason, From: at})
+	case PauseEnded:
+		if n := len(b.t.Pauses); n > 0 && b.t.Pauses[n-1].To.IsZero() && b.t.Pauses[n-1].Pause == l.Pause {
+			b.t.Pauses[n-1].To = at
+		} else {
+			b.unplaced("", at, "%s at %s ends the pause %d, which the trace does not hold open", l.Msg, stamp(at), l.Pause)
+		}
 	case Launched, ProcessStart, BootStage:
 	}
 }
@@ -817,10 +858,15 @@ func (b *traceBuilder) onLine(line LogLine) {
 func stamp(at time.Time) string { return at.UTC().Format(time.RFC3339Nano) }
 
 // boot begins a daemon process at at, and the downtime before it where an earlier process wrote a
-// line.
+// line: from that process's first stop line where it wrote one (Boot.Stopped), since it runs no
+// pass once it has begun to stop, and from its last line otherwise.
 func (b *traceBuilder) boot(at time.Time, seen bool) {
-	if len(b.t.Boots) > 0 && !b.last.IsZero() && b.last.Before(at) {
-		b.t.Downtimes = append(b.t.Downtimes, Downtime{From: b.last, To: at})
+	if n := len(b.t.Boots); n > 0 && !b.last.IsZero() && b.last.Before(at) {
+		from := b.last
+		if stopped := b.t.Boots[n-1].Stopped; !stopped.IsZero() && stopped.Before(from) {
+			from = stopped
+		}
+		b.t.Downtimes = append(b.t.Downtimes, Downtime{From: from, To: at})
 	}
 	b.t.Boots = append(b.t.Boots, Boot{At: at, Seen: seen})
 }

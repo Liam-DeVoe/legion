@@ -20,7 +20,9 @@ type Assumption struct {
 // Assumptions is every assumption a replay makes, by number, in order: the spec's eighteen, then
 // the seven the plan added, from the mapping of the release at 9542c6fb onto today's workflow (19
 // to 22), the conflict path of the rule main (23), a daemon's downtime (24) and its reading of
-// outside blockers (25). A run names the ones its measures rest on by these numbers.
+// outside blockers (25), then the tool's own, each a reason a fact is left out of a replay or an
+// outbox row is finished without acting (26 to 33: FactSources, OutboxHandling). A run names the
+// ones its measures rest on by these numbers.
 var Assumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -97,4 +99,28 @@ var Assumptions = []Assumption{
 	{Number: 25,
 		Text:      "An outside blocker's close is seen at the next tick or boot, as the daemon sees it.",
 		Direction: "A close the daemon saw sooner would end link waits sooner, so reading it at the tick lengthens link waits, which disfavours a rule that keeps its slot through a wait."},
+	{Number: assumeNoticesChangeNothing,
+		Text:      "A notice, a message or a prompt the daemon sends a worker or posts on Dispatch changes nothing the record's workers did after it: their work is the record's segments.",
+		Direction: "A notice that changed what a worker did, or how soon, would move that work by the replay's own timing of the notice; under the recorded rule each notice falls where the record's did, and under another rule the work it would have moved stays where the record put it, which favours the recorded rule's timing."},
+	{Number: assumePublicationsDecideNothing,
+		Text:      "What the daemon publishes on Dispatch for people and tools to read, the gated steps, the design gates, the role holders and the step and plan records, is read back by no decision a replay runs.",
+		Direction: "Sound: the daemon decides from its own record and Dispatch's events, and a person who acted on a publication did so in a recorded event the replay applies."},
+	{Number: assumeWorkspaceInSegment,
+		Text:      "The work of a pod or a workspace, a branch made, a pod stopped, bundled, released or removed, and a role that a pause or an idle pod's release stops, lies inside the recorded work segments and the record's own pause.",
+		Direction: "A rule that starts more issues at once may wait longer for pods and workspaces than the record did, which the recorded lengths do not carry, and that favours such a rule; the slowdown factor f is the tool's reading of it."},
+	{Number: assumeNoGitHub,
+		Text:      "GitHub moves a replay only by the moves the record shows: a pull request's opening, reviews, checks, mergeability, merge queue and pushes are read from the recorded moves, and the replay's own pull request record stands in for the issue's.",
+		Direction: "A rule that changes how long a head waits may change what GitHub reports of it, a conflict above all; the tool draws conflicts from the fitted rate (assumption 3) and keeps every other report as the record's moves, which favours a rule under which heads wait longer."},
+	{Number: assumeNoProductionCheck,
+		Text:      "A production check after a merge, its looks and its wakes, changes nothing of a replay: it runs after the issue is done.",
+		Direction: "Sound for the measures, which end at an issue's done; a check that reopened the issue is the record's own reopen, which the replay applies."},
+	{Number: assumeSupervisionSettles,
+		Text:      "A worker's claim settles as the record shows it: it launches, is ready and confirms its task at its start, its turns are the record's, and no silence, lost session, memory kill or full disk of supervision's moves the issue.",
+		Direction: "A supervision fault the record holds shows as the claim failure, retry or hold it led to, which the replay enters from the record; a fault a rule would bring on more or less often is not drawn, which favours a rule that runs more at once."},
+	{Number: assumeCompletionPassed,
+		Text:      "A worker's completion passes the checks a live one passes before its move, its claim's run, its handoff record and its review's head, since the record shows it passed them; the move enters at the end of its segment.",
+		Direction: "Sound under the recorded rule; under another, a completion whose check would have failed on a later head is entered as passed, which favours a rule under which more completions meet a moved head."},
+	{Number: assumeBootRepairsNothing,
+		Text:      "The repairs a boot or a read of the repository mapping makes, a merger the cutover left released, a design gate's request found again, a repository's mapping changed, change nothing of a window.",
+		Direction: "Sound for a window recorded under one release and one mapping: a repair the record made shows as its own move or start, which the replay enters as recorded."},
 }

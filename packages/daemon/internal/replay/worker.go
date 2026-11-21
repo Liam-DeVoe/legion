@@ -1,6 +1,24 @@
 package replay
 
-import "github.com/sjawhar/legion/daemon/internal/record"
+import (
+	"cmp"
+	"context"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
+)
 
 // RowKind is one kind of outbox row as the replay's worker stub tells them apart: its
 // record.OutboxKind and, for a supervise row, its op, since a start, a suspend and a close of a
@@ -47,4 +65,974 @@ type RowHandling struct {
 // record.OutboxKind, and a supervise row by each of its ops. A row of a kind with no entry here
 // is neither executed nor finished under an assumption, and the inventory test
 // (TestEveryOutboxKindIsExecutedOrFinishedUnderAnAssumption) names it.
-var OutboxHandling = map[RowKind]RowHandling{}
+var OutboxHandling = map[RowKind]RowHandling{
+	{Kind: record.OutboxKindDispatchStatus}: {Way: OutboxExecuted, Facts: []string{"DispatchIssue", "Handover"},
+		Does: "behind the executor's fences, read against the replay's copy of Dispatch, writes the status there and applies the event that write makes; a hand-over applies the hand-over"},
+	{Kind: record.OutboxKindLingerClose}: {Way: OutboxExecuted, Facts: []string{"LingerExpired"},
+		Does: "applies the linger's expiry at the row's next_at"},
+	{Kind: record.OutboxKindGateSeed}: {Way: OutboxExecuted, Facts: []string{"DispatchArtifact", "GateAboveDispatch"},
+		Does: "reads the registered document's approval from the replay's copy of Dispatch and applies what it finds, or the reset of a gate above Dispatch's version"},
+	{Kind: record.OutboxKindSupervise, Op: "start"}: {Way: OutboxExecuted,
+		Does: "behind the executor's fences writes the role's claim as the outbox's start writes it, admitted on its first start, with its given entry and a confirmed delivery, logs the launch, and resumes the issue's paused segment or opens its next recorded one"},
+	{Kind: record.OutboxKindSupervise, Op: "suspend"}: {Way: OutboxExecuted,
+		Does: "suspends the role's claim, its task taken back, and pauses the issue's segment it works, or cancels it where the issue has left the workflow"},
+	{Kind: record.OutboxKindSupervise, Op: "issue_close"}: {Way: OutboxExecuted,
+		Does: "retires the role's claim of a closed issue and cancels the segments it works"},
+	{Kind: record.OutboxKindSupervise, Op: "tree_close"}: {Way: OutboxExecuted,
+		Does: "retires the role's claim of a tree whose linger expired and cancels the segments it works"},
+	{Kind: record.OutboxKindSupervise, Op: "release"}:    {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
+	{Kind: record.OutboxKindSupervise, Op: "pause_stop"}: {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
+
+	{Kind: record.OutboxKindDispatchMessage}:  {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
+	{Kind: record.OutboxKindNotice}:           {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
+	{Kind: record.OutboxKindControllerNotice}: {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
+	{Kind: record.OutboxKindRoleMessage}:      {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
+	{Kind: record.OutboxKindHookPrompt}:       {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
+	{Kind: record.OutboxKindUpdateAsk}:        {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
+	{Kind: record.OutboxKindMergeForward}:     {Way: OutboxFinished, Assumption: assumeNoticesChangeNothing},
+
+	{Kind: record.OutboxKindGatedStepsPublish}:  {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
+	{Kind: record.OutboxKindDesignGatesPublish}: {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
+	{Kind: record.OutboxKindRoleHoldersPublish}: {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
+	{Kind: record.OutboxKindStepRecord}:         {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
+	{Kind: record.OutboxKindPlanRecord}:         {Way: OutboxFinished, Assumption: assumePublicationsDecideNothing},
+
+	{Kind: record.OutboxKindIssueBranch}:     {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
+	{Kind: record.OutboxKindIssueSuspend}:    {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
+	{Kind: record.OutboxKindIssueBundle}:     {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
+	{Kind: record.OutboxKindIssueRelease}:    {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
+	{Kind: record.OutboxKindWorkspaceRemove}: {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
+	{Kind: record.OutboxKindClaimRelease}:    {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
+
+	{Kind: record.OutboxKindMergeQueueRead}:    {Way: OutboxFinished, Assumption: assumeNoGitHub},
+	{Kind: record.OutboxKindMergeQueueRemoval}: {Way: OutboxFinished, Assumption: assumeNoGitHub},
+	{Kind: record.OutboxKindConflictConfirm}:   {Way: OutboxFinished, Assumption: assumeNoGitHub},
+
+	{Kind: record.OutboxKindCheckWake}:  {Way: OutboxFinished, Assumption: assumeNoProductionCheck},
+	{Kind: record.OutboxKindCheckLook}:  {Way: OutboxFinished, Assumption: assumeNoProductionCheck},
+	{Kind: record.OutboxKindCheckBound}: {Way: OutboxFinished, Assumption: assumeNoProductionCheck},
+}
+
+// outboxLease is how long the stub leases a row it takes, as the daemon's lanes lease one
+// (internal/daemon's outboxLease): the stub finishes every row it takes before it takes the next,
+// so no lease it takes is ever live when another row of the issue is listed.
+const outboxLease = 30 * time.Second
+
+// replaySession is the session a claim the stub launches runs, which names no worker: the
+// replay's workers are the record's segments.
+const replaySession = "replay"
+
+// dueSlack is how far past the clock's moment the stub reads a row as due. The simulated clock
+// moves a microsecond at each read within one instant (simClock), so a moment a pass wrote from
+// its clock — a linger's close, two hours after the leave — stands those few microseconds after the
+// moment the record shows; the stub wakes at the millisecond (wake) and takes a row due within
+// the slack of it, so the act the row brings happens at the record's moment.
+const dueSlack = time.Millisecond
+
+// dueNow is the moment the stub reads the outbox's rows at: the clock's next moment and the slack.
+func (d *driver) dueNow() time.Time { return d.now().Add(dueSlack) }
+
+// drain runs the worker stub between facts, on connections of its own and never inside a handler:
+// the outbox rows the daemon's lanes would take now, in the store's own order and under its own
+// rules (record.Postgres.DueRows: due, in order, one status write of an issue at a time, a start
+// behind an older issue_branch, a start that waits for a slot not before it holds one, nothing a
+// pause holds), one at a time and listed again after each, since a row run changes what is due,
+// until none is due; then a wake at the next row that comes due later (wake).
+func (d *driver) drain() error {
+	for {
+		var due []record.OutboxRow
+		if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
+			var err error
+			due, err = d.records.DueRows(d.ctx, tx, d.window.Project, "", nil, d.dueNow())
+			return err
+		}); err != nil {
+			return fmt.Errorf("replay: list the outbox rows due at %s: %w", stamp(d.clock.Instant()), err)
+		}
+		ran := false
+		for _, row := range due {
+			took, err := d.take(row)
+			if err != nil {
+				return err
+			}
+			if took {
+				ran = true
+				break
+			}
+		}
+		if !ran {
+			return d.wake()
+		}
+	}
+}
+
+// wake queues the stub's next run at the earliest next_at of the project's rows that come due
+// after now, as a lane sleeps until its next row is due (record.Postgres.NextDue): a linger's
+// close, a start backing off; at its millisecond, which the slack reads it due at (dueSlack).
+// Nothing is queued where a wake at that moment or earlier already is.
+func (d *driver) wake() error {
+	var next *time.Time
+	now := d.dueNow()
+	if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
+		return tx.QueryRow(d.ctx, `select min(next_at) from outbox where split_part(issue, '-', 1) = $1 and next_at > $2
+			and (lease_until is null or lease_until <= $2)`, d.window.Project, now).Scan(&next)
+	}); err != nil {
+		return fmt.Errorf("replay: read when the outbox is next due after %s: %w", stamp(now), err)
+	}
+	if next == nil {
+		return nil
+	}
+	at := next.UTC().Truncate(time.Millisecond)
+	if !d.wakeAt.IsZero() && !d.wakeAt.After(at) && d.wakeAt.After(d.clock.Instant()) {
+		return nil
+	}
+	d.wakeAt = at
+	d.push(&item{at: at, class: classWake, rec: at, run: func() error {
+		if d.wakeAt.Equal(at) {
+			d.wakeAt = time.Time{}
+		}
+		return nil
+	}})
+	return nil
+}
+
+// take leases row, if a lane may still run it now (record.Postgres.ClaimRow), and runs it as its
+// kind's handling says (OutboxHandling). It answers whether it took the row.
+func (d *driver) take(row record.OutboxRow) (bool, error) {
+	var leased record.OutboxRow
+	var ok bool
+	if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
+		var err error
+		leased, ok, err = d.records.ClaimRow(d.ctx, tx, row.ID, d.dueNow(), outboxLease)
+		return err
+	}); err != nil || !ok {
+		return false, err
+	}
+	payload, err := record.DecodeOutboxPayload(leased)
+	if err != nil {
+		return true, fmt.Errorf("replay: decode outbox row %d: %w", leased.ID, err)
+	}
+	switch value := payload.(type) {
+	case record.StatusWrite:
+		err = d.statusRow(leased, value)
+	case record.LingerClose:
+		err = d.lingerRow(leased, value)
+	case record.GateSeed:
+		err = d.gateSeedRow(leased, value)
+	case record.SuperviseRequest:
+		err = d.superviseRow(leased, value)
+	default:
+		err = d.finishUnder(leased, RowKind{Kind: leased.Kind})
+	}
+	if err != nil {
+		return true, fmt.Errorf("replay: run outbox row %d (%s of %s) at %s: %w", leased.ID, leased.Kind, leased.Issue,
+			stamp(d.clock.Instant()), err)
+	}
+	return true, nil
+}
+
+// finish deletes row, the stub's run of it over (record.Postgres.FinishOutbox).
+func (d *driver) finish(row record.OutboxRow) error {
+	return d.st.Tx(d.ctx, func(tx pgx.Tx) error {
+		return d.records.FinishOutbox(d.ctx, tx, row.ID, row.LeaseToken)
+	})
+}
+
+// finishUnder finishes row without acting, under the assumption its kind's handling names, and
+// counts it.
+func (d *driver) finishUnder(row record.OutboxRow, kind RowKind) error {
+	handling, handled := OutboxHandling[kind]
+	if !handled || handling.Way != OutboxFinished {
+		return fmt.Errorf("the stub holds no way to finish a row of %s %s", kind.Kind, kind.Op)
+	}
+	if d.counters.Finished == nil {
+		d.counters.Finished = map[int]int{}
+	}
+	d.counters.Finished[handling.Assumption]++
+	d.used[handling.Assumption] = true
+	return d.finish(row)
+}
+
+// retry gives row back to the outbox to run again on its backoff, as a lane gives back a row
+// whose executor waits on something (record.RetryBackoff): a first start of a child's own
+// architect while its tree lingers, a merger behind its tree's closed design gate, a claim its
+// tree's lifecycle refuses.
+func (d *driver) retry(row record.OutboxRow, why error) error {
+	next := d.clock.Instant().Add(record.RetryBackoff(row.Attempts))
+	if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
+		return d.records.RetryOutbox(d.ctx, tx, row.ID, row.LeaseToken, next, why.Error())
+	}); err != nil {
+		return err
+	}
+	d.counters.Retried++
+	return nil
+}
+
+// lingerRow runs a linger's close at its next_at: the linger's expiry (intake.LingerExpired), as
+// the daemon's executor applies it.
+func (d *driver) lingerRow(row record.OutboxRow, payload record.LingerClose) error {
+	if _, err := d.apply("outbox", fmt.Sprintf("linger:%s:%d", row.Issue, payload.Generation),
+		intake.LingerExpired{Issue: row.Issue, Generation: payload.Generation}); err != nil {
+		return err
+	}
+	return d.finish(row)
+}
+
+// gateSeedRow runs a gate seed as the daemon's executor does (internal/daemon's seedGate), reading
+// the registered document's approval from the replay's copy of Dispatch: approved on its latest
+// version, the gate opens there; changes requested on it, it closes with the reason; a later
+// version moves the gate to it; a document below the seeded version resets the gate to the
+// version Dispatch holds (intake.GateAboveDispatch). A read that changes nothing applies nothing.
+// A document the window holds no event of, which a registration names all the same (a version
+// written before the inputs reach, or one a deployment that gates no step writes no event for), is
+// read at the version the registration names: the architect registered the version it wrote.
+func (d *driver) gateSeedRow(row record.OutboxRow, payload record.GateSeed) error {
+	read := d.shadow.approvalOf(row.Issue, payload.ArtifactID)
+	latest := read.latest
+	if latest == 0 {
+		latest = payload.Version
+	}
+	fact := intake.DispatchArtifact{Key: row.Issue, ArtifactID: payload.ArtifactID, Kind: intake.DispatchArtifactVersion,
+		Version: latest, RequestWaitsOnAgent: read.ask != "" && read.waitingOn == "agent"}
+	switch {
+	case read.approved != nil:
+		fact.Kind, fact.Mark, fact.Actor = intake.DispatchArtifactApproved, read.approved.mark, read.approved.actor
+	case read.changes != nil:
+		reason := read.changes.reason
+		if reason == "" {
+			reason = "Dispatch reports changes requested"
+		}
+		fact.Kind, fact.Reason, fact.Mark, fact.Actor = intake.DispatchArtifactChangesRequested, reason, read.changes.mark, read.changes.actor
+	case latest == payload.Version:
+		return d.finish(row)
+	}
+	if latest < payload.Version {
+		id := fmt.Sprintf("gate-above:%s:%d:%s:%s:%d:%s:%d:%d", row.Issue, payload.Generation, payload.Step, payload.ArtifactID,
+			payload.Version, fact.Kind, fact.Version, fact.Mark.ID())
+		if _, err := d.apply("outbox", id, intake.GateAboveDispatch{Generation: payload.Generation, Above: payload.Version, Read: fact}); err != nil {
+			return err
+		}
+		return d.finish(row)
+	}
+	id := fmt.Sprintf("gate-seed:%s:%d:%s:%s:%s:%d:%d", row.Issue, payload.Generation, payload.Step, payload.ArtifactID, fact.Kind,
+		fact.Version, fact.Mark.ID())
+	if fact.Kind == intake.DispatchArtifactVersion && fact.RequestWaitsOnAgent {
+		id += ":with-agent"
+	}
+	if _, err := d.apply("outbox", id, fact); err != nil {
+		return err
+	}
+	return d.finish(row)
+}
+
+// statusRow runs a status write as the daemon's executor does (internal/daemon's status and the
+// rule of its kind), every fence ported against the replay's copy of Dispatch (the shadow): a
+// person's hand-over stands only while the label does; a hand-over of a closed tree's child is
+// fenced on its hand-over record and its root's linger, hands the child over (intake.Handover),
+// and writes the status with the label; the daemon's own close stands only at the generation it
+// closed; and every kind finishes without writing where somebody moved the issue since the row
+// read it, or where Dispatch already shows the status. A write the fences let through is the
+// shadow's status write, whose event the replay applies at once as the Dispatch event it makes.
+// The reason a write carries is posted nowhere: no measure or decision reads it.
+func (d *driver) statusRow(row record.OutboxRow, payload record.StatusWrite) error {
+	iss, ok := d.shadow.issues[row.Issue]
+	if !ok || iss.payload == nil {
+		// Dispatch holds no such issue, and its executor's read is refused.
+		return d.finish(row)
+	}
+	read, handedOver := iss.status(), dispatch.CarriesLegionLabel(iss.labels())
+	moved := read != payload.ObservedStatus && read != payload.Status
+	switch payload.Kind {
+	case record.PersonHandoverStatusRow:
+		if !moved && !handedOver {
+			return d.finish(row)
+		}
+	case record.HandOverStatusRow:
+		return d.handOverRow(row, payload, read, handedOver, moved)
+	case record.CloseStatusRow:
+		if payload.CloseGeneration != 0 {
+			issue, err := d.recorded(row.Issue)
+			if err != nil {
+				return err
+			}
+			if issue != nil && issue.Generation != payload.CloseGeneration {
+				return d.finish(row)
+			}
+		}
+	}
+	if moved || read == payload.Status {
+		return d.finish(row)
+	}
+	if err := d.writeStatus(row.Issue, payload.Status, false); err != nil {
+		return err
+	}
+	return d.finish(row)
+}
+
+// handOverRow runs a hand-over's status write (internal/daemon's handOverRule): a move that
+// superseded it drops its fence; a fence that no longer holds writes nothing; otherwise the child
+// is written todo with the label where Dispatch does not show it so already, and handed over.
+func (d *driver) handOverRow(row record.OutboxRow, payload record.StatusWrite, read string, handedOver, moved bool) error {
+	if moved {
+		if err := d.serialized(func(ctx context.Context, tx pgx.Tx) error {
+			return d.records.DeleteHandoverAt(ctx, tx, row.Issue, payload.HandOverTree, payload.HandOverLinger)
+		}); err != nil {
+			return err
+		}
+		return d.finish(row)
+	}
+	holds, err := d.handOverHolds(row, payload)
+	if err != nil || !holds {
+		if err != nil {
+			return err
+		}
+		return d.finish(row)
+	}
+	handOver := func() error {
+		_, err := d.apply("outbox", fmt.Sprintf("handover:%s:%d", row.Issue, row.ID),
+			intake.Handover{Issue: row.Issue, Tree: payload.HandOverTree, Generation: payload.HandOverLinger})
+		return err
+	}
+	if read == payload.Status && handedOver {
+		if err := handOver(); err != nil {
+			return err
+		}
+		return d.finish(row)
+	}
+	raw, wrote, err := d.shadow.statusWrite(row.Issue, payload.Status, true, d.clock.Instant())
+	if err != nil {
+		return err
+	}
+	if err := handOver(); err != nil {
+		return err
+	}
+	if wrote {
+		if err := d.applyEcho(row.Issue, raw); err != nil {
+			return err
+		}
+	}
+	return d.finish(row)
+}
+
+// handOverHolds says whether a hand-over's fence still holds, as the daemon's executor reads it
+// (internal/daemon's handOverHolds): the child still in the tree the row names, its hand-over
+// record of that tree and linger uncancelled, and the tree's root lingering at that generation. A
+// cancelled record is dropped on the way.
+func (d *driver) handOverHolds(row record.OutboxRow, payload record.StatusWrite) (bool, error) {
+	var issue, root *record.Issue
+	var handover *record.Handover
+	if err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		if issue, err = d.records.Issue(d.ctx, tx, row.Issue); err != nil || issue == nil {
+			return err
+		}
+		if handover, err = d.records.Handover(d.ctx, tx, row.Issue); err != nil || handover == nil || handover.Cancelled {
+			return err
+		}
+		root, err = d.records.Issue(d.ctx, tx, handover.Tree)
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read the hand-over of %s: %w", row.Issue, err)
+	}
+	if handover != nil && handover.Cancelled {
+		if err := d.serialized(func(ctx context.Context, tx pgx.Tx) error {
+			return d.records.DeleteHandoverAt(ctx, tx, row.Issue, payload.HandOverTree, payload.HandOverLinger)
+		}); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	return issue != nil && handover != nil && root != nil && issue.Tree == handover.Tree && handover.Tree == payload.HandOverTree &&
+		handover.Generation == payload.HandOverLinger && root.LingersAt(handover.Generation), nil
+}
+
+// writeStatus is the daemon's write of key's status to Dispatch, made in the shadow, and the event
+// that write makes applied at once through the decoder and the chain (applyEcho).
+func (d *driver) writeStatus(key, status string, handOver bool) error {
+	raw, wrote, err := d.shadow.statusWrite(key, status, handOver, d.clock.Instant())
+	if err != nil || !wrote {
+		return err
+	}
+	return d.applyEcho(key, raw)
+}
+
+// applyEcho applies raw, the event a status write of the replay's own made in the shadow, as the
+// Dispatch consumer applies the event that write makes: decoded, prepared and applied as its id.
+func (d *driver) applyEcho(key string, raw json.RawMessage) error {
+	var head struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &head); err != nil {
+		return fmt.Errorf("read the event of the status write of %s: %w", key, err)
+	}
+	fact, _, err := intake.DecodeDispatchEvent(d.window.Project, key, raw)
+	if err != nil || fact == nil {
+		return err
+	}
+	prepared, recorded, err := d.prepare(fact)
+	if err != nil {
+		return err
+	}
+	d.countFence(prepared, recorded)
+	_, err = d.apply("dispatch", "dispatch-"+strconv.FormatInt(head.ID, 10), prepared)
+	return err
+}
+
+// superviseRow runs a supervise row as the daemon's executor does (internal/daemon's supervise),
+// its fences first: a pause's stop and an idle pod's release are finished under the assumption of
+// a pod's own work; a row of an issue the replay does not record finishes; a close of a tree runs
+// on its linger's fence and a stop of a tree the issue has left on that tree; every other row
+// finishes where it serves an earlier generation, a phase the issue has left or an entry its role
+// has left, or names another tree.
+func (d *driver) superviseRow(row record.OutboxRow, payload record.SuperviseRequest) error {
+	if payload.Op == "pause_stop" || payload.Op == "release" {
+		return d.finishUnder(row, RowKind{Kind: record.OutboxKindSupervise, Op: payload.Op})
+	}
+	issue, err := d.recorded(row.Issue)
+	if err != nil {
+		return err
+	}
+	if issue == nil {
+		return d.finish(row)
+	}
+	token, err := claim.NewToken(d.token, row.Issue, payload.Role)
+	if err != nil {
+		return err
+	}
+	switch {
+	case payload.Op == "tree_close":
+		return d.closeTree(row, payload, *issue, token)
+	case payload.Op == "suspend" && payload.Tree != issue.Tree:
+		c, found := d.claims[token]
+		if !found || c.Tree != payload.Tree {
+			return d.finish(row)
+		}
+		return d.suspend(row, payload, *issue, token)
+	case payload.CheckLook > 0:
+		// A production check's look: no check runs in a replay (assumption 30).
+		return d.finishUnder(row, RowKind{Kind: record.OutboxKindCheckLook})
+	}
+	if payload.Generation != issue.Generation || payload.Phase != "" && payload.Phase != issue.Phase || payload.Tree != issue.Tree {
+		return d.finish(row)
+	}
+	if payload.Entry > 0 && payload.Phase != "" {
+		entry, err := d.phaseEntry(row.Issue, payload.Role)
+		if err != nil {
+			return err
+		}
+		if payload.Entry < entry {
+			return d.finish(row)
+		}
+	}
+	switch payload.Op {
+	case "start":
+		return d.start(row, payload, *issue, token)
+	case "suspend":
+		return d.suspend(row, payload, *issue, token)
+	case "issue_close":
+		c, found := d.claims[token]
+		if !found || !workflow.StopActs(row.ID, payload, c.LastStartRow, nil) {
+			return d.finish(row)
+		}
+		return d.retireClaim(row, token)
+	}
+	return fmt.Errorf("outbox row %d has unknown supervise operation %q", row.ID, payload.Op)
+}
+
+// phaseEntry is the entry role's phases row of issue names (record.PhaseRow.Entry).
+func (d *driver) phaseEntry(issue string, role claim.Role) (int64, error) {
+	var entry int64
+	err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		rows, err := d.records.Phases(d.ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		entry = record.PhaseRowOf(rows, role).Entry
+		return nil
+	})
+	return entry, err
+}
+
+// start runs a start row as the outbox's start does (internal/daemon's supervise, op start):
+// finished without acting for an issue out of the workflow or a member of a lingering tree, but
+// the first start of a child's own architect, which waits on its backoff while its root lingers;
+// a merger's start waits while its tree's design gate is closed. Then the claim is written as the
+// start and the turn's confirmation write it: admitted on its first start, re-pointed at the
+// issue's tree where it stands in another, launched again where it was queued, suspended, failed
+// or retired (`supervise: launched`), and given the row's task unless it holds that phase's task
+// already or was given the row's entry (supervise's queue), with a confirmed delivery, in one
+// transaction with the row's finish. Last, the work the start brings: the issue's paused segment
+// of the role resumes; a start whose entry is above the one the claim was given, or that resends
+// its entry, opens the issue's next recorded segment of the role (and an issue the record never
+// started takes the never-started scenario's work); a start that re-sends an entry already given
+// is counted as a reassertion. The settling of a root architect's claim whose root handed work to
+// a person is told the pass (Settled).
+func (d *driver) start(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue, token claim.Token) error {
+	c, found := d.claims[token]
+	if payload.WakeKind != "" && found && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByDaemon {
+		return d.finish(row)
+	}
+	if record.OutOfWorkflow(issue.Status) {
+		return d.finish(row)
+	}
+	root, err := d.recorded(issue.Tree)
+	if err != nil {
+		return err
+	}
+	if root != nil && root.Lingers() {
+		if !found && payload.Role == claim.RoleArchitect && !claim.IsTreeRoot(issue.Key, issue.Tree) && payload.Phase == "" && payload.Task == "" {
+			return d.retry(row, fmt.Errorf("the first start of the own architect of %s waits for the tree of %s to run again", issue.Key, root.Key))
+		}
+		return d.finish(row)
+	}
+	if payload.Role == claim.RoleMerger {
+		closed, err := d.gateClosed(issue)
+		if err != nil {
+			return err
+		}
+		if closed {
+			return d.retry(row, fmt.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree))
+		}
+	}
+	if !found || c.Tree != issue.Tree {
+		admit := c
+		if !found {
+			admit = supervise.Claim{Token: token, Project: d.token, Tree: issue.Tree, Issue: issue.Key, Role: payload.Role,
+				State: supervise.StateQueued}
+		}
+		admit.Tree = issue.Tree
+		admitted, err := d.st.AdmitClaim(d.ctx, admit)
+		if err != nil {
+			return d.retry(row, err)
+		}
+		c = admitted
+	}
+	given, state := c.GivenEntry, c.State
+	if state == supervise.StateFailed && payload.RuleResume {
+		return d.finish(row)
+	}
+	c.LastStartRow = row.ID
+	if state == supervise.StateQueued || state == supervise.StateSuspended || state == supervise.StateFailed ||
+		state == supervise.StateRetired {
+		d.launch(&c, state == supervise.StateSuspended)
+	}
+	ranNothing := state == supervise.StateFailed || state == supervise.StateRetired
+	delivered := false
+	if (payload.ResumeTask || ranNothing) && c.Pending != nil && payload.Phase != "" &&
+		c.Pending.StillWorked(payload.Generation, payload.Phase, c.State) {
+		if payload.Entry > 0 && c.Pending.Entry == payload.Entry && payload.Entry > c.GivenEntry {
+			c.GivenEntry = payload.Entry
+		}
+	} else if payload.Task != "" && !queuedAlready(c, row.ID, payload) {
+		now := d.now()
+		if c.Pending != nil {
+			// The task the claim held was taken by a turn, or is superseded: the newer one takes
+			// its place (supervise's queue), the older retired as a turn retires it.
+			c = retired(c)
+		}
+		kept, err := json.Marshal(payload.Kept)
+		if err != nil {
+			return err
+		}
+		if payload.Kept == nil {
+			kept = nil
+		}
+		c.Pending = &supervise.Delivery{ID: fmt.Sprintf("outbox:%d", row.ID), Task: payload.Task, Phase: payload.Phase,
+			Generation: payload.Generation, Entry: payload.Entry, Kept: kept, RoundNamed: payload.RoundNamed,
+			QueuedAt: now, DeliveredAt: now, ConfirmedAt: now, Prompted: true}
+		c.DeliveredRows = append(slices.Clone(c.DeliveredRows), row.ID)
+		if payload.Entry > 0 {
+			c.GivenEntry = payload.Entry
+			c.Handshake = supervise.EntryHandshake{Entry: payload.Entry, Generation: payload.Generation, QueuedAt: now, ConfirmedAt: now}
+		}
+		delivered = true
+	}
+	if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
+		var err error
+		if c.Pending != nil {
+			_, err = d.st.PutClaimAndDeliveryTx(d.ctx, tx, c, *c.Pending)
+		} else {
+			_, err = d.st.PutClaimTx(d.ctx, tx, c)
+		}
+		if err != nil {
+			return err
+		}
+		return d.records.FinishOutbox(d.ctx, tx, row.ID, row.LeaseToken)
+	}); err != nil {
+		return fmt.Errorf("write the claim %s of the start row %d: %w", token, row.ID, err)
+	}
+	d.claims[token] = c
+	d.used[assumeSupervisionSettles] = true
+	if err := d.startWork(issue, payload, given, delivered); err != nil {
+		return err
+	}
+	return d.settled(issue.Key, payload.Role)
+}
+
+// queuedAlready says whether c was given the work of payload's start already (supervise's
+// Machine.given): an entry at or below the one the claim was given, unless the start resends it,
+// or, for a start of no entry, the row itself delivered once.
+func queuedAlready(c supervise.Claim, row int64, payload record.SuperviseRequest) bool {
+	if payload.Entry > 0 && !payload.ResendEntry {
+		return payload.Entry <= c.GivenEntry
+	}
+	return slices.Contains(c.DeliveredRows, row)
+}
+
+// launch brings c's worker up as the supervisor's launch does: the next launch of the claim, its
+// failure and suspension cleared, ready to be prompted, and the line the launch writes (`supervise:
+// launched`). resumed says whether the launch resumes a suspended claim's session.
+func (d *driver) launch(c *supervise.Claim, resumed bool) {
+	c.Generation++
+	c.State, c.SuspendedBy, c.Session = supervise.StateIdle, "", replaySession
+	c.Failure, c.FailureCause, c.FailedAt = "", "", time.Time{}
+	c.LastReady = d.now()
+	resumedBy := "none"
+	if resumed {
+		resumedBy = "id"
+	}
+	d.log.Info("supervise: launched", "claim", string(c.Token), "generation", c.Generation,
+		"incarnation", fmt.Sprintf("replay%08x", c.Generation), "resumed", resumed, "resumedBy", resumedBy)
+}
+
+// retired is c with its pending task retired as the end of the turn that worked it retires it
+// (supervise's retirePending): the run and entry it served recorded where the task was
+// confirmed, and the entry it was given put back to the one it served where it was not.
+func retired(c supervise.Claim) supervise.Claim {
+	p := c.Pending
+	if p == nil {
+		return c
+	}
+	switch {
+	case !p.ConfirmedAt.IsZero():
+		c.ServingGeneration = p.Generation
+		if p.Entry > 0 {
+			c.ServedEntry = p.Entry
+		}
+	case p.Entry != 0 && p.Entry == c.GivenEntry:
+		c.GivenEntry = c.ServedEntry
+	}
+	c.Pending = nil
+	c.Budgets.Deaths = 0
+	return c
+}
+
+// startWork is the work a start the stub ran brings to issue: the paused segment of the role, or
+// its next recorded segment where the start's entry is above the one the claim was given (given)
+// or the start resends its entry, a reassertion counted where the start re-sent an entry the
+// claim was given already.
+func (d *driver) startWork(issue record.Issue, payload record.SuperviseRequest, given int64, delivered bool) error {
+	if p := d.pausedPiece(issue.Key, payload.Role); p != nil {
+		return d.resumePiece(p)
+	}
+	opens := payload.ResendEntry || payload.Entry > 0 && payload.Entry > given
+	switch {
+	case opens && delivered:
+		served := cmp.Or(payload.Phase, issue.Phase)
+		if d.startPiece(issue.Key, payload.Role, served, payload.ResendEntry) != nil {
+			return nil
+		}
+		if d.neverStarted(issue.Key) {
+			return d.neverStartedWork(issue.Key, payload.Role, served)
+		}
+		d.counters.NoSegment++
+	case payload.Entry > 0 && !opens:
+		d.counters.Reassertions++
+	}
+	return nil
+}
+
+// pausedPiece is the piece of key's work role's claim was suspended in, nil for none.
+func (d *driver) pausedPiece(key string, role claim.Role) *piece {
+	for _, p := range d.script.pieces[key] {
+		if p.state == piecePaused && p.role == role {
+			return p
+		}
+	}
+	return nil
+}
+
+// neverStarted says whether the record never started key's work: an issue of the trace with no
+// slot and no work segment.
+func (d *driver) neverStarted(key string) bool {
+	iss, ok := d.trace.Issues[key]
+	if !ok {
+		return true
+	}
+	if len(iss.Slots) > 0 {
+		return false
+	}
+	return !slices.ContainsFunc(iss.Visits, func(visit Visit) bool { return visit.Segment != nil })
+}
+
+// neverStartedWork is the work of an issue the record never started, which the replay starts: the
+// scenario the branch names for it (Branch.NeverStarted, assumption 8). Under `none` the start
+// opens a segment with no turn and no end, which holds what the start took to the window's end.
+func (d *driver) neverStartedWork(key string, role claim.Role, served phase.Phase) error {
+	if scenario := cmp.Or(d.cfg.Branch.NeverStarted, MainBranch.NeverStarted); scenario != MainBranch.NeverStarted {
+		return fmt.Errorf("the branch's never-started scenario %q gives %s, which the record never started, work this replay does not draw: it runs %q alone",
+			scenario, key, MainBranch.NeverStarted)
+	}
+	d.used[8] = true
+	p := &piece{issue: key, index: len(d.script.pieces[key]), phase: served, role: role, opens: opensOnStart, ends: endOpen,
+		start: d.clock.Instant(), m: d.script.inFlightAt(d.clock.Instant())}
+	d.script.pieces[key] = append(d.script.pieces[key], p)
+	d.openPiece(p, d.clock.Instant(), false)
+	return nil
+}
+
+// gateClosed says whether the design gate of issue's tree is closed, which holds the merger's
+// start (internal/daemon's designGateClosed): a step the deployment gates whose row no approval has
+// opened.
+func (d *driver) gateClosed(issue record.Issue) (bool, error) {
+	closed := false
+	err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		root, err := d.records.Issue(d.ctx, tx, issue.Tree)
+		if err != nil || root == nil {
+			return err
+		}
+		gates, err := record.ReadTreeGates(d.ctx, tx, d.records, []record.Issue{*root}, d.window.GateSteps)
+		if err != nil {
+			return err
+		}
+		gate, ok := gates[root.Key]
+		closed = ok && len(d.window.GateSteps) > 0 && !gate.Open()
+		return nil
+	})
+	return closed, err
+}
+
+// suspend runs a suspend as the outbox's does: a claim that runs nothing, or that a newer start
+// superseded (workflow.StopActs), is left; otherwise the turn under way ends, the task it held is
+// taken back unconfirmed, so the entry it was given falls to the one it served and the admission
+// pass sends that entry again once the issue holds its slot again (admit's resumeSlottedWorkers),
+// and the claim stands suspended by the daemon (`supervise: suspended`). The issue's segment the
+// role works pauses with the rest of its length, or is cancelled where the issue has left the
+// workflow.
+func (d *driver) suspend(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue, token claim.Token) error {
+	c, found := d.claims[token]
+	if !found || c.State == supervise.StateFailed || c.State == supervise.StateRetired || c.State == supervise.StateSuspended ||
+		!workflow.StopActs(row.ID, payload, c.LastStartRow, nil) {
+		return d.finish(row)
+	}
+	if p := d.runningPiece(issue.Key, payload.Role); p != nil && p.state == pieceRunning {
+		if record.InWorkflow(issue) {
+			if err := d.pausePiece(p); err != nil {
+				return err
+			}
+		} else {
+			p.state = pieceCancelled
+		}
+	}
+	if d.turnOpen(d.claims[token]) {
+		if err := d.writeTurnEnd(issue.Key, payload.Role); err != nil {
+			return err
+		}
+	}
+	c = d.claims[token]
+	pending := c.Pending
+	if pending != nil {
+		taken := *pending
+		taken.ConfirmedAt = time.Time{}
+		c.Pending = &taken
+	}
+	c = retired(c)
+	c.State, c.SuspendedBy = supervise.StateSuspended, supervise.SuspendedByDaemon
+	if err := d.writeClaim(c, pending); err != nil {
+		return err
+	}
+	d.log.Info("supervise: suspended", "claim", string(token), "reason", payload.Reason, "by", string(supervise.SuspendedByDaemon))
+	return d.finish(row)
+}
+
+// closeTree runs a tree's close as the outbox's does: it acts only while the tree's root still
+// lingers at the generation the close names (workflow.StopActs), and then retires the claim and
+// cancels the segments it works.
+func (d *driver) closeTree(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue, token claim.Token) error {
+	c, found := d.claims[token]
+	if !found {
+		return d.finish(row)
+	}
+	root, err := d.recorded(payload.Tree)
+	if err != nil {
+		return err
+	}
+	if !workflow.StopActs(row.ID, payload, c.LastStartRow, root) {
+		return d.finish(row)
+	}
+	return d.retireClaim(row, token)
+}
+
+// retireClaim retires the claim token names, its issue closed or its tree's linger expired: the
+// turn under way ends, the task it held goes with it, the session is kept, and every segment of the
+// role's work on the issue is cancelled.
+func (d *driver) retireClaim(row record.OutboxRow, token claim.Token) error {
+	c := d.claims[token]
+	for _, p := range d.script.pieces[c.Issue] {
+		if p.role == c.Role && (p.state == pieceRunning || p.state == piecePaused) {
+			p.state = pieceCancelled
+		}
+	}
+	if d.turnOpen(c) {
+		if err := d.writeTurnEnd(c.Issue, c.Role); err != nil {
+			return err
+		}
+	}
+	c = d.claims[token]
+	pending := c.Pending
+	c = retired(c)
+	c.State = supervise.StateRetired
+	if err := d.writeClaim(c, pending); err != nil {
+		return err
+	}
+	return d.finish(row)
+}
+
+// writeClaim writes c, and retires the delivery pending was where c no longer holds it.
+func (d *driver) writeClaim(c supervise.Claim, pending *supervise.Delivery) error {
+	var err error
+	if pending != nil && c.Pending == nil {
+		err = d.st.RetireDelivery(d.ctx, c, pending.ID)
+	} else {
+		err = d.putClaim(c)
+	}
+	if err != nil {
+		return fmt.Errorf("write the claim %s: %w", c.Token, err)
+	}
+	d.claims[c.Token] = c
+	return nil
+}
+
+// putClaim writes c as the claim's machine writes its state (store.Store.PutClaim), with its
+// pending delivery where it holds one.
+func (d *driver) putClaim(c supervise.Claim) error {
+	var err error
+	if c.Pending != nil {
+		err = d.st.PutClaimAndDelivery(d.ctx, c, *c.Pending)
+	} else {
+		err = d.st.PutClaim(d.ctx, c)
+	}
+	if err != nil {
+		return fmt.Errorf("write the claim %s: %w", c.Token, err)
+	}
+	d.claims[c.Token] = c
+	return nil
+}
+
+// retireTask retires the task key's role's claim holds once the work of its segment is over, as
+// the end of the worker's last turn of it retires it (supervise's retirePending): the entry it
+// served recorded on the claim.
+func (d *driver) retireTask(key string, role claim.Role) error {
+	token, err := claim.NewToken(d.token, key, role)
+	if err != nil {
+		return err
+	}
+	c, ok := d.claims[token]
+	if !ok || c.Pending == nil {
+		return nil
+	}
+	pending := c.Pending
+	return d.writeClaim(retired(c), pending)
+}
+
+// turnOpen says whether c is in a turn (supervise.StateWorking), the one state projection reads as
+// a worker in a turn.
+func (d *driver) turnOpen(c supervise.Claim) bool {
+	return c.State == supervise.StateWorking
+}
+
+// ensureClaim is key's role's claim, admitted where the stub holds none: a segment under way at
+// the window's start whose claim the start state did not write, since no turn of it stood then.
+func (d *driver) ensureClaim(key string, role claim.Role) (supervise.Claim, error) {
+	token, err := claim.NewToken(d.token, key, role)
+	if err != nil {
+		return supervise.Claim{}, err
+	}
+	if c, ok := d.claims[token]; ok {
+		return c, nil
+	}
+	issue, err := d.recorded(key)
+	if err != nil {
+		return supervise.Claim{}, err
+	}
+	if issue == nil {
+		return supervise.Claim{}, fmt.Errorf("a turn of %s's %s at %s: the replay does not record %s", key, role, stamp(d.clock.Instant()), key)
+	}
+	c, err := d.st.AdmitClaim(d.ctx, supervise.Claim{Token: token, Project: d.token, Tree: issue.Tree, Issue: key, Role: role,
+		State: supervise.StateQueued})
+	if err != nil {
+		return supervise.Claim{}, fmt.Errorf("a turn of %s's %s at %s: %w", key, role, stamp(d.clock.Instant()), err)
+	}
+	d.launch(&c, false)
+	if err := d.putClaim(c); err != nil {
+		return supervise.Claim{}, err
+	}
+	return c, nil
+}
+
+// writeTurnStart is a turn of key's role's worker beginning, in p: its claim in the turn
+// (supervise.StateWorking) from now, the step the turn records, and the line the turn writes
+// (`supervise: a turn started`, with the delivery the turn works where the claim holds one).
+func (d *driver) writeTurnStart(key string, role claim.Role, p *piece) error {
+	c, err := d.ensureClaim(key, role)
+	if err != nil {
+		return err
+	}
+	if d.turnOpen(c) || c.State == supervise.StateFailed || c.State == supervise.StateRetired {
+		return nil
+	}
+	now := d.now()
+	c.State, c.LastTurnStart = supervise.StateWorking, now
+	if err := d.putClaim(c); err != nil {
+		return err
+	}
+	if _, err := d.st.PutClaimStep(d.ctx, c.Token, supervise.StepRecord{At: now, TurnStartedAt: now}); err != nil {
+		return fmt.Errorf("write the step of the claim %s: %w", c.Token, err)
+	}
+	args := []any{"claim", string(c.Token), "generation", c.Generation}
+	if c.Pending != nil {
+		args = append(args, "delivery", c.Pending.ID)
+	}
+	d.log.Info("supervise: a turn started", args...)
+	d.working[c.Token] = p
+	return d.settled(key, role)
+}
+
+// writeTurnEnd is the turn of key's role's worker under way ending: its claim idle from now, and
+// the line the turn writes (`supervise: a turn ended`).
+func (d *driver) writeTurnEnd(key string, role claim.Role) error {
+	token, err := claim.NewToken(d.token, key, role)
+	if err != nil {
+		return err
+	}
+	c, ok := d.claims[token]
+	if !ok || !d.turnOpen(c) {
+		return nil
+	}
+	c.State, c.LastTurnEnd = supervise.StateIdle, d.now()
+	if err := d.putClaim(c); err != nil {
+		return err
+	}
+	args := []any{"claim", string(c.Token), "generation", c.Generation}
+	if c.Pending != nil {
+		args = append(args, "delivery", c.Pending.ID)
+	}
+	d.log.Info("supervise: a turn ended", args...)
+	delete(d.working, token)
+	return d.settled(key, role)
+}
+
+// settled applies Settled where the claim the stub just changed is a root architect's and its root
+// has handed work to a person (record.Issue.DeclaredSeq), so the pass that enters the root's wait
+// on that person runs at the moment the claim settled, as supervision's own facts make it run in a
+// daemon (review Q2, item 15).
+func (d *driver) settled(key string, role claim.Role) error {
+	if role != claim.RoleArchitect {
+		return nil
+	}
+	issue, err := d.recorded(key)
+	if err != nil || issue == nil || !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.DeclaredSeq == 0 {
+		return err
+	}
+	_, err = d.apply("replay", d.factID("settled", key), Settled{Issue: key})
+	return err
+}

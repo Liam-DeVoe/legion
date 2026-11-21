@@ -55,7 +55,7 @@ var legionCommands = [][]string{
 	{"claims", "release-names"}, {"claims", "close"}, {"claims", "list"},
 	{"project"}, {"project", "pause"}, {"project", "resume"},
 	{"sessions"}, {"sessions", "import"},
-	{"replay"}, {"replay", "collect"}, {"replay", "collect-merges"}, {"replay", "neutralize"}, {"replay", "rules"},
+	{"replay"}, {"replay", "collect"}, {"replay", "collect-merges"}, {"replay", "neutralize"}, {"replay", "run"}, {"replay", "rules"},
 	{"probe-boot"},
 	{"controller"}, {"controller", "start"},
 }

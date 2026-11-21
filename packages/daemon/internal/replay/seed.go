@@ -596,8 +596,8 @@ func (s *seeder) owedStarts() error {
 
 // pullRequests writes a synthetic open pull request for each placed issue in the workflow the trace
 // has seen one of before the start, on the issue's own branch against its default branch, numbered
-// as a line named it or by the issue's own number: the record the daemon's guards read (review Q2,
-// item 1).
+// as a line named it or by the issue's own number, its head arrived when the trace first saw the
+// pull request: the record the daemon's guards read (review Q2, item 1).
 func (s *seeder) pullRequests() error {
 	for _, key := range s.placedKeys() {
 		issue, iss := s.placed[key], s.t.Issues[key]
@@ -610,7 +610,7 @@ func (s *seeder) pullRequests() error {
 			number, _ = strconv.Atoi(suffix)
 		}
 		pr := record.PullRequest{Issue: key, Repo: issue.Repo, Number: number, Branch: claim.IssueBranch(key), Base: issue.DefaultBranch,
-			State: record.PullRequestOpen}
+			HeadUpdatedAt: iss.PullRequest, State: record.PullRequestOpen}
 		if err := s.records.PutPullRequest(s.ctx, s.tx, pr); err != nil {
 			return fmt.Errorf("replay: seed the pull request of %s: %w", key, err)
 		}
