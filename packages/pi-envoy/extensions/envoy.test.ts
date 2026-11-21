@@ -50,12 +50,11 @@ import type {
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
 import { natsFailureReason } from "@legion/envoy-client/errors";
-import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
-import { NATS_DIAL_PLAN } from "@legion/envoy-client/nats-connection";
+import { NATS_DIAL_PLAN, NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection";
 import {
   renderSessionAnswers,
   sessionAnswersFailureLine,
@@ -773,9 +772,6 @@ afterEach(async () => {
   if (originalEnvoyUrl === undefined) delete process.env.ENVOY_URL;
   else process.env.ENVOY_URL = originalEnvoyUrl;
   globalThis.fetch = originalFetch;
-  // What a test's Dispatch answers taught the process about its keyed layer is per process, so a
-  // later suite in the same run (envoy-client's) would read it for the same origin.
-  forgetKeyedLayerMemory();
   // A broker client's retry loop trades on for the process's life, so each row's clients are
   // closed with it: one whose trades were failing would go on trading, and logging, into the
   // rows after it.
@@ -1167,7 +1163,9 @@ const acceptOnce =
       : { code: "ACCEPT_ALREADY_ACCEPTED", status: 409 };
 
 /** The accept route's response for `answer` to an accept of `attempt`, carrying back the request's
- *  key as Dispatch's keyed layer does (`key`), which is what lets the client ask again under it. */
+ *  key (`key`) as Dispatch's keyed layer does. The resend ignores the echo: the client asks again
+ *  under its key whatever the answer carries, and reads the echo only to settle a fresh 4xx
+ *  refusal that echoes exactly its key. */
 function acceptResponse(
   attempt: number,
   answer: AcceptAnswer,
@@ -1263,13 +1261,6 @@ async function bootDirectSession(
   const replyWaiters: { readonly count: number; readonly resolve: () => void }[] = [];
   globalThis.fetch = async (input, init) => {
     const url = new URL(input.toString());
-    // This Dispatch runs the keyed layer: its answers to a keyed write carry the key back and its
-    // /healthz says so, so a failed accept is asked again under its key.
-    if (url.pathname === "/healthz") {
-      return new Response(JSON.stringify({ status: "ok", idempotency_keys: true }), {
-        headers: { "content-type": "application/json" },
-      });
-    }
     if (url.pathname.startsWith("/api/v1/messages/")) {
       const authorization = new Headers(init?.headers).get("Authorization");
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/accept")) {
@@ -21485,6 +21476,46 @@ console.log(JSON.stringify(args));
     ).toBe(false);
     await fixture.handlers.get("session_shutdown")?.({}, context);
   }, 60_000);
+
+  test("a first NATS dial whose broker token the hub refuses twice drops it, starts another trade, and says so", async () => {
+    // The pass's dials share the keeper's count of the token's refusals (`connectNats`'
+    // `hooks.credential`), so the dial drops a token the hub refused twice, as the keeper does on
+    // an open connection. The waits between the dials are recorded, not slept.
+    const { minted } = brokerPod(() => "grant");
+    natsState.failConnects = 2;
+    natsState.failError = () =>
+      new NatsError("'Authorization Violation'", ErrorCode.AuthorizationViolation);
+    setNatsConnectForTests(
+      natsStandInConnect,
+      { firstDelayMs: 5, maxDelayMs: 5, budgetMs: 30_000 },
+      { delay: async () => {}, random: () => 0 }
+    );
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push(entry.message);
+    });
+    try {
+      const { context, notifications } = timedContext("ses_first_dial_refused", Date.now());
+      const { default: envoyExtension } = await import("./envoy.ts?first-dial-refused-twice");
+      const fixture = createPi();
+      envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.({}, context);
+      expect(
+        natsState.failConnects,
+        notifications.map(({ message }) => message).join(" | ")
+      ).toBe(0);
+      // The start's token, and the trade the drop started.
+      await until(() => minted.size === 2, "the trade the drop started");
+      expect([...minted.values()]).toEqual(["ses_first_dial_refused", "ses_first_dial_refused"]);
+      expect(warnings.filter((message) => message.includes(NATS_DIAL_TOKEN_DROPPED))).toHaveLength(
+        1
+      );
+      await fixture.handlers.get("session_shutdown")?.({}, context);
+    } finally {
+      stopSink();
+      setNatsConnectForTests(natsStandInConnect);
+    }
+  }, 30_000);
 
   test("natsCredential follows a session switch", async () => {
     // A session that presents its broker token (NATS_AUTH=broker) is admitted to its own subjects
