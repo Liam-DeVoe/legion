@@ -37,11 +37,11 @@ import type { StallWatchdogAborter } from "@legion/pi-shared/stall-watchdog";
  * the take of an owed task at its `agent_end`, and the take's text, if the daemon accepts it,
  * starts the next run, which is that task's turn; a message of the worker's own would start a turn
  * ahead of it. So where the take is pending when the message would go, after the abort, the
- * message waits for that take (`TaskTake.deferUntilSettled`), and one line says so. The message
- * goes once the take settles with no run starting first (`TaskTake.deferUntilSettled` says when),
- * since an aborted run's `session_stop` arms nothing (`extensions/legion.ts`) and nothing else then
- * starts the work again; it is sent then, once, as it would have been at once. A run that starts
- * first, the take's own or another, is the work going again, and it is not sent.
+ * message waits for that take, and one line says so; it goes once the take settles with no run
+ * starting first (`TaskTake.deferUntilSettled` says when), since an aborted run's `session_stop`
+ * arms nothing (`extensions/legion.ts`) and nothing else then starts the work again. It is sent
+ * then, once, as it would have been at once. A run that starts first, the take's own or another,
+ * is the work going again, and it is not sent.
  *
  * **Both halves fail loudly, and the ladder goes on.** A host with no `abort()`, an `abort()`
  * that throws or whose Promise rejects, and a message the host refuses each throw from here; the
@@ -99,7 +99,7 @@ export function createStallAborter(deps: StallAborterDeps): StallWatchdogAborter
       const task = deps.deferUntilTakeSettles(send);
       if (task !== undefined) {
         deps.log.info(
-          "legion: a stall abort's restart message waits for the take, because a take of the claim's task is pending: the task's text, if the daemon accepts the take, starts the next run, and the message is sent if the take is refused or dropped, or once a take refused in-turn has waited its bound",
+          "legion: a stall abort's restart message waits for the take, because a take of the claim's task is pending: the task's text, if the daemon accepts the take, starts the next run, and the message is sent if the take is refused by another hold or dropped, or once a take refused in-turn has waited its bound",
           { task }
         );
         return "held";

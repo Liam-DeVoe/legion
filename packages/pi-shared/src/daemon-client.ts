@@ -552,8 +552,8 @@ function daemonGaveNoAnswer(error: unknown): boolean {
 
 /** Resolves `true` once `ms` have passed, or `false` as soon as `signal` aborts: a timer that
  * keeps no process alive. The one wait between attempts, `retryWhileDaemonRestarts`'s and
- * `sendUntilAnswered`'s, unless a test passes its own clock; the take's bound after a run whose
- * take was refused `in-turn` (`IN_TURN_REWRITE_BOUND_MS`, `./task-take`) uses it too. */
+ * `sendUntilAnswered`'s, unless a test passes its own clock; the bound of a take refused
+ * `in-turn` (`IN_TURN_REWRITE_BOUND_MS`, `./task-take`) uses it too. */
 export function timerWait(ms: number, signal?: AbortSignal): Promise<boolean> {
   const { promise, resolve } = Promise.withResolvers<boolean>();
   if (signal?.aborted) {

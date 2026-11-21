@@ -93,21 +93,13 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  *
  * The take is pending (`pending`, R6) while it holds an owed value it has not asked about at this
  * revision, while a take is in flight, while an accepted take's turn has not started, its text
- * held included, and while a take of the held revision stands refused `in-turn`. The daemon
- * refuses a take `in-turn` while it counts a run of the claim as going, and writes the value
- * again once it reads that run's `agent_end` frame from the worker's stream: the turn's report,
- * which `agent_end` sends after `runEnded`, does not end the turn there. The take asks again at
- * that write. Such a refusal can meet an idle host as well as a busy one: the take sent at a
- * run's end races that frame to the daemon, and a take asked while the host is idle can be
- * overtaken by a short run that ends before the answer comes back. So a refusal `in-turn` stays
- * pending, whenever it arrives, until a newer revision, a delete, a run that starts, or `close`,
- * and for at most `IN_TURN_REWRITE_BOUND_MS` from the later of the run's end and the refusal's
- * arrival: past that bound the take is not pending, since another hold may stand at the turn's
- * end and the daemon then writes nothing until that hold ends. A refusal by any other hold is not
- * pending, since the daemon writes the value again only once its hold ends. A held value naming
- * the task whose turn is running is pending neither as one not asked about, nor as a take in
- * flight, nor as one refused `in-turn`, and `noteFor` gives it no note either: nothing is taken
- * for it, since that run's end holds the number finished.
+ * held included, and while a take of the held revision stands refused `in-turn`, until a newer
+ * revision, a delete, a run that starts, or `close`, and for at most `IN_TURN_REWRITE_BOUND_MS`
+ * from the later of the run's end and the refusal's arrival (`TaskTake.pending` says why). A
+ * refusal by any other hold is not pending, since the daemon writes the value again only once its
+ * hold ends. A held value naming the task whose turn is running is pending neither as one not
+ * asked about, nor as a take in flight, nor as one refused `in-turn`, and `noteFor` gives it no
+ * note either: nothing is taken for it, since that run's end holds the number finished.
  * The host's reminder starts no turn while the take is pending: the task is the next turn. A stall
  * abort's restart message that finds the take pending waits for it (`deferUntilSettled`), and is
  * sent if the take is refused by another hold or dropped, or once the bound of a refusal
@@ -136,15 +128,13 @@ const HOLD_IN_TURN = "in-turn";
 
 /**
  * How long a take refused `in-turn` stays pending (`pending`, R6), from the later of the end of
- * the run the daemon counted as going and the refusal's arrival. The daemon writes the value
- * again once it reads that run's `agent_end` frame from the worker's stream, which can come after
- * both, and the take waits for that write. Another hold may stand at the turn's end, and the
- * daemon then writes nothing until that hold ends, so past this bound the take is not pending and
- * the reminding and a stall abort's held restart go on. In the task-take e2e proof's CI run
- * 44792856135 (job 136485570478, legion/INFRA-2811 at 164a5331, 2026-11-20), the daemon wrote the
- * claim's value 3.2 ms after it logged the turn's end, and the listener's relay reached the worker
- * 42 ms and 53 ms after two of the daemon's writes, so the write the take waits for comes about
- * 60 ms after the run's end; 30 s is about 500 times that.
+ * the run the daemon counted as going and the refusal's arrival. Another hold may stand at the
+ * turn's end, and the daemon then writes nothing until that hold ends, so past this bound the take
+ * is not pending and the reminding and a stall abort's held restart go on. In the task-take e2e
+ * proof's CI run 44792856135 (job 136485570478, legion/INFRA-2811 at 164a5331, 2026-11-20), the
+ * daemon wrote the claim's value 3.2 ms after it logged the turn's end, and the listener's relay
+ * reached the worker 42 ms and 53 ms after two of the daemon's writes, so the write the take waits
+ * for comes about 60 ms after the run's end; 30 s is about 500 times that.
  */
 export const IN_TURN_REWRITE_BOUND_MS = 30_000;
 
@@ -341,12 +331,10 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   // (`hand`).
   let accepted: Accepted = NONE;
   let handings = 0;
-  // Whether the daemon refused the held value's take `in-turn`, which it writes again once it reads
-  // the `agent_end` frame of the run it counted as going, so the take stays pending past that
-  // run's end on the host (`pending`), whether the refusal met the host busy or idle: every change
-  // of the held value ends it (`endInTurnRefusal`). The bound of that wait, which starts at the
-  // later of the run's end and the refusal's arrival (`startInTurnBound`); and the task numbers
-  // this process has noted to its host (`noteFor`).
+  // Whether the daemon refused the held value's take `in-turn`, which keeps the take pending
+  // (`pending`): every change of the held value ends it (`endInTurnRefusal`). The bound of that
+  // wait, which starts at the later of the run's end and the refusal's arrival
+  // (`boundInTurnRefusal`); and the task numbers this process has noted to its host (`noteFor`).
   let refusedInTurn = false;
   let inTurnBound: AbortController | undefined;
   const noted = new Set<number>();
@@ -470,20 +458,12 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
         if (held?.number === value.number) held = undefined;
         return;
       case "refused":
-        // The daemon counted a run of the claim as going: it writes the value again once it reads
-        // that run's `agent_end` frame from the stream, so the take is pending until that write
-        // or the bound (`pending`). The refusal can meet the host idle as well as busy: the take
-        // sent at a run's end races that frame, and a take asked while the host was idle can be
-        // overtaken by a short run. Where the host is busy, the bound starts at the run's end
-        // (`runEnded`); where it is idle, that run has ended already, so the bound starts now,
-        // and a value owed nothing waits for nothing.
+        // An `in-turn` refusal keeps the take pending (`pending` says why it can meet the host
+        // idle as well as busy). Busy, its bound starts at the run's end (`runEnded`); idle, that
+        // run has ended already, so it starts now.
         if (answer.hold !== HOLD_IN_TURN) return;
-        if (busy) {
-          refusedInTurn = true;
-        } else if (owed(held)) {
-          refusedInTurn = true;
-          startInTurnBound();
-        }
+        refusedInTurn = true;
+        if (!busy) boundInTurnRefusal();
         return;
     }
   };
@@ -604,6 +584,15 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     });
   };
 
+  /** No run is going while the take stands refused `in-turn`, since the run the refusal came
+   *  during has ended or the refusal met the host idle: the bound starts where the held value is
+   *  still owed, and the refusal of a value owed nothing (the running task's own number, which
+   *  that run's end finished) ends here. */
+  const boundInTurnRefusal = (): void => {
+    if (refusedInTurn && owed(held)) startInTurnBound();
+    else endInTurnRefusal();
+  };
+
   /** A request for a pair other than `key`'s is replaced: it is sent no more. */
   const replace = (key: string | undefined): void => {
     if (seeing !== undefined && seeing.key !== key) {
@@ -700,17 +689,9 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       // daemon: the number is owed nothing from here on, before the report has even landed, and
       // until the daemon refuses it (`reportRefused`).
       if (ended !== undefined && !providerError) finishing = Math.max(finishing, ended);
-      // A take refused `in-turn` during this run stays pending past its end, its bound starting
-      // here: the daemon writes the value again once it reads this run's `agent_end` frame from
-      // the stream, and the turn's report, sent after this call, does not end the turn there. A
-      // take this end sends races that frame, and a refusal `in-turn` of it meets the host idle
-      // and starts its own bound (`answered`). A refusal of a value this end leaves owed nothing,
-      // the running task's own number, ends here.
-      if (refusedInTurn && owed(held)) {
-        startInTurnBound();
-      } else {
-        endInTurnRefusal();
-      }
+      // A take refused `in-turn` during this run stays pending, its bound starting here
+      // (`pending`).
+      boundInTurnRefusal();
       // A text accepted during the run that just ended, or while the host set that run's prompt
       // up: that run was not the task's turn, so its end names no task (`ended` is that run's own
       // task, if any), and the text starts the next run, the task's, or waits for that next run's

@@ -423,7 +423,9 @@ test("a stall abort's restart held for a pending take is sent once that take is 
   expect(held.logged).toEqual([
     { message: expect.stringContaining("waits for the take"), fields: { task: 4 } },
   ]);
-  expect(held.steps[1]?.outcome).toContain("is sent if that take is refused or dropped");
+  expect(held.steps[1]?.outcome).toContain(
+    "is sent if that take is refused by another hold or dropped"
+  );
 
   // The aborted run ends and asks the take: nothing goes while the daemon has not answered it.
   expect(claim.take.runEnded(false)).toBeUndefined();
