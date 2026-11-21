@@ -125,9 +125,9 @@ const (
 // (snapshots.go:630-771): the restore request with the backup's config and state, each chunk as a
 // request on the deliver subject the server names, then an empty request whose answer is the
 // stream's create response; it answers the restored stream's message count. paced runs after each
-// chunk, and an ended ctx stops the restore between chunks and cuts the chunk in flight short.
-// Beyond jsm.go it retries the two answers above, each within its bound.
-func restoreStream(ctx context.Context, nc *nats.Conn, b streamBackup, paced func()) (uint64, error) {
+// chunk with ctx, and an ended ctx stops the restore between chunks and cuts the chunk in flight
+// short. Beyond jsm.go it retries the two answers above, each within its bound.
+func restoreStream(ctx context.Context, nc *nats.Conn, b streamBackup, paced func(context.Context)) (uint64, error) {
 	request, _ := json.Marshal(map[string]json.RawMessage{"config": b.config, "state": b.state})
 	var started struct {
 		apiAnswer
@@ -170,7 +170,7 @@ func restoreStream(ctx context.Context, nc *nats.Conn, b streamBackup, paced fun
 			return 0, fmt.Errorf("restore %s: the chunk at byte %d: %s", b.stream, offset, ack.Data)
 		}
 		if paced != nil {
-			paced()
+			paced(ctx)
 		}
 	}
 	finished, err := nc.Request(started.DeliverSubject, nil, time.Minute)
@@ -299,18 +299,40 @@ func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 // as stalled (v2.15.1 jetstream_api.go:4613, activityInterval).
 const restoreStall = 5 * time.Second
 
+// stallWait is the ceiling on the wait for the server to end a cut restore as stalled: far past
+// restoreStall, so a loaded machine does not reach it, and the wait ends on the stall itself.
+const stallWait = restoreStall + 25*time.Second
+
+// stalledRestores is how many times the hub's members have logged a restore of stream ended as
+// stalled: "Stream restore failed for '$G > <stream>': restore for stream ... is stalled".
+func (r *operatorRig) stalledRestores(stream string) int {
+	count := 0
+	for _, server := range r.cluster.Servers {
+		for _, line := range strings.Split(server.Log(), "\n") {
+			if strings.Contains(line, "Stream restore failed for '$G > "+stream+"'") && strings.Contains(line, "is stalled") {
+				count++
+			}
+		}
+	}
+	return count
+}
+
 // restoreCommand is the held restore as the operator's command runs it on the clustered hub:
 // before each attempt a forced reconnect, so the attempt starts on a decision less than a second
 // old, and a wait for the reconnect; an attempt that the connection's close cuts short is waited
-// out past the server's stall, its leftover stream is deleted (deleteCutRestore), and the restore
-// runs again from its first chunk, attempts times at most. After the last attempt's cut it deletes
-// the leftover too, so a stopped command leaves no stream, and answers an error naming the bucket
-// and every attempt's error.
-func restoreCommand(t *testing.T, o *operatorConn, b streamBackup, attempts int, paced func()) error {
+// out until the server has ended it as stalled, its leftover stream is deleted
+// (deleteCutRestore), and the restore runs again from its first chunk, attempts times at most.
+// After the last attempt's cut it deletes the leftover too, so a stopped command leaves no stream,
+// and answers an error naming the bucket and every attempt's error.
+//
+// The stall is a real server's timer, so the wait keeps a wall-clock ceiling (stallWait), but ends
+// on the fact, the member's log line, rather than on a clock.
+func restoreCommand(t *testing.T, r *operatorRig, o *operatorConn, b streamBackup, attempts int, paced func(context.Context)) error {
 	t.Helper()
 	var failures []string
 	for range attempts {
 		o.reconnect(t)
+		stalled := r.stalledRestores(b.stream)
 		ctx, cancel := context.WithCancel(context.Background())
 		stop := make(chan struct{})
 		go func() {
@@ -327,7 +349,9 @@ func restoreCommand(t *testing.T, o *operatorConn, b streamBackup, attempts int,
 			return nil
 		}
 		failures = append(failures, err.Error())
-		time.Sleep(restoreStall + time.Second)
+		testwait.WithinPolling(t, stallWait, 100*time.Millisecond, "the server ending the cut restore of "+b.stream+" as stalled", func() bool {
+			return r.stalledRestores(b.stream) > stalled
+		})
 		testwait.WithinPolling(t, 15*time.Second, 50*time.Millisecond, "the connection after the cut", o.IsConnected)
 		deleteCutRestore(t, o, b.stream)
 	}
@@ -357,13 +381,16 @@ func deleteCutRestore(t *testing.T, o *operatorConn, stream string) {
 	require.Equal(t, 10059, gone.Error.ErrCode, "%s after its cut restore's delete: %s", stream, gone.raw)
 }
 
-// A held restore survives one close of its connection: with the held user living a few seconds
-// and the chunks paced so a restore takes about five, the first attempt is cut by the server
-// closing the connection at the user's expiry; once the server has ended that restore as stalled,
-// the stream it leaves is deleted (deleteCutRestore) and is gone, and the second attempt, on the
-// reconnect's new decision under held, restores every message. A second close stops the command,
-// naming the bucket and both errors, and the stream its cut leaves is deleted and does not come
-// back.
+// A held restore survives one close of its connection: with the held user living a few seconds,
+// the first attempt is held after its first chunk until the server closes the connection at the
+// user's expiry, which cuts it; once the server has ended that restore as stalled, the stream it
+// leaves is deleted (deleteCutRestore) and is gone, and the second attempt, on the reconnect's new
+// decision under held, restores every message. A second close stops the command, naming the
+// bucket and both errors, and the stream its cut leaves is deleted and does not come back.
+//
+// The close is a real server's, at the user's expiry, so the pacing keeps a wall-clock ceiling
+// (closeWait) but waits on the fact, the attempt's context ended by the disconnect, and holds no
+// attempt whose user lives longer than a minute.
 //
 // Run by hand, the control is the restore without its retry (one attempt): the stream is missing
 // after the cut, and the test fails naming the bucket.
@@ -373,7 +400,17 @@ func TestARestoreSurvivesOneReconnect(t *testing.T) {
 	_, js := r.admin(t)
 	r.makeStreams(t, 40, 16*1024, 0)
 	sessions := kvBucket(bus.SessionBucket)
-	paced := func() { time.Sleep(500 * time.Millisecond) }
+	const closeWait = 30 * time.Second
+	paced := func(ctx context.Context) {
+		if latest := r.decisions.latest(operatorName); time.Until(latest.Expires) > time.Minute {
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(closeWait):
+			t.Errorf("the server did not close the held user's connection within %s of its decision", closeWait)
+		}
+	}
 
 	// Reads: the first connect, the first attempt's forced reconnect (3 s), the reconnect after its
 	// cut, the second attempt's forced reconnect: an hour each but the second.
@@ -383,11 +420,11 @@ func TestARestoreSurvivesOneReconnect(t *testing.T) {
 	backup, err := backupStream(operator.Conn, sessions)
 	require.NoError(t, err)
 	require.EqualValues(t, 40, backup.messages)
-	require.Greater(t, len(backup.data), 6*restoreChunk, "the backup is too small for the paced restore to outlive the held user")
+	require.Greater(t, len(backup.data), 2*restoreChunk, "the backup is one chunk, so a restore held after its first chunk has none left to cut")
 
 	succeeds(t, operator.Conn, "$JS.API.STREAM.DELETE."+sessions, nil)
 	seen := r.decisions.count(operatorName)
-	require.NoError(t, restoreCommand(t, operator, backup, 2, paced), "the restore did not survive one close")
+	require.NoError(t, restoreCommand(t, r, operator, backup, 2, paced), "the restore did not survive one close")
 	require.GreaterOrEqual(t, r.decisions.count(operatorName)-seen, 3, "the restore ran again on no new decision")
 	for _, decision := range r.decisions.since(operatorName, seen) {
 		require.Equal(t, natsgrant.Operator(natsgrant.OperatorPhaseHeld), decision.Grant, "a reconnect of the restore was not given the held grant")
@@ -401,7 +438,7 @@ func TestARestoreSurvivesOneReconnect(t *testing.T) {
 		reader.mu.Lock()
 		reader.lives, reader.reads = []time.Duration{3 * time.Second, time.Hour, 3 * time.Second, time.Hour}, 0
 		reader.mu.Unlock()
-		err := restoreCommand(t, operator, backup, 2, paced)
+		err := restoreCommand(t, r, operator, backup, 2, paced)
 		require.Error(t, err, "the restore completed through two closes")
 		require.Contains(t, err.Error(), sessions)
 		require.Contains(t, err.Error(), "stopped after 2 closes")
