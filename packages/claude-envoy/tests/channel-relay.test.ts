@@ -2,8 +2,9 @@
  * A Claude Code or Codex session whose inbound is the listener's relay socket
  * (`ENVOY_INBOUND=listener`): the channel server dials the socket rather than NATS
  * (`dialChannelInbound`), and neither live view takes its control subject on it, since the socket
- * carries no agent stream and refuses that subject (`subject_not_granted`). The socket is a
- * stand-in that serves the socket's wire and the broker's token exchange on one origin
+ * carries no agent stream and refuses that subject (`subject_not_granted`); and a session whose own
+ * relay subject the listener refuses is told why and takes it again at the heartbeat. The socket
+ * is a stand-in that serves the socket's wire and the broker's token exchange on one origin
  * (`@legion/envoy-client/test/relay-socket-stand-in`).
  */
 import { afterEach, expect, test } from "bun:test"
@@ -22,7 +23,22 @@ import type { ModEvent } from "../hooks/mod-protocol"
 import { startAgentStream } from "../src/agent-stream-runner"
 import { dialChannelInbound } from "../src/channel-connection"
 import { startCodexAgentStream } from "../src/codex/codex-agent-stream"
+import { startChannelSession } from "../src/envoy-channel-server"
 import type { ModLink } from "../src/mod-link"
+import { SessionIdentity } from "../src/session-identity"
+import {
+  FakeNotifier,
+  noInterest,
+  recordingClient,
+  sessionOptions,
+  useScratchState,
+  waitFor,
+} from "./channel-session-harness"
+import { isolatePaneEnvironment } from "./pane-environment"
+
+isolatePaneEnvironment()
+
+const scratchState = useScratchState()
 
 const SESSION = "0c3b6f6e-0000-4000-8000-0000000000aa"
 const tempDir = temporaryDirectories("channel-relay")
@@ -124,3 +140,71 @@ test("a relay socket session dials the socket, and neither live view takes a sub
   }
   expect(server.subs).toEqual([{ session: SESSION, subject: standInDeliverSubject(SESSION) }])
 })
+
+/** The notices the server wrote for itself under `heading`: the one write that names no event. */
+function notices(notifier: FakeNotifier, heading: string): string[] {
+  return notifier.notifications
+    .filter((written) => written.eventId === undefined && written.content.includes(heading))
+    .map((written) => written.content)
+}
+
+// #4658 answers the session's own relay subject `subject_not_granted` when its NATS server refuses
+// the subscribe, as a misrendered or missing grant makes it. The subscription ends with that
+// error, as a nats.js one the server refused does, so the session is told why it receives nothing
+// and takes the subject again at the heartbeat, rather than holding a dead subscription.
+test("a relay subject the listener refuses is told as an outage naming why, and the heartbeat takes it again", async () => {
+  const server = startRelaySocketStandIn()
+  started.push(() => server.stop())
+  const settings = relaySettings(server)
+  const { inbound } = settings
+  if ("off" in inbound) throw new Error(`inbound is off: ${inbound.off}`)
+  const dialled = await dialChannelInbound(
+    inbound,
+    settings.url,
+    () => SESSION,
+    "claude-envoy-channel-test",
+    () => undefined,
+    undefined,
+    AbortSignal.timeout(10_000),
+  )
+  started.push(() => dialled.connection.close())
+  const notifier = new FakeNotifier()
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), scratchState(), {
+      connection: dialled.connection,
+      notifier,
+      heartbeatMs: 50,
+      client: recordingClient([], { subscribe: async (input) => noInterest(input.sessionID) }),
+    }),
+  )
+  try {
+    const relaySubject = standInDeliverSubject(SESSION)
+    server.refuseOwnSubject = true
+    // The socket opens again and takes the subject again, which the listener now refuses.
+    server.close(1012, "listener_stopping")
+    await waitFor(
+      async () => notices(notifier, "Envoy inbound unavailable").length === 1,
+      "the refusal told",
+      () => JSON.stringify(notifier.notifications),
+    )
+    expect(notices(notifier, "Envoy inbound unavailable")[0]).toContain(
+      `the listener's relay socket refused the subject ${relaySubject} (subject_not_granted)`,
+    )
+    // The heartbeat asks for the subject again while it is refused.
+    const refusedOnce = server.refusedSubs.length
+    await waitFor(
+      async () => server.refusedSubs.length > refusedOnce,
+      "the subject asked for again at a heartbeat",
+    )
+    server.refuseOwnSubject = false
+    await waitFor(
+      async () => notices(notifier, "Envoy inbound restored").length === 1,
+      "the session told it receives again once the subject is granted",
+      () => JSON.stringify(notifier.notifications),
+    )
+    expect(server.subs.at(-1)).toEqual({ session: SESSION, subject: relaySubject })
+    expect(notices(notifier, "Envoy inbound unavailable")).toHaveLength(1)
+  } finally {
+    await session.shutdown()
+  }
+}, 30_000)

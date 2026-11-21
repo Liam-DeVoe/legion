@@ -135,6 +135,9 @@ export interface RelaySocketStandIn {
   tokenSeconds: number;
   /** A status every upgrade is refused with while set, as an edge whose broker is away (503). */
   refuseUpgrades: number | undefined;
+  /** While true, a `sub` of the session's own relay subject is refused `subject_not_granted` too,
+   *  as a listener whose NATS server rejects its subscribe (a grant misrendered or missing) does. */
+  refuseOwnSubject: boolean;
   /** The open sockets of `session`. */
   sockets(session: string): number;
   /** Sends `frame` to every subscription of `session`'s relay subject, on every socket of the
@@ -262,6 +265,7 @@ export function startRelaySocketStandIn(
     tradesAsked: 0,
     tokenSeconds: 3600,
     refuseUpgrades: undefined,
+    refuseOwnSubject: false,
     sockets: (session) => [...open].filter((socket) => socket.data.session === session).length,
     deliver(session, frame) {
       const subject = standInDeliverSubject(session);
@@ -449,7 +453,7 @@ export function startRelaySocketStandIn(
           }
           const subject = String(frame.subject);
           standIn.handled.push({ session, frame: `sub ${sid} ${subject}` });
-          if (subject !== standInDeliverSubject(session)) {
+          if (subject !== standInDeliverSubject(session) || standIn.refuseOwnSubject) {
             standIn.refusedSubs.push({ session, subject, code: "subject_not_granted" });
             send(socket, { op: "err", sid, code: "subject_not_granted" });
             return;

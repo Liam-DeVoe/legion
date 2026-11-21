@@ -512,10 +512,22 @@ describe("a relay socket", () => {
       relay.subscribe("agentstream.ses_a.control"),
       relay.subscribe("agentstream.ses_a.control"),
     ];
-    // Each refused subscription ends, as a closed one does.
-    for (const subscription of refused) {
-      for await (const _ of subscription) throw new Error("a refused subscription yielded");
-    }
+    // Each refused subscription ends with an error naming the subject and code, as a nats.js
+    // subscription a server refused does, so its reader is told why.
+    const ended = await Promise.all(
+      refused.map((subscription) =>
+        subscription[Symbol.asyncIterator]()
+          .next()
+          .then(
+            (next) => (next.done === true ? "ended with no error" : "yielded a frame"),
+            (error: unknown) => (error instanceof Error ? error.message : String(error))
+          )
+      )
+    );
+    expect(ended).toEqual([
+      "the listener's relay socket refused the subject agentstream.ses_a.control (subject_not_granted)",
+      "the listener's relay socket refused the subject agentstream.ses_a.control (subject_not_granted)",
+    ]);
     expect(server.refusedSubs).toEqual([
       { session: "ses_a", subject: "agentstream.ses_a.control", code: "subject_not_granted" },
       { session: "ses_a", subject: "agentstream.ses_a.control", code: "subject_not_granted" },
@@ -544,12 +556,17 @@ describe("a relay socket", () => {
     const fifthNow = await Promise.race([
       fifth[Symbol.asyncIterator]()
         .next()
-        .then((next) => (next.done === true ? "ended" : "yielded a frame")),
+        .then(
+          (next) => (next.done === true ? "ended with no error" : "yielded a frame"),
+          (error: unknown) => (error instanceof Error ? error.message : String(error))
+        ),
       // The listener answered the fifth `sub` before the pong above: a second round trip is past
       // anything still to come about it.
       relay.flush().then(() => "still open a round trip after the listener refused it"),
     ]);
-    expect(fifthNow).toBe("ended");
+    expect(fifthNow).toBe(
+      `the listener's relay socket refused the subject ${subject} (subscription_limit)`
+    );
     expect(server.refusedSubs).toEqual([{ session: "ses_a", subject, code: "subscription_limit" }]);
     expect(logs.filter((line) => line.includes("subscription_limit"))).toEqual([
       `the listener's relay socket for ses_a refused the subject ${subject} (subscription_limit); that subscription is closed`,

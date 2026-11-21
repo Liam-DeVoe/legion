@@ -201,11 +201,16 @@ export function relayReopenDelay(end: RelayEnd, streak: number): number {
   return doubling(RELAY_FIRST_WAIT_MS, streak);
 }
 
-/** An async queue: what is pushed is read in order, and reading ends once it is ended and empty. */
+/** An async queue: what is pushed is read in order, and reading ends once it is ended and empty,
+ *  or rejects with the error it failed with once that is read. */
 class Queue<T> implements AsyncIterable<T> {
   readonly #items: T[] = [];
-  readonly #waiting: ((result: IteratorResult<T>) => void)[] = [];
+  readonly #waiting: {
+    readonly resolve: (result: IteratorResult<T>) => void;
+    readonly reject: (error: Error) => void;
+  }[] = [];
   #ended = false;
+  #failed: Error | undefined;
   readonly #onReturn: () => void;
 
   constructor(onReturn: () => void) {
@@ -216,13 +221,23 @@ class Queue<T> implements AsyncIterable<T> {
     if (this.#ended) return;
     const waiting = this.#waiting.shift();
     if (waiting === undefined) this.#items.push(item);
-    else waiting({ done: false, value: item });
+    else waiting.resolve({ done: false, value: item });
   }
 
   end(): void {
     if (this.#ended) return;
     this.#ended = true;
-    for (const waiting of this.#waiting.splice(0)) waiting({ done: true, value: undefined });
+    for (const waiting of this.#waiting.splice(0))
+      waiting.resolve({ done: true, value: undefined });
+  }
+
+  /** Ends the queue with `error`: a reader takes what was pushed before it, then the error, as a
+   *  nats.js subscription a server refused ends with its permissions violation. */
+  fail(error: Error): void {
+    if (this.#ended) return;
+    this.#ended = true;
+    this.#failed = error;
+    for (const waiting of this.#waiting.splice(0)) waiting.reject(error);
   }
 
   [Symbol.asyncIterator](): AsyncIterator<T> {
@@ -231,9 +246,10 @@ class Queue<T> implements AsyncIterable<T> {
         if (this.#items.length > 0) {
           return Promise.resolve({ done: false, value: this.#items.shift() as T });
         }
+        if (this.#failed !== undefined) return Promise.reject(this.#failed);
         if (this.#ended) return Promise.resolve({ done: true, value: undefined });
-        const { promise, resolve } = Promise.withResolvers<IteratorResult<T>>();
-        this.#waiting.push(resolve);
+        const { promise, resolve, reject } = Promise.withResolvers<IteratorResult<T>>();
+        this.#waiting.push({ resolve, reject });
         return promise;
       },
       // A reader that stops early (`break`) ends what it read, as a nats.js iterator does.
@@ -288,6 +304,10 @@ class RelaySubscription implements RelaySocketSubscription {
 
   end(): void {
     this.#queue.end();
+  }
+
+  fail(error: Error): void {
+    this.#queue.fail(error);
   }
 
   [Symbol.asyncIterator](): AsyncIterator<RelaySocketMessage> {
@@ -841,10 +861,14 @@ export class ListenerRelay implements InboundConnection {
     const subscription = "sid" in frame ? this.#subs.get(Number(frame.sid)) : undefined;
     if (subscription !== undefined && SUBSCRIPTION_REFUSALS[code] === true) {
       // A subject this socket does not carry, or a subscription past the most a socket holds:
-      // that subscription is closed, as a NATS server's permissions violation closes it, and every
-      // other one goes on.
+      // that subscription ends with an error naming the subject and code, as a NATS server's
+      // permissions violation ends a nats.js one, so its reader is told why; every other goes on.
       this.#subs.delete(subscription.sid);
-      subscription.end();
+      subscription.fail(
+        new LoggableError(
+          `the listener's relay socket refused the subject ${subscription.subject} (${code})`
+        )
+      );
       this.#logOnce(
         `${session}\u0000${code}\u0000${subscription.subject}`,
         `the listener's relay socket for ${session} refused the subject ${subscription.subject} (${code}); that subscription is closed`

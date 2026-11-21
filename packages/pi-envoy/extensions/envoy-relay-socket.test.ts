@@ -2,8 +2,9 @@
 // real extension, in a process of its own (`test/relay-session-process.ts`), opens the socket for
 // its session with that session's broker token, takes its relay subject on it, and opens no live
 // view, since the socket carries no agent stream and refuses that subject
-// (`subject_not_granted`). The socket and the broker are one stand-in
-// (`@legion/envoy-client/test/relay-socket-stand-in`), which this process runs and reads.
+// (`subject_not_granted`); and a session whose own relay subject the listener refuses is told why.
+// The socket and the broker are one stand-in (`@legion/envoy-client/test/relay-socket-stand-in`),
+// which this process runs and reads.
 import { expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -58,6 +59,50 @@ test("a relay socket session takes its relay subject on the socket and no agent 
     expect(report.notices.join("\n")).toContain(
       "Envoy's inbound messages come through the listener's relay socket (ENVOY_INBOUND is listener), which carries no live view: the Agents page shows nothing of this session's turns"
     );
+  } finally {
+    server.stop();
+  }
+}, 60_000);
+
+// #4658 answers the session's own relay subject `subject_not_granted` when its NATS server refuses
+// the subscribe (a grant misrendered or missing). The subscription ends with that error, as a
+// nats.js one the server refused does, so the session is told why it receives nothing, rather
+// than told it holds no relay subject with no reason.
+test("a relay subject the listener refuses is told naming why", async () => {
+  const server = startRelaySocketStandIn();
+  server.refuseOwnSubject = true;
+  try {
+    const home = tempDir();
+    const tokenFile = join(home, "token");
+    writeFileSync(tokenFile, `${fixtureSecret("proj")}\n`);
+    const refusal = `the listener's relay socket refused the subject ${standInDeliverSubject(SESSION)} (subject_not_granted)`;
+    const report = await runRelaySession({
+      session: SESSION,
+      cwd: import.meta.dir,
+      env: {
+        PATH: process.env.PATH,
+        TMPDIR: process.env.TMPDIR,
+        HOME: home,
+        ENVOY_CONFIG_FILE: join(home, "envoy.json"),
+        ENVOY_URL: server.url,
+        ENVOY_INBOUND: "listener",
+        AGENT_SECRETS_URL: server.url,
+        AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+        AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+      },
+      timeoutMs: 45_000,
+      waitFor: "receives nothing",
+    });
+    expect(server.refusedSubs[0]).toEqual({
+      session: SESSION,
+      subject: standInDeliverSubject(SESSION),
+      code: "subject_not_granted",
+    });
+    const told = report.lines.filter((line) => line.includes("receives nothing"));
+    if (told.length === 0) {
+      throw new Error(`the session was never told it receives nothing: ${JSON.stringify(report)}`);
+    }
+    expect(told[0]).toContain(refusal);
   } finally {
     server.stop();
   }
