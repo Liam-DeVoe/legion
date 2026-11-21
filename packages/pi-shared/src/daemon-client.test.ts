@@ -409,7 +409,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       },
       "handoff-complete.json",
     ],
-    // A tester's fail names the step its task returns to (contract 202).
+    // A tester's fail names the step its task returns to (contract 201).
     [
       "handoffComplete",
       "/legion/v1/handoff/complete",
@@ -501,7 +501,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       { grantId: "grant-208", issue: "LEGION-209" },
       "child-rerun.json",
     ],
-    // The owner's plan (contract 202): register_plan answers the plan it took, stop_task nothing.
+    // The owner's plan (contract 201): register_plan answers the plan it took, stop_task nothing.
     [
       "planRegister",
       "/legion/v1/plans/register",
