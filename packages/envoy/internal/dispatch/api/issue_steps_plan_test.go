@@ -221,6 +221,33 @@ func TestAPlannedStepReadsOnlyItsOwnRunsAfterAVersionChangesItsSteps(t *testing.
 	}
 }
 
+// A step the plan names `role:key` is run by an agent of that role, and its run records the role
+// alone, since a run carries no agent key: the owner's acceptance, `acceptance:owner`, runs as a
+// run of role acceptance. So a planned `acceptance:owner` whose run ended passed reads passed. The
+// fault is a step matched by the whole word the plan writes, `acceptance:owner`, which no run's
+// role is, so the step reads not started after it passed.
+func TestAPlannedKeyedStepReadsTheRunsOfItsRole(t *testing.T) {
+	handler := newTestHandler(t)
+	daemon := daemonSessionOf("LEG")
+	issue := createTestIssue(t, handler, "LEG", "A plan whose owner accepts the work")
+	putPlanRecordOK(t, handler, issue, uuid.NewString(), map[string]any{
+		"actor": daemon, "generation": 1, "source": "owner", "artifact_id": uuid.NewString(), "version": 1,
+		"tasks": []map[string]any{{"id": "a", "steps": []string{"implementer", "acceptance:owner"}, "needs": []string{}}},
+	})
+	for place, role := range []string{"implementer", "acceptance"} {
+		run := startRun(t, handler, "LEG", issue, "a", role, place+1, 1, at(10*place))
+		putStepOK(t, handler, issue, run, map[string]any{"actor": daemon, "task": "a", "step": place + 1, "kind": "step",
+			"role": role, "generation": 1, "result": "passed", "ended_at": at(10*place + 5)})
+	}
+	tasks := stepsTasks(readSteps(t, handler, issue))
+	if len(tasks) == 0 {
+		t.Fatalf("the steps of %s list no task", issue)
+	}
+	if got, want := tasks[0].Planned, []string{"1 implementer passed", "2 acceptance:owner passed"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the planned steps = %q, want %q: the run of role acceptance at place 2 is the run of acceptance:owner", got, want)
+	}
+}
+
 // A plan write records each task's needs as the ids it names, and answers them; a task written
 // with no needs answers them null. A need that names no task of the plan is refused, and nothing
 // is written. The fault is a node that holds a need no task of it answers to; the control is a
