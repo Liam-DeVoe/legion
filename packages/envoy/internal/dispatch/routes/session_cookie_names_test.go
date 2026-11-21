@@ -22,10 +22,16 @@ const (
 	namesOutsideOrigin   = "https://outside.dispatch.example"
 )
 
-// twoPeopleRouter is a router on a cookie identity at namesCanonicalOrigin, also answering at
-// namesOutsideOrigin, holding a current session for alice and one for mallory, with the value of
-// each one's session cookie.
+// twoPeopleRouter is twoPeopleRouterAt namesOutsideOrigin, with the cookie Secure.
 func twoPeopleRouter(t *testing.T) (handler http.Handler, alice, mallory string) {
+	t.Helper()
+	return twoPeopleRouterAt(t, namesOutsideOrigin, false)
+}
+
+// twoPeopleRouterAt is a router on a cookie identity at namesCanonicalOrigin, also answering at
+// outside, under DISPATCH_INSECURE_COOKIE when insecure is true, holding a current session for alice
+// and one for mallory, with the value of each one's session cookie.
+func twoPeopleRouterAt(t *testing.T, outside string, insecure bool) (handler http.Handler, alice, mallory string) {
 	t.Helper()
 	people := newMemoryPeople()
 	sessions := &memorySessionStore{generations: map[string]int64{}}
@@ -42,14 +48,15 @@ func twoPeopleRouter(t *testing.T) (handler http.Handler, alice, mallory string)
 		values[email] = cookie.Value
 	}
 	ctx, err := BuildAppContext(AppContextOptions{
-		SigningKey:    testSigningKey,
-		People:        people,
-		Sessions:      sessions,
-		Identity:      identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions},
-		AgentTokens:   sharedAgentTokens(t, "agent-token"),
-		ServerURL:     namesCanonicalOrigin,
-		OutsideOrigin: namesOutsideOrigin,
-		Lifetime:      t.Context(),
+		SigningKey:     testSigningKey,
+		People:         people,
+		Sessions:       sessions,
+		Identity:       identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions},
+		AgentTokens:    sharedAgentTokens(t, "agent-token"),
+		ServerURL:      namesCanonicalOrigin,
+		OutsideOrigin:  outside,
+		InsecureCookie: insecure,
+		Lifetime:       t.Context(),
 	})
 	if err != nil {
 		t.Fatalf("build context: %v", err)
@@ -75,13 +82,15 @@ func whoamiCarrying(handler http.Handler, origin string, cookies ...*http.Cookie
 // for two people, is the person of `__Host-dsession`: a `dsession` another host under the domain
 // planted beside a victim's session signs them in as nobody else (login CSRF).
 //
-// At the outside origin, which no released build served, the session cookie has one name,
-// `__Host-dsession` (the router is Secure): a `dsession` alone there is no session, and beside a
-// `__Host-dsession` it changes nothing.
+// At the outside origin, which no released build has served, the session cookie has one name,
+// `__Host-dsession` (the outside origin is https): a `dsession` alone there is no session, and
+// beside a `__Host-dsession` it changes nothing. That holds at every port of the outside origin's
+// host, since a browser sends one host's cookies to every port of it.
 //
 // Controls: read `dsession` alone (auth.sessionCookieValue), and every row carrying
 // `__Host-dsession` fails; read the canonical origin's two names at the outside origin too, and its
-// row of a planted `dsession` alone fails.
+// rows of a planted `dsession` alone fail; mark the outside origin by host and port, and the row at
+// another port fails.
 func TestWhoamiReadsTheSessionCookieOfItsOrigin(t *testing.T) {
 	handler, alice, mallory := twoPeopleRouter(t)
 	host := func(value string) *http.Cookie { return &http.Cookie{Name: "__Host-dsession", Value: value} }
@@ -99,6 +108,8 @@ func TestWhoamiReadsTheSessionCookieOfItsOrigin(t *testing.T) {
 		{name: "outside: only __Host-dsession", origin: namesOutsideOrigin, cookies: []*http.Cookie{host(alice)}, login: "alice@d.example"},
 		{name: "outside: only a planted dsession", origin: namesOutsideOrigin, cookies: []*http.Cookie{plain(mallory)}, login: ""},
 		{name: "outside: alice's __Host-dsession, and mallory's dsession first", origin: namesOutsideOrigin, cookies: []*http.Cookie{plain(mallory), host(alice)}, login: "alice@d.example"},
+		{name: "outside host, another port: only __Host-dsession", origin: namesOutsideOrigin + ":8443", cookies: []*http.Cookie{host(alice)}, login: "alice@d.example"},
+		{name: "outside host, another port: only a planted dsession", origin: namesOutsideOrigin + ":8443", cookies: []*http.Cookie{plain(mallory)}, login: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response := whoamiCarrying(handler, tc.origin, tc.cookies...)
@@ -117,13 +128,14 @@ func TestWhoamiReadsTheSessionCookieOfItsOrigin(t *testing.T) {
 
 // A write that carries a session cookie of its origin must come from that origin
 // (enforceCookieOrigin, through auth.HasSessionCookie): a page of another site that makes the browser
-// send either name at the canonical origin, or `__Host-dsession` at the outside origin, is refused
-// 403. A `dsession` at the outside origin is no session cookie there: the write passes the check
-// and finds no person, 401, and signs nobody out.
+// send either name at the canonical origin, or `__Host-dsession` at the outside origin's host, is
+// refused 403. A `dsession` at the outside origin's host, at any port, is no session cookie there:
+// the write passes the check and finds no person, 401, and signs nobody out.
 //
 // Controls: auth.HasSessionCookie reading `dsession` alone, and the canonical `__Host-dsession` row
 // reaches the sign-out, which answers 200 and signs alice out; read the canonical origin's two names
-// at the outside origin, and its `dsession` row answers 403.
+// at the outside origin, and its `dsession` rows answer 403; mark the outside origin by host and
+// port, and the row at another port answers 403.
 func TestAWriteCarryingASessionCookieMustComeFromItsOrigin(t *testing.T) {
 	for _, tc := range []struct {
 		origin, name string
@@ -133,6 +145,7 @@ func TestAWriteCarryingASessionCookieMustComeFromItsOrigin(t *testing.T) {
 		{origin: namesCanonicalOrigin, name: "dsession", status: http.StatusForbidden},
 		{origin: namesOutsideOrigin, name: "__Host-dsession", status: http.StatusForbidden},
 		{origin: namesOutsideOrigin, name: "dsession", status: http.StatusUnauthorized},
+		{origin: namesOutsideOrigin + ":8443", name: "dsession", status: http.StatusUnauthorized},
 	} {
 		t.Run(tc.origin+" "+tc.name, func(t *testing.T) {
 			handler, alice, _ := twoPeopleRouter(t)
@@ -147,6 +160,39 @@ func TestAWriteCarryingASessionCookieMustComeFromItsOrigin(t *testing.T) {
 			}
 			if still := whoamiCarrying(handler, namesCanonicalOrigin, &http.Cookie{Name: "dsession", Value: alice}); still.Code != http.StatusOK {
 				t.Errorf("after the foreign-origin sign-out, alice's session answered whoami %d %s, want 200: the write signed her out", still.Code, still.Body.String())
+			}
+		})
+	}
+}
+
+// At the outside origin the session cookie follows that origin's scheme, not DISPATCH_INSECURE_COOKIE:
+// at an https outside origin it is `__Host-dsession` even under the setting (a browser takes a
+// Secure cookie there), and at an http one it is `dsession` even with the cookie Secure elsewhere (a
+// browser refuses a `__Host-` cookie over plain http). Each is read there alone.
+//
+// Control: take the outside origin's name from the setting rather than its scheme, and every row
+// fails.
+func TestTheOutsideOriginsSessionCookieFollowsItsScheme(t *testing.T) {
+	host := func(value string) *http.Cookie { return &http.Cookie{Name: "__Host-dsession", Value: value} }
+	plain := func(value string) *http.Cookie { return &http.Cookie{Name: "dsession", Value: value} }
+	const httpOutside = "http://outside.dispatch.example"
+	for _, tc := range []struct {
+		name     string
+		outside  string
+		insecure bool
+		// read is the name the outside origin reads, and ignored the one it does not.
+		read, ignored func(string) *http.Cookie
+	}{
+		{name: "https outside origin under DISPATCH_INSECURE_COOKIE", outside: namesOutsideOrigin, insecure: true, read: host, ignored: plain},
+		{name: "http outside origin with the cookie Secure", outside: httpOutside, insecure: false, read: plain, ignored: host},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, alice, mallory := twoPeopleRouterAt(t, tc.outside, tc.insecure)
+			if response := whoamiCarrying(handler, tc.outside, tc.read(alice)); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"login":"alice@d.example"`) {
+				t.Errorf("GET %s/auth/whoami carrying %v answered %d %s, want 200 naming alice", tc.outside, tc.read(alice), response.Code, response.Body.String())
+			}
+			if response := whoamiCarrying(handler, tc.outside, tc.ignored(mallory)); response.Code != http.StatusUnauthorized {
+				t.Errorf("GET %s/auth/whoami carrying %v answered %d %s, want 401", tc.outside, tc.ignored(mallory), response.Code, response.Body.String())
 			}
 		})
 	}
