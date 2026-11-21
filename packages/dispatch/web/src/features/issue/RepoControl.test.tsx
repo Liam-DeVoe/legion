@@ -185,13 +185,17 @@ function renderControl(
     const spoken = drawn.querySelector(".sr-only")?.textContent;
     return `${title} | ${drawn.querySelector(badge)?.textContent} | ${spoken}`;
   });
-  const view = render(
+  const tree = (heldNow: boolean) => (
     <QueryClientProvider client={queryClient}>
-      <CachedControl commits={commits} held={held} />
+      <CachedControl commits={commits} held={heldNow} />
     </QueryClientProvider>
   );
+  const view = render(tree(held));
   return {
     commits,
+    /** Draws the control again, held while `heldNow`: the host's other write starting or
+     *  ending. */
+    hold: (heldNow: boolean) => view.rerender(tree(heldNow)),
     user,
     listRepoProjects,
     queryClient,
@@ -531,11 +535,13 @@ test("RepoControl's keys on its closed trigger only move the list's highlight, a
 });
 
 // `held` is the issue page's other field writes: the trigger keeps the focus and its Tab stop and
-// says it is busy, a pick made then is dropped, and a typed repository stays in the list's text
-// box for the next Enter.
-test("a held RepoControl keeps its focus and Tab stop and writes nothing", async () => {
+// says it is busy, and neither a press nor a key on it opens the list while the hold lasts, so the
+// reader never picks or types a repository the hold would refuse with no word. A list opened
+// before the hold began writes nothing while it lasts: a pick is dropped, and a typed repository
+// stays in the list's text box for the next Enter.
+test("a held RepoControl keeps its focus and Tab stop, opens no list, and writes nothing from a list opened before the hold", async () => {
   const patchIssue = answerIssuePatches();
-  const { queryClient, unmount, user } = renderControl(
+  const { hold, queryClient, unmount, user } = renderControl(
     { repo: "acme/gadgets", resolvedRepo: "acme/gadgets" },
     mappings,
     { held: true }
@@ -545,10 +551,34 @@ test("a held RepoControl keeps its focus and Tab stop and writes nothing", async
     await mappingsRead(queryClient);
     expect(trigger()).toHaveAttribute("aria-disabled", "true");
     expect(trigger()).not.toBeDisabled();
-    await user.keyboard("{ArrowDown}{Enter}");
+    await user.click(trigger());
+    expect(screen.queryByRole("listbox"), "a press opened the list").toBeNull();
+    for (const keys of [
+      "{ArrowDown}",
+      "{ArrowUp}",
+      "{Home}",
+      "{End}",
+      "{PageDown}",
+      "{PageUp}",
+      "z",
+      "{Enter}",
+      " ",
+    ]) {
+      await user.keyboard(keys);
+      expect(screen.queryByRole("listbox"), `${keys} opened the list`).toBeNull();
+      expect(trigger()).toHaveFocus();
+    }
+    expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/gadgets`);
+
+    hold(false);
+    const list = await openList(user, REPOSITORY);
+    hold(true);
+    await user.click(within(list).getByRole("option", { name: "acme/widgets" }));
     expect(trigger()).toHaveFocus();
     expect(trigger()).toHaveAccessibleName(`${REPOSITORY} acme/gadgets`);
+    hold(false);
     await openList(user, REPOSITORY);
+    hold(true);
     await user.click(searchBox());
     await user.paste("zed/other");
     await user.keyboard("{Enter}");

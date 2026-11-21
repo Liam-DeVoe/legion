@@ -185,13 +185,17 @@ function renderControl({ held = false }: { held?: boolean } = {}) {
   // What the trigger's name says after its label - the person it holds, as a `<select>` says its
   // value - and the text of its badge.
   const commits = recordCommits<string | null>(() => drawnPick(trigger()));
-  const view = render(
+  const tree = (heldNow: boolean) => (
     <QueryClientProvider client={queryClient}>
-      <CachedControl commits={commits} held={held} />
+      <CachedControl commits={commits} held={heldNow} />
     </QueryClientProvider>
   );
+  const view = render(tree(held));
   return {
     commits,
+    /** Draws the control again, held while `heldNow`: the host's other write starting or
+     *  ending. */
+    hold: (heldNow: boolean) => view.rerender(tree(heldNow)),
     user,
     listUsers,
     queryClient,
@@ -562,18 +566,43 @@ test("AssigneeControl's keys on its closed badge only move the list's highlight,
 });
 
 // `held` is the issue page's other field writes: the badge keeps the focus and its Tab stop and
-// says it is busy, and a pick made then is dropped rather than queued.
-test("a held AssigneeControl keeps its focus and Tab stop and drops a pick", async () => {
+// says it is busy, and neither a press nor a key on it opens the list while the hold lasts, so the
+// reader never picks a person the hold would drop with no word. A list the reader opened before
+// the hold began drops a pick made in it, rather than queueing it.
+test("a held AssigneeControl keeps its focus and Tab stop, opens no list, and drops a pick from a list opened before the hold", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, assignee: "bob" });
-  const { queryClient, unmount, user } = renderControl({ held: true });
+  const { hold, queryClient, unmount, user } = renderControl({ held: true });
   try {
     act(() => trigger().focus());
     await peopleRead(queryClient);
     expect(trigger()).toHaveAttribute("aria-disabled", "true");
     expect(trigger()).not.toBeDisabled();
-    await user.keyboard("{ArrowDown}{Enter}");
+    await user.click(trigger());
+    expect(screen.queryByRole("listbox"), "a press opened the list").not.toBeInTheDocument();
+    for (const keys of [
+      "{ArrowDown}",
+      "{ArrowUp}",
+      "{Home}",
+      "{End}",
+      "{PageDown}",
+      "{PageUp}",
+      "b",
+      "{Enter}",
+      " ",
+    ]) {
+      await user.keyboard(keys);
+      expect(screen.queryByRole("listbox"), `${keys} opened the list`).not.toBeInTheDocument();
+      expect(trigger()).toHaveFocus();
+    }
+    expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} alice`);
+
+    hold(false);
+    const list = await openList(user, ASSIGNEE);
+    hold(true);
+    await user.click(within(list).getByRole("option", { name: "bob" }));
     expect(trigger()).toHaveFocus();
     expect(trigger()).toHaveAccessibleName(`${ASSIGNEE} alice`);
+    await act(async () => {});
     expect(patchIssue).not.toHaveBeenCalled();
   } finally {
     unmount();

@@ -14,6 +14,8 @@ import { api, type WriteBounds } from "../../api/client";
 import { issueQuery, userStateQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type {
+  Artifact,
+  ArtifactReview,
   Issue,
   IssueDetails,
   UpdateIssueInput,
@@ -21,6 +23,10 @@ import type {
   UserState,
 } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { useKeymapScope } from "../shell/keymap";
+import { setActionKeys } from "../shell/keymap-keys";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import { idlePriorityWrite, mockHeaderReads } from "./header-fixture";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
@@ -459,5 +465,208 @@ test("a read of the state asked while the header's pin is out waits for its answ
   } finally {
     view.unmount();
     stopListening();
+  }
+});
+
+// The header's `a`, read with the keymap the shell mounts and the `issue` scope the page pushes.
+
+/** The issue's spec, with its approval request (`ask-approval`) awaiting version 2. */
+const awaitingSpec: Artifact = {
+  approval: { ask_id: "ask-approval", latest_version: 2, state: "awaiting" },
+  created_at: "2026-09-24T05:00:00Z",
+  created_by: { id: "alice", kind: "user" },
+  id: "artifact-1",
+  issue_key: base.key,
+  kind: "doc",
+  name: "spec.md",
+  primary: true,
+  project: base.project,
+  ref_key: "CORE-1/spec",
+  session_id: null,
+  slug: "spec",
+  versions: [],
+};
+
+/** The issue with its spec's approval request open, its turn alice's: the reader's. */
+const approvalIssue: IssueDetails = {
+  ...details,
+  artifacts: [awaitingSpec],
+  open_asks: [
+    {
+      anchor: null,
+      answer: null,
+      artifact_id: awaitingSpec.id,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      author: { id: "session-1", kind: "session" },
+      block_id: null,
+      created_at: "2026-09-24T05:30:00Z",
+      edited_at: null,
+      id: "ask-approval",
+      issue_key: base.key,
+      kind: "approval",
+      last_reply: null,
+      multiple: false,
+      opened_event_id: 1,
+      options: [],
+      question: "Approve the spec?",
+      state: "open",
+      urgency: "med",
+      waiting_on: "human",
+      waiting_on_person: "alice",
+    },
+  ],
+};
+
+/** Dispatch's answer to the approval of version 2 of the spec. */
+const specApproval: ArtifactReview = {
+  actor: { id: "alice", kind: "user" },
+  artifact_id: awaitingSpec.id,
+  ask_id: "ask-approval",
+  content_sha256: null,
+  content_sha256_source: null,
+  created_at: "2026-09-24T06:30:00Z",
+  id: "review-1",
+  kind: "person",
+  reason: null,
+  state: "approved",
+  version: 2,
+};
+
+/** Pushes the `issue` scope, which the issue page pushes and the header's keys fire under. */
+function IssueScope(): null {
+  useKeymapScope("issue");
+  return null;
+}
+
+/** The header of the issue the cache holds, given its spec from that same read, as `IssuePage`
+ *  draws it. */
+function SpecHeader(): ReactNode {
+  const read = useQuery({ ...issueQuery(base.key), staleTime: Infinity }).data;
+  if (read === undefined) return null;
+  return (
+    <IssueHeader
+      documentArtifact={read.artifacts?.[0]}
+      isClosed={false}
+      issue={read}
+      priorityWrite={idlePriorityWrite}
+      state={stateForIssue(undefined, read.key)}
+    />
+  );
+}
+
+// `a` approves once per press. A held `a` repeats its keydown, and a repeat presses nothing; and
+// Approve stays held from the press until the issue is read again, so neither a repeat nor a
+// second `a` before that read records a second approval, which Dispatch would record at the
+// latest version once the request it answered is closed.
+test("a held a, or a second a before the issue is read again, records one approval", async () => {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  client.setQueryData(issueQuery(base.key).queryKey, approvalIssue);
+  const restoreReads = mockHeaderReads();
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const readAgain = Promise.withResolvers<IssueDetails>();
+  const getIssue = spyOn(api, "getIssue").mockReturnValue(readAgain.promise);
+  const review = spyOn(api, "createArtifactVersionReview").mockResolvedValue(specApproval);
+  const answered: IssueDetails = {
+    ...approvalIssue,
+    artifacts: [
+      { ...awaitingSpec, approval: { latest_version: 2, state: "approved", version: 2 } },
+    ],
+    open_asks: [],
+  };
+  const user = userEvent.setup();
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <MarginProvider>
+          <KeymapProvider>
+            <IssueScope />
+            <SpecHeader />
+          </KeymapProvider>
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const approve = await screen.findByRole("button", { name: "Approve" });
+    // A repeat presses nothing, though Approve takes a press.
+    fireEvent.keyDown(document.body, { key: "a", repeat: true });
+    await act(settle);
+    expect(review).not.toHaveBeenCalled();
+
+    await user.keyboard("a");
+    await waitFor(() => expect(review).toHaveBeenCalledTimes(1));
+    expect(review).toHaveBeenCalledWith("artifact-1", 2, { state: "approved" }, keyedAttempt);
+    // Dispatch recorded it, and the issue is being read again: `a` held down and `a` pressed
+    // again record nothing more.
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
+    await user.keyboard("{a>3/}");
+    await user.keyboard("a");
+    await act(settle);
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(approve).toHaveAttribute("aria-disabled", "true");
+
+    // The read lands with the request answered, and the header draws no Approve.
+    await act(async () => readAgain.resolve(answered));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument()
+    );
+    await user.keyboard("a");
+    expect(review).toHaveBeenCalledTimes(1);
+  } finally {
+    readAgain.resolve(answered);
+    view.unmount();
+    restoreReads();
+    subscribers.mockRestore();
+    getIssue.mockRestore();
+    review.mockRestore();
+  }
+});
+
+// The four Set priority rows have no key until a person gives them one. A held key repeats its
+// keydown, and only its first press writes: each repeat would be one more write of the same
+// priority, sent behind the first.
+test("a held key a person gave Set priority P2 writes the priority once", async () => {
+  setActionKeys("alice", "issue.set-p2", ["Shift+Z"]);
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const restoreReads = mockHeaderReads();
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  // Each priority the header's write is given.
+  const submitted: (number | null)[] = [];
+  const user = userEvent.setup();
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <MarginProvider>
+          <KeymapProvider login="alice">
+            <IssueScope />
+            <IssueHeader
+              documentArtifact={undefined}
+              isClosed={false}
+              issue={details}
+              priorityWrite={{ ...idlePriorityWrite, submit: (level) => submitted.push(level) }}
+              state={stateForIssue(undefined, details.key)}
+            />
+          </KeymapProvider>
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await screen.findByRole("heading", { level: 1, name: base.title });
+    await user.keyboard("{Shift>}{Z>4/}{/Shift}");
+    expect(submitted).toEqual([2]);
+  } finally {
+    view.unmount();
+    restoreReads();
+    subscribers.mockRestore();
+    window.localStorage.removeItem(userPreferenceStorageKey("alice", "shell.keymap"));
   }
 });

@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import {
@@ -100,6 +100,24 @@ interface ReviewPress {
 /** Dispatch's refusal of a review whose version moved after the page read it (`409
  *  REVIEW_VERSION_MOVED`): its words name the version a review would now record. */
 const VERSION_MOVED: ReadonlySet<string> = new Set(["REVIEW_VERSION_MOVED"]);
+
+/** The reads each page draws `reviewed`'s approval from: its own (the Inbox's reading pane), and
+ *  its owner's - an issue document's issue and that issue's documents (both issue pages' header,
+ *  the Artifacts tab), a project document's project documents and its read by reference. */
+function approvalReads(reviewed: Artifact): readonly QueryKey[] {
+  return [
+    ["artifact", reviewed.id],
+    ...(reviewed.issue_key === null
+      ? [
+          ["project", reviewed.project, "artifacts"],
+          ["artifact-ref", `${reviewed.project}/${reviewed.slug}`],
+        ]
+      : [
+          ["issue", reviewed.issue_key],
+          ["artifacts", reviewed.issue_key],
+        ]),
+  ];
+}
 
 /** The chip's words. `latest` is the issue page's word for the latest version, given inside
  *  `NoTooltips` alone: there a stale chip draws the latest version, which its `title` says
@@ -413,6 +431,9 @@ export interface ApprovalChipProps {
    *  button's `aria-keyshortcuts`, and the first drawn inside it after its label
    *  (`ControlKeyHint`). */
   shortcutKeys?: ApprovalShortcutKeys;
+  /** `data-*` attributes the host writes on the state button (the pill, which opens the
+   *  reviews), for its own code to find it by: the Inbox's command bar presses it by its mark. */
+  stateMarks?: Readonly<Record<`data-${string}`, string>>;
 }
 
 /**
@@ -422,8 +443,8 @@ export interface ApprovalChipProps {
  * read: a version that moved after the read is refused, and the refusal is shown here.
  *
  * The two actions carry `data-approval-action` (`approve`, `request-changes`), which the keys
- * that press them find them by (the Inbox's `a` and Shift+R), and the badge `data-inbox-action`
- * (`show-reviews`), which the Inbox's command bar presses it by.
+ * that press them find them by (the Inbox's `a` and Shift+R), and the state button carries the
+ * marks its host gives it (`stateMarks`), which the Inbox's command bar presses it by.
  *
  * In the reading pane's head (`pane`) one chip stands for one approval request from the head's
  * first draw: the two actions it draws, held, before the document's read returns are the
@@ -440,6 +461,7 @@ export function ApprovalChip({
   layout = "inline",
   onReviewed,
   shortcutKeys,
+  stateMarks,
   size = "default",
   variant = "list",
   showActions = variant !== "list",
@@ -459,11 +481,14 @@ export function ApprovalChip({
     label: ({ artifact: reviewed, input }: ReviewPress) =>
       `${input.state === "approved" ? "Approval" : "Change request"} on ${reviewed.name}`,
     onError: (error, { artifact: reviewed }) => {
-      // The document moved after the page read it: the page reads it again, so the next press
-      // reviews the version a review would now record, which the reader then has in front of
-      // them, and never one they did not read.
+      // The document moved after the page read it: every read a page draws its approval from is
+      // read again - the issue's own among them, which both issue pages' header draws the chip
+      // from - so the next press reviews the version a review would now record, which the reader
+      // then has in front of them, and never one they did not read.
       if (apiErrorCodeIn(error, VERSION_MOVED)) {
-        void queryClient.invalidateQueries({ queryKey: ["artifact", reviewed.id] });
+        for (const queryKey of approvalReads(reviewed)) {
+          void queryClient.invalidateQueries({ queryKey });
+        }
       }
     },
     onSettled: () => submitGuard.release(),
@@ -471,36 +496,25 @@ export function ApprovalChip({
     write: ({ artifact: reviewed, input, version }, bounds) =>
       api.createArtifactVersionReview(reviewed.id, version, input, bounds),
     onSuccess: (_result, { artifact: reviewed }) => {
-      // Outside `NoTooltips` the dialog closes as the write lands and the reads the write makes
-      // stale go on after it, as on `main`. Inside, `onSuccess` returns those reads, which
-      // TanStack Query awaits before the write stops pending: Approve, Request changes and the
-      // dialog's submit stay refused, and keep the focus, until the new approval is read, and
-      // only then does a dialog the reader has not closed (`onClose`) close and give the focus
-      // back to the button that opened it. The reads are the reviewed document's, from the
-      // press.
+      // `onSuccess` returns the reads the write makes stale, which TanStack Query awaits before
+      // the write stops pending, on both sides of `NoTooltips`: Approve, Request changes and the
+      // dialog's submit stay refused, and keep the focus, until the new approval is read. So no
+      // second press - a second `a`, a held key's repeat, a second click - records a second
+      // approval while the page still draws the request as waiting. Outside `NoTooltips` the
+      // dialog closes as the write lands, as on `main`. Inside, it closes once the reads are in,
+      // and a dialog the reader has not closed (`onClose`) then gives the focus back to the button
+      // that opened it. The reads are the reviewed document's, from the press.
       if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
-      const rereads = [
+      const rereads = Promise.all([
         queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
-        queryClient.invalidateQueries({ queryKey: ["artifact", reviewed.id] }),
         queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
         ...(reviewed.issue_key === null
-          ? [
-              queryClient.invalidateQueries({
-                queryKey: ["project", reviewed.project, "artifacts"],
-              }),
-              queryClient.invalidateQueries({
-                queryKey: ["artifact-ref", `${reviewed.project}/${reviewed.slug}`],
-              }),
-            ]
-          : [
-              queryClient.invalidateQueries({ queryKey: ["issue", reviewed.issue_key] }),
-              queryClient.invalidateQueries({ queryKey: ["artifacts", reviewed.issue_key] }),
-              queryClient.invalidateQueries({ queryKey: ["asks", reviewed.issue_key] }),
-            ]),
-      ];
-      if (page === null) return;
-      return Promise.all(rereads).then(() => setRequestChangesOpen(false));
+          ? []
+          : [queryClient.invalidateQueries({ queryKey: ["asks", reviewed.issue_key] })]),
+        ...approvalReads(reviewed).map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+      ]);
+      return page === null ? rereads : rereads.then(() => setRequestChangesOpen(false));
     },
   });
 
@@ -540,7 +554,8 @@ export function ApprovalChip({
     return null;
   }
 
-  /** Held while a review is out, and in the pane's head until the read has given the approval. */
+  /** Held while a review is out, until the reads it made stale are read again (`onSuccess`), and
+   *  in the pane's head until the read has given the approval. */
   const held = review.isPending || approval === undefined;
   const approveLabel =
     !pane && approval?.state === "stale" ? `Approve v${approval.latest_version}` : "Approve";
@@ -579,8 +594,8 @@ export function ApprovalChip({
   // One filled button per surface: approving is the action the header wants, and two outline
   // buttons made a reader choose before reading either. At the new issue page header's size it is
   // filled with that page's ink, not the application's blue. Both actions are held while the
-  // write is out (`heldPress`), on both sides of `NoTooltips`, so each keeps the focus: a
-  // `disabled` button drops it to the body in a browser.
+  // write and the reads it makes again are out (`heldPress`), on both sides of `NoTooltips`, so
+  // each keeps the focus: a `disabled` button drops it to the body in a browser.
   const approveAction = (
     <button
       aria-keyshortcuts={keyshortcutsOf(shortcutKeys?.approve)}
@@ -632,7 +647,7 @@ export function ApprovalChip({
         // Inside `NoTooltips`, the document whose approval this is, which an approval request's
         // own address puts the focus on.
         data-approval-artifact={page === null ? undefined : artifact?.id}
-        data-inbox-action="show-reviews"
+        {...stateMarks}
         onClick={() => setReviewsOpen(true)}
         ref={chipButton}
         title={

@@ -59,7 +59,8 @@ export function assigneeControlName(issueKey: string): string {
  * tab order - and a pick made meanwhile is queued behind the save. Named by
  * `assigneeControlName` and then the badge's words. `held` is the host's own write out (the issue
  * page's other field writes): the trigger keeps the focus and its Tab stop (`aria-disabled`), and
- * a pick made then is dropped.
+ * neither a press nor a key on it opens the list while it lasts, as the ask card's hand-on refuses
+ * its open (`AskHandOn`); a pick in a list opened before the hold began is dropped.
  *
  * `variant="header"` draws the new issue page header's shape (the prototype's `.person`): the
  * person's initial in a filled circle beside their name in the ink, or Unassigned in the quiet
@@ -120,7 +121,7 @@ export function AssigneeControl({
           keysOnTrigger
           label={assigneeControlName(issueKey)}
           mode="single"
-          onOpenChange={setOpen}
+          onOpenChange={(next) => setOpen(next && !held)}
           onPick={(picked) => {
             if (held || picked === value) return;
             write.submit(picked === UNASSIGNED ? null : picked);

@@ -9,7 +9,7 @@ import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "rea
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
-import { onFakeClock, tick } from "../../__tests__/fake-clock";
+import { onFakeClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
@@ -891,6 +891,29 @@ test("IssuePage writes no priority from a digit pressed on the Assignee trigger,
     view.unmount();
     patchIssue.mockRestore();
     listUsers.mockRestore();
+    restore();
+  }
+});
+
+// A held digit repeats its keydown, and only its first press writes the priority: each repeat
+// would be one more write of the same priority, sent behind the first.
+test("IssuePage writes the priority once for a held digit", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: 2 });
+  const view = renderIssuePage();
+
+  try {
+    await screen.findByTestId("issue-header");
+    await user.keyboard("{2>4/}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    await act(settle);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
     restore();
   }
 });

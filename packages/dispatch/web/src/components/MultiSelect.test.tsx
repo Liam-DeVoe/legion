@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, which user-event has no form for.
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -854,6 +854,46 @@ test("with keysOnTrigger, a move key on the closed trigger opens the list on the
     expect(screen.getByTestId("closings").textContent).toBe(Array(6).fill("escape").join(","));
   } finally {
     page.stop();
+    view.unmount();
+  }
+});
+
+// The panel holds about five rows and marks the highlighted one on the row alone
+// (`aria-activedescendant`), so a key that moves the highlight past its fold - End, Page Down,
+// ArrowUp's wrap from a trigger holding nothing, ArrowUp's wrap in the text box - scrolls the row
+// it highlights into sight, as far as it needs and no further, before Enter can pick it.
+test("a single pick scrolls the row each key highlights into sight in its panel", async () => {
+  const user = userEvent.setup();
+  const epics = Array.from({ length: 25 }, (_, index) => `epic-${index + 1}`);
+  const scrolled: { readonly options: unknown; readonly row: string | undefined }[] = [];
+  const scrolls = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element,
+    options?: boolean | ScrollIntoViewOptions
+  ) {
+    scrolled.push({ options, row: this.textContent?.replace("✓", "") });
+  });
+  const view = render(<SingleHost keysOnTrigger options={epics} />);
+  try {
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+    act(() => trigger.focus());
+    for (const [keys, to] of [
+      ["{End}", "epic-25"],
+      ["{PageDown}", "epic-10"],
+      ["{ArrowUp}", "epic-25"],
+      ["{Home}{ArrowUp}", "epic-25"],
+    ] as const) {
+      scrolled.length = 0;
+      await user.keyboard(keys);
+      const search = screen.getByRole("combobox", { name: "Search epics" });
+      expect(highlightedRow(search), `${keys} highlights ${to}`).toBe(to);
+      expect(scrolled.at(-1), `${keys} scrolls ${to} into sight`).toEqual({
+        options: { block: "nearest" },
+        row: to,
+      });
+      await user.keyboard("{Escape}");
+    }
+  } finally {
+    scrolls.mockRestore();
     view.unmount();
   }
 });

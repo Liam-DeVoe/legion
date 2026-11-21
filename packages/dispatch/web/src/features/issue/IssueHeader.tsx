@@ -248,7 +248,11 @@ export function IssueHeader({
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
       action: `issue.set-p${level}` as const,
-      run: () => priorityWrite.submit(level),
+      // One write per press of a key a person gave the row: a held key's repeated keydown writes
+      // nothing.
+      run: ({ repeat }: { readonly repeat: boolean }) => {
+        if (!repeat) priorityWrite.submit(level);
+      },
       // The same condition as `PriorityEditor`'s `disabled` and `held` below.
       when: () => !(isClosed || updateIssue.isPending),
     })),
@@ -312,8 +316,13 @@ export function IssueHeader({
       : null;
   useKeymap("issue", [
     {
+      // One approval per press of the key: a held `a` repeats its keydown, and a repeat presses
+      // nothing. Approve itself stays held from the press until the page reads the approval again
+      // (`ApprovalChip`), so a second press meanwhile presses nothing either.
       action: "issue.approve",
-      run: () => approvalControl("approve")?.click(),
+      run: (event) => {
+        if (!event.repeat) approvalControl("approve")?.click();
+      },
       when: () => approvalControl("approve") !== null,
     },
     {

@@ -1,10 +1,10 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -218,9 +218,19 @@ test("the reading pane's Approve keeps one label for a stale approval", () => {
 });
 
 // The keys find the two actions and the badge by their marks: the Inbox's `a` and Shift+R press
-// Approve and Request changes, and its command bar's Show the reviews presses the badge.
+// Approve and Request changes, and its command bar's Show the reviews presses the badge by the
+// mark the Inbox gives it (`stateMarks`), which no other host's badge carries.
 test("the header's actions and its badge carry the marks the keys press them by", () => {
-  const view = renderChip(artifact({ latest_version: 3, state: "awaiting" }), "header");
+  const awaiting = artifact({ latest_version: 3, state: "awaiting" });
+  const view = render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ApprovalChip
+        artifact={awaiting}
+        stateMarks={{ "data-inbox-action": "show-reviews" }}
+        variant="header"
+      />
+    </QueryClientProvider>
+  );
   try {
     expect(screen.getByRole("button", { name: "Approve" })).toHaveAttribute(
       "data-approval-action",
@@ -236,6 +246,14 @@ test("the header's actions and its badge carry the marks the keys press them by"
     );
   } finally {
     view.unmount();
+  }
+  const unmarked = renderChip(awaiting, "header");
+  try {
+    expect(screen.getByRole("button", { name: "Awaiting approval" })).not.toHaveAttribute(
+      "data-inbox-action"
+    );
+  } finally {
+    unmarked.unmount();
   }
 });
 
@@ -331,6 +349,131 @@ test("an Approve whose version moved shows the server's refusal and reads the do
     expect(queryClient.getQueryState(["artifact", "artifact-1"])?.isInvalidated).toBe(true);
     expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
   } finally {
+    createArtifactVersionReview.mockRestore();
+    view.unmount();
+  }
+});
+
+/** An approved review of `version` of the document, as Dispatch answers one it recorded. */
+function approvedReview(version: number): ArtifactReview {
+  return {
+    actor: { id: "alice", kind: "user" },
+    artifact_id: "artifact-1",
+    ask_id: null,
+    content_sha256: null,
+    content_sha256_source: null,
+    created_at: "2026-09-11T00:00:00Z",
+    id: "review-1",
+    kind: "person",
+    reason: null,
+    state: "approved",
+    version,
+  };
+}
+
+/** The chip as both issue pages' header draws it: from the issue's own read, which carries the
+ *  issue's documents (`primarySpec`), never from the document's read. Each read of the issue is
+ *  answered by `read`. */
+function IssueReadChip({
+  read,
+}: {
+  read: () => Promise<{ readonly artifacts: readonly Artifact[] }>;
+}): ReactNode {
+  const issue = useQuery({ queryFn: read, queryKey: ["issue", "CORE-1"] });
+  const spec = issue.data?.artifacts[0];
+  return spec === undefined ? null : <ApprovalChip artifact={spec} variant="header" />;
+}
+
+/** A client whose reads and writes are not tried again. */
+function chipClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+}
+
+// On an issue page the header draws the chip from the issue's read, which a 409 reads again too:
+// the next press reviews the version the page then draws, rather than sending the version the
+// server refused again and again until something else reads the issue.
+test("on an issue page, an Approve whose version moved reads the issue again, and the next press reviews the version it then draws", async () => {
+  const user = userEvent.setup();
+  const refusal =
+    "the review would record version 4 of Design notes, not version 3: read version 4 and review it";
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview")
+    .mockRejectedValueOnce(new ApiError(409, { code: "REVIEW_VERSION_MOVED", error: refusal }))
+    .mockResolvedValue(approvedReview(4));
+  // The version the issue's read answers; the document moves on to 4 once the page has read 3.
+  let latest = 3;
+  let reads = 0;
+  const view = render(
+    <QueryClientProvider client={chipClient()}>
+      <IssueReadChip
+        read={async () => {
+          reads += 1;
+          return { artifacts: [artifact({ latest_version: latest, state: "awaiting" })] };
+        }}
+      />
+    </QueryClientProvider>
+  );
+  try {
+    const approve = await screen.findByRole("button", { name: "Approve" });
+    latest = 4;
+    await user.click(approve);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(refusal));
+    await waitFor(() => expect(reads, "the refusal reads the issue again").toBe(2));
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(createArtifactVersionReview).toHaveBeenCalledTimes(2));
+    expect(createArtifactVersionReview.mock.calls.map(([, version]) => version)).toEqual([3, 4]);
+  } finally {
+    createArtifactVersionReview.mockRestore();
+    view.unmount();
+  }
+});
+
+// Approve stays held until the reads its review made stale are in, outside `NoTooltips` as
+// inside: Dispatch records an approval at the latest version for a review with no request open,
+// so a second press - a second `a`, a held key's repeat, a double click - before the issue is read
+// again would record a second approval.
+test("a second press of Approve before the page reads its approval again sends no second review", async () => {
+  const user = userEvent.setup();
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockResolvedValue(
+    approvedReview(3)
+  );
+  const answered = artifact({ latest_version: 3, state: "approved", version: 3 });
+  const readAgain = Promise.withResolvers<{ readonly artifacts: readonly Artifact[] }>();
+  let reads = 0;
+  const view = render(
+    <QueryClientProvider client={chipClient()}>
+      <IssueReadChip
+        read={() => {
+          reads += 1;
+          return reads === 1
+            ? Promise.resolve({ artifacts: [artifact({ latest_version: 3, state: "awaiting" })] })
+            : readAgain.promise;
+        }}
+      />
+    </QueryClientProvider>
+  );
+  try {
+    const approve = await screen.findByRole("button", { name: "Approve" });
+    await user.click(approve);
+    await waitFor(() => expect(createArtifactVersionReview).toHaveBeenCalledTimes(1));
+    // The review is recorded, and the issue is being read again.
+    await waitFor(() => expect(reads).toBe(2));
+    await user.click(approve);
+    await user.click(approve);
+    await act(settle);
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
+    expect(approve).toHaveAttribute("aria-disabled", "true");
+
+    // The read lands with the request answered, and the chip draws the approval in Approve's place.
+    await act(async () => readAgain.resolve({ artifacts: [answered] }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument()
+    );
+    expect(screen.getByRole("button", { name: "Approved v3" })).toBeInTheDocument();
+    expect(createArtifactVersionReview).toHaveBeenCalledTimes(1);
+  } finally {
+    readAgain.resolve({ artifacts: [answered] });
     createArtifactVersionReview.mockRestore();
     view.unmount();
   }

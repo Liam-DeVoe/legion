@@ -7,7 +7,7 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pickNamed } from "../../__tests__/list-picks";
 import { choicesOf, pickFromMenu } from "../../__tests__/menu-picks";
@@ -949,6 +949,66 @@ test("the approval chip's keys press its own actions, and only while those take 
     answered.reject(new Error("the connection dropped"));
     view.unmount();
     createArtifactVersionReview.mockRestore();
+    restore();
+  }
+});
+
+// A held `a` repeats its keydown, and a repeat presses nothing. Approve is held while the review
+// its first press wrote is out, so only a repeat with nothing out shows the key's own refusal;
+// the press after it approves, which shows the key was there to act.
+test("a repeat of a held a on the approval chip approves nothing, and a press of a approves", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader({
+    ...issue,
+    artifacts: [
+      { ...issue.artifacts[0], approval: { latest_version: 2, state: "stale", version: 1 } },
+    ],
+    open_asks: [approvalAsk()],
+  });
+  const answered = Promise.withResolvers<ArtifactReview>();
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    () => answered.promise
+  );
+  const view = renderHeader();
+
+  try {
+    const stateActions = await screen.findByTestId("issue-state-actions");
+    await within(stateActions).findByRole("button", { name: "Approve v2" });
+    const chip = stateActions.querySelector<HTMLElement>("[data-approval-artifact]");
+    if (chip === null) throw new Error("the header draws no approval chip");
+    act(() => chip.focus());
+    fireEvent.keyDown(chip, { key: "a", repeat: true });
+    await act(settle);
+    expect(createArtifactVersionReview).not.toHaveBeenCalled();
+    await user.keyboard("a");
+    await waitFor(() => expect(createArtifactVersionReview).toHaveBeenCalledTimes(1));
+  } finally {
+    answered.reject(new Error("the connection dropped"));
+    view.unmount();
+    createArtifactVersionReview.mockRestore();
+    restore();
+  }
+});
+
+// A held digit repeats its keydown, and only its first press writes the priority: each repeat
+// would be one more write of the same priority, sent behind the first.
+test("a held digit writes the header's priority once", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: 2 });
+  const view = renderHeader();
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await user.keyboard("{2>4/}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
+    );
+    await act(settle);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
     restore();
   }
 });

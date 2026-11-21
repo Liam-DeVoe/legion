@@ -1,4 +1,12 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import {
   borderDefault,
@@ -138,8 +146,8 @@ interface SharedProps {
   /** The trigger is busy with what the last close committed: it stays focusable, and says so
    *  rather than looking actionable and doing nothing. It only sets `aria-disabled`, so the
    *  trigger keeps its focus and its Tab stop and a press still opens the list, unless the host
-   *  refuses the open in `onOpenChange` (the Agents page's Issue list); a host whose write is out
-   *  drops the pick (`AssigneeControl`, `RepoControl`). */
+   *  refuses the open in `onOpenChange`: the Agents page's Issue list, and each host whose write
+   *  is out (`AssigneeControl`, `RepoControl`, `AskHandOn`). */
   readonly ariaDisabled?: boolean;
   /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
   readonly error?: string | null;
@@ -306,6 +314,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const [activeValue, setActiveValue] = useState<string | undefined>(undefined);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const wasOpen = useRef(false);
+  // The panel's sticky text box at its top, and a multi-select's sticky Clear foot at its bottom,
+  // which a row scrolled into sight is kept clear of.
+  const searchHostRef = useRef<HTMLDivElement>(null);
+  const clearHostRef = useRef<HTMLDivElement>(null);
   // What an open reads of this render: the value it starts on, and the options a move key that
   // opened it steps through. A host may build its options only while the list stands open (an
   // ask's hand-on), so the step is taken in the open render's options, not the closed trigger's.
@@ -336,6 +348,9 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       : undefined;
   const rows = createValue === undefined ? visibleOptions : [...visibleOptions, createValue];
   const activeRow = activeValue !== undefined && rows.includes(activeValue) ? activeValue : rows[0];
+  // The highlighted row's element, which the text box names (`aria-activedescendant`); none while
+  // the list is closed, which draws no rows.
+  const activeId = activeRow === undefined ? undefined : optionId(activeRow);
   // The empty message stands where no option is left. A multi-select's create row stands in its
   // place, since it adds an option; a single pick's row takes the typed value as it is, so the
   // message stays over it.
@@ -405,6 +420,26 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     }
     wasOpen.current = open;
   }, [open]);
+
+  // The highlighted row stays in sight in the panel, whatever moved the highlight - the open on
+  // the value picked, a move key on the closed trigger, an arrow in the text box, a search - since
+  // the panel holds about five rows and the highlight is drawn on the row alone: End, Page Down
+  // or ArrowUp's wrap would otherwise highlight a row below the fold, which Enter then picks
+  // unseen. `nearest` scrolls only as far as the row needs to stand inside the panel's box, where
+  // the sticky text box at its top, or a multi-select's sticky Clear foot at its bottom, can still
+  // stand over it, so the panel scrolls on until the row stands clear of both. Laid out before the
+  // browser paints, so the row is never drawn out of sight first.
+  useLayoutEffect(() => {
+    const row = activeId === undefined ? null : document.getElementById(activeId);
+    const panel = document.getElementById(panelId);
+    if (row === null || panel === null) return;
+    row.scrollIntoView({ block: "nearest" });
+    const { bottom, top } = row.getBoundingClientRect();
+    const underSearch = (searchHostRef.current?.getBoundingClientRect().bottom ?? top) - top;
+    if (underSearch > 0) panel.scrollTop -= underSearch;
+    const underClear = bottom - (clearHostRef.current?.getBoundingClientRect().top ?? bottom);
+    if (underClear > 0) panel.scrollTop += underClear;
+  }, [activeId, panelId]);
 
   // A key on the closed trigger of a single pick that takes the list's keys: a move key opens the
   // list on the row it moves to from the value picked, and a letter or a digit opens it with that
@@ -547,9 +582,12 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           id={panelId}
           onDismiss={(how) => onOpenChange(false, how)}
         >
-          <div className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}>
+          <div
+            className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}
+            ref={searchHostRef}
+          >
             <input
-              aria-activedescendant={activeRow === undefined ? undefined : optionId(activeRow)}
+              aria-activedescendant={activeId}
               aria-autocomplete="list"
               aria-controls={listboxId}
               aria-expanded="true"
@@ -653,7 +691,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
             </p>
           )}
           {props.mode === "single" || selected.length === 0 ? null : (
-            <div className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}>
+            <div
+              className={`sticky bottom-0 border-t p-2 ${tooltips ? card : ON_PAGE.panel}`}
+              ref={clearHostRef}
+            >
               <button
                 className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${tooltips ? `${surfaceMutedBg} ${textSecondaryOnSurface}` : ON_PAGE.clear}`}
                 disabled={disabled}

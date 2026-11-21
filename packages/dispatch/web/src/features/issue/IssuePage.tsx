@@ -271,9 +271,12 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     },
     {
       // While the menu is open the focus is in it, whose keys are its own, so a digit there is
-      // the menu's pick and never this second write.
+      // the menu's pick and never this second write. One write per press: a held digit repeats
+      // its keydown, and a repeat writes nothing.
       action: "issue.set-priority",
-      run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
+      run: (event) => {
+        if (!event.repeat) priorityWrite.submit(Number(event.key) as IssuePriority);
+      },
       when: () => usableControl(PRIORITY_MENU) !== null && outsideInputsAndAskCards(),
     },
     {

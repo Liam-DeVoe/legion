@@ -164,8 +164,10 @@ export function RepoControl({
  * beside the trigger with a Retry, and in the list, which still takes a typed repository.
  *
  * `held` is the host's own write out (the issue page's other field writes): the trigger keeps the
- * focus and its Tab stop (`aria-disabled`), and nothing is written while it lasts - a pick is
- * dropped, and a typed repository stays in the list's text box for the next Enter.
+ * focus and its Tab stop (`aria-disabled`), and neither a press nor a key on it opens the list
+ * while it lasts, as the ask card's hand-on refuses its open (`AskHandOn`). A list opened before
+ * the hold began writes nothing while it lasts: a pick is dropped, and a typed repository stays in
+ * the list's text box for the next Enter.
  */
 function RepositoryList({
   disabled,
@@ -258,7 +260,7 @@ function RepositoryList({
           mode="single"
           onCreate={give}
           onOpenChange={(next) => {
-            setOpen(next);
+            setOpen(next && !held);
             setRefused(false);
           }}
           onPick={(picked) => {
