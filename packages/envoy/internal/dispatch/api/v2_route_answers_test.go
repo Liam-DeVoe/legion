@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/cipher/wire"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // PUT /api/v2/credential-requests/{id}/state answers the request as the broker records it once
@@ -51,6 +52,10 @@ func TestTheCredentialStateAnswersItsOwnRecordAlone(t *testing.T) {
 // approver it stored, and otherwise the person its approver names. A person's machine login whose
 // approver is anyone, which only an older broker opened, is the broker's to refuse to everybody,
 // so its state sent again by any person is relayed, and the broker's 403 NOT_APPROVER answered.
+// No broker-issued token holds approve (brokerTokenActor), so the approver's own broker token
+// sending the state again is refused 403 OAUTH_SCOPE_REQUIRED naming approve at the state's rule,
+// before the compare reads the record, and nothing is relayed or looked up, as /api/v1 refuses
+// that token its approve.
 func TestTheCredentialStateNoOpAdmitsWhomTheBrokerLetsDecide(t *testing.T) {
 	tour := newRouteTour(t)
 	route := tour.requireMounted(t, http.MethodPut, "/credential-requests/{id}/state")
@@ -91,6 +96,24 @@ func TestTheCredentialStateNoOpAdmitsWhomTheBrokerLetsDecide(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a person's login, sent by its approver's broker token", func(t *testing.T) {
+		caller := newBrokerCaller(t)
+		const token = "a-tour-token-that-would-approve-again"
+		tour.brokerTokens.Says(token, personScopedTokenAnswer(caller.jkt))
+		id := "tour-record-" + uuid.NewString()
+		stored := tourLoginRecord(id, "approved")
+		stored.Approver = brokerTestPerson
+		tour.secrets.answer(http.MethodPost, "/v1/machine-logins/lookup", http.StatusOK, stored)
+		approve, lookups := "/v1/credential-requests/"+id+"/approve", tour.secrets.callsTo(http.MethodPost, "/v1/machine-logins/lookup")
+		response := tour.serve(caller.presenting(t, route.Method, "/api/v2/credential-requests/"+id+"/state", token,
+			map[string]any{"state": "approved", "code": "ABCD-1234"}))
+		assertGateRefused(t, "the approval sent again by its approver's broker token", response, model.ScopeApprove, "state approved")
+		if relayed, looked := tour.secrets.callsTo(http.MethodPost, approve),
+			tour.secrets.callsTo(http.MethodPost, "/v1/machine-logins/lookup")-lookups; relayed != 0 || looked != 0 {
+			t.Fatalf("the refused approval was relayed %d times and looked up %d times, want never", relayed, looked)
+		}
+	})
 }
 
 // GET /api/v2/machine-logins answers each machine login's person as the secrets broker lists it

@@ -291,7 +291,7 @@ func (s *server) v2IssueRows() []routeRow {
 		{
 			Method: http.MethodPut, Pattern: "/issues/{key}/decisions/{block_id}/state", Auth: authAny, Versions: onlyV2,
 			Description: "Record that the caller, a person, agrees with a decision as the text they read it at {state: " +
-				"kept, text_sha256} (the person scope): text_sha256 is the decision's own from GET " +
+				"kept, text_sha256} (the person and approve scopes): text_sha256 is the decision's own from GET " +
 				"/api/v2/issues/{key}/decisions, and a decision whose text changed since is 409 DECISION_CHANGED with " +
 				"nothing written (400 INVALID_KEEP for a body without it). Answers the keep {artifact_id, block_id, " +
 				"changed_version, kept_by, kept_at} and appends decision.kept, which wakes nobody; a keep of the same " +
@@ -303,7 +303,7 @@ func (s *server) v2IssueRows() []routeRow {
 			Resource: "state", Kind: kindState,
 			Body:        requestBody{Kind: bodyStateUnion, Arms: map[string]any{"kept": keepDecisionStateInput{}}},
 			Shape:       routeShape{Status: http.StatusOK, Response: model.DecisionKeep{}},
-			OAuthScopes: person,
+			OAuthScopes: routeScopeSet{model.ScopePerson, model.ScopeApprove},
 			Scope:       scopeProject, ProjectOf: projectPathIssue,
 			IDs: &idRoute{Reason: "a decision's heading block id, which names a block of the issue's decisions document; " +
 				"the path names no document to resolve a prefix within"},

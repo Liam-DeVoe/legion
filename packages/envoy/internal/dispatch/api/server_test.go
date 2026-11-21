@@ -85,6 +85,12 @@ type testServerOptions struct {
 	// is the deployment with no broker, which is every test but broker_token_test.go's and
 	// project_scope_test.go's, and answers such a presentation 401 UNAUTHORIZED.
 	brokerTokens func(*store.Store) *ciphertoken.Verifier
+	// agentSecretsURL points Deps' broker relay for the credential pages at a fake secrets broker
+	// (DISPATCH_AGENT_SECRETS_URL), and the server presents the account token
+	// credentialTestAccountToken there from a file newRegisteredTestServer writes, as envoyURL's
+	// is; empty is the deployment with no broker, whose credential routes answer FEATURE_OFF. The
+	// route tour points it at its own fake broker (newTourSecretsBroker).
+	agentSecretsURL string
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
 	// X-Dispatch-User header names.
 	identity identity.Identity
@@ -151,11 +157,6 @@ type testServerOptions struct {
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
-	// agentSecretsURL points the credential pages' relay at a fake secrets broker (the route
-	// tour's, newTourSecretsBroker), Dispatch presenting credentialTestAccountToken to it; empty
-	// leaves the feature off, as every test but the route tour does. The credential routes' own
-	// tests build a server of their own (newCredentialTestHandler).
-	agentSecretsURL string
 	// duplicateBound is the near-copy gate's bound (server.duplicateBound); zero keeps
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
@@ -293,7 +294,11 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	case agentPublisher == nil:
 		agentPublisher = NewAgentPublishRecorder()
 	}
-	input := DepsInput{
+	agentSecretsTokenFile := ""
+	if options.agentSecretsURL != "" {
+		agentSecretsTokenFile = accountTokenFile(t, credentialTestAccountToken)
+	}
+	deps, err := NewDeps(DepsInput{
 		Store:            database,
 		Identity:         people,
 		AgentTokens:      sharedAgentTokens(t, "agent-token"),
@@ -318,28 +323,22 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.
-		HorizonStallAfter: horizontest.StallWarning,
-		HorizonWarnEvery:  horizontest.StallWarning,
-		OIDC:              options.oidc,
-		BrokerTokens:      brokerTokens,
-		AgentStream:       options.agentStream,
-		AgentPublisher:    agentPublisher,
-		Embedder:          options.embedder,
-		Answerer:          options.answerer,
-		Files:             options.files,
-		DashboardEntry:    options.dashboardEntry,
-		BuildCommit:       options.buildCommit,
-		OutboxPublishes:   options.outboxPublishes,
-		Metrics:           options.metrics,
-	}
-	if options.agentSecretsURL != "" {
-		tokenFile := filepath.Join(t.TempDir(), "token")
-		if err := os.WriteFile(tokenFile, []byte(credentialTestAccountToken), 0o600); err != nil {
-			t.Fatalf("write the account token file: %v", err)
-		}
-		input.AgentSecretsURL, input.AgentSecretsTokenFile = options.agentSecretsURL, tokenFile
-	}
-	deps, err := NewDeps(input)
+		HorizonStallAfter:     horizontest.StallWarning,
+		HorizonWarnEvery:      horizontest.StallWarning,
+		OIDC:                  options.oidc,
+		BrokerTokens:          brokerTokens,
+		AgentSecretsURL:       options.agentSecretsURL,
+		AgentSecretsTokenFile: agentSecretsTokenFile,
+		AgentStream:           options.agentStream,
+		AgentPublisher:        agentPublisher,
+		Embedder:              options.embedder,
+		Answerer:              options.answerer,
+		Files:                 options.files,
+		DashboardEntry:        options.dashboardEntry,
+		BuildCommit:           options.buildCommit,
+		OutboxPublishes:       options.outboxPublishes,
+		Metrics:               options.metrics,
+	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}

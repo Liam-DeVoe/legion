@@ -14,7 +14,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -612,23 +611,23 @@ func TestAReviewNamingNoVersionOfTheDocumentIsRefusedWithNothingWritten(t *testi
 // The version a review names is read only once the credential is known to be that of a person who
 // may review (recordArtifactReview), so a caller who may not review is told that, and never that
 // its {number} is no version. A credential without the person scope - a machine's broker token
-// that names no person, or a personal token holding no scope - is refused 403
+// that names no person, or a personal token holding no scope - and a person's broker token, which
+// holds the person scope and never approve (brokerTokenActor), are each refused 403
 // OAUTH_SCOPE_REQUIRED by the row's scope gate (gateRouteScopes), which runs before the handler.
-// A person's broker token whose session parameter names another session than the one it proved
-// passes that gate and is refused 403 ACTOR_SESSION_MISMATCH by actingPerson: that row holds the
-// handler's own order, and reads 400 INVALID_REVIEW in a handler that reads the number first. The
-// same token naming no other session is refused that 400, so the number check is live for the
-// caller the 403 turned away. None of them writes a review.
+// The person's broker token is refused the same on POST /api/v2/artifacts/{id}/reviews, the
+// /api/v2 route that answers this one, with the version in its body, before its decoder reads it:
+// /api/v2 grants nothing /api/v1 refuses. A personal token of the same person holding approve
+// passes that gate and is refused 400 INVALID_REVIEW, so the number check is live for the callers
+// the 403 turned away. None of them writes a review.
 func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
-	const personToken = "a-person-token-that-reviews"
-	person := liveNamedToken(caller.jkt)
-	person.ProjectScope, person.Projects = ciphertoken.ProjectScopePerson, nil
-	rig.broker.Says(personToken, person)
+	const personToken = "a-person-token-that-would-review"
+	rig.broker.Says(personToken, personScopedTokenAnswer(caller.jkt))
 	const machineToken = "a-machine-token-naming-no-person"
 	rig.broker.Says(machineToken, serviceOnlyToken(caller.jkt))
 	unscoped := personalTokenOwnedBy(t, rig.database, brokerTestPerson)
+	reviewer := personalTokenOwnedBy(t, rig.database, brokerTestPerson, model.ScopePerson, model.ScopeApprove)
 
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
 		"key": "REV", "name": "Reviews",
@@ -648,6 +647,11 @@ func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber
 
 	for _, number := range []string{"0", "two"} {
 		path := versionReviewPath(artifactID, number)
+		// The /api/v2 review names the version in its body, as JSON spells number there.
+		var version any = number
+		if whole, err := strconv.Atoi(number); err == nil {
+			version = whole
+		}
 		for _, row := range []struct {
 			caller string
 			send   func() *httptest.ResponseRecorder
@@ -668,11 +672,19 @@ func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber
 				code: apicode.OAuthScopeRequired.V1Name(),
 			},
 			{
-				caller: "a person's broker token whose session parameter names another session",
+				caller: "a person's broker token, which never holds approve",
 				send: func() *httptest.ResponseRecorder {
-					return rig.serve(caller.presenting(t, http.MethodPost, path+"?session=session-someone-else", personToken, body))
+					return rig.serve(caller.presenting(t, http.MethodPost, path, personToken, body))
 				},
-				code: "ACTOR_SESSION_MISMATCH",
+				code: apicode.OAuthScopeRequired.V1Name(),
+			},
+			{
+				caller: "a person's broker token on the /api/v2 route that answers this one",
+				send: func() *httptest.ResponseRecorder {
+					return rig.serve(caller.presenting(t, http.MethodPost, "/api/v2/artifacts/"+artifactID+"/reviews", personToken,
+						map[string]any{"state": "approved", "version": version}))
+				},
+				code: apicode.OAuthScopeRequired.V1Name(),
 			},
 		} {
 			refused := row.send()
@@ -680,9 +692,9 @@ func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber
 				t.Fatalf("%s reviewing version %q: status=%d body=%s, want 403 %s", row.caller, number, refused.Code, refused.Body.String(), row.code)
 			}
 		}
-		live := rig.serve(caller.presenting(t, http.MethodPost, path, personToken, body))
+		live := agentRequest(t, rig.handler, http.MethodPost, path, body, reviewer)
 		if code, _ := refusalOf(t, live); live.Code != http.StatusBadRequest || code != "INVALID_REVIEW" {
-			t.Fatalf("the person's own token reviewing version %q: status=%d body=%s, want 400 INVALID_REVIEW", number, live.Code, live.Body.String())
+			t.Fatalf("the person's own personal token holding approve reviewing version %q: status=%d body=%s, want 400 INVALID_REVIEW", number, live.Code, live.Body.String())
 		}
 	}
 	if reviews := listReviews(t, rig.handler, artifactID); len(reviews) != 0 {

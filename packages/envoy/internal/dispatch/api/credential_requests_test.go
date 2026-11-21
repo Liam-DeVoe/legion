@@ -30,7 +30,7 @@ const credentialTestAccountToken = "dispatch-account-token"
 
 // accountTokenFile writes token to a file of the test's own directory, as a pod's projected
 // token volume holds it, and answers the path the client reads its bearer from.
-func accountTokenFile(t *testing.T, token string) string {
+func accountTokenFile(t testing.TB, token string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(path, []byte(token), 0o600); err != nil {
@@ -41,8 +41,9 @@ func accountTokenFile(t *testing.T, token string) string {
 
 // newCredentialTestHandler mounts the real routes with AgentSecrets pointed at brokerURL ("" to
 // leave the feature off) on a server of its own, holding the people alice and bob and the shared
-// agent token "agent-token". The route tour turns the feature on through newTestServer's own
-// option instead (testServerOptions.agentSecretsURL).
+// agent token "agent-token", that configures nothing else. A test that needs the relay beside
+// another of newTestServer's options - the route tour, or the broker token verifier
+// (broker_token_approve_test.go) - sets testServerOptions.agentSecretsURL instead.
 func newCredentialTestHandler(t *testing.T, brokerURL string) http.Handler {
 	t.Helper()
 	tokenFile := ""

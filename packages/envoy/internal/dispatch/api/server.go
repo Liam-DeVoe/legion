@@ -1487,11 +1487,9 @@ func missingScopeError(scope, message string) *apiError {
 
 // gateRouteScopes is the one place a route's OAuth scopes are enforced: register wraps every row
 // that declares any (routeScopes) in it, ahead of the keyed, project and session layers, so the
-// table is what decides and a handler restates nothing. A credential the deployment configured
-// rather than a person — the shared token, a pod's service-account token, a broker-issued token
-// scoped to a project — holds none of them; a personal token holds the set its own row names.
-// The first scope the credential lacks, in the order the row declares them, is 403
-// OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
+// table is what decides and a handler restates nothing. What each credential holds is said once,
+// above routeScopes. The first scope the credential lacks, in the order the row declares them, is
+// 403 OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
 // through writeAuthenticationError, as every gate on this server does.
 //
 // The caller it resolved rides along (resolvedCallerKey), so no layer behind it verifies the

@@ -9676,7 +9676,7 @@
     },
     "/api/v2/issues/{key}/decisions/{block_id}/state": {
       "put": {
-        "description": "Record that the caller, a person, agrees with a decision as the text they read it at {state: kept, text_sha256} (the person scope): text_sha256 is the decision's own from GET /api/v2/issues/{key}/decisions, and a decision whose text changed since is 409 DECISION_CHANGED with nothing written (400 INVALID_KEEP for a body without it). Answers the keep {artifact_id, block_id, changed_version, kept_by, kept_at} and appends decision.kept, which wakes nobody; a keep of the same text_sha256 by the person who kept it answers the keep as it stands and writes nothing, and anybody else's moves the keep to them. 400 STATE_INVALID for any other state; {block_id} is the heading block of a decision of the issue's decisions.md outside `## Replaced`, and any other block is 404 BLOCK_NOT_FOUND; 404 ISSUE_NOT_FOUND.",
+        "description": "Record that the caller, a person, agrees with a decision as the text they read it at {state: kept, text_sha256} (the person and approve scopes): text_sha256 is the decision's own from GET /api/v2/issues/{key}/decisions, and a decision whose text changed since is 409 DECISION_CHANGED with nothing written (400 INVALID_KEEP for a body without it). Answers the keep {artifact_id, block_id, changed_version, kept_by, kept_at} and appends decision.kept, which wakes nobody; a keep of the same text_sha256 by the person who kept it answers the keep as it stands and writes nothing, and anybody else's moves the keep to them. 400 STATE_INVALID for any other state; {block_id} is the heading block of a decision of the issue's decisions.md outside `## Replaced`, and any other block is 404 BLOCK_NOT_FOUND; 404 ISSUE_NOT_FOUND.",
         "operationId": "putApiV2IssuesByKeyDecisionsByBlockIdState",
         "parameters": [
           {
@@ -9782,7 +9782,8 @@
         },
         "x-auth": "any",
         "x-oauth-scopes": [
-          "person"
+          "person",
+          "approve"
         ],
         "x-refusal-codes": {
           "ANSWER_NOT_KEPT": "*",
