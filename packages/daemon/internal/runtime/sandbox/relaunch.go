@@ -104,6 +104,18 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // never answers the round that is to replace that pod. A pod whose template says nothing this
 // daemon can read is replaced at the launch instead, as every drifted pod was before the round.
 //
+// Such a pod is kept unless the update round over it is over by the daemon's rule for a round with
+// no process in its pod (Options.RoundPodEnds, dispatch://INFRA-4109 R7): no role process runs in
+// it, and nothing holds it — no operator's suspension, no project pause, and, before the round's
+// bound, no role that holds the round's ask it has not answered. The round would replace such a
+// pod a moment later, so a role started in it would have its first turn ended and be launched a
+// second time, as INFRA-4455's tester was on 2026-11-19. The daemon is asked under the pod's launch
+// turn, so the round's bound is read when the launch runs rather than when the role was resumed,
+// and a yes has this launch make the round's own replacement: the Suspended patch names the pod
+// under the round's mark (displacing, suspendAnnotating, roundReplacement), and the role starts
+// in the new pod, as in any replacement. An error of that reading fails the launch as any step
+// does.
+//
 // A live pod no round covers is replaced here for every kind of drift instead, as every launch did
 // before the round existed: no round is ever opened over such a pod, so a launch that kept it
 // would leave its role in a pod the configuration has left behind for ever (movedInPod,
@@ -158,10 +170,10 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // not answer in time (stopIssuedChild). A launch installs its plugin pair (launcherCommand) only
 // when spec.Plugins is set and the pod was kept rather than replaced: a pod replaced for any other
 // reason — a suspended Sandbox, a lost launcher binding, a failed init, a pod that never started, a
-// moved address — comes up on the configured image, which the boot gate holds to the daemon's
-// contract, so its copies are already right; carrying the install onto a fresh pod would be
-// installing over a pair already current. l.spec.Plugins is cleared in that case before
-// launcherCommand builds its argv.
+// moved address, an update round that is over — comes up on the configured image, which the boot
+// gate holds to the daemon's contract, so its copies are already right; carrying the install onto
+// a fresh pod would be installing over a pair already current. l.spec.Plugins is cleared in that
+// case before launcherCommand builds its argv.
 //
 // An issue Sandbox whose disk shape is not the one this launch renders (supersededDisk) is
 // replaced with the pod. It is one of the release before the pod-owned disk, which owns an
@@ -230,9 +242,9 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	}
 	pod := r.storedPod(s.Name)
 	installing := l.spec.Plugins != nil
-	decided, err := r.replacement(bounded, s, pod, &l)
+	decided, err := r.replacement(bounded, s, pod, &l, r.roundPodEnds)
 	if err != nil {
-		return fail("read its pod's launcher bindings", err)
+		return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, boundRanOut(ctx, bounded, r.launchBound, err))
 	}
 	// A pod its node never started (neverStarted) is replaced as a pod whose init failed is, since
 	// no launcher connects from it: a launch that kept it would wait out its start bound on it, be
@@ -245,6 +257,12 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			"pod", pod.Name, "uid", pod.UID, "node", pod.Spec.NodeName, "notStartedFor", decided.unstarted.Round(time.Second),
 			"scheduledFor", decided.scheduledFor.Round(time.Second), "startBound", r.startBound(s), "claim", spec.Claim)
 	}
+	// A pod the update round over it is done with is replaced as the round's own replacement
+	// (podReplacement's kind), which the daemon has recorded as this launch's act.
+	if decided.kind == roundReplacement {
+		r.log.Info("sandbox runtime: this launch replaces the pod of an update round that its bound or its answers ended; the role starts in a new pod",
+			"pod", pod.Name, "uid", pod.UID, "claim", spec.Claim)
+	}
 	replace := decided.why != ""
 	if installing && replace {
 		// Replaced for some other reason: the fresh pod's image is already current, so nothing is
@@ -255,7 +273,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		// The suspension's own copy of the Sandbox carries the annotation naming the replaced pod:
 		// a launch that replaces the Sandbox (podReplacement's sandbox) reads it from there onto the
 		// Sandbox it creates (replaceSupersededSandbox).
-		suspended, step, err := r.suspendReplaced(bounded, s, pod, decided.displacesRoles)
+		suspended, step, err := r.suspendReplaced(bounded, s, pod, decided.displacesRoles, decided.kind)
 		if err != nil {
 			return fail(step, err)
 		}
@@ -437,16 +455,21 @@ type podReplacement struct {
 	// created and how long ago its node was given it, which the launch's warning gives; 0 for
 	// every other pod.
 	unstarted, scheduledFor time.Duration
+	// kind is which act the replacement is (displacing): the launch's own, or, for a live pod
+	// whose update round the daemon found over (runtime.RoundPodEnds), the round's own
+	// replacement, which its suspension names under the round's mark as well.
+	kind replacementKind
 }
 
 // replacement is whether a launch of l into the Sandbox read as s, whose stored pod is pod,
 // replaces that pod rather than starting l's role in it: relaunch's one decision, which a relaunch
 // of a claim on its same session also asks before it stops anything (RelaunchRefusal), so the
-// check and the launch never disagree about a pod. Where it keeps the pod it records on l what the
+// check and the launch never disagree about a pod but in one reading, the update round's, which
+// the launch alone asks (rounds). Where it keeps the pod it records on l what the
 // pod was built with (keptBy, l.kept) and the default owner its launchers' Secrets record
 // (launcherBound, l.gitHubDefault). The launcher Secrets are read only once nothing the stores
-// hold has answered, since each is an API request; an error is such a read that failed, which
-// proves nothing about the pod.
+// hold has answered, since each is an API request. An error is such a read that failed, or a
+// failed reading of the round, which proves nothing about the pod; it names the step that failed.
 //
 // A pod no role runs in (runsNoRole) — one not live, or one its node never started, from which no
 // launcher connects and on which a launch that kept it would wait out its start bound — is
@@ -481,7 +504,18 @@ type podReplacement struct {
 // template says nothing the daemon can read, it cannot tell what the pod carries, and the launch
 // replaces the pod where it stands, which is what every launch into a drifted pod did before the
 // round existed.
-func (r *Runtime) replacement(ctx context.Context, s *sandbox, pod *corev1.Pod, l *launch) (podReplacement, error) {
+//
+// A live pod a round covers that the launch would keep for everything above may be the pod of an
+// update round that is over: no role process runs in it, and nothing holds it, so the round is
+// about to replace it, and a role started in it would have its first turn ended by that
+// replacement and be launched a second time (Resume's comment above). So a launch hands rounds,
+// the daemon's reading of that round (Options.RoundPodEnds), which it asks under the pod's launch
+// turn before the launcher Secrets are read, and a yes replaces the pod as the round's own
+// replacement (roundReplacement). The check (RelaunchRefusal) hands nil and asks nothing: the
+// daemon records each answer as the act of the launch that asked (the pod kept or replaced at its
+// launch), so only a launch that acts on the answer may ask, and a round that is over has no role
+// process in its pod, so its replacement ends none of the roles the check guards.
+func (r *Runtime) replacement(ctx context.Context, s *sandbox, pod *corev1.Pod, l *launch, rounds runtime.RoundPodEnds) (podReplacement, error) {
 	sandbox := r.supersededDisk(s, *l)
 	if sandbox == "" {
 		sandbox = volumeReset(s, pod)
@@ -512,9 +546,19 @@ func (r *Runtime) replacement(ctx context.Context, s *sandbox, pod *corev1.Pod, 
 			return displace("its pod was built from " + strings.Join(built, "; "))
 		}
 	}
+	if covered && rounds != nil {
+		ends, err := rounds(ctx, l.spec.Claim, string(pod.UID))
+		if err != nil {
+			return podReplacement{}, fmt.Errorf("read the update round over its pod: %w", err)
+		}
+		if ends {
+			return podReplacement{why: "the update round over its pod " + string(pod.UID) + " is over", displacesRoles: true,
+				sandbox: sandbox, kind: roundReplacement}, nil
+		}
+	}
 	bound, err := r.launcherBound(ctx, s, pod, l)
 	if err != nil {
-		return podReplacement{}, err
+		return podReplacement{}, fmt.Errorf("read its pod's launcher bindings: %w", err)
 	}
 	if !bound {
 		return displace("a launcher Secret of its roles does not bind its pod " + string(pod.UID))
@@ -1522,11 +1566,13 @@ func labelPatchPath(key string) string {
 // ends as much as the roles of one an update round replaced.
 //
 // roundDisplacedAnnotation names the pod a Sandbox was suspended to replace for its update round,
-// and only ReplacePod writes it. It is what tells the round's own replacement, in flight between
-// its suspension and the pod's end, from a launch's replacement of the same pod, which takes the
-// pod's disk with whatever its workers have not pushed: the two are the same suspension naming the
-// same pod under displacedAnnotation, and only the round's may be read as a pod that is there and
-// has not drifted (PodDrift).
+// and only the round's own replacements write it: ReplacePod, ReplaceIssuePod, and a launch into
+// the pod of a round that is over (relaunch, Options.RoundPodEnds). It is what tells the round's
+// own replacement, in flight between its suspension and the pod's end, from a launch's replacement
+// of the same pod for a reason of the launch's own, which takes the pod's disk with whatever its
+// workers have not pushed: the two are the same suspension naming the same pod under
+// displacedAnnotation, and only the round's may be read as a pod that is there and has not drifted
+// (PodDrift).
 const (
 	displacedAnnotation      = "legion.dev/displaced-pod"
 	roundDisplacedAnnotation = "legion.dev/round-displaced-pod"
@@ -1548,7 +1594,8 @@ const (
 )
 
 // replacementKind is which of the two acts that replace a live pod a suspension is made for: a
-// launch that cannot use the pod it found, or the update round of that pod, once it is over.
+// launch that cannot use the pod it found, or the update round of that pod, once it is over —
+// made by ReplacePod or ReplaceIssuePod, or by a launch that found the round over (relaunch).
 type replacementKind bool
 
 const (
@@ -1560,8 +1607,10 @@ const (
 // act that ends a pod for a launch suspends it, a launch that replaces its pod (relaunch) and the
 // stop of a controller whose launcher is not connected (endPod), each of which then waits the pod
 // out itself (awaitPodGone). A replacement that ends roles running in the pod (displacesRoles,
-// from runsNoRole) names the pod on the Sandbox in the same write (displacing,
-// launchReplacement), so each of those roles' end is read as the daemon's own act and not a death.
+// from runsNoRole) names the pod on the Sandbox in the same write as kind's replacement
+// (displacing): a launch's own, or the update round's where a launch found the round over its pod
+// over (podReplacement's kind), so each of those roles' end is read as the daemon's own act and
+// not a death.
 // Any other suspends the Sandbox, where it is not Suspended already, recording in the same write
 // the end of a pod of its own that ended with a reason (suspendRecordingEnd), which its roles read
 // after the pod is gone. A Sandbox already Suspended takes no suspension patch that could carry
@@ -1572,11 +1621,11 @@ const (
 // which a caller names its failure by: "suspend its sandbox", or, for a Sandbox already Suspended,
 // "mark its kept volume for the reset". An error is a patch the API server refused: a suspension,
 // which ended nothing, or the reset mark's patch, which left the mark unwritten.
-func (r *Runtime) suspendReplaced(ctx context.Context, s *sandbox, pod *corev1.Pod, displacesRoles bool) (*sandbox, string, error) {
+func (r *Runtime) suspendReplaced(ctx context.Context, s *sandbox, pod *corev1.Pod, displacesRoles bool, kind replacementKind) (*sandbox, string, error) {
 	const suspend = "suspend its sandbox"
 	switch {
 	case displacesRoles:
-		suspended, err := r.suspendAnnotating(ctx, s, displacing(pod.UID, launchReplacement))
+		suspended, err := r.suspendAnnotating(ctx, s, displacing(pod.UID, kind))
 		return suspended, suspend, err
 	case s.mode() != modeSuspended:
 		return s, suspend, r.suspendRecordingEnd(ctx, s, pod)
@@ -1588,12 +1637,14 @@ func (r *Runtime) suspendReplaced(ctx context.Context, s *sandbox, pod *corev1.P
 
 // displacing is the annotations of a suspension that replaces the live pod uid for kind: uid as
 // the displaced pod (displacedAnnotation), and for a round's replacement as the round's too
-// (roundDisplacedAnnotation), which a launch's replacement never writes. Sent in the one merge
-// patch that suspends the Sandbox (suspendAnnotating), they are applied with the suspension or
-// not at all, so a refused suspension names no pod. The patch's copy of the Sandbox is the one
-// that carries the name: a migrating launch reads it from there onto the Sandbox it creates in
-// its place (replaceSupersededSandbox). ReplacePod sends them through suspendOver, which adds the
-// reset mark where the pod failed on a kept volume (volumeResetAnnotation, volumeFault).
+// (roundDisplacedAnnotation), which a launch's replacement for a reason of its own never writes.
+// Sent in the one merge patch that suspends the Sandbox (suspendAnnotating), they are applied with
+// the suspension or not at all, so a refused suspension names no pod. The patch's copy of the
+// Sandbox is the one that carries the name: a migrating launch reads it from there onto the
+// Sandbox it creates in its place (replaceSupersededSandbox). ReplacePod and ReplaceIssuePod send
+// them through suspendOver (replaceRoundPod), which adds the reset mark where the pod failed on a
+// kept volume (volumeResetAnnotation, volumeFault); a launch that replaces a live pod as the
+// round's replacement sends them through suspendAnnotating, as for any live pod (relaunch).
 func displacing(uid types.UID, kind replacementKind) map[string]*string {
 	displaced := string(uid)
 	annotations := map[string]*string{displacedAnnotation: &displaced}

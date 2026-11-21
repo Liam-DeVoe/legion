@@ -437,7 +437,7 @@ func TestReplacementJudgesAPodItsNodeNeverStartedByOneReadingOfTheClock(t *testi
 			}
 			mu.Unlock()
 
-			decided, err := g.r.replacement(g.ctx, s, pod, &l)
+			decided, err := g.r.replacement(g.ctx, s, pod, &l, nil)
 			mu.Lock()
 			readings = nil
 			mu.Unlock()

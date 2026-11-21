@@ -210,6 +210,44 @@ func TestTheRelaunchCheckReadsAMicroVMPodAsItsLaunchDoes(t *testing.T) {
 	}
 }
 
+// The check asks the daemon nothing of the update round over the pod (Options.RoundPodEnds): the
+// daemon records each answer as the act of the launch that asked, so only the launch that follows
+// the stop asks, under the pod's launch turn. A round the daemon reads as over refuses no relaunch,
+// since no role process runs in such a pod and its replacement ends none of the roles the check
+// guards; the launch then makes that replacement as the round's own, naming the pod under the
+// round's mark, and the claim's next generation starts in the new pod.
+func TestTheRelaunchCheckAsksNothingOfTheUpdateRound(t *testing.T) {
+	var asked []roundAsk
+	g := newRig(t, nil, withRoundPodEnds(true, nil, &asked))
+	spec := workerSpec(t)
+	tester := g.spawn(spec)
+	name, old := tester.Sandbox.Name, tester.Sandbox.PodUID
+	asked = nil
+	if err := g.r.RelaunchRefusal(g.ctx, tester, false); err != nil {
+		t.Fatalf("RelaunchRefusal = %v, want none: the check asks nothing of the round", err)
+	}
+	if len(asked) != 0 {
+		t.Fatalf("the check asked the daemon %+v, want nothing", asked)
+	}
+	if err := g.r.StopForRelaunch(g.ctx, tester, false); err != nil {
+		t.Fatalf("StopForRelaunch = %v", err)
+	}
+	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-g2", resumeSession
+	next, err := g.r.Resume(g.ctx, &tester, spec)
+	if err != nil {
+		t.Fatalf("Resume the tester: %v", err)
+	}
+	if want := []roundAsk{{token: workerToken, pod: old}}; !slices.Equal(asked, want) {
+		t.Errorf("the launch asked the daemon %+v, want %+v", asked, want)
+	}
+	if next.Sandbox.PodUID == old {
+		t.Fatalf("the launch kept pod %s, whose round the daemon reads as over", old)
+	}
+	if s := g.sandbox(name); s.Annotations[roundDisplacedAnnotation] != old || s.Annotations[displacedAnnotation] != old {
+		t.Errorf("the Sandbox names %q replaced by its round and %q displaced, want %s for both", s.Annotations[roundDisplacedAnnotation], s.Annotations[displacedAnnotation], old)
+	}
+}
+
 // The daemon's own relaunch of its controller (mayReplacePod) is never refused for the pod: no
 // other role runs in the controller's pod, so a launcher that is not connected and a launch that
 // needs a new pod are both answered by a new pod. Where its launcher is not connected, the stop

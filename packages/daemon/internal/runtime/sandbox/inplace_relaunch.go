@@ -23,6 +23,14 @@ var _ runtime.InPlaceRelauncher = (*Runtime)(nil)
 // pod the check would replace only where no round covers the pod, which is the controller's, whose
 // relaunch is the daemon's own and may replace it.
 //
+// The check guards the other roles running in the pod, and it keeps one decision of the launch out
+// of its reading: the update round over the pod (Options.RoundPodEnds), which the daemon records as
+// the act of the launch that asked, so the check asks nothing of it (replacement's rounds). A pod
+// whose round is over when the launch runs, after this claim's process has stopped, has no role
+// process left in it, and the launch replaces it as the round's own replacement; a check that
+// passed is thus no promise that the next generation starts in the same pod, only that no other
+// role running in it is ended for this relaunch.
+//
 // With mayReplacePod nothing refuses: the daemon's own relaunch of its controller replaces a pod in
 // which no other role runs, so it reads nothing. It stops, starts and writes nothing; the launcher
 // Secrets it reads are held as their roles' credentials, as any launch's read holds them
@@ -49,9 +57,9 @@ func (r *Runtime) RelaunchRefusal(ctx context.Context, loc runtime.Locator, mayR
 		return fmt.Errorf("relaunch %s: its Sandbox %s is gone: %w", loc.Claim, loc.Sandbox.Name, runtime.ErrRelaunchReplacesPod)
 	}
 	l := r.relaunchLaunch(s, loc.Claim, role)
-	decided, err := r.replacement(ctx, s, r.storedPod(s.Name), &l)
+	decided, err := r.replacement(ctx, s, r.storedPod(s.Name), &l, nil)
 	if err != nil {
-		return fmt.Errorf("relaunch %s: read its pod's launcher bindings: %w", loc.Claim, err)
+		return fmt.Errorf("relaunch %s: %w", loc.Claim, err)
 	}
 	if decided.why != "" {
 		return fmt.Errorf("relaunch %s: %s: %w", loc.Claim, decided.why, runtime.ErrRelaunchReplacesPod)
@@ -142,7 +150,7 @@ func (r *Runtime) endPod(ctx context.Context, loc runtime.Locator) error {
 		return nil
 	}
 	idle, _, _ := r.runsNoRole(s, pod, r.now())
-	suspended, step, err := r.suspendReplaced(ctx, s, pod, idle == "")
+	suspended, step, err := r.suspendReplaced(ctx, s, pod, idle == "", launchReplacement)
 	if err != nil {
 		return fail(step, err)
 	}
