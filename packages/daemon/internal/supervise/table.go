@@ -2310,7 +2310,12 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // (stopWaitsForResult) stops the claim here instead (stopAtResult), once the result has decided
 // the task and once the copy the turn's end started has ended, or its wait has run out
 // (waitForTurnCopy): a refused task taken back is one the stop owes the role a launch for, and a
-// finished one is retired by the settle that follows every decision (Handle).
+// finished one is retired by the settle that follows every decision (Handle). A result whose agent
+// ran no turn is that hold's result too: once the prompt is charged (promptFailed), the hold stops
+// the claim the same way, unless another prompt of the task is still outstanding, whose own result
+// is then the one the hold waits for. A busy answer records the claim working instead
+// (recordBusyTurn), so the end of the turn the agent is in runs the hold (turnEnded), or the
+// result of the earlier prompt that turn belongs to does.
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
 	if !r.AgentInvoked {
@@ -2333,7 +2338,10 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 			}
 			return errors.Join(m.takeBackPending(ctx, taskUnread), m.recordBusyTurn(ctx))
 		}
-		return m.promptFailed(ctx, why, taskRead)
+		if err := m.promptFailed(ctx, why, taskRead); err != nil || m.awaitsResult() {
+			return err
+		}
+		return m.stopAtResult(ctx)
 	}
 	m.outstanding = nil
 	if r.Error != "" {

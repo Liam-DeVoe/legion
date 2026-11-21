@@ -17,8 +17,8 @@ import (
 )
 
 // heldCopy is one send of an issue's saved workspace copy that the pod's launcher answered Held:
-// the pod it was sent to, the restore id it carried, and the LauncherID of each launcher session
-// of that pod connected when the answer came.
+// the pod it was sent to, the restore id it carried, when the copy was taken, and the LauncherID
+// of each launcher session of that pod connected when the answer came.
 //
 // A pod's `roles` container runs one launcher process, which holds a connection of its own to
 // the daemon per role, each with a LauncherID of its own that the process mints at its start and
@@ -40,9 +40,14 @@ import (
 // It is recorded only on Held, so a send that failed records nothing, and each issue keeps one,
 // replaced by the next send its launcher held, so the record grows only with the issues the
 // daemon has sent a copy for.
+//
+// taken is the copy's own time (runtime.WorkspaceBundle.At), the one the line of the send names
+// (reachedLine), kept so the line confirming the launcher's restore names it too
+// (restoreReported): the launcher's report carries the restore id alone.
 type heldCopy struct {
 	podUID    string
 	restore   int64
+	taken     time.Time
 	launchers map[string]bool
 }
 
@@ -56,9 +61,9 @@ func (d *launchers) holdsCopy(issue string, session *launcherSession) (heldCopy,
 }
 
 // heldBy records that the launcher of podUID answered Held to the send of issue's copy under
-// restore: the LauncherID of every session of that pod the daemon holds now, replacing whatever
-// the issue held before (heldCopy).
-func (d *launchers) heldBy(issue, podUID string, restore int64) {
+// restore, taken at taken: the LauncherID of every session of that pod the daemon holds now,
+// replacing whatever the issue held before (heldCopy).
+func (d *launchers) heldBy(issue, podUID string, restore int64, taken time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	launchers := map[string]bool{}
@@ -67,7 +72,16 @@ func (d *launchers) heldBy(issue, podUID string, restore int64) {
 			launchers[s.id] = true
 		}
 	}
-	d.held[issue] = heldCopy{podUID: podUID, restore: restore, launchers: launchers}
+	d.held[issue] = heldCopy{podUID: podUID, restore: restore, taken: taken, launchers: launchers}
+}
+
+// heldTaken is when the copy was taken that this daemon sent issue's pod podUID under restore and
+// that pod's launcher held (heldCopy.taken), and whether the daemon holds that send.
+func (d *launchers) heldTaken(issue, podUID string, restore int64) (time.Time, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	held, ok := d.held[issue]
+	return held.taken, ok && held.podUID == podUID && held.restore == restore
 }
 
 // bundleRestoreBound is how long the hop of one pod's saved bundle may take. The 40 MiB a release
@@ -114,6 +128,11 @@ const withheldBranchLine = "launcher bundle: the saved workspace copy's own valu
 // reachedLine is the line a copy the launcher holds whole is logged with, before the launcher
 // applies it.
 const reachedLine = "launcher bundle: the issue's saved workspace work reached the pod that restores it"
+
+// restoredLine is the line a launcher's report that its restore put the work back is logged with,
+// once the store has kept that copy as the restoring pod's own (restoreReported). It names the
+// issue, the pod, the restore id and when the copy was taken.
+const restoredLine = "launcher bundle: the pod's launcher restored the issue's saved workspace work, which the database keeps as that pod's own copy"
 
 // alreadyHeldLine is the line a role start whose launcher process already holds the copy its pod
 // was sent is logged with (heldCopy): the start takes nothing of the issue's copies and sends
@@ -305,7 +324,7 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		// next copy of the issue's workspace replaces its row. The launcher process holds it for
 		// every role it serves, so the sessions of this pod connected now are recorded as holding
 		// it, and a later start on one of them sends it nothing (heldCopy).
-		d.heldBy(issue, podUID, bundle.Release)
+		d.heldBy(issue, podUID, bundle.Release, bundle.At)
 		d.log.Info(reachedLine,
 			"issue", issue, "launcher", token, "copy", kind, "taken", bundle.At,
 			"bytes", len(bundle.Bundle), "slices", len(frames), "restore", bundle.Release)
@@ -377,6 +396,11 @@ func (d *launchers) logCopyTakes(session *launcherSession, token claim.Token, re
 // It runs on the launcher's own frame loop rather than in a goroutine of its own, so a pod whose
 // restore is confirmed has its copy kept before any later frame of that launcher is read; the
 // keep is one indexed row of each table.
+//
+// The line it writes (restoredLine) names when the restored copy was taken, as the send's line
+// does, from the send this daemon recorded (heldTaken). A report that reaches a daemon which holds
+// no record of that send, one restarted since it, names no `taken`: the restore id is all the
+// report carries, and the earlier daemon's line of the send named the time.
 func (d *launchers) restoreReported(s *launcherSession, report shimwire.LauncherRestored) {
 	if d.restored == nil || s.issue == "" {
 		return
@@ -393,8 +417,11 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "restore", report.Release, "error", err)
 		return
 	}
-	d.log.Info("launcher bundle: the pod's launcher restored the issue's saved workspace work, which the database keeps as that pod's own copy",
-		"issue", s.issue, "launcher", s.token, "pod", s.podUID, "sequence", report.ID, "restore", report.Release)
+	line := []any{"issue", s.issue, "launcher", s.token, "pod", s.podUID, "sequence", report.ID, "restore", report.Release}
+	if taken, ok := d.heldTaken(s.issue, s.podUID, report.Release); ok {
+		line = append(line, "taken", taken)
+	}
+	d.log.Info(restoredLine, line...)
 }
 
 // bundleFrames are the slices that carry one saved copy of issue's workspace, with every bookmark

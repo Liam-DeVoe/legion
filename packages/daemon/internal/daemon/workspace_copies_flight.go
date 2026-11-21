@@ -192,6 +192,11 @@ type runningCopy struct {
 	// it, and so do a copy refused for its size, which is no fault to retry (runningCopyTooLarge),
 	// and the cadence's forgetting of an issue no claim names (forgetUnclaimed).
 	retry bool
+	// saidNoRole is when a copy of the issue that found no live role to ask was last logged at
+	// Info (sayNoRole), zero for none the cadence remembers. The line names the issue once a period
+	// rather than at every tick: the cadence finds such an issue at each due tick for as long as
+	// its retry waits for a role (copyWorkingWorkspaces).
+	saidNoRole time.Time
 	// free is the issue's one place in flight: nil while nothing of the issue runs, made when a
 	// copy or a release's save takes the place (take) and closed when that run gives it back
 	// (giveBack), which is what a save waiting for the place waits on (hold).
@@ -273,10 +278,11 @@ func (c *runningCopies) take(issue string) (runningCopy, bool) {
 // giveBack gives issue's place back, and answers the issue's entry as it found it, which says
 // whether a copy was owed while the place was held. It is the one way the place is given back, by
 // a copy (done) and by a release's save (hold): it wakes a save waiting for the place, keeps the
-// period the take started with nothing owed and nothing overtaken, marks the retry as retry says
-// or as a copy that came to nothing beside the run left it owed (runningCopy.retry,
-// runningCopy.missed), and drops the entry of every issue whose place is free, that owes no retry
-// and whose period has passed. The caller holds c.mu.
+// period the take started and the last line of a copy that found no role (runningCopy.saidNoRole)
+// with nothing owed and nothing overtaken, marks the retry as retry says or as a copy that came to
+// nothing beside the run left it owed (runningCopy.retry, runningCopy.missed), and drops the entry
+// of every issue whose place is free, that owes no retry and whose period has passed. The caller
+// holds c.mu.
 //
 // Such an entry answers due exactly as a missing one does, so keeping it says nothing the map
 // would not say without it, and a daemon that runs for weeks would hold one word per issue it
@@ -293,7 +299,7 @@ func (c *runningCopies) giveBack(issue string, retry bool) runningCopy {
 	if held.inFlight() {
 		close(held.free)
 	}
-	c.issues[issue] = runningCopy{started: held.started, retry: retry || held.missed}
+	c.issues[issue] = runningCopy{started: held.started, retry: retry || held.missed, saidNoRole: held.saidNoRole}
 	now := c.clock()
 	maps.DeleteFunc(c.issues, func(_ string, held runningCopy) bool {
 		return !held.inFlight() && !held.retry && now.Sub(held.started) >= runningCopyPeriod
@@ -432,7 +438,8 @@ func (c *runningCopies) due(issue string, now time.Time, tick time.Duration) boo
 func (c *runningCopies) untaken(issue string, retry bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if held := c.issues[issue]; held.inFlight() {
+	held := c.issues[issue]
+	if held.inFlight() {
 		if retry {
 			held.missed = true
 			c.issues[issue] = held
@@ -442,7 +449,30 @@ func (c *runningCopies) untaken(issue string, retry bool) {
 	if c.issues == nil {
 		c.issues = make(map[string]runningCopy)
 	}
-	c.issues[issue] = runningCopy{started: c.clock(), retry: retry}
+	c.issues[issue] = runningCopy{started: c.clock(), retry: retry, saidNoRole: held.saidNoRole}
+}
+
+// sayNoRole is whether a copy of issue that found no live role is logged at Info now, and marks
+// it said where it is: no such line of the issue was written in the last period
+// (runningCopyPeriod) by the cadence's clock (runningCopy.saidNoRole). The cadence's tick and a
+// push's copy share the mark, so the issue is named at Info once a period whichever finds it. The
+// mark lives in the issue's entry and goes with it: where the cadence forgets the issue
+// (forgetUnclaimed), or where an entry that owes no retry is dropped once its period has passed
+// (giveBack).
+func (c *runningCopies) sayNoRole(issue string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.clock()
+	held := c.issues[issue]
+	if !held.saidNoRole.IsZero() && now.Sub(held.saidNoRole) < runningCopyPeriod {
+		return false
+	}
+	if c.issues == nil {
+		c.issues = make(map[string]runningCopy)
+	}
+	held.saidNoRole = now
+	c.issues[issue] = held
+	return true
 }
 
 // retries is every issue whose last copy owes a retry (runningCopy.retry), by key.

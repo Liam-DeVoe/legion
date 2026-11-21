@@ -346,17 +346,18 @@ func TestAPushAppliedAgainOrLateNeverMovesTheNewestRecordedPushBack(t *testing.T
 
 // Every push of an issue's branch that moves its record asks for a copy of the issue's workspace,
 // whatever the issue is doing, so a push of an issue whose roles were released, or that has
-// finished, finds no live role to ask. That copy is logged at Debug: a Warn per push of every
-// released issue would bury the lines a deployment counts. The copy looks for its role before it
-// takes the issue's one place in flight, so beside a copy in flight it logs at once, and is never
-// owed behind it.
+// finished, finds no live role to ask. The first such copy in a period is logged at Info, which
+// names the issue left with no copy, and every other push of that issue inside the period at
+// Debug: a line at Info or Warn per push of every released issue would bury the lines a deployment
+// counts. The copy looks for its role before it takes the issue's one place in flight, so beside a
+// copy in flight it logs at once, and is never owed behind it.
 //
 // What moved: a turn's end and the copy owed behind one in flight used to read the claims for a
 // role of their own, and this test pinned the owed copy's no role at Debug and the turn's end's at
 // Warn. Neither reads the claims now — the turn's end hands its copy the claim whose turn ended,
 // and the owed copy asks the role it was owed with — so neither finds no role, and what each asks
 // is pinned by workspace_copy_turn_end_test.go.
-func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtDebugAndNeverAtWarn(t *testing.T) {
+func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtInfoOnceAPeriodAndNeverAtWarn(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Pushes: rig.st, PushRecorded: rig.w.copyWorkspaceAtPush}, quietLogger())
@@ -378,12 +379,17 @@ func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtDebugAndNeverAtWarn(t *testing
 			t.Fatalf("the daemon logged %d copies that found no role, want %d; it logged:\n%s", len(lines), count, rig.logs.String())
 		}
 	}
-	// allDebug fails on any line of a copy that was not stored but the no-role line at Debug.
-	allDebug := func() {
+	// noRoleAt fails unless the lines of a copy that was not stored are the no-role line alone,
+	// at the levels levels names in order.
+	noRoleAt := func(levels ...string) {
 		t.Helper()
-		for _, line := range rig.lines(t, runningCopyUnsavedLine) {
-			if line["reason"] != runningCopyNoRole || line["level"] != "DEBUG" {
-				t.Fatalf("a copy of an issue with no live role was logged as %v, want reason %s at DEBUG", line, runningCopyNoRole)
+		lines := rig.lines(t, runningCopyUnsavedLine)
+		if len(lines) != len(levels) {
+			t.Fatalf("the daemon logged %d copies that were not stored, want %d: %v", len(lines), len(levels), lines)
+		}
+		for i, line := range lines {
+			if line["reason"] != runningCopyNoRole || line["level"] != levels[i] {
+				t.Fatalf("a copy of an issue with no live role was logged as %v, want reason %s at %s", line, runningCopyNoRole, levels[i])
 			}
 		}
 	}
@@ -398,7 +404,7 @@ func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtDebugAndNeverAtWarn(t *testing
 	apply("push-of-a-released-issue", "c1", "c2")
 	awaitNoRole(1)
 	rig.awaitQuiet(t)
-	allDebug()
+	noRoleAt("INFO")
 	if asked := rig.bundler.reads(); len(asked) != 0 {
 		t.Fatalf("the bundler was asked %v for an issue with no live role", asked)
 	}
@@ -417,7 +423,7 @@ func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtDebugAndNeverAtWarn(t *testing
 	}
 	release()
 	rig.awaitQuiet(t)
-	allDebug()
+	noRoleAt("INFO", "DEBUG")
 	if asked := rig.bundler.reads(); len(asked) != 1 {
 		t.Fatalf("the bundler was asked %v, want the copy in flight alone", asked)
 	}

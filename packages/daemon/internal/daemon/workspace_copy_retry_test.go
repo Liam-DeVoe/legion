@@ -14,7 +14,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A copy that comes to nothing at a turn's end is taken again at the next period, though the
@@ -61,28 +60,47 @@ func TestACopyThatFailedAtATurnsEndIsTakenAgainBetweenTurnsUntilOneIsStored(t *t
 
 // A copy that found no live role owes a retry like any other copy that came to nothing, and the
 // retry waits for a live role: an issue whose roles were released or stopped has no running pod
-// whose work a copy could hold, so each due tick skips it, asks no shim and writes no line, and
-// the issue keeps its retry. Once a resumed or relaunched pod's role is live, the first due tick
-// takes the copy and stores it, and the stored copy pays the retry. The copy that finds no role
-// here is a push's, the one copy that reads the claims for a role after the fact: a turn's end
-// hands its copy the claim whose turn ended.
-func TestTheCadencesRetryWaitsForALiveRoleAndWritesNoLineWithoutOne(t *testing.T) {
+// whose work a copy could hold, so each due tick skips it, asks no shim, and the issue keeps its
+// retry. The daemon's log names such an issue under no_live_role at Info, once a period: the
+// first due tick of a period writes the line, the other ticks of that period write none, and the
+// first of the next period writes it again, so an issue idle for hours is named every five
+// minutes and not every minute. Once a resumed or relaunched pod's role is live, the first due
+// tick takes the copy and stores it, and the stored copy pays the retry. The copy that finds no
+// role here is a push's, the one copy that reads the claims for a role after the fact: a turn's
+// end hands its copy the claim whose turn ended.
+//
+// The controls are noLiveRole without the period's limit, under which the test fails at the
+// second tick's line, and noLiveRole at Debug, under which it fails at the first tick's level.
+func TestTheCadenceNamesARetryWithNoLiveRoleAtInfoOnceAPeriodAndAsksNothing(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.clock.advance(0)
 	rig.setClaimState(t, "suspended")
 	rig.w.copyWorkspaceAtPush(rig.issue.Key)
-	if lines := rig.awaitUnsaved(t, runningCopyNoRole, 1); lines[0]["level"] != "DEBUG" {
-		t.Fatalf("the push that found no role is logged as %v, want it at DEBUG", lines[0])
+	seen := len(rig.awaitUnsaved(t, runningCopyNoRole, 1))
+	// tickLines runs one pass of the cadence and answers the no-role lines it wrote.
+	tickLines := func() []map[string]any {
+		t.Helper()
+		rig.w.copyWorkingWorkspaces(ctx)
+		lines := rig.unsavedFor(t, runningCopyNoRole)[seen:]
+		seen += len(lines)
+		return lines
 	}
 
-	// Two due ticks while no role is live ask nothing and log nothing.
-	for range 2 {
-		rig.wind(t)
-		rig.w.copyWorkingWorkspaces(ctx)
+	// The first due tick names the issue at Info.
+	rig.wind(t)
+	if lines := tickLines(); len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["issue"] != rig.issue.Key {
+		t.Fatalf("the first due tick with no live role logged %v, want one line at INFO naming %s", lines, rig.issue.Key)
 	}
-	if testwait.Holds(time.Second, testwait.Poll, func() bool { return len(rig.lines(t, runningCopyUnsavedLine)) > 1 }) {
-		t.Fatalf("the cadence logged a retry of an issue with no live role; the daemon logged:\n%s", rig.logs.String())
+	// The next tick, inside the same period, is due too and writes nothing.
+	rig.clock.advance(rig.w.copyTick())
+	if lines := tickLines(); len(lines) != 0 {
+		t.Fatalf("a tick inside the period of the last no-role line logged %v, want nothing", lines)
+	}
+	// The first tick of the next period names the issue again.
+	rig.clock.advance(runningCopyPeriod - rig.w.copyTick())
+	if lines := tickLines(); len(lines) != 1 || lines[0]["level"] != "INFO" {
+		t.Fatalf("the first tick of the next period logged %v, want one line at INFO", lines)
 	}
 	if asked := rig.bundler.reads(); len(asked) != 0 {
 		t.Fatalf("the bundler was asked %v for an issue with no live role", asked)
@@ -100,8 +118,9 @@ func TestTheCadencesRetryWaitsForALiveRoleAndWritesNoLineWithoutOne(t *testing.T
 // The cadence forgets an issue that no claim of the project names at all — the issue of a branch
 // pushed from outside, never run in this project, or one whose claims are gone — retry and all,
 // since no copy of it can ever be stored to clear that retry, and the cadence's memory would grow
-// with every such issue. A push of such an issue's branch still logs its copy that found no role
-// at Debug. An issue with a claim keeps its retry whatever state its claim is in.
+// with every such issue. A push of such an issue's branch logs its copy that found no role as a
+// push of any issue does: at Info for the first in a period (noLiveRole). An issue with a claim
+// keeps its retry whatever state its claim is in.
 func TestTheCadenceForgetsTheRetryOfAnIssueNoClaimNamesAndKeepsAClaimedIssues(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
@@ -110,8 +129,8 @@ func TestTheCadenceForgetsTheRetryOfAnIssueNoClaimNamesAndKeepsAClaimedIssues(t 
 	rig.w.copyWorkspaceAtPush(unclaimed)
 	rig.w.copyWorkspaceAtPush(rig.issue.Key)
 	for _, line := range rig.awaitUnsaved(t, runningCopyNoRole, 2) {
-		if line["issue"] == unclaimed && line["level"] != "DEBUG" {
-			t.Fatalf("the push's copy of an issue no claim names is logged as %v, want it at DEBUG", line)
+		if line["level"] != "INFO" {
+			t.Fatalf("the first push's copy of %v that found no role is logged as %v, want it at INFO", line["issue"], line)
 		}
 	}
 	if owed := rig.w.copies.retries(); !slices.Equal(owed, []string{rig.issue.Key, unclaimed}) {

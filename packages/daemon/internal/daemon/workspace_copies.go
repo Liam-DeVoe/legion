@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -71,11 +72,12 @@ const (
 	// reason it failed by name. Such a copy holds nothing and leaves the issue with the copy it
 	// had; the issue is tried again at the next period, between turns as well, once a role of it
 	// is live (runningCopy.retry), unless the copy was refused for its size (runningCopyTooLarge).
-	// A push's copy of an issue with no live role writes it at Debug instead (copyWorkspaceAtPush,
-	// takeRunningCopy), and a copy off a pod an idle release has saved its bundle off writes it at
-	// Info, since nothing failed (runningCopyReleaseBundled), as do a copy the store refuses because
-	// the issue's running copy was taken after it (runningCopyNewerStands) and a copy of an issue
-	// the daemon's project does not record (runningCopyNotRecorded).
+	// A copy of an issue with no live role writes it at Info, once a period per issue, and a push's
+	// copy writes it at Debug inside that period (noLiveRole); a copy off a pod an idle release has
+	// saved its bundle off writes it at Info, since nothing failed (runningCopyReleaseBundled), as
+	// do a copy the store refuses because the issue's running copy was taken after it
+	// (runningCopyNewerStands) and a copy of an issue the daemon's project does not record
+	// (runningCopyNotRecorded).
 	runningCopyUnsavedLine = "running copy: no copy of the issue workspace was stored"
 	// runningCopyOvertakenLine is a copy that was being built when the daemon recorded a push of
 	// the issue's branch, at Info. It is not stored: it may have read the workspace before the
@@ -95,12 +97,14 @@ const (
 	// runningCopyClaimsUnread: the daemon could not read its own claims, so no role was chosen.
 	runningCopyClaimsUnread = "claims_unread"
 	// runningCopyNoRole: the issue has no live role with a process to ask. Only a shim can build
-	// the bundle, in the workspace it already works in. A push's copy is the one copy that writes
-	// it, at Debug, since a push of a released or finished issue meets it every time
-	// (copyWorkspaceAtPush). A turn's end and the copy owed behind one in flight ask the role they
-	// were handed and read no claims (takeRunningCopyOf, copyAsk), and the cadence asks only of an
-	// issue with a live role in the claims it read and hands its copy those claims, so neither
-	// meets it (copyWorkingWorkspaces).
+	// the bundle, in the workspace it already works in. Two callers meet it, each choosing the role
+	// from the claims: a push's copy, which reads them after the fact, and the cadence's tick at an
+	// issue that owes a retry once its roles have all gone, which then takes no copy of it
+	// (copyWorkspaceAtPush, copyWorkingWorkspaces). A turn's end and the copy owed behind one in
+	// flight ask the role they were handed and read no claims (takeRunningCopyOf, copyAsk), so
+	// neither meets it. The line is written once a period per issue at Info (noLiveRole): R2 has
+	// the daemon's log name each issue that holds no copy, and a line at every tick, or at every
+	// push of a released issue, would bury the lines a deployment counts.
 	runningCopyNoRole = "no_live_role"
 	// runningCopyClockUnread: the daemon could not read the store's clock as the copy's take
 	// began, which is the copy's time (store.Store.BeginWorkspaceCopy), so it asked no shim.
@@ -201,10 +205,11 @@ func (w *workflowRuntime) tickWorkspaceCopies(ctx context.Context) {
 // the copy itself chooses the role it asks (runningCopyClaim); an issue in a turn always has one,
 // since the role in the turn is live. A retry so waits for a live role of its issue. An issue with
 // none — released, or with every role stopped — has no running pod whose work a copy could hold,
-// so the pass skips it with no line and it keeps its retry, which runs at the first due tick after
-// a resumed or relaunched pod's role is live again. The pass also forgets every issue no claim of
-// the project names at all (forgetUnclaimed), so the cadence's memory does not grow with every
-// issue that ever failed a copy.
+// so the pass takes no copy of it and it keeps its retry, which runs at the first due tick after a
+// resumed or relaunched pod's role is live again. The skip is logged under runningCopyNoRole at
+// Info once a period for the issue, and at no other due tick (noLiveRole). The pass also forgets
+// every issue no claim of the project names at all (forgetUnclaimed), so the cadence's memory does
+// not grow with every issue that ever failed a copy.
 //
 // Which issues are in a turn is read from the claims the daemon's own store holds rather than
 // from anything this process remembers, so a daemon that has just restarted reads it exactly as
@@ -247,6 +252,7 @@ func (w *workflowRuntime) copyWorkingWorkspaces(ctx context.Context) {
 			continue
 		}
 		if _, live := runningCopyClaim(claims, w.projectID, issue); !live {
+			w.noLiveRole(ctx, issue, false)
 			continue
 		}
 		w.startRunningCopy(issue, claims)
@@ -314,13 +320,14 @@ func (w *workflowRuntime) copyWorkspaceAtTurnEnd(c supervise.Claim, finished fun
 // daemon records while an idle release runs, between its save and its role stops, takes no copy:
 // the release's bundle is that pod's last copy (takeRunningCopy).
 //
-// An issue with no live role to ask is logged at Debug for a push (takeRunningCopy). Every push of
-// the branch that moves the record asks, whoever pushed and whatever the issue is doing, so a push
-// of an issue that was released or has finished finds no role at all, and a Warn for each would
-// bury the lines a deployment counts. The push is the one copy that reads the claims for its role
-// after the fact: the turn's end hands its copy the claim whose turn ended, the copy owed behind
-// one in flight asks the role it was owed with (copyAsk), and the cadence asks only of an issue
-// with a live role in the claims it read. The role is read before the issue's place in flight is
+// An issue with no live role to ask is logged at Info for a push once a period, and at Debug for
+// every other push inside it (takeRunningCopy, noLiveRole). Every push of the branch that moves
+// the record asks, whoever pushed and whatever the issue is doing, so a push of an issue that was
+// released or has finished finds no role at all, and a Warn for each would bury the lines a
+// deployment counts. The push is the one copy that reads the claims for its role after the fact:
+// the turn's end hands its copy the claim whose turn ended, the copy owed behind one in flight
+// asks the role it was owed with (copyAsk), and the cadence asks only of an issue with a live role
+// in the claims it read. The role is read before the issue's place in flight is
 // taken, so such a push's copy logs at once, beside a copy in flight as well, and is never owed
 // behind it. It owes a retry all the same, which the cadence takes once a role of the issue is live
 // (copyWorkingWorkspaces). Beside a copy in flight it marks that retry on the issue's place
@@ -415,9 +422,9 @@ func (w *workflowRuntime) startOwedCopy(owed copyAsk) {
 // flight: it bundles nothing, so there is no bundler of it to keep apart from another and nothing
 // to be owed behind it. It starts the issue's period and owes a retry all the same, which it
 // marks on the run that holds the place where one does (runningCopies.untaken). An issue with no
-// live role is logged at Debug (copyWorkspaceAtPush): only a push meets it, since the cadence asks
+// live role is logged as a push's (noLiveRole): only a push meets it here, since the cadence asks
 // only of an issue it found a live role of in the claims it hands, and this chooses from those
-// same claims.
+// same claims; the cadence logs its own skip of an issue with none (copyWorkingWorkspaces).
 func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, claims []supervise.Claim) {
 	if claims == nil {
 		read, err := w.copyStore.Claims(ctx)
@@ -431,10 +438,27 @@ func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, cla
 	chosen, ok := runningCopyClaim(claims, w.projectID, issue)
 	if !ok {
 		w.copies.untaken(issue, true)
-		w.log.Debug(runningCopyUnsavedLine, "issue", issue, "reason", runningCopyNoRole)
+		w.noLiveRole(ctx, issue, true)
 		return
 	}
 	w.takeRunningCopyOf(ctx, copyAsk{of: chosen})
+}
+
+// noLiveRole logs a copy of issue that found no live role to ask (runningCopyNoRole): at Info
+// where no such line of the issue was written in the last period (runningCopies.sayNoRole), so
+// the daemon's log names each issue left with no copy for that reason, and the line holds the
+// issue and the reason alone. Inside that period a push's copy writes it at Debug, so each push is
+// still on record for a reader who asks for that level, and the cadence's tick writes nothing: it
+// finds the issue at every due tick for as long as its retry waits for a role.
+func (w *workflowRuntime) noLiveRole(ctx context.Context, issue string, push bool) {
+	level := slog.LevelInfo
+	if !w.copies.sayNoRole(issue) {
+		if !push {
+			return
+		}
+		level = slog.LevelDebug
+	}
+	w.log.Log(ctx, level, runningCopyUnsavedLine, "issue", issue, "reason", runningCopyNoRole)
 }
 
 // takeRunningCopyOf asks the role of ask's claim for the git bundle of its issue's workspace's

@@ -599,6 +599,11 @@ func TestAPodWhoseIssueHoldsOnlyARunningWorkspaceCopyRestoresIt(t *testing.T) {
 	if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
 		t.Fatalf("the store holds a release bundle = %t (%v), want none: the issue was never released", held, err)
 	}
+	// The line confirming the restore names the same time, so a reader of that line alone knows
+	// how old the work is that went back.
+	if kept := restoreLine(t, logs, restoredLine); !strings.Contains(kept, "taken="+loggedAs(takenAt)) {
+		t.Fatalf("the confirmed restore logged %s, want it to carry taken=%s", kept, loggedAs(takenAt))
+	}
 	if slices < 2 {
 		t.Fatalf("the running copy crossed in %d slices, want the sequence a copy of its size takes", slices)
 	}

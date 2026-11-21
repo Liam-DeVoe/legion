@@ -102,7 +102,8 @@ func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
 		{Fact: "that a failed copy leaves the issue the copy it had", Phrase: "the issue keeps the copy it had"},
 		{Fact: "that a copy that came to nothing is tried again between turns", Phrase: "That retry comes between turns as well"},
 		{Fact: "that a retry waits for a live role of its issue", Phrase: "A retry waits for a live role of its issue"},
-		{Fact: "that an issue with no live role is skipped with no line", Phrase: "skips such an issue with no log line and keeps its retry"},
+		{Fact: "that an issue with no live role is skipped and keeps its retry", Phrase: "takes no copy of such an issue and keeps its retry"},
+		{Fact: "that the skip names the issue at Info once a period", Phrase: "the reason `no_live_role`, at Info, once in each 5 minutes for that issue"},
 		{Fact: "that the shim refuses a workspace over the bound itself", Phrase: "is refused by the shim itself"},
 	})
 }
