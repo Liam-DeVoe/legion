@@ -101,11 +101,7 @@ func startHold(ctx context.Context, records *holdrecord.Client, op *Operator, w 
 // readStep1 reads every claim's disk for the step-1 map: step1_disk_id.<claim> and
 // step1_volume.<claim>.
 func readStep1(ctx context.Context, op *Operator) (map[string]string, error) {
-	r, err := Precondition(ctx, op.Hub)
-	if err != nil {
-		return nil, err
-	}
-	claims, err := ReadClaims(ctx, op.Hub, r, op.Disks)
+	_, claims, err := readDisks(ctx, op)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +266,7 @@ func printStopRecords(stdout io.Writer, d holdrecord.Done) {
 }
 
 // readDisks is every claim's disk id now, by target (claim name), with the claims' bindings.
-func readDisks(ctx context.Context, op *Operator, step string) (map[string]string, map[string]ClaimBinding, error) {
+func readDisks(ctx context.Context, op *Operator) (map[string]string, map[string]ClaimBinding, error) {
 	r, err := Precondition(ctx, op.Hub)
 	if err != nil {
 		return nil, nil, err
@@ -300,7 +296,7 @@ func abortDisks(ctx context.Context, op *Operator, d holdrecord.Done) error {
 	if !ok {
 		return unknownf(StepPreflight, nil, "the hold's journal holds no step-1 map")
 	}
-	read, bindings, err := readDisks(ctx, op, StepPreflight)
+	read, bindings, err := readDisks(ctx, op)
 	if err != nil {
 		return err
 	}
@@ -420,7 +416,7 @@ func onExpectedDisks(ctx context.Context, op *Operator, d holdrecord.Done) error
 	if !ok {
 		return unknownf(StepPreflight, nil, "the hold's journal holds no step-1 map")
 	}
-	read, _, err := readDisks(ctx, op, StepPreflight)
+	read, _, err := readDisks(ctx, op)
 	if err != nil {
 		return err
 	}
@@ -554,29 +550,12 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 		return nil, stop(err)
 	}
 
-	// Steps 3 and 4: every declared server restarted and proved, one at a time.
-	restart := Restart{Hub: op.Hub, Declared: declared, Limit: op.RestartLimit,
-		Probe: op.Probe,
-		Bind: func(ctx context.Context, pod string, step1, now Varz) error {
-			if err := CheckReload(StepProof, pod, step1, now); err != nil {
-				return err
-			}
-			return render.ProveBinding(ctx, op.Hub, op.Disks, pod, now, claims[render.Claim(pod)])
-		}}
-	restarted, err := restart.Run(ctx, nc)
-	if err != nil {
-		return nil, stop(err)
-	}
-	after := make(Declared, len(restarted))
-	for i, r := range restarted {
-		after[i] = DeclaredServer{Pod: r.Pod, Varz: r.Varz}
-	}
-
-	// Step 5: the meta barrier, with the writer census again inside it, since the restart.
-	barrier := MetaBarrier{Hub: op.Hub, Declared: after, HoldID: holdID}
-	if err := barrier.Run(ctx, nc, func(ctx context.Context) error {
+	// Steps 3 to 5: every declared server restarted and proved, one at a time, then the meta
+	// barrier, with the writer census again inside it, since the restart.
+	restarted, err := restartProveAndBarrier(ctx, op, nc, render, declared, holdID, claims, func(ctx context.Context) error {
 		return op.wholeCensus(ctx, nc, present)
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, stop(err)
 	}
 
@@ -687,7 +666,7 @@ func prove(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 		t, v, _ := strings.Cut(pair, "=")
 		restored[t] = v
 	}
-	read, bindings, err := readDisks(ctx, op, StepProof)
+	read, bindings, err := readDisks(ctx, op)
 	if err != nil {
 		return err
 	}
@@ -763,7 +742,7 @@ func proveServers(ctx context.Context, op *Operator, holdID string, bindings map
 	if err != nil {
 		return nil, err
 	}
-	if _, err := restartProveAndBarrier(ctx, op, nc, render, declared, holdID, bindings); err != nil {
+	if _, err := restartProveAndBarrier(ctx, op, nc, render, declared, holdID, bindings, nil); err != nil {
 		return nil, err
 	}
 	return Report{Hub: op.Hub, Declared: declared, AuthUser: render.AuthUser, Wait: op.Wait}.Run(ctx, nc)
@@ -792,11 +771,17 @@ func RestartProveAndBarrier(ctx context.Context, op *Operator, holdID string) (D
 	if err != nil {
 		return nil, err
 	}
-	return restartProveAndBarrier(ctx, op, nc, render, declared, holdID, claims)
+	restarted, err := restartProveAndBarrier(ctx, op, nc, render, declared, holdID, claims, nil)
+	if err != nil {
+		return nil, err
+	}
+	return restartedDeclared(restarted), nil
 }
 
-// restartProveAndBarrier is steps 3 to 5 on nc, each claim held to bindings.
-func restartProveAndBarrier(ctx context.Context, op *Operator, nc *nats.Conn, render *Render, declared Declared, holdID string, bindings map[string]ClaimBinding) (Declared, error) {
+// restartProveAndBarrier is steps 3 to 5 on nc, each claim held to bindings: the restart of every
+// declared server with its proof, then the meta barrier, which runs listing inside it (`hold set`'s
+// writer census; nil for none). It returns the restarted servers.
+func restartProveAndBarrier(ctx context.Context, op *Operator, nc *nats.Conn, render *Render, declared Declared, holdID string, bindings map[string]ClaimBinding, listing func(context.Context) error) ([]Restarted, error) {
 	restart := Restart{Hub: op.Hub, Declared: declared, Limit: op.RestartLimit, Probe: op.Probe,
 		Bind: func(ctx context.Context, pod string, step1, now Varz) error {
 			if err := CheckReload(StepProof, pod, step1, now); err != nil {
@@ -808,12 +793,17 @@ func restartProveAndBarrier(ctx context.Context, op *Operator, nc *nats.Conn, re
 	if err != nil {
 		return nil, err
 	}
+	if err := (MetaBarrier{Hub: op.Hub, Declared: restartedDeclared(restarted), HoldID: holdID}).Run(ctx, nc, listing); err != nil {
+		return nil, err
+	}
+	return restarted, nil
+}
+
+// restartedDeclared is the restarted servers as declared ones, each with its new /varz.
+func restartedDeclared(restarted []Restarted) Declared {
 	after := make(Declared, len(restarted))
 	for i, r := range restarted {
 		after[i] = DeclaredServer{Pod: r.Pod, Varz: r.Varz}
 	}
-	if err := (MetaBarrier{Hub: op.Hub, Declared: after, HoldID: holdID}).Run(ctx, nc, nil); err != nil {
-		return nil, err
-	}
-	return after, nil
+	return after
 }

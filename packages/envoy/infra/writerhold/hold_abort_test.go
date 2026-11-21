@@ -97,7 +97,7 @@ func TestHoldAbort(t *testing.T) {
 	require.Equal(t, "stop", latestState(h.journal(id), holdrecord.CommandAbort), "the refused abort wrote no stop entry")
 	// The control of R27-C: the same claims read afresh at abort's start match themselves, so an
 	// abort that compared with a fresh reading would have released over the restore.
-	fresh, _, err := readDisks(ctx, h.op, StepPreflight)
+	fresh, _, err := readDisks(ctx, h.op)
 	require.NoError(t, err)
 	require.NoError(t, sameDisks(StepPreflight, "a fresh reading", fresh, fresh), "the control")
 	code, _, _ = h.run(actionProve, "--hold", id, "--restored", holdtest.Claim(0)+"=pvc-"+holdtest.Pod(0))
