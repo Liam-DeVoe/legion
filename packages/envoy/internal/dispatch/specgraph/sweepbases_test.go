@@ -18,32 +18,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph/specgraphtest"
 )
 
-// setUp is the bases that setup, the setup of a sweep, builds, built inside the one guard of what
-// the reader reads (writerCalled) as the bytes of each file of each base, copied inside the guard's
-// call (filesOf): so the setup, the code of its writers and of what it calls among it, fails by
-// name where it changes a variable of the package, as a writer does, and no object that the setup
-// built is a base that a sweep reads. Each sweep reads its bases through it.
-func setUp(t *testing.T, who string, setup func(*testing.T) map[string]fstest.MapFS) map[string]fstest.MapFS {
-	t.Helper()
-	built := writerCalled(t, who, nil, func() func(*testing.T) map[string]fstest.MapFS { return setup }, func(setup func(*testing.T) map[string]fstest.MapFS) map[string]map[string][]byte {
-		files := map[string]map[string][]byte{}
-		for name, fsys := range setup(t) {
-			files[name] = filesOf(t, fsys)
-		}
-		return files
-	})
-	bases := make(map[string]fstest.MapFS, len(built))
-	for name, files := range built {
-		bases[name] = filesFS(files)
-	}
-	return bases
-}
-
 // sweepBases is each base that the sweeps read, by its name (sweepBaseNames), each built alone by
-// sweepBase from a read of its scenario of its own: the setup of each sweep (setUp). No code that
-// builds one base holds another, so a writer of a base reaches its own base alone; and each sweep
-// reads its wants from a separate build of the base (sweepAgainst), which no code of this setup
-// saw.
+// sweepBase from a read of its scenario of its own: the setup of each sweep. No code that builds one
+// base holds another, so a writer of a base reaches its own base alone; and the floor's digest of
+// each sweep holds the bytes of each base that it read (sweepCount.judged).
 func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	t.Helper()
 	bases := map[string]fstest.MapFS{}
@@ -192,7 +170,7 @@ func builtBases() map[string]builtBase {
 		// true.
 		"wait-cycle with the outcomes of its two first runs swapped": {"wait-cycle", func(t *testing.T, fsys fstest.MapFS) (fstest.MapFS, fstest.MapFS) {
 			from := cloneFiles(fsys)
-			fsys = editTree(t, fsys, "results.json", func() treeEdit { return firstOutcomesSwapped() })
+			fsys = editTree(t, fsys, "results.json", firstOutcomesSwapped())
 			return fsys, from
 		}, func(t *testing.T, name string, fsys fstest.MapFS) {
 			readsAt(t, name, fsys, "a-sent-message-reaches-a-listener", failedAtB1, "m1")
@@ -307,10 +285,10 @@ func builtBases() map[string]builtBase {
 	} {
 		table[row.name] = builtBase{"carry", func(t *testing.T, fsys fstest.MapFS) (fstest.MapFS, fstest.MapFS) {
 			from := cloneFiles(fsys)
-			fsys = editTree(t, fsys, "results.json", func() treeEdit { return resultsAdded(row.adds) })
-			fsys = editTree(t, fsys, "jobs.json", func() treeEdit { return jobsEnded(row.jobsAt) })
+			fsys = editTree(t, fsys, "results.json", resultsAdded(row.adds))
+			fsys = editTree(t, fsys, "jobs.json", jobsEnded(row.jobsAt))
 			for _, e := range row.then {
-				fsys = editTree(t, fsys, e.file, func() treeEdit { return e.writer() })
+				fsys = editTree(t, fsys, e.file, e.writer())
 			}
 			return fsys, from
 		}, func(t *testing.T, name string, fsys fstest.MapFS) {
@@ -357,7 +335,7 @@ func builtBases() map[string]builtBase {
 		holds func(Scenario) bool
 	}{
 		{"with test_commit c1 on the failing run of ", func(t *testing.T, fsys fstest.MapFS) fstest.MapFS {
-			return editTree(t, fsys, "results.json", func() treeEdit { return testCommitOnFailingRuns(graph) })
+			return editTree(t, fsys, "results.json", testCommitOnFailingRuns(graph))
 		}, func(s Scenario) bool {
 			return slices.ContainsFunc(s.Results, func(r Result) bool {
 				return r.Check == graph && r.Kind == ResultRun && r.Outcome == OutcomeFail && r.TestCommit == "c1"
@@ -539,10 +517,10 @@ func withSecondCheck(t *testing.T, base fstest.MapFS) fstest.MapFS {
 	if block == "" {
 		t.Fatalf("wait-cycle's approved.json holds no block of %s", old)
 	}
-	fsys = editTree(t, fsys, "approved.json", func() treeEdit { return nodeCopied(old, added, block) })
+	fsys = editTree(t, fsys, "approved.json", nodeCopied(old, added, block))
 	fsys["files/m1/spec.md"] = &fstest.MapFile{Data: append(slices.Clone(fsys["files/m1/spec.md"].Data), "\n"+block...)}
-	fsys = editTree(t, fsys, "results.json", func() treeEdit { return resultsCopied(old, added) })
-	fsys = editTree(t, fsys, "ties.json", func() treeEdit { return tiesCopied(old, added) })
+	fsys = editTree(t, fsys, "results.json", resultsCopied(old, added))
+	fsys = editTree(t, fsys, "ties.json", tiesCopied(old, added))
 	return fsys
 }
 

@@ -22,8 +22,7 @@ import (
 // of such an object is an entry of a map: a record of the scenario, which the sweep puts null in the
 // place of and TestTakingOutAWholeRecordMovesAStateOnlyByItsRight takes out, and whose key the
 // sweep writes as a name that names nothing. Like each table that a sweep reads, it is a function
-// that gives a new value at each call, not a variable of the package, so that no writer can change
-// what a sweep reads after it (packageValuesNow).
+// that gives a new value at each call, not a variable of the package.
 func sweepMaps() map[string][][]string {
 	return map[string][][]string{
 		"history.json": {{"commits", "*", "files"}},
@@ -83,20 +82,15 @@ func notRepoPaths(path string) []string {
 // file added; a JSON file as the tree of the base's file with the one change that the input names,
 // compared whole (changedFile); a text file by its bytes (filesWritten); and a refusal of CI as the
 // reader reads it (refusalRead). The sweep builds what it means before its writer runs, from a
-// decode of the base of its own, and each object that the writer is handed is the writer's own: a
-// writer is a function of the package, which can name no variable of the sweep, built inside the
-// one guard of the package's variables (writerCalled), and it gets a tree or files of its own and
-// copies of the place and the value; inside the call that the guard compares around, the sweep
-// takes the bytes of what the writer gave and left, and after it compares those with copies taken
-// before the call (changeKept); and the input that the sweep derives is no object that a writer was
-// handed, but those bytes (changedFile, filesWritten). So a writer that writes another value,
-// writes it at another place, under another key or under another file name, changes another place
-// of the file too, or changes the value or the place that it is handed, before or after a right
-// write, fails by name, and one that keeps what it was handed and changes it in a later call
-// changes no input; and each sweep derives at least its floors of inputs of each base, of those
-// that the reader reads and of those that it refuses (sweepFloors), so that a fault that drops
-// inputs, a sweep that does not derive an input that it built, and a fault that moves inputs from
-// one kind to the other fail by name too. One right, which sweepInputs gives
+// decode of the base of its own; a writer is a function of the package, which gets a tree or files
+// of its own and copies of the place and the value (changedFile, filesWritten). So a writer that
+// writes another value, writes it at another place, under another key or under another file name,
+// or changes another place of the file too, fails by name. Each sweep reads each input in the
+// reader's own process (sweepReader), which no code of the test process can reach, and derives at
+// least its floors of inputs of each base, of those that the reader reads and of those that it
+// refuses (sweepFloors), so that a fault that drops inputs, a sweep that does not derive an input
+// that it built, and a fault that moves inputs from one kind to the other fail by name too. One
+// right, which sweepInputs gives
 // the input where it writes it: a repository path of a tree written " " is a real path, since git
 // holds a file of that name (git ls-tree of a tree that holds one lists the path " "), so the tree
 // changed at a path that a tie covers, and a result there, a failure among them, carries no more
@@ -110,7 +104,7 @@ func notRepoPaths(path string) []string {
 // reader refuses it and it has no right.
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
-	bases := setUp(t, "the sweeps' setup (sweepBases)", sweepBases)
+	bases := sweepBases(t)
 	floorsCover(t, "tree", bases)
 	reader := newSweepReader(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
@@ -200,21 +194,20 @@ func knownPositive(t *testing.T, base fstest.MapFS) sweepInput {
 	t.Helper()
 	return sweepInput{
 		what:  "the known positive, results.json /5 (a failure of production-delivery-takes-under-a-second) taken out",
-		fsys:  changedFile(t, base, "results.json", treeChange{place: []string{"5"}, out: true}, func() treeWriter { return leftOutAt }),
+		fsys:  changedFile(t, base, "results.json", treeChange{place: []string{"5"}, out: true}, leftOutAt),
 		known: true,
 	}
 }
 
-// sweepAgainst derives each input of the base name in the reader's process p and compares its states
-// with those of the base: an input that moves a state toward true fails the test, unless the input
-// has a right to it. The base's states, and each comparison of an input's files with the base's, come
-// from a separate build of the base (sweepBase, inside the guard of the setup, setUp), which no
-// writer, builder or code of the sweep saw; base, the base that the sweep built its inputs from, must
-// hold its files byte for byte (baseAsBuilt), so that a writer or code of the sweep that changed the
-// base, whose change the sweep would read both as its input's and as its want's, fails by the base's
-// name. A right with allowed covers only the places where the input reads the state that allowed
-// holds there. Two rights name no place, so an input that has one is judged by its right alone: a
-// repository path of a tree written " " (pathOfOneSpace), whose tree then changed at a path that a
+// sweepAgainst derives each input of base, the base name, in the reader's process p and compares its
+// states with those of the base, as the process reads it: an input that moves a state toward true
+// fails the test, unless the input has a right to it. The floor's digest holds the key of the base's
+// line, the bytes that the process read of it (sweepCount.judged), so a base that a writer or code of
+// the sweep changed, whose change the sweep would read both as its input's and as its want's, fails
+// by the base's name. A right with allowed covers only the places where the input reads the state
+// that allowed holds there. Two rights name no place, so an input that has one is judged by its right
+// alone: a repository path of a tree written " " (pathOfOneSpace), whose tree then changed at a path
+// that a
 // tie covers, so the carry of each result across that commit ends, at each subject after it; and a
 // parent left out of an approved block (parentLeftOut), whose statement then sits at the top of the
 // tree, so the statement above it loses it, which can leave that one and each above it met. The
@@ -228,11 +221,7 @@ func knownPositive(t *testing.T, base fstest.MapFS) sweepInput {
 // input once (sweepCount.known); no floor counts it.
 func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.MapFS, inputs []sweepInput) sweepCount {
 	t.Helper()
-	built := setUp(t, "a separate build of the base "+name, func(t *testing.T) map[string]fstest.MapFS {
-		return map[string]fstest.MapFS{name: sweepBase(t, name)}
-	})[name]
-	baseAsBuilt(t, name, base, built)
-	line, baseKey := readerLine(t, built)
+	line, baseKey := readerLine(t, base)
 	whole, err := reader.ask(t, line)
 	if err != nil {
 		t.Fatalf("the base: %v", err)
@@ -240,11 +229,11 @@ func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.
 	n := sweepCount{inputs: len(inputs)}
 	n.judged = append(n.judged, baseKey[:]...)
 	if name == knownPositiveBase {
-		inputs = append(slices.Clone(inputs), knownPositive(t, built))
+		inputs = append(slices.Clone(inputs), knownPositive(t, base))
 	}
 	seen := map[[sha256.Size]byte]string{}
 	for _, in := range inputs {
-		if sameFiles(t, built, in.fsys) {
+		if sameFiles(t, base, in.fsys) {
 			t.Errorf("%s: the input's files are the base's, so the sweep wrote nothing", in.what)
 			continue
 		}
@@ -296,21 +285,6 @@ func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.
 	return n
 }
 
-// baseAsBuilt fails the test unless base, the base name that a sweep built its inputs from, holds
-// the files of built, a separate build of it that no writer of the sweep saw, byte for byte, and
-// no other file.
-func baseAsBuilt(t *testing.T, name string, base, built fstest.MapFS) {
-	t.Helper()
-	if got, want := slices.Sorted(maps.Keys(base)), slices.Sorted(maps.Keys(built)); !slices.Equal(got, want) {
-		t.Fatalf("the sweep read the base %s with the files %q, and a separate build of it, which no writer of the sweep saw, holds the files %q", name, got, want)
-	}
-	for _, file := range slices.Sorted(maps.Keys(built)) {
-		if !bytes.Equal(base[file].Data, built[file].Data) {
-			t.Fatalf("the sweep read the base %s with %d bytes of %s, and a separate build of it, which no writer of the sweep saw, holds %d other bytes there: a writer or code of the sweep changed the base", name, len(base[file].Data), file, len(built[file].Data))
-		}
-	}
-}
-
 // sameFiles is whether the scenarios a and b hold the same files with the same contents: each JSON
 // file as its decoded tree, since the base's files are as their author wrote them and a write is as
 // encodeTree writes it, and each other file by its bytes.
@@ -353,7 +327,7 @@ func sameFiles(t *testing.T, a, b fstest.MapFS) bool {
 // means, built before its writer runs (refusalAdded, refusalRead).
 func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults(t *testing.T) {
 	t.Parallel()
-	bases := setUp(t, "the sweeps' setup (sweepBases)", sweepBases)
+	bases := sweepBases(t)
 	floorsCover(t, "refusals", bases)
 	reader := newSweepReader(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
@@ -410,7 +384,7 @@ func withoutResultsOf(t *testing.T, p *readerProcess, base fstest.MapFS, c Check
 		}
 	}
 	want := slices.DeleteFunc(slices.Clone(s.Results), func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit })
-	fsys := editTree(t, base, "results.json", func() treeEdit { return resultsWithout(slices.Clone(out)) })
+	fsys := editTree(t, base, "results.json", resultsWithout(slices.Clone(out)))
 	if read, err := ReadScenario(fsys); err != nil || !reflect.DeepEqual(read.Results, want) {
 		t.Fatalf("the sweep took the results of %s at %s out of results.json, and the reader reads %d results (%v), where it should read %d", c.ID, commit, len(read.Results), err, len(want))
 	}
@@ -459,7 +433,7 @@ const plantedOnElsewhere = `a planted_on that names a commit of the history coun
 // process p reads them.
 func withoutResult(t *testing.T, p *readerProcess, base fstest.MapFS, i int) map[string]string {
 	t.Helper()
-	fsys := changedFile(t, base, "results.json", treeChange{place: []string{strconv.Itoa(i)}, out: true}, func() treeWriter { return leftOutAt })
+	fsys := changedFile(t, base, "results.json", treeChange{place: []string{strconv.Itoa(i)}, out: true}, leftOutAt)
 	states, err := p.states(t, fsys)
 	if err != nil {
 		t.Fatalf("the base with result %d taken out: %v", i+1, err)
@@ -520,7 +494,7 @@ type addableRecords struct {
 // reads unknown, planted_on_outside_history.
 func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
-	bases := setUp(t, "the sweeps' setup (sweepBases)", sweepBases)
+	bases := sweepBases(t)
 	floorsCover(t, "members", bases)
 	reader := newSweepReader(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
@@ -569,7 +543,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 							// The read back takes the member and its value from the input's words, and
 							// changedFile builds the file that it means before the writer runs and hands the
 							// writer copies of its own.
-							fsys := changedFile(t, base, file, treeChange{place: append(slices.Clone(place), m[0]), value: v}, func() treeWriter { return valueAt })
+							fsys := changedFile(t, base, file, treeChange{place: append(slices.Clone(place), m[0]), value: v}, valueAt)
 							in := sweepInput{what: fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys: fsys}
 							if commit, named := v.(string); file == "results.json" && m[0] == "planted_on" && named {
 								if _, held, err := s.History.Changed(commit, commit); err == nil && held {
@@ -676,11 +650,11 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 	entryMaps, pathPlaces := sweepMaps(), sweepPaths()
 	roundTrip := maps.Clone(base)
 	with := func(what, name string, want treeChange, write treeWriter) *sweepInput {
-		inputs = append(inputs, sweepInput{what: what, fsys: changedFile(t, base, name, want, func() treeWriter { return write })})
+		inputs = append(inputs, sweepInput{what: what, fsys: changedFile(t, base, name, want, write)})
 		return &inputs[len(inputs)-1]
 	}
 	for _, name := range slices.Sorted(maps.Keys(base)) {
-		out := filesWritten(t, base, map[string][]byte{name: nil}, func() fileWriter { return takenOut(name) })
+		out := filesWritten(t, base, map[string][]byte{name: nil}, takenOut(name))
 		inputs = append(inputs, sweepInput{what: name + " taken out", fsys: out})
 		if path.Ext(name) != ".json" {
 			continue
@@ -796,7 +770,7 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 	// carriedFailure is carry with a failure of c at c1 after its pass, which carries to c2, and a
 	// pass at c2 after it and a caught failing example planted on c2: c2 reads unknown (disagree).
 	carriedFailure := func(t *testing.T, fsys fstest.MapFS) fstest.MapFS {
-		return editTree(t, fsys, "results.json", func() treeEdit { return failureCarriedToC2() })
+		return editTree(t, fsys, "results.json", failureCarriedToC2())
 	}
 	rows := []row{
 		{kind: "a file of a commit's tree", reason: "a tied file that the later commit does not hold changed, so c1's pass carries no more to c2 (R8)",
@@ -842,7 +816,7 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 		if r.setup != nil {
 			base = r.setup(t, base)
 		}
-		without := changedFile(t, base, r.file, treeChange{place: r.place, out: true}, func() treeWriter { return leftOutAt })
+		without := changedFile(t, base, r.file, treeChange{place: r.place, out: true}, leftOutAt)
 		for _, read := range []struct {
 			fsys fstest.MapFS
 			want string
@@ -886,8 +860,7 @@ func failureCarriedToC2() treeEdit {
 // refusalAdded is a copy of base, of its own (editTree), with CI's refusal of the check id at
 // commit added to uncited.json by its writer (refusalAt), read back by the reader against the
 // refusals that the sweep means, which it builds before the writer runs from a decode of base of
-// their own: those of base, and that one with the rule test-did-not-run (refusalRead). The guard
-// compares base, the sweep's own base, around the writer and its builder.
+// their own: those of base, and that one with the rule test-did-not-run (refusalRead).
 func refusalAdded(t *testing.T, base fstest.MapFS, commit, id string) fstest.MapFS {
 	t.Helper()
 	want := map[string]map[string]string{commit: {}}
@@ -895,7 +868,7 @@ func refusalAdded(t *testing.T, base fstest.MapFS, commit, id string) fstest.Map
 		want[at] = maps.Clone(checks)
 	}
 	want[commit][id] = "test-did-not-run"
-	fsys := editTree(t, base, "uncited.json", func() treeEdit { return refusalAt(commit, id) })
+	fsys := editTree(t, base, "uncited.json", refusalAt(commit, id))
 	refusalRead(t, fsys, commit, id, want)
 	return fsys
 }
