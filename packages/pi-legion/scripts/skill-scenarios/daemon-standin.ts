@@ -47,8 +47,9 @@
  * Usage: `bun daemon-standin.ts <port> <log file> <boot token file> <project> <issue> <role>
  * [<world file>]`. The state document holds that one issue, in the phase its role works, on the
  * repository and default branch the world file names (rig.sh's world.json, `repo` and `base`,
- * their one source), the one repository of the project's mapping; with no world file it serves
- * neither the state document nor the issue's record, since it holds no repository to name.
+ * their one source), which `repositories.live` names as the one repository a live record names;
+ * with no world file it serves neither the state document nor the issue's record, since it holds
+ * no repository to name.
  * Prints `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the kernel's
  * pick).
  */

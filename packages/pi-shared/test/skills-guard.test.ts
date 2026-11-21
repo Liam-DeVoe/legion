@@ -666,6 +666,15 @@ const retiredTesterReads: readonly (readonly [
     2,
   ],
   [
+    'a reword of pr-body.md\'s "are CI\'s: read them on GitHub at the head" with no place, "read them at the head you tested"',
+    [
+      "- The tester tries to break the changed surface and writes the red test for a way no test would",
+      "  catch. Lint, types and the unit and integration suites are CI's: read",
+      "  them at the head you tested.",
+    ],
+    2,
+  ],
+  [
     "tester.md's \"Read the head's checks on GitHub before any verdict\"",
     [
       "Record what you ran and what you observed.",
@@ -680,6 +689,15 @@ const retiredTesterReads: readonly (readonly [
       "- The tester tries to break the changed surface and writes the red test for a way no test would",
       "  catch. The tester reads the",
       "  head's checks on GitHub before any verdict.",
+    ],
+    2,
+  ],
+  [
+    'a reword of "The tester reads the head\'s checks on GitHub before any verdict" as "the head\'s CI checks"',
+    [
+      "- The tester tries to break the changed surface and writes the red test for a way no test would",
+      "  catch. The tester reads the head's",
+      "  CI checks before any verdict.",
     ],
     2,
   ],
@@ -749,6 +767,40 @@ const retiredTesterReads: readonly (readonly [
     2,
   ],
   [
+    'a reword of the holder as "The role holding the issue\'s phase re-runs a red at the head"',
+    [
+      "Record what you ran and what you observed. The role holding the issue's",
+      "phase re-runs a red at the head.",
+    ],
+    1,
+  ],
+  [
+    "a reword of pr-body.md's passive re-run, \"is re-run once by the holder of the issue's phase\"",
+    [
+      "A red at the head that the change did not make is information. It is re-run once by the",
+      "holder of the issue's phase.",
+    ],
+    2,
+  ],
+  [
+    "a reword of the page's press, \"The holder of the issue's phase presses `gh run rerun <run-id> --failed` once\"",
+    [
+      "## Who may re-run",
+      "",
+      "- The holder of the issue's phase presses",
+      "  `gh run rerun <run-id> --failed` once.",
+    ],
+    3,
+  ],
+  [
+    'a reword of the holder\'s re-run, "re-runs the failed jobs once"',
+    [
+      "Record what you ran and what you observed. The role that holds the issue's phase re-runs the",
+      "failed jobs once.",
+    ],
+    1,
+  ],
+  [
     'tester.md\'s "you wait for none of them but three"',
     [
       "The round goes on when the re-run is green. A lane GitHub shows `queued` or `in progress` is read",
@@ -781,6 +833,16 @@ const retiredTesterReads: readonly (readonly [
       "  of them but the re-run.",
     ],
     2,
+  ],
+  [
+    'a reword of pr-body.md\'s wait, "The tester waits on CI only for the re-run that page gives it"',
+    ["  holds the rule. The tester waits on", "  CI only for the re-run that page gives it."],
+    1,
+  ],
+  [
+    'a reword of pr-body.md\'s wait, "The tester waits for nothing on CI but the re-run"',
+    ["  holds the rule. The tester waits for nothing", "  on CI but the re-run."],
+    1,
   ],
   [
     'pr-body.md\'s "however the tester learned of it"',
@@ -870,9 +932,9 @@ test.each(retiredTesterReads)("%s is reported at the line it starts on", (_sourc
 
 // Each sentence the trees keep beside the tester's retired ones, which a pattern too wide would
 // refuse: the sentences that replaced them, the reviewer's own read and wait, and the sentences that
-// keep a `ci_check` check CI's. The last seven are sentences a docs page, a runbook or a tester's
-// page could plausibly say, which no tree carries: the tester patterns refused each until the class
-// search at INFRA-1303's merge head.
+// keep a `ci_check` check CI's. The last fourteen are sentences a docs page, a runbook or a tester's
+// page could plausibly say, which no tree carries: the tester patterns refused the first seven until
+// the class search at INFRA-1303's merge head, and the last seven until the one at 5c710625.
 const keptBesideTesterReads: readonly (readonly [source: string, page: readonly string[]])[] = [
   [
     'tester.md\'s "Let CI do its job"',
@@ -1044,6 +1106,46 @@ const keptBesideTesterReads: readonly (readonly [source: string, page: readonly 
       "The tester records what it saw. The tester notes the red",
       "banner the app shows when the login fails.",
     ],
+  ],
+  [
+    "a tester's page, \"The tester waits for nothing but the app's own boot.\"",
+    [
+      "The tester boots the app and drives it as a user would. The tester waits for",
+      "nothing but the app's own boot.",
+    ],
+  ],
+  [
+    'a tester\'s page, "The tester waits on CI for nothing, but it waits for the app to boot."',
+    [
+      "The tester boots the app and drives it as a user would. The tester waits on CI for",
+      "nothing, but it waits for the app to boot.",
+    ],
+  ],
+  [
+    "a runbook's \"re-runs its setup, and is then taken by the role that holds the issue's phase\"",
+    [
+      "A pod restarted by the daemon re-runs its setup, and is then taken by the role that",
+      "holds the issue's phase.",
+    ],
+  ],
+  [
+    "a runbook's \"The daemon reruns the reminder, which is read by the role that holds the issue's phase.\"",
+    ["The daemon reruns the reminder, which is read by the role that holds", "the issue's phase."],
+  ],
+  [
+    "a runbook's \"A job is re-run by the daemon, and its log is read by the role that holds the issue's phase.\"",
+    [
+      "A job is re-run by the daemon, and its log is read by the role that holds",
+      "the issue's phase.",
+    ],
+  ],
+  [
+    "a runbook's \"The role that holds the issue's phase presses Enter in its pane\"",
+    ["The role that holds the issue's phase presses", "Enter in its pane to accept the prompt."],
+  ],
+  [
+    "a runbook's \"The role that holds the issue's phase reruns its last command after a restart.\"",
+    ["The role that holds the issue's phase reruns", "its last command after a restart."],
   ],
 ];
 

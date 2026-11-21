@@ -635,19 +635,20 @@ export function retiredRerunProhibitions(roots: readonly string[]): string[] {
  * body reference's "Lint, types and the unit and integration suites are CI's, read on GitHub at the
  * head" (main's "are CI's: read them on GitHub at the head"), and its earlier "are CI's, read there
  * and recorded for no later step". Two shapes: `read(s) CI for everything static`, and the lanes
- * called CI's (`CI's`, `CI's work`) with a comma or a colon and then a read of them where the
- * tester made it: `read on GitHub`, `read them on GitHub` or `read there`. The place is the object
- * the pattern reads, so a sentence that sends its reader to one job's log passes: "Formatting is
- * CI's: read the `fmt` job's log to see what it changed." and "Lint is CI's work, read the job log
- * on GitHub when it fails." The sentences that keep a `ci_check` check CI's pass, since no such
- * read follows: "A check carrying `ci_check` is CI's: that read shows its one derived result"
- * (the tester's role part) and "a check carrying `ci_check` is CI's, and its result …" (its core).
- * So do the sentences that replaced the read: "every other lane are CI's work, and you do not run
- * in your own pod what CI runs for you" (the core) and "are CI's: the tester lets CI do its job"
- * (pr-body.md).
+ * called CI's (`CI's`, `CI's work`) with a comma or a colon and then a read of the lanes
+ * themselves: `read them`, or a `read` whose place is where the tester made it, `read on GitHub`,
+ * `read there` or `read at the head`. The object is what the pattern reads, so a sentence that
+ * sends its reader to one job's log passes: "Formatting is CI's: read the `fmt` job's log to see
+ * what it changed." and "Lint is CI's work, read the job log on GitHub when it fails." A reword
+ * that drops the place is still refused: "… are CI's: read them at the head you tested." The
+ * sentences that keep a `ci_check` check CI's pass, since no such read follows: "A check carrying
+ * `ci_check` is CI's: that read shows its one derived result" (the tester's role part) and "a
+ * check carrying `ci_check` is CI's, and its result …" (its core). So do the sentences that
+ * replaced the read: "every other lane are CI's work, and you do not run in your own pod what CI
+ * runs for you" (the core) and "are CI's: the tester lets CI do its job" (pr-body.md).
  */
 const TESTER_READS_THE_STATIC_LANES =
-  /\breads?\s+CI\s+for\s+everything\s+static\b|\bCI's(?:\s+work)?[,:]\s+read\s+(?:them\s+)?(?:on\s+GitHub|there)\b/i;
+  /\breads?\s+CI\s+for\s+everything\s+static\b|\bCI's(?:\s+work)?[,:]\s+read\s+(?:them\b|(?:on\s+GitHub|there|at\s+the\s+head)\b)/i;
 
 /**
  * The read of the head's checks before a verdict: the tester's prompt part's "Read the head's
@@ -655,46 +656,67 @@ const TESTER_READS_THE_STATIC_LANES =
  * and the pull-request body reference's "The tester reads the head's checks on GitHub before any
  * verdict". The subject is the tester: by name (`the tester reads`), as `you read`, or as the
  * imperative `Read` that opens a sentence or a list item, which is the prompt part's own shape.
- * The opening is read through a lookbehind, so a hit names the line of the `Read`. A verdict is
- * the tester's word, and another role's read passes: "The reviewer reads the head's checks on
- * GitHub itself before it approves" (concepts.md) and "The reviewer reads the head's checks on
- * GitHub before any verdict it gives."
+ * The opening is read through a lookbehind, so a hit names the line of the `Read`. The object is
+ * the head's checks, a lane noun or its runs, with the word a lane noun may carry before it, so
+ * "The tester reads the head's CI checks before any verdict." is refused too. A verdict is the
+ * tester's word, and another role's read passes: "The reviewer reads the head's checks on GitHub
+ * itself before it approves" (concepts.md) and "The reviewer reads the head's checks on GitHub
+ * before any verdict it gives."
  */
-const HEADS_CHECKS_BEFORE_ANY_VERDICT =
-  /(?:\bthe\s+tester\s+reads|\byou\s+read|(?<=(?:^|[.!?:;]\s|[-*]\s))read)\s+the\s+head's\s+checks\b[^.]{0,30}?\bbefore\s+any\s+verdict\b/i;
+const HEADS_CHECKS_BEFORE_ANY_VERDICT = new RegExp(
+  String.raw`(?:\bthe\s+tester\s+reads|\byou\s+read|(?<=(?:^|[.!?:;]\s|[-*]\s))read)\s+the\s+head's\s+${LANE_QUALIFIER}(?:${LANE}s|runs)\b[^.]{0,30}?\bbefore\s+any\s+verdict\b`,
+  "i"
+);
 
 /**
- * The phase's holder, named by the phase alone: `the role that holds the issue's phase` or `the
- * holder of the issue's phase`, which the tester read as itself while it held `testing`.
+ * The phase's holder, named by the phase alone: `the role that holds the issue's phase`, `the role
+ * holding the issue's phase` or `the holder of the issue's phase`, which the tester read as itself
+ * while it held `testing`.
  */
-const PHASE_HOLDER = String.raw`(?:role\s+that\s+holds|holder\s+of)\s+the\s+issue's\s+phase\b`;
+const PHASE_HOLDER = String.raw`(?:role\s+(?:that\s+holds|holding)|holder\s+of)\s+the\s+issue's\s+phase\b`;
+
+/**
+ * What a holder re-runs or presses when it is the retired re-run: a red, a lane noun, a run, a
+ * workflow, CI or the re-run itself, behind an optional determiner and an optional word of its
+ * state (`the failed jobs`, `a red check`, `its cancelled run`), or `gh run rerun` as the command.
+ */
+const RERUN_OBJECT = String.raw`(?:\`?gh\s+run\s+rerun\b|(?:(?:a|an|the|each|every|any|that|this|one|its)\s+)?(?:(?:red|failed|failing|cancelled|required)\s+)?${LANE_QUALIFIER}(?:red|${LANE}s?|runs?|workflows?|re-?runs?|CI)\b)`;
 
 /**
  * The tester as a holder of the re-run. Four shapes: the three-holder list that opened with it,
  * "the tester in `testing`, the reviewer in `reviewing` …" (the red-at-the-head page, the worker
  * prompt part, the concepts and troubleshooting pages); the pull-request body reference's "is the
  * tester's to re-run once"; the page's "The tester and the implementer still re-run such a red
- * once"; and the phase's holder (`PHASE_HOLDER`) as the one who re-runs, either as the subject of
- * `re-run(s)` or `presses` — the tester's prompt part's "The role that holds the issue's phase
- * re-runs a red at the head", the page's "The holder of the issue's phase presses the re-run" and
- * the architect's prompt part's "the role that holds the issue's phase re-runs a red the change
- * did not make once" — or as the `by` of a re-run earlier in its sentence, pr-body.md's "re-run
- * once … by the role that holds the issue's phase". The `by` is read through a lookbehind, so a
- * hit names the line of the holder. A holder that is the object of another verb passes, though a
- * re-run follows it: "After a restart the daemon starts the role that holds the issue's phase
- * again, and that role reruns its last command." The sentences that replaced them name the two
- * holders and pass: "The holders of the re-run are the reviewer in `reviewing` and the
- * implementer while it holds `implementing`." and "The tester presses nothing" (the page, the
- * worker prompt part). So does the worker prompt part's "One role holds the issue's phase at a
- * time", which names no holder of a re-run.
+ * once"; and the phase's holder (`PHASE_HOLDER`) as the one who re-runs. That holder is either the
+ * subject of `re-run(s)` or `presses` with a re-run's object (`RERUN_OBJECT`, or `it` or `them`
+ * after `re-runs`) — the tester's prompt part's "The role that holds the issue's phase re-runs a
+ * red at the head", the page's "The holder of the issue's phase presses the re-run" and the
+ * architect's prompt part's "the role that holds the issue's phase re-runs a red the change did
+ * not make once" — or the agent of a passive re-run (`is re-run`, `gets re-run`, `be re-run`)
+ * earlier in its sentence, pr-body.md's "is re-run once with `gh run rerun <run-id> --failed`, by
+ * the role that holds the issue's phase". The agent is the first `by` after that re-run, with no
+ * other auxiliary between, and it is read through a lookbehind, so a hit names the line of the
+ * holder. So a holder that presses or re-runs something else passes: "The role that holds the
+ * issue's phase presses Enter in its pane to accept the prompt." and "The role that holds the
+ * issue's phase reruns its last command after a restart." So does a holder that is the object or
+ * the agent of another verb, though a re-run stands in its sentence: "After a restart the daemon
+ * starts the role that holds the issue's phase again, and that role reruns its last command.", "A
+ * pod restarted by the daemon re-runs its setup, and is then taken by the role that holds the
+ * issue's phase.", "The daemon reruns the reminder, which is read by the role that holds the
+ * issue's phase." and "A job is re-run by the daemon, and its log is read by the role that holds
+ * the issue's phase." The cost is a passive re-run whose agent stands past a second auxiliary,
+ * which passes. The sentences that replaced them name the two holders and pass: "The holders of
+ * the re-run are the reviewer in `reviewing` and the implementer while it holds `implementing`."
+ * and "The tester presses nothing" (the page, the worker prompt part). So does the worker prompt
+ * part's "One role holds the issue's phase at a time", which names no holder of a re-run.
  */
 const THE_TESTER_HOLDS_THE_RERUN = new RegExp(
   [
     String.raw`\btester\s+in\s+\`?testing\`?\s*,\s+the\s+reviewer\b`,
     String.raw`\bthe\s+tester's\s+to\s+re-?run\b`,
     String.raw`\bthe\s+tester\s+and\s+the\s+implementer\s+still\s+re-?run\b`,
-    String.raw`\b${PHASE_HOLDER}\s+(?:re-?runs?|presses)\b`,
-    String.raw`(?<=\bre-?runs?\b[^.]*\bby\s+the\s+)${PHASE_HOLDER}`,
+    String.raw`\b${PHASE_HOLDER}\s+(?:re-?runs?\s+(?:it\b|them\b|${RERUN_OBJECT})|presses\s+${RERUN_OBJECT})`,
+    String.raw`(?<=\b(?:is|are|was|were|be|been|being|gets?|got)\s+re-?run\b(?:(?!\b(?:by|is|are|was|were|be|been|being|gets?|got)\b)[^.])*\bby\s+the\s+)${PHASE_HOLDER}`,
   ].join("|"),
   "i"
 );
@@ -705,16 +727,21 @@ const THE_TESTER_HOLDS_THE_RERUN = new RegExp(
  * `completed`, however you learned of it", and its earlier "you wait for none of them but that
  * re-run"; the pull-request body reference's "The tester waits on CI for nothing but what that
  * page gives it", its earlier "the tester waits for none of them but the re-run", and its "however
- * the tester learned of it". The tester's wait is read with its object, `for nothing` or `for
- * none`, before the `but` of its exceptions, so a sentence that has the tester wait for something
- * else passes: "The tester waits for the app to boot, but reads no CI." and "The tester waits
- * until the deploy finishes, but never on CI." The reviewer's wait passes, since its list is "the
- * three" the page gives it: "You wait for none of them but the three
+ * the tester learned of it". What marks the tester's wait as one on CI is `on CI`, or `none of
+ * them`, the lanes the sentence names: a wait `on CI for nothing`, `for nothing on CI` or `for none
+ * of them` is read with the `but` of its exceptions, with no comma, colon or semicolon between,
+ * and any other wait `on CI` is refused whatever it waits for ("The tester waits on CI only for the
+ * re-run that page gives it."), save one for nothing (`for nothing`, `for none`, `for no …`). So a
+ * sentence that has the tester wait for something else passes: "The tester waits for the app to
+ * boot, but reads no CI.", "The tester waits until the deploy finishes, but never on CI.", "The
+ * tester waits for nothing but the app's own boot." and "The tester waits on CI for nothing, but it
+ * waits for the app to boot." The reviewer's wait passes, since its list is "the three" the page
+ * gives it: "You wait for none of them but the three
  * `skill://legion-worker/references/red-at-the-head.md` gives you" (go/reviewer.md). So does the
  * tester's "wait on no CI".
  */
 const THE_TESTER_WAITS_ON_CI =
-  /\bthe\s+tester\s+waits?\s+(?:on\s+CI\s+)?for\s+(?:nothing|none)\b[^.]{0,20}?\bbut\b|\byou\s+wait\s+for\s+none\s+of\s+them\s+but\s+(?:three|that\s+re-?run)\b|\bhowever\s+the\s+tester\s+learned\b/i;
+  /\bthe\s+tester\s+waits?\s+(?:on\s+CI\s+for\s+(?:nothing|none)|for\s+(?:nothing|none)\s+on\s+CI|for\s+none\s+of\s+them)\b[^.,:;]{0,20}?\bbut\b|\bthe\s+tester\s+waits?\s+on\s+CI\b(?!\s+for\s+(?:nothing|none|no)\b)|\byou\s+wait\s+for\s+none\s+of\s+them\s+but\s+(?:three|that\s+re-?run)\b|\bhowever\s+the\s+tester\s+learned\b/i;
 
 /**
  * The tester's verdict on a check CI proves: the worker skill's `ci_check` reference's "A
