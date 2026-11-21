@@ -40,7 +40,7 @@ func guardFixedNaming(ctx context.Context, host bool, consumers *bus.SessionCons
 
 // awaitFixedNaming reads, in the fixed mode, the selection bucket's cutover marker before the
 // listener runs today's names (bus.SessionConsumers.RefuseConvertedStore), and answers:
-//   - nil when there is no marker: no bucket, no sentinel, a marker that is not done, or a read the
+//   - nil when there is no marker: no bucket, a sentinel whose marker is not done, or a read the
 //     connection's grant refuses, which is logged as a warning (the listener beside Dispatch and a
 //     listener whose hub never gave it the window's grants read no bucket at all, and neither can
 //     hold a converted one);
@@ -48,8 +48,10 @@ func guardFixedNaming(ctx context.Context, host bool, consumers *bus.SessionCons
 //     which the start ends, naming ENVOY_CONSUMER_NAMES;
 //   - ctx's error when ctx ends first.
 //
-// Any other failed read (no connection, a timeout) tells nothing, so it is logged and read again
-// every interval: a start that cannot read the marker waits rather than run today's names unread.
+// Any other failed read tells nothing, so it is logged and read again every interval: a start that
+// cannot read the marker waits rather than run today's names unread. That includes no connection
+// and a timeout, and a bucket that exists with no sentinel or with a value under the sentinel's key
+// that is not the sentinel, which is never no marker (bus.SessionConsumers.RefuseConvertedStore).
 func awaitFixedNaming(ctx context.Context, consumers *bus.SessionConsumers, logger *logging.Logger, interval time.Duration) error {
 	for logged := false; ; {
 		readCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)

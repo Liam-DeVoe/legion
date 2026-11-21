@@ -118,13 +118,16 @@ var ErrConvertedStore = errors.New("bus: the selection bucket says the cutover c
 
 // RefuseConvertedStore is, in the fixed mode, the refusal of a selection bucket the cutover
 // converted (ErrConvertedStore, naming ENVOY_CONSUMER_NAMES): a bucket whose sentinel says the
-// cutover is done holds the sessions' fresh names, and today's fixed names must not run over it. A
-// bucket that does not exist, a sentinel that is missing, and a marker that is not done (none, or
-// rolled back) are no marker, and so is a read the connection's user may not make, which answers
+// cutover is done holds the sessions' fresh names, and today's fixed names must not run over it.
+// Only a bucket that does not exist is no marker, with a sentinel whose marker is not done (none,
+// or rolled back), and a read the connection's user may not make, which answers
 // ErrConsumerNotGranted for its caller to log: a hub whose listener grant has no read of the bucket
 // was never given the window's grants, which come before the bucket's creation, and the listener
-// beside Dispatch holds no such read at all. Any other failed read (no connection, a timeout) is its
-// error, which tells nothing, and the caller reads again rather than run today's names unread. In
+// beside Dispatch holds no such read at all. A bucket that exists with no sentinel, or with a value
+// under the sentinel's key that is not the sentinel (consumernames.ErrNoSentinel: a server answer
+// stored there through a request's reply subject, another key's record, a delete marker), is never
+// no marker: it is its error, as any other failed read (no connection, a timeout) is, and the
+// caller reads again rather than run today's names over a bucket whose marker it cannot read. In
 // the fresh mode it answers nil: that mode refuses every call until the marker says done.
 func (s *SessionConsumers) RefuseConvertedStore(ctx context.Context) error {
 	if s.fresh != nil {
@@ -132,7 +135,7 @@ func (s *SessionConsumers) RefuseConvertedStore(ctx context.Context) error {
 	}
 	state, err := s.client.SelectionStore().State(ctx)
 	switch {
-	case errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel):
+	case errors.Is(err, consumernames.ErrNoStore):
 		return nil
 	case errors.Is(err, ErrPublishDenied):
 		return fmt.Errorf("%w: %w", ErrConsumerNotGranted, err)
