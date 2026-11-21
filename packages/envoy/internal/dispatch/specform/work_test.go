@@ -299,9 +299,18 @@ func workTable() []workRow {
 			extracted(units(":::check{#c}\nDispatch reads it.", " Dispatch checks a%d.B now.", end))},
 		{"many lines of one text, each with a way out that the whole text reads", ruleStopNoSpace, 300,
 			extracted(units(":::check{#c}\nDispatch reads it.", "\u2028Dispatch checks a%d.B now.", end))},
-		{"one claim that refers to many footnotes, each of whose ways out takes a verb away", "ste100-synonym-rotation", 300,
+		{"one claim that refers to many footnotes, one in each eight of which has a way out that takes a verb away", "ste100-synonym-rotation", 300,
 			extracted(func(n int) string {
-				return units(":::check{#c}\nDispatch keeps it", "[^%d]", ".\n:::\n\n")(n) + units("", "[^%d]: It checks Foo%[1]d.Validate at boot.\n\n", "")(n)
+				var markdown strings.Builder
+				markdown.WriteString(units(":::check{#c}\nDispatch keeps it", "[^%d]", ".\n:::\n\n")(n))
+				for index := 1; index <= n; index++ {
+					if index%8 == 0 {
+						fmt.Fprintf(&markdown, "[^%d]: It checks Foo%[1]d.Validate at boot.\n\n", index)
+					} else {
+						fmt.Fprintf(&markdown, "[^%d]: It.\n\n", index)
+					}
+				}
+				return markdown.String()
 			})},
 		{"a chain of footnotes, each of whose ways out takes a verb away", "ste100-synonym-rotation", 300,
 			extracted(func(n int) string {
