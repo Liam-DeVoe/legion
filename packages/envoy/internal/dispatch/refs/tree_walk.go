@@ -130,13 +130,21 @@ func asOfNodeJoins(kind, id, bound string) string {
 		left join graph_nodes node on node.kind = ` + kind + ` and node.id = ` + id
 }
 
+// workflowKinds are the kinds of the nodes that record how an issue's work ran: a run of a step,
+// the plan a run ran from, and the handoff a run reported, each part_of its issue (the kinds
+// workflowstore writes and names). They are records of the workflow and not parts of the
+// discussion, so the children read answers none of them, and a walk reaches nothing under one
+// either. They are spelled here rather than imported, so the walk, and every package that walks
+// a tree, depends on no workflow writer.
+var workflowKinds = []string{"step", "plan", "handoff"}
+
 // treeChildrenStatement is the children of each parent $1 and $2 name, kinds and ids, at the cut
 // whose bounds $3 and $4 are: each node whose part_of names the parent there - read into the
 // parent through graph_tuples_as_of_in - and whose newest standing part_of out of it, read through
-// graph_tuples_as_of_out, is that one, unless its state there is gone. It answers each parent's
-// children by the parent's position, the ranked ones first by rank and then the unranked, a tie by
-// the lower address, `<kind>:<id>`, each compared byte for byte (collate "C"), since a rank is a
-// base-62 string of mixed case.
+// graph_tuples_as_of_out, is that one, unless its state there is gone or its kind is one of
+// workflowKinds. It answers each parent's children by the parent's position, the ranked ones
+// first by rank and then the unranked, a tie by the lower address, `<kind>:<id>`, each compared
+// byte for byte (collate "C"), since a rank is a base-62 string of mixed case.
 var treeChildrenStatement = `
 	select parent.position, child.from_kind, child.from_id, ` + treeNodeColumns + `
 	from unnest($1::text[], $2::text[]) with ordinality as parent (kind, id, position)
@@ -144,6 +152,7 @@ var treeChildrenStatement = `
 		select distinct on (t.from_kind, t.from_id) t.from_kind, t.from_id, t.asserted
 		from graph_tuples t
 		where t.to_kind = parent.kind and t.to_id = parent.id and t.kind = '` + graphstore.TuplePartOf + `'
+		  and t.from_kind not in ('` + strings.Join(workflowKinds, `', '`) + `')
 		  and t.to_kind <> '` + graphstore.KindValue + `' and ` + cutBound(`$3`, `$4`) + `
 		order by t.from_kind, t.from_id, t.at desc, t.seq desc
 	) child

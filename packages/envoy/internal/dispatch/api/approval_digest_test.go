@@ -163,10 +163,18 @@ func requireWalkOrder(t *testing.T, tree docs.IssueTree) {
 	}
 }
 
-// createDigestIssue creates, as alice, an issue of project with spec, born converted unless
-// unconverted, in which case a live process of the release before is beside the server for the
-// create alone (holdIssuesUnconverted, taken back once the issue is written).
+// createDigestIssue creates, as alice, a root issue of project with spec, born converted unless
+// unconverted (createDigestChild).
 func createDigestIssue(t *testing.T, handler http.Handler, database *store.Store, project, title, spec string, unconverted bool) model.Issue {
+	t.Helper()
+	return createDigestChild(t, handler, database, project, title, spec, "", unconverted)
+}
+
+// createDigestChild creates, as alice, an issue of project with spec under the issue parent, a
+// root issue where parent is "", born converted unless unconverted, in which case a live process
+// of the release before is beside the server for the create alone (holdIssuesUnconverted, taken
+// back once the issue is written).
+func createDigestChild(t *testing.T, handler http.Handler, database *store.Store, project, title, spec, parent string, unconverted bool) model.Issue {
 	t.Helper()
 	ctx := context.Background()
 	var held string
@@ -178,7 +186,7 @@ func createDigestIssue(t *testing.T, handler http.Handler, database *store.Store
 			t.Fatalf("add a live server process that lists no issue room: %v", err)
 		}
 	}
-	issue, tree := createRoomIssue(t, handler, database, project, title, spec, "")
+	issue, tree := createRoomIssue(t, handler, database, project, title, spec, parent)
 	if unconverted {
 		if _, err := database.Pool.Exec(ctx, `delete from server_processes where instance = $1::uuid`, held); err != nil {
 			t.Fatalf("take back the process of the release before: %v", err)
@@ -637,7 +645,9 @@ func digestStepRequirementUnderComment(t *testing.T, rig *digestRig) {
 }
 
 func digestStepChildCriterion(t *testing.T, rig *digestRig) {
-	child := createChildIssue(t, rig.handler, "CORE", rig.issue.Key, ":::requirement{#cr1}\nThe child's own requirement.\n:::\n")
+	// The child is born converted under the rig's issue, whose requirements stand, so it is a view
+	// and its spec holds its design and no requirement of its own.
+	child := createChildIssue(t, rig.handler, "CORE", rig.issue.Key, "The child's design.\n")
 	_, block := personComment(t, rig.handler, rig.database, rig.issue.Key, "I want it quick.\n\nAnd right.")
 	parent := rig.record(t, rig.issue.Key, graphstore.QuerySpec)
 	childBefore := rig.record(t, child.Key, graphstore.QuerySpec)

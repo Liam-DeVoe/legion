@@ -595,12 +595,18 @@ func TestTheTreeReadAnswersAResultAgainstTheWordsItWasRecordedFor(t *testing.T) 
 // edit, an upload replacing a document and an upload of a new one, leaving the child unchanged; a
 // child that holds a requirement of its own is no view; and once the parent is done, the child is
 // no view and takes a requirement.
+//
+// The child holding a requirement of its own is created unconverted, as the release before writes
+// a child, with no issue_trees row: a child born converted under a parent whose requirements stand
+// is a view whatever it holds, and its create with a requirement is refused
+// (TestAnIssueCreateRefusesARequirementOnAView), so no converted child holding one can be created
+// at this head.
 func TestTheTreeReadNamesTheAncestorAnIssueIsAViewOf(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createReferenceAPIProject(t, handler, "VIEW")
 	parent := createDigestIssue(t, handler, database, "VIEW", "The parent", ":::requirement{#r1}\nThe parent states it.\n:::\n", false)
 	child := createChildIssue(t, handler, "VIEW", parent.Key, "The child's design.\n")
-	owning := createChildIssue(t, handler, "VIEW", parent.Key, ":::requirement{#cr1}\nThe child's own requirement.\n:::\n")
+	owning := createDigestChild(t, handler, database, "VIEW", "The owning child", ":::requirement{#cr1}\nThe child's own requirement.\n:::\n", parent.Key, true)
 
 	read := treeRead(t, handler, parent.Key, "", "alice", false)
 	if read.ViewOf != nil {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -28,19 +29,25 @@ import (
 // approval request's answer names none for it; one at settled or live is counted as every
 // requirement is, and cybermonklabs/legion#4180 gives overtaken its meaning. A check or a plan task
 // whose block is proposed is a question still open too, so it serves nothing yet and its
-// requirement is counted without it (queueServingBlockCounts). Nothing is ever refused
+// requirement is counted without it (queueServingBlockCounts). A requirement of an issue that is
+// a view on its ancestor's spec (docs.ViewOf) is a gap whatever its state and whatever serves it:
+// a view holds no requirement of its own, every write route refuses one, and one that reached it
+// through its room, as a block a person pasted in the browser, is named so it is moved into the
+// ancestor's spec. Nothing is ever refused
 // for a gap: three readers show it — the route below for the Spec tab, `dispatch read --issue`,
 // which prints each gap after `Coverage: `, and an approval request's answer, which names the
 // missing checks alone.
 
 // noRequirementsGap is the one gap line a spec that marks no requirement answers, in place of a
-// line per requirement. noCheckReason and noPlanTaskReason are what one requirement lacks, as
-// RequirementCoverage.Gaps carries it; a document-level gap line is the requirement's block id
-// and one of these, which is what noCheckGap builds.
+// line per requirement. noCheckReason and noPlanTaskReason are what one requirement lacks, and
+// viewRequirementReason what a requirement of a view is, as RequirementCoverage.Gaps carries it; a
+// document-level gap line is the requirement's block id and one of these, which is what noCheckGap
+// builds.
 const (
-	noRequirementsGap = "the spec marks no requirements"
-	noCheckReason     = "has no check"
-	noPlanTaskReason  = "has no plan task"
+	noRequirementsGap     = "the spec marks no requirements"
+	noCheckReason         = "has no check"
+	noPlanTaskReason      = "has no plan task"
+	viewRequirementReason = "is a requirement on a view"
 )
 
 // GET /api/v1/issues/{key}/coverage  (any authenticated caller)
@@ -113,6 +120,10 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
+	view, err := docs.ViewOf(ctx, q, issueKey)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
 	batch := &pgx.Batch{}
 	states := make(map[string]string, len(requirements))
 	served := map[string]servingCounts{}
@@ -130,6 +141,9 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, 
 		requirement.Checks, requirement.PlanTasks = counts.checks, counts.planTasks
 		requirement.State = cmp.Or(states[requirement.BlockID], graphstore.StateLive)
 		requirement.Gaps = []string{}
+		if view != "" {
+			requirement.Gaps = append(requirement.Gaps, viewRequirementReason)
+		}
 		// A proposed requirement is a question still open, never work left undone.
 		if requirement.State != graphstore.StateProposed {
 			if requirement.Checks == 0 {

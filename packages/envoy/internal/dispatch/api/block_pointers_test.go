@@ -213,16 +213,18 @@ func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T)
 // sibling tree is refused, a needs naming a plan task of a sibling tree among them, and a document
 // its project holds points only inside itself. A needs names a plan task of another document of
 // its own issue or of an issue above it (dispatch://INFRA-1253/spec R10). Every refusal names the
-// reference and writes nothing.
+// reference and writes nothing. The issues below the root each hold a requirement of their own,
+// so they are created unconverted, as the release before writes a child: a child born converted
+// under an issue whose requirements stand is a view, and its create with a requirement is refused.
 func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	requirement := ":::requirement{#r1}\nA requirement.\n:::\n"
 	root := createSpecIssue(t, handler, "CORE", requirement)
-	middle := createChildIssue(t, handler, "CORE", root.Key, requirement+"\n:::plan_task{#m9}\nAbove.\n:::\n")
-	issue := createChildIssue(t, handler, "CORE", middle.Key, requirement+"\n:::plan_task{#t9}\nTheirs.\n:::\n")
-	sibling := createChildIssue(t, handler, "CORE", middle.Key, requirement+"\n:::plan_task{#s9}\nA sibling's.\n:::\n")
+	middle := createDigestChild(t, handler, database, "CORE", "The middle", requirement+"\n:::plan_task{#m9}\nAbove.\n:::\n", root.Key, true)
+	issue := createDigestChild(t, handler, database, "CORE", "The issue", requirement+"\n:::plan_task{#t9}\nTheirs.\n:::\n", middle.Key, true)
+	sibling := createDigestChild(t, handler, database, "CORE", "The sibling", requirement+"\n:::plan_task{#s9}\nA sibling's.\n:::\n", middle.Key, true)
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"
 
 	// A requirement of the issue's own spec, of its parent's and of its root's is named.

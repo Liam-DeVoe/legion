@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -177,5 +179,65 @@ func TestTheCoverageAndResultsTwinsAnswerAsTheReadsTheyReplace(t *testing.T) {
 	t.Logf("with the planted serves tuple the census of %s reads %q", key, differences)
 	if len(differences) != 1 || !strings.Contains(differences[0], "r2") || !strings.Contains(differences[0], "checks=2") {
 		t.Errorf("with a serves tuple only the store holds the census of %s reads %q, want the one difference naming r2 with two checks", key, differences)
+	}
+}
+
+// TestARequirementPastedIntoAViewIsAGapOfBothCoverageReads: a person pastes a requirement block
+// into the spec of a view child in the browser, which no write route takes; the issue room applies
+// it and its settlement's block index makes it a requirement node. The child stays a view of its
+// parent (docs.ViewOf), and the coverage read (GET /api/v1/issues/{key}/coverage) and its twin over
+// the tuples each name that requirement a gap, "is a requirement on a view", on the requirement and
+// as "<block id> is a requirement on a view" on the issue, beside its other gaps; the census of the
+// twins reads no difference; and the parent's own requirement carries no such gap.
+func TestARequirementPastedIntoAViewIsAGapOfBothCoverageReads(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
+	documents := deps.Docs.(*docs.Service)
+	ctx := context.Background()
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	createReferenceAPIProject(t, handler, "PASTE")
+	parent := createDigestIssue(t, handler, database, "PASTE", "The parent", ":::requirement{#r1}\nThe parent states it.\n:::\n", false)
+	child := createDigestChild(t, handler, database, "PASTE", "The view", "The view's design.\n", parent.Key, false)
+
+	pasted, err := pmdoc.Parse(":::requirement{#pr1}\nThe pasted work.\n:::\n")
+	if err != nil {
+		t.Fatalf("parse the pasted requirement: %v", err)
+	}
+	peer := connectBrowserPeer(t, handler, documents, child.PrimaryArtifactID)
+	t.Cleanup(peer.close)
+	peer.edit(t, func(tree *pmdoc.Node) error {
+		tree.Children = append(tree.Children, pasted.Children...)
+		return nil
+	})
+	peer.barrier(t)
+	settleIssue(t, documents, child.Key)
+	if ancestor, err := docs.ViewOf(ctx, database.Pool, child.Key); err != nil || ancestor != parent.Key {
+		t.Fatalf("after the paste %s is a view of %q (%v), want %s", child.Key, ancestor, err, parent.Key)
+	}
+
+	server := directServer(deps)
+	twin, err := server.issueCoverageOverTuples(ctx, database.Pool, alice, child.Key, nil)
+	if err != nil {
+		t.Fatalf("read the coverage of %s over the tuples: %v", child.Key, err)
+	}
+	for _, read := range []struct {
+		name     string
+		coverage model.IssueCoverage
+	}{{"the coverage read", readCoverage(t, handler, child.Key)}, {"the coverage read over the tuples", twin}} {
+		requirement := coverageOf(t, read.coverage, "pr1")
+		if !slices.Contains(requirement.Gaps, viewRequirementReason) || !slices.Contains(read.coverage.Gaps, "pr1 "+viewRequirementReason) {
+			t.Errorf("%s of %s answers pr1 with the gaps %q and the issue with %q, want %q on each", read.name, child.Key, requirement.Gaps, read.coverage.Gaps, viewRequirementReason)
+		}
+	}
+	differences, err := server.twinCensus(ctx, database.Pool, alice, child.Key)
+	if err != nil {
+		t.Fatalf("take the census of the twins of %s: %v", child.Key, err)
+	}
+	if len(differences) > 0 {
+		t.Errorf("the census of the twins of %s reads %q, want no difference", child.Key, differences)
+	}
+	for _, gap := range readCoverage(t, handler, parent.Key).Gaps {
+		if strings.Contains(gap, viewRequirementReason) {
+			t.Errorf("the coverage of %s, which is no view, names the gap %q", parent.Key, gap)
+		}
 	}
 }

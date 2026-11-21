@@ -46,8 +46,10 @@ type tupleCheck struct {
 // check holding no result, holding only a fail, or holding a pass recorded against a text sum it no
 // longer holds - and a retracted result counts as none; one a check proves is proved. A requirement
 // whose node or a node above it is overtaken is closed with its subtree: it lists no gap and
-// nothing under it. A proposed requirement is a question still open and raises no gap. A block the
-// block index has not reached has no node, so the read answers it once that index runs.
+// nothing under it. A proposed requirement is a question still open and raises no gap. A
+// requirement of an issue that is a view (docs.ViewOf) is a gap whatever its state and whatever
+// serves it, unless it is closed, as issueCoverage names it. A block the block index has not
+// reached has no node, so the read answers it once that index runs.
 func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who model.Actor, issueKey string, trees *displayTreeReader) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
 	if err := q.QueryRow(ctx, `
@@ -99,6 +101,10 @@ func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who mod
 		return coverage, nil
 	}
 	descendants, err := refs.IssueDescendants(ctx, q, who, issueKey)
+	if err != nil {
+		return model.IssueCoverage{}, err
+	}
+	view, err := docs.ViewOf(ctx, q, issueKey)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -163,6 +169,9 @@ func (s *server) issueCoverageOverTuples(ctx context.Context, q queryer, who mod
 				requirement.Coverage = "proved"
 			default:
 				requirement.Coverage = "unproven"
+			}
+			if view != "" {
+				requirement.Gaps = append(requirement.Gaps, viewRequirementReason)
 			}
 			if requirement.State != graphstore.StateProposed {
 				if requirement.Checks == 0 {

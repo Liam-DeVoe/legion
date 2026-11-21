@@ -14,68 +14,91 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// A child issue that holds no requirement of its own is a view on its ancestor's spec (R23 of
-// this branch's spec): its checks serve the requirements of the nearest issue above it that holds
-// requirement nodes and is not done, and a requirement written on it is refused with the
-// ancestor's name, so the work it does is the work that ancestor states. ViewOf is the one answer
-// of whose view an issue is: the tree read's view_of member reads it, and so does the refusal of a
-// requirement written on such a child (RefuseRequirementOnView), so the two never disagree.
+// A child issue is a view on its ancestor's spec (R23 of this branch's spec): its checks serve the
+// requirements of the nearest issue above it that holds requirement nodes and is not done, and a
+// requirement written on it is refused with the ancestor's name, so the work it does is the work
+// that ancestor states. ViewUnder is the one answer of whose view an issue is, from its parent up:
+// ViewOf reads it for an issue that stands, and the tree read's view_of member reads ViewOf, as
+// the refusal of a requirement written on such a child does (RefuseRequirementOnView); an issue
+// create reads it for the issue it makes (RefuseRequirementUnder), whose own row is not written
+// yet. So none of them disagree.
 
 // requirementType is the typed block a requirement is.
 const requirementType = "requirement"
 
-// viewOfStatement reads, for the issue $1 whose ancestors, parent first, are $2: whether the issue
-// is converted (its issue_trees row), whether it holds a requirement node of its own (a
-// document_blocks row of type requirement of one of its artifacts, its tree's among them, which
-// the block index writes for every current requirement block and deletes once a version drops
-// it), and the nearest of its ancestors that holds one, with whether that ancestor is done.
+// viewOfStatement reads, of the issues $1, a parent first and then each issue above it up to the
+// root, the nearest that holds a requirement node - a document_blocks row of type requirement of
+// one of its artifacts, its tree's among them, which the block index writes for every current
+// requirement block and deletes once a version drops it - with whether that issue is done. It
+// answers no row where none of them holds one.
 const viewOfStatement = `
-	select exists (select 1 from issue_trees tree where tree.issue_key = $1),
-	       exists (select 1 from document_blocks d join artifacts doc on doc.id = d.artifact_id
-	               where doc.issue_key = $1 and d.type = '` + requirementType + `'),
-	       coalesce(nearest.key, ''), coalesce(nearest.done, false)
-	from (select 1) one
-	left join lateral (
-		select above.key, i.status = 'done' as done
-		from unnest($2::text[]) with ordinality as above(key, depth)
-		join issues i on i.key = above.key
-		where exists (select 1 from document_blocks d join artifacts doc on doc.id = d.artifact_id
-		              where doc.issue_key = above.key and d.type = '` + requirementType + `')
-		order by above.depth
-		limit 1
-	) nearest on true`
+	select above.key, i.status = 'done'
+	from unnest($1::text[]) with ordinality as above(key, depth)
+	join issues i on i.key = above.key
+	where exists (select 1 from document_blocks d join artifacts doc on doc.id = d.artifact_id
+	              where doc.issue_key = above.key and d.type = '` + requirementType + `')
+	order by above.depth
+	limit 1`
 
 // ViewOf is the issue whose requirements the issue issueKey is a view of, read through q, and ""
-// where it is no view. An issue is a view where it is converted - born so, or by the conversion
-// - and holds no requirement node of its own, and its nearest ancestor that holds requirement
-// nodes is not done: that ancestor is the one it is a view of. An issue the conversion has not
-// reached is no view and writes as it always has; an issue that holds requirements of its own
-// stands on its own, as a child that already held them when it converted does; and a child whose
-// nearest ancestor holding requirements is done stands on its own too, since that ancestor's spec
-// can take no more work.
+// where it is no view. An issue is a view where it is converted - its issue_trees row, which at
+// this head only an issue born converted holds - and the nearest issue above it that holds
+// requirement nodes is not done (ViewUnder of its parent): that issue is the one it is a view of,
+// whatever the issue holds itself, since a requirement that reached it through its room is a gap
+// the coverage read names, not a requirement of its own. An issue the conversion has not reached
+// is no view and writes as it always has, and a child whose nearest ancestor holding requirements
+// is done stands on its own, since that ancestor's spec can take no more work. A child that held
+// requirements of its own when the conversion reached it stands on its own too, by the mark the
+// conversion leaves on it, which this head does not write.
 func ViewOf(ctx context.Context, q Queryer, issueKey string) (string, error) {
-	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
-	if err != nil {
-		return "", fmt.Errorf("read the issues above %s: %w", issueKey, err)
-	}
-	if len(ancestors) == 0 {
+	var parent *string
+	var converted bool
+	err := q.QueryRow(ctx, `
+		select i.parent_key, exists (select 1 from issue_trees tree where tree.issue_key = i.key)
+		from issues i where i.key = $1`, issueKey).Scan(&parent, &converted)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
-	var converted, holds, done bool
-	var nearest string
-	if err := q.QueryRow(ctx, viewOfStatement, issueKey, ancestors).Scan(&converted, &holds, &nearest, &done); err != nil {
-		return "", fmt.Errorf("read whether %s is a view of an issue above it: %w", issueKey, err)
+	if err != nil {
+		return "", fmt.Errorf("read whether %s is converted: %w", issueKey, err)
 	}
-	if !converted || holds || nearest == "" || done {
+	if !converted || parent == nil {
+		return "", nil
+	}
+	return ViewUnder(ctx, q, *parent)
+}
+
+// ViewUnder is the issue whose requirements a converted issue whose parent is parentKey is a view
+// of, read through q, and "" where it would be none (ViewOf): the nearest issue of the chain that
+// starts at parentKey and climbs to the root (refs.IssueAncestors) that holds requirement nodes,
+// where that issue is not done. A root issue, whose parentKey is "", is no view.
+func ViewUnder(ctx context.Context, q Queryer, parentKey string) (string, error) {
+	if parentKey == "" {
+		return "", nil
+	}
+	above, err := refs.IssueAncestors(ctx, q, parentKey)
+	if err != nil {
+		return "", fmt.Errorf("read the issues above %s: %w", parentKey, err)
+	}
+	var nearest string
+	var done bool
+	err = q.QueryRow(ctx, viewOfStatement, append([]string{parentKey}, above...)).Scan(&nearest, &done)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the nearest issue from %s up that holds requirements: %w", parentKey, err)
+	}
+	if done {
 		return "", nil
 	}
 	return nearest, nil
 }
 
 // ErrRequirementBelongsToAncestor refuses a write that adds a requirement node to an issue that
-// is a view of Ancestor (ViewOf): Issue's spec states no requirement of its own, so work Ancestor
-// does not state goes into Ancestor's spec first. Blocks are the ids of the requirement blocks the
-// write would add. Nothing of the write is written.
+// is a view of Ancestor (ViewOf, ViewUnder): Issue's spec states no requirement of its own, so
+// work Ancestor does not state goes into Ancestor's spec first. Blocks are the ids of the
+// requirement blocks the write would add. Nothing of the write is written.
 type ErrRequirementBelongsToAncestor struct {
 	Issue, Ancestor string
 	Blocks          []string
@@ -121,8 +144,31 @@ func RefuseRequirementOnView(ctx context.Context, q Queryer, issueKey string, be
 	if err != nil || ancestor == "" {
 		return err
 	}
+	return requirementBelongsTo(issueKey, ancestor, added)
+}
+
+// RefuseRequirementUnder refuses, with ErrRequirementBelongsToAncestor, the spec of the issue
+// issueKey that an issue create makes converted under the parent parentKey, where spec holds a
+// requirement block and the new issue would be a view (ViewUnder), read through q. The new issue's
+// own row is not written yet, so the chain is read from its parent. A spec that holds no
+// requirement block reads nothing.
+func RefuseRequirementUnder(ctx context.Context, q Queryer, issueKey, parentKey string, spec *pmdoc.Node) error {
+	added := requirementIDs(spec)
+	if len(added) == 0 || parentKey == "" {
+		return nil
+	}
+	ancestor, err := ViewUnder(ctx, q, parentKey)
+	if err != nil || ancestor == "" {
+		return err
+	}
+	return requirementBelongsTo(issueKey, ancestor, added)
+}
+
+// requirementBelongsTo is the refusal of the requirement blocks added to the issue, a view of
+// ancestor, naming the blocks in sorted order.
+func requirementBelongsTo(issue, ancestor string, added []string) error {
 	sort.Strings(added)
-	return &ErrRequirementBelongsToAncestor{Issue: issueKey, Ancestor: ancestor, Blocks: added}
+	return &ErrRequirementBelongsToAncestor{Issue: issue, Ancestor: ancestor, Blocks: added}
 }
 
 // refuseRequirementOnViewOf is RefuseRequirementOnView for a write to the document artifactID,

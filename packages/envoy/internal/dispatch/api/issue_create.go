@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -443,6 +444,26 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// An issue born converted under a parent is a view on the spec of the nearest issue of its
+	// parent's chain that holds requirements, while that issue is not done, and a view takes no
+	// requirement of its own, as a write to one of its documents takes none (docs'
+	// RefuseRequirementOnView): a requirement of its spec is refused with that issue's name. The
+	// new issue's row is not written yet, so the chain is read from its parent
+	// (docs.RefuseRequirementUnder). Nothing of the create is written: every write of it so far
+	// is queued or in this transaction, which the refusal rolls back.
+	if bornConverted && parentKey != "" {
+		spec := ledger.ReadBackOf(artifactID, markdown)
+		if spec == nil {
+			if spec, err = pmdoc.ParseRendering(markdown); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
+		if err := docs.RefuseRequirementUnder(r.Context(), tx, key, parentKey, spec); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	specVersion, err := ledger.QueueVersion(r.Context(), artifactID, markdown, []model.Actor{actor}, nil)
 	if err != nil {
