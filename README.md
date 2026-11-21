@@ -157,7 +157,11 @@ bun run dispatch:local                                       # Dispatch, seeded 
 ```
 
 Envoy's Go tests start NATS in Docker, and the tests that need a Postgres read its address from the
-environment (`LEGION_TEST_PG_DSN` for the daemon's). On a host without Docker, the daemon's NATS
+environment (`LEGION_TEST_PG_DSN` for the daemon's). One of them, `internal/ompsessions`'
+`TestEveryPoolPinsItsSearchPath`, also reaches that server through a PgBouncer 1.25.2 in
+transaction mode named by `TEST_PGBOUNCER_DSN`, and fails without it:
+`.github/workflows/ci-job-daemon-go.yaml`'s step "Start PgBouncer in front of the Postgres
+service" starts one. On a host without Docker, the daemon's NATS
 tests use a running nats-server with JetStream instead when `LEGION_TEST_NATS_URL` (its client URL)
 and `LEGION_TEST_NATS_MONITOR_URL` (its monitoring endpoint) are both set, one package at a time
 (`go test -p 1`); that server, and any nats-server an Envoy of your own runs against, must be 2.12
