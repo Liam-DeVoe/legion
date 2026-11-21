@@ -44,18 +44,18 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
   {
     place: "field",
     name: "session",
-    source: "the broker's token exchange: brokerclient/testdata/wire.json, form.session",
+    source: "the broker's token exchange: cipherclient/testdata/wire.json, form.session",
   },
   {
     place: "field",
     name: "projects",
-    source: "the broker's token exchange: brokerclient/testdata/wire.json, form.projects",
+    source: "the broker's token exchange: cipherclient/testdata/wire.json, form.projects",
   },
   {
     place: "field",
     name: "launcher_credential",
     source:
-      "the broker's token exchange: brokerclient/testdata/wire.json, form.launcher_credential",
+      "the broker's token exchange: cipherclient/testdata/wire.json, form.launcher_credential",
   },
   {
     place: "field",

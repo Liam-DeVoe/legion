@@ -34,7 +34,7 @@ body: |-
   a response's body outside those readers.
   The helper splits an `invalid_request` description at its first `": "` only where the rule reads
   the whole description as clean. The broker's words in `redact.Error`, `redact.Cause` and
-  `brokeraddr.Address.Words`, and the words in the helper's `BrokerError`, `agent-secrets`' and
+  `cipheraddr.Address.Words`, and the words in the helper's `BrokerError`, `agent-secrets`' and
   `agent-secrets-devrelay`'s refusals, `githubapp.StatusError`, `auth.CallbackError`, the Envoy
   listener client's errors, a refused revocation's code and the load test's seed code print
   through it; those error types hold the words behind pointers, so no fmt verb, `slog` field or

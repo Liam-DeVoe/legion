@@ -8,8 +8,8 @@ import (
 )
 
 // WordsNotReadable is what a message prints in place of a remote field the rule cannot read as
-// clean (Remote, Field). It is a different case from brokeraddr.WordsNotPrinted, which an address
-// that is not clean prints in place of every word; brokeraddr.Address.Words prints both.
+// clean (Remote, Field). It is a different case from cipheraddr.WordsNotPrinted, which an address
+// that is not clean prints in place of every word; cipheraddr.Address.Words prints both.
 const WordsNotReadable = "(not printed: the answer's words hold a URL the rule cannot read as clean)"
 
 // Remote is the rule for one field another party wrote - a refusal's words, a code, a body. It

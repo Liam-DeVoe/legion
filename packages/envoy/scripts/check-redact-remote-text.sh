@@ -24,7 +24,7 @@
 #     status, and fails on a non-zero status or on an inventory test the report holds no passing
 #     testcase for. It reads the report rather than Bun's console, which prints no line for a
 #     passing test where AGENT or CLAUDECODE is set, as it is in an agent's shell;
-#   - runs `bun run typecheck` in packages/contracts, packages/broker-client and
+#   - runs `bun run typecheck` in packages/contracts, packages/cipher-client and
 #     packages/envoy-client, and fails on a non-zero status.
 #
 # Around those steps it runs the mutation gate, packages/envoy/cmd/redact-gate, whose stages run
@@ -42,7 +42,7 @@
 # output it captured there. `--controls` runs the gate's negative controls instead, each from a
 # passing baseline in its own scratch worktree.
 #
-# A package's own needs stay its own: internal/dispatch/api and internal/broker/helper read the
+# A package's own needs stay its own: internal/dispatch/api and internal/cipher/helper read the
 # test databases their suites read (DISPATCH_TEST_DATABASE_URL, LEGION_TEST_PG_DSN) where a test
 # of theirs needs one. No line this script prints is a real credential: the tests' credentials
 # are made up (not-a-secret-...), and a failure line it prints may quote one.

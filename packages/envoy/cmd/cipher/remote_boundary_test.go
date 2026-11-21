@@ -17,7 +17,8 @@ import (
 
 // TestAGcloudRefusalPrintsNoneOfItsWords: gcloud that cannot print an access token writes Google's
 // answer to the refresh it failed on its standard error, a URL carrying a credential among it; the
-// gcloud sign-in's error, which names that standard error, prints none of the credential.
+// gcloud sign-in's error, which quotes none of that standard error (runGcloud discards it), prints
+// none of the credential.
 func TestAGcloudRefusalPrintsNoneOfItsWords(t *testing.T) {
 	dir := t.TempDir()
 	script := strings.Join([]string{

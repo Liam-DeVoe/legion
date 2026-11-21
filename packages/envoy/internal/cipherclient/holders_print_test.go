@@ -53,7 +53,7 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Exported: &refusedErrorExported{400, redacttest.Code, redacttest.Words, refusedIdentity(projectedStub())},
 		},
 		{
-			Name: "brokerclient.tokenAnswer",
+			Name: "cipherclient.tokenAnswer",
 			Kind: "fields",
 			Boxed: tokenAnswer{
 				TokenType: code, ExpiresIn: redact.RemoteNumber{RemoteText: words},

@@ -973,10 +973,11 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 // keptSend reads the send route's 202, a send for a role the listener kept for the role's next
 // holder (listenerwire.KeptSendResponse), as the envelope the role's kept lane holds, whose walk
 // hands it to the session that holds the role, live. A 202 naming no kept copy is no answer a
-// send gets, and is ErrUnavailable.
+// send gets, and is ErrUnavailable. The answer is read through decodeAnswer, as every answer of
+// this client is.
 func keptSend(response *http.Response) (SendResult, error) {
 	var answer listenerwire.KeptSendResponse
-	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+	if err := decodeAnswer(response, &answer); err != nil {
 		return SendResult{}, fmt.Errorf("%w: decode POST /v1/messages/send response: %v", ErrUnavailable, err)
 	}
 	if !answer.Kept {

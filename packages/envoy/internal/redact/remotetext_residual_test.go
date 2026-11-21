@@ -161,7 +161,7 @@ func FuzzTheRuleNeverChangesWhichOAuthCodeAFieldIs(f *testing.F) {
 	})
 }
 
-// coded is an error that holds its own code, as brokerclient's RefusedError does.
+// coded is an error that holds its own code, as cipherclient's RefusedError does.
 type coded struct {
 	code   OAuthCode
 	answer error

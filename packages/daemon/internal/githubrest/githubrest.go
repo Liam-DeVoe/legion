@@ -200,11 +200,13 @@ func (c Client) refusal(method string, target *url.URL, response *http.Response,
 }
 
 // AnswerOf is response, GitHub's answer other than 2xx to method at path, whose body is body, as an
-// *Answer: the status, the body as GitHub sent it, the rate-limit headers as GitHub sent them,
-// whether the answer is GitHub's rate limit (RateLimited) and, when it is, how long to wait
-// (retryAfter) and which budget it spent (spent) — the REST API's core budget when GitHub names no
-// other. Client builds every answer it returns with it, and appauth builds the one its own errors
-// carry (appauth.AnswerError), so both read GitHub's answers one way.
+// *Answer: the status, the body as its caller read it - GitHub's words as the rule prints them,
+// with the token the call carried redacted (Client's call and appauth's refusalBody read it through
+// oauth2call.ReadAnswer) - the rate-limit headers as GitHub sent them, whether the answer is
+// GitHub's rate limit (RateLimited) and, when it is, how long to wait (retryAfter) and which budget
+// it spent (spent) — the REST API's core budget when GitHub names no other. Client builds every
+// answer it returns with it, and appauth builds the one its own errors carry (appauth.AnswerError),
+// so both read GitHub's answers one way.
 func AnswerOf(method, path string, response *http.Response, body []byte) *Answer {
 	refused := &Answer{Method: method, Path: path, Status: response.StatusCode, Body: strings.TrimSpace(string(body)),
 		RateLimited: RateLimited(response, body), RetryAfter: retryAfter(response, body, time.Now()), Limit: limitHeaders(response.Header)}

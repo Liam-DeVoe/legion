@@ -117,9 +117,9 @@ const (
 const leakBaseRefs = "+refs/heads/redact-leak-row-base-*:refs/remotes/origin/redact-leak-row-base-*"
 
 const (
-	brokerclientPkg = "github.com/sjawhar/envoy/internal/brokerclient"
-	plantDir        = "packages/envoy/internal/brokerclient/"
-	plantTSDir      = "packages/broker-client/src/"
+	cipherclientPkg = "github.com/sjawhar/envoy/internal/cipherclient"
+	plantDir        = "packages/envoy/internal/cipherclient/"
+	plantTSDir      = "packages/cipher-client/src/"
 )
 
 // redacttestFault replaces redacttest.RequireNone's failure with body, in the worktree.
@@ -168,12 +168,12 @@ var controls = []control{
 		return c.edit(boxTSFile, " || (more && splitUserInfo(token.slice(start)))", "")
 	}},
 	{id: "2", what: "a new call of the rule, written as a receiver call through a type alias and a method value, at a site no row names", stage: 2,
-		expect: []string{"call census", "cmd/agent-secrets-devrelay/main.go", "(github.com/sjawhar/envoy/brokeraddr.Address).Words", "controlAlias"},
+		expect: []string{"call census", "cmd/cipher-devrelay/main.go", "(github.com/sjawhar/envoy/cipheraddr.Address).Words", "controlAlias"},
 		plant: func(c *controlRun) error {
-			return c.appendTo("packages/envoy/cmd/agent-secrets-devrelay/main.go", `
+			return c.appendTo("packages/envoy/cmd/cipher-devrelay/main.go", `
 // controlAlias is the control's planted call of the rule.
 func controlAlias(words string) string {
-	type address = brokeraddr.Address
+	type address = cipheraddr.Address
 	var a address
 	w := a.Words
 	return w(words)
@@ -231,15 +231,15 @@ func controlAlias(words string) string {
 		}},
 	{id: "6", what: "new holders reached only through a pointer, a slice, a map, an embedded struct, a generic type's instance and a TypeScript object type, with no print-test row", stage: 2,
 		each: [][]string{
-			{"holder census", brokerclientPkg + ".controlViaPointer"},
-			{"holder census", brokerclientPkg + ".controlViaSlice"},
-			{"holder census", brokerclientPkg + ".controlViaMap"},
-			{"holder census", brokerclientPkg + ".controlEmbedded"},
-			{"holder census", brokerclientPkg + ".controlGeneric[*" + brokerclientPkg + ".RefusedError]"},
+			{"holder census", cipherclientPkg + ".controlViaPointer"},
+			{"holder census", cipherclientPkg + ".controlViaSlice"},
+			{"holder census", cipherclientPkg + ".controlViaMap"},
+			{"holder census", cipherclientPkg + ".controlEmbedded"},
+			{"holder census", cipherclientPkg + ".controlGeneric[*" + cipherclientPkg + ".RefusedError]"},
 			{"holder census", plantTSDir + "control-holder.ts#ControlHolder"},
 		},
 		plant: func(c *controlRun) error {
-			if err := c.write(plantDir+"control_holders.go", "package brokerclient\n\n// Control (6)'s planted holders, each reaching the box only through another type.\ntype controlViaPointer struct{ r *RefusedError }\n\ntype controlViaSlice struct{ r []tokenAnswer }\n\ntype controlViaMap struct{ r map[string]*RefusedError }\n\ntype controlEmbedded struct{ RefusedError }\n\ntype controlGeneric[T any] struct{ r T }\n\nvar controlInstance controlGeneric[*RefusedError]\n"); err != nil {
+			if err := c.write(plantDir+"control_holders.go", "package cipherclient\n\n// Control (6)'s planted holders, each reaching the box only through another type.\ntype controlViaPointer struct{ r *RefusedError }\n\ntype controlViaSlice struct{ r []tokenAnswer }\n\ntype controlViaMap struct{ r map[string]*RefusedError }\n\ntype controlEmbedded struct{ RefusedError }\n\ntype controlGeneric[T any] struct{ r T }\n\nvar controlInstance controlGeneric[*RefusedError]\n"); err != nil {
 				return err
 			}
 			return c.write(plantTSDir+"control-holder.ts", "import type { LibraryError } from \"@legion/contracts/remote-text\";\n\n/** Control (6)'s planted holder, reaching the box through an array of library errors. */\nexport interface ControlHolder {\n  readonly errors: readonly LibraryError[];\n}\n")
@@ -257,7 +257,7 @@ func controlAlias(words string) string {
 			{"whole-value census", plantTSDir + "control-whole.ts:9"},
 		},
 		plant: func(c *controlRun) error {
-			if err := c.write(plantDir+"control_whole.go", "package brokerclient\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\n\t\"golang.org/x/oauth2\"\n)\n\n// controlSprint and controlMarshal are control (8)'s planted whole uses.\nfunc controlSprint(re *oauth2.RetrieveError) string { return fmt.Sprint(re) }\n\nfunc controlMarshal(re *oauth2.RetrieveError) ([]byte, error) { return json.Marshal(re) }\n"); err != nil {
+			if err := c.write(plantDir+"control_whole.go", "package cipherclient\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\n\t\"golang.org/x/oauth2\"\n)\n\n// controlSprint and controlMarshal are control (8)'s planted whole uses.\nfunc controlSprint(re *oauth2.RetrieveError) string { return fmt.Sprint(re) }\n\nfunc controlMarshal(re *oauth2.RetrieveError) ([]byte, error) { return json.Marshal(re) }\n"); err != nil {
 				return err
 			}
 			return c.write(plantTSDir+"control-whole.ts", "import type { ResponseBodyError } from \"openid-client\";\n\n/** Control (8)'s planted whole uses of an openid-client error. */\nexport function controlTemplate(error: ResponseBodyError): string {\n  return `${error}`;\n}\n\nexport function controlStringify(error: ResponseBodyError): string {\n  return JSON.stringify(error);\n}\n")
@@ -265,18 +265,18 @@ func controlAlias(words string) string {
 	{id: "9a", what: "a new production call of reflect's struct-field access outside package redact that the inventory does not name", stage: 2,
 		expect: []string{"reflection census", plantDir + "control_reflect.go"},
 		plant: func(c *controlRun) error {
-			return c.write(plantDir+"control_reflect.go", "package brokerclient\n\nimport \"reflect\"\n\n// controlField is control (9a)'s planted reflection.\nfunc controlField(v any) any { return reflect.ValueOf(v).Field(0).Interface() }\n")
+			return c.write(plantDir+"control_reflect.go", "package cipherclient\n\nimport \"reflect\"\n\n// controlField is control (9a)'s planted reflection.\nfunc controlField(v any) any { return reflect.ValueOf(v).Field(0).Interface() }\n")
 		}},
 	{id: "9b", what: "a named reflection call whose operand's possible types include an external error type", stage: 2,
 		expect: []string{"reflection census", "controlNamed", "external error type"},
 		plant: func(c *controlRun) error {
-			if err := c.write(plantDir+"control_reflect_named.go", "package brokerclient\n\nimport (\n\t\"reflect\"\n\n\t\"golang.org/x/oauth2\"\n)\n\n// controlNamed is control (9b)'s planted reflection, which the inventory names.\nfunc controlNamed(re *oauth2.RetrieveError) any { return reflect.ValueOf(re).Elem().Field(0).Interface() }\n"); err != nil {
+			if err := c.write(plantDir+"control_reflect_named.go", "package cipherclient\n\nimport (\n\t\"reflect\"\n\n\t\"golang.org/x/oauth2\"\n)\n\n// controlNamed is control (9b)'s planted reflection, which the inventory names.\nfunc controlNamed(re *oauth2.RetrieveError) any { return reflect.ValueOf(re).Elem().Field(0).Interface() }\n"); err != nil {
 				return err
 			}
 			gate := c.inv["gate"].(map[string]any)
 			exempt, _ := gate["reflection"].([]any)
 			gate["reflection"] = append(exempt, map[string]any{
-				"file": plantDir + "control_reflect_named.go", "function": brokerclientPkg + ".controlNamed",
+				"file": plantDir + "control_reflect_named.go", "function": cipherclientPkg + ".controlNamed",
 				"operands": []string{"*golang.org/x/oauth2.RetrieveError"}, "why": "control (9b)",
 			})
 			return c.writeInventory()
@@ -359,7 +359,7 @@ func controlAlias(words string) string {
 			{"boundary census", plantTSDir + "control-boundary.ts:4"},
 		},
 		plant: func(c *controlRun) error {
-			if err := c.write(plantDir+"control_boundary.go", "package brokerclient\n\nimport \"golang.org/x/oauth2/google\"\n\n// controlConfig is control (18)'s planted call of x/oauth2 outside the boundary.\nfunc controlConfig() { _, _ = google.ConfigFromJSON(nil) }\n"); err != nil {
+			if err := c.write(plantDir+"control_boundary.go", "package cipherclient\n\nimport \"golang.org/x/oauth2/google\"\n\n// controlConfig is control (18)'s planted call of x/oauth2 outside the boundary.\nfunc controlConfig() { _, _ = google.ConfigFromJSON(nil) }\n"); err != nil {
 				return err
 			}
 			return c.write(plantTSDir+"control-boundary.ts", "import { randomState } from \"openid-client\";\n\n/** Control (18)'s planted call of openid-client outside callLibrary. */\nexport const controlState = randomState();\n")
@@ -377,7 +377,7 @@ func controlAlias(words string) string {
 			{"boundary census", plantTSDir + "control-handed-out.ts:6", "handed out"},
 		},
 		plant: func(c *controlRun) error {
-			if err := c.write(plantDir+"control_dispatch.go", `package brokerclient
+			if err := c.write(plantDir+"control_dispatch.go", `package cipherclient
 
 import (
 	"context"
@@ -434,7 +434,7 @@ export const controlHandedOut: string = callLibrary(() => randomState)();
 			{"boundary census", plantTSDir + "control-fetch.ts:4"},
 		},
 		plant: func(c *controlRun) error {
-			if err := c.write(plantDir+"control_client.go", "package brokerclient\n\nimport (\n\t\"context\"\n\t\"net/http\"\n\n\t\"golang.org/x/oauth2\"\n)\n\n// controlClient is control (23)'s planted client handed to x/oauth2 without RefusalClient.\nfunc controlClient(ctx context.Context) context.Context {\n\treturn context.WithValue(ctx, oauth2.HTTPClient, &http.Client{})\n}\n"); err != nil {
+			if err := c.write(plantDir+"control_client.go", "package cipherclient\n\nimport (\n\t\"context\"\n\t\"net/http\"\n\n\t\"golang.org/x/oauth2\"\n)\n\n// controlClient is control (23)'s planted client handed to x/oauth2 without RefusalClient.\nfunc controlClient(ctx context.Context) context.Context {\n\treturn context.WithValue(ctx, oauth2.HTTPClient, &http.Client{})\n}\n"); err != nil {
 				return err
 			}
 			return c.write(plantTSDir+"control-fetch.ts", "import { customFetch } from \"openid-client\";\n\n/** Control (23)'s planted fetch handed to openid-client without refusalFetch. */\nexport const controlFetch = { [customFetch]: fetch };\n")
@@ -445,7 +445,7 @@ export const controlHandedOut: string = callLibrary(() => randomState)();
 			{"boundary census", plantDir + "control_default_client.go:14", "oauth2.HTTPClient"},
 		},
 		plant: func(c *controlRun) error {
-			if err := c.write(plantDir+"control_scope.go", `package brokerclient
+			if err := c.write(plantDir+"control_scope.go", `package cipherclient
 
 import (
 	"context"
@@ -462,7 +462,7 @@ func controlScope(ctx context.Context) {
 `); err != nil {
 				return err
 			}
-			return c.write(plantDir+"control_default_client.go", `package brokerclient
+			return c.write(plantDir+"control_default_client.go", `package cipherclient
 
 import (
 	"context"
@@ -507,7 +507,7 @@ func controlDefaultClient(ctx context.Context) *http.Client {
 			{"answer census", plantDir + "control_answer.go:87", "controlClassify", "outside"},
 		},
 		plant: func(c *controlRun) error {
-			return c.write(plantDir+"control_answer.go", `package brokerclient
+			return c.write(plantDir+"control_answer.go", `package cipherclient
 
 import (
 	"encoding/json"

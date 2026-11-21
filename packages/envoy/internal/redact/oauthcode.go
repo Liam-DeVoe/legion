@@ -60,7 +60,7 @@ func (c OAuthCode) String() string {
 
 // RefusalCode is the code of the first OAuth error answer down err's chain (errors.Unwrap, and
 // each error of an errors.Join in turn), decided from the code as it came. An error that holds the
-// code itself and reads it (a RefusalCode method, as brokerclient's RefusedError has) answers
+// code itself and reads it (a RefusalCode method, as cipherclient's RefusedError has) answers
 // first, since the *oauth2.RetrieveError it unwraps to holds the rule's reading of the code and not
 // the code (NewRetrieveError); x/oauth2's own *oauth2.RetrieveError answers from the ErrorCode
 // x/oauth2 read off the answer. OAuthNone where the chain holds neither.

@@ -10,9 +10,9 @@
       "github.com/sjawhar/envoy/internal/redact.Error",
       "github.com/sjawhar/envoy/internal/redact.AnswerText",
       "github.com/sjawhar/envoy/internal/redact.Tokens",
-      "(github.com/sjawhar/envoy/brokeraddr.Address).Words",
-      "(github.com/sjawhar/envoy/brokeraddr.Address).Cause",
-      "(github.com/sjawhar/envoy/brokeraddr.Address).Error"
+      "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
+      "(github.com/sjawhar/envoy/cipheraddr.Address).Cause",
+      "(github.com/sjawhar/envoy/cipheraddr.Address).Error"
     ],
     "printers": [
       "github.com/sjawhar/envoy/internal/redact.ruled",
@@ -28,8 +28,8 @@
     ],
     "exempt": [
       {
-        "file": "packages/envoy/internal/broker/helper/broker.go",
-        "function": "github.com/sjawhar/envoy/internal/broker/helper.oauthBrokerError",
+        "file": "packages/envoy/internal/cipher/helper/broker.go",
+        "function": "github.com/sjawhar/envoy/internal/cipher/helper.oauthBrokerError",
         "why": "it compares the redactor's text with redact.AnswerText to tell the broker's own answer, and prints neither"
       }
     ],
@@ -57,39 +57,39 @@
     },
     "holders": [
       {
-        "holder": "github.com/sjawhar/envoy/internal/brokerclient.RefusedError",
-        "test": "print-brokerclient.RefusedError"
+        "holder": "github.com/sjawhar/envoy/internal/cipherclient.RefusedError",
+        "test": "print-cipherclient.RefusedError"
       },
       {
-        "holder": "github.com/sjawhar/envoy/internal/brokerclient.tokenAnswer",
-        "test": "print-brokerclient.tokenAnswer"
+        "holder": "github.com/sjawhar/envoy/internal/cipherclient.tokenAnswer",
+        "test": "print-cipherclient.tokenAnswer"
       },
       {
         "holder": "(*github.com/sjawhar/envoy/internal/oidc.CodeFlow).Revoke struct{Error redact.RemoteText \"json:\\\"error\\\"\"}",
         "test": "print-oidc.CodeFlow.Revoke.body"
       },
       {
-        "holder": "github.com/sjawhar/envoy/internal/broker/helper.BrokerError",
+        "holder": "github.com/sjawhar/envoy/internal/cipher/helper.BrokerError",
         "test": "print-helper.BrokerError"
       },
       {
-        "holder": "(*github.com/sjawhar/envoy/internal/broker/helper.Broker).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}",
+        "holder": "(*github.com/sjawhar/envoy/internal/cipher/helper.Broker).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}",
         "test": "print-helper.Broker.do.envelope"
       },
       {
-        "holder": "github.com/sjawhar/envoy/cmd/agent-secrets.apiError",
+        "holder": "github.com/sjawhar/envoy/cmd/cipher.apiError",
         "test": "print-agent-secrets.apiError"
       },
       {
-        "holder": "(*github.com/sjawhar/envoy/cmd/agent-secrets.client).doStatus struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}",
+        "holder": "(*github.com/sjawhar/envoy/cmd/cipher.client).doStatus struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}",
         "test": "print-agent-secrets.client.doStatus.envelope"
       },
       {
-        "holder": "github.com/sjawhar/envoy/cmd/agent-secrets-devrelay.apiError",
+        "holder": "github.com/sjawhar/envoy/cmd/cipher-devrelay.apiError",
         "test": "print-devrelay.apiError"
       },
       {
-        "holder": "(*github.com/sjawhar/envoy/cmd/agent-secrets-devrelay.apiClient).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}",
+        "holder": "(*github.com/sjawhar/envoy/cmd/cipher-devrelay.apiClient).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}",
         "test": "print-devrelay.apiClient.do.envelope"
       },
       {
@@ -153,11 +153,11 @@
         "test": "print-redact.LibraryError"
       },
       {
-        "holder": "packages/broker-client/src/token-client.ts#BrokerTokenClient",
+        "holder": "packages/cipher-client/src/token-client.ts#BrokerTokenClient",
         "test": "print-broker-client.BrokerTokenClient"
       },
       {
-        "holder": "packages/broker-client/src/environment.ts#MadeBrokerClient",
+        "holder": "packages/cipher-client/src/environment.ts#MadeBrokerClient",
         "test": "print-broker-client.MadeBrokerClient"
       },
       {
@@ -173,11 +173,11 @@
         "test": "print-LibraryError"
       },
       {
-        "holder": "github.com/sjawhar/envoy/internal/broker/projectaccess.refusalCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}",
+        "holder": "github.com/sjawhar/envoy/internal/cipher/projectaccess.refusalCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}",
         "test": "print-projectaccess.refusalCode"
       },
       {
-        "holder": "github.com/sjawhar/envoy/cmd/agent-secrets-devrelay.cmdMachineApprove struct{RecordID string \"json:\\\"record_id\\\"\"; State redact.RemoteText \"json:\\\"state\\\"\"}",
+        "holder": "github.com/sjawhar/envoy/cmd/cipher-devrelay.cmdMachineApprove struct{RecordID string \"json:\\\"record_id\\\"\"; State redact.RemoteText \"json:\\\"state\\\"\"}",
         "test": "print-devrelay.cmdMachineApprove.lookup"
       },
       {
@@ -223,10 +223,10 @@
     ],
     "reflection": [
       {
-        "file": "packages/envoy/cmd/agent-secrets/secret_signal_linux.go",
-        "function": "github.com/sjawhar/envoy/cmd/agent-secrets.sigaction",
+        "file": "packages/envoy/cmd/cipher/secret_signal_linux.go",
+        "function": "github.com/sjawhar/envoy/cmd/cipher.sigaction",
         "operands": [
-          "*github.com/sjawhar/envoy/cmd/agent-secrets.linuxSigaction",
+          "*github.com/sjawhar/envoy/cmd/cipher.linuxSigaction",
           "unsafe.Pointer"
         ],
         "why": "rt_sigaction's struct, passed to the system call by address"
@@ -299,19 +299,19 @@
       {
         "row": "site-ts-token-type-minted",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
+        "files": ["packages/cipher-client/src/__tests__/boundary-leaks.test.ts"],
         "capture": "leak"
       },
       {
         "row": "site-ts-issuer-said",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
+        "files": ["packages/cipher-client/src/__tests__/boundary-leaks.test.ts"],
         "capture": "leak"
       },
       {
         "row": "site-ts-signin-ended",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
+        "files": ["packages/cipher-client/src/__tests__/boundary-leaks.test.ts"],
         "capture": "leak"
       },
       {
@@ -336,7 +336,7 @@
         "row": "site-gcloud-stderr",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": [
-          "packages/envoy/cmd/agent-secrets/remote_boundary_test.go",
+          "packages/envoy/cmd/cipher/remote_boundary_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.gcloud-sign-in"
@@ -345,7 +345,7 @@
         "row": "site-gcp-userinfo",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": [
-          "packages/envoy/cmd/agent-secrets/remote_boundary_test.go",
+          "packages/envoy/cmd/cipher/remote_boundary_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.userinfo"
@@ -354,7 +354,7 @@
         "row": "site-gcp-secret-manager-token",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": [
-          "packages/envoy/cmd/agent-secrets/secret_gcp_token_refusal_test.go",
+          "packages/envoy/cmd/cipher/secret_gcp_token_refusal_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.secret-manager-token"
@@ -363,7 +363,7 @@
         "row": "leak-proxy-echo-impersonation",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/brokerclient/proxy_echo_test.go",
+          "packages/envoy/internal/cipherclient/proxy_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokerclient.proxy-echo-impersonation"
@@ -399,7 +399,7 @@
         "row": "leak-brokertest-client.go_ApproveMachineLogin_decision_answered_200",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.proxy-echo/client.go-ApproveMachineLogin-decision-answered-200"
@@ -408,7 +408,7 @@
         "row": "leak-brokertest-client.go_ApproveMachineLogin_decision_refused",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.proxy-echo/client.go-ApproveMachineLogin-decision-refused"
@@ -417,7 +417,7 @@
         "row": "leak-brokertest-client.go_ApproveMachineLogin_lookup_answered_200",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.proxy-echo/client.go-ApproveMachineLogin-lookup-answered-200"
@@ -426,7 +426,7 @@
         "row": "leak-brokertest-client.go_ApproveMachineLogin_lookup_refused",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.proxy-echo/client.go-ApproveMachineLogin-lookup-refused"
@@ -435,7 +435,7 @@
         "row": "leak-brokertest-client.go_AskForAgentSecret_answered_200",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.proxy-echo/client.go-AskForAgentSecret-answered-200"
@@ -444,7 +444,7 @@
         "row": "leak-brokertest-client.go_DeviceLogin_refused",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.proxy-echo/client.go-DeviceLogin-refused"
@@ -453,7 +453,7 @@
         "row": "leak-brokertest-client.go_EnrollSession_answered_201",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.proxy-echo/client.go-EnrollSession-answered-201"
@@ -462,7 +462,7 @@
         "row": "leak-brokertest-client.go_EnrollSession_refused",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.proxy-echo/client.go-EnrollSession-refused"
@@ -471,7 +471,7 @@
         "row": "leak-brokertest-client.go_GrantValues_answered_200",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.proxy-echo/client.go-GrantValues-answered-200"
@@ -480,7 +480,7 @@
         "row": "leak-brokertest-client.go_GrantValues_refused",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.proxy-echo/client.go-GrantValues-refused"
@@ -489,7 +489,7 @@
         "row": "leak-brokertest-client.go_RequestAgentSecret_refused",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.proxy-echo/client.go-RequestAgentSecret-refused"
@@ -498,7 +498,7 @@
         "row": "leak-brokertest-client.go_Refresh",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.proxy-echo/client.go-Refresh"
@@ -564,7 +564,7 @@
         "row": "split-refusal-helper",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
-          "packages/envoy/internal/broker/helper/oauth_refusal_split_test.go",
+          "packages/envoy/internal/cipher/helper/oauth_refusal_split_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "helper.split-refusal"
@@ -1457,7 +1457,7 @@
         "row": "error-json-brokertest-echo-member",
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_error_json_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_error_json_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.error-json/echo-member"
@@ -1466,7 +1466,7 @@
         "row": "error-json-brokertest-error-quotes-url",
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_error_json_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_error_json_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.error-json/error-quotes-url"
@@ -1475,7 +1475,7 @@
         "row": "error-json-brokertest-error-echoes-token",
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_error_json_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_error_json_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.error-json/error-echoes-token"
@@ -1484,7 +1484,7 @@
         "row": "error-json-brokertest-code-quotes-url",
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
         "files": [
-          "packages/envoy/internal/broker/brokertest/answertext_error_json_test.go",
+          "packages/envoy/internal/cipher/ciphertest/answertext_error_json_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokertest.error-json/code-quotes-url"
@@ -1592,7 +1592,7 @@
         "row": "brokerclient-trade-echo",
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
         "files": [
-          "packages/envoy/internal/brokerclient/trade_echo_test.go",
+          "packages/envoy/internal/cipherclient/trade_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokerclient.trade-echo/run"
@@ -1600,7 +1600,7 @@
       {
         "row": "ts-request-echo-description",
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
-        "files": ["packages/broker-client/src/__tests__/request-echo.test.ts"],
+        "files": ["packages/cipher-client/src/__tests__/request-echo.test.ts"],
         "capture": "ts.request-echo/description/message"
       },
       {
@@ -1652,7 +1652,7 @@
         "row": "record-userinfo-echo",
         "base": "0cef0dcfd204fd7769e6aadced8520abfbd57f4a",
         "files": [
-          "packages/envoy/cmd/agent-secrets/remote_boundary_test.go",
+          "packages/envoy/cmd/cipher/remote_boundary_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.userinfo"
@@ -1754,7 +1754,7 @@
         "row": "brokerclient-answer-echo-302",
         "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
         "files": [
-          "packages/envoy/internal/brokerclient/answer_echo_test.go",
+          "packages/envoy/internal/cipherclient/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokerclient.answer-echo/302-words"
@@ -1763,7 +1763,7 @@
         "row": "brokerclient-answer-echo-502",
         "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
         "files": [
-          "packages/envoy/internal/brokerclient/answer_echo_test.go",
+          "packages/envoy/internal/cipherclient/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokerclient.answer-echo/502-words"
@@ -1772,7 +1772,7 @@
         "row": "brokerclient-answer-echo-token-type",
         "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
         "files": [
-          "packages/envoy/internal/brokerclient/answer_echo_test.go",
+          "packages/envoy/internal/cipherclient/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokerclient.answer-echo/200-token-type"
@@ -1781,7 +1781,7 @@
         "row": "brokerclient-answer-echo-credential-expires-at",
         "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
         "files": [
-          "packages/envoy/internal/brokerclient/answer_echo_test.go",
+          "packages/envoy/internal/cipherclient/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "brokerclient.answer-echo/200-credential-expires-at"
@@ -1790,7 +1790,7 @@
         "row": "agentsecrets-answer-echo-body",
         "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
         "files": [
-          "packages/envoy/cmd/agent-secrets/answer_echo_test.go",
+          "packages/envoy/cmd/cipher/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.answer-echo/502-page-echoes-body"
@@ -1799,7 +1799,7 @@
         "row": "agentsecrets-answer-echo-proof",
         "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
         "files": [
-          "packages/envoy/cmd/agent-secrets/answer_echo_test.go",
+          "packages/envoy/cmd/cipher/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.answer-echo/401-envelope-echoes-proof"
@@ -1808,7 +1808,7 @@
         "row": "agentsecrets-answer-echo-terminal-proof",
         "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
         "files": [
-          "packages/envoy/cmd/agent-secrets/answer_echo_test.go",
+          "packages/envoy/cmd/cipher/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.answer-echo/403-terminal-envelope-echoes-proof/renew-stderr"
@@ -1817,7 +1817,7 @@
         "row": "devrelay-answer-echo-words",
         "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
         "files": [
-          "packages/envoy/cmd/agent-secrets-devrelay/answer_echo_test.go",
+          "packages/envoy/cmd/cipher-devrelay/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets-devrelay.answer-echo/words"
@@ -1826,7 +1826,7 @@
         "row": "devrelay-answer-echo-code",
         "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
         "files": [
-          "packages/envoy/cmd/agent-secrets-devrelay/answer_echo_test.go",
+          "packages/envoy/cmd/cipher-devrelay/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets-devrelay.answer-echo/code"
@@ -1907,7 +1907,7 @@
         "row": "agentsecrets-page-references",
         "base": "63bd1880951d45cdf0874ad5c722143e827c3528",
         "files": [
-          "packages/envoy/cmd/agent-secrets/answer_echo_test.go",
+          "packages/envoy/cmd/cipher/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.page-references/named"
@@ -1916,7 +1916,7 @@
         "row": "helper-decode-echo",
         "base": "2a4911c83e03e3bb1b8f895c960fa30b1fc1126a",
         "files": [
-          "packages/envoy/internal/broker/helper/decode_echo_test.go",
+          "packages/envoy/internal/cipher/helper/decode_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "helper.decode-echo/renew"
@@ -1925,7 +1925,7 @@
         "row": "agentsecrets-decode-echo",
         "base": "2a4911c83e03e3bb1b8f895c960fa30b1fc1126a",
         "files": [
-          "packages/envoy/cmd/agent-secrets/answer_echo_test.go",
+          "packages/envoy/cmd/cipher/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.decode-echo"
@@ -1934,7 +1934,7 @@
         "row": "dispatch-agentsecrets-answer-echo",
         "base": "2a4911c83e03e3bb1b8f895c960fa30b1fc1126a",
         "files": [
-          "packages/envoy/internal/dispatch/agentsecrets/answer_echo_test.go",
+          "packages/envoy/internal/dispatch/cipher/answer_echo_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "dispatch-agentsecrets.answer-echo"
@@ -2033,17 +2033,17 @@
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
       },
       {
-        "file": "packages/envoy/internal/broker/helper/broker.go",
+        "file": "packages/envoy/internal/cipher/helper/broker.go",
         "callee": "(net/http.RoundTripper).RoundTrip",
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
       },
       {
-        "file": "packages/envoy/internal/brokerclient/device.go",
+        "file": "packages/envoy/internal/cipherclient/device.go",
         "callee": "(net/http.RoundTripper).RoundTrip",
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
       },
       {
-        "file": "packages/envoy/internal/brokerclient/dpop.go",
+        "file": "packages/envoy/internal/cipherclient/dpop.go",
         "callee": "(net/http.RoundTripper).RoundTrip",
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
       },
@@ -2114,11 +2114,6 @@
           "why": "retrieve is the *oauth2.RetrieveError redact.OAuth2 answered, whose ErrorCode the boundary holds as the rule's reading with every credential the exchange's record names redacted (newOAuthAnswer), and empty where no record covers it: the code holds no word of the request"
         },
         {
-          "file": "packages/envoy/cmd/agent-secrets/secret_gcp.go",
-          "function": "github.com/sjawhar/envoy/cmd/agent-secrets.runGcloud",
-          "why": "gcloud's standard error, the words of a process this command runs, which sends no request of this process: there is no request record to read, and the rule reads the words"
-        },
-        {
           "file": "packages/envoy/internal/dispatch/auth/callback.go",
           "function": "github.com/sjawhar/envoy/internal/dispatch/auth.ParseCallback",
           "why": "the OAuth callback's own query, which the person's browser sends to Dispatch: it answers no request Dispatch sent, so there is no request record to read, and the rule reads the words"
@@ -2137,9 +2132,9 @@
     {
       "id": "r4-refusal-words",
       "requirement": "r4-unchanged",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestARefusalCarriesTheBrokersWordsThroughTheRedaction",
-      "production": "brokerclient.RefusedError"
+      "production": "cipherclient.RefusedError"
     },
     {
       "id": "r4-clean-url-error",
@@ -2181,68 +2176,68 @@
       "requirement": "r4-unchanged",
       "package": "./brokeraddr",
       "test": "TestAnAnswersWordsPrintOnlyBesideACleanAddress",
-      "production": "brokeraddr.Address.Words"
+      "production": "cipheraddr.Address.Words"
     },
     {
       "id": "e2e-brokerclient-renewal-log",
       "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestTheRenewalLoopLogsTheBrokersWordsAsTheRuleReadsThem",
-      "production": "brokerclient.Client.Run: the line prints the refusal through redact.Error, which reads its words again; the sentence's and sanitized's rows each hold one of the two"
+      "production": "cipherclient.Client.Run: the line prints the refusal through redact.Error, which reads its words again; the sentence's and sanitized's rows each hold one of the two"
     },
     {
       "id": "e2e-helper-stopped-trade",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/helper",
+      "package": "./internal/cipher/helper",
       "test": "TestTheStoppedTradeLogsTheBrokersWordsAsTheRuleReadsThem",
-      "production": "helper.Broker.Start: the ERROR line prints through brokeraddr.Address.Error; the sentence's and sanitized's rows each hold one of the two"
+      "production": "helper.Broker.Start: the ERROR line prints through cipheraddr.Address.Error; the sentence's and sanitized's rows each hold one of the two"
     },
     {
       "id": "e2e-helper-login",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/helper",
+      "package": "./internal/cipher/helper",
       "test": "TestALoginRefusalPrintsNoCredentialItsDescriptionRepeats",
       "production": "helper.oauthBrokerError"
     },
     {
       "id": "e2e-helper-enrol",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/helper",
+      "package": "./internal/cipher/helper",
       "test": "TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat",
       "production": "helper.Server.enrollLoop"
     },
     {
       "id": "e2e-agent-secrets-withheld",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestABrokerRefusalPrintsNoCredentialItsWordsRepeat",
       "production": "agent-secrets status, cmdEnroll --pod"
     },
     {
       "id": "held-refused-error",
       "requirement": "r2-held",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestARefusalPrintsTheBrokersWordsAsTheRuleReadsThem",
       "production": "%s %q %v %+v %#v %x %X, Error(), LogValue, slog, held in an unexported field"
     },
     {
       "id": "held-broker-error",
       "requirement": "r2-held",
-      "package": "./internal/broker/helper",
+      "package": "./internal/cipher/helper",
       "test": "TestABrokerErrorPrintsTheBrokersWordsAsTheRuleReadsThem",
       "production": "%s %q %v %+v %#v %x %X, Error(), LogValue, slog, held in an unexported field"
     },
     {
       "id": "held-agent-secrets-api-error",
       "requirement": "r2-held",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestAStatusRefusalPrintsTheBrokersWordsAsTheRuleReadsThem",
       "production": "%s %q %v %+v %#v %x %X, Error(), LogValue, slog, held in an unexported field"
     },
     {
       "id": "held-devrelay-api-error",
       "requirement": "r2-held",
-      "package": "./cmd/agent-secrets-devrelay",
+      "package": "./cmd/cipher-devrelay",
       "test": "TestABrokerRefusalPrintsItsWordsAsTheRuleReadsThem",
       "production": "%s %q %v %+v %#v %x %X, Error(), LogValue, slog, held in an unexported field"
     },
@@ -2279,11 +2274,11 @@
       "requirement": "r3-each-site",
       "package": "./brokeraddr",
       "test": "TestEachMarkerNamesItsOwnCase",
-      "production": "(github.com/sjawhar/envoy/brokeraddr.Address).Words",
-      "function": "(github.com/sjawhar/envoy/brokeraddr.Address).Words",
-      "capture": "brokeraddr.Words",
+      "production": "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
+      "function": "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
+      "capture": "cipheraddr.Words",
       "mutation": {
-        "file": "packages/envoy/brokeraddr/brokeraddr.go",
+        "file": "packages/envoy/cipheraddr/brokeraddr.go",
         "preimage": "redact.Field(text)",
         "replacement": "text"
       }
@@ -2291,30 +2286,30 @@
     {
       "id": "agent-secrets-error-withheld",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestARefusalBesideAnAddressThatIsNotCleanPrintsItsStatusAlone",
-      "production": "(*github.com/sjawhar/envoy/cmd/agent-secrets.apiError).Error: its rule call is the box's own printer now"
+      "production": "(*github.com/sjawhar/envoy/cmd/cipher.apiError).Error: its rule call is the box's own printer now"
     },
     {
       "id": "agent-secrets-answered-code",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestAPodRefusalPrintsTheBrokersWordsAsTheRuleReadsThem",
-      "production": "(*github.com/sjawhar/envoy/cmd/agent-secrets.apiError).answered: its rule call is the box's own printer now"
+      "production": "(*github.com/sjawhar/envoy/cmd/cipher.apiError).answered: its rule call is the box's own printer now"
     },
     {
       "id": "agent-secrets-renew",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestARenewRefusalPrintsTheBrokersWordsAsTheRuleReadsThem",
-      "production": "github.com/sjawhar/envoy/cmd/agent-secrets.renewLoop: its rule call is the box's own printer now"
+      "production": "github.com/sjawhar/envoy/cmd/cipher.renewLoop: its rule call is the box's own printer now"
     },
     {
       "id": "brokerclient-signin",
       "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestARefusedSignInLogsTheBrokersCodeAsTheRuleReadsIt",
-      "production": "(*github.com/sjawhar/envoy/internal/brokerclient.SignInAuthority).Current: its rule call is the box's own printer now"
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.SignInAuthority).Current: its rule call is the box's own printer now"
     },
     {
       "id": "results-ci",
@@ -2515,9 +2510,9 @@
     {
       "id": "site-brokerclient-token-answer",
       "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestATokenAnswersFieldsAreReadOnlyThroughTheBox",
-      "production": "brokerclient.Client.read"
+      "production": "cipherclient.Client.read"
     },
     {
       "id": "site-listener-holder",
@@ -2571,9 +2566,9 @@
     {
       "id": "held-refusal-answer",
       "requirement": "r2-held",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestARefusalUnwrapsToTheRulesReadingAndItsCode",
-      "production": "brokerclient.RefusedError.Unwrap"
+      "production": "cipherclient.RefusedError.Unwrap"
     },
     {
       "id": "r4-refusal-code",
@@ -2585,7 +2580,7 @@
     {
       "id": "r4-refused-refresh",
       "requirement": "r4-unchanged",
-      "package": "./internal/broker/helper",
+      "package": "./internal/cipher/helper",
       "test": "TestARefusedRefreshTakesTheDropBranchWhateverItsWordsQuote",
       "production": "helper.Broker refresh, redact.RefusalCode"
     },
@@ -2599,9 +2594,9 @@
     {
       "id": "brokertoken-mint-refusal",
       "requirement": "r3-each-site",
-      "package": "./internal/brokertoken",
+      "package": "./internal/ciphertoken",
       "test": "TestARefusedMintPrintsNoCredentialItsRefusalEchoes",
-      "production": "brokertoken GoogleAccount.generateIDToken, redact.RemoteText.WithoutTokens"
+      "production": "ciphertoken GoogleAccount.generateIDToken, redact.RemoteText.WithoutTokens"
     },
     {
       "id": "boundary-oauth2",
@@ -2620,9 +2615,9 @@
     {
       "id": "r4-quoted-refusal",
       "requirement": "r4-unchanged",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestARefusalWhoseWordsTheRuleQuotesStillPrintsThemQuoted",
-      "production": "brokerclient.RefusedError"
+      "production": "cipherclient.RefusedError"
     },
     {
       "id": "boundary-answer-code",
@@ -2718,21 +2713,21 @@
     {
       "id": "site-gcloud-stderr",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestAGcloudRefusalPrintsNoneOfItsWords",
       "production": "gcpBackend.signInWithGcloud, runGcloud"
     },
     {
       "id": "site-gcp-userinfo",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestTheUserinfoReadPrintsNoneOfGooglesWords",
       "production": "gcpUserinfo, redact.TokenSource"
     },
     {
       "id": "site-gcp-secret-manager-token",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestASecretManagerCallsTokenRefusalPrintsNoneOfItsWords",
       "production": "gcpCredentialsFile, gcpClientDial, redact.TokenSource"
     },
@@ -2760,93 +2755,93 @@
     {
       "id": "leak-brokertest-client.go_ApproveMachineLogin_decision_answered_200",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoHelpers/client.go_ApproveMachineLogin_decision_answered_200",
-      "production": "brokertest.Client, excerpt.BodyForText"
+      "production": "ciphertest.Client, excerpt.BodyForText"
     },
     {
       "id": "leak-brokertest-client.go_ApproveMachineLogin_decision_refused",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoHelpers/client.go_ApproveMachineLogin_decision_refused",
-      "production": "brokertest.Client, excerpt.BodyForText"
+      "production": "ciphertest.Client, excerpt.BodyForText"
     },
     {
       "id": "leak-brokertest-client.go_ApproveMachineLogin_lookup_answered_200",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoHelpers/client.go_ApproveMachineLogin_lookup_answered_200",
-      "production": "brokertest.Client, excerpt.BodyForText"
+      "production": "ciphertest.Client, excerpt.BodyForText"
     },
     {
       "id": "leak-brokertest-client.go_ApproveMachineLogin_lookup_refused",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoHelpers/client.go_ApproveMachineLogin_lookup_refused",
-      "production": "brokertest.Client, excerpt.BodyForText"
+      "production": "ciphertest.Client, excerpt.BodyForText"
     },
     {
       "id": "leak-brokertest-client.go_AskForAgentSecret_answered_200",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoHelpers/client.go_AskForAgentSecret_answered_200",
-      "production": "brokertest.Client, excerpt.BodyForText"
+      "production": "ciphertest.Client, excerpt.BodyForText"
     },
     {
       "id": "leak-brokertest-client.go_DeviceLogin_refused",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoHelpers/client.go_DeviceLogin_refused",
-      "production": "brokertest.Client, excerpt.BodyForText"
+      "production": "ciphertest.Client, excerpt.BodyForText"
     },
     {
       "id": "leak-brokertest-client.go_EnrollSession_answered_201",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoHelpers/client.go_EnrollSession_answered_201",
-      "production": "brokertest.Client, excerpt.BodyForText"
+      "production": "ciphertest.Client, excerpt.BodyForText"
     },
     {
       "id": "leak-brokertest-client.go_EnrollSession_refused",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoHelpers/client.go_EnrollSession_refused",
-      "production": "brokertest.Client, excerpt.BodyForText"
+      "production": "ciphertest.Client, excerpt.BodyForText"
     },
     {
       "id": "leak-brokertest-client.go_GrantValues_answered_200",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoHelpers/client.go_GrantValues_answered_200",
-      "production": "brokertest.Client, excerpt.BodyForText"
+      "production": "ciphertest.Client, excerpt.BodyForText"
     },
     {
       "id": "leak-brokertest-client.go_GrantValues_refused",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoHelpers/client.go_GrantValues_refused",
-      "production": "brokertest.Client, excerpt.BodyForText"
+      "production": "ciphertest.Client, excerpt.BodyForText"
     },
     {
       "id": "leak-brokertest-client.go_RequestAgentSecret_refused",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoHelpers/client.go_RequestAgentSecret_refused",
-      "production": "brokertest.Client, excerpt.BodyForText"
+      "production": "ciphertest.Client, excerpt.BodyForText"
     },
     {
       "id": "leak-brokertest-client.go_Refresh",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoClientOAuth/client.go_Refresh",
-      "production": "brokertest.Client.Refresh, redact.OAuth2's answer"
+      "production": "ciphertest.Client.Refresh, redact.OAuth2's answer"
     },
     {
       "id": "site-brokertest-client.go_DeviceToken",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestProxyEchoClientOAuth/client.go_DeviceToken",
-      "production": "brokertest.Client.DeviceToken, redact.OAuth2's answer"
+      "production": "ciphertest.Client.DeviceToken, redact.OAuth2's answer"
     },
     {
       "id": "site-loadtest-own-refusal",
@@ -3054,9 +3049,9 @@
     {
       "id": "error-json-brokertest-echo-member",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestAnErrorJSONPrintsNoCredentialItHolds/echo-member",
-      "production": "brokertest answerText, excerpt.ErrorJSON"
+      "production": "ciphertest answerText, excerpt.ErrorJSON"
     },
     {
       "id": "error-json-loadtest-error-quotes-url",
@@ -3068,9 +3063,9 @@
     {
       "id": "error-json-brokertest-error-quotes-url",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestAnErrorJSONPrintsNoCredentialItHolds/error-quotes-url",
-      "production": "brokertest answerText, excerpt.ErrorJSON"
+      "production": "ciphertest answerText, excerpt.ErrorJSON"
     },
     {
       "id": "error-json-loadtest-error-echoes-token",
@@ -3082,9 +3077,9 @@
     {
       "id": "error-json-brokertest-error-echoes-token",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestAnErrorJSONPrintsNoCredentialItHolds/error-echoes-token",
-      "production": "brokertest answerText, excerpt.ErrorJSON"
+      "production": "ciphertest answerText, excerpt.ErrorJSON"
     },
     {
       "id": "error-json-loadtest-code-quotes-url",
@@ -3096,9 +3091,9 @@
     {
       "id": "error-json-brokertest-code-quotes-url",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/brokertest",
+      "package": "./internal/cipher/ciphertest",
       "test": "TestAnErrorJSONPrintsNoCredentialItHolds/code-quotes-url",
-      "production": "brokertest answerText, excerpt.ErrorJSON"
+      "production": "ciphertest answerText, excerpt.ErrorJSON"
     },
     {
       "id": "excerpt-error-json-field",
@@ -3138,21 +3133,21 @@
     {
       "id": "split-refusal-helper",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/helper",
+      "package": "./internal/cipher/helper",
       "test": "TestASplitRefusalPrintsNoCredentialItsWordsQuote",
       "production": "helper oauthBrokerError, redact.NewOAuthRefusal"
     },
     {
       "id": "split-refusal-machine-login",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestMachineLoginPrintsNoCredentialASplitRefusalQuotes",
       "production": "agent-secrets machine login, helper Login"
     },
     {
       "id": "split-refusal-remote",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/helper",
+      "package": "./internal/cipher/helper",
       "test": "TestASplitRefusalPrintsNoCredentialItsWordsQuote",
       "production": "github.com/sjawhar/envoy/internal/redact.NewOAuthRefusal",
       "function": "github.com/sjawhar/envoy/internal/redact.NewOAuthRefusal",
@@ -3474,16 +3469,16 @@
     {
       "id": "leak-proxy-echo-impersonation",
       "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestProxyEchoExternalAccountMintNamesThePageWithoutItsCredentials/impersonation",
-      "production": "brokerclient.ExternalAccountIdentity.Token, redact.RefusalClient"
+      "production": "cipherclient.ExternalAccountIdentity.Token, redact.RefusalClient"
     },
     {
       "id": "site-proxy-echo-sts",
       "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestProxyEchoExternalAccountMintNamesThePageWithoutItsCredentials/security_token_service",
-      "production": "brokerclient.ExternalAccountIdentity.Token, redact.RefusalClient"
+      "production": "cipherclient.ExternalAccountIdentity.Token, redact.RefusalClient"
     },
     {
       "id": "tokens-every-piece",
@@ -3600,7 +3595,7 @@
     {
       "id": "tokens-field-without",
       "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestATradeRefusalPrintsNoSubjectTokenItEchoes",
       "production": "github.com/sjawhar/envoy/internal/redact.fieldWithout",
       "function": "github.com/sjawhar/envoy/internal/redact.fieldWithout",
@@ -3614,7 +3609,7 @@
     {
       "id": "tokens-ruled-without",
       "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestATradeRefusalPrintsNoSubjectTokenItEchoes",
       "production": "github.com/sjawhar/envoy/internal/redact.ruledWithout",
       "function": "github.com/sjawhar/envoy/internal/redact.ruledWithout",
@@ -3845,55 +3840,55 @@
     {
       "id": "helper-proof-echo",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/helper",
+      "package": "./internal/cipher/helper",
       "test": "TestABrokerErrorPrintsNoProofItsAnswerEchoes",
       "production": "helper Broker.do, redact.Carried, RemoteText.WithoutTokens"
     },
     {
       "id": "brokerclient-trade-echo",
       "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestATradeRefusalPrintsNoSubjectTokenItEchoes",
-      "production": "brokerclient Client.post, redact.Carried, RemoteText.WithoutTokens"
+      "production": "cipherclient Client.post, redact.Carried, RemoteText.WithoutTokens"
     },
     {
       "id": "brokerclient-answer-echo-302",
       "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/302-words",
-      "production": "brokerclient Client.post: a 3xx's words, through the record taken once before the status switch (redact.Carried)"
+      "production": "cipherclient Client.post: a 3xx's words, through the record taken once before the status switch (redact.Carried)"
     },
     {
       "id": "brokerclient-answer-echo-502",
       "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/502-words",
-      "production": "brokerclient Client.post: a 5xx's words, through the record taken once before the status switch (redact.Carried)"
+      "production": "cipherclient Client.post: a 5xx's words, through the record taken once before the status switch (redact.Carried)"
     },
     {
       "id": "brokerclient-answer-echo-token-type",
       "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/200-token-type",
-      "production": "brokerclient Client.read: a refusal quotes no value the broker wrote"
+      "production": "cipherclient Client.read: a refusal quotes no value the broker wrote"
     },
     {
       "id": "brokerclient-answer-echo-credential-expires-at",
       "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestATradeAnswerPrintsNoSubjectTokenItEchoes/200-credential-expires-at",
-      "production": "brokerclient Client.read: a refusal quotes no value the broker wrote"
+      "production": "cipherclient Client.read: a refusal quotes no value the broker wrote"
     },
     {
       "id": "brokerclient-refusal-beside-credential",
       "requirement": "r4-unchanged",
-      "package": "./internal/brokerclient",
+      "package": "./internal/cipherclient",
       "test": "TestARefusalBesideACredentialedAddressPrintsNoneOfItsWords",
-      "production": "(*github.com/sjawhar/envoy/internal/brokerclient.Client).post: the refusal through the address's Error (brokeraddr.Address.Error), which withholds its words beside an address that is not clean",
-      "function": "(*github.com/sjawhar/envoy/internal/brokerclient.Client).post",
+      "production": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post: the refusal through the address's Error (cipheraddr.Address.Error), which withholds its words beside an address that is not clean",
+      "function": "(*github.com/sjawhar/envoy/internal/cipherclient.Client).post",
       "capture": "brokerclient.refusal-beside-credential",
       "mutation": {
-        "file": "packages/envoy/internal/brokerclient/brokerclient.go",
+        "file": "packages/envoy/internal/cipherclient/brokerclient.go",
         "preimage": "c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, said, described))",
         "replacement": "newRefusedError(refusedIdentity(c.subject), resp.StatusCode, said, described)"
       }
@@ -3901,35 +3896,35 @@
     {
       "id": "agentsecrets-answer-echo-body",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes/502-page-echoes-body",
       "production": "agent-secrets client.doStatus: a page that is no envelope, through the record (redact.Carried)"
     },
     {
       "id": "agentsecrets-answer-echo-proof",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes/401-envelope-echoes-proof",
       "production": "agent-secrets client.doStatus and apiError: the envelope's words, through the record (redact.Carried)"
     },
     {
       "id": "agentsecrets-answer-echo-terminal-proof",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestARenewalRefusalPrintsNoCredentialItsAnswerEchoes/403-terminal-envelope-echoes-proof",
       "production": "agent-secrets renewLoop's permanent refusal line, apiError.words, through the record (redact.Carried)"
     },
     {
       "id": "devrelay-answer-echo-words",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets-devrelay",
+      "package": "./cmd/cipher-devrelay",
       "test": "TestAListedCallersRefusalPrintsNoBearerItsAnswerEchoes/words",
       "production": "agent-secrets-devrelay apiClient.do: the envelope's words, through the record (redact.Carried)"
     },
     {
       "id": "devrelay-answer-echo-code",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets-devrelay",
+      "package": "./cmd/cipher-devrelay",
       "test": "TestAListedCallersRefusalPrintsNoBearerItsAnswerEchoes/code",
       "production": "agent-secrets-devrelay apiClient.do: the envelope's code, through the record (redact.Carried)"
     },
@@ -3992,14 +3987,14 @@
     {
       "id": "helper-decode-echo",
       "requirement": "r3-each-site",
-      "package": "./internal/broker/helper",
+      "package": "./internal/cipher/helper",
       "test": "TestAnAcceptedAnswerThatDoesNotDecodePrintsNoProofItEchoes",
-      "production": "(*github.com/sjawhar/envoy/internal/broker/helper.Broker).do: an accepted answer decodes through redact.Answer.Decode, whose error quotes no value"
+      "production": "(*github.com/sjawhar/envoy/internal/cipher/helper.Broker).do: an accepted answer decodes through redact.Answer.Decode, whose error quotes no value"
     },
     {
       "id": "agentsecrets-decode-echo",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestARenewalAnswerThatDoesNotDecodePrintsNoPodTokenItEchoes",
       "production": "agent-secrets client.RenewEnrollment: the renewal's answer decodes through redact.Answer.Decode, whose error quotes no value"
     },
@@ -4013,7 +4008,7 @@
     {
       "id": "agentsecrets-page-references",
       "requirement": "r1-fail-closed",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestARenewalRefusalPrintsNoCredentialItsPagesReferencesHide",
       "production": "redact.Remote's step 0 (decodeSeparators) through agent-secrets client.doStatus's page, apiError and renewLoop"
     },
@@ -4055,7 +4050,7 @@
     {
       "id": "record-userinfo-echo",
       "requirement": "r3-each-site",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestTheUserinfoReadPrintsNoneOfGooglesWords/a_refused_userinfo_read",
       "production": "gcpUserinfo, redact.Carried off the answer"
     },
@@ -4158,18 +4153,18 @@
       "production": "redact.RemoteText: String, GoString, Format, MarshalJSON, MarshalText, LogValue"
     },
     {
-      "id": "print-brokerclient.RefusedError",
+      "id": "print-cipherclient.RefusedError",
       "requirement": "r2-held",
-      "package": "./internal/brokerclient",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/brokerclient.RefusedError",
-      "production": "github.com/sjawhar/envoy/internal/brokerclient.RefusedError: every printer at every placement"
+      "package": "./internal/cipherclient",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/cipherclient.RefusedError",
+      "production": "github.com/sjawhar/envoy/internal/cipherclient.RefusedError: every printer at every placement"
     },
     {
-      "id": "print-brokerclient.tokenAnswer",
+      "id": "print-cipherclient.tokenAnswer",
       "requirement": "r2-held",
-      "package": "./internal/brokerclient",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/brokerclient.tokenAnswer",
-      "production": "github.com/sjawhar/envoy/internal/brokerclient.tokenAnswer: every printer at every placement"
+      "package": "./internal/cipherclient",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/cipherclient.tokenAnswer",
+      "production": "github.com/sjawhar/envoy/internal/cipherclient.tokenAnswer: every printer at every placement"
     },
     {
       "id": "print-oidc.CodeFlow.Revoke.body",
@@ -4181,44 +4176,44 @@
     {
       "id": "print-helper.BrokerError",
       "requirement": "r2-held",
-      "package": "./internal/broker/helper",
+      "package": "./internal/cipher/helper",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/helper.BrokerError",
-      "production": "github.com/sjawhar/envoy/internal/broker/helper.BrokerError: every printer at every placement"
+      "production": "github.com/sjawhar/envoy/internal/cipher/helper.BrokerError: every printer at every placement"
     },
     {
       "id": "print-helper.Broker.do.envelope",
       "requirement": "r2-held",
-      "package": "./internal/broker/helper",
+      "package": "./internal/cipher/helper",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/helper.Broker.do.envelope",
-      "production": "(*github.com/sjawhar/envoy/internal/broker/helper.Broker).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
+      "production": "(*github.com/sjawhar/envoy/internal/cipher/helper.Broker).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
     },
     {
       "id": "print-agent-secrets.apiError",
       "requirement": "r2-held",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.apiError",
-      "production": "github.com/sjawhar/envoy/cmd/agent-secrets.apiError: every printer at every placement"
+      "production": "github.com/sjawhar/envoy/cmd/cipher.apiError: every printer at every placement"
     },
     {
       "id": "print-agent-secrets.client.doStatus.envelope",
       "requirement": "r2-held",
-      "package": "./cmd/agent-secrets",
+      "package": "./cmd/cipher",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/agent-secrets.client.doStatus.envelope",
-      "production": "(*github.com/sjawhar/envoy/cmd/agent-secrets.client).doStatus struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}: every printer at every placement"
+      "production": "(*github.com/sjawhar/envoy/cmd/cipher.client).doStatus struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"; AnswerID redact.RemoteText \"json:\\\"answer_id\\\"\"}: every printer at every placement"
     },
     {
       "id": "print-devrelay.apiError",
       "requirement": "r2-held",
-      "package": "./cmd/agent-secrets-devrelay",
+      "package": "./cmd/cipher-devrelay",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/devrelay.apiError",
-      "production": "github.com/sjawhar/envoy/cmd/agent-secrets-devrelay.apiError: every printer at every placement"
+      "production": "github.com/sjawhar/envoy/cmd/cipher-devrelay.apiError: every printer at every placement"
     },
     {
       "id": "print-devrelay.apiClient.do.envelope",
       "requirement": "r2-held",
-      "package": "./cmd/agent-secrets-devrelay",
+      "package": "./cmd/cipher-devrelay",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/devrelay.apiClient.do.envelope",
-      "production": "(*github.com/sjawhar/envoy/cmd/agent-secrets-devrelay.apiClient).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
+      "production": "(*github.com/sjawhar/envoy/cmd/cipher-devrelay.apiClient).do struct{Code redact.RemoteText \"json:\\\"code\\\"\"; Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
     },
     {
       "id": "print-auth.CallbackError",
@@ -4237,16 +4232,16 @@
     {
       "id": "print-projectaccess.refusalCode",
       "requirement": "r2-held",
-      "package": "./internal/broker/projectaccess",
+      "package": "./internal/cipher/projectaccess",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/projectaccess.refusalCode",
-      "production": "github.com/sjawhar/envoy/internal/broker/projectaccess.refusalCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}: every printer at every placement"
+      "production": "github.com/sjawhar/envoy/internal/cipher/projectaccess.refusalCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}: every printer at every placement"
     },
     {
       "id": "print-devrelay.cmdMachineApprove.lookup",
       "requirement": "r2-held",
-      "package": "./cmd/agent-secrets-devrelay",
+      "package": "./cmd/cipher-devrelay",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/devrelay.cmdMachineApprove.lookup",
-      "production": "github.com/sjawhar/envoy/cmd/agent-secrets-devrelay.cmdMachineApprove struct{RecordID string \"json:\\\"record_id\\\"\"; State redact.RemoteText \"json:\\\"state\\\"\"}: every printer at every placement"
+      "production": "github.com/sjawhar/envoy/cmd/cipher-devrelay.cmdMachineApprove struct{RecordID string \"json:\\\"record_id\\\"\"; State redact.RemoteText \"json:\\\"state\\\"\"}: every printer at every placement"
     },
     {
       "id": "print-going.chatWireError",
@@ -4405,13 +4400,13 @@
     {
       "id": "dispatch-agentsecrets-answer-echo",
       "requirement": "r3-each-site",
-      "package": "./internal/dispatch/agentsecrets",
+      "package": "./internal/dispatch/cipher",
       "test": "TestARelayedRefusalCarriesNoTokenItsAnswerEchoes",
-      "production": "(*github.com/sjawhar/envoy/internal/dispatch/agentsecrets.Client).do",
-      "function": "(*github.com/sjawhar/envoy/internal/dispatch/agentsecrets.Client).do",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do",
       "capture": "dispatch-agentsecrets.answer-echo",
       "mutation": {
-        "file": "packages/envoy/internal/dispatch/agentsecrets/client.go",
+        "file": "packages/envoy/internal/dispatch/cipher/client.go",
         "preimage": "[]byte(redact.Tokens(raw.String(), -1, redact.Carried(response)...))",
         "replacement": "[]byte(raw.String() + redact.Tokens(\"\", -1, redact.Carried(response)...))"
       }
@@ -4435,49 +4430,49 @@
     {
       "id": "e2e-ts-pending",
       "requirement": "r3-each-site",
-      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "file": "packages/cipher-client/src/__tests__/remote-words.test.ts",
       "test": "a registration still pending prints none of the refusal's words: user information and a query value",
       "production": "RegistrationPendingError.constructor"
     },
     {
       "id": "ts-refusal-code-alone",
       "requirement": "r3-each-site",
-      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "file": "packages/cipher-client/src/__tests__/remote-words.test.ts",
       "test": "a refusal prints none of the broker's words it does not know: the code, with no description",
       "production": "undefined: its rule call is the box's own printer now"
     },
     {
       "id": "ts-refusal-code",
       "requirement": "r3-each-site",
-      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "file": "packages/cipher-client/src/__tests__/remote-words.test.ts",
       "test": "a refusal prints none of the broker's words it does not know: the code, with a description",
       "production": "undefined: its rule call is the box's own printer now"
     },
     {
       "id": "ts-refusal-description",
       "requirement": "r3-each-site",
-      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "file": "packages/cipher-client/src/__tests__/remote-words.test.ts",
       "test": "a refusal prints none of the broker's words it does not know: the description: user information and a query value",
       "production": "undefined: its rule call is the box's own printer now"
     },
     {
       "id": "ts-credential-expires-at",
       "requirement": "r3-each-site",
-      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "file": "packages/cipher-client/src/__tests__/remote-words.test.ts",
       "test": "an answer's credential_expires_at is quoted nowhere: user information and a query value",
       "production": "undefined: its rule call is the box's own printer now"
     },
     {
       "id": "held-ts-refusal",
       "requirement": "r2-held",
-      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "file": "packages/cipher-client/src/__tests__/remote-words.test.ts",
       "test": "a refusal prints none of the broker's words it does not know: the description: words the rule cannot read",
       "production": "BrokerRefusedError, JSON.stringify, Bun.inspect"
     },
     {
       "id": "site-ts-token-answer",
       "requirement": "r3-each-site",
-      "file": "packages/broker-client/src/__tests__/remote-words.test.ts",
+      "file": "packages/cipher-client/src/__tests__/remote-words.test.ts",
       "test": "an answer whose credential_expires_at is not this grant's quotes none of it",
       "production": "BrokerTokenClient #read, RemoteText.date"
     },
@@ -4491,21 +4486,21 @@
     {
       "id": "site-ts-token-type-minted",
       "requirement": "r3-each-site",
-      "file": "packages/broker-client/src/__tests__/boundary-leaks.test.ts",
+      "file": "packages/cipher-client/src/__tests__/boundary-leaks.test.ts",
       "test": "a token type the library refuses prints neither the broker's words nor the token it minted",
       "production": "BrokerTokenClient #trade, #refusal"
     },
     {
       "id": "site-ts-issuer-said",
       "requirement": "r3-each-site",
-      "file": "packages/broker-client/src/__tests__/boundary-leaks.test.ts",
+      "file": "packages/cipher-client/src/__tests__/boundary-leaks.test.ts",
       "test": "an issuer's refusal whose a description quotes a credential's URL prints none of it",
       "production": "personIdentity issuerSaid"
     },
     {
       "id": "site-ts-signin-ended",
       "requirement": "r3-each-site",
-      "file": "packages/broker-client/src/__tests__/boundary-leaks.test.ts",
+      "file": "packages/cipher-client/src/__tests__/boundary-leaks.test.ts",
       "test": "a sign-in the issuer ended with words that quote a credential's URL prints none of them",
       "production": "personIdentity, SignInEndedError"
     },
@@ -4939,7 +4934,7 @@
     {
       "id": "ts-request-echo-description",
       "requirement": "r3-each-site",
-      "file": "packages/broker-client/src/__tests__/request-echo.test.ts",
+      "file": "packages/cipher-client/src/__tests__/request-echo.test.ts",
       "test": "a refusal whose description echoes the subject token prints none of it, and keeps its code",
       "production": "broker-client token-client, refusalFetch, LibraryError"
     },
@@ -4995,16 +4990,16 @@
     {
       "id": "print-broker-client.BrokerTokenClient",
       "requirement": "r2-held",
-      "file": "packages/broker-client/src/__tests__/holders-print.test.ts",
+      "file": "packages/cipher-client/src/__tests__/holders-print.test.ts",
       "test": "box print test: broker-client.BrokerTokenClient prints no secret by any printer at any placement",
-      "production": "packages/broker-client/src/token-client.ts#BrokerTokenClient: every printer at every placement"
+      "production": "packages/cipher-client/src/token-client.ts#BrokerTokenClient: every printer at every placement"
     },
     {
       "id": "print-broker-client.MadeBrokerClient",
       "requirement": "r2-held",
-      "file": "packages/broker-client/src/__tests__/holders-print.test.ts",
+      "file": "packages/cipher-client/src/__tests__/holders-print.test.ts",
       "test": "box print test: broker-client.MadeBrokerClient prints no secret by any printer at any placement",
-      "production": "packages/broker-client/src/environment.ts#MadeBrokerClient: every printer at every placement"
+      "production": "packages/cipher-client/src/environment.ts#MadeBrokerClient: every printer at every placement"
     },
     {
       "id": "print-envoy-client.Made",
@@ -5035,7 +5030,7 @@
       "guard": "e2e-helper-stopped-trade"
     },
     {
-      "site": "brokerclient's renewal loop line",
+      "site": "cipherclient's renewal loop line",
       "source": "the brief's probe",
       "guard": "e2e-brokerclient-renewal-log"
     },
@@ -5072,12 +5067,12 @@
     {
       "site": "brokerclient.go RefusedError, held",
       "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
-      "holder": "github.com/sjawhar/envoy/internal/brokerclient.RefusedError"
+      "holder": "github.com/sjawhar/envoy/internal/cipherclient.RefusedError"
     },
     {
       "site": "brokerclient.go tokenAnswer's error fields",
       "source": "the review of #4368 at f0d00b1c26, F7 surviving mutant",
-      "holder": "github.com/sjawhar/envoy/internal/brokerclient.tokenAnswer"
+      "holder": "github.com/sjawhar/envoy/internal/cipherclient.tokenAnswer"
     },
     {
       "site": "auth/callback.go CallbackError's code",
@@ -5211,7 +5206,7 @@
       "guard": "site-gcp-secret-manager-token"
     },
     {
-      "site": "brokerclient external_account impersonation, a page in the call's place echoing the access token the exchange minted",
+      "site": "cipherclient external_account impersonation, a page in the call's place echoing the access token the exchange minted",
       "source": "the proxy-echo rows at c40c4751f9",
       "guard": "leak-proxy-echo-impersonation"
     },
@@ -5231,62 +5226,62 @@
       "guard": "leak-loadtest-events.go_status_resolve"
     },
     {
-      "site": "brokertest client.go ApproveMachineLogin decision answered 200, a gateway's page echoing the request's credentials",
+      "site": "ciphertest client.go ApproveMachineLogin decision answered 200, a gateway's page echoing the request's credentials",
       "source": "A2's excerpt rows at 3ef907d2ec",
       "guard": "leak-brokertest-client.go_ApproveMachineLogin_decision_answered_200"
     },
     {
-      "site": "brokertest client.go ApproveMachineLogin decision refused, a gateway's page echoing the request's credentials",
+      "site": "ciphertest client.go ApproveMachineLogin decision refused, a gateway's page echoing the request's credentials",
       "source": "A2's excerpt rows at 3ef907d2ec",
       "guard": "leak-brokertest-client.go_ApproveMachineLogin_decision_refused"
     },
     {
-      "site": "brokertest client.go ApproveMachineLogin lookup answered 200, a gateway's page echoing the request's credentials",
+      "site": "ciphertest client.go ApproveMachineLogin lookup answered 200, a gateway's page echoing the request's credentials",
       "source": "A2's excerpt rows at 3ef907d2ec",
       "guard": "leak-brokertest-client.go_ApproveMachineLogin_lookup_answered_200"
     },
     {
-      "site": "brokertest client.go ApproveMachineLogin lookup refused, a gateway's page echoing the request's credentials",
+      "site": "ciphertest client.go ApproveMachineLogin lookup refused, a gateway's page echoing the request's credentials",
       "source": "A2's excerpt rows at 3ef907d2ec",
       "guard": "leak-brokertest-client.go_ApproveMachineLogin_lookup_refused"
     },
     {
-      "site": "brokertest client.go AskForAgentSecret answered 200, a gateway's page echoing the request's credentials",
+      "site": "ciphertest client.go AskForAgentSecret answered 200, a gateway's page echoing the request's credentials",
       "source": "A2's excerpt rows at 3ef907d2ec",
       "guard": "leak-brokertest-client.go_AskForAgentSecret_answered_200"
     },
     {
-      "site": "brokertest client.go DeviceLogin refused, a gateway's page echoing the request's credentials",
+      "site": "ciphertest client.go DeviceLogin refused, a gateway's page echoing the request's credentials",
       "source": "A2's excerpt rows at 3ef907d2ec",
       "guard": "leak-brokertest-client.go_DeviceLogin_refused"
     },
     {
-      "site": "brokertest client.go EnrollSession answered 201, a gateway's page echoing the request's credentials",
+      "site": "ciphertest client.go EnrollSession answered 201, a gateway's page echoing the request's credentials",
       "source": "A2's excerpt rows at 3ef907d2ec",
       "guard": "leak-brokertest-client.go_EnrollSession_answered_201"
     },
     {
-      "site": "brokertest client.go EnrollSession refused, a gateway's page echoing the request's credentials",
+      "site": "ciphertest client.go EnrollSession refused, a gateway's page echoing the request's credentials",
       "source": "A2's excerpt rows at 3ef907d2ec",
       "guard": "leak-brokertest-client.go_EnrollSession_refused"
     },
     {
-      "site": "brokertest client.go GrantValues answered 200, a gateway's page echoing the request's credentials",
+      "site": "ciphertest client.go GrantValues answered 200, a gateway's page echoing the request's credentials",
       "source": "A2's excerpt rows at 3ef907d2ec",
       "guard": "leak-brokertest-client.go_GrantValues_answered_200"
     },
     {
-      "site": "brokertest client.go GrantValues refused, a gateway's page echoing the request's credentials",
+      "site": "ciphertest client.go GrantValues refused, a gateway's page echoing the request's credentials",
       "source": "A2's excerpt rows at 3ef907d2ec",
       "guard": "leak-brokertest-client.go_GrantValues_refused"
     },
     {
-      "site": "brokertest client.go RequestAgentSecret refused, a gateway's page echoing the request's credentials",
+      "site": "ciphertest client.go RequestAgentSecret refused, a gateway's page echoing the request's credentials",
       "source": "A2's excerpt rows at 3ef907d2ec",
       "guard": "leak-brokertest-client.go_RequestAgentSecret_refused"
     },
     {
-      "site": "brokertest client.go Refresh, a gateway's page echoing the refresh token and the DPoP proof",
+      "site": "ciphertest client.go Refresh, a gateway's page echoing the refresh token and the DPoP proof",
       "source": "A2's excerpt rows, red at c40c4751f9",
       "guard": "leak-brokertest-client.go_Refresh"
     },
@@ -5527,7 +5522,7 @@
       "guard": "error-json-loadtest-echo-member"
     },
     {
-      "site": "brokertest answerText, a JSON body whose \"error\" is a string, printed whole (red team)",
+      "site": "ciphertest answerText, a JSON body whose \"error\" is a string, printed whole (red team)",
       "source": "the review of #4368 at db7e4a0226",
       "guard": "error-json-brokertest-echo-member"
     },
@@ -5567,7 +5562,7 @@
       "guard": "helper-proof-echo"
     },
     {
-      "site": "brokerclient trade, a description echoing the subject token (red team)",
+      "site": "cipherclient trade, a description echoing the subject token (red team)",
       "source": "the review of #4368 at db7e4a0226",
       "guard": "brokerclient-trade-echo"
     },
@@ -5612,12 +5607,12 @@
       "guard": "boundary-url-error-url"
     },
     {
-      "site": "brokerclient.(*Client).post: a 3xx or 5xx answer's words printed with no request record",
+      "site": "cipherclient.(*Client).post: a 3xx or 5xx answer's words printed with no request record",
       "source": "the review of #4368 at 63bd188095, finding 1",
       "guard": "brokerclient-answer-echo-502"
     },
     {
-      "site": "brokerclient.(*Client).read: token_type, credential_expires_at and expires_in quoted with no request record",
+      "site": "cipherclient.(*Client).read: token_type, credential_expires_at and expires_in quoted with no request record",
       "source": "the review of #4368 at 63bd188095, finding 2",
       "guard": "brokerclient-answer-echo-token-type"
     },

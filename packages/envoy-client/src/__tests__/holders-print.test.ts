@@ -6,14 +6,14 @@
 // test builds values of their shapes.
 
 import { afterAll, expect, test } from "bun:test";
-import { newDpopKey } from "@legion/broker-client/dpop";
-import type { TokenSource } from "@legion/broker-client/source";
-import { BrokerTokenClient } from "@legion/broker-client/token-client";
-import { BrokerRefusedError } from "@legion/broker-client/token-errors";
+import { newDpopKey } from "@legion/cipher-client/dpop";
+import type { TokenSource } from "@legion/cipher-client/source";
+import { BrokerTokenClient } from "@legion/cipher-client/token-client";
+import { BrokerRefusedError } from "@legion/cipher-client/token-errors";
 import {
   POD_SESSION_NOT_REGISTERED,
   SUBJECT_TOKEN_TYPE_KUBERNETES,
-} from "@legion/broker-client/wire";
+} from "@legion/cipher-client/wire";
 import { type Holder, printTest, REMOTE_WORDS } from "@legion/test-fixtures/print-test";
 
 const SCRIPTED: TokenSource = {

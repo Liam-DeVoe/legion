@@ -1704,7 +1704,7 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *cipherclient.Author
 // the helper acts on, and with the broker's own words (the answer's error) as the address lets
 // them print: beside an address that is not clean, the broker, or whoever answers for that address,
 // can repeat the credential back in any text of its answer, so the refusal prints as its status
-// alone (BrokerError.withheld), as oauthBrokerError and brokerclient's token exchange print theirs.
+// alone (BrokerError.withheld), as oauthBrokerError and cipherclient's token exchange print theirs.
 // An accepted answer out cannot be decoded from is an error that names the member that did not
 // decode and quotes no value of the answer (redact.Answer.Decode).
 func (b *Broker) do(req *http.Request, ok []int, out any) error {
