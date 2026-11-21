@@ -319,6 +319,7 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("Margin | - | form | railShown || …", { reason: REASONS[4] }),
   ...answers("useDialog | - | form | (open) ? …", { reason: REASONS[12] }),
   ...answers("useDialog | - | form | if (!open) return …", { reason: REASONS[12] }),
+  ...answers("useDialog | - | form | if (open)", { reason: REASONS[12] }),
   ...answers(
     "useMarginSheet | - | form | if (ownerId !== undefined && window.matchMedia(COMPACT_VIEWPORT_QUERY).matches)",
     { reason: REASONS[9] }
