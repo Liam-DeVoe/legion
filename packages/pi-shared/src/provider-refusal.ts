@@ -12,9 +12,9 @@
  *
  * Every provider writes its own refusal text, and the host hands an extension the message the
  * provider left, not a code, so the texts below are matched as Oh My Pi writes them at the pinned
- * tag `v18.18.6-sami.20261117-013345`. The module reads its input as `unknown` and narrows it
- * field by field, as `./phase-stall` does: a host whose message shape differs falls through to
- * `clean` rather than throwing inside an event handler.
+ * tag. The module reads its input as `unknown` and narrows it field by field, as `./phase-stall`
+ * does: a host whose message shape differs falls through to `clean` rather than throwing inside an
+ * event handler.
  */
 
 import type { AgentEndEvent } from "./pi-types";
@@ -25,12 +25,12 @@ export type ProviderTurnOutcome =
   | { kind: "provider-error" };
 
 /** Anthropic's refusal text: `Refusal`, or `Refusal (<category>)`, either one optionally followed
- * by `: <explanation>` (`packages/ai/src/providers/anthropic.ts:3186-3191` at the pinned tag).
+ * by `: <explanation>` (`packages/ai/src/providers/anthropic.ts:3188-3193` at the pinned tag).
  * The category is bounded as the Google reasons below are, and for the same reason. */
 const ANTHROPIC_REFUSAL = /^Refusal(?: \(([^)]{0,200})\))?(?::|$)/;
 
 /** What OpenAI's own filter leaves: the chat completion's `finish_reason`
- * (`packages/ai/src/providers/openai-completions.ts:3072-3073` at the pinned tag) and the
+ * (`packages/ai/src/providers/openai-completions.ts:3075-3076` at the pinned tag) and the
  * responses API's incomplete reason. */
 const OPENAI_FILTER_TEXTS = [
   "Provider finish_reason: content_filter",
@@ -60,7 +60,7 @@ const GOOGLE_FILTER_REASONS: Record<string, true> = {
  * above the longest of them changes no answer and leaves the work linear in the text. */
 const GOOGLE_FINISH_REASON = /Generation failed with finish reason: ([A-Z_]{1,64})/;
 
-/** The prompt feedback Google returns in place of a candidate (`google-shared.ts:811` at the
+/** The prompt feedback Google returns in place of a candidate (`google-shared.ts:808-814` at the
  * pinned tag), and the same block as the Gemini-through-Droid provider words it. */
 const GOOGLE_PROMPT_BLOCKED = /Request blocked by Google \(([^)]{0,200})\)/;
 const GOOGLE_FILTERS_BLOCKED = /Generation was blocked by content filters \(([^)]{0,200})\)/;

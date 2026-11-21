@@ -137,8 +137,9 @@ var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/de
 // nothing, and a sha dir lacks holds nothing there as it does anywhere. An empty answer, a
 // repository with no branch and no tag, holds nothing. A git that cannot be run, that exits other
 // than 0, or that its bound stops is an error naming url, never a repository read as holding
-// nothing, and the error carries no credential: the URL it names and git's standard error it
-// quotes are each written without the user and password a URL can carry (withoutUserinfo).
+// nothing, and the error carries no credential: the URL it names is written without the user and
+// password a URL can carry (withoutUserinfo), and git's standard error it quotes is quoted as
+// gitSaid quotes it, with every URL's credentials taken out before the cap (redact.Tail).
 func (g *Guard) advertised(ctx context.Context, dir, url string) (commits, objects []string, err error) {
 	read := "git ls-remote " + withoutUserinfo(url)
 	bounded, cancel := context.WithTimeout(ctx, g.heldReadBound)

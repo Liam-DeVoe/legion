@@ -1120,7 +1120,7 @@ func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
 	})
 	// The cut falls where the token of a URL's userinfo would be, had the userinfo not been taken
 	// out of the whole of the standard error first: a cut there leaves the token's end quoted with
-	// no "://" before it for withoutUserinfo to find.
+	// no "://" before it for redact.URLCredentials to find.
 	t.Run("a cut that would fall inside a URL's credential quotes none of it", func(t *testing.T) {
 		line := "fatal: unable to access '" + credentialedURL + "': the host did not answer\n"
 		at := strings.Index(line, credentialToken) + len(credentialToken)/2

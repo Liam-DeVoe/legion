@@ -8,9 +8,9 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // gitPins is the configuration every git this package starts reads last: no hook and no
@@ -133,7 +133,8 @@ func PushName(remote string) string {
 // already hold, the author, the committer, each other header, such as the mergetag a merge of a
 // signed tag holds, the message, each added or renamed path, and each added line, and for a blob
 // or a tree a ref or a tag is at, which the destination does not already hold, each line of the
-// blob, or each path of the tree and each line of its files.
+// blob, or each path of the tree and each line of its files. Under a deployment that runs no
+// shared check (sharedCheck) the rules are the whole of it.
 //
 // The rules read no commit the destination already holds, which is a commit one of its branches
 // or tags reaches as the destination itself reports them at the push, nor a tag object, a blob or
@@ -148,23 +149,26 @@ func PushName(remote string) string {
 // publishes.
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
-	check, err := g.Resolve()
+	check, err := g.sharedCheck(what)
 	if err != nil {
-		return &SetupFailure{What: what, Why: whyNoCheck, Err: err}
-	}
-	var lines strings.Builder
-	for _, update := range req.Updates {
-		lines.WriteString(update.Line())
-		lines.WriteString("\n")
-	}
-	// bash runs the check rather than the check running itself: that is the shape git's own
-	// pre-push hook calls it in, and the one the check documents for a push.
-	if err := g.shared(ctx, what, child{
-		argv:  []string{"bash", check, req.Remote, req.URL},
-		dir:   req.Dir,
-		stdin: strings.NewReader(lines.String()),
-	}); err != nil {
 		return err
+	}
+	defer check.remove()
+	if check.path != "" {
+		var lines strings.Builder
+		for _, update := range req.Updates {
+			lines.WriteString(update.Line())
+			lines.WriteString("\n")
+		}
+		// bash runs the check rather than the check running itself: that is the shape git's own
+		// pre-push hook calls it in, and the one the check documents for a push.
+		if err := g.shared(ctx, what, child{
+			argv:  []string{"bash", check.path, req.Remote, req.URL},
+			dir:   req.Dir,
+			stdin: strings.NewReader(lines.String()),
+		}); err != nil {
+			return err
+		}
 	}
 	public, err := g.scanThrough(ctx, what, RepoFromURL(req.URL))
 	if err != nil {
@@ -403,28 +407,22 @@ func gitExited(what string, status int, stderr string) error {
 const gitErrorBytes = 4096
 
 // gitSaid is what a failure of a git quotes of the standard error git wrote (gitExited): stderr
-// less the user and password of each URL in it (withoutUserinfo), then trimmed and, past
-// gitErrorBytes, its last gitErrorBytes bytes, after the count of the bytes left out before them.
-// The user and password are taken out of the whole of stderr before it is cut: a lazy fetch of a
-// partial clone that fails names its promisor remote, and a read of a push's destination names the
-// URL git handed the hook, either of which can carry a token as `user:token@`, and a cut that fell
-// inside it would leave the token's end quoted without the "://" it is found by. The end is what
-// is kept because git writes its `fatal:` line last, after any warnings. The cut moves forward to
-// the start of a character, looking at most utf8.UTFMax bytes ahead and staying put where none
-// starts there, so a valid character is never split and an invalid run cannot take the whole quote.
+// trimmed and, past gitErrorBytes, its last gitErrorBytes bytes, after the count of the bytes left
+// out before them, cut by redact.Tail, which first takes the user and password and the query of
+// each URL out of the whole of it (redact.URLCredentials). They are taken out of the whole of
+// stderr before it is cut: a lazy fetch of a partial clone that fails names its promisor remote,
+// and a read of a push's destination names the URL git handed the hook, either of which can carry
+// a token as `user:token@` or in its query, and a cut that fell inside it would leave the token's
+// end quoted where the rule no longer finds it. The end is what is kept because git writes its
+// `fatal:` line last, after any warnings. The cut moves forward to the start of a character,
+// looking at most utf8.UTFMax bytes ahead and staying put where none starts there, so a valid
+// character is never split and an invalid run cannot take the whole quote.
 func gitSaid(stderr string) string {
-	said := strings.TrimSpace(withoutUserinfo(stderr))
-	if len(said) <= gitErrorBytes {
+	said, cut := redact.Tail(strings.TrimSpace(stderr), gitErrorBytes)
+	if cut == 0 {
 		return said
 	}
-	cut := len(said) - gitErrorBytes
-	for i := cut; i < cut+utf8.UTFMax; i++ {
-		if utf8.RuneStart(said[i]) {
-			cut = i
-			break
-		}
-	}
-	return fmt.Sprintf("(%d bytes left out) …%s", cut, said[cut:])
+	return fmt.Sprintf("(%d bytes left out) …%s", cut, said)
 }
 
 // userinfo is the user and password a URL with a scheme can carry, the "user:token@" of
@@ -433,8 +431,8 @@ func gitSaid(stderr string) string {
 var userinfo = regexp.MustCompile(`://[^/?#\s'"]*@`)
 
 // withoutUserinfo is text with the user and password of each URL in it taken out, so that
-// https://user:token@host/path reads https://host/path. It is what a failure that names a URL, or
-// that quotes git's own account of one, prints: the URL git hands a pre-push hook can carry a
+// https://user:token@host/path reads https://host/path. It is what a failure that names a URL
+// prints, git's own account of one being gitSaid's: the URL git hands a pre-push hook can carry a
 // token, and a failure is printed for whoever reads the log. A URL in git's scp form
 // (user@host:path) names a user and no password, and is left as it is.
 func withoutUserinfo(text string) string {
