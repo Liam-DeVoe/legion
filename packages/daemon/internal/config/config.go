@@ -520,7 +520,7 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 			file.Warnings = append(file.Warnings,
 				fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
 		default:
-			err = classify(key)
+			err = classify(root.Content[i])
 		}
 		if err != nil {
 			return fileConfig{}, err
@@ -530,14 +530,35 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 }
 
 // classify refuses an unmodelled key, naming its class.
-func classify(key string) error {
+func classify(node *yaml.Node) error {
+	key := node.Value
 	if reason, ok := tossedKeys[key]; ok {
 		return fmt.Errorf("unknown key %s: %s", key, reason)
 	}
 	if message, ok := migrationKeys[key]; ok {
 		return errors.New(message)
 	}
+	if !keyShape.MatchString(key) {
+		return errors.New(unknownKeyAt(node, ""))
+	}
 	return fmt.Errorf("unknown key %s", key)
+}
+
+// keyShape is the shape of a name a configuration file could mean as a key: letters, digits, "_"
+// and "-", from a letter. A name of another shape (one holding ":", "/", "@" or a space, as a URL
+// does) is no typo of a key.
+var keyShape = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
+
+// unknownKeyAt is the refusal of an unknown key whose name has no key's shape (keyShape), under the
+// mapping under names ("" at the file's root): its line, never its text. Such a name is no typo of
+// a key; it can be a credential, or a URL holding one, pasted where a key goes, and the URL rule
+// the refusal is printed through (redact.URLCredentials) does not read such a URL whole when a
+// character that ends a URL in a text, a "'" among them, stands in its userinfo.
+func unknownKeyAt(node *yaml.Node, under string) string {
+	if under == "" {
+		return fmt.Sprintf("unknown key at line %d, whose name has no key's shape (letters, digits, _ and -)", node.Line)
+	}
+	return fmt.Sprintf("unknown key at line %d under %s, whose name has no key's shape (letters, digits, _ and -)", node.Line, under)
 }
 
 // readRuntime reads `runtime`: the `tmux` scalar (no block), or a one-key mapping, `{kubernetes:
@@ -641,10 +662,19 @@ func requiredString(value *yaml.Node, key, why string) (string, error) {
 	return read, err
 }
 
-// unknownKeyError is describedMembers' refusal of a name the mapping may not carry.
-type unknownKeyError struct{ key, name string }
+// unknownKeyError is describedMembers' refusal of a name the mapping may not carry, by its line
+// alone when the name has no key's shape (unknownKeyAt).
+type unknownKeyError struct {
+	key  string
+	node *yaml.Node
+}
 
-func (e unknownKeyError) Error() string { return fmt.Sprintf("unknown key %s.%s", e.key, e.name) }
+func (e unknownKeyError) Error() string {
+	if !keyShape.MatchString(e.node.Value) {
+		return unknownKeyAt(e.node, e.key)
+	}
+	return fmt.Sprintf("unknown key %s.%s", e.key, e.node.Value)
+}
 
 // describedMembers returns a mapping's members by name, refusing a name it does not know or names
 // twice. A member whose value is null is left out, as an unset key. It is the one reader of a
@@ -665,7 +695,7 @@ func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Nod
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		name, node := value.Content[i].Value, value.Content[i+1]
 		if !slices.ContainsFunc(described.Members, func(m member) bool { return m.Name == name }) {
-			return nil, unknownKeyError{key, name}
+			return nil, unknownKeyError{key, value.Content[i]}
 		}
 		if seen[name] {
 			return nil, fmt.Errorf("%s names %s twice", key, name)

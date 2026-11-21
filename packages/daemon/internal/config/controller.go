@@ -86,8 +86,12 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key := root.Content[i].Value
 		if !slices.Contains(controllerKeys, key) {
-			unknown = append(unknown, fmt.Sprintf("unknown key %q in the controller configuration; legion controller start reads only %s — see %s",
-				key, strings.Join(controllerKeys, ", "), ControllerConfigExample))
+			shown := fmt.Sprintf("unknown key %q", key)
+			if !keyShape.MatchString(key) {
+				shown = unknownKeyAt(root.Content[i], "")
+			}
+			unknown = append(unknown, fmt.Sprintf("%s in the controller configuration; legion controller start reads only %s — see %s",
+				shown, strings.Join(controllerKeys, ", "), ControllerConfigExample))
 			continue
 		}
 		values[key] = root.Content[i+1]

@@ -204,11 +204,14 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	fields, err := describedMembers(value, key, "projects.<KEY>")
 	var unknown unknownKeyError
 	if errors.As(err, &unknown) {
-		if unknown.name == "repo" {
+		if unknown.node.Value == "repo" {
 			return Project{}, nil, fmt.Errorf(`Unknown key %q: the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project`, key+".repo")
 		}
+		if !keyShape.MatchString(unknown.node.Value) {
+			return Project{}, nil, unknown
+		}
 		// The shipped loader's own words (validateProjectEntry, config.ts).
-		return Project{}, nil, fmt.Errorf(`Unknown key %q`, key+"."+unknown.name)
+		return Project{}, nil, fmt.Errorf(`Unknown key %q`, key+"."+unknown.node.Value)
 	}
 	if err != nil {
 		return Project{}, nil, err

@@ -103,14 +103,15 @@ func (c *operatorCall) connect() (operator, bool) {
 	if *c.tokenFile != "" {
 		read, err := config.ReadPrivateSecretPointer("--operator-token-file", *c.tokenFile)
 		if err != nil {
-			fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
+			printRefusal(c.stderr, c.name(), err)
 			return operator{}, false
 		}
 		bearer = read
 	}
+	// The loader's refusal, through the URL rule as every command's (printRefusal).
 	address, err := daemonAddress(*c.configPath, *c.port)
 	if err != nil {
-		fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
+		printRefusal(c.stderr, c.name(), err)
 		return operator{}, false
 	}
 	return operator{base: address, bearer: bearer}, true

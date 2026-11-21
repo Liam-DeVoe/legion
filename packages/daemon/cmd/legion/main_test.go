@@ -1584,18 +1584,46 @@ func TestStopRunsNoPrivateKeyCommand(t *testing.T) {
 	}
 }
 
-// `legion stop` prints the loader's refusal as `legion start` does (printRefusal), through the URL
-// rule: a URL pasted where a key goes, made-up user name and password in its userinfo, is refused
-// as an unknown key, and the refusal names the key without its userinfo.
+// `legion stop` prints the loader's refusal as `legion start` does (printRefusal): a URL pasted
+// where a key goes, made-up user name and password in its userinfo, is refused as an unknown key
+// by its line alone, since a name of no key's shape is no typo of a key. A password holding a "'",
+// which ends a URL for the URL rule, is the case no rule on the text could cut.
 func TestStopPrintsTheLoadersRefusalWithoutURLUserinfo(t *testing.T) {
+	for name, credential := range map[string]string{
+		"a password and a user name":        "madeUpStopUser0123:madeUpStopPassword0123",
+		"a password holding a single quote": "madeUpStopUser0123:madeUpStop'Password0123",
+	} {
+		t.Run(name, func(t *testing.T) {
+			legionState(t)
+			config, _ := workflowConfig(t, 13370, "\"https://"+credential+"@cache.example\": 1\n")
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "stop", "--config", config}, &out, &errb)
+			if want := "legion stop: unknown key at line "; code != 1 || !strings.HasPrefix(errb.String(), want) ||
+				!strings.HasSuffix(errb.String(), ", whose name has no key's shape (letters, digits, _ and -)\n") {
+				t.Fatalf("legion stop = %d, stderr %q, want 1 and the unknown key named by its line", code, errb.String())
+			}
+			for i := 0; i+10 <= len(credential); i++ {
+				if strings.Contains(errb.String(), credential[i:i+10]) {
+					t.Fatalf("stderr %q holds %q of the URL's userinfo", errb.String(), credential[i:i+10])
+				}
+			}
+		})
+	}
+}
+
+// The operator's commands print the loader's refusal of `--config` as `legion start` does
+// (printRefusal), and a URL pasted where a key goes, a made-up user name and password in its
+// userinfo, is named by its line alone: `legion state --config` here.
+func TestOperatorCommandsPrintTheLoadersRefusalWithoutURLUserinfo(t *testing.T) {
+	const credential = "madeUpStateUser0123:madeUpStatePassword0123"
 	legionState(t)
-	const credential = "madeUpStopUser0123:madeUpStopPassword0123"
-	config, _ := workflowConfig(t, 13370, "https://"+credential+"@cache.example: 1\n")
+	config, _ := workflowConfig(t, 13370, "\"https://"+credential+"@cache.example\": 1\n")
 
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "stop", "--config", config}, &out, &errb)
-	if want := "legion stop: unknown key https://cache.example\n"; code != 1 || errb.String() != want {
-		t.Fatalf("legion stop = %d, stderr %q, want 1 and %q", code, errb.String(), want)
+	code := run(context.Background(), []string{"legion", "state", "--config", config}, &out, &errb)
+	if want := "legion state: unknown key at line "; code != 1 || !strings.HasPrefix(errb.String(), want) {
+		t.Fatalf("legion state = %d, stderr %q, want 1 and the unknown key named by its line", code, errb.String())
 	}
 	for i := 0; i+10 <= len(credential); i++ {
 		if strings.Contains(errb.String(), credential[i:i+10]) {
