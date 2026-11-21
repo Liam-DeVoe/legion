@@ -394,7 +394,9 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []
 // session holds (controllerLaneRoles), which decide the one private subject a session registers
 // beside its own agent subject: the controller notice lane of the project whose controller role
 // it holds. The listener's registration route filters the session's consumer on the row this
-// merge produces, having planned it with these same roles (PlanInterest).
+// merge produces, having planned it with these same roles (PlanInterest). A stored topic the plan
+// dropped (InterestPlan.Without) is taken out of the row before the merge, so the row is the
+// filter.
 //
 // The machine id and the directory are the requesting registration's, and the stored row is the
 // fallback for whichever of the two the request leaves empty. A session that registers again
@@ -417,7 +419,9 @@ func mergeForUpsert(cur Interest, getErr error, item Interest, now int64, plan I
 	item.MachineID = first(requested.MachineID, cur.MachineID)
 	item.Dir = first(requested.Dir, cur.Dir)
 	item.UpdatedAt = now
-	item.Topics = MergedTopics(requested.SessionID, plan.Roles, item.Topics, plan.Topics)
+	item.Topics = MergedTopics(requested.SessionID, plan.Roles, slices.DeleteFunc(slices.Clone(item.Topics), func(topic string) bool {
+		return slices.Contains(plan.Dropped, topic)
+	}), plan.Topics)
 	return item, nil
 }
 

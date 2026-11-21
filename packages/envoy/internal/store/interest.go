@@ -119,8 +119,28 @@ func MergedTopics(sessionID string, roles []string, cur []string, topics []strin
 // the topics it asked for (Registry.PlanInterestAfterConflict), filters the consumer on the new
 // plan and writes that, so an unsubscribe that landed in the seconds between a plan and its
 // write is not undone and the filter is never left standing for a plan the row does not hold.
+//
+// Dropped is the topics of the stored row the plan leaves out (Without): the write removes them
+// from the row it merges Topics into (mergeForUpsert), so the row it stores holds exactly Topics.
+// A plan the store makes drops nothing.
 type InterestPlan struct {
 	Roles    []string
 	Topics   []string
 	Revision uint64
+	Dropped  []string
+}
+
+// Without is the plan with topics left out of it: out of Topics, which the session's consumer is
+// filtered on, and out of the row its write stores (Dropped), the stored row's own topics among
+// them. It is how a caller holding a session to a rule of its own (cmd/listener's edge listener,
+// which holds a session to its token's projects) drops what that rule refuses from a plan whose
+// topics the store merged in from the row another listener wrote. The plan's revision stands, so
+// its write is still refused when another writer stored the row since.
+func (p InterestPlan) Without(topics []string) InterestPlan {
+	if len(topics) == 0 {
+		return p
+	}
+	p.Topics = slices.DeleteFunc(slices.Clone(p.Topics), func(topic string) bool { return slices.Contains(topics, topic) })
+	p.Dropped = append(slices.Clone(p.Dropped), topics...)
+	return p
 }

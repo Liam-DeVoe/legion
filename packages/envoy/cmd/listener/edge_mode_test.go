@@ -1,8 +1,8 @@
 package main
 
-// edge_mode_test.go holds the edge listener's rules on a real bus: E1's admission, E2's topics
-// with its GitHub rows G1 to G6, E3's roles, E4's sends, E5's reads, E6's start, and K6's record
-// of the registering token's projects on each session.
+// edge_mode_test.go holds the edge listener's rules on a real bus: the admission, the topics a
+// session follows with the GitHub rows, the stored topics a plan brings in, the roles, the sends,
+// the reads, the start, and the record of the registering token's projects on each session.
 //
 // Every row reads the projects its listener serves from ENVOY_EDGE_PROJECTS when the test's own
 // environment sets it, and serves PRIV otherwise (edgeTestProjects). So the control every row is
@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -60,10 +61,10 @@ func edgeTestProjects(t *testing.T) []string {
 	return projects
 }
 
-// The repository answer every GitHub row starts from, as K-E5's broker route relays Dispatch's:
+// The repository answer every GitHub row starts from, as the broker's route relays Dispatch's:
 // PRIV-1 names acme/pub, PRIV-3 names none and is a child of PRIV-2, which names acme/two, so
 // PRIV's issues resolve to acme/pub and acme/two; INFRA-1 names acme/priv, which is INFRA's and
-// no repository of PRIV's. Which issue resolves where is Dispatch's one rule (AG-11); the stand-in
+// no repository of PRIV's. Which issue resolves where is Dispatch's one rule; the stand-in
 // answers its result.
 func edgeRepositoryFixture() map[string][]string {
 	return map[string][]string{"PRIV": {"acme/pub", "acme/two"}, "INFRA": {"acme/priv"}}
@@ -72,9 +73,9 @@ func edgeRepositoryFixture() map[string][]string {
 // edgeAccountToken is the stand-in broker account the rig's repository reader asks with.
 const edgeAccountToken = "listener-account-token"
 
-// repositoryStandIn is the broker's GET /v1/project-repositories (K-E5, AG-12's route) as the
-// edge listener reads it: the answer of each project it serves, 403 PROJECT_NOT_LISTED for any
-// other, and the status the test sets in place of every answer while it sets one.
+// repositoryStandIn is the broker's GET /v1/project-repositories as the edge listener reads it:
+// the answer of each project it serves, 403 PROJECT_NOT_LISTED for any other, and the status the
+// test sets in place of every answer while it sets one.
 type repositoryStandIn struct {
 	server  *httptest.Server
 	serves  []string
@@ -288,6 +289,32 @@ func (r *edgeRig) placeElsewhere(t *testing.T, sessionID string, projects ...str
 	}
 }
 
+// placeElsewhereFollowing is placeElsewhere of a session whose interest row another listener
+// stored with topics beside its agent subject.
+func (r *edgeRig) placeElsewhereFollowing(t *testing.T, sessionID string, projects []string, topics ...string) {
+	t.Helper()
+	r.placeElsewhere(t, sessionID, projects...)
+	if _, err := r.deps.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "shared-listener"}, topics); err != nil {
+		t.Fatalf("write %s's interest row with %v: %v", sessionID, topics, err)
+	}
+}
+
+// storeGithubEvent stores a GitHub event of repository, owner/name as GitHub writes it, on the
+// subject the intake publishes it on with kind after the repository, its payload naming the
+// repository as every GitHub event's payload does (contracts' githubPayload), and returns it.
+func (r *edgeRig) storeGithubEvent(t *testing.T, repository, kind string) contracts.Envelope {
+	t.Helper()
+	owner, name, _ := strings.Cut(repository, "/")
+	subject := contracts.GithubRepositoryPrefix(owner, name) + "." + kind
+	item := listenerTestEnvelope(subject, "edge-github-"+id.New())
+	item.Source = "github"
+	item.Payload = fmt.Sprintf(`{"kind":"pr","action":"opened","repo":%q}`, repository)
+	if _, err := r.harness.client.JS().Publish(subject, marshalListenerEnvelope(t, item)); err != nil {
+		t.Fatalf("store a GitHub event of %s on %s: %v", repository, subject, err)
+	}
+	return item
+}
+
 // withheld is envoy_edge_github_withheld_total{reason=...} as the listener's /metrics renders it,
 // -1 for no series.
 func (r *edgeRig) withheld(t *testing.T, reason string) int64 {
@@ -334,10 +361,9 @@ func requireStatus(t *testing.T, recorder *httptest.ResponseRecorder, status int
 	}
 }
 
-// E1: an edge listener admits a broker token alone, and only one whose projects are all among
-// the ones it serves, of project scope named or person; every other caller is refused before any
-// handler runs. The exported admission (EdgeAdmits) is the very rule apiAuth asks, which the relay
-// socket asks again of each live answer (K-E2).
+// The admission: an edge listener admits a broker token alone, and only one whose projects are
+// all among the ones it serves, of project scope named or person; every other caller is refused
+// before any handler runs. The exported admission (EdgeAdmits) is the very rule apiAuth asks.
 func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	projects := edgeTestProjects(t)
 	broker := brokertokentest.NewStubBroker(t)
@@ -421,7 +447,7 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	}
 }
 
-// G1: an edge session may follow the GitHub events of each repository its project's issues
+// An edge session may follow the GitHub events of each repository its project's issues
 // resolve to, read fresh through the broker at the registration with the listener's own account,
 // and an event of each reaches it.
 func TestAnEdgeRelaysTheGitHubEventsOfItsProjectsRepositories(t *testing.T) {
@@ -434,17 +460,17 @@ func TestAnEdgeRelaysTheGitHubEventsOfItsProjectsRepositories(t *testing.T) {
 	answer := rig.subscribe(t, token, sessionID, topics...)
 	requireStatus(t, answer, http.StatusOK, fmt.Sprintf("a registration following %v", topics))
 	if rig.repositories.calls.Load() == before {
-		t.Fatalf("the registration naming %v read no repository answer; K-E5 is read fresh at each one", topics)
+		t.Fatalf("the registration naming %v read no repository answer; the answer is read fresh at each one", topics)
 	}
 	if got := rig.repositories.lastBearer(); got != "Bearer "+edgeAccountToken {
 		t.Fatalf("the repository read presented %q, want the listener's own account", got)
 	}
-	pub, _ := rig.storeEvent(t, "notifications.github.acme.pub.pr.1")
-	two, _ := rig.storeEvent(t, "notifications.github.acme.two.issue.2")
+	pub := rig.storeGithubEvent(t, "acme/pub", "pr.1")
+	two := rig.storeGithubEvent(t, "acme/two", "issue.2")
 	requireFrames(t, standIn.collect(t, 2, 10*time.Second), pub, two)
 }
 
-// G2: a GitHub interest in a repository no issue of the project resolves to, or in no single
+// A GitHub interest in a repository no issue of the project resolves to, or in no single
 // repository, is refused 403 repository_not_in_project, and such a repository's event never
 // reaches the session.
 func TestAnEdgeRefusesAnotherRepositorysEvents(t *testing.T) {
@@ -456,8 +482,8 @@ func TestAnEdgeRefusesAnotherRepositorysEvents(t *testing.T) {
 		requireTopicRefusal(t, rig.subscribe(t, token, sessionID, topic), "repository_not_in_project", topic)
 	}
 	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusOK, "an interest in acme/pub")
-	rig.storeEvent(t, "notifications.github.acme.priv.pr.3")
-	pub, _ := rig.storeEvent(t, "notifications.github.acme.pub.pr.4")
+	rig.storeGithubEvent(t, "acme/priv", "pr.3")
+	pub := rig.storeGithubEvent(t, "acme/pub", "pr.4")
 	frames := standIn.collect(t, 1, 10*time.Second)
 	if frames[0].item.Topic != pub.Topic {
 		t.Fatalf("the session's first frame is %s, want acme/pub's: the event of acme/priv reached it", frames[0].item.Topic)
@@ -466,7 +492,7 @@ func TestAnEdgeRefusesAnotherRepositorysEvents(t *testing.T) {
 	standIn.none(t, time.Second)
 }
 
-// G3: every subject of no project but GitHub's is refused 403 topic_not_in_project: the
+// Every subject of no project but GitHub's is refused 403 topic_not_in_project: the
 // intakes, the shared wake, the listener's own lanes.
 func TestAnEdgeRefusesEverySubjectOfNoProjectButGitHub(t *testing.T) {
 	rig := newEdgeRig(t)
@@ -484,26 +510,26 @@ func TestAnEdgeRefusesEverySubjectOfNoProjectButGitHub(t *testing.T) {
 	}
 }
 
-// G4: a repository that leaves the project's answer stops reaching the session at the first
+// A repository that leaves the project's answer stops reaching the session at the first
 // refresh that reads the new answer, its event acknowledged undelivered and counted, and the
 // session's interest in it is gone at the refresh after. The production refresh runs every 30 s
 // and an answer lives 60 s, so both happen within 60 s of the change.
 func TestARepositoryThatLeavesTheProjectStopsReachingTheEdge(t *testing.T) {
 	if edgeRepositoryRefresh != 30*time.Second || edgeRepositoryAnswerLife != 60*time.Second {
-		t.Fatalf("the refresh runs every %s and an answer lives %s, want 30 s and 60 s (R15)", edgeRepositoryRefresh, edgeRepositoryAnswerLife)
+		t.Fatalf("the refresh runs every %s and an answer lives %s, want 30 s and 60 s", edgeRepositoryRefresh, edgeRepositoryAnswerLife)
 	}
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_leaving"
 	token := rig.personToken(sessionID, "PRIV")
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>", "notifications.github.acme.two.>"), http.StatusOK, "the registration")
-	first, _ := rig.storeEvent(t, "notifications.github.acme.two.pr.1")
+	first := rig.storeGithubEvent(t, "acme/two", "pr.1")
 	requireFrames(t, standIn.collect(t, 1, 10*time.Second), first)
 
 	rig.repositories.answer("PRIV", "acme/pub")
 	rig.tick(t)
-	left, _ := rig.storeEvent(t, "notifications.github.acme.two.pr.2")
-	stays, _ := rig.storeEvent(t, "notifications.github.acme.pub.pr.3")
+	left := rig.storeGithubEvent(t, "acme/two", "pr.2")
+	stays := rig.storeGithubEvent(t, "acme/pub", "pr.3")
 	// The frames go in stream order, so the event after it arriving first is the proof the one
 	// before it was not relayed.
 	frames := standIn.collect(t, 1, 10*time.Second)
@@ -532,7 +558,7 @@ func TestARepositoryThatLeavesTheProjectStopsReachingTheEdge(t *testing.T) {
 	}
 }
 
-// G5: while no repository answer younger than 60 s stands, a registration naming a GitHub topic
+// While no repository answer younger than 60 s stands, a registration naming a GitHub topic
 // is 503 repositories_unknown, every GitHub frame is acknowledged undelivered with the gap mark
 // on the next frame, and every frame that is not GitHub's flows as before.
 func TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames(t *testing.T) {
@@ -546,7 +572,7 @@ func TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames(t *testing.T) {
 	requireEdgeRefusal(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.pub.>"), http.StatusServiceUnavailable, "repositories_unknown",
 		"a registration naming acme/pub while the answer is 503")
 	rig.clock.advance(edgeRepositoryAnswerLife + time.Second)
-	rig.storeEvent(t, "notifications.github.acme.pub.pr.5")
+	rig.storeGithubEvent(t, "acme/pub", "pr.5")
 	agent, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	frames := standIn.collect(t, 1, 10*time.Second)
 	if frames[0].item.EventID != agent.EventID {
@@ -561,7 +587,7 @@ func TestAnUnknownRepositoryAnswerWithholdsOnlyGitHubFrames(t *testing.T) {
 	}
 }
 
-// G6: Dispatch answers a repository in lower case and the intake keeps GitHub's case, so the
+// Dispatch answers a repository in lower case and the intake keeps GitHub's case, so the
 // edge compares owner and name ignoring case: an interest in Acme/Pub is admitted through an
 // answer of acme/pub, and the event the intake publishes for Acme/Pub reaches the session.
 func TestAnEdgeComparesRepositoriesIgnoringCase(t *testing.T) {
@@ -572,13 +598,13 @@ func TestAnEdgeComparesRepositoriesIgnoringCase(t *testing.T) {
 	before := rig.repositories.calls.Load()
 	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.Acme.Pub.>"), http.StatusOK, "an interest in Acme/Pub")
 	if rig.repositories.calls.Load() == before {
-		t.Fatal("the registration naming Acme/Pub read no repository answer; K-E5 is read fresh at each one")
+		t.Fatal("the registration naming Acme/Pub read no repository answer; the answer is read fresh at each one")
 	}
-	event, _ := rig.storeEvent(t, contracts.GithubRepositoryPrefix("Acme", "Pub")+".pr.9")
+	event := rig.storeGithubEvent(t, "Acme/Pub", "pr.9")
 	requireFrames(t, standIn.collect(t, 1, 10*time.Second), event)
 }
 
-// E2's publish rule: an edge session publishes only a role subject of its project in the form
+// The publish rule: an edge session publishes only a role subject of its project in the form
 // that names the project, for a role that works for that project (contracts.ClaimProject): a
 // Legion role of the project, or a free-form role under it. Anything else is 403
 // topic_not_published, a Legion role of another project named under this one among it.
@@ -608,8 +634,8 @@ func TestEdgePublishesOnlyRoleSubjectsOfItsProjects(t *testing.T) {
 	}
 }
 
-// E3: an edge session claims and reads only a role of its token's projects, the project
-// contracts.ClaimProject gives it, and its claim is keyed by contracts.RoleClaimKey.
+// The role rule: an edge session claims and reads only a role of its token's projects, the
+// project contracts.ClaimProject gives it, and its claim is keyed by contracts.RoleClaimKey.
 func TestEdgeHoldsRolesToTheTokensProjects(t *testing.T) {
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_roles"
@@ -641,9 +667,9 @@ func mustClaimProject(t *testing.T, role, requested string) string {
 	return project
 }
 
-// E4: an edge session sends only to a session whose token lists one of its token's projects; a
-// send to any other is answered as to a missing session, and a publish to a role subject names
-// one of its projects.
+// The send rule: an edge session sends only to a session whose token lists one of its token's
+// projects; a send to any other is answered as to a missing session, and a publish to a role
+// subject names one of its projects.
 func TestEdgeSendsOnlyToSessionsOfTheTokensProjects(t *testing.T) {
 	rig := newEdgeRig(t)
 	const sender, peer = "ses_edge_sender", "ses_edge_peer"
@@ -669,8 +695,8 @@ func TestEdgeSendsOnlyToSessionsOfTheTokensProjects(t *testing.T) {
 	requireEdgeRefusal(t, rig.call(t, http.MethodPost, token, "/v1/messages/publish", body), http.StatusForbidden, "topic_not_published", "a publish to INFRA's role")
 }
 
-// E5: the edge's reads answer only the sessions and roles of the token's projects, and the
-// interest list, another session's interests and every delete naming another session are 403.
+// The read rule: the edge's reads answer only the sessions and roles of the token's projects, and
+// the interest list, another session's interests and every delete naming another session are 403.
 func TestEdgeReadsListOnlyTheTokensProjects(t *testing.T) {
 	rig := newEdgeRig(t)
 	const reader, peer = "ses_edge_reader", "ses_edge_peer_read"
@@ -763,10 +789,10 @@ func TestEdgeReadsListOnlyTheTokensProjects(t *testing.T) {
 	}
 }
 
-// K6: every listener that verifies broker tokens records the registering token's projects on the
+// Every listener that verifies broker tokens records the registering token's projects on the
 // session's entry, sorted, and [] for a registration that lists none, so the edge's send and read
-// rules can read the target's projects. It holds with edge mode off too: the field is K6's for
-// every listener, and the API's answers do not carry it.
+// rules can read the target's projects. It holds with edge mode off too: the field is every
+// listener's, and the API's answers do not carry it.
 func TestEdgeSessionEntryRecordsTheRegisteringTokensProjects(t *testing.T) {
 	rig := newEdgeRig(t)
 	const sessionID = "ses_edge_k6"
@@ -798,9 +824,9 @@ func TestEdgeSessionEntryRecordsTheRegisteringTokensProjects(t *testing.T) {
 	}
 }
 
-// E6: an edge listener refuses to start beside any credential that admits a caller by something
-// other than a broker token, beside webhooks, and without the whole broker-token group; each
-// refusal names the variable. The last row starts the built binary that way.
+// The start rule: an edge listener refuses to start beside any credential that admits a caller by
+// something other than a broker token, beside webhooks, and without the whole broker-token group;
+// each refusal names the variable. The last row starts the built binary that way.
 func TestEdgeRefusesToStartBesideSharedCredentials(t *testing.T) {
 	projects := edgeTestProjects(t)
 	broker := []string{
@@ -849,7 +875,7 @@ func TestEdgeRefusesToStartBesideSharedCredentials(t *testing.T) {
 	}
 }
 
-// Q1's row: a registration the edge refuses names exactly the topics it refuses, as the
+// A registration the edge refuses names exactly the topics it refuses, as the
 // registration carried them, so the client drops those and registers the rest again; the allowed
 // topic beside them is named nowhere, and nothing of the registration is stored.
 func TestAnEdgeRefusalNamesOnlyTheRefusedTopics(t *testing.T) {
@@ -868,7 +894,7 @@ func TestAnEdgeRefusalNamesOnlyTheRefusedTopics(t *testing.T) {
 	requireStatus(t, rig.subscribe(t, token, sessionID, allowed), http.StatusOK, "the registration of the allowed topic alone")
 }
 
-// Q2's row on a listener in no edge mode: a free-form role claimed under a project is that
+// On a listener in no edge mode, a free-form role claimed under a project is that
 // project's own claim, keyed by contracts.RoleClaimKey (PRIV.lead-reviewer), beside the claim of
 // the same name under no project (lead-reviewer), which keeps its bare key. Each is read, and
 // reached by a publish and by the role lane, under its own project.
@@ -877,7 +903,7 @@ func TestAFreeFormRoleUnderAProjectIsClaimedReadAndReachedUnderThatProject(t *te
 	requireFreeFormRoleUnderItsProject(t, rig, "ses_ff_bare", "ses_ff_priv", "ses_ff_sender")
 }
 
-// Q2's row at the edge: an edge session claims, reads and is reached through a free-form role of
+// At the edge, an edge session claims, reads and is reached through a free-form role of
 // its token's project, and a role of the same name under no project, claimed elsewhere, keeps its
 // own holder. The edge refuses the bare name, which works for no project, to claim and to publish.
 func TestAnEdgeClaimsPublishesAndReadsAFreeFormRoleOfItsProject(t *testing.T) {
@@ -906,9 +932,10 @@ func TestAnEdgeClaimsPublishesAndReadsAFreeFormRoleOfItsProject(t *testing.T) {
 	requireFrames(t, standIn.collect(t, 1, 10*time.Second), published)
 }
 
-// requireFreeFormRoleUnderItsProject is Q2's row on rig: bare claims lead-reviewer, priv claims
-// PRIV.lead-reviewer, both soft, and neither takes the other's role; a read, a publish through
-// the route and a message on the role lane each reach the holder of their own name's claim.
+// requireFreeFormRoleUnderItsProject is the free-form role row on rig: bare claims lead-reviewer,
+// priv claims PRIV.lead-reviewer, both soft, and neither takes the other's role; a read, a publish
+// through the route and a message on the role lane each reach the holder of their own name's
+// claim.
 func requireFreeFormRoleUnderItsProject(t *testing.T, rig *edgeRig, bare, priv, sender string) {
 	t.Helper()
 	tokens := map[string]string{}
@@ -1002,5 +1029,354 @@ func TestEdgeListenerLinksNoDispatchStore(t *testing.T) {
 	}
 	if listed == 0 || !found {
 		t.Fatalf("UNKNOWN: go list -deps listed %d packages and %s among them: %t", listed, self, found)
+	}
+}
+
+// The topics a session's interest row already holds, which another listener stored for it under
+// a token of other projects, are held to the edge's rule as the topics a registration names are:
+// the session registers at the edge naming a topic of PRIV alone, and its row's subject of no
+// project (notifications.slack.>), its INFRA issue topic and its GitHub topic of INFRA's
+// repository are dropped from the row and from its consumer's filter, each named in the answer's
+// warnings, while its GitHub topic of PRIV's repository stays. No event of a dropped topic reaches
+// the session, and another PRIV session's GET /v1/sessions and GET /v1/registry/<id> show none of
+// them.
+func TestAnEdgeDropsTheStoredTopicsOfOtherProjects(t *testing.T) {
+	rig := newEdgeRig(t)
+	const moved, reader = "ses_edge_moved", "ses_edge_moved_reader"
+	const (
+		slack      = "notifications.slack.>"
+		infra      = "notifications.dispatch.issue.INFRA.INFRA-7.>"
+		infraRepo  = "notifications.github.acme.priv.>"
+		privRepo   = "notifications.github.acme.pub.>"
+		privIssues = "notifications.dispatch.issue.PRIV.>"
+	)
+	rig.placeElsewhereFollowing(t, moved, []string{}, slack, infra, infraRepo, privRepo)
+	standIn := startSessionStandIn(t, rig.url, moved, answerDone)
+	answer := rig.subscribe(t, rig.personToken(moved, "PRIV"), moved, privIssues)
+	requireStatus(t, answer, http.StatusOK, "the moved session's registration at the edge")
+	var registered listenerwire.SubscribeResponse
+	if err := json.Unmarshal(answer.Body.Bytes(), &registered); err != nil {
+		t.Fatalf("decode the registration's answer %s: %v", answer.Body.String(), err)
+	}
+	for _, dropped := range []string{slack, infra, infraRepo} {
+		if !slices.ContainsFunc(registered.Warnings, func(warning string) bool { return strings.HasPrefix(warning, dropped+" was removed") }) {
+			t.Errorf("the registration's warnings %q name no removal of the stored topic %s", registered.Warnings, dropped)
+		}
+	}
+	row := bucketInterestRow(t, rig.harness.client, moved)
+	for _, dropped := range []string{slack, infra, infraRepo} {
+		if slices.Contains(row.Topics, dropped) {
+			t.Errorf("after the registration at the edge %s's row still holds %s: %v", moved, dropped, row.Topics)
+		}
+	}
+	if !slices.Contains(row.Topics, privRepo) || !slices.Contains(row.Topics, privIssues) {
+		t.Errorf("after the registration at the edge %s's row is %v, want it to keep %s and %s", moved, row.Topics, privRepo, privIssues)
+	}
+
+	rig.storeEvent(t, "notifications.slack.T1.C1.message")
+	rig.storeEvent(t, "notifications.dispatch.issue.INFRA.INFRA-7.comment.created")
+	rig.storeGithubEvent(t, "acme/priv", "pr.8")
+	priv, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-1.comment.created")
+	// The frames go in stream order, so PRIV's event arriving first is the proof that none of
+	// the three before it was relayed.
+	frames := standIn.collect(t, 1, 10*time.Second)
+	if frames[0].item.EventID != priv.EventID {
+		t.Fatalf("the moved session's first frame is %s on %s, want PRIV's event: an event of a stored topic of another project reached it",
+			frames[0].item.EventID, frames[0].item.Topic)
+	}
+	requireFrames(t, frames, priv)
+
+	token := rig.namedToken(reader, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, reader), http.StatusOK, "the reader's registration")
+	shown := requireTopicsHidden(t, rig, token, moved, slack, infra, infraRepo)
+	if !slices.Contains(shown, privIssues) {
+		t.Errorf("GET /v1/registry/%s shows %v, want it to show %s, a topic of PRIV", moved, shown, privIssues)
+	}
+}
+
+// A registration's plan made again after a conflict is held as its first plan is: another
+// listener stores the session's row with a subject of no project and an INFRA issue topic while
+// this listener's copy of the row still lacks them, so the registration's first plan, made from
+// the copy, has its write refused, and its second plan, made from the bucket's row, merges them
+// in. The edge drops both from that plan, so the row stored holds neither, and the answer names
+// each.
+func TestAnEdgeHoldsThePlanItMakesAgainAfterAConflict(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_replanned"
+	const slack, infra, privIssues = "notifications.slack.>", "notifications.dispatch.issue.INFRA.INFRA-7.>", "notifications.dispatch.issue.PRIV.>"
+	token := rig.personToken(sessionID, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, sessionID, privIssues), http.StatusOK, "the first registration")
+	holdInterestCache(t, rig.deps.registry)
+	other, err := store.Open(t.Context(), rig.harness.client.Conn, store.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the other listener's registry: %v", err)
+	}
+	t.Cleanup(other.StopWatch)
+	waitForRegistry(t, other)
+	if _, err := other.Upsert(store.Interest{SessionID: sessionID, MachineID: "shared-listener"}, []string{slack, infra}); err != nil {
+		t.Fatalf("store %s's row on the other listener: %v", sessionID, err)
+	}
+	if cached, _ := rig.deps.registry.Cached(sessionID); slices.Contains(cached.Topics, slack) || slices.Contains(cached.Topics, infra) {
+		t.Fatalf("UNKNOWN: this listener's copy of %s's row holds %v already, so its first plan merges the other listener's topics and no plan is made again", sessionID, cached.Topics)
+	}
+	if stored := bucketInterestRow(t, rig.harness.client, sessionID); !slices.Contains(stored.Topics, slack) || !slices.Contains(stored.Topics, infra) {
+		t.Fatalf("UNKNOWN: the bucket holds %s's row %v, without the other listener's topics", sessionID, stored.Topics)
+	}
+
+	answer := rig.subscribe(t, token, sessionID, privIssues)
+	requireStatus(t, answer, http.StatusOK, "the registration after the other listener's write")
+	row := bucketInterestRow(t, rig.harness.client, sessionID)
+	if slices.Contains(row.Topics, slack) || slices.Contains(row.Topics, infra) || !slices.Contains(row.Topics, privIssues) {
+		t.Fatalf("after a plan made again over the other listener's row, %s's row is %v, want %s and neither %s nor %s", sessionID, row.Topics, privIssues, slack, infra)
+	}
+	var registered listenerwire.SubscribeResponse
+	if err := json.Unmarshal(answer.Body.Bytes(), &registered); err != nil {
+		t.Fatalf("decode the registration's answer %s: %v", answer.Body.String(), err)
+	}
+	for _, dropped := range []string{slack, infra} {
+		if !slices.ContainsFunc(registered.Warnings, func(warning string) bool { return strings.HasPrefix(warning, dropped+" was removed") }) {
+			t.Errorf("the registration's warnings %q name no removal of %s", registered.Warnings, dropped)
+		}
+	}
+}
+
+// A read at the edge shows a session's topics of the reader's projects alone, also before the
+// session registers at the edge: a session another listener registered under a PRIV token, whose
+// row holds a subject of no project, an INFRA issue topic and the GitHub topics of an INFRA and a
+// PRIV repository beside its PRIV topic, is listed to a PRIV reader without the first three, by
+// GET /v1/sessions and by GET /v1/registry/<id>, and the session's own GET /v1/interests/<id> at
+// the edge shows its own record the same way.
+func TestAnEdgeReadShowsOnlyTheTopicsOfTheTokensProjects(t *testing.T) {
+	rig := newEdgeRig(t)
+	const elsewhere, reader = "ses_edge_shown", "ses_edge_shown_reader"
+	const (
+		slack      = "notifications.slack.>"
+		infra      = "notifications.dispatch.issue.INFRA.INFRA-7.>"
+		infraRepo  = "notifications.github.acme.priv.>"
+		privRepo   = "notifications.github.acme.pub.>"
+		privIssues = "notifications.dispatch.issue.PRIV.>"
+	)
+	rig.placeElsewhereFollowing(t, elsewhere, []string{"PRIV"}, slack, infra, infraRepo, privRepo, privIssues)
+	rig.tick(t)
+	token := rig.namedToken(reader, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, reader), http.StatusOK, "the reader's registration")
+	shown := requireTopicsHidden(t, rig, token, elsewhere, slack, infra, infraRepo)
+	for _, kept := range []string{privRepo, privIssues, contracts.LegacyAgentSubject(elsewhere)} {
+		if !slices.Contains(shown, kept) {
+			t.Errorf("GET /v1/registry/%s shows %v, want it to show %s", elsewhere, shown, kept)
+		}
+	}
+	own := rig.call(t, http.MethodGet, rig.personToken(elsewhere, "PRIV"), "/v1/interests/"+elsewhere, "")
+	requireStatus(t, own, http.StatusOK, "the session's own GET /v1/interests/"+elsewhere)
+	var record listenerwire.InterestRow
+	if err := json.Unmarshal(own.Body.Bytes(), &record); err != nil {
+		t.Fatalf("decode %s: %v", own.Body.String(), err)
+	}
+	for _, hidden := range []string{slack, infra, infraRepo} {
+		if slices.Contains(record.Topics, hidden) {
+			t.Errorf("the session's own GET /v1/interests/%s shows %s: %v", elsewhere, hidden, record.Topics)
+		}
+	}
+	if !slices.Contains(record.Topics, privIssues) {
+		t.Errorf("the session's own GET /v1/interests/%s shows %v, want %s", elsewhere, record.Topics, privIssues)
+	}
+}
+
+// requireTopicsHidden fails the test unless GET /v1/sessions and GET /v1/registry/<sessionID>,
+// each asked with token, show sessionID and none of hidden among its topics; it returns the
+// topics the registry read shows.
+func requireTopicsHidden(t *testing.T, rig *edgeRig, token, sessionID string, hidden ...string) []string {
+	t.Helper()
+	listed := rig.call(t, http.MethodGet, token, "/v1/sessions", "")
+	requireStatus(t, listed, http.StatusOK, "GET /v1/sessions")
+	var rows []listenerwire.SessionInfo
+	if err := json.Unmarshal(listed.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode %s: %v", listed.Body.String(), err)
+	}
+	found := false
+	for _, row := range rows {
+		if row.SessionID != sessionID {
+			continue
+		}
+		found = true
+		for _, topic := range row.Topics {
+			if slices.Contains(hidden, topic) {
+				t.Errorf("GET /v1/sessions shows %s following %s, a topic of no project of the reader's", sessionID, topic)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("GET /v1/sessions lists no %s: %s", sessionID, listed.Body.String())
+	}
+	one := rig.call(t, http.MethodGet, token, "/v1/registry/"+sessionID, "")
+	requireStatus(t, one, http.StatusOK, "GET /v1/registry/"+sessionID)
+	var info listenerwire.SessionInfo
+	if err := json.Unmarshal(one.Body.Bytes(), &info); err != nil {
+		t.Fatalf("decode %s: %v", one.Body.String(), err)
+	}
+	for _, topic := range info.Topics {
+		if slices.Contains(hidden, topic) {
+			t.Errorf("GET /v1/registry/%s shows the topic %s, of no project of the reader's", sessionID, topic)
+		}
+	}
+	return info.Topics
+}
+
+// A registration the edge refuses 503 repositories_unknown is told the listener's own sentence:
+// nothing of what the broker answered reaches the client, its error code and its text among it.
+// It holds both for a GitHub topic the registration names and for one the session's row holds,
+// which the edge reads the answer for as well.
+func TestAnEdgeRepositoriesRefusalCopiesNoBrokerText(t *testing.T) {
+	rig := newEdgeRig(t)
+	const named, stored = "ses_edge_unknown_named", "ses_edge_unknown_stored"
+	rig.placeElsewhereFollowing(t, stored, []string{}, "notifications.github.acme.pub.>")
+	rig.repositories.failWith(http.StatusServiceUnavailable)
+	for _, call := range []struct {
+		session string
+		topics  []string
+	}{
+		{named, []string{"notifications.github.acme.pub.>"}},
+		{stored, nil},
+	} {
+		recorder := rig.subscribe(t, rig.personToken(call.session, "PRIV"), call.session, call.topics...)
+		requireEdgeRefusal(t, recorder, http.StatusServiceUnavailable, "repositories_unknown", fmt.Sprintf("%s's registration naming %v while the broker answers 503", call.session, call.topics))
+		for _, broker := range []string{"REPOSITORIES_UNKNOWN", "the stand-in answers"} {
+			if strings.Contains(recorder.Body.String(), broker) {
+				t.Errorf("%s's 503 copies the broker's answer (%q): %s", call.session, broker, recorder.Body.String())
+			}
+		}
+	}
+}
+
+// A subject writes a dot in a repository's name as an underscore, so acme/a.b and acme/a_b
+// publish on one subject (notifications.github.acme.a_b): the session follows it through an
+// answer that names acme/a.b, and the event of acme/a_b on that subject is withheld
+// not_in_project, while the event of acme/a.b reaches it. The relay holds each event to the
+// repository its own payload names.
+func TestAnEdgeRelaysOnlyTheEventsOfTheRepositoryItsAnswerNames(t *testing.T) {
+	rig := newEdgeRig(t)
+	const sessionID = "ses_edge_dotted"
+	rig.repositories.answer("PRIV", "acme/a.b")
+	token := rig.personToken(sessionID, "PRIV")
+	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	requireStatus(t, rig.subscribe(t, token, sessionID, "notifications.github.acme.a_b.>"), http.StatusOK, "an interest in acme/a.b, which its subject writes acme.a_b")
+	other := rig.storeGithubEvent(t, "acme/a_b", "pr.1")
+	own := rig.storeGithubEvent(t, "acme/a.b", "pr.2")
+	if otherPrefix, ownPrefix := contracts.GithubRepositoryPrefix("acme", "a_b"), contracts.GithubRepositoryPrefix("acme", "a.b"); otherPrefix != ownPrefix {
+		t.Fatalf("UNKNOWN: acme/a_b's events are under %s and acme/a.b's under %s, not one subject", otherPrefix, ownPrefix)
+	}
+	frames := standIn.collect(t, 1, 10*time.Second)
+	if frames[0].item.EventID == other.EventID {
+		t.Fatalf("the event of acme/a_b reached a session whose answer names acme/a.b alone")
+	}
+	requireFrames(t, frames, own)
+	if got := rig.withheld(t, "not_in_project"); got != 1 {
+		t.Fatalf(`envoy_edge_github_withheld_total{reason="not_in_project"} = %d, want 1: the acme/a_b event withheld`, got)
+	}
+}
+
+// A role read at the edge names a holder whose registering token listed none of the reader's
+// projects without its place: a PRIV role held by a session another listener registered with no
+// broker token is answered with its holder and claim, and with no directory, machine, host or
+// title and no capabilities. A holder of the reader's project is answered whole.
+func TestAnEdgeRoleReadNamesNoPlaceOfAHolderOutsideItsProjects(t *testing.T) {
+	rig := newEdgeRig(t)
+	const reader, internal, peer = "ses_edge_role_reader", "ses_edge_role_internal", "ses_edge_role_peer"
+	const internalRole, peerRole = "legion-priv-priv-4-tester", "legion-priv-priv-5-tester"
+	token := rig.personToken(reader, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, reader), http.StatusOK, "the reader's registration")
+	requireStatus(t, rig.subscribe(t, rig.namedToken(peer, "PRIV"), peer), http.StatusOK, "the peer's registration")
+	if err := rig.deps.sessions.Put(internal, session.SessionEntry{MachineID: "internal-machine", Host: "internal-host", SelfSubscribed: true,
+		Title: "an internal agent", Dir: "/home/agent/internal-checkout", Capabilities: []string{"tmux"}, Projects: []string{}}); err != nil {
+		t.Fatalf("register %s elsewhere: %v", internal, err)
+	}
+	for role, holder := range map[string]string{internalRole: internal, peerRole: peer} {
+		if _, err := rig.deps.registry.SetRole(holder, "test-machine", role, false); err != nil {
+			t.Fatalf("claim %s for %s: %v", role, holder, err)
+		}
+	}
+	read := func(role string) listenerwire.RoleHolder {
+		t.Helper()
+		recorder := rig.call(t, http.MethodGet, token, "/v1/roles/"+role, "")
+		requireStatus(t, recorder, http.StatusOK, "GET /v1/roles/"+role)
+		var answer listenerwire.RoleHolder
+		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+			t.Fatalf("decode %s: %v", recorder.Body.String(), err)
+		}
+		return answer
+	}
+	held := read(internalRole)
+	if held.Holder != internal || held.Dir != "" || held.Host != "" || held.MachineID != "" || held.Title != "" || len(held.Capabilities) != 0 {
+		t.Errorf("GET /v1/roles/%s answers %+v, want holder %s with no directory, host, machine, title or capabilities", internalRole, held, internal)
+	}
+	if whole := read(peerRole); whole.Holder != peer || whole.MachineID == "" || whole.Host == "" {
+		t.Errorf("GET /v1/roles/%s answers %+v, want holder %s with its machine and host: it is a session of PRIV", peerRole, whole, peer)
+	}
+}
+
+// edgeBrokerTransport answers each request the edge's repository reader sends with answer, on the
+// reader's own goroutine, as the broker would over the network.
+type edgeBrokerTransport func(*http.Request) (*http.Response, error)
+
+func (f edgeBrokerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+// One project whose broker read hangs holds back no other project's read: a refresh reads each
+// served project on its own, so PRIV's answer is read while SLOW's read is still waiting, and
+// PRIV's answer is fresh when the pass ends. Read one after the other, PRIV's would wait for
+// SLOW's to time out, and with enough slow projects ahead of it would age past its life.
+func TestAnEdgeRefreshReadsEachProjectOnItsOwn(t *testing.T) {
+	var slowWaiting atomic.Int32
+	slowEntered := make(chan struct{})
+	release := make(chan struct{})
+	var readWhileSlowWaited atomic.Bool
+	privRead := make(chan struct{})
+	transport := edgeBrokerTransport(func(request *http.Request) (*http.Response, error) {
+		project := request.URL.Query().Get("project")
+		if project == "SLOW" {
+			slowWaiting.Add(1)
+			close(slowEntered)
+			defer slowWaiting.Add(-1)
+			select {
+			case <-release:
+			case <-request.Context().Done():
+				return nil, request.Context().Err()
+			}
+			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader("{}")), Request: request}, nil
+		}
+		// This read waits for SLOW's to have begun, whichever order the reads start in, and then
+		// sees whether that one is still waiting. A read that ends before SLOW's begins, its
+		// time spent while the refresh runs one read at a time, saw no read beside it.
+		defer close(privRead)
+		select {
+		case <-slowEntered:
+			readWhileSlowWaited.Store(slowWaiting.Load() == 1)
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
+		}
+		body := fmt.Sprintf(`{"project":%q,"repositories":["acme/pub"]}`, project)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})
+	reader := newEdgeRepositories("http://broker.example", listenerBrokerAccount(edgeAccountToken), []string{"SLOW", "PRIV"},
+		newEdgeWithheldCounter(metrics.New()), logging.New("test"))
+	reader.client = &http.Client{Transport: transport}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reader.refresh(context.Background())
+	}()
+	select {
+	case <-privRead:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the refresh read no answer of PRIV within 30 s")
+	}
+	close(release)
+	<-done
+	if !readWhileSlowWaited.Load() {
+		t.Fatal("the refresh read PRIV's answer only once SLOW's read had ended: a project whose read hangs holds back every project after it")
+	}
+	if repositories, complete := reader.standing([]string{"PRIV"}); !complete || !slices.Equal(repositories, []string{"acme/pub"}) {
+		t.Fatalf("after the refresh PRIV stands %v (complete %t), want [acme/pub]", repositories, complete)
 	}
 }

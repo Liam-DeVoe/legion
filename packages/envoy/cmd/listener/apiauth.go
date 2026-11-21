@@ -320,8 +320,8 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			admit(w, r, credentialNone)
 			return
 		}
-		// An edge listener admits a broker token alone (E1): whatever else a request presents,
-		// it is refused here as an unknown credential is, before any bearer is compared.
+		// An edge listener admits a broker token alone (EdgeAdmits): whatever else a request
+		// presents, it is refused here as an unknown credential is, before any bearer is compared.
 		if len(auth.edgeProjects) > 0 {
 			writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 			return
