@@ -144,7 +144,7 @@ func TestEveryBusUnavailableAnswerThatMayHaveStoredTheMessageSaysSo(t *testing.T
 		item := contracts.MessageEnvelope(contracts.Message{Text: "in process"}, "notifications.team.in-process", publishDedupePrefix+uuid.NewString())
 		_, err := publishHeld(context.Background(), nil, func(context.Context, contracts.Envelope) (bus.StoredAck, error) {
 			return bus.StoredAck{}, refusal
-		}, nil, requestSender{}, &item)
+		}, &requestRecord{}, requestSender{}, &item)
 		return err
 	}
 	// unread is the error publishHeld answers a duplicate verdict at sequence 7, a resend's where
@@ -154,7 +154,7 @@ func TestEveryBusUnavailableAnswerThatMayHaveStoredTheMessageSaysSo(t *testing.T
 		reader := &standInReader{stored: &bus.StoredMessage{Sequence: 8, Subject: item.Topic}}
 		_, err := publishHeld(context.Background(), reader, func(context.Context, contracts.Envelope) (bus.StoredAck, error) {
 			return bus.StoredAck{Sequence: 7, Duplicate: true, Resent: resent}, nil
-		}, nil, requestSender{}, &item)
+		}, &requestRecord{}, requestSender{}, &item)
 		return err
 	}
 	for _, row := range []struct {

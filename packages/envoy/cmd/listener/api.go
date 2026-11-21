@@ -880,11 +880,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusConflict, outcomeSessionStopped, "the session is stopped")
 			return
 		}
-		// item is the copy the stream holds after a duplicate verdict (publishHeld); the line
-		// names who asked from the envelope built for the request.
-		asked := item
-		record.asked = &asked
-		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, charge, senderOf(r, item), &item)
+		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, record, senderOf(r, item), &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return
@@ -1273,11 +1269,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-		// item is the copy the stream holds after a duplicate verdict (publishHeld); the line
-		// names who asked from the envelope built for the request.
-		asked := item
-		record.asked = &asked
-		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, charge, senderOf(r, item), &item)
+		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, record, senderOf(r, item), &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return

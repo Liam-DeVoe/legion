@@ -233,11 +233,7 @@ func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint
 		return
 	}
 	held.DedupeKey = strings.TrimPrefix(held.DedupeKey, roleForwardDedupePrefix)
-	s.duplicate = held.EventID != s.item.EventID
-	asked := s.item
-	s.record.asked = &asked
-	s.item = s.sender.answer(held)
-	s.record.item = &s.item
+	s.duplicate = s.record.answerStored(&s.item, held, s.sender)
 	s.delivered(outcome)
 }
 
@@ -315,13 +311,9 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	// read it as a repeat or answered its own resend or in-process refusal with it, which the 202
 	// says with duplicate as a 200 does (deliveredHeld), and which tells a client the shorter
 	// answer another sender gets (requestSender.answer) from a whole one.
-	duplicate := kept.item.EventID != s.item.EventID
-	asked := s.item
-	s.record.asked = &asked
-	s.item = s.sender.answer(kept.item)
+	duplicate := s.record.answerStored(&s.item, kept.item, s.sender)
 	s.holder = result.Holder
 	s.holderState = result.HolderState
-	s.record.item = &s.item
 	s.record.holder = s.holder
 	answer := listenerwire.PublishResponse{
 		Envelope:     s.item,
@@ -397,11 +389,13 @@ func (s *roleSend) timedOut() {
 // An echo is answered with its own envelope, which no forward stored, unless the route's record
 // names a forward the stream stored for another holder for the same request: the same sender,
 // role and dedupe key (forwardRequest, dedupe.Cache.Forward) - a session that sent to the role,
-// took it, and repeats. That repeat is answered as that stored forward (deliveredHeld on the
-// earlier holder's subject), never with the new envelope built for the repeat, whose event_id no
-// stored message carries. The record is the listener's own and lasts 10 minutes; a repeat after
-// that or on another listener answers its own new envelope, as at main. No stream lookup finds the
-// earlier forward by the request alone, since its message id names the earlier holder's subject.
+// took it, and repeats. That record never names the echo's holder: the request names its source
+// session, which is that holder, and no send forwards to its own source session (beforeForward).
+// The repeat is answered as that stored forward (deliveredHeld on the earlier holder's subject),
+// never with the new envelope built for the repeat, whose event_id no stored message carries.
+// The record is the listener's own and lasts 10 minutes; a repeat after that or on another
+// listener answers its own new envelope, as at main. No stream lookup finds the earlier forward
+// by the request alone, since its message id names the earlier holder's subject.
 //
 // None of those answers marks the charge: each stores nothing, and an earlier forward of the same
 // send that failed with no refusal, which may have stored the message for the holder it went to,
@@ -417,11 +411,11 @@ func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.Sessi
 	case forwardAllowed:
 		return false
 	case forwardEcho:
-		if earlier, seq, stored := s.d.confirmed.Forward(forwardRequest(s.item)); stored && earlier != s.holder {
+		if earlier, seq, stored := s.d.confirmed.Forward(forwardRequest(s.item)); stored {
 			s.deliveredHeld(ctx, earlier, seq, sendSkipped)
-			break
+		} else {
+			s.delivered(sendSkipped)
 		}
-		s.delivered(sendSkipped)
 	case forwardRepeat:
 		// The route stored this key's forward for this holder, and its record keeps the
 		// sequence the stream holds that forward at, which is the copy this repeat answers. A

@@ -6,7 +6,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -164,11 +163,8 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 		if !reflect.DeepEqual(answer.envelope, kept) {
 			t.Fatalf("%s answered %+v, want the kept copy field for field: %+v", what, answer.envelope, kept)
 		}
-		var fields struct {
-			Kept bool `json:"kept"`
-		}
-		if err := json.Unmarshal([]byte(answer.raw), &fields); err != nil || !fields.Kept || answer.Duplicate != duplicate {
-			t.Fatalf("%s answered %s (%v), want kept: true and duplicate %t", what, answer.raw, err, duplicate)
+		if !answer.Kept || answer.Duplicate != duplicate {
+			t.Fatalf("%s answered %s, want kept: true and duplicate %t", what, answer.raw, duplicate)
 		}
 	}
 

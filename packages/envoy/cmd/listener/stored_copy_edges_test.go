@@ -60,7 +60,7 @@ func TestARepeatWhoseCopyReadDoesNotAnswerAnswers503(t *testing.T) {
 		}
 		repeat := item
 		reader := &standInReader{stored: &bus.StoredMessage{Sequence: seq, Subject: item.Topic, Data: data}}
-		duplicate, err := publishHeld(context.Background(), reader, duplicateVerdict, nil, sender, &repeat)
+		duplicate, err := publishHeld(context.Background(), reader, duplicateVerdict, &requestRecord{}, sender, &repeat)
 		if err != nil || !duplicate || repeat.EventID != copied.EventID {
 			t.Fatalf("a read that answers answered duplicate %t, event %s (%v); want duplicate and the copy's %s", duplicate, repeat.EventID, err, copied.EventID)
 		}
@@ -71,7 +71,7 @@ func TestARepeatWhoseCopyReadDoesNotAnswerAnswers503(t *testing.T) {
 		reader := &standInReader{}
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		_, err := publishHeld(ctx, reader, duplicateVerdict, nil, sender, &repeat)
+		_, err := publishHeld(ctx, reader, duplicateVerdict, &requestRecord{}, sender, &repeat)
 		if reader.reads != 1 || !errors.Is(err, errStoredCopyUnread) || repeat.EventID != item.EventID {
 			t.Fatalf("a read that did not answer gave %d reads, error %v, event %s; want one read, errStoredCopyUnread and the request's own envelope untouched",
 				reader.reads, err, repeat.EventID)

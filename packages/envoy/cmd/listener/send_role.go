@@ -119,10 +119,7 @@ func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord,
 	} else {
 		charge.stored()
 	}
-	duplicate := kept.item.EventID != item.EventID
-	asked := *item
-	record.asked = &asked
-	*item = sender.answer(kept.item)
+	duplicate := record.answerStored(item, kept.item, sender)
 	record.holder = holder
 	record.acceptWith(w, http.StatusAccepted, listenerwire.KeptSendResponse{
 		Envelope:     *item,

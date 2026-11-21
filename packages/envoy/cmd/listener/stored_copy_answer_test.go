@@ -104,7 +104,7 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 		item := envelope()
 		own := item
 		charge := &senderCharge{sender: "ses_own_copy", giveBack: func() {}}
-		duplicate, err := publishHeld(ctx, client, storedThen(own), charge, requestSender{source: item.Source, session: item.SourceSession}, &item)
+		duplicate, err := publishHeld(ctx, client, storedThen(own), &requestRecord{charge: charge}, requestSender{source: item.Source, session: item.SourceSession}, &item)
 		if err != nil || duplicate || !reflect.DeepEqual(item, own) {
 			t.Fatalf("a resend's verdict on the request's own copy answered duplicate %t, %+v (%v); want no duplicate and its own copy whole, %+v",
 				duplicate, item, err, own)
@@ -119,7 +119,7 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 		item.DedupeKey = publishDedupePrefix + uuid.NewString()
 		other := item
 		other.EventID = id.New()
-		duplicate, err := publishHeld(ctx, client, storedThen(other), nil, requestSender{source: item.Source, session: item.SourceSession}, &item)
+		duplicate, err := publishHeld(ctx, client, storedThen(other), &requestRecord{}, requestSender{source: item.Source, session: item.SourceSession}, &item)
 		if err != nil || !duplicate || !reflect.DeepEqual(item, other) {
 			t.Fatalf("a verdict on another request's copy answered duplicate %t, %+v (%v); want duplicate and that copy whole, %+v",
 				duplicate, item, err, other)
@@ -208,7 +208,7 @@ func TestADuplicateVerdictThatNamesNoCopyAnswers503AtOnce(t *testing.T) {
 		item := contracts.MessageEnvelope(contracts.Message{Text: "in process"}, "notifications.team.in-process", publishDedupePrefix+uuid.NewString())
 		_, err := publishHeld(context.Background(), nil, func(context.Context, contracts.Envelope) (bus.StoredAck, error) {
 			return bus.StoredAck{}, inProcess
-		}, nil, requestSender{}, &item)
+		}, &requestRecord{}, requestSender{}, &item)
 		var logs strings.Builder
 		record := &requestRecord{logger: logging.NewWithWriter("test", &logs), line: "listener publish", laneKey: "topic", item: &item}
 		recorder := httptest.NewRecorder()

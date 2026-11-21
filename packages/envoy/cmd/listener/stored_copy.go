@@ -91,12 +91,12 @@ func (s requestSender) answer(held contracts.Envelope) contracts.Envelope {
 	}
 }
 
-// publishHeld publishes *item within ctx through publish, marks charge by the stream's answer to
-// that publish (senderCharge.published), and leaves in *item the envelope the stream holds for
-// it, which it reads through reader, as sender may read it (requestSender.answer). It is the one
-// publish of the send route and of the topic publish, so neither can answer an envelope the
-// stream does not hold: a route answers *item, and after a duplicate verdict *item is the stored
-// copy, not the envelope the route built.
+// publishHeld publishes *item within ctx through publish, marks record's charge by the stream's
+// answer to that publish (senderCharge.published), and leaves in *item the envelope the stream
+// holds for it, which it reads through reader, as sender may read it (requestRecord.answerStored).
+// It is the one publish of the send route and of the topic publish, so neither can answer an
+// envelope the stream does not hold: a route answers *item, and after a duplicate verdict *item
+// is the stored copy, not the envelope the route built.
 //
 // A publish the stream stored as a new copy leaves *item as it was, and duplicate false. A
 // duplicate verdict names the copy the stream holds under the same message id, at its sequence
@@ -114,9 +114,9 @@ func (s requestSender) answer(held contracts.Envelope) contracts.Envelope {
 // cannot be read after the bus sent the publish again (bus.StoredAck.Resent) may be the one this
 // request's first send stored, so that error is bus.ErrUnacknowledged too (resentUnread), and its
 // 503 says maybe_stored as every answer that may have stored the message does (mayHaveStored).
-func publishHeld(ctx context.Context, reader storedReader, publish storedPublish, charge *senderCharge, sender requestSender, item *contracts.Envelope) (duplicate bool, err error) {
+func publishHeld(ctx context.Context, reader storedReader, publish storedPublish, record *requestRecord, sender requestSender, item *contracts.Envelope) (duplicate bool, err error) {
 	ack, err := publish(ctx, *item)
-	charge.published(ack, err)
+	record.charge.published(ack, err)
 	if errors.Is(err, bus.ErrDuplicateInProcess) {
 		return false, fmt.Errorf("%w: %w", errStoredCopyUnread, err)
 	}
@@ -130,9 +130,21 @@ func publishHeld(ctx context.Context, reader storedReader, publish storedPublish
 		}
 		return false, err
 	}
-	duplicate = held.EventID != item.EventID
+	return record.answerStored(item, held, sender), nil
+}
+
+// answerStored makes *item, the envelope a route built for its request, the answer of held, a
+// copy the stream or the role's kept lane holds under the request's message id, as sender may
+// read it (requestSender.answer). The record's line then names that copy's event_id and, from
+// the envelope built for the request (asked), who asked and with what words. duplicate is
+// whether held is another request's copy, which is when its event_id is not the built
+// envelope's.
+func (rec *requestRecord) answerStored(item *contracts.Envelope, held contracts.Envelope, sender requestSender) (duplicate bool) {
+	asked := *item
+	rec.asked = &asked
+	rec.item = item
 	*item = sender.answer(held)
-	return duplicate, nil
+	return held.EventID != asked.EventID
 }
 
 // resentUnread is a stored copy that could not be read after a resend's duplicate verdict: the

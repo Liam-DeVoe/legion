@@ -71,6 +71,28 @@ func (a heldAnswer) requireHeld(t *testing.T, what string, kept contracts.Envelo
 	}
 }
 
+// requireKeyTaken fails unless the answer is status with duplicate and kept's event_id and times
+// (issued_at, expires_at, kept_at), and carries none of what kept's sender wrote or who it is: no
+// payload, payload_summary, payload_ref, source, source_session or sender, and not words, which
+// that sender wrote. It is the answer a caller gets for repeating another sender's key
+// (requestSender.answer).
+func (a heldAnswer) requireKeyTaken(t *testing.T, what string, status int, kept contracts.Envelope, words string) {
+	t.Helper()
+	a.requireStatus(t, what, status)
+	if !a.Duplicate {
+		t.Fatalf("%s answered %s, want duplicate", what, a.raw)
+	}
+	got := a.envelope
+	if got.EventID != kept.EventID || got.IssuedAt != kept.IssuedAt ||
+		!reflect.DeepEqual(got.ExpiresAt, kept.ExpiresAt) || !reflect.DeepEqual(got.KeptAt, kept.KeptAt) {
+		t.Fatalf("%s answered %s, want the stored copy's event_id and times: %+v", what, a.raw, kept)
+	}
+	if got.Payload != "" || got.PayloadSummary != "" || got.PayloadRef != "" || got.Source != "" ||
+		got.SourceSession != "" || got.Sender != nil || strings.Contains(a.raw, words) {
+		t.Fatalf("%s answered %s, which carries what the other sender wrote or who it is", what, a.raw)
+	}
+}
+
 // heldForward is the one forward the stream holds on holder's agent subject, as the role route
 // answers it: with the forward mark, which it must carry, taken off its dedupe key
 // (roleForwardDedupePrefix).

@@ -98,7 +98,8 @@ type requestRecord struct {
 	// request refused before the envelope exists (an undecodable body): that request still gets
 	// its line, with the envelope's four fields empty rather than no line at all. A route that
 	// answers a copy another request stored points item at that copy, and keeps the envelope it
-	// built in asked, whose source, source_session and payload_summary the line names.
+	// built in asked, whose source, source_session and payload_summary the line names
+	// (answerStored).
 	item   *contracts.Envelope
 	asked  *contracts.Envelope
 	holder string

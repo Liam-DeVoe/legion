@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -92,16 +91,7 @@ func TestARoleMarkedSendKeptForTheRoleAnswersTheKeptCopy(t *testing.T) {
 		planted.requireStatus(t, "the agent's publish to the role nobody claims", http.StatusAccepted)
 		kept := heldCopy(t, rig.harness.client, bus.KeptRoleSubject(role))
 		answer := send(t, role, key, "dispatch's words", "required")
-		answer.requireStatus(t, "the marked send under the agent's key", http.StatusAccepted)
-		got := answer.envelope
-		if !answer.Duplicate || got.EventID != kept.EventID || got.IssuedAt != kept.IssuedAt ||
-			!reflect.DeepEqual(got.KeptAt, kept.KeptAt) {
-			t.Fatalf("the marked send under the agent's key answered %s, want duplicate and the kept copy's event_id and times: %+v", answer.raw, kept)
-		}
-		if got.Payload != "" || got.PayloadSummary != "" || got.Source != "" || got.SourceSession != "" ||
-			got.Sender != nil || strings.Contains(answer.raw, words) {
-			t.Fatalf("the marked send under the agent's key answered %s, which carries what the agent wrote or who it is", answer.raw)
-		}
+		answer.requireKeyTaken(t, "the marked send under the agent's key", http.StatusAccepted, kept, words)
 		if got := expectsReply(t, answer); got != "optional" {
 			t.Fatalf("the marked send under the agent's key answered expects_reply %q, want the kept copy's %q", got, "optional")
 		}

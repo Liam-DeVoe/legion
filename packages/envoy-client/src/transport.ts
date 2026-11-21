@@ -1270,7 +1270,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // The attempts this send made, which the unconfirmed error names: fewer than the client's
       // where an answer ends the send early, such as a 2xx whose body does not parse.
       let made = 0;
-      let answered: KeyTakenResult | z.infer<typeof EnvelopeResponseSchema>;
+      let response: z.infer<typeof EnvelopeResponseSchema>;
       try {
         const answer = await post(
           "/v1/messages/send",
@@ -1301,14 +1301,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         // that says only that another sender's message holds the key is read before the whole
         // envelope, which it never is (KeyTakenWireSchema).
         const raw = answerJson(answer, "POST", "/v1/messages/send");
-        answered = keyTakenOf(raw) ?? EnvelopeResponseSchema.parse(raw);
+        const taken = keyTakenOf(raw);
+        if (taken !== undefined) return taken;
+        response = EnvelopeResponseSchema.parse(raw);
       } catch (error) {
         const refused = notSent || (error instanceof EnvoyApiError && error.details.status < 500);
         if (refused && !unanswered) throw error;
         throw new EnvoySendUnconfirmedError(input.targetSessionID, idempotencyKey, made, error);
       }
-      if ("keyTaken" in answered) return answered;
-      const response = answered;
       return {
         envelope: response,
         recipient: response.recipient ?? input.targetSessionID,

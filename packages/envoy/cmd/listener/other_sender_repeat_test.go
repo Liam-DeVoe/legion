@@ -99,19 +99,7 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 	// who asked: session, and the asker's own words.
 	learnsOnlyTheKey := func(t *testing.T, what string, r route, answer heldAnswer, kept contracts.Envelope, words, session, asked string) {
 		t.Helper()
-		answer.requireStatus(t, what, r.status)
-		if !answer.Duplicate {
-			t.Fatalf("%s answered %s, want duplicate", what, answer.raw)
-		}
-		got := answer.envelope
-		if got.EventID != kept.EventID || got.IssuedAt != kept.IssuedAt ||
-			!reflect.DeepEqual(got.ExpiresAt, kept.ExpiresAt) || !reflect.DeepEqual(got.KeptAt, kept.KeptAt) {
-			t.Fatalf("%s answered %s, want the stored copy's event_id and times: %+v", what, answer.raw, kept)
-		}
-		if got.Payload != "" || got.PayloadSummary != "" || got.PayloadRef != "" || got.Source != "" ||
-			got.SourceSession != "" || got.Sender != nil || strings.Contains(answer.raw, words) {
-			t.Fatalf("%s answered %s, which carries what the other sender wrote or who it is", what, answer.raw)
-		}
+		answer.requireKeyTaken(t, what, r.status, kept, words)
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(answer.raw), &fields); err != nil || string(fields["expects_reply"]) != `"optional"` {
 			t.Fatalf("%s answered expects_reply %s, want the stored copy's \"optional\"; body %s", what, fields["expects_reply"], answer.raw)
