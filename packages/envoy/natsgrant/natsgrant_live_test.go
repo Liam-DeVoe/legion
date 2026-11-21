@@ -14,24 +14,134 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// grantedConnection connects to uri as the nkey user whose seed is seed and returns the
-// connection with the asynchronous errors the server sends it, a refused publish's among them.
-func grantedConnection(t *testing.T, uri, seed string) (*natsgo.Conn, <-chan error) {
+// grantedConnection connects to uri as the nkey user whose seed is seed, with options, and
+// returns the connection with the asynchronous errors the server sends it, a refused publish's
+// among them.
+func grantedConnection(t *testing.T, uri, seed string, options ...natsgo.Option) (*natsgo.Conn, <-chan error) {
 	t.Helper()
 	errs := make(chan error, 16)
-	conn, err := testnats.ConnectSeed(t, uri, seed, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
+	conn, err := testnats.ConnectSeed(t, uri, seed, append(options, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
 		select {
 		case errs <- err:
 		default:
 		}
-	}))
+	}))...)
 	require.NoError(t, err)
 	t.Cleanup(conn.Close)
 	return conn, errs
+}
+
+// refusedNaming waits up to 10 s for the server's permissions violation naming what, a fragment of
+// its text such as `Publish to "x"`, among errs, and fails the test without one.
+func refusedNaming(t *testing.T, errs <-chan error, what string) {
+	t.Helper()
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case err := <-errs:
+			if errors.Is(err, natsgo.ErrPermissionViolation) && strings.Contains(err.Error(), what) {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("the server sent no permissions violation for %s within 10s", what)
+		}
+	}
+}
+
+// The edge's consumer calls reach past its publish list, and this row pins how far, on the hub's
+// image: a narrowing of that reach fails it, and so does a widening of the publish list it reads
+// against. On a stream with the production subjects, which a shared listener's user owns:
+//   - a direct publish of the edge's on another project's role subject is refused, and a push
+//     consumer the edge creates over a message it stored delivers that message on the same subject;
+//   - a push consumer whose deliver subject the stream carries is refused as a cycle;
+//   - the edge updates another listener's durable to deliver to its own inbox, and deletes it;
+//   - a subscription to the relay subjects under deliver.> is admitted and delivered a subject of
+//     two tokens past the prefix, where a subscription to that subject itself is refused.
+func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
+	edgeSeed, edgeKey := testnats.User(t)
+	sharedSeed, sharedKey := testnats.User(t)
+	readerSeed, readerKey := testnats.User(t)
+	edge, shared := edge(t, "m", "PRIV"), natsgrant.Listener("shared")
+	_, uri := testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(
+		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
+		testnats.StaticUser{NKey: sharedKey, Publish: shared.Publish, Subscribe: shared.Subscribe},
+		testnats.StaticUser{NKey: readerKey, Publish: []string{"example.unused"}, Subscribe: []string{">"}},
+	), []string{"-js"}, false)
+	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithName("shared"), bus.WithEnvironment(func(name string) (string, bool) {
+		if name == bus.NkeySeedEnvVar {
+			return sharedSeed, true
+		}
+		return "", false
+	}))
+	require.NoError(t, err, "the shared listener's user creates the stream")
+	t.Cleanup(owner.Close)
+	const durable = "listener-shared"
+	_, err = owner.JS().AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
+		Durable: durable, DeliverSubject: owner.Conn.NewInbox(), FilterSubjects: []string{"notifications.dispatch.>"}, AckPolicy: natsgo.AckExplicitPolicy,
+	})
+	require.NoError(t, err, "the shared listener's user creates its durable")
+	reader, _ := grantedConnection(t, uri, readerSeed)
+	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
+	edgeJS, err := edgeConn.JetStream()
+	require.NoError(t, err)
+
+	t.Run("a push consumer delivers on a subject the grant does not publish", func(t *testing.T) {
+		const target, own = "notifications.role.INFRA.x", "notifications.agent.ses_edge_own"
+		received, err := reader.SubscribeSync(target)
+		require.NoError(t, err)
+		require.NoError(t, reader.Flush())
+		require.NoError(t, edgeConn.Publish(target, []byte("published directly")))
+		require.NoError(t, edgeConn.Flush())
+		refusedNaming(t, edgeErrs, `Publish to "`+target+`"`)
+		_, err = edgeJS.Publish(own, []byte("stored by the edge"))
+		require.NoError(t, err, "the edge stores a message on its own agent subject")
+		_, err = edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
+			Name: "edge-reach", FilterSubject: own, DeliverSubject: target, AckPolicy: natsgo.AckNonePolicy,
+		})
+		require.NoError(t, err, "the edge creates a push consumer delivering on %s", target)
+		msg, err := received.NextMsg(10 * time.Second)
+		require.NoError(t, err, "the edge's push consumer delivered nothing on %s", target)
+		require.Equal(t, "stored by the edge", string(msg.Data), "the reader received the edge's direct publish, which the server refused")
+	})
+	t.Run("a deliver subject the stream carries is refused as a cycle", func(t *testing.T) {
+		_, err := edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
+			Name: "edge-cycle", FilterSubject: "notifications.agent.ses_edge_own", DeliverSubject: "notifications.dispatch.issue.INFRA.INFRA-1.comment.created", AckPolicy: natsgo.AckNonePolicy,
+		})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "cycle")
+	})
+	t.Run("it updates and deletes another listener's durable", func(t *testing.T) {
+		stolen := natsgrant.EdgeInboxPrefix("m") + ".stolen"
+		_, err := edgeJS.UpdateConsumer(bus.Stream, &natsgo.ConsumerConfig{
+			Durable: durable, DeliverSubject: stolen, FilterSubjects: []string{"notifications.dispatch.>"}, AckPolicy: natsgo.AckExplicitPolicy,
+		})
+		require.NoError(t, err, "the edge updates %s", durable)
+		info, err := owner.JS().ConsumerInfo(bus.Stream, durable)
+		require.NoError(t, err)
+		require.Equal(t, stolen, info.Config.DeliverSubject, "%s delivers to the edge's inbox", durable)
+		require.NoError(t, edgeJS.DeleteConsumer(bus.Stream, durable), "the edge deletes %s", durable)
+		_, err = owner.JS().ConsumerInfo(bus.Stream, durable)
+		require.ErrorIs(t, err, natsgo.ErrConsumerNotFound, "%s is still there", durable)
+	})
+	t.Run("a subscription under deliver.> is admitted and gets two tokens past the prefix", func(t *testing.T) {
+		const twoTokens = "notifications.envoy.deliver.x.y"
+		wide, err := edgeConn.SubscribeSync(bus.DeliverSubjectPrefix + ">")
+		require.NoError(t, err)
+		_, err = edgeConn.SubscribeSync(twoTokens)
+		require.NoError(t, err)
+		require.NoError(t, edgeConn.Flush())
+		refusedNaming(t, edgeErrs, `Subscription to "`+twoTokens+`"`)
+		require.NoError(t, owner.Conn.Publish(twoTokens, []byte("two tokens")))
+		require.NoError(t, owner.Conn.Flush())
+		msg, err := wide.NextMsg(10 * time.Second)
+		require.NoError(t, err, "the edge's subscription under deliver.> was delivered nothing")
+		require.Equal(t, twoTokens, msg.Subject)
+	})
 }
 
 // A publish of a Dispatch event on the edge listener's connection is refused by the server: the
@@ -43,7 +153,7 @@ func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 	edgeSeed, edgeKey := testnats.User(t)
 	listenerSeed, listenerKey := testnats.User(t)
 	readerSeed, readerKey := testnats.User(t)
-	edge, listener := natsgrant.Edge("m", []string{"PRIV"}), natsgrant.Listener("example-hub")
+	edge, listener := edge(t, "m", "PRIV"), natsgrant.Listener("example-hub")
 	server, uri := testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(
 		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
 		testnats.StaticUser{NKey: listenerKey, Publish: listener.Publish, Subscribe: listener.Subscribe},
@@ -170,7 +280,7 @@ func TestTheEdgeGrantPublishesOnlyItsOwnLanes(t *testing.T) {
 	edgeSeed, edgeKey := testnats.User(t)
 	listenerSeed, listenerKey := testnats.User(t)
 	readerSeed, readerKey := testnats.User(t)
-	edge, listener := natsgrant.Edge("m", []string{"PRIV"}), natsgrant.Listener("m")
+	edge, listener := edge(t, "m", "PRIV"), natsgrant.Listener("m")
 	_, uri := testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(
 		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
 		testnats.StaticUser{NKey: listenerKey, Publish: listener.Publish, Subscribe: listener.Subscribe},

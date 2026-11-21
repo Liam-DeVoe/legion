@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,25 @@ func registryBody(t *testing.T, met *metrics.Registry) string {
 	return recorder.Body.String()
 }
 
+// testEdgeGrant is the grant of an edge listener of test-machine serving PRIV, counting on met.
+func testEdgeGrant(t *testing.T, met *metrics.Registry) *edgeGrant {
+	t.Helper()
+	grant, err := newEdgeGrant("test-machine", []string{"PRIV"}, met)
+	if err != nil {
+		t.Fatalf("the edge's grant: %v", err)
+	}
+	return grant
+}
+
+// The start's grant refuses a project list natsgrant.Edge refuses, naming edge mode, and counts
+// nothing on it.
+func TestAnEdgeListenerGrantRefusesAListThatIsNoListOfProjectKeys(t *testing.T) {
+	grant, err := newEdgeGrant("test-machine", []string{"*"}, metrics.New())
+	if err == nil || grant != nil || !strings.Contains(err.Error(), "edge mode") {
+		t.Fatalf("newEdgeGrant(test-machine, [*]) = %v, %v; want no grant and a refusal naming edge mode", grant, err)
+	}
+}
+
 // An edge listener's grant publishes no kept role lane, so the edge keeps no role message and
 // hands no kept lane over: a handover of a lane that holds a copy for a live holder forwards
 // nothing and writes no cursor, the sweep ends before it starts, and a keep stores nothing. The
@@ -49,7 +69,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 		return nil
 	})
 	edge := shared
-	edge.edge = newEdgeGrant("test-machine", []string{"PRIV"}, harness.metrics)
+	edge.edge = testEdgeGrant(t, harness.metrics)
 
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "edge-kept-handover-"+id.New())
 	if _, kept := keepRoleMessage(shared, role, item); !kept {
@@ -107,7 +127,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 func TestAnEdgePublishToAnUnheldRoleIsRefusedAndKeptNowhere(t *testing.T) {
 	d, client := keptRoleDeps(t)
 	met := metrics.New()
-	d.delivery.edge = newEdgeGrant("test-machine", []string{"PRIV"}, met)
+	d.delivery.edge = testEdgeGrant(t, met)
 	const (
 		project = "PRIV.edge-unheld"
 		legacy  = "edge-unheld-legacy"
@@ -156,7 +176,7 @@ func TestAnEdgePublishToAnUnheldRoleIsRefusedAndKeptNowhere(t *testing.T) {
 func TestAnEdgeListenerPublishesNoDeliveryExceptionItsGrantDoesNotHold(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	edge := harness.config
-	edge.edge = newEdgeGrant("test-machine", []string{"PRIV"}, harness.metrics)
+	edge.edge = testEdgeGrant(t, harness.metrics)
 	exceptions, err := harness.client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + ">")
 	if err != nil {
 		t.Fatalf("subscribe to the exception lanes: %v", err)

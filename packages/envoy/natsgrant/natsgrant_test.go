@@ -99,13 +99,21 @@ type edgeGolden struct {
 	Subscribe []string `json:"subscribe"`
 }
 
+// edge is natsgrant.Edge(machineID, projects), which must take the list.
+func edge(t *testing.T, machineID string, projects ...string) natsgrant.Permissions {
+	t.Helper()
+	grant, err := natsgrant.Edge(machineID, projects)
+	require.NoError(t, err, "Edge(%q, %v)", machineID, projects)
+	return grant
+}
+
 // The edge listener's grant is the golden, element for element and in order, with no deny list.
 func TestTheEdgeGrantIsTheGolden(t *testing.T) {
 	var golden edgeGolden
 	readJSON(t, "testdata/edge.golden.json", &golden)
 	require.Equal(t, "m", golden.MachineID)
 	require.Equal(t, []string{"PRIV"}, golden.Projects)
-	grant := natsgrant.Edge(golden.MachineID, golden.Projects)
+	grant := edge(t, golden.MachineID, golden.Projects...)
 	requireSet(t, set{Publish: golden.Publish, Subscribe: golden.Subscribe}, grant, "Edge("+strconv.Quote(golden.MachineID)+", "+strings.Join(golden.Projects, ",")+")")
 	require.Empty(t, grant.PublishDeny)
 	require.Empty(t, grant.SubscribeDeny)
@@ -115,14 +123,14 @@ func TestTheEdgeGrantIsTheGolden(t *testing.T) {
 // notification topic, the finite list of the edge's own subjects - the agent subjects, each
 // project's role subjects, the relay subjects, the relay receipts, the resume lane, and the
 // exception lanes of the agent subjects and of each project's role subjects - and no create or
-// update of the stream. In subscribe: its own inbox prefix in place of every reply inbox, every
-// session's relay subject and the relay receipts, and neither role-lane queue group. So a change
-// to Listener reaches Edge, and the golden above says that it did.
+// update of the stream. In subscribe: its own machine's inbox prefix in place of every reply inbox,
+// every session's relay subject and the relay receipts, and neither role-lane queue group. So a
+// change to Listener reaches Edge, and the golden above says that it did.
 func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
-	require.Equal(t, "_INBOX_envoy_edge", natsgrant.EdgeInboxPrefix)
-	for _, id := range []string{"m", "example-hub"} {
+	for id, prefix := range map[string]string{"m": "_INBOX_envoy_edge_m", "example-hub": "_INBOX_envoy_edge_example-hub", "example hub": "_INBOX_envoy_edge_example-hub"} {
+		require.Equal(t, prefix, natsgrant.EdgeInboxPrefix(id), "EdgeInboxPrefix(%q)", id)
 		for _, projects := range [][]string{{"PRIV"}, {"OTHER", "PRIV"}} {
-			listener, edge := natsgrant.Listener(id), natsgrant.Edge(id, projects)
+			listener, edge := natsgrant.Listener(id), edge(t, id, projects...)
 			require.Equal(t, "notifications.>", listener.Publish[0])
 			kept := slices.DeleteFunc(slices.Clone(listener.Publish[1:]), func(entry string) bool {
 				return entry == "$JS.API.STREAM.CREATE.ENVOY_NOTIFICATIONS" || entry == "$JS.API.STREAM.UPDATE.ENVOY_NOTIFICATIONS"
@@ -137,26 +145,46 @@ func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 				own = append(own, "notifications.envoy.exceptions.notifications.role."+project+".>")
 			}
 			require.Equal(t, append(own, kept...), edge.Publish, "Edge(%q, %v) publish", id, projects)
-			require.Equal(t, []string{"_INBOX_envoy_edge.>", "notifications.envoy.deliver.*", "notifications.envoy.relayreply.>"}, edge.Subscribe, "Edge(%q, %v) subscribe", id, projects)
+			require.Equal(t, []string{prefix + ".>", "notifications.envoy.deliver.*", "notifications.envoy.relayreply.>"}, edge.Subscribe, "Edge(%q, %v) subscribe", id, projects)
 		}
 	}
 }
 
-// matchesSubject reports whether the NATS subject pattern pattern admits subject: token by
-// token, * for any one token and > for one or more tokens at the end.
-func matchesSubject(pattern, subject string) bool {
-	patterns, tokens := strings.Split(pattern, "."), strings.Split(subject, ".")
-	for i, p := range patterns {
-		switch {
-		case p == ">":
-			return len(tokens) > i
-		case i >= len(tokens):
-			return false
-		case p != "*" && p != tokens[i]:
-			return false
-		}
+// Two edge machines subscribe inbox prefixes of their own, so neither is delivered the other's
+// replies: neither's inbox entry matches an inbox the other names.
+func TestEachEdgeMachineSubscribesItsOwnInboxes(t *testing.T) {
+	a, b := edge(t, "edge-a", "PRIV"), edge(t, "edge-b", "PRIV")
+	inboxOfB := natsgrant.EdgeInboxPrefix("edge-b") + ".nuid"
+	require.True(t, slices.ContainsFunc(b.Subscribe, func(entry string) bool { return bus.SubjectContains(entry, inboxOfB) }), "edge-b does not subscribe its own inbox %s", inboxOfB)
+	require.False(t, slices.ContainsFunc(a.Subscribe, func(entry string) bool { return bus.SubjectContains(entry, inboxOfB) }), "edge-a subscribes edge-b's inbox %s", inboxOfB)
+}
+
+// Edge refuses a project list oauthwire.ValidProjects refuses, naming why, and builds no subject
+// of it: a wildcard, a dot or a lower-case key would make a role subject reach other projects'.
+// The lists the two callers read take it.
+func TestTheEdgeGrantRefusesAListThatIsNoListOfProjectKeys(t *testing.T) {
+	for name, projects := range map[string][]string{
+		"a wildcard":          {"*"},
+		"a full wildcard":     {">"},
+		"a dotted key":        {"PRIV.X"},
+		"a lower-case key":    {"priv"},
+		"an empty key":        {""},
+		"a key named twice":   {"PRIV", "PRIV"},
+		"an unsorted list":    {"PRIV", "OTHER"},
+		"seventeen projects":  {"AA", "AB", "AC", "AD", "AE", "AF", "AG", "AH", "AI", "AJ", "AK", "AL", "AM", "AN", "AO", "AP", "AQ"},
+		"a key with a space":  {"PRIV X"},
+		"a key past ten long": {"ABCDEFGHIJK"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			grant, err := natsgrant.Edge("m", projects)
+			require.Error(t, err, "Edge(m, %q)", projects)
+			require.Equal(t, natsgrant.Permissions{}, grant)
+		})
 	}
-	return len(patterns) == len(tokens)
+	for _, projects := range [][]string{{"PRIV"}, {"OTHER", "PRIV"}, nil} {
+		_, err := natsgrant.Edge("m", projects)
+		require.NoError(t, err, "Edge(m, %q)", projects)
+	}
 }
 
 // The edge publishes each of its own lanes and nothing else of the notification topics: no event
@@ -166,9 +194,9 @@ func matchesSubject(pattern, subject string) bool {
 // The listener's own grant admits each publish the edge's refuses, which shows the matcher can
 // find one.
 func TestTheEdgeGrantPublishesNothingOutsideItsLanes(t *testing.T) {
-	edge, listener := natsgrant.Edge("m", []string{"PRIV"}), natsgrant.Listener("m")
+	edge, listener := edge(t, "m", "PRIV"), natsgrant.Listener("m")
 	admits := func(entries []string, subject string) bool {
-		return slices.ContainsFunc(entries, func(pattern string) bool { return matchesSubject(pattern, subject) })
+		return slices.ContainsFunc(entries, func(pattern string) bool { return bus.SubjectContains(pattern, subject) })
 	}
 	for _, subject := range []string{
 		"notifications.dispatch.issue.PRIV.PRIV-1.comment.created",
@@ -211,7 +239,7 @@ func TestTheEdgeGrantPublishesNothingOutsideItsLanes(t *testing.T) {
 // The auth service's guard passes the edge's grant: it opens neither direction and names no system
 // subject. The same check on a copy with no subscribe list finds that direction open.
 func TestTheEdgeGrantOpensNoDirection(t *testing.T) {
-	grant := natsgrant.Edge("m", []string{"PRIV"})
+	grant := edge(t, "m", "PRIV")
 	direction, open := natsgrant.OpenDirection(grant)
 	require.False(t, open, "Edge opens its %s direction", direction)
 	entry, named := natsgrant.NamesSystemSubject(grant)
@@ -301,7 +329,7 @@ func TestNamesSystemSubject(t *testing.T) {
 		grants["ListenerHost("+id+")"] = natsgrant.ListenerHost(id)
 		grants["Dispatch("+id+")"] = natsgrant.Dispatch(id)
 		grants["Host("+id+")"] = natsgrant.Host(id)
-		grants["Edge("+id+", PRIV)"] = natsgrant.Edge(id, []string{"PRIV"})
+		grants["Edge("+id+", PRIV)"] = edge(t, id, "PRIV")
 	}
 	for name, grant := range grants {
 		require.NotEmpty(t, slices.Concat(grant.Publish, grant.Subscribe), name)
