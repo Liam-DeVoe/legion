@@ -1,6 +1,9 @@
 package natsurl
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Check answers each rule's reason at the position of the URL that breaks it, and lets through
 // what nats.go reads as written. The URLs carry no credential: what a refusal prints is held by
@@ -30,19 +33,32 @@ func TestCheck(t *testing.T) {
 		{"a ws list's later URL with no scheme whose path stops parsing once decoded", []string{"ws://host:4222", "host:4223/%25zz?x=1"}, 2, HandshakeReason},
 		{"a wss list's later URL with no scheme whose path stops parsing once decoded", []string{"WSS://host:4222", "host:4223/%25zz?x=1"}, 2, HandshakeReason},
 		{"a nats list's later URL with no scheme and the same path", []string{"nats://host:4222", "host:4223/%25zz?x=1"}, 0, ""},
+		// nats.go drops an empty entry before it builds its pool (processUrlString), so the pool's
+		// scheme is the first entry that is not empty, and a position is counted in the caller's
+		// list, empty entries included.
+		{"an empty first entry, then a ws list's later URL with no scheme whose path stops parsing", []string{"", "ws://host:4222", "host:4223/%25zz?x=1"}, 3, HandshakeReason},
+		{"a blank first entry, then a ws URL and a later URL with a user name and no scheme", []string{" ", "ws://host:4222", "tail@host:4223"}, 3, TailReason},
+		{"empty entries only", []string{"", " "}, 0, ""},
+		// nats.go reads the first URL's scheme as url.Parse does: one that begins `ws:` with its
+		// `://` further on is a ws URL, so a later scheme-less URL is dialled as ws.
+		{"an opaque ws first URL, then a later URL with no scheme whose path stops parsing", []string{"ws:opaque://x", "host:4223/%25zz?x=1"}, 2, HandshakeReason},
+		// A ws host that stops parsing once decoded is named as the host, not the path.
+		{"a websocket host that stops parsing once decoded", []string{"ws://host%25zz:4222/nats"}, 1, HandshakeHostReason},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			trimmed, position, reason := Check(tc.urls)
+			dialled, position, reason := Check(tc.urls)
 			if position != tc.position || reason != tc.reason {
 				t.Fatalf("Check = %d, %q; want %d, %q", position, reason, tc.position, tc.reason)
 			}
-			if len(trimmed) != len(tc.urls) {
-				t.Fatalf("Check returned %d URLs for %d", len(trimmed), len(tc.urls))
+			for _, server := range dialled {
+				if server == "" || server != strings.TrimSpace(server) {
+					t.Fatalf("Check returned %q, an entry nats.go would not dial as written", server)
+				}
 			}
 		})
 	}
-	if trimmed, _, _ := Check([]string{" nats://host:4222\t"}); trimmed[0] != "nats://host:4222" {
-		t.Fatalf("Check kept the white space: %q", trimmed[0])
+	if dialled, _, _ := Check([]string{" nats://host:4222\t", "", "nats://host:4223"}); len(dialled) != 2 || dialled[0] != "nats://host:4222" {
+		t.Fatalf("Check = %q, want the two URLs trimmed and the empty entry dropped", dialled)
 	}
 }
 

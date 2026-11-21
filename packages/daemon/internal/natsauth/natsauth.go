@@ -183,16 +183,21 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 }
 
 // unreadableURL refuses the first of urls that nats.go would read other than as written once
-// Connect joins the list with commas (natsurl.EntryRefusal: a comma, a URL that does not parse, an
-// "@" after its host, a websocket URL whose handshake URL does not parse), each read trimmed, as
-// nats.go reads it. It names the URL by its position in urls alone, as the configuration's refusal
-// of a nats_urls entry does (config.readNatsURLs), with natsurl's fixed reason: any text of such a
-// URL can be a part of the credential, and url.Parse's error quotes the URL whole.
+// Connect joins the list with commas: one holding a comma (natsurl.CommaReason), or one the rules
+// natsurl.Check runs on the list as nats.go reads it refuse (a URL that does not parse, an "@"
+// after its host, a websocket URL whose handshake URL does not parse, a later scheme-less URL
+// read with the pool's scheme), each read trimmed and an empty one dropped, as nats.go reads
+// them. It names the URL by its position in urls alone, as the configuration's refusal of a
+// nats_urls entry does (config.readNatsURLs), with natsurl's fixed reason: any text of such a URL
+// can be a part of the credential, and url.Parse's error quotes the URL whole.
 func unreadableURL(urls []string) error {
 	for index, raw := range urls {
-		if why := natsurl.EntryRefusal(strings.TrimSpace(raw)); why != "" {
-			return fmt.Errorf("the NATS server URL %d of %d cannot be read: %s", index+1, len(urls), why)
+		if strings.Contains(raw, ",") {
+			return fmt.Errorf("the NATS server URL %d of %d cannot be read: %s", index+1, len(urls), natsurl.CommaReason)
 		}
+	}
+	if _, position, why := natsurl.Check(urls); why != "" {
+		return fmt.Errorf("the NATS server URL %d of %d cannot be read: %s", position, len(urls), why)
 	}
 	return nil
 }

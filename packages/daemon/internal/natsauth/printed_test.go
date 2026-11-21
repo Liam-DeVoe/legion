@@ -225,6 +225,17 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 			{name: "Connect handed a websocket URL with the token in its query whose path stops parsing once decoded",
 				printed: connectTo("ws://" + listening(t) + "/%25zz?token=" + token),
 				names:   []string{"the NATS server URL 1 of 1 cannot be read", "does not parse once decoded", "%2525"}},
+			// A ws list's later URL with no scheme: nats.go dials it as ws, so the handshake rule
+			// runs on it too, as natsurl.Check runs it for the list.
+			{name: "Connect handed a ws list whose later URL has no scheme, the token in its query, and a path that stops parsing",
+				printed: func() error {
+					conn, err := natsauth.Connect([]string{"ws://127.0.0.1:1", listening(t) + "/%25zz?token=" + token}, "", t.Name())
+					if err == nil {
+						conn.Close()
+					}
+					return err
+				},
+				names: []string{"the NATS server URL 2 of 2 cannot be read", "does not parse once decoded", "%2525"}},
 			{name: "PublicKey of the token", printed: func() error { _, err := natsauth.PublicKey(token); return err },
 				names: []string{"the NATS nkey seed", "does not hold a valid nkey seed"}},
 			{name: "PublicKey of an account's seed", printed: func() error { _, err := natsauth.PublicKey(account); return err },

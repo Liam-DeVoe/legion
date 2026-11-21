@@ -90,10 +90,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 
 	// The rules Dial and Connect run, before any credential is read or dial made: nats.go's own
 	// refusal of a URL it cannot read quotes the URL whole, a credential in it included, and this
-	// one names the URL by its position.
-	urls, position, why := natsurl.Check(strings.Split(*servers, ","))
+	// one names the URL by its position in --servers, empty entries counted, which Check drops as
+	// nats.go does.
+	listed := strings.Split(*servers, ",")
+	urls, position, why := natsurl.Check(listed)
 	if why != "" {
-		fmt.Fprintf(stderr, "natsprobe: --servers: NATS server URL %d of %d cannot be read: %s\n", position, len(urls), why)
+		fmt.Fprintf(stderr, "natsprobe: --servers: NATS server URL %d of %d cannot be read: %s\n", position, len(listed), why)
 		return exitUsage
 	}
 	option, name, err := credential(getenv, *tokenFile, *googleAudience, *none)

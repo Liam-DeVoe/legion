@@ -34,27 +34,32 @@ const (
 	UnparsedReason         = `it does not parse as a URL; write a credential in it percent-encoded (a "/" as %2F, a comma as %2C)`
 	UserinfoPastHostReason = `an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`
 	HandshakeReason        = `its path does not parse once decoded, as the NATS client's websocket handshake decodes it; write a "%" in its path as %2525`
+	// HandshakeHostReason is HandshakeReason's for a host that stops parsing once decoded, as one
+	// holding an IPv6 zone or an encoded "%" does.
+	HandshakeHostReason = `its host does not parse once decoded, as the NATS client's websocket handshake decodes it; write the host as it is read, with no percent-encoding`
 	// CommaReason is a comma's in one URL: the NATS client reads one as the end of a server URL, so
 	// a URL that holds one is a list of servers or a credential holding a comma.
 	CommaReason = `it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`
 	// TailReason is a later URL's, of a list a caller split on its commas, that carries a user name
 	// or password and names none of the schemes NATS servers are written with: what a comma in a
-	// credential leaves after it. nats.go dials such a URL too, a scheme-less one as nats:// and one
-	// of any other scheme as plain NATS, so a list written so connected before. It is refused all
-	// the same: a user name or password written in a URL is a credential there, and where a comma
-	// split it, the part before the comma is a URL nats.go dials, its head read as a host and named
-	// as the host it could not reach.
-	TailReason = `it carries a user name or password and names none of the schemes nats, tls, ws and wss, as the part after a comma in a credential does once the list is split on its commas; such a URL connected before, but a credential split there has its head dialled and printed as a host: name the URL's scheme, and write a comma in a credential percent-encoded (%2C)`
+	// credential leaves after it. In a nats or tls list nats.go dials such a URL too, a scheme-less
+	// one as nats:// and one of any other scheme as plain NATS, so a list written so connected
+	// before; in a ws list it dials a scheme-less one as ws or wss and refuses one of another
+	// scheme as mixing (nats.go:2299-2300). It is refused all the same: a user name or password
+	// written in a URL is a credential there, and where a comma split it, the part before the comma
+	// is a URL nats.go dials, its head read as a host and named as the host it could not reach.
+	TailReason = `it carries a user name or password and names none of the schemes nats, tls, ws and wss, as the part after a comma in a credential does once the list is split on its commas; in a nats or tls list such a URL connected before, but a credential split there has its head dialled and printed as a host: name the URL's scheme, and write a comma in a credential percent-encoded (%2C)`
 )
 
-// schemes are the schemes NATS servers are written with. nats.go dials a URL of any other scheme
-// too, as plain NATS; the tail rule refuses one that carries a user name or password.
+// schemes are the schemes NATS servers are written with. In a nats or tls list nats.go dials a URL
+// of any other scheme too, as plain NATS; the tail rule refuses one that carries a user name or
+// password.
 var schemes = []string{"nats", "tls", "ws", "wss"}
 
 // Refusal is why nats.go would read server, one trimmed server URL, other than as written, and ""
 // when it would not: read as nats.go reads it, nats:// added where it names no scheme, it does not
 // parse; it parses with an "@" after its host (UserinfoPastHost); or it is a websocket URL whose
-// handshake URL does not parse (HandshakeURLParses).
+// handshake URL does not parse (handshakeRefusal).
 func Refusal(server string) string { return refusal(server, "nats") }
 
 // refusal is Refusal with scheme added where server names none, as nats.go adds its pool's.
@@ -68,10 +73,8 @@ func refusal(server, scheme string) string {
 		return UnparsedReason
 	case UserinfoPastHost(parsed):
 		return UserinfoPastHostReason
-	case !HandshakeURLParses(parsed):
-		return HandshakeReason
 	}
-	return ""
+	return handshakeRefusal(parsed)
 }
 
 // EntryRefusal is Refusal for one URL of a list its caller joins with commas before nats.go reads
@@ -84,35 +87,57 @@ func EntryRefusal(server string) string {
 	return Refusal(server)
 }
 
-// Check trims each of urls, a list a caller split on its commas, and returns the trimmed list,
-// which is the list to dial: nats.go parses a server as written, so an untrimmed URL would pass
-// the rules trimmed and reach nats.go untrimmed, whose parse error quotes it whole. It also returns
-// the 1-based position of the first URL nats.go would read other than as written, with its reason
-// (Refusal, and for a later URL TailReason), or 0 and "".
+// Check reads urls, a list a caller split on its commas, as nats.go reads the list it dials: each
+// entry trimmed, and an empty one dropped (nats.go v1.55.0 processUrlString, nats.go:1968-1979,
+// which Connect runs on its URL string). It returns those entries, the list to dial: nats.go parses
+// a server as written, so an untrimmed URL would pass the rules trimmed and reach nats.go
+// untrimmed, whose parse error quotes it whole. It also returns the 1-based position, in urls, of
+// the first URL nats.go would read other than as written, with its reason (Refusal, and for a URL
+// after the first TailReason), or 0 and "".
 //
 // A later URL that names no scheme is read with the pool's, as nats.go reads it
-// (parseServerURL, connScheme): the first URL's websocket scheme, so a ws or wss list's later
-// scheme-less URL goes through the websocket handshake rule too, and nats:// otherwise.
-func Check(urls []string) (trimmed []string, position int, reason string) {
-	trimmed = make([]string, len(urls))
-	for index, raw := range urls {
-		trimmed[index] = strings.TrimSpace(raw)
-	}
+// (parseServerURL, connScheme): the websocket scheme of the first URL it adds, the first that is
+// not empty, as url.Parse reads that URL's scheme (addURLToPool and isWebsocketScheme,
+// nats.go:2296-2298), so a ws or wss list's later scheme-less URL goes through the websocket
+// handshake rule too, and nats:// otherwise. url.Parse, not the text before "://": a first URL
+// such as `ws:<opaque>://…` is a ws URL to nats.go.
+func Check(urls []string) (dialled []string, position int, reason string) {
 	pool := "nats"
-	for index, server := range trimmed {
+	for index, raw := range urls {
+		server := strings.TrimSpace(raw)
+		if server == "" {
+			continue
+		}
+		first := len(dialled) == 0
+		dialled = append(dialled, server)
+		if first {
+			pool = poolScheme(server)
+		}
 		scheme, _, named := strings.Cut(server, "://")
 		scheme = strings.ToLower(scheme)
-		if index == 0 && named && (scheme == "ws" || scheme == "wss") {
-			pool = scheme
-		}
-		if index > 0 && strings.Contains(server, "@") && (!named || !slices.Contains(schemes, scheme)) {
-			return trimmed, index + 1, TailReason
+		if !first && strings.Contains(server, "@") && (!named || !slices.Contains(schemes, scheme)) {
+			return dialled, index + 1, TailReason
 		}
 		if why := refusal(server, pool); why != "" {
-			return trimmed, index + 1, why
+			return dialled, index + 1, why
 		}
 	}
-	return trimmed, 0, ""
+	return dialled, 0, ""
+}
+
+// poolScheme is the scheme nats.go gives a later scheme-less URL of a list whose first URL is
+// first: ws or wss when url.Parse reads first, nats:// added where it names none, with a websocket
+// scheme (connScheme), and nats otherwise.
+func poolScheme(first string) string {
+	if !strings.Contains(first, "://") {
+		first = "nats://" + first
+	}
+	if parsed, err := url.Parse(first); err == nil {
+		if scheme := strings.ToLower(parsed.Scheme); scheme == "ws" || scheme == "wss" {
+			return scheme
+		}
+	}
+	return "nats"
 }
 
 // UserinfoPastHost reports whether parsed, a NATS server URL that parsed, holds an "@" after its
@@ -123,18 +148,24 @@ func UserinfoPastHost(parsed *url.URL) bool {
 	return strings.Contains(parsed.Path, "@") || strings.Contains(parsed.RawQuery, "@") || strings.Contains(parsed.Fragment, "@")
 }
 
-// HandshakeURLParses reports whether parsed, a NATS server URL that parsed, is no websocket URL or
-// one whose handshake URL parses: nats.go's websocket handshake builds a URL of the host, the
-// decoded path and the raw query and parses it again, and its error quotes that URL whole, its
-// query, and a token in it, included.
-func HandshakeURLParses(parsed *url.URL) bool {
+// handshakeRefusal is why parsed, a NATS server URL that parsed, fails nats.go's websocket
+// handshake, or "" when it is no websocket URL or one whose handshake URL parses. The handshake
+// builds a URL of the host, the decoded path and the raw query and parses it again, and its error
+// quotes that URL whole, its query, and a token in it, included. The reason names the part that
+// fails: the host alone, or the path and query after it.
+func handshakeRefusal(parsed *url.URL) string {
 	if !strings.EqualFold(parsed.Scheme, "ws") && !strings.EqualFold(parsed.Scheme, "wss") {
-		return true
+		return ""
+	}
+	if _, err := url.Parse("http://" + parsed.Host); err != nil {
+		return HandshakeHostReason
 	}
 	rebuilt := "http://" + parsed.Host + parsed.Path
 	if parsed.RawQuery != "" {
 		rebuilt += "?" + parsed.RawQuery
 	}
-	_, err := url.Parse(rebuilt)
-	return err == nil
+	if _, err := url.Parse(rebuilt); err != nil {
+		return HandshakeReason
+	}
+	return ""
 }
