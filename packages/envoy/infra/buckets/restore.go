@@ -114,10 +114,8 @@ const BackupManifestOutput = "manifest"
 // it deletes no bucket the hold's backup did not take.
 func backupCovers(d holdrecord.Done, buckets []string) error {
 	path := ""
-	for _, op := range d.Ops {
-		if op.Command == CommandBackup && op.State == "done" {
-			path = op.Outputs[BackupManifestOutput]
-		}
+	if backup, ok := writerhold.LatestDone(d, CommandBackup); ok {
+		path = backup.Outputs[BackupManifestOutput]
 	}
 	refuse := func(what string) error {
 		return &writerhold.Refusal{Step: writerhold.StepPreflight, What: "recreate deletes only what its hold's backup covered: " + what}

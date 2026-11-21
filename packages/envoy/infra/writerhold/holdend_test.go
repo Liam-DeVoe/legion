@@ -59,8 +59,8 @@ func TestHoldTheStreamsUpdateStopsThroughRunHeld(t *testing.T) {
 	require.Contains(t, stdout, "update stops here")
 	id := h.row().HoldID
 	last := h.lastEntry(id)
-	require.Equal(t, CommandStreamsUpdate+" stop", last.Command+" "+last.State)
-	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs["left"])
+	require.Equal(t, CommandStreamsUpdate+" "+stateStop, last.Command+" "+last.State)
+	require.Equal(t, holdrecord.LeftUnchanged, last.Outputs[stopLeftOutput])
 	code, _, _ = h.run(actionRelease, "--hold", id, "--reason", "the update stopped unchanged")
 	require.Zero(t, code, "release after an update that stopped unchanged")
 

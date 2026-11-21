@@ -73,7 +73,7 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 	if c.Workflow != "" && d.Workflow != c.Workflow {
 		return id, refusef(StepPreflight, "hold %s is a %s hold: %s runs only in a %s hold", id, d.Workflow, c.Command, c.Workflow)
 	}
-	if latestState(d, holdrecord.CommandSet) != "done" {
+	if latestState(d, holdrecord.CommandSet) != stateDone {
 		reading, err := Set(ctx, records, op, id, c.Reason, nil)
 		if err != nil {
 			return id, err
@@ -144,41 +144,6 @@ type Left struct {
 func (l *Left) Error() string { return l.Err.Error() }
 
 func (l *Left) Unwrap() error { return l.Err }
-
-// priorLeft is what earlier runs of command in d left, or "" when every one recorded
-// LeftUnchanged: a run whose intent has no stop after it was cut and may have changed anything its
-// inputs name, and a stop that recorded a change, or nothing, counts as changed.
-func priorLeft(d holdrecord.Done, command string) string {
-	var left []string
-	pending := false
-	for _, op := range d.Ops {
-		if op.Command != command {
-			continue
-		}
-		switch op.State {
-		case "intent":
-			if pending {
-				left = append(left, "an earlier run was cut after its intent, and may have changed what its inputs name")
-			}
-			pending = true
-		case "stop":
-			pending = false
-			switch recorded := op.Outputs["left"]; recorded {
-			case holdrecord.LeftUnchanged:
-			case "":
-				left = append(left, "an earlier run stopped recording nothing, so counted as changed")
-			default:
-				left = append(left, "an earlier run left: "+recorded)
-			}
-		case "done":
-			pending = false
-		}
-	}
-	if pending {
-		left = append(left, "an earlier run was cut after its intent, and may have changed what its inputs name")
-	}
-	return strings.Join(left, "; ")
-}
 
 // describeChanges names each stream a change stated it made, for a stop whose postcheck failed.
 func describeChanges(changes map[string]Change) string {

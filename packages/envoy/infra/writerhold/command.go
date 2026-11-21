@@ -427,8 +427,8 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 			return err
 		}
 		switch {
-		case latestState(d, holdrecord.CommandRelease) == "done" || latestState(d, holdrecord.CommandAbort) == "done":
-		case latestState(d, holdrecord.CommandSet) == "done":
+		case endedBy(d) != "":
+		case latestState(d, holdrecord.CommandSet) == stateDone:
 			phase, holdID = natsgrant.OperatorPhaseHeld, o.holdID
 		default:
 			// A hold lost in prepare: the route stores no prepare row, so the row comes back

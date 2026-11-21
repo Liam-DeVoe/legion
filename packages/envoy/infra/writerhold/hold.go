@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -161,7 +160,7 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 	if row.Phase == natsgrant.OperatorPhaseReleased {
 		// An abort killed between its move and its done entry left its intent pending: the rerun
 		// sends no move and writes the done entry, which completes the record and ends the hold.
-		if latestState(d, holdrecord.CommandAbort) == "intent" {
+		if latestState(d, holdrecord.CommandAbort) == stateIntent {
 			if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandAbort, nil); err != nil {
 				return err
 			}
@@ -174,7 +173,7 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 	if row.Phase == natsgrant.OperatorPhasePrepare {
 		// A row that reads prepare after hold set's done entry was rolled back by a database
 		// writer, not prepared: the journal, not the row, says how far the hold got.
-		if latestState(d, holdrecord.CommandSet) == "done" {
+		if latestState(d, holdrecord.CommandSet) == stateDone {
 			return refusef(StepPreflight, "the hold row reads prepare at gen %d, and %s is done in hold %s's journal: the row was put back under the set hold, so abort takes no prepare path", row.Gen, holdrecord.CommandSet, o.holdID)
 		}
 		if err := records.DeleteCohort(ctx, o.holdID); err != nil {
@@ -263,25 +262,10 @@ func abortReconcile(ctx context.Context, records *holdrecord.Client, op *Operato
 	return err
 }
 
-// printStopRecords prints what each stopped command left, as abort's latest intent carries it
-// (holdrecord.Admit's left.<index> inputs).
+// printStopRecords prints what each stopped command left, as abort's latest intent carries it.
 func printStopRecords(stdout io.Writer, d holdrecord.Done) {
-	for i := len(d.Ops) - 1; i >= 0; i-- {
-		op := d.Ops[i]
-		if op.Command != holdrecord.CommandAbort || op.State != "intent" {
-			continue
-		}
-		keys := make([]string, 0, len(op.Inputs))
-		for k := range op.Inputs {
-			if strings.HasPrefix(k, "left.") {
-				keys = append(keys, k)
-			}
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			fmt.Fprintf(stdout, "left by a stopped command: %s\n", op.Inputs[k])
-		}
-		return
+	for _, record := range stopRecords(d) {
+		fmt.Fprintf(stdout, "left by a stopped command: %s\n", record)
 	}
 }
 
@@ -391,7 +375,7 @@ func release(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 		if err != nil {
 			return err
 		}
-		if latestState(d, holdrecord.CommandRelease) == "intent" {
+		if latestState(d, holdrecord.CommandRelease) == stateIntent {
 			if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandRelease, nil); err != nil {
 				return err
 			}
@@ -504,7 +488,7 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 	if err != nil {
 		return nil, err
 	}
-	pending := latestState(d, holdrecord.CommandSet) == "intent"
+	pending := latestState(d, holdrecord.CommandSet) == stateIntent
 	stop := func(cause error) error {
 		if !pending {
 			return cause
@@ -661,17 +645,6 @@ func probeRefused(ctx context.Context, op *Operator, url, what string) error {
 		return nil
 	}
 	return unknownf(StepProbe, err, "the probe's connect to %s", what)
-}
-
-// latestState is the state of command's latest entry in the journal, or "".
-func latestState(d holdrecord.Done, command string) string {
-	state := ""
-	for _, op := range d.Ops {
-		if op.Command == command {
-			state = op.State
-		}
-	}
-	return state
 }
 
 // presentStreams are the names of the step-1 readings of streams that are present.
