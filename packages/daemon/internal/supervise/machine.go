@@ -4066,7 +4066,7 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// The runtime's sweep observes the process again at every tick, so this one is left to
 		// the copy's end: the held stop then lets the process go itself, and a hold dropped
 		// meanwhile (dropHeld) leaves the next observation to repoint it.
-		if m.stopWaitsForTurnCopy() {
+		if m.stopHeldOverTurnCopy() {
 			m.log.Info("supervise: the process is alive at a stale address while its held stop waits for the copy of its turn's end; it is replaced once that wait is over",
 				"incarnation", observation.Locator.Incarnation, "copy", m.turnCopy.seq, "detail", observation.Detail)
 			return nil

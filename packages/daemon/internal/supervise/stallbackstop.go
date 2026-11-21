@@ -149,12 +149,12 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 			"kind", m.wake.kind, "due", m.wake.at, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
 		return nil
 	}
-	// The claim is in a turn it started after the end of one whose copy its held stop still waits
-	// for (endTurnCopyWait leaves such a stop to this turn's end). Replacing the process now would
-	// end that hold (replaceNow, endHeld) while the copy still asks the process's shim. The turn
-	// is left alone, as a refused replacement leaves it, and the next sweep posts it again: by
-	// then the copy has ended, or its wait has run out at the copy's budget.
-	if m.stopWaitsForTurnCopy() {
+	// A stop is held over the claim while the copy of an earlier turn's end is still being taken
+	// (stopHeldOverTurnCopy): the agent started this turn after that end. Replacing the process now
+	// would end that hold (replaceNow, endHeld) while the copy still asks the process's shim. The
+	// turn is left alone, as a refused replacement leaves it, and the next sweep posts it again: by
+	// then the copy has ended, or its budget has run out.
+	if m.stopHeldOverTurnCopy() {
 		m.log.Info("supervise: the stall backstop found the claim's held stop waiting for the copy of an earlier turn's end; the turn is left to the next sweep",
 			"copy", m.turnCopy.seq, "until", m.turnCopy.due, "bound", ev.Bound, "deadline", ev.Deadline, "lastStep", last)
 		return nil

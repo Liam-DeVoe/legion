@@ -178,14 +178,24 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 		return nil
 	}
 	controller := claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)
-	// A claim in a turn holds the relaunch back for that turn's end, and so does one whose held
-	// stop waits for the copy its last turn's end started (waitForTurnCopy): the relaunch replaces
-	// the process, and here it would let that process go through the held stop (replaceNow,
-	// endHeld) while the copy still asks its shim, which cuts the copy off and leaves the turn's
-	// end in no copy once the role is stopped. The controller's claim takes no copy
-	// (Deps.CopyTurnEnd), and its turn is never waited out.
-	if !controller && (m.claim.State == StateWorking || m.stopWaitsForTurnCopy()) {
+	// A claim in a turn holds the relaunch back for that turn's end (holdStaleRelaunch). The
+	// controller's claim takes no copy (Deps.CopyTurnEnd), and its turn is never waited out.
+	if !controller && m.claim.State == StateWorking {
 		m.holdStaleRelaunch(trigger)
+		return nil
+	}
+	// A claim idle or ready holding a stop while the copy its last turn's end started is still
+	// being taken (stopHeldOverTurnCopy) is not relaunched: the relaunch would let the process go
+	// through the held stop (replaceNow, endHeld) while the copy still asks its shim, cutting the
+	// copy off. Nothing is held for later: the held stop runs once that copy is over
+	// (stopHeldOverTurnCopy says what runs it), and its let-go takes the process, so the claim's
+	// next launch is a resume onto this daemon's plugin; a hold dropped meanwhile leaves the claim
+	// to the next sweep, which posts it again. A credit this post carries goes back at the end of
+	// the decision (endRefreshLane). The controller's claim takes no copy, so it never waits here.
+	if m.stopHeldOverTurnCopy() {
+		m.log.Info("supervise: the process speaks another plugin contract while its held stop waits for the copy of its turn's end; nothing is relaunched, and that stop takes the process",
+			"incarnation", m.claim.Locator.Incarnation, "pluginContract", m.claim.PluginContract,
+			"daemonApiVersion", m.deps.PluginContract, "copy", m.turnCopy.seq, "trigger", trigger)
 		return nil
 	}
 	// Every relaunch of this lane waits under a credit of the gate, so one reached with none asks
@@ -217,13 +227,6 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 // tick while its turn runs, so only the first of them logs; the rest replace the trigger and say
 // nothing.
 //
-// A claim whose held stop waits for the copy its last turn's end started is held here too, the
-// claim idle or ready meanwhile (refreshPlugin). Nothing re-decides that relaunch at the copy's
-// end: the held stop runs then, or at the wait's bound, and its let-go takes the process and this
-// relaunch with it (letGo), so the claim's next launch is a resume onto this daemon's plugin. A
-// hold dropped while it waits (dropHeld) ends the wait, and the next sweep, which posts the claim
-// again, finds no wait and relaunches it.
-//
 // A claim in a turn takes no admission of the refresh gate, and the relaunch its turn's end
 // runs asks for one where every uncredited relaunch of this lane asks, at refreshPlugin's own
 // guard (afterTurn, dispatch://INFRA-2712 R2). A wait of a turn is minutes, and a credit held
@@ -240,11 +243,8 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 // claim one sweep, which is what an imperfect skip costs the pass everywhere else it makes one.
 func (m *Machine) holdStaleRelaunch(trigger string) {
 	if m.staleRelaunch == nil {
-		line := "supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end"
-		if m.claim.State != StateWorking {
-			line = "supervise: the process speaks another plugin contract; its relaunch waits for the copy of its turn's end that its held stop waits for"
-		}
-		m.log.Info(line, "incarnation", m.claim.Locator.Incarnation, "pluginContract", m.claim.PluginContract,
+		m.log.Info("supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end",
+			"incarnation", m.claim.Locator.Incarnation, "pluginContract", m.claim.PluginContract,
 			"daemonApiVersion", m.deps.PluginContract, "trigger", trigger)
 	}
 	m.staleRelaunch = &trigger
@@ -509,12 +509,16 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "due", m.wake.at)
 		return claim.StalePluginContract(got, m.deps.PluginContract)
 	}
-	// A held stop that waits for the copy its turn's end started takes this process at the copy's
-	// end or the wait's bound (waitForTurnCopy), and its let-go ends the stale process with it, so
-	// the claim's next launch is a resume onto this daemon's plugin. A relaunch here would end that
-	// hold now (relaunchStale, replaceNow, endHeld), while the copy still asks the process's shim.
-	if m.stopWaitsForTurnCopy() {
-		m.log.Info("supervise: a registration on another plugin contract reached a claim whose held stop waits for the copy of its turn's end; that stop takes this process and nothing is relaunched or charged here",
+	// While a stop is held over the claim and the copy of its last turn's end is still being taken
+	// (stopHeldOverTurnCopy), the registration is refused and nothing is relaunched or charged here.
+	// That does not keep the process for the copy: the plugin stops its agent on this refusal
+	// (packages/pi-shared's bootLegionClaim), so the process ends at once, the copy fails and owes a
+	// retry, and the process's death meets the held stop (died, endHeld), which suspends the claim
+	// charged nothing. What the guard keeps is that end: relaunched here instead, a claim whose
+	// relaunch for this contract was already made would be charged a launch failure, and its
+	// relaunch would drop the held stop with the process (relaunchAfterFailure, letGo).
+	if m.stopHeldOverTurnCopy() {
+		m.log.Info("supervise: a registration on another plugin contract reached a claim whose held stop waits for the copy of its turn's end; nothing is relaunched or charged here, and the process's exit on this refusal meets that stop",
 			"pluginContract", got, "daemonApiVersion", m.deps.PluginContract, "copy", m.turnCopy.seq)
 		return claim.StalePluginContract(got, m.deps.PluginContract)
 	}

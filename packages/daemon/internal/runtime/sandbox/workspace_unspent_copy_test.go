@@ -233,6 +233,10 @@ func TestAnUnspentCopyIsTakenAndSentOncePerLauncherProcess(t *testing.T) {
 // and sends nothing. The pause is two seconds, so that with no turn the other five starts reach
 // their takes inside the first's however widely the pod's launches are spread: at 100 ms the
 // control below failed one run in three at e1fd7dc6, and at two seconds it failed three in three.
+// The pause runs inside the first start, which the boot timeout bounds (BootTimeout), and the rig
+// sets that to two seconds: under it the pause would leave the start less than 150 ms, so a slow
+// run would time the start out rather than test the copy. This rig gives the boot timeout a
+// minute, which only a hang reaches.
 //
 // The negative control is the turn given back right before relaunch calls launchers.start, where
 // the six starts meet inside their hops and each takes the copies and sends the copy.
@@ -240,7 +244,7 @@ func TestAnUnspentCopyIsTakenAndSentOnceWhenSixRolesOfOnePodSpawnTogether(t *tes
 	st := bundleStore(t)
 	saveRunningCopy(t, st, runningWorkspaceCopy("pod-one"))
 	takes := new(atomic.Int32)
-	g := newRig(t, nil, withCountedTakes(st, takes, 2*time.Second))
+	g := newRig(t, nil, withCountedTakes(st, takes, 2*time.Second), withOptions(func(o *Options) { o.BootTimeout = time.Minute }))
 	roles := issueRoleTokens(t)
 	type spawned struct {
 		loc runtime.Locator

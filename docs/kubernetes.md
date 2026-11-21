@@ -3356,6 +3356,7 @@ Each of those relaunches waits under a wake kind of its own, `plugin-refresh`, w
 Two relaunches stand outside the gate.
 The project controller's own claim is relaunched at once, mid-turn, whatever contract it records: its pod holds no issue workspace, so it has nothing to push, and its wake is exempt from the pacing altogether, so an operator reads a running wave through the one session that comes back ahead of it.
 A registration that still differs from the daemon's is relaunched at once too, under the plain `launch` kind, because it is that one claim's own launch rather than a wave: its agent is refused in words and its process exits on the refusal, so no running turn could lose anything.
+Where a stop is held over the claim while the copy of its last turn's end is still being taken, the daemon makes no relaunch and charges nothing, yet the plugin still exits on the refusal: the process ends, the copy fails, the issue keeps the copy it had and the copy owes a retry, and the exit meets the held stop, which suspends the claim as the stop would have.
 
 A worker's turn is waited out:
 a stale claim in a turn is left running, its relaunch held until the turn ends (`holdStaleRelaunch` records it, `turnEnded` runs it back through `refreshPlugin`, both in `packages/daemon/internal/supervise/`), because a worker the lane asks nothing is exactly the worker whose unpushed turn the relaunch would throw away.

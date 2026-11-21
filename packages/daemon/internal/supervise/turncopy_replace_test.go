@@ -2,10 +2,11 @@ package supervise
 
 // What would let a live process go while its held stop waits for the copy its turn's end started
 // (R1 of dispatch://INFRA-1117): a stale-plugin relaunch, a stale address, the turn of a wake the
-// pacing parked over that process, the agent's ready said again, the stall backstop over a turn
-// the agent started since, and a registration on another plugin contract. Each would run or end
-// the held stop while the copy still asks the process's shim, so each waits for that copy as the
-// stop does.
+// pacing parked over that process, the agent's ready said again and the stall backstop over a turn
+// the agent started since. Each of these five would run or end the held stop while the copy still
+// asks the process's shim, so each waits for that copy as the stop does. A registration on another
+// plugin contract cannot wait: its plugin exits on the refusal. It is neither relaunched nor
+// charged, and its process's exit meets the held stop.
 
 import (
 	"testing"
@@ -62,8 +63,8 @@ func stopsAfterTheCopy(t *testing.T, h *harness, copies *turnEndCopies, loc runt
 // moves the contract is every claim. A claim whose held stop waits for its turn's copy is idle, so
 // the relaunch was not held back for a turn, and it let the process go through the held stop while
 // the copy still asked its shim: the copy failed and the turn's end was in no copy once the role
-// was stopped. The relaunch is held while the stop waits, as it is held for a turn, and the copy's
-// end runs the stop, which takes the process and the relaunch with it.
+// was stopped. While the stop waits the relaunch is not made, and nothing holds it for later: the
+// copy's end runs the stop, which takes the process.
 //
 // The control is the relaunch held back for a turn alone: the claim is then suspended at the
 // sweep's post, while the copy is still being taken, and the test fails there.
@@ -184,18 +185,23 @@ func TestTheStallBackstopWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
 	h.wantCalls("Suspend", 1)
 }
 
-// A registration on another plugin contract over a live claim relaunches its process onto this
-// daemon's plugin (staleRegistration), which ends a held stop (endHeld) while the copy still asks
-// the process's shim. While the stop waits for the copy the registration is refused as stale and
-// nothing is relaunched: the copy's end runs the stop, which takes the stale process with it.
+// A registration on another plugin contract over a claim whose relaunch for this contract was
+// already made charges a launch failure and relaunches (staleRegistration, relaunchAfterFailure),
+// and the relaunch would drop a held stop with the process. While a stop is held and the copy of
+// the last turn's end is still being taken, the registration is refused as stale and nothing is
+// relaunched or charged. That keeps no process for the copy: the plugin stops its agent on the
+// refusal, so the process's death follows, and it meets the held stop, which suspends the claim
+// charged nothing, as the stop's own end would.
 //
-// The control is the relaunch made whatever the stop waits for: the claim is then suspended at the
-// registration, while the copy is still being taken, and the test fails there.
-func TestAStaleRegistrationWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T) {
-	h, copies, loc := copyWaiting(t)
+// The control is the relaunch made whatever the stop is held over: the registration then charges a
+// launch failure and relaunches the claim, and the test fails there.
+func TestAStaleRegistrationUnderAHeldStopOverTheTurnsCopyIsNeitherRelaunchedNorCharged(t *testing.T) {
+	h, _, loc := copyWaitingStale(t)
 	stale := h.claim().PluginContract
-	h.deps.PluginContract, h.m.deps.PluginContract = refreshContract, refreshContract
-	h.m.deps.PluginRelaunchable = true
+	h.m.mu.Lock()
+	h.m.claim.PluginRelaunchFor = refreshContract
+	h.m.mu.Unlock()
+	charged := h.claim().Budgets.LaunchFailures
 
 	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
 		CapabilityHash: []byte("capability"), PluginContract: stale})
@@ -204,5 +210,14 @@ func TestAStaleRegistrationWaitsForTheTurnsCopyItsHeldStopWaitsFor(t *testing.T)
 		t.Fatal("the registration on another plugin contract was answered nil, want it refused as stale")
 	}
 	waitsOnItsProcess(t, h, loc)
-	stopsAfterTheCopy(t, h, copies, loc)
+	if got := h.claim().Budgets.LaunchFailures; got != charged {
+		t.Fatalf("the refused registration charged %d launch failures, want none", got-charged)
+	}
+
+	h.observe(runtime.Gone)
+
+	if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByDaemon || c.Budgets.LaunchFailures != charged {
+		t.Fatalf("the claim after its process exited on the refusal is %s by %q with %d launch failures, want suspended by the daemon's held stop and %d",
+			c.State, c.SuspendedBy, c.Budgets.LaunchFailures, charged)
+	}
 }

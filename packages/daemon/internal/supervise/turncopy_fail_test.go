@@ -4,7 +4,7 @@ package supervise
 // dispatch://INFRA-1117). A provider error that holds the issue and a run of refused turns at the
 // launch-failure limit each fail the claim, and a failure ends the claim's process (fail,
 // endProcess): decided while the held stop waits, it would stop the process the copy still asks,
-// as the eight paths of turncopy_replace_test.go and turncopy_prompt_test.go would.
+// as the seven paths of turncopy_replace_test.go and turncopy_prompt_test.go would.
 
 import "testing"
 

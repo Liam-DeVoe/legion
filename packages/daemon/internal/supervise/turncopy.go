@@ -92,10 +92,39 @@ func (m *Machine) waitForTurnCopy() bool {
 	return true
 }
 
-// stopWaitsForTurnCopy is whether the claim's held stop is waiting for the copy its turn's end
-// started (waitForTurnCopy).
+// stopWaitsForTurnCopy is whether the claim's held stop has begun to wait for the copy its turn's
+// end started (waitForTurnCopy): the narrow reading, for the two callers that ask whether that
+// wait has started — suspend, which starts it where it has not, and suspendAtTimeout, whose line
+// says which bound ran out. Every guard asks stopHeldOverTurnCopy instead.
 func (m *Machine) stopWaitsForTurnCopy() bool {
 	return m.held != nil && m.turnCopy != nil && m.turnCopy.stopWaits
+}
+
+// stopHeldOverTurnCopy is whether a stop is held over the claim while the copy of the issue's
+// workspace that its last turn's end started is still being taken (Machine.turnCopy), whether or
+// not the stop has begun to wait for it. A pause's stop held for the prompt's result begins that
+// wait only at the result (stopAtResult), after the result's own decisions have run, so a guard
+// that asked whether the wait had begun would let those decisions cut the copy.
+//
+// It is the precondition of every path that stops or replaces the claim's process while it holds
+// a stop (endHeld, suspendHeld, fail, replaceNow): such a path asks it first, and where it is true
+// leaves the stop to what runs it, because the stop would take the process whose shim the copy is
+// asking and leave the turn's end in no copy once the role is stopped. A stop already waiting is
+// run at the copy's end or the wait's bound (endTurnCopyWait); one whose wait has not begun is run
+// after the decision that begins it, the prompt's result a pause's stop waits for (stopAtResult),
+// or the end of the turn it was held for (turnEnded). The sites that ask it are a prompt failure
+// at the limit (chargePrompt), a provider error that holds the issue (providerErrored), a run of
+// refused turns at the limit (turnOutcome), the stall backstop (backstopStalledTurn), a
+// stale-plugin relaunch (refreshPlugin), a registration on another plugin contract
+// (staleRegistration), a stale address (judge), the agent's ready said again (reready), and the
+// turn of a wake parked over the process (wakeNow). The registration alone keeps no process: its
+// plugin exits on the refusal, the copy fails and owes a retry, and what the guard keeps is that
+// the exit meets the held stop (died, endHeld) rather than a relaunch charged a launch failure. A
+// new suspension asks the copy itself (suspend), and the turn's and the compaction's ends and the
+// prompt's result start the wait (waitForTurnCopy). The turn-copy tests of this package
+// (turncopy_*_test.go) and k9's wait control (dispatch://INFRA-1117) are what hold it.
+func (m *Machine) stopHeldOverTurnCopy() bool {
+	return m.held != nil && m.turnCopy != nil
 }
 
 // heldStopWaitsAtEnd is the wait of a stop held for the end of a turn or of a compaction for the

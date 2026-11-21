@@ -3,8 +3,8 @@ package supervise
 // A prompt's failure at the prompt-failure limit while a held stop waits for the copy its turn's
 // end started (R1 of dispatch://INFRA-1117). The retirement that limit makes is the held stop's
 // own stop where a suspension is held (chargePrompt), and that stop would take the process the
-// copy still asks, as the stale-plugin relaunch, the stale address, the parked wake and the ready
-// said again would (turncopy_replace_test.go).
+// copy still asks, as the stale-plugin relaunch, the stale address, the parked wake, the ready
+// said again and the stall backstop would (turncopy_replace_test.go).
 
 import "testing"
 
