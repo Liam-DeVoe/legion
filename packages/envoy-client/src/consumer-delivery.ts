@@ -378,10 +378,6 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   const render = options.render ?? renderInbound;
   const now = options.now ?? Date.now;
   const repeat = options.every ?? every;
-  // The session's own inbox, in the old form and under any project (`isOwnAgentSubject`), so a
-  // frame on any of them is its own, whenever the stream stored it. Named because the follow
-  // filter and the persisted follow times must read it the same way.
-  const ownsSubject = (subject: string): boolean => isOwnAgentSubject(subject, sessionID);
 
   let currentEpoch: ConsumerEpoch = { id: newEpoch(), startedAt: now() };
   // When each followed topic was first followed, on the host's clock.
@@ -456,7 +452,7 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
   };
 
   const followedAt = (subject: string): number | undefined => {
-    if (ownsSubject(subject)) return Number.NEGATIVE_INFINITY;
+    if (isOwnAgentSubject(subject, sessionID)) return Number.NEGATIVE_INFINITY;
     const forms = topicForms(subject);
     let earliest: number | undefined;
     for (const [topic, at] of follows) {
@@ -780,7 +776,7 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
       for (const topic of topics) {
         // The session's own agent subject is always followed (`followedAt`), so it is never one of
         // the follow times a host persists.
-        if (ownsSubject(topic)) continue;
+        if (isOwnAgentSubject(topic, sessionID)) continue;
         next.set(topic, follows.get(topic) ?? at);
       }
       follows = next;

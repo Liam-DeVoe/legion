@@ -4629,13 +4629,6 @@ describe("envoy OMP extension", () => {
     expect(roleClaims).toEqual([{ session_id: "ses_omp", role: "legion-controller" }]);
   });
 
-  // The listener's record keeps a claimed role's lane in the form it writes it,
-  // `notifications.role.<role>`, whichever form the claim named (packages/envoy/cmd/listener,
-  // `roleSetHandler`), and a resumed session reads the role it should hold off its record by
-  // cutting that lane's prefix (`desiredRole`). So the role it claims again is the role itself. The
-  // second row is the control the first leans on: a record rewritten to the new form,
-  // `notifications.role.INFRA.<role>`, reads to this very comparison as a role named
-  // `INFRA.<role>`, so a store that rewrote it would show here.
   for (const { name, rewrite, claimed } of [
     {
       name: "as the listener wrote it",

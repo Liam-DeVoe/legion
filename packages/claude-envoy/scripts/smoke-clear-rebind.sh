@@ -154,7 +154,6 @@ check_entry() {
   printf '%s: %s\n' "$1" "$entry"
   jq -e --arg own "notifications.agent.*.${after_id}" '(.topics // []) | index($own)' <<<"$entry" >/dev/null \
     || fail "the new entry does not list its own direct subject notifications.agent.*.${after_id}"
-  # shellcheck disable=SC2016 # $new and $old are jq variables
   if jq -e --arg new "notifications.agent.*.${before}" --arg old "notifications.agent.${before}" \
     '(.topics // []) | (index($new) // index($old))' <<<"$entry" >/dev/null; then
     fail "the new entry still lists the pre-/clear direct subject of ${before}"

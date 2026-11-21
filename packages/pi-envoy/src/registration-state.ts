@@ -452,6 +452,8 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
   const tokenProjects = new Map<string, readonly string[]>();
   const placed = (role: string, sessionID: string): PlacedRole =>
     placeRole(role, tokenProjects.get(sessionID));
+  const roleClaimName = (role: string, sessionID: string): string =>
+    placedRoleName(placed(role, sessionID));
   const roleName = (role: string, sessionID: string): string => {
     const at = placed(role, sessionID);
     return placed(at.role, sessionID).project === at.project ? at.role : placedRoleName(at);
@@ -885,7 +887,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         guard();
         return deps
           .client()
-          .getRole(placedRoleName(placed(role, actingFor())))
+          .getRole(roleClaimName(role, actingFor()))
           .then(
             (info) => info.holder,
             () => undefined
@@ -1031,7 +1033,7 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       laneNames(claimedRoleTopic, role, claimedRoleSessionID ?? ""),
     roleName,
     roleNameOfLane,
-    roleClaimName: (role, sessionID) => placedRoleName(placed(role, sessionID)),
+    roleClaimName,
     holdSessionID: () => claimedRoleSessionID,
     isRoleBound,
     roleBoundSubjects: () => [...roleNoticeSubjects],

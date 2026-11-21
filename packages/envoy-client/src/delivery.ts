@@ -1371,8 +1371,6 @@ export function renderInbound(
       ...(dispatchIssue === undefined ? [] : [dispatchIssue]),
     ].join(", ") || undefined;
   const rendered = {
-    // The session's inbox in either form, the session alone or under a project, names it the
-    // recipient (`isOwnAgentSubject`), and no other session's does.
     ...(envelope.topic !== undefined && isOwnAgentSubject(envelope.topic, sessionID)
       ? { to: `you (${sessionID})` }
       : {}),
