@@ -120,8 +120,11 @@ type leaverRig struct {
 	directory *directorytest.Google
 	// metadataHost is the host of the rig's metadata machine on a rig built withPersonSignIns
 	// (startLeaverMetadataServer), and "" on any other: what googleidentity.MetadataHostVar names
-	// to a client of that machine, passed to each explicitly.
+	// to a client of that machine, passed to each explicitly. machineToken is the identity token
+	// that machine answers for the broker's machine audience, which a sign-in trade presents as
+	// its actor (signInTrade).
 	metadataHost string
+	machineToken string
 }
 
 // leaverOption changes how newLeaverRig builds its rig, by the hooks it adds to the config.

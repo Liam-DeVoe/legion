@@ -446,8 +446,9 @@ type leaverSignInMachine struct {
 }
 
 // signInMachine is a machine of r's broker whose sign-in client is a device-flow client of r's fake
-// Google, and whose own Google identity is the one r's fake metadata server serves, read with the
-// variables withPersonSignIns set in this process.
+// Google, and whose own Google identity is the one r's fake metadata server serves: its commands'
+// environment names that server's host (r.metadataHost), the metadata identity and the broker's
+// machine audience, so no variable of this test process reaches them.
 func (c leaverClients) signInMachine(t *testing.T, r *leaverRig) *leaverSignInMachine {
 	t.Helper()
 	r.google.EnableDeviceFlow(r.googleKey, ciphertest.PersonSignInAudience, leaverDeviceSecret)
