@@ -1432,6 +1432,12 @@ test("Load older by keyboard keeps the focus in view when the older page extends
 // Details scrolled 500 px down, turned busy and then went once its read answered; the focus was
 // on the resize handle, and two Tabs took Details to 0. The keeper now looks first in the
 // scrolling body of Details the lost control stood in, and skips a fixed or sticky control.
+// The row drives the Retry of the People section's read of the subscribed agents, a control the
+// page draws only with Details' people: as its line goes, the People section hands the focus to
+// its Subscribers control (`details-more.tsx`), and the keeper stands behind that hand-on. The
+// Retry of what the issue blocks now hands its own focus on (`IssueMargin.tsx`), so a row driven
+// by it holds without Details' people. The keeper's own rules are its unit cases
+// (`details-focus-keeper.test.tsx`).
 test("a control of Details that goes away under the focus hands it to a control of Details' body, never the drawer's resize handle", async ({
   browser,
 }) => {
@@ -1442,8 +1448,8 @@ test("a control of Details that goes away under the focus hands it to a control 
   const context = await reader(browser, "alice");
   try {
     const page = await context.newPage();
-    const blocks = /\/api\/v1\/references\?.*kind=blocked_by/;
-    await page.route(blocks, (route) =>
+    const subscribers = (url: URL) => url.pathname === `/api/v1/issues/${issue.key}/subscribers`;
+    await page.route(subscribers, (route) =>
       route.fulfill({
         body: JSON.stringify({ error: { code: "INTERNAL", message: "refused by the row" } }),
         contentType: "application/json",
@@ -1456,7 +1462,7 @@ test("a control of Details that goes away under the focus hands it to a control 
     await expect(retry, "Details draws no Retry for the read that failed").toHaveCount(1, {
       timeout: 30_000,
     });
-    await page.unroute(blocks);
+    await page.unroute(subscribers);
     await retry.focus();
     await nextFrames(page);
     await page.keyboard.press("Enter");
