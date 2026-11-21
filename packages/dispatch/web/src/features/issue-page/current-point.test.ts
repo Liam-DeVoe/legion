@@ -4,7 +4,13 @@ import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import type { Actor } from "../../api/types";
-import { currentPath, type PointAim, pointMarks, useCurrentPoint } from "./current-point";
+import {
+  currentPath,
+  type PointAim,
+  type PointMark,
+  pointMarks,
+  useCurrentPoint,
+} from "./current-point";
 import type { TreeNode } from "./issue-tree";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import type { NodeType } from "./page-words";
@@ -305,7 +311,7 @@ test("the point's own row is marked here, and no other row is marked", () => {
   const root = deepQuestion();
   const path = currentPath(root, undefined);
   const rows = treeRows(root);
-  const here = { "CORE-1>c1>c2>a1": "here" };
+  const here: Readonly<Record<string, PointMark>> = { "CORE-1>c1>c2>a1": "here" };
   expect(Object.fromEntries(pointMarks(rows, path))).toEqual(here);
   expect(Object.fromEntries(pointMarks(rows.slice(1), path))).toEqual(here);
 });
