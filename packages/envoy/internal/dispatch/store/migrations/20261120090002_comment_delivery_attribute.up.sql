@@ -22,75 +22,51 @@
 -- the server's alone. Its store name is its own name, since `delivery` is no base attribute of a
 -- node (graphstore.IsBaseAttribute).
 --
--- Running this file again writes the same rows, as running the seed again does: the node upsert
--- moves every column but `made_at` and `made_by`, and each tuple insert appends only a fact the node
--- does not already carry. The migration records no event, so every row it writes carries the
--- `source_event` sentinel 0, and its rows carry a writer of their own, so a reader of the store can
--- tell them from the seed's.
-with change as (
-  select now() as at, '{"kind": "system", "id": "block-schema-comment"}'::jsonb as writer
-),
-declared (name, store_name, position, schema) as (
-  values ('delivery', 'delivery', 0, '{"kind": "enum", "choices": ["btw", "aside", "steer"]}'::jsonb)
-)
+-- Every row is written out as a literal, because the pre-deploy census admits only literal rows on
+-- a table above pgmigrate.CensusTableLimit (its bounded-write rule), and graph_tuples is above it
+-- in production once INFRA-1149's backfill has run. The file is four `insert ... values`
+-- statements, as 20261116102759 is: the node, then its visibility and state tuples, its
+-- `attribute_of` tuple and its value tuples. No earlier migration writes this id and no code outside
+-- a migration writes a node of kind `attribute`, so the node does not exist when this runs and every
+-- tuple below is one it lacks.
+--
+-- The migration records no event, so every row carries the `source_event` sentinel 0, and its rows
+-- carry a writer of their own, so a reader of the store can tell them from the seed's. `made_at`
+-- and `at` are `now()`, the one moment of the migration's transaction; a tuple's `asserted` and
+-- `legacy_source_seq` take their defaults, true and null. The runner applies this file once
+-- (schema_migrations). Run again by hand, the node insert leaves the node as it stands, but every
+-- tuple is appended a second time: neither unique key of graph_tuples covers a row at the sentinel.
 insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
-select 'attribute', 'comment/' || declared.store_name, 'attribute', 'project', 'live',
-       declared.schema || jsonb_build_object(
-         'name', declared.name, 'store_name', declared.store_name, 'position', declared.position
-       ),
-       change.at, change.writer, 0
-from change, declared
-order by declared.store_name
-on conflict (kind, id) do update set
-  supertag = excluded.supertag,
-  visibility = excluded.visibility,
-  state = excluded.state,
-  attributes = excluded.attributes,
-  source_event = excluded.source_event;
+values ('attribute', 'comment/delivery', 'attribute', 'project', 'live',
+        '{"kind": "enum", "choices": ["btw", "aside", "steer"], "name": "delivery", "store_name": "delivery", "position": 0}',
+        now(), '{"kind": "system", "id": "block-schema-comment"}', 0)
+on conflict (kind, id) do nothing;
 
--- The two base attributes the node carries, as the tuples they are, read back off the row just
--- written, as the seed reads them.
-insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
-select node.kind, node.id, fact.kind, 'value', fact.value, node.made_at, node.made_by, 0, null, true
-from graph_nodes node
-cross join lateral (values ('visibility', node.visibility), ('state', node.state)) as fact(kind, value)
-where node.kind = 'attribute' and node.id like 'comment/%'
-  and not exists (
-    select 1 from graph_tuples held
-    where held.from_kind = node.kind and held.from_id = node.id and held.kind = fact.kind
-      and held.to_kind = 'value' and held.to_id = fact.value
-      and held.source_event = 0 and held.asserted
-  )
-order by node.id, fact.kind;
+-- The two base attributes the node carries, as the tuples they are: its visibility, `project`, and
+-- its state, `live`.
+insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+values ('attribute', 'comment/delivery', 'state', 'value', 'live',
+        now(), '{"kind": "system", "id": "block-schema-comment"}', 0),
+       ('attribute', 'comment/delivery', 'visibility', 'value', 'project',
+        now(), '{"kind": "system", "id": "block-schema-comment"}', 0);
 
 -- What ties the attribute to comment. A reader of the schema follows this tuple, never the spelling
 -- of the node's id, so without it the node is no attribute of any type.
-insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
-select node.kind, node.id, 'attribute_of', 'supertag', 'comment', node.made_at, node.made_by, 0, null, true
-from graph_nodes node
-where node.kind = 'attribute' and node.id like 'comment/%'
-  and not exists (
-    select 1 from graph_tuples held
-    where held.from_kind = node.kind and held.from_id = node.id and held.kind = 'attribute_of'
-      and held.to_kind = 'supertag' and held.to_id = 'comment'
-      and held.source_event = 0 and held.asserted
-  )
-order by node.id;
+insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+values ('attribute', 'comment/delivery', 'attribute_of', 'supertag', 'comment',
+        now(), '{"kind": "system", "id": "block-schema-comment"}', 0);
 
--- The values the node carries, as the tuples they are, read back off the row just written as the
--- seed reads every type node's: a `value` tuple whose kind is the attribute's name and whose far
--- end is its value as text, at the `source_event` sentinel.
-insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
-select node.kind, node.id, fact.kind, 'value', fact.value, node.made_at, node.made_by, 0, null, true
-from graph_nodes node
-cross join lateral (
-  select attribute.key, attribute.value #>> '{}' from jsonb_each(node.attributes) as attribute
-) as fact(kind, value)
-where node.kind = 'attribute' and node.id like 'comment/%'
-  and not exists (
-    select 1 from graph_tuples held
-    where held.from_kind = node.kind and held.from_id = node.id and held.kind = fact.kind
-      and held.to_kind = 'value' and held.to_id = fact.value
-      and held.source_event = 0 and held.asserted
-  )
-order by node.id, fact.kind;
+-- The values the node carries, as the tuples they are, as the seed states every type node's: a
+-- `value` tuple for each key of the node's attributes, whose kind is the key and whose far end is
+-- the value as text (`#>> '{}'`), so the list of choices is its JSON text.
+insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
+values ('attribute', 'comment/delivery', 'choices', 'value', '["btw", "aside", "steer"]',
+        now(), '{"kind": "system", "id": "block-schema-comment"}', 0),
+       ('attribute', 'comment/delivery', 'kind', 'value', 'enum',
+        now(), '{"kind": "system", "id": "block-schema-comment"}', 0),
+       ('attribute', 'comment/delivery', 'name', 'value', 'delivery',
+        now(), '{"kind": "system", "id": "block-schema-comment"}', 0),
+       ('attribute', 'comment/delivery', 'position', 'value', '0',
+        now(), '{"kind": "system", "id": "block-schema-comment"}', 0),
+       ('attribute', 'comment/delivery', 'store_name', 'value', 'delivery',
+        now(), '{"kind": "system", "id": "block-schema-comment"}', 0);

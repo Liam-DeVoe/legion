@@ -28,12 +28,16 @@ import (
 // time, in that order and through the same path the migration runner runs each, to prove a second
 // run leaves the same nodes. The seed alone would not do: run again, it puts back the version and
 // the attributes it was written at, which every later type migration has moved on from.
+//
+// The runner applies each migration once (schema_migrations), so a type migration written after
+// the backfill writes literal rows under the census's bounded-write rule and is not run a second
+// time: 20261116102759 is one, and is left out. The second run holds for INFRA-1149's own type
+// migrations only.
 var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
 	"../../internal/dispatch/store/migrations/20261115130000_graph_supertags_element_versions.up.sql",
 	"../../internal/dispatch/store/migrations/20261116082319_graph_supertags_decision_reading.up.sql",
-	"../../internal/dispatch/store/migrations/20261116102759_delivery_attempt_attributes.up.sql",
 }
 
 // blockSchemaFile is the seed of the typed block types. It is read from disk rather than from
@@ -95,6 +99,14 @@ var storeTypeAttributes = []storeType{{
 		{Name: "accepted_at", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeTimestamp, Server: true}},
 		{Name: "accepted_as", BlockAttributeSchema: pmdoc.BlockAttributeSchema{
 			Kind: pmdoc.BlockAttributeEnum, Server: true, Choices: []string{"user_turn"},
+		}},
+	},
+}, {
+	name:     "comment",
+	document: "dispatch://INFRA-1152/spec R5",
+	attributes: []pmdoc.BlockAttribute{
+		{Name: "delivery", BlockAttributeSchema: pmdoc.BlockAttributeSchema{
+			Kind: pmdoc.BlockAttributeEnum, Choices: []string{"btw", "aside", "steer"},
 		}},
 	},
 }}
