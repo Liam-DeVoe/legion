@@ -4091,6 +4091,9 @@ restore that target back onto the done prove's disk, then run `hold abort`. If t
 gone (a 404 by name, or that name now has another numeric id), `hold abort` writes a stop naming
 it: restore that target onto another disk, run `hold prove` there, and run `hold abort` again,
 which reruns the reconcile for the stores its stop named and releases over the new prove's disks.
+A `hold abort` whose process was killed before its release is run again: its own pending intent
+admits it, and the rerun repeats the whole abort from its start, the disk check against the newest
+done prove and then the reconcile over every store, trusting nothing the killed run wrote.
 The residual: on this path clients reach the restored and proven hub before its census, until a
 `streams-census` hold runs clean.
 

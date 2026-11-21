@@ -58,8 +58,11 @@ type rules struct {
 	HubAbortAfterStop bool
 	// AbortAfterOwnStop: hub-restore's hold abort is admitted again after its own stop, whenever
 	// that stop was written, and reruns the reconcile for the stores that stop named; its own
-	// pending intent, a rerun after a crash, admits it too, since the stop that admitted the
-	// crashed run is no longer its latest entry. An abort whose disk check found the done prove's
+	// pending intent admits it too, since the stop that admitted a crashed run is no longer its
+	// latest entry. An abort admitted on its own pending intent is a rerun of a crashed abort: it
+	// repeats the whole abort from its start, the disk check against the newest done prove and then
+	// the reconcile over every store, and trusts nothing the crashed run wrote. An abort whose disk
+	// check found the done prove's
 	// disk gone (a 404 by name, or that name now has another numeric id) writes a stop naming the
 	// disk; that stop admits a restore onto another disk and a new hold prove there, which this
 	// table already admits before completion: the new prove's done opens a new epoch, abort's check
