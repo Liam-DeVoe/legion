@@ -246,6 +246,41 @@ func (m *Machine) bindRestoredAnchor(ctx context.Context, hello StreamHello) err
 	return nil
 }
 
+// backlogCutLine is the line of a hello that does not say its shim's backlog is whole
+// (readBacklog), at Info: the count of the process's turns is not known until a report places it.
+const backlogCutLine = "supervise: the shim's hello does not say its backlog is whole; the count of its process's turns is no longer known"
+
+// readBacklog reads what a hello of the claim's ready, idle or working agent says of its shim's
+// backlog (StreamHello.BacklogWhole; reconnected, reconnectedMidTurn). A backlog that is not whole
+// dropped its oldest frames while no daemon was connected, or its shim cannot say it dropped none,
+// and a trim of it can drop a whole turn, start and end. What the machine read off the frames it
+// saw then stops standing for the turns that ran:
+//
+//   - the count of the process's turns is lost (turnCount.lose), and the hello marks it as cut
+//     (turnCount.cut). Kept, it would be short by every turn the backlog dropped whole, so the turn
+//     the daemon gives the next take would carry a dropped turn's sequence, and that turn's late
+//     report, naming no task, would put back a take whose own turn is running (notTheTakesTurn).
+//     It is known again only where a report places it (learnTurns);
+//   - a report's mark of its turn's start as still to come (Machine.reportedAhead) goes: that
+//     start may be among the frames dropped, and kept, the mark would take the next start, the
+//     next task's own among them. While the count is not known after such a hello no report
+//     leaves one (startedUnseen), and a start of the reported turn that does come is read as any
+//     other start: given to a take that awaits its turn, or no task's.
+//
+// A take a daemon start restored has its anchor refused by the same word (bindRestoredAnchor), and
+// a stale-plugin relaunch decided behind such a replay takes a restored take whose turn no frame
+// showed back as a turn that may have run (turnAnswered).
+func (m *Machine) readBacklog(hello StreamHello) {
+	if hello.BacklogWhole {
+		return
+	}
+	m.log.Info(backlogCutLine)
+	count := m.counted()
+	count.lose()
+	count.cut = true
+	m.reportedAhead = aheadReport{}
+}
+
 // aheadReport is the turn whose report ran ahead of its start frame (Machine.reportedAhead): the
 // task the report named, 0 for none, and the report's sequence.
 type aheadReport struct {
@@ -265,8 +300,9 @@ type aheadReport struct {
 // a report of that take's number named first (startedUnseen); 0 for none. known is whether ended
 // is every end of the generation's turns: a machine a daemon start builds over a live process
 // missed the turns that ended under the daemon before it (NewMachine), a start that arrives with a
-// turn still running says an end was missed (turnStartedWhileBusy), and a turn that ends before
-// the agent said ready is one the producer may or may not have numbered (turnEndedBeforeReady).
+// turn still running says an end was missed (turnStartedWhileBusy), a turn that ends before
+// the agent said ready is one the producer may or may not have numbered (turnEndedBeforeReady),
+// and a hello whose shim's backlog is not whole may follow a turn dropped whole (readBacklog).
 // A count not known goes on counting every end it sees, so it is the producer's count less the
 // ends it missed, and take is read only while the count is known. It reads a report's turn start
 // as unseen wherever the claim is not working (startedUnseen), as the machine read every report
@@ -277,9 +313,15 @@ type aheadReport struct {
 // machine saw (learnTurns), placed until the agent's answer to the ask that placement makes has
 // checked it (placedCount, checkPlacedCount). The next launch counts its generation afresh, known
 // (counted).
+//
+// cut is whether a hello of the generation said its shim's backlog is not whole (readBacklog):
+// a turn's start may be gone with the frames it dropped, so while the count is not known no
+// report marks its turn's start as still to come (startedUnseen). It stands for the generation,
+// since what was dropped stays dropped whatever a later hello says; a count known again reads a
+// report's sequence instead.
 type turnCount struct {
 	generation, ended, take uint64
-	known                   bool
+	known, cut              bool
 	anchor                  takeAnchor
 	placed                  placedCount
 }

@@ -7439,6 +7439,7 @@ The stops themselves run in the outbox, so a pause of several hundred roles does
 
 - A role in a turn stops when that turn ends, with no deadline.
   The stop waits for the turn-outcome report that settles the take's task, so a role whose turn a provider refused keeps its task and is owed a launch for it.
+  A report that says the turn was a run of the worker's own, and not the take's, gives the take its turn back, and the stop then waits for the take's own turn or for the second bound (`worker_turn_start_timeout_seconds`) from that report, which charges the worker, takes the task back and lets the stop land, owing the role a launch for the task.
 
 - A start still in flight is cancelled, and its claim is stopped at once.
   A launch whose start has finished is stopped when its agent is ready, before it takes a task.

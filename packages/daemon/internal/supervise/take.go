@@ -886,6 +886,14 @@ func (m *Machine) claimHold() string {
 	if _, holds := m.pauseHolds(); holds {
 		return HoldProjectPaused
 	}
+	return m.stateHold()
+}
+
+// stateHold is claimHold beneath the project's pause: the hold the claim's own state and memory put
+// on a take of its task, whether or not the project is paused. R5's second wait reads it where
+// work waits behind a take a report put back (secondWaitNow): the pause holds the take, and the
+// pause's own stop can be that work.
+func (m *Machine) stateHold() string {
 	switch m.claim.State {
 	case StateReady, StateIdle:
 	case StateWorking:

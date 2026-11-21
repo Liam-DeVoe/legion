@@ -570,15 +570,24 @@ func (m *Machine) putBack(ctx context.Context, by string) error {
 // (notTheTakesTurn), so no start is still to come for it, and a mark for it would name this task
 // in the start of the claim's next task's turn. A claim whose count of its process's turns is not
 // known (turnCount.known) marks the next start, as it always did, and its report places no count
-// (learnTurns), since the machine gave the take no turn it saw. A working claim's start frame has
-// come already: the turn running is the report's.
+// (learnTurns), since the machine gave the take no turn it saw; except where a hello of the
+// process said its shim's backlog is not whole (turnCount.cut, readBacklog): the start may be
+// among the frames the backlog dropped, the take's whole turn run while no daemon was connected,
+// and the mark would take the next start, the next task's own among them. There no start is
+// marked, and one of the reported turn that does come is read as any other (turnStarted): given
+// to a take that awaits its turn, which its own report then settles, or no task's, its line naming
+// no task. A working claim's start frame has come already: the turn running is the report's.
 func (m *Machine) startedUnseen(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	m.log.Info("supervise: a turn's report names the accepted take's task before its turn start was seen; the turn is the take's",
 		"task", p.Number)
 	m.resetPromptBudgets()
 	count := m.counted()
-	if m.claim.State != StateWorking && (!count.known || r.Sequence > count.ended) {
+	toCome := r.Sequence > count.ended
+	if !count.known {
+		toCome = !count.cut
+	}
+	if m.claim.State != StateWorking && toCome {
 		m.reportedAhead = aheadReport{task: p.Number, sequence: r.Sequence}
 	}
 	count.take = r.Sequence

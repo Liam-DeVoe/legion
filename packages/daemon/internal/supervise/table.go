@@ -27,7 +27,8 @@ type RuntimeObservation struct{ Observation runtime.Observation }
 // BacklogWhole is the hello's word that the connection is handed every frame the shim held for a
 // daemon since its last connection (shimwire.Hello2.BacklogWhole), which a take a daemon start
 // restored needs before a report can give it its turn back (bindRestoredAnchor); false is a shim
-// that dropped frames or cannot say.
+// that dropped frames or cannot say, after which the machine no longer counts the process's turns
+// off the frames it saw (readBacklog).
 type StreamHello struct {
 	Claim        claim.Token
 	Generation   uint64
@@ -1429,12 +1430,14 @@ func enrolledOnly(m *Machine, ctx context.Context, _ Event) error { return m.ens
 // (askRestoredTurn): the hello carries no turn, and the shim replays what it held only once this
 // hello is answered. The first hello after a daemon start gives a restored take's anchor its
 // connection, where the hello says its shim's backlog is whole (bindRestoredAnchor), before
-// anything else of the hello can fail.
+// anything else of the hello can fail; a hello that does not say so loses the count of the
+// process's turns and the mark of a start still to come (readBacklog).
 func reconnected(m *Machine, ctx context.Context, ev Event) error {
 	m.disarm(TimerRegistration)
 	if err := m.bindRestoredAnchor(ctx, ev.(StreamHello)); err != nil {
 		return err
 	}
+	m.readBacklog(ev.(StreamHello))
 	if err := m.ensureEnrolled(ctx); err != nil {
 		return err
 	}
@@ -1502,10 +1505,15 @@ func (m *Machine) askRestoredTurn(ctx context.Context) {
 //
 // The reconnect deadline the unanswered ask armed goes with the answer. Any other answer — to the
 // ask a restored working claim makes (askTurnOver), or one arriving after the relaunch was decided
-// — changes nothing. One case stays outside it: a task's turn that both started and ended while
-// no daemon served the claim, and whose agent_start fell out of the shim's backlog, reaches the
-// machine as a turn it never saw begin (blindTurnEnded), so the relaunch takes that task back as
-// one no turn ran (dispatch://INFRA-2811, T3's rule three).
+// — changes nothing. A replay behind a hello that did not say its shim's backlog is whole
+// (turnCount.cut, readBacklog) may have lost a take's whole turn, run while no daemon served the
+// claim, or that turn's start alone, its end reaching the machine as a turn it never saw begin
+// (blindTurnEnded). So behind such a replay an agent in no turn has a take whose turn no frame
+// showed taken back with the note of a cut turn rather than unstarted (markRestoredTurnUnseen),
+// as a take whose report never came is (reportMissed): the next process runs the task again told
+// that its turn on it may have run (dispatch://INFRA-2811, T3's rule three). What no hello can
+// show missing stays outside it: frames the daemon before the start read and never recorded, and
+// frames the shim wrote to that daemon's connection as it closed.
 func turnAnswered(m *Machine, ctx context.Context, ev Event) error {
 	answer := ev.(StreamTurnAnswered)
 	if !m.askTurn {
@@ -1519,19 +1527,35 @@ func turnAnswered(m *Machine, ctx context.Context, ev Event) error {
 			return err
 		}
 	}
+	if !answer.Streaming {
+		m.markRestoredTurnUnseen()
+	}
 	return m.refreshPlugin(ctx, m.askTrigger, false)
+}
+
+// markRestoredTurnUnseen marks the restored take whose stale-plugin relaunch is decided now — at
+// its agent's answer of no turn (turnAnswered), or at the reconnect deadline with no answer
+// (reconnectDeadline) — as one whose turn may have run unseen (Machine.restoredTurnUnseen), where
+// a hello of the process's generation did not say its shim's backlog is whole (turnCount.cut) and
+// the take still awaits its turn: the let-go then takes it back as a cut turn (interrupted).
+func (m *Machine) markRestoredTurnUnseen() {
+	if p := m.claim.Pending; m.counted().cut && p != nil && p.awaitsTurn() {
+		m.restoredTurnUnseen = true
+	}
 }
 
 // reconnectedMidTurn is the shim's hello while the claim is working. Within one daemon's life the
 // shim's backlog replays whatever the turn did meanwhile, agent_end included; a restored claim
 // may be waiting on an agent_end an earlier daemon received and never recorded, so its first
-// hello asks. It ends the reconnect deadline a daemon start armed, as reconnected does, and gives
-// a restored take's anchor its connection as that does (bindRestoredAnchor).
+// hello asks. It ends the reconnect deadline a daemon start armed, as reconnected does, gives
+// a restored take's anchor its connection as that does (bindRestoredAnchor), and reads what the
+// hello says of the shim's backlog as that does (readBacklog).
 func reconnectedMidTurn(m *Machine, ctx context.Context, ev Event) error {
 	m.disarm(TimerRegistration)
 	if err := m.bindRestoredAnchor(ctx, ev.(StreamHello)); err != nil {
 		return err
 	}
+	m.readBacklog(ev.(StreamHello))
 	if err := m.ensureEnrolled(ctx); err != nil {
 		return err
 	}

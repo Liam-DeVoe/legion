@@ -132,6 +132,7 @@ So each figure that names a task names its claim too.
     The command counts the turn that the daemon put back as a turn with no cause, at its start and at its end, although these two lines name the task.
     The worker's report says this for certain when it names the take as `held`: the take's text was still waiting, unrun, when the turn ended.
     After a daemon restart under a live worker, the daemon has lost its count of the worker's turns, and such a report is the only one that puts the first take back.
+    The daemon loses that count in the same way when the worker's shim reconnects with a hello that does not say that its shim dropped no frame while no daemon was connected, because a turn that the shim dropped whole would leave the count one turn short, and it writes `supervise: the shim's hello does not say its backlog is whole; the count of its process's turns is no longer known`.
     A take that the daemon accepted before the restart is put back the same way, unless the daemon before the restart saw the end of the turn it gave that take: the daemon after it cannot tell then whether the take's own turn also ran before the restart, and that take's report puts nothing back.
     When that report arrives before the start of its turn, the daemon gives that turn no take, and writes `supervise: a turn started that the producer said ran with the accepted take's text held; the turn is no task's, and the take awaits its turn`.
     The command counts that turn as a turn with no cause, since its lines name no task.
@@ -144,6 +145,9 @@ So each figure that names a task names its claim too.
 - `turns each number took` is, for each task, the number of turns that started with that task as their cause.
   A turn that the daemon put back does not count.
   The expected value is 1.
+  After a hello that does not say that the worker's shim dropped no frame, a task can take 0 turns.
+  The shim can have dropped the whole turn of the task.
+  Also, when the worker's report of a turn arrives before the start of that turn, the daemon does not wait for that start, so a start that does come names no task.
 
 - `numbers written by origin` is the number of tasks that the daemon wrote as values, by the origin of each task.
 

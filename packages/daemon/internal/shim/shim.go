@@ -867,7 +867,8 @@ type outbox struct {
 	backlog [][]byte
 	frames  []int
 	// dropped is whether the backlog has ever dropped a frame, which is logged once for the
-	// shim's life; gap is whether it dropped one since a connection last took it whole.
+	// shim's life; gap is whether it dropped one since a connection last took it whole, or a
+	// replay broke partway (attach).
 	dropped bool
 	gap     bool
 	log     *log.Logger
@@ -900,7 +901,9 @@ func (o *outbox) send(lines ...[]byte) {
 }
 
 // whole is whether the backlog has dropped no frame since a connection last took it whole: what
-// the next hello says (shimwire.Hello2.BacklogWhole).
+// the next hello says (shimwire.Hello2.BacklogWhole). A replay that broke partway counts as such a
+// drop (attach): the frames it wrote before it broke left the backlog, and the dead connection may
+// never have carried them to a daemon.
 func (o *outbox) whole() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -914,7 +917,8 @@ func (o *outbox) whole() bool {
 // as every frame since the last connection, and has acted on that word by the time the ack
 // comes, so the replay goes to the next connection instead, whose hello says what was dropped.
 // A connection that breaks mid-replay is closed, and what it did not take whole waits for the
-// next.
+// next. What it did take whole is gone from the backlog though its daemon may never have read it,
+// so the backlog is marked as one that dropped frames (gap), and the next hello says so (whole).
 func (o *outbox) attach(conn net.Conn, w *shimwire.Writer, whole bool) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -923,8 +927,9 @@ func (o *outbox) attach(conn net.Conn, w *shimwire.Writer, whole bool) bool {
 		_ = conn.Close()
 		return false
 	}
-	for len(o.frames) > 0 {
+	for replayed := false; len(o.frames) > 0; replayed = true {
 		if !writeFrame(w, o.backlog[:o.frames[0]]) {
+			o.gap = o.gap || replayed
 			_ = conn.Close()
 			return false
 		}

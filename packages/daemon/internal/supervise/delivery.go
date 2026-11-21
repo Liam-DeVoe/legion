@@ -1160,11 +1160,13 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // (message); outOfMemory says that end was the pod running out of memory, which adds
 // outOfMemoryTask, and it is written on every such call, true or false, so a second interruption
 // of the same task for another reason clears a note that no longer describes it. A take whose
-// turn had not started goes back with no note, since the worker ran nothing of it. The task is
-// neither retired nor its run marked served, since the turn never finished; the claim's TaskTaken
-// stays, since the worker read it. A task no take holds is left as it is. An older daemon's ask
-// of an update round is the one task no take is accepted for again: it keeps its delivery id,
-// which names its round, and the next take of it drops it (takeable).
+// turn had not started goes back with no note, since the worker ran nothing of it, except a
+// restored take whose turn may have run with no frame of it reaching the machine
+// (Machine.restoredTurnUnseen): it goes back as a turn cut off, since the worker may have run it
+// whole. The task is neither retired nor its run marked served, since the turn never finished;
+// the claim's TaskTaken stays, since the worker read it. A task no take holds is left as it is. An
+// older daemon's ask of an update round is the one task no take is accepted for again: it keeps
+// its delivery id, which names its round, and the next take of it drops it (takeable).
 //
 // A take whose turn has already ended is settled by its claim's contract. Where the end frame
 // finishes a task — a plugin below TaskTakeContract, whose reports name no number
@@ -1216,6 +1218,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 		}
 		inTurn = true
 	}
+	inTurn = inTurn || (m.restoredTurnUnseen && m.restoredTake && p.awaitsTurn())
 	m.log.Warn("supervise: "+why+"; the task waits for the relaunch", "task", p.Number, "delivery", p.ID)
 	next := *p
 	handshake := m.claim.Handshake

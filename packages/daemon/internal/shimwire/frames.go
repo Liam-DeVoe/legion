@@ -147,18 +147,22 @@ type AgentSecretsHello struct {
 // them (internal/shim's outbox), and a shim says true only where it dropped none since then. A
 // shim that drops one after this hello said true, while the hello waits for its ack, replays
 // nothing on the connection and closes it, so no connection whose hello said true carries a
-// replay with a frame missing, and the next hello says false. What the word does not cover are
-// frames the shim wrote to a connection that then broke, which may never have been read.
+// replay with a frame missing, and the next hello says false. So does the hello after a replay
+// that broke partway: the frames it wrote before it broke left the backlog, and the connection
+// that broke may never have carried them to a daemon. What the word does not cover are frames the
+// shim wrote live to a connection that then broke, which may never have been read.
 //
 // The member is left out when false, and a hello without it is read as a shim that cannot say it
 // dropped nothing: one that dropped frames, and one built before the member, which tells no one.
 // That is the reading that costs nothing where it is wrong. A daemon reads the starts and ends of
-// the agent's turns off the replay, and the one reading that needs every one of them — a take a
-// daemon start restored, given its turn back on the producer's word that its text was held
-// (supervise's bindRestoredAnchor) — is refused on such a connection: put back over a replay that
-// lost the take's own turn start, that take would be read as one whose turn is still to come
-// while its turn runs. Refused, it keeps its turn as a daemon before the word kept it. A daemon
-// built before the member ignores it, as it ignores every member it does not name.
+// the agent's turns off the replay, and nothing that needs every one of them is read off such a
+// connection (supervise's reconnected): no producer's word that its text was held gives a take a
+// daemon start restored its turn back (bindRestoredAnchor), the count of the process's turns is
+// lost until a report places it again, no report with that count lost marks its turn's start as
+// still to come, and a stale-plugin relaunch takes a restored take whose turn no frame showed back
+// as a turn that may have run. Read as whole instead, a replay that lost a turn's start would have
+// that turn read as one still to come while it runs, or as one that never ran.
+// A daemon built before the member ignores it, as it ignores every member it does not name.
 type Hello2 struct {
 	BootToken    string             `json:"bootToken"`
 	AgentSecrets *AgentSecretsHello `json:"agentSecrets,omitempty"`

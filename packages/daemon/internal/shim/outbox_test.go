@@ -195,6 +195,57 @@ func TestATrimmedBacklogDropsAWholeSequenceNeverItsHeadAlone(t *testing.T) {
 	}
 }
 
+// A replay that breaks partway has taken frames off the backlog that its connection may never have
+// carried to a daemon: a write the kernel took is no read the daemon made, and the connection that
+// broke under the next frame may have been dead under those already. So the next hello says the
+// backlog dropped frames (outbox.whole), as it does after a trim, and a daemon reads no replay
+// behind it as every frame since the last connection. A replay that breaks under its first frame
+// has taken nothing off the backlog, and the next hello still says it is whole: that frame waits,
+// whole, for the next connection with the rest.
+//
+// The negative control is the head before this change (1d8f65eb), where the replayed frames leave
+// the backlog with no gap marked, so the next hello says the backlog is whole.
+func TestAReplayBrokenPartwayLeavesTheBacklogNotWhole(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		taken int // lines the replaying connection takes before it breaks
+		whole bool
+	}{
+		{"broken after two of its three frames", 2, false},
+		{"broken under its first frame", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := outboxShim()
+			for n := range 3 {
+				s.out.send(plain(n))
+			}
+			if !s.out.whole() {
+				t.Fatal("a backlog that dropped nothing says it is not whole")
+			}
+
+			if broken := attachConn(s, tc.taken); !broken.closed {
+				t.Fatal("the connection that broke mid-replay was left open")
+			}
+
+			if got := s.out.whole(); got != tc.whole {
+				t.Fatalf("after the broken replay the next hello says the backlog is whole %t, want %t", got, tc.whole)
+			}
+			next := attachConn(s, math.MaxInt)
+			if len(next.lines) != 3-tc.taken {
+				t.Fatalf("the next connection was replayed %d lines (%q), want the %d the broken replay did not carry", len(next.lines), next.lines, 3-tc.taken)
+			}
+			for i, got := range next.lines {
+				if want := string(plain(tc.taken + i)); got != want {
+					t.Fatalf("replayed line %d is %s, want %s", i, got, want)
+				}
+			}
+			if !s.out.whole() {
+				t.Fatal("a connection that took the backlog whole leaves it not whole")
+			}
+		})
+	}
+}
+
 // ompChunkID is the id of the sequence ompSequence writes.
 const ompChunkID = "omp-agent-end"
 

@@ -179,17 +179,25 @@ func (m *Machine) firstWaitNow() (firstWait, bool) {
 // on it, for its own turn or for this bound, whichever is first (decision 8), so the bound is
 // armed from the put-back as for any take awaiting its turn, and it runs the work once it has
 // taken the take back (turnStartBoundOver). Left unarmed, as for a hold, the daemon's own
-// suspension, which names no deadline, would wait for a turn the worker may never start.
+// suspension, which names no deadline, would wait for a turn the worker may never start. The
+// project's pause does not stop it either while such work waits: the pause holds the take, and
+// its own stop, held behind the take, is such work, so the hold read under the pause is the
+// claim's own (stateHold). Read as the pause, it would leave that stop waiting for a turn the
+// worker may never start, and the pause would never stop the claim.
 func (m *Machine) secondWaitNow() (time.Time, bool) {
 	p := m.claim.Pending
 	if m.deps.Timeouts.TurnStart <= 0 || m.awaitsAct || p == nil || !p.awaitsTurn() {
 		return time.Time{}, false
 	}
-	switch hold := m.claimHold(); {
-	case hold == "":
-	case (hold == HoldSuspension || hold == HoldStalePlugin) && m.workHeld() && m.reportHolds():
+	if m.workHeld() && m.reportHolds() {
 		// The hold is the work waiting behind the take (reportwait.go), which this bound bounds.
-	default:
+		switch m.stateHold() {
+		case "", HoldSuspension, HoldStalePlugin:
+			return p.ConfirmedAt, true
+		}
+		return time.Time{}, false
+	}
+	if m.claimHold() != "" {
 		return time.Time{}, false
 	}
 	return p.ConfirmedAt, true
@@ -295,15 +303,26 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 // stale-plugin lane's own (refreshPlugin), charged nothing, as the lane's relaunch is: the
 // process did come back, and the relaunch is for its plugin, not for a failure of the claim. A
 // gate the lane finds full leaves it to the next sweep's post, which no answer holds back any
-// more.
+// more. The deadline then bounds that ask, not a suspension held over the claim, whose shim came
+// back and whose turn's end and take's report reach the machine: a hold over a claim working, or
+// one that waits for the report of its take's turn (heldWaits, reportwait.go), is left to that
+// turn and that wait, as reready leaves it, and the relaunch waits with it (refreshPlugin's own
+// holds). Run here, its stop would cut off the take's own turn, or come before that turn's report,
+// and settle would take back as a cut turn a task whose turn ran whole. A hold neither waits for
+// runs here, as before the hello. And where a hello of the process's generation did not say its
+// shim's backlog is whole, a take still awaiting its turn may have had that turn run unseen, its
+// frames dropped from the replay, so the relaunch takes it back as a cut turn rather than
+// unstarted, as at the agent's answer of no turn (markRestoredTurnUnseen, turnAnswered).
 func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
-	if m.held != nil {
+	asked := m.askTurn && !m.askedAt.IsZero()
+	if m.held != nil && (!asked || (m.claim.State != StateWorking && !m.heldWaits())) {
 		return m.suspendHeld(ctx)
 	}
-	if m.askTurn && !m.askedAt.IsZero() {
+	if asked {
 		m.askTurn, m.unansweredAsks = false, 0
 		m.log.Warn("supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn within the reconnect deadline of its hello; the stale-plugin lane relaunches it, uncharged",
 			"askedAt", m.askedAt)
+		m.markRestoredTurnUnseen()
 		return m.refreshPlugin(ctx, m.askTrigger, false)
 	}
 	return m.retireNeverReady(ctx, neverReady{

@@ -1581,8 +1581,11 @@ type Machine struct {
 	// task, and nothing of the take is done a second time — and clears the mark; one of a later
 	// turn clears it as well, since the reported turn's start was lost. Where the machine does not
 	// know which turn a start is of (turnCount.known), the next start is the reported turn's, as
-	// it always was. A turn's end with no start seen clears it too (blindTurnEnded): that start
-	// was lost and will not come. letGo clears it with the process, and it is memory only.
+	// it always was, except after a hello that said its shim's backlog dropped frames, which clears
+	// the mark and leaves none while the count is not known (readBacklog, turnCount.cut): the start
+	// may be among the frames dropped. A turn's end with no start seen clears it too
+	// (blindTurnEnded): that start was lost and will not come. letGo clears it with the process,
+	// and it is memory only.
 	reportedAhead aheadReport
 	// turns is the count of the current process's turns this machine keeps, which tells the turn
 	// a report is of from the turn the daemon gave the pending task's take (turnCount). It is
@@ -1594,6 +1597,15 @@ type Machine struct {
 	// The wait for a take's report bounds such a take with nothing held only where its restored
 	// anchor is bound (reportReaches). It is memory only: what it says is of this daemon's start.
 	restoredTake bool
+	// restoredTurnUnseen is whether the restored take (restoredTake), awaiting its turn, may have
+	// had that turn run with no frame of it reaching the machine: the stale-plugin relaunch of its
+	// claim was decided, at its agent's answer of no turn or at the reconnect deadline with no
+	// answer, behind a replay whose hello did not say the shim's backlog is whole
+	// (markRestoredTurnUnseen, turnCount.cut), and a trim of that backlog can drop a whole turn.
+	// The let-go takes such a take back with the note of a cut turn rather than unstarted
+	// (interrupted), so the next process is told its turn on the task may have run. letGo clears
+	// it with the process, and it is memory only.
+	restoredTurnUnseen bool
 	// rewrite is the pending task whose value the next write at a hold's end (offerPending) logs
 	// under a cause of its own, and that cause: TaskValueRetake for a task taken back in this
 	// process for a reason that keeps the process — a provider error's turn, a compaction, the
@@ -4065,7 +4077,8 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // task's, and the background work its own activity report named. It is read here, first,
 // because everything it reads goes with the process below, and the launch that follows clears
 // the report. noEnd records nothing. The mark of a task taken back from that process's turn goes
-// with the process too (cutTurnOf).
+// with the process too (cutTurnOf), as does the mark of a restored take whose turn may have run
+// unseen (restoredTurnUnseen).
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
@@ -4076,7 +4089,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.dropHeld()
 	m.staleRelaunch = nil
 	m.turnsTask, m.reportedAhead, m.rewrite = 0, aheadReport{}, valueRewrite{}
-	m.cutTurnOf = ""
+	m.cutTurnOf, m.restoredTurnUnseen = "", false
 	m.compacting, m.lostCompaction = nil, nil
 	m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
