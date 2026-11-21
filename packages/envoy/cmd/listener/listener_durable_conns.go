@@ -50,15 +50,23 @@ type durableConnsKey struct {
 // listenerDurableConns is every listener client's durableConns.
 var listenerDurableConns sync.Map
 
-// connsOf is client's durableConns for durable.
+// connsOf is client's durableConns for durable. The registry forgets the entry once client stops,
+// so a process that connects a client again keeps no entry, and no closed connection, of the
+// stopped one.
 func connsOf(client *bus.Client, durable string) *durableConns {
 	key := durableConnsKey{client, durable}
 	if conns, ok := listenerDurableConns.Load(key); ok {
 		return conns.(*durableConns)
 	}
-	conns, _ := listenerDurableConns.LoadOrStore(key, &durableConns{
+	conns, loaded := listenerDurableConns.LoadOrStore(key, &durableConns{
 		client: client, durable: durable, byName: map[string]*bus.Client{},
 	})
+	if !loaded {
+		go func() {
+			<-client.Stopped()
+			listenerDurableConns.Delete(key)
+		}()
+	}
 	return conns.(*durableConns)
 }
 
@@ -78,10 +86,12 @@ func (d *durableConns) subscriberOK() bool {
 	return subscriber != nil && subscriber.SubOK()
 }
 
-// drainAll drains every intake connection of every durable of client, each within timeout, so a
-// delivery still in its handler acknowledges before the process exits: the listener's shutdown
-// runs it before it drains client, through which the handlers publish.
-func drainAll(client *bus.Client, timeout time.Duration) []error {
+// drainAll drains every intake connection of every durable of client by deadline, so a delivery
+// still in its handler acknowledges before the process exits: the listener's shutdown runs it
+// before it drains client, through which the handlers publish, and gives client what remains of
+// the one stopClientDrain both drains share (shutdownListener). A connection whose share is gone by
+// its turn is closed instead.
+func drainAll(client *bus.Client, deadline time.Time) []error {
 	var conns []*bus.Client
 	listenerDurableConns.Range(func(key, value any) bool {
 		if key.(durableConnsKey).client == client {
@@ -96,7 +106,12 @@ func drainAll(client *bus.Client, timeout time.Duration) []error {
 	})
 	var errs []error
 	for _, conn := range conns {
-		if err := conn.Drain(timeout); err != nil {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			conn.Close()
+			continue
+		}
+		if err := conn.Drain(remaining); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -105,7 +120,9 @@ func drainAll(client *bus.Client, timeout time.Duration) []error {
 
 // machine is the machine id the durable is the listener durable of (bus.ListenerDurable), as the
 // auth service's entry names it: the durable's name without its "listener-" prefix. A machine id
-// holding a space, which the durable's name writes as a hyphen, is granted no generation.
+// holding a space, which the durable's name writes as a hyphen, gives a name the auth service's
+// entry does not match, so that listener is granted no generation and its start fails: closed, on
+// purpose, rather than a guess at which machine the hyphen stood for.
 func (d *durableConns) machine() string {
 	return strings.TrimPrefix(d.durable, "listener-")
 }

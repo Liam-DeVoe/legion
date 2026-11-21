@@ -1965,9 +1965,15 @@ const (
 	// the handed-over forwards, which is roleForwardTimeout (role_lane.go). Every pod's grace is
 	// rendered from stopBudget, so a change to either wait moves the rendered grace with it.
 	stopLaneGrace = stopLaneDrain + roleForwardTimeout
-	// stopClientDrain bounds the main client's drain: 10 s for the deliveries in their handlers,
-	// as before the drain hooks, and the hooks' 3 s on top (bus's drainHookReserve).
-	stopClientDrain = 13 * time.Second
+	// stopDeliveriesDrain is the deliveries' share of stopClientDrain: their handlers' 10 s, as
+	// before the drain hooks.
+	stopDeliveriesDrain = 10 * time.Second
+	// stopClientDrain bounds the listener's NATS drains together: the deliveries' share, and the
+	// main client's drain hooks' 3 s on top (bus's drainHookReserve). In the fixed consumer naming
+	// mode the main client carries the deliveries and drains in all of it; in the fresh mode each
+	// generation's own connection carries them and drains first, in the deliveries' share, and
+	// the main client drains in what remains (shutdownListener), so stopBudget counts both.
+	stopClientDrain = stopDeliveriesDrain + 3*time.Second
 	// stopBudget is the whole stop, the three deadlines added, and is inside every runtime's
 	// 30 s after the pre-stop wait.
 	stopBudget = stopHTTPGrace + stopLaneGrace + stopClientDrain
@@ -2050,11 +2056,15 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	}
 	parts.known.StopWatch()
 	// In the fresh naming mode the durable's deliveries arrive on its generation's own connection:
-	// it drains first, while the main client still carries the publishes its handlers make.
-	for _, err := range drainAll(parts.client, stopClientDrain) {
+	// it drains first, in the deliveries' share, while the main client still carries the publishes
+	// its handlers make; the main client then drains in what remains of the one stopClientDrain both
+	// share, which stopBudget counts. In the fixed mode there is no such connection, and the main
+	// client drains in all of it.
+	drainsEnd := time.Now().Add(stopClientDrain)
+	for _, err := range drainAll(parts.client, time.Now().Add(stopDeliveriesDrain)) {
 		logger.Warn("nats drain error", slog.String("connection", "durable generation"), slog.String("error", err.Error()))
 	}
-	if err := parts.client.Drain(stopClientDrain); err != nil {
+	if err := parts.client.Drain(time.Until(drainsEnd)); err != nil {
 		logger.Warn("nats drain error", slog.String("error", err.Error()))
 	}
 
