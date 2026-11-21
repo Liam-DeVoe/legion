@@ -118,7 +118,8 @@ admitted in it: "the hold has ended: hold release is done".
 
 - From `prepare`, it deletes the hold's cohort record and moves the row to `released`. It refuses
   when the journal holds `hold set`'s `done` entry, because such a row was put back by a database
-  writer.
+  writer. A prepared hold with no journal at all, where `hold prepare` moved the row and its
+  journal insert did not land, takes the same path: with no journal there is no `hold set` entry.
 - In a set hold, it is admitted once a command has stopped and no intent is pending. It prints
   what each stop left.
 - In hub-restore, after a done `hold prove`, it is admitted only after a stop. It then checks each

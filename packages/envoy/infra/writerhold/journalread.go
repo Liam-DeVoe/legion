@@ -1,6 +1,7 @@
 package writerhold
 
 import (
+	"context"
 	"sort"
 	"strings"
 
@@ -19,7 +20,9 @@ import (
 //   - priorLeft's cut-run rule: holdrecord's cutRun (journal.go);
 //   - stopLeftOutput: holdrecord's stopLeftKey (journal.go);
 //   - abortLeftPrefix and stopRecords: a reader of the keys holdrecord's withStopRecords
-//     (client.go, Admit's abort inputs) writes.
+//     (client.go, Admit's abort inputs) writes;
+//   - journalKind and hasJournal: a typed answer from holdrecord's Journal for a hold with no
+//     journal, which today answers that with an untyped error.
 
 // The states of a journal entry, as holdrecord's stateIntent, stateDone and stateStop write them.
 const (
@@ -35,6 +38,21 @@ const stopLeftOutput = "left"
 // abortLeftPrefix begins each input of abort's intent that carries one stop's record of what its
 // command left, `left.<the stop's index in the journal>` (holdrecord's withStopRecords).
 const abortLeftPrefix = "left."
+
+// journalKind is the record kind of a hold's journal (holdrecord's journalKind).
+const journalKind = "done"
+
+// hasJournal reports whether hold holdID has a journal: false when the broker lists no record of the
+// journal's kind for it, which startHold leaves when its journal insert after the row's move did not
+// land. A journal the broker has seen and that is gone outside its routes reads below its floor,
+// holdrecord.ErrUnknown, never as none.
+func hasJournal(ctx context.Context, records *holdrecord.Client, holdID string) (bool, error) {
+	found, err := records.Records(ctx, holdID, journalKind)
+	if err != nil {
+		return false, err
+	}
+	return len(found) > 0, nil
+}
 
 // latestState is the state of command's latest entry in the journal, or "".
 func latestState(d holdrecord.Done, command string) string {

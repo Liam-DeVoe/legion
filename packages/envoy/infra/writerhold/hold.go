@@ -131,7 +131,9 @@ func prepare(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 // abort is `hold abort`. From prepare, and only while the hold's journal holds no `hold set` done
 // entry (a row that reads prepare after it was put back by a database writer, which abort refuses),
 // it deletes the hold's cohort record, then moves the row to released under its hold id; the
-// thresholds a prepare raised stay. A held row is aborted through the hold's table
+// thresholds a prepare raised stay. A prepared hold with no journal at all, which startHold leaves
+// when its journal insert after the row's move did not land, takes the same path: no journal holds
+// no `hold set` entry. A held row is aborted through the hold's table
 // (holdrecord.Admit): in every workflow once a command has stopped and no intent is pending, the way
 // out of a command that cannot succeed, and refused while a command's intent is pending or before
 // any command has stopped ("no command has stopped"). Its intent carries each stop's record of what
@@ -148,6 +150,15 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 	}
 	if row.HoldID != o.holdID {
 		return refusef(StepPreflight, "the hold row is %s under hold %s, not %s", row.Phase, row.HoldID, o.holdID)
+	}
+	if row.Phase == natsgrant.OperatorPhasePrepare {
+		journaled, err := hasJournal(ctx, records, o.holdID)
+		if err != nil {
+			return err
+		}
+		if !journaled {
+			return abortPrepared(ctx, records, row, o, stdout)
+		}
 	}
 	d, _, err := records.Journal(ctx, o.holdID)
 	if err != nil {
@@ -172,15 +183,7 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 		if latestState(d, holdrecord.CommandSet) == stateDone {
 			return refusef(StepPreflight, "the hold row reads prepare at gen %d, and %s is done in hold %s's journal: the row was put back under the set hold, so abort takes no prepare path", row.Gen, holdrecord.CommandSet, o.holdID)
 		}
-		if err := records.DeleteCohort(ctx, o.holdID); err != nil {
-			return err
-		}
-		moved, err := records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, o.holdID, o.reason)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(stdout, "aborted hold %s from prepare: row gen %d, released\n", o.holdID, moved.Gen)
-		return nil
+		return abortPrepared(ctx, records, row, o, stdout)
 	}
 	if _, err := records.Admit(ctx, o.holdID, holdrecord.Request{Command: holdrecord.CommandAbort}, nil); err != nil {
 		return err
@@ -222,6 +225,20 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 	if changed != nil {
 		return fmt.Errorf("the hold is released, and a disk changed after abort's last check, outside any hold: %w", changed)
 	}
+	return nil
+}
+
+// abortPrepared is abort's prepare path on row, prepared under o's hold id: the hold's cohort record
+// deleted, then the row moved to released under its hold id.
+func abortPrepared(ctx context.Context, records *holdrecord.Client, row holdrecord.Row, o options, stdout io.Writer) error {
+	if err := records.DeleteCohort(ctx, o.holdID); err != nil {
+		return err
+	}
+	moved, err := records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, o.holdID, o.reason)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "aborted hold %s from prepare: row gen %d, released\n", o.holdID, moved.Gen)
 	return nil
 }
 
