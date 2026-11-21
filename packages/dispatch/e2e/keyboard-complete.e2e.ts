@@ -5,6 +5,11 @@
  *  at - which is also how the negative control reads: the same rows run on a build of the merge
  *  base, where they fail at the first step the merge base does not do.
  *
+ *  One row proves no check of the document: its title starts with `held-press`, the name of the
+ *  file whose rule it holds in the browser (`web/src/components/held-press.ts`: a control whose
+ *  write is out is held, not disabled, so it keeps the keyboard's focus), in place of a check's
+ *  id.
+ *
  *  The rows write - snoozes, priorities, statuses, assignees, repositories, hand-ons - and count
  *  each write at the server's own route, so they run on the real stack. They import nothing this
  *  tree adds to or changes in `web/src`: what they need from the app they read off the page or
@@ -32,6 +37,7 @@ import {
   putRepoProject,
   requestApproval,
   reviewArtifact,
+  sessionCookie,
   snoozeAsk,
   withOpenedAsk,
 } from "./api";
@@ -87,10 +93,12 @@ import {
   returnMornings,
   reviewWrites,
   type SeededApproval,
+  type SpreadAsk,
   seedApprovalAtVersionTwo,
   seedArchitectureLeaf,
   seedAsksOverTwoProjects,
   seedPriorityWithWork,
+  seedSecondRepositoryPull,
   seedTallAsks,
   seedTwoMachines,
   snoozedUntil,
@@ -412,21 +420,21 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
 }
 
 // SLOW(>=2s): four asks seeded and snoozed one by one, with the band and the bar read each time.
-test("k-snooze-menu: b and h open the Snooze menu beside the reading pane, where only Enter, a click or a digit writes", async ({
+test("k-snooze-menu: b and h open the Snooze menu beside the reading pane, where Enter or a digit writes and an arrow, Escape, Tab or a click outside writes nothing", async ({
   page,
 }) => {
   await snoozeMenuSteps(page, "the reading pane");
 });
 
 // SLOW(>=2s): four asks seeded and snoozed one by one, with the band and the bar read each time.
-test("k-snooze-menu: b and h open the Snooze menu on the Inbox's cards, where only Enter, a click or a digit writes", async ({
+test("k-snooze-menu: b and h open the Snooze menu on the Inbox's cards, where Enter or a digit writes and an arrow, Escape, Tab or a click outside writes nothing", async ({
   page,
 }) => {
   await snoozeMenuSteps(page, "card mode");
 });
 
 // SLOW(>=2s): four asks seeded and snoozed one by one, with the band and the bar read each time.
-test("k-snooze-menu: b and h open the Snooze menu in the Inbox drawer, where only Enter, a click or a digit writes", async ({
+test("k-snooze-menu: b and h open the Snooze menu in the Inbox drawer, where Enter or a digit writes and an arrow, Escape, Tab or a click outside writes nothing", async ({
   page,
 }) => {
   await snoozeMenuSteps(page, "the drawer");
@@ -947,6 +955,85 @@ test("k-choice-writes-on-enter: on a question's card the hand-on's keys only cha
   });
 });
 
+/** The people the assignee list's row signs in beside alice and bob, whom the reset signs in:
+ *  seven people, and with Unassigned eight rows, more than the list's box shows at once. */
+const MORE_PEOPLE = ["carol", "dave", "erin", "frank", "grace"] as const;
+
+/** Where the row an open single pick's list highlights stands against the list's box
+ *  (`MultiSelect`): its words, whether its top is above the bottom of the sticky band that holds
+ *  the list's search box, and whether its bottom is below the inner bottom of the panel's scroll
+ *  box, each read from `getBoundingClientRect`. */
+interface HighlightedRow {
+  readonly name: string;
+  readonly underSearch: boolean;
+  readonly belowBox: boolean;
+}
+
+/** The row the open list of `control`, a single pick's trigger, highlights (`aria-activedescendant`
+ *  of its search box), or undefined while the list is closed or highlights nothing. */
+function highlightedRow(control: Locator): Promise<HighlightedRow | undefined> {
+  return control.evaluate((trigger): HighlightedRow | undefined => {
+    const panel = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
+    const search = panel?.querySelector('[role="combobox"]');
+    const row = document.getElementById(search?.getAttribute("aria-activedescendant") ?? "");
+    if (!panel || !search || row === null) return undefined;
+    const own = row.getBoundingClientRect();
+    const band = (search.parentElement ?? search).getBoundingClientRect();
+    const inner = panel.getBoundingClientRect().top + panel.clientTop + panel.clientHeight;
+    return {
+      belowBox: own.bottom > inner + 0.5,
+      name: (row.textContent ?? "").replace("✓", "").trim(),
+      underSearch: own.top < band.bottom - 0.5,
+    };
+  });
+}
+
+// SLOW(>=2s): five more people signed in, the issue page loaded, and the assignee's list walked
+// from End up to its first row and opened again by ArrowUp.
+test("k-choice-writes-on-enter: on the issue page with seven people and no assignee, End on the closed assignee, each ArrowUp after it up to the first row, and ArrowUp on the closed assignee each leave the highlighted row inside the list's box, below its search box", async ({
+  page,
+}) => {
+  const { issueKey, title } = await seedChoices();
+  await patchIssue(issueKey, { assignee: null });
+  for (const login of MORE_PEOPLE) await sessionCookie(login);
+  await page.setViewportSize(WIDE);
+  await openIssue(page, issueKey, title);
+  const control = page.getByLabel(`Assignee of ${issueKey}`, { exact: true });
+  const say = (text: string) => `k-choice-writes-on-enter: the assignee's list, ${text}`;
+  const inView = (step: string) =>
+    expect
+      .poll(() => highlightedRow(control), {
+        message: say(
+          `${step}: the highlighted row stands inside the list's box, below its search box`
+        ),
+      })
+      .toMatchObject({ belowBox: false, underSearch: false });
+
+  // A click opens the list once, so its read of the people lands before the keys walk it.
+  await control.click();
+  const options = listOf(control).getByRole("option");
+  await expect
+    .poll(() => options.count(), { message: say("the list holds Unassigned and seven people") })
+    .toBeGreaterThanOrEqual(8);
+  // The poll above saw every row of the list, which one read of the people draws together.
+  const count = await options.count();
+  await page.keyboard.press("Escape");
+  await expect(listOf(control), say("Escape closes the list")).toHaveCount(0);
+  await expect(control, say("Escape leaves the focus on the closed assignee")).toBeFocused();
+
+  await page.keyboard.press("End");
+  await inView("End on the closed assignee");
+  for (let press = 1; press < count; press += 1) {
+    await page.keyboard.press("ArrowUp");
+    await inView(`ArrowUp ${press} after End`);
+  }
+  await page.keyboard.press("Escape");
+  await expect(listOf(control), say("Escape closes the list again")).toHaveCount(0);
+  await expect(control, say("Escape puts the focus back on the closed assignee")).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await inView("ArrowUp on the closed assignee, which shows no one");
+});
+
 // ---------------------------------------------------------------------------
 // k-menu-contrast (the menus' part; the single-pick lists' part is its own row)
 // ---------------------------------------------------------------------------
@@ -957,9 +1044,15 @@ test("k-choice-writes-on-enter: on a question's card the hand-on's keys only cha
 const THEMES = ["light", "dark"] as const;
 
 /** Reads the contrast of `target`, failing softly under 4.5:1 with `what` and the choice `name`
- *  named. */
+ *  named, and at once, with the same names, where `contrastOf` refuses the element: a native
+ *  `<select>` or `<option>` with a transparent background, or no opaque background under it. */
 async function expectReadable(target: Locator, what: string, name: string): Promise<void> {
-  const reading = await contrastOf(target);
+  const reading = await contrastOf(target).catch((error: unknown) => {
+    throw new Error(
+      `k-menu-contrast: ${what}, ${name}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
+    );
+  });
   expect
     .soft(
       reading.ratio,
@@ -1034,8 +1127,27 @@ test("k-menu-contrast: every choice of the snooze, priority and status menus rea
 /** Reads the contrast of the shared list's trigger `control` and of each choice of its list,
  *  failing softly for each pair under 4.5:1, with the theme, the control and the choice named.
  *  The trigger is read on the element that draws its text, and its choices in the list a click
- *  on it opens, once that list holds `fromRead`, a choice only the list's own read brings. */
+ *  on it opens, once that list holds `fromRead`, a choice only the list's own read brings. A
+ *  native select draws its open list outside the page, so it is read itself, with each of its
+ *  `<option>`s where it stands and no click; `contrastOf` refuses either by name when its own
+ *  background is transparent. */
 async function readChoiceContrast(control: Locator, what: string, fromRead: string): Promise<void> {
+  // The caller found the control drawn, and whether it is a native select is its tag, which no
+  // later read of the page changes, so one instant's answer is the answer.
+  const native = await control.evaluate((element) => element instanceof HTMLSelectElement);
+  if (native) {
+    await expectReadable(control, what, "the control");
+    const nativeOptions = control.locator("option");
+    // A native select holds every one of its options in the page from its first draw.
+    const nativeCount = await nativeOptions.count();
+    for (let index = 0; index < nativeCount; index += 1) {
+      const option = nativeOptions.nth(index);
+      // An option's words are in the page from the select's first draw, and they only name the
+      // choice in a failure's message.
+      await expectReadable(option, what, `the choice ${(await option.textContent())?.trim()}`);
+    }
+    return;
+  }
   await expectReadable(
     control.locator("xpath=.//*[text()[normalize-space()]]").first(),
     what,
@@ -1240,6 +1352,8 @@ async function pressTwiceWhileHeld(
   );
 }
 
+// held-press proves no check of the Verification document; the file's header says why its title
+// starts with that name.
 // SLOW(>=2s): three writes, each held until its control is pressed again, on the issue page and
 // on Settings.
 test("held-press: a button, a form's submit and a checkbox keep the keyboard's focus while their write is out, and two presses send one write", async ({
@@ -1412,12 +1526,13 @@ async function openLinkView(page: Page, seed: LinkSeed, view: LinkView): Promise
 }
 
 /** What `act` opens in a new page of `context`, whose address it answers once loaded; the page is
- *  closed. */
+ *  closed. A press that opens no page fails by `what`, the press's own words (`newPageAt`). */
 async function openedAddress(
   context: BrowserContext,
-  act: () => Promise<unknown>
+  act: () => Promise<unknown>,
+  what: string
 ): Promise<string> {
-  const opened = await newPageAt(context, act);
+  const opened = await newPageAt(context, act, what);
   const address = opened.url();
   await opened.close();
   return address;
@@ -1448,7 +1563,11 @@ async function clickEachLink(
   let links = await openLinkView(page, seed, view);
   const at = page.url();
   expect(
-    await openedAddress(context, () => links.away.click()),
+    await openedAddress(
+      context,
+      () => links.away.click(),
+      `k-link-click: in ${view}, a click on the web link`
+    ),
     `k-link-click: in ${view}, a click on the web link opens a new page at ${AWAY}`
   ).toBe(AWAY);
   expect(page.url(), `k-link-click: in ${view}, the Dispatch page stays at its address`).toBe(at);
@@ -1478,7 +1597,11 @@ test("k-link-click: in the spec the reader edits, a plain click opens each link,
     name: "the commented page",
   });
   expect(
-    await openedAddress(context, () => commented.click()),
+    await openedAddress(
+      context,
+      () => commented.click(),
+      "k-link-click: in the editable spec, a click on the link inside commented text"
+    ),
     `k-link-click: in the editable spec, a click on the link inside commented text opens ${COMMENTED_AWAY}`
   ).toBe(COMMENTED_AWAY);
 
@@ -1504,11 +1627,19 @@ test("k-link-click: in the spec the reader edits, a plain click opens each link,
     [links.key, "the key's title"],
   ] as const) {
     expect(
-      await openedAddress(context, () => link.click({ modifiers: ["ControlOrMeta"] })),
+      await openedAddress(
+        context,
+        () => link.click({ modifiers: ["ControlOrMeta"] }),
+        `k-link-click: a Ctrl+click on ${what}`
+      ),
       `k-link-click: a Ctrl+click on ${what} opens a new page at the other issue`
     ).toMatch(new RegExp(`^${otherPage}(/|$)`));
     expect(
-      await openedAddress(context, () => link.click({ button: "middle" })),
+      await openedAddress(
+        context,
+        () => link.click({ button: "middle" }),
+        `k-link-click: a middle click on ${what}`
+      ),
       `k-link-click: a middle click on ${what} opens a new page at the other issue`
     ).toMatch(new RegExp(`^${otherPage}(/|$)`));
   }
@@ -1529,6 +1660,65 @@ for (const view of ["the past version", "the reading pane", "the comment"] as co
     await clickEachLink(context, page, seed, view);
   });
 }
+
+/** An issue whose spec holds the requirement `r1`, and whose plan holds a task that serves it
+ *  (`:::plan_task{#t1 serves="dispatch://KEY/spec#b-r1"}`), at version 2, so its version 1 is a
+ *  past version. The task's typed block draws its `serves` in its header, as a link to the spec's
+ *  block. */
+async function seedPlanTask(): Promise<{ readonly key: string; readonly reference: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: ":::requirement{#r1}\nThe mirror replays the ledger.\n:::\n",
+    title: "Mirror replay",
+  });
+  const reference = `dispatch://${issue.key}/spec#b-r1`;
+  const plan = await createIssueArtifact(issue.key, {
+    content: `# Plan\n\n:::plan_task{#t1 serves="${reference}"}\nReplay the ledger into the mirror.\n:::\n`,
+    name: "plan.md",
+  });
+  await editArtifact(
+    plan.artifact.id,
+    { ops: [{ after: "end", markdown: "A later line.", op: "insert" }] },
+    asker
+  );
+  return { key: issue.key, reference };
+}
+
+// SLOW(>=2s): a plan seeded at version 2, and its page and its version 1 each opened and left by
+// a click.
+test("k-link-click: in the plan the reader edits and in its past version, a plain click on a task's serves link moves the page to the spec with no new load of the application", async ({
+  page,
+}) => {
+  const seed = await seedPlanTask();
+  await page.setViewportSize(WIDE);
+  const plan = `/issues/${seed.key}/artifacts/plan-md`;
+  for (const view of ["the plan the reader edits", "the plan's past version"] as const) {
+    const step = `k-link-click: in ${view}, a click on the task's serves link`;
+    let scope: Locator;
+    if (view === "the plan the reader edits") {
+      await page.goto(plan);
+      await expect(page.getByRole("status", { name: "connected" })).toHaveText("connected");
+      scope = documentEditor(page);
+    } else {
+      await page.goto(`${plan}?v=1`);
+      scope = page
+        .getByRole("region", { name: "Document version 1" })
+        .getByRole("textbox", { name: "Document editor" });
+    }
+    // The link the task's header draws for its `serves` (`typed-block-drawing.ts`).
+    const serves = scope.locator(
+      `header[data-proof-block-summary] a[data-dispatch-href="${seed.reference}"]`
+    );
+    await expect(serves, `k-link-click: ${view} draws the task's serves link`).toBeVisible();
+    await markDocument(page);
+    await serves.click();
+    await expect(page, `${step} moves the page to the spec`).toHaveURL(
+      new RegExp(`/issues/${seed.key}/spec(?:[?#].*)?$`)
+    );
+    expect(await reloaded(page), `${step} loads no new document`).toBe(false);
+  }
+});
 
 /** A person's press on `link` - a click, a Ctrl+click or a middle click - with the button held
  *  down for 150 ms, as a hand holds it, where Playwright's own `click` releases it at once, at the
@@ -1568,8 +1758,40 @@ async function heldPressOpens(
   return address;
 }
 
+/** Runs `press` on `link` and holds the element it pressed to still being in the page once the
+ *  press has settled: connected, drawn, and still the one element `link` finds, not a link of
+ *  the same name drawn again in its place; softly, so one run names every press that goes wrong.
+ *  Answers what `press` answers. */
+async function keepsPressedLink<T>(
+  link: Locator,
+  step: string,
+  press: () => Promise<T>
+): Promise<T> {
+  // Held from before the press, the card at rest and folded, so the read after the press tells
+  // this element from a link of the same name drawn again in its place.
+  const pressed = await link.elementHandle();
+  const answer = await press();
+  expect
+    .soft(
+      // Read after the press has settled: `press` waited out the new page it may open, so a
+      // fold or a draw again that the press set off has happened by now.
+      await link.evaluateAll(
+        (found, held) => ({
+          connected: held.isConnected,
+          same: found.length === 1 && found[0] === held,
+          visible: held.checkVisibility(),
+        }),
+        pressed
+      ),
+      `${step} leaves the pressed link in the page`
+    )
+    .toEqual({ connected: true, same: true, visible: true });
+  await pressed.dispose();
+  return answer;
+}
+
 // SLOW(>=2s): the Conversation tab or the spec opened for each of ten presses.
-test("k-link-click: in a folded comment on the Conversation tab and in the spec's margin, a press on a link leaves the comment folded, and a Ctrl+click and a middle click open its dispatch:// link in a new page", async ({
+test("k-link-click: in a folded comment on the Conversation tab and in the spec's margin, a press on a link leaves the comment folded and the link in the page, and a Ctrl+click and a middle click open its dispatch:// link in a new page", async ({
   context,
   page,
 }) => {
@@ -1638,7 +1860,11 @@ test("k-link-click: in a folded comment on the Conversation tab and in the spec'
         "false"
       );
       const at = page.url();
-      const address = await heldPressOpens(context, page, link, how);
+      const address = await keepsPressedLink(
+        link,
+        `k-link-click: in ${where}, a ${how} on ${name}`,
+        () => heldPressOpens(context, page, link, how)
+      );
       // Soft, so one run names every place and press that goes wrong.
       if (name === "the dispatch:// link") {
         expect
@@ -1662,7 +1888,7 @@ test("k-link-click: in a folded comment on the Conversation tab and in the spec'
 });
 
 // SLOW(>=2s): the Conversation tab or the spec opened for each of ten presses, and each of the four presses that move the page waits out 5 s for a new page that never opens.
-test("k-link-click: in a folded comment on the Conversation tab and in the spec's margin, a click on its web link opens a new page, a click on its dispatch:// link or its key's title moves the page to the other issue, and a Ctrl+click and a middle click on its key's title open it in a new page, the comment staying folded", async ({
+test("k-link-click: in a folded comment on the Conversation tab and in the spec's margin, a click on its web link opens a new page, a click on its dispatch:// link or its key's title moves the page to the other issue, and a Ctrl+click and a middle click on its key's title open it in a new page, the comment staying folded and the pressed link in the page", async ({
   context,
   page,
 }) => {
@@ -1737,10 +1963,9 @@ test("k-link-click: in a folded comment on the Conversation tab and in the spec'
         continue;
       }
 
-      // Held from before the press, the card at rest and folded, so the reads after the press
-      // tell this element from a link of the same name drawn again in its place.
-      const pressed = await link.elementHandle();
-      const address = await heldPressOpens(context, page, link, how);
+      const address = await keepsPressedLink(link, step, () =>
+        heldPressOpens(context, page, link, how)
+      );
       // Soft, so one run names every place and press that goes wrong.
       if (name === "the web link") {
         expect.soft(address, `${step} opens a new page at ${AWAY}`).toBe(AWAY);
@@ -1767,24 +1992,6 @@ test("k-link-click: in a folded comment on the Conversation tab and in the spec'
           `${step} puts no caret in a reply box`
         )
         .toBe("none");
-      // The element pressed, not a link of the same name drawn again in its place: whether it is
-      // still in the page and drawn, and whether the link's own locator still finds it.
-      expect
-        .soft(
-          // Read after the press has settled, as the read above: the element pressed, and
-          // whatever the link's locator finds now.
-          await link.evaluateAll(
-            (found, held) => ({
-              connected: held.isConnected,
-              same: found.length === 1 && found[0] === held,
-              visible: held.checkVisibility(),
-            }),
-            pressed
-          ),
-          `${step} leaves the pressed link in the page`
-        )
-        .toEqual({ connected: true, same: true, visible: true });
-      await pressed.dispose();
     }
   }
 });
@@ -1802,7 +2009,11 @@ test("k-link-keys: in the spec the reader edits, Alt+Enter with the caret in a l
   await placeCaret(page, "before", "Read");
   for (let step = 0; step < 8; step += 1) await page.keyboard.press("ArrowRight");
   expect(
-    await openedAddress(context, () => page.keyboard.press("Alt+Enter")),
+    await openedAddress(
+      context,
+      () => page.keyboard.press("Alt+Enter"),
+      "k-link-keys: Alt+Enter in the web link"
+    ),
     `k-link-keys: Alt+Enter in the web link opens a new page at ${AWAY}`
   ).toBe(AWAY);
   expect(await storedSpec(seed), "k-link-keys: Alt+Enter in the web link changes no text").toBe(
@@ -1834,12 +2045,14 @@ test("k-link-keys: in the spec the reader edits, Alt+Enter with the caret in a l
 });
 
 /** One stop of the focus inside a scope: the text a reader sees on it, whether it draws anything
- *  at all (a box of some size holding visible text), and its name, its `aria-label` else that
- *  text. */
+ *  at all (a box of some size holding visible text), its name, its `aria-label` else that text,
+ *  and the text of the paragraph or list item it stands in, which tells two stops of the same
+ *  text apart. */
 interface TabStop {
   readonly text: string;
   readonly drawn: boolean;
   readonly name: string;
+  readonly block: string;
 }
 
 /** Presses Tab from where the focus is until it has entered `scope` and left it again, at most
@@ -1855,6 +2068,7 @@ async function tabWalk(page: Page, scope: Locator, limit: number): Promise<TabSt
       const box = active.getBoundingClientRect();
       const text = active.innerText.trim();
       return {
+        block: active.closest("p, li")?.textContent?.trim() ?? "",
         drawn: box.width > 0 && box.height > 0 && text !== "",
         name: active.getAttribute("aria-label") ?? text,
         text,
@@ -1886,13 +2100,16 @@ test("k-link-keys: in the past version and the reading pane, Tab reaches each li
       await expect(paneScroller(page), "k-link-keys: l puts the focus in the pane").toBeFocused();
     }
     const stops = await tabWalk(page, links.scope, 60);
-    const texts = stops.map((stop) => stop.text);
-    const order = ["a page elsewhere", "the other issue", titleText].map((text) =>
-      texts.indexOf(text)
-    );
+    // The title drawn over the address link reads as the bare key's does, so the bare key's is
+    // the stop of that text in the paragraph the bare key stands in.
+    const order = [
+      stops.findIndex((stop) => stop.text === "a page elsewhere"),
+      stops.findIndex((stop) => stop.text === "the other issue"),
+      stops.findIndex((stop) => stop.text === titleText && stop.block.startsWith("The bare key")),
+    ];
     expect(
       order.every((index, at) => index !== -1 && (at === 0 || index > (order[at - 1] ?? -1))),
-      `k-link-keys: in ${view}, Tab reaches the web link, the dispatch:// link and the key's title in turn: ${JSON.stringify(texts)}`
+      `k-link-keys: in ${view}, Tab reaches the web link, the dispatch:// link and the bare key's title in turn: ${JSON.stringify(stops.map((stop) => `${stop.text} (in "${stop.block}")`))}`
     ).toBe(true);
     expect(
       stops.filter((stop) => !stop.drawn),
@@ -1901,7 +2118,11 @@ test("k-link-keys: in the past version and the reading pane, Tab reaches each li
 
     await links.away.focus();
     expect(
-      await openedAddress(context, () => page.keyboard.press("Enter")),
+      await openedAddress(
+        context,
+        () => page.keyboard.press("Enter"),
+        `k-link-keys: in ${view}, Enter on the web link`
+      ),
       `k-link-keys: in ${view}, Enter on the web link opens a new page at ${AWAY}`
     ).toBe(AWAY);
     await links.issue.focus();
@@ -2144,7 +2365,10 @@ async function pressInDocument(
 }
 
 /** The tall approval requests, each of a spec at least four times the column's height, and a
- *  question its asker reworded, whose card draws the `<summary>` of its earlier wording. */
+ *  question its asker reworded, whose card draws the `<summary>` of its earlier wording: forty
+ *  paragraphs of its question stand above that summary, past the column's height, and its nine
+ *  options below it, so the column can stand away from its top at the summary with room to
+ *  scroll on down. */
 async function seedListAndDocument(): Promise<{
   readonly reworded: string;
   readonly tall: readonly SeededApproval[];
@@ -2152,8 +2376,23 @@ async function seedListAndDocument(): Promise<{
   await createProject({ key: "CORE", name: "Core" });
   const tall = await seedTallAsks("CORE");
   const issue = await createIssue({ force: true, project: "CORE", title: "Lease audit" });
-  const ask = await createAsk(issue.key, { question: "Which lease does the audit read?" }, asker);
-  await editAsk(ask.id, { question: "Which lease window does the audit read?" }, asker);
+  const windows = Array.from(
+    { length: 40 },
+    (_, index) => `Lease window ${index + 1} closes at noon.`
+  ).join("\n\n");
+  const ask = await createAsk(
+    issue.key,
+    {
+      options: Array.from({ length: 9 }, (_, index) => ({ label: `Window ${index + 1}` })),
+      question: `Which lease does the audit read?\n\n${windows}`,
+    },
+    asker
+  );
+  await editAsk(
+    ask.id,
+    { question: `Which lease window does the audit read?\n\n${windows}` },
+    asker
+  );
   return { reworded: ask.id, tall };
 }
 
@@ -2260,15 +2499,31 @@ test("k-list-and-document: Space, Shift+Space, g g and Shift+G scroll the open d
     "k-list-and-document: Space on Copy reference moves no scrollTop"
   ).toBe(beforeCopy.top);
 
-  // On a focused `<summary>` of the pane, Space opens or closes it and scrolls nothing.
+  // On a focused `<summary>` of the pane, Space opens or closes it and scrolls nothing. The column
+  // is put where the summary stands at its foot: the question above it runs past the column's
+  // height and its options below it (`seedListAndDocument`), so the column stands away from its
+  // top with room to scroll on down, and a Space the page took as a scroll would move it.
   await selectRow(page, seed.reworded);
   const summary = inboxPane(page).locator("summary", { hasText: "Show 1 previous version" });
   await expect(summary, "k-list-and-document: the reworded question draws a summary").toBeVisible();
   await summary.focus();
+  await summary.evaluate((node) => {
+    const column = node.closest('[data-testid="inbox-pane-scroller"]');
+    if (column === null) throw new Error("the summary is not in the reading column");
+    column.scrollTop += node.getBoundingClientRect().bottom - column.getBoundingClientRect().bottom;
+  });
   const opened = () =>
     summary.evaluate((node) => (node.parentElement as HTMLDetailsElement | null)?.open === true);
   const wasOpen = await opened();
   const beforeSummary = await columnAt(page);
+  expect(
+    beforeSummary.top,
+    "k-list-and-document: at the summary the column stands away from its top"
+  ).toBeGreaterThan(0);
+  expect(
+    beforeSummary.top + beforeSummary.height,
+    "k-list-and-document: at the summary the column has room to scroll on down"
+  ).toBeLessThan(beforeSummary.scrollHeight - 1);
   await page.keyboard.press("Space");
   await expect
     .poll(opened, {
@@ -2711,7 +2966,7 @@ async function shiftOOpens(
   const before = page.url();
   const pages = context.pages().length;
   const opened = await test.step(`k-new-tab: ${place}, Shift+O opens a new page`, () =>
-    newPageAt(context, () => page.keyboard.press("Shift+O")));
+    newPageAt(context, () => page.keyboard.press("Shift+O"), `k-new-tab: ${place}, Shift+O`));
   expect(opened.url(), `k-new-tab: ${place}, the new page is at the address o opens`).toBe(address);
   expect(context.pages().length, `k-new-tab: ${place}, Shift+O opens one new page`).toBe(pages + 1);
   expect(page.url(), `k-new-tab: ${place}, the first page keeps its address`).toBe(before);
@@ -2981,7 +3236,11 @@ test("k-new-tab: in the command bar Ctrl+Enter on an issue's hit and a Ctrl+clic
   );
   const fromKey =
     await test.step("k-new-tab: in the command bar, Ctrl+Enter opens a new page", () =>
-      newPageAt(context, () => box.press("Control+Enter")));
+      newPageAt(
+        context,
+        () => box.press("Control+Enter"),
+        "k-new-tab: in the command bar, Ctrl+Enter on the issue's hit"
+      ));
   expect(
     new URL(fromKey.url()).pathname,
     "k-new-tab: Ctrl+Enter opens the issue's page in the new page"
@@ -3002,7 +3261,11 @@ test("k-new-tab: in the command bar Ctrl+Enter on an issue's hit and a Ctrl+clic
   await expect(documentHit).toHaveAttribute("aria-selected", "true");
   const fromClick =
     await test.step("k-new-tab: in the command bar, a Ctrl+click opens a new page", () =>
-      newPageAt(context, () => documentHit.click({ modifiers: ["Control"] })));
+      newPageAt(
+        context,
+        () => documentHit.click({ modifiers: ["Control"] }),
+        "k-new-tab: in the command bar, a Ctrl+click on the document's hit"
+      ));
   expect(fromClick.url(), "k-new-tab: a Ctrl+click opens the document in the new page").toMatch(
     new RegExp(`/projects/CORE/documents/${runbook.artifact.slug}\\?q=reseed$`)
   );
@@ -3120,9 +3383,10 @@ async function arrowToNext(
   await expect(next).toBeFocused();
 }
 
-/** Two projects of two questions each, at P1 and P2 (`seedAsksOverTwoProjects`), and a third
- *  issue of CORE in another status with no question, labelled `ledger` with CORE's P1 issue. */
-async function seedFilterKeys(): Promise<void> {
+/** Two projects of two questions each, at P1 and P2 (`seedAsksOverTwoProjects`), which it
+ *  answers, and a third issue of CORE in another status with no question, labelled `ledger`
+ *  with CORE's P1 issue. */
+async function seedFilterKeys(): Promise<SpreadAsk[]> {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "OPS", name: "Ops" });
   const asks = await seedAsksOverTwoProjects(["CORE", "OPS"]);
@@ -3131,6 +3395,7 @@ async function seedFilterKeys(): Promise<void> {
   const first = asks.find((ask) => ask.project === "CORE" && ask.priority === 1);
   if (first === undefined) throw new Error("k-filter-keys: the seed holds no P1 question of CORE");
   await patchIssue(first.issueKey, { labels: ["ledger"] });
+  return asks;
 }
 
 /** Presses `j` in the drawer `peek` and answers the row it put the focus on, by that row's id. */
@@ -3176,7 +3441,7 @@ test("k-filter-keys: on the Inbox page and in its drawer Shift+F opens the Filte
 test("k-filter-keys: on the Inbox page and in its drawer Shift+V opens the View menu on its first choice, whose arrows sort and group the list, and Escape hands the focus back", async ({
   page,
 }) => {
-  await seedFilterKeys();
+  const asks = await seedFilterKeys();
 
   // The Inbox page: Sort by, then Group by, which Tab reaches.
   const inbox = await openInboxAt(page, "the reading pane", 4);
@@ -3195,6 +3460,21 @@ test("k-filter-keys: on the Inbox page and in its drawer Shift+V opens the View 
     inbox.scope.getByRole("button", { name: /^Medium \(4\)$/ }),
     "k-filter-keys: on the Inbox, the list is banded by urgency"
   ).toBeVisible();
+  // Sorted by priority and banded by urgency, the one band lists both P1 questions before both
+  // P2 ones. Newest first, by each row's last write, lists the last asked first, and each project
+  // was asked at P1 and then at P2 (`seedAsksOverTwoProjects`), so it lists P2, P1, P2, P1.
+  const priorityOf = new Map(asks.map((ask) => [ask.askId, ask.priority]));
+  await expect
+    .poll(
+      async () =>
+        (
+          await inbox.scope
+            .locator("[data-inbox-row]")
+            .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""))
+        ).map((id) => priorityOf.get(id)),
+      { message: "k-filter-keys: on the Inbox, the band lists the rows by priority" }
+    )
+    .toEqual([1, 1, 2, 2]);
   await escapeCloses(page, menu, null, "the Inbox's View menu");
 
   // The drawer, from its first row: Tab to Group by.
@@ -3307,7 +3587,7 @@ test("k-filter-keys: on the project List, the Board and the Priorities page Shif
 });
 
 // SLOW(>=2s): the Agents page and both views of the Delivery page, each worked by key.
-test("k-filter-keys: on the Agents page and the Delivery page, in both of its views, Shift+F opens the Filter panel on its first field, whose keys narrow the list, and Escape twice hands the focus back", async ({
+test("k-filter-keys: on the Agents page and the Delivery list Shift+F opens the Filter panel on its first field, whose keys narrow the list, and Escape twice hands the focus back; on the Delivery timeline Shift+F opens the same panel on its first field and Escape hands the focus back", async ({
   page,
 }) => {
   // Two live sessions on two machines; the first asked a question, which puts it in Needs you
@@ -3321,6 +3601,7 @@ test("k-filter-keys: on the Agents page and the Delivery page, in both of its vi
     { actor: { id: sessionIds.observer, kind: "session" as const }, as: "agent" as const }
   );
   await seedDeliveryFixture();
+  await seedSecondRepositoryPull();
   await page.setViewportSize(WIDE);
 
   // The Agents page: its first field is Group.
@@ -3337,16 +3618,20 @@ test("k-filter-keys: on the Agents page and the Delivery page, in both of its vi
   await escapeCloses(page, agentsPanel, null, "on the Agents page");
   await expect(agents, "k-filter-keys: on the Agents page, the narrowing stays").toHaveCount(1);
 
-  // The Delivery page's List view: its first field is Repository. The fixture's pull requests
-  // are all of one repository, so the pick keeps both, and the narrowing is read off its chip and
-  // the address.
+  // The Delivery page's List view: its first field is Repository. The fixture's two pull
+  // requests of acme/widgets and the one of acme/gadgets are listed, and the pick of acme/widgets
+  // leaves its two.
   await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}&mode=list`);
   const pulls = page.locator("tbody tr[data-pr-row]");
-  await expect(pulls).toHaveCount(2);
+  await expect(pulls).toHaveCount(3);
   await focusPage(page, "k-filter-keys: on the Delivery list, the focus starts on the page");
   const repository = page.getByRole("button", { name: /^Repository:/ });
   const deliveryPanel = await shiftFOpens(page, repository, "on the Delivery list");
   await tickField(page, repository, "widg", /^acme\/widgets,/, "on the Delivery list");
+  await expect(
+    pulls,
+    "k-filter-keys: on the Delivery list, the field narrows the list"
+  ).toHaveCount(2);
   await escapeCloses(page, deliveryPanel, null, "on the Delivery list");
   await expect(
     controlRow(page.getByTestId("main-content")).getByRole("button", {
@@ -3355,9 +3640,10 @@ test("k-filter-keys: on the Agents page and the Delivery page, in both of its vi
     "k-filter-keys: on the Delivery list, the narrowing stays as its chip"
   ).toBeVisible();
   await expect(page).toHaveURL(/[?&]repo=acme%2Fwidgets(&|$)/);
-  await expect(pulls).toHaveCount(2);
+  await expect(pulls, "k-filter-keys: on the Delivery list, the narrowing stays").toHaveCount(2);
 
-  // The Timeline view takes the same key.
+  // The Timeline view opens the same panel on the same field by the same key, and Escape closes
+  // it with the focus back on the page.
   await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
   await expect(page.getByRole("button", { exact: true, name: "List" })).toBeVisible();
   await focusPage(page, "k-filter-keys: on the Delivery timeline, the focus starts on the page");
@@ -4181,7 +4467,9 @@ const INBOX_ACTIONS: readonly (readonly [RegExp, InboxAction])[] = [
   [/^Un-snooze /, { label: "Un-snooze" }],
   [/^Priority of /, { key: "p", label: "Open the priority menu" }],
   [/^Assign \S+ to me$/, { label: "Assign to me" }],
-  [/^Copy reference/, { key: "y", label: "Copy the row's reference" }],
+  // The item's own Copy reference, which `y` presses, named apart by its mark (`controlNames`);
+  // any other Copy reference `controlNames` reads matches no row of this table.
+  [/^item's own: Copy reference/, { key: "y", label: "Copy the row's reference" }],
   [/^(Dismiss|Move to Inbox): /, { key: "e", label: "Dismiss, or Move to Inbox" }],
   [/^Mark read$/, { label: "Mark read" }],
   [/^Show (\d+ earlier|fewer) repl/, { label: "Show earlier replies" }],
@@ -4228,22 +4516,38 @@ const INBOX_ACTIONS: readonly (readonly [RegExp, InboxAction])[] = [
   [/^(Send|Cancel reply)$/, { key: "r", label: "Reply in the thread of the item in hand" }],
 ];
 
+/** What marks a turn of the thread an item's card or the pane draws: a message or a reply of its
+ *  thread body (`ThreadBody`'s turns), and a reply of an ask's thread (`AskThread`). */
+const THREAD_TURN = "[data-inbox-thread-turn], [data-turn], [data-reply]";
+
 /** The names of the buttons, menu triggers and disclosures (`<summary>`) `scope` shows that take
  *  a press now, as assistive tech reads them: the elements its `aria-labelledby` names (a single
  *  pick's trigger, named by its list and then what it shows), else its `aria-label`, else its
  *  text - each text without what it hides from assistive tech (the key a control draws beside
  *  its label in the pane's head). A disabled one - Ask back with nothing typed, Answer with
  *  nothing picked - is no action of the item in hand until it takes a press; the question the
- *  reader asks back on reads Ask back once it does. */
+ *  reader asks back on reads Ask back once it does.
+ *
+ *  The item's own Copy reference, inside its `[data-copy-ref="item"]` mark (the one the Inbox's
+ *  `y` presses), is named `item's own: ` and then its name. The Copy reference a message or a
+ *  reply of the item's thread draws for itself, inside its turn (`THREAD_TURN`), is left out by
+ *  that place, not by its name: it acts on that message and not on the item, R22 gives it as a
+ *  control Tab reaches, and k-threads proves it (Verification v10). Any other Copy reference is
+ *  read under its own name. */
 function controlNames(scope: Locator): Promise<string[]> {
-  return scope.locator('button, [role="button"], summary').evaluateAll((nodes) => {
+  return scope.locator('button, [role="button"], summary').evaluateAll((nodes, turns) => {
     const shown = (element: Element) => {
       const named = element.cloneNode(true) as Element;
       for (const hidden of named.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
       return named.textContent ?? "";
     };
     return nodes
-      .filter((node) => node.getClientRects().length > 0 && !node.matches(":disabled"))
+      .filter(
+        (node) =>
+          node.getClientRects().length > 0 &&
+          !node.matches(":disabled") &&
+          !(node.closest("[data-copy-ref]") !== null && node.closest(turns) !== null)
+      )
       .map((node) => {
         const namedBy = node.getAttribute("aria-labelledby");
         const name =
@@ -4256,9 +4560,10 @@ function controlNames(scope: Locator): Promise<string[]> {
                   return part === null ? "" : shown(part);
                 })
                 .join(" ");
-        return name.replace(/\s+/g, " ").trim();
+        const spoken = name.replace(/\s+/g, " ").trim();
+        return node.closest('[data-copy-ref="item"]') === null ? spoken : `item's own: ${spoken}`;
       });
-  });
+  }, THREAD_TURN);
 }
 
 /** The labels of the `?` help's Inbox section, opened over the item in hand and closed again. */
@@ -4402,24 +4707,42 @@ async function openEveryActionInbox(
 }
 
 /** The names of the controls the Inbox draws for the item `id`, which the reader is on: its row,
- *  and beside the reading pane the pane's head, the item's card and its thread's body. */
+ *  and beside the reading pane the pane's head, the item's card and its thread's body, read once
+ *  the item's reads are in. While a read is out, the part it draws shows a busy skeleton
+ *  (`LoadingSkeleton`'s `aria-busy`), and an `approval` request's state and its Approve wait on
+ *  its document's read, which the pane starts only once the selection has rested
+ *  (`PaneDocument`): so the row waits for no busy skeleton in the row or the pane, and on an
+ *  approval request for Approve to take a press. */
 async function itemControlNames(
   page: Page,
   place: EveryActionPlace,
   id: string,
-  step: string
+  step: string,
+  approval = false
 ): Promise<string[]> {
   const row = inboxRow(page, id);
+  await expect(row.locator('[aria-busy="true"]'), `${step}: its row's reads are in`).toHaveCount(0);
   const names = await controlNames(row);
   if (place === "the reading pane") {
     const pane = inboxPane(page);
-    await expect(paneHead(page), `${step}: its head is drawn`).toBeVisible();
-    names.push(...(await controlNames(paneHead(page))));
+    const head = paneHead(page);
+    await expect(head, `${step}: its head is drawn`).toBeVisible();
+    if (approval) {
+      await expect(
+        head.getByRole("button", { disabled: false, exact: true, name: "Approve" }),
+        `${step}: its document's read is in, and Approve takes a press`
+      ).toBeVisible();
+    }
+    await expect(
+      pane.locator('[aria-busy="true"]'),
+      `${step}: the pane's reads are in`
+    ).toHaveCount(0);
+    names.push(...(await controlNames(head)));
     const card = pane.getByTestId(`ask-${id}`);
-    // The pane draws its body in the render that drew its head, which was waited for above.
+    // The pane's reads are in, as waited for above, so the card is drawn now where it is one.
     if ((await card.count()) > 0) names.push(...(await controlNames(card)));
     const thread = pane.locator("[data-inbox-thread-body]");
-    // The same render drew any thread body of the item, so this count is the drawn one.
+    // The same reads drew any thread body of the item, so this count is the drawn one.
     if ((await thread.count()) > 0) names.push(...(await controlNames(thread.first())));
   }
   return names;
@@ -4454,7 +4777,7 @@ async function everyActionSteps(page: Page, place: EveryActionPlace): Promise<vo
       await card.locator("[data-ask-answer]").fill("Which format does it ship in?");
     }
     await row(id).focus();
-    const names = await itemControlNames(page, place, id, step(what));
+    const names = await itemControlNames(page, place, id, step(what), id === seed.approval);
     await expectEveryAction(page, names, (text) => step(`${what}: ${text}`));
   }
 
@@ -4815,9 +5138,18 @@ const DISMISS: HeadControl = {
   name: "Dismiss",
 };
 
+/** The approval's state, which `ApprovalChip` draws in the head once the document's read returns
+ *  (`data-inbox-action="show-reviews"`). */
+const SHOW_REVIEWS: HeadControl = {
+  find: (head) => head.locator('[data-inbox-action="show-reviews"]'),
+  name: "the approval's state",
+};
+
 /** The controls of an approval request's head, Approve first, which the check's negative control
- *  names; of a question's; and of a reply thread's, whose Open page is what `o` opens. */
+ *  names; the same once the document's read is in, with the approval's state; of a question's;
+ *  and of a reply thread's, whose Open page is what `o` opens. */
 const APPROVAL_CONTROLS = [APPROVE, REQUEST_CHANGES, OPEN_PAGE, PRIORITY, SNOOZE, COPY_REFERENCE];
+const READ_APPROVAL_CONTROLS = [...APPROVAL_CONTROLS, SHOW_REVIEWS];
 const QUESTION_CONTROLS = [OPEN_PAGE, PRIORITY, SNOOZE, COPY_REFERENCE];
 const THREAD_CONTROLS = [{ ...OPEN_PAGE, key: "o" }, COPY_REFERENCE, DISMISS];
 
@@ -4970,7 +5302,7 @@ test("k-pane-head: on approval requests and questions whose titles are 1 and 300
     [
       "the approval requests",
       approvals,
-      APPROVAL_CONTROLS,
+      READ_APPROVAL_CONTROLS,
       head.getByRole("button", { disabled: false, exact: true, name: "Request changes" }),
     ],
     ["the questions", questions, QUESTION_CONTROLS, SNOOZE.find(head)],
@@ -5199,11 +5531,11 @@ test("k-pane-head: no control drawn before Next change moves when Next change ap
   await expect(nextChange, step("nothing is marked yet, so no Next change is drawn")).toHaveCount(
     0
   );
-  const before = await readHead(page, APPROVAL_CONTROLS);
+  const before = await readHead(page, READ_APPROVAL_CONTROLS);
   await release();
   await expect(nextChange, step("the version is marked and Next change appears")).toBeVisible();
-  const after = await readHead(page, APPROVAL_CONTROLS);
-  expectSamePlaces(before, after, APPROVAL_CONTROLS, step);
+  const after = await readHead(page, READ_APPROVAL_CONTROLS);
+  expectSamePlaces(before, after, READ_APPROVAL_CONTROLS, step);
   // It appears after the other controls, in reading order: on Copy reference's line to its
   // right, or on a line below it. The controls of one line share their centre line.
   const copy = after.controls.get(COPY_REFERENCE.name);
@@ -5677,7 +6009,7 @@ function chordHint(page: Page): Promise<string[]> {
 
 // SLOW(>=2s): the issue page loaded, every tab of its strip opened twice, and a chord hint left
 // to its one second.
-test("k-issue-tabs: ] and [ walk the tab strip in its order and wrap, the t chords stay, and the chord hint lists each second key of t and g with its action", async ({
+test("k-issue-tabs: ] and [ walk the tab strip in its order and wrap, t c selects Conversation, and the chord hint lists each second key of t and g with its action", async ({
   page,
 }) => {
   const seed = await seedIssueTabs();
@@ -6331,7 +6663,7 @@ test("k-comment-focus: at 1440x900 each new comment puts the caret in the margin
 
 // SLOW(>=2s): the spec opened and connected at a sheet's width, three comments started on it, the
 // sheet opened and closed three times, and one comment sent.
-test("k-comment-focus: at 1024x768, where the margin is a sheet, each new comment puts the caret in the box, and Escape in the empty box and a send close the sheet and put it back in the commented word", async ({
+test("k-comment-focus: at 1024x768, where the margin is a sheet, each new comment puts the caret in the box, Escape over a kept draft asks Discard draft? and keeps the sheet open, and once the draft is discarded Escape in the empty box and a send close the sheet and put the caret back in the commented word", async ({
   page,
 }) => {
   const seed = await seedCommentFocus();
@@ -6378,9 +6710,21 @@ test("k-comment-focus: at 1024x768, where the margin is a sheet, each new commen
     box.getByRole("button", { name: "Use my draft" }),
     step("the kept draft has the press that takes it into the field")
   ).toBeVisible();
-  // Escape over a kept draft asks `Discard draft?` rather than closing the box (`closeOrAsk`), and
-  // a close keeps the draft for the next comment, whose field it holds read-only, so the row drops
-  // it first. The focus stays in the box, where the box's Escape listener reads the key.
+  // With the kept draft offered the box is not yet empty, so Escape there asks `Discard draft?`
+  // and keeps the box and the sheet open (`closeOrAsk`, main's kept-draft offer of
+  // cybermonklabs/legion#3000). The row answers the offer with Discard my draft, which leaves the
+  // field empty with nothing offered. The focus stays in the box, where the box's Escape listener
+  // reads the key.
+  await page.keyboard.press("Escape");
+  await expect(
+    sheet.getByRole("alert").filter({ hasText: "Discard draft?" }),
+    step("Escape with the kept draft offered asks Discard draft?")
+  ).toBeVisible();
+  await expect(
+    sheet,
+    step("Escape with the kept draft offered keeps the sheet open")
+  ).toHaveAttribute("data-expanded", "true");
+  await expect(box, step("Escape with the kept draft offered keeps the box")).toBeVisible();
   await box.getByRole("button", { name: "Discard my draft" }).press("Enter");
   await expect(offer, step("Discard my draft drops the kept draft")).toHaveCount(0);
   await expect
@@ -6450,10 +6794,10 @@ interface FocusAt {
 interface KeyboardReach {
   /** Lists the controls the page shows inside `root`. */
   list(root: Element): ShownControl[];
-  /** Of the listed controls, the ones `root` still shows, by their place in the list, by the
-   *  same reading. */
-  drawn(root: Element): number[];
-  /** The names of the controls `root` shows, by the same reading. */
+  /** Of the listed controls, the ones still in the page, by their place in the list: connected,
+   *  with a box of their own (client rects). */
+  kept(): number[];
+  /** The names of the controls `root` shows, by `list`'s reading. */
   shownIn(root: Element): string[];
   at(): FocusAt;
   focus(index: number): void;
@@ -6685,10 +7029,10 @@ async function installReach(page: Page): Promise<void> {
         }
         return { back: active === first, index };
       },
-      drawn: (root) => {
-        const shownNow = new Set(controlsIn(root));
-        return listed.flatMap((element, index) => (shownNow.has(element) ? [index] : []));
-      },
+      kept: () =>
+        listed.flatMap((element, index) =>
+          element.isConnected && element.getClientRects().length > 0 ? [index] : []
+        ),
       focus: (index) => {
         const element = listed[index];
         if (element instanceof HTMLElement || element instanceof SVGElement) element.focus();
@@ -6762,8 +7106,8 @@ async function withoutEases(page: Page): Promise<void> {
   });
 }
 
-/** Holds `page`, drawn as `at` names it, to R12: each control it shows, and still shows when the
- *  walk ends, takes the focus from Tab, or from its group's arrow keys once Tab reached the
+/** Holds `page`, drawn as `at` names it, to R12: each control it shows, and still holds once Tab
+ *  has walked it, takes the focus from Tab, or from its group's arrow keys once Tab reached the
  *  group's stop, or is a row or a card the page's own keys reach. The caller has waited for the
  *  page to draw what it shows. */
 async function expectKeyboardReach(page: Page, at: ReachPage): Promise<void> {
@@ -6808,6 +7152,18 @@ async function expectKeyboardReach(page: Page, at: ReachPage): Promise<void> {
     if (focus.index >= 0) reached.add(focus.index);
   }
   await addFocused();
+
+  // The walk owes a stop to each listed control the page still holds once Tab has walked it, read
+  // here, before the arrows and the row keys, which can take a control away themselves: `j`
+  // beside the reading pane selects another item and draws a head of its own, and a tab strip's
+  // arrow moves a past version's page to another tab. Only a control the Tab walk took out of the
+  // page, or left with no box, is owed no stop. The Conversation's `Jump to latest` pill is one:
+  // it shows when a turn that reaches the page over the live socket after its first read leaves
+  // the window off the newest card (`e2e/review-routes.ts`, the `issue-conversation` route), and
+  // the walk's first Tab scrolls the window back to the page's top, which takes the pill away
+  // before any Tab reaches it. Each Tab moved the focus inside its own key press, so this one
+  // reading says what the page holds once the walk has ended.
+  const keptAfterTab = await page.evaluate(() => window.__keyboardReach?.kept() ?? []);
 
   // A group's members from the stop Tab reached, by the group's arrow key, once round the whole
   // group and back to that stop. The round counts every member the page holds, not only the
@@ -6864,25 +7220,15 @@ async function expectKeyboardReach(page: Page, at: ReachPage): Promise<void> {
   }
   await addFocused();
 
-  // The walk owes a stop only to a control the page still draws when it ends. The
-  // Conversation's `Jump to latest` pill shows when a turn that reaches the page over the live
-  // socket after its first read leaves the window off the newest card (`e2e/review-routes.ts`,
-  // the `issue-conversation` route); the walk starts at the page's top, its first Tab scrolls
-  // the window back there, and that takes the pill away before any Tab reaches it. A control
-  // that stays drawn and that no key reaches still fails. The walk has ended, so this one
-  // reading says what the page draws at its end.
-  const drawnAtEnd = await (at.scope ?? page.locator("body")).evaluate(
-    (root) => window.__keyboardReach?.drawn(root) ?? []
-  );
   const takenAway = controls
-    .filter((control) => !drawnAtEnd.includes(control.index))
+    .filter((control) => !keptAfterTab.includes(control.index))
     .map((control) => control.name);
   expect(
     controls
-      .filter((control) => drawnAtEnd.includes(control.index) && !reached.has(control.index))
+      .filter((control) => keptAfterTab.includes(control.index) && !reached.has(control.index))
       .map((control) => control.name),
     step(
-      `each control the page shows takes the focus from Tab, or from its group's arrow keys once Tab reached the group, or is a row or a card its keys reach${takenAway.length === 0 ? "" : `; the page took these away during the walk, so they are owed no stop: ${takenAway.join(", ")}`}`
+      `each control the page shows takes the focus from Tab, or from its group's arrow keys once Tab reached the group, or is a row or a card its keys reach${takenAway.length === 0 ? "" : `; the Tab walk took these out of the page, so they are owed no stop: ${takenAway.join(", ")}`}`
     )
   ).toEqual([]);
 }
@@ -7039,7 +7385,7 @@ test("k-keyboard-reach: on a project document page and on a past version of a sp
 });
 
 // SLOW(>=2s): the review corpus seeded, and the project's List and Board each walked by Tab and j.
-test("k-keyboard-reach: on a project's List and Board, Tab reaches every control, and j every row and card", async ({
+test("k-keyboard-reach: on a project's List and Board, Tab, or j for a row or a card, reaches every control", async ({
   page,
 }) => {
   const seed = await seedReviewRoutes({ boundMs: expectTimeout });
@@ -7189,7 +7535,7 @@ for (const reviewed of REVIEW_PAGES) {
 }
 
 // SLOW(>=2s): the review corpus seeded, and both views of the Delivery page walked by Tab.
-test("k-keyboard-reach: on the Delivery page, on its timeline and on its list, Tab reaches every control, and ArrowDown every pull request", async ({
+test("k-keyboard-reach: on the Delivery page, on its timeline and on its list, Tab, or ArrowDown for a pull request's row, reaches every control", async ({
   page,
 }) => {
   const seed = await seedReviewRoutes({ boundMs: expectTimeout });

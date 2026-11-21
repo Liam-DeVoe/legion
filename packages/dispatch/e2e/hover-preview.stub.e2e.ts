@@ -60,9 +60,10 @@ async function centreInBoard(page: Page, key: string): Promise<void> {
  * been written, so the write and the reads it starts land before a gesture rather than under
  * one. The dwell is a page timer (`DWELL_MS`), so the page's own clock spends it, and the jump
  * repeats because the mark is written only once the observer has reported the turn. The tab
- * keeps each `New` mark it drew for the whole visit (`visitMarks`, `ConversationTab.tsx`),
- * through that write and the read of the unread boundary it starts, so the turn's mark is still
- * drawn after it and the reference stays where it was drawn. */
+ * keeps each `New` mark it drew for the whole visit: it marks the turns from the earliest unread
+ * boundary a read of the visit answered (`visitBoundary`, `ConversationTab.tsx`), so through that
+ * write and the read of the unread boundary it starts the turn's mark is still drawn after it,
+ * and the reference stays where it was drawn. */
 async function spendDwell(page: Page, turns: Locator, issueKey: string): Promise<void> {
   const mark = `/api/v1/me/issues/${issueKey}/state`;
   let written = false;

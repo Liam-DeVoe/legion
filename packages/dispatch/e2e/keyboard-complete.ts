@@ -28,11 +28,13 @@ import {
   withOpenedAsk,
 } from "./api";
 import { composite, contrastRatio, parseComputedColor, toRgbString } from "./colors";
+import { expectTimeout } from "./expect-timeout";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { body, notes } from "./inbox-pane-scroll";
 import { agentRowId, replyRowId, seenOf } from "./inbox-threads";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
 import { machineSession } from "./machines";
+import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
 
 declare global {
@@ -65,10 +67,15 @@ const servingOtherSite = new WeakSet<BrowserContext>();
  * `noopener`, a modifier click, a middle click. The page is answered once its document has
  * loaded, at the address it was opened at. Every `OTHER_SITE` address answers a page of its own
  * from the context's route.
+ *
+ * Each wait ends at `expectTimeout`, the bound the rows' own assertions wait for a state, with a
+ * failure that names `what` - the press the row made - and the wait that ran out, where the
+ * context's own deadline would end it later with no word of what was awaited.
  */
 export async function newPageAt(
   context: BrowserContext,
-  act: () => Promise<unknown>
+  act: () => Promise<unknown>,
+  what: string
 ): Promise<Page> {
   if (!servingOtherSite.has(context)) {
     servingOtherSite.add(context);
@@ -79,10 +86,22 @@ export async function newPageAt(
       })
     );
   }
-  const opened = context.waitForEvent("page");
-  await act();
-  const page = await opened;
-  await page.waitForLoadState("domcontentloaded");
+  // Awaited together, so a press that throws ends the wait with it rather than leaving the wait
+  // to fail on its own later.
+  const [page] = await Promise.all([
+    context.waitForEvent("page", { timeout: expectTimeout }).catch((error: unknown) => {
+      throw new Error(`${what}: no new page opened within ${expectTimeout} ms`, { cause: error });
+    }),
+    act(),
+  ]);
+  await page
+    .waitForLoadState("domcontentloaded", { timeout: expectTimeout })
+    .catch((error: unknown) => {
+      throw new Error(
+        `${what}: the new page at ${page.url()} did not load its document within ${expectTimeout} ms`,
+        { cause: error }
+      );
+    });
   return page;
 }
 
@@ -116,12 +135,13 @@ export interface Contrast {
 }
 
 /** What the page reports of one element: its `color`, the `background-color` of it and of each
- *  element above it up to the root, and whether a `color` or `background-color` transition still
- *  runs on any of them. */
+ *  element above it up to the root, whether a `color` or `background-color` transition still
+ *  runs on any of them, and whether the element is a native `<select>` or `<option>`. */
 interface ColourReading {
   readonly backgrounds: string[];
   readonly color: string;
   readonly easing: boolean;
+  readonly native: boolean;
 }
 
 /**
@@ -131,7 +151,11 @@ interface ColourReading {
  * `page.emulateMedia({ colorScheme })` the reading is polled until no such transition runs on
  * the element or above it. A translucent layer is laid over what is under it; `opacity` is not
  * read. The root of every Dispatch page draws an opaque background (`:root` in `styles.css`), so
- * an element with no opaque background under it is refused by name.
+ * an element with no opaque background under it is refused by name. A native `<select>` or
+ * `<option>` whose own `background-color` is transparent is refused by name too: the browser or
+ * the system can draw a native control's face and its open list on a colour of its own where
+ * that background is transparent, and the open list outside the page, so the page's layers under
+ * it say nothing of what the reader sees there.
  */
 export async function contrastOf(locator: Locator): Promise<Contrast> {
   let reading: ColourReading | undefined;
@@ -159,6 +183,7 @@ export async function contrastOf(locator: Locator): Promise<Contrast> {
             backgrounds: chain.map((node) => getComputedStyle(node).backgroundColor),
             color: getComputedStyle(element).color,
             easing,
+            native: element instanceof HTMLSelectElement || element instanceof HTMLOptionElement,
           };
         });
         return reading.easing;
@@ -170,6 +195,11 @@ export async function contrastOf(locator: Locator): Promise<Contrast> {
     throw new Error("the element's colours were never read");
   }
   const layers = reading.backgrounds.map(parseComputedColor);
+  if (reading.native && layers[0]?.alpha === 0) {
+    throw new Error(
+      `a native <select> or <option> with a transparent background-color: ${reading.backgrounds[0]}`
+    );
+  }
   const first = layers.findIndex((layer) => layer.alpha > 0);
   const opaque = layers.findIndex((layer, index) => index >= first && layer.alpha >= 1);
   if (first === -1 || opaque === -1) {
@@ -530,4 +560,19 @@ export async function seedAsksOverTwoProjects(
     }
   }
   return seeded;
+}
+
+/** A merged pull request of a second repository, `acme/gadgets`, by the author whose pull
+ *  requests the Delivery page counts, inside the day `seedDeliveryFixture` writes its two pull
+ *  requests of `acme/widgets` in (`TIMELINE_FIXTURE_QUERY`): with it the Delivery list holds three
+ *  rows, its Repository field offers both repositories, and a pick of `acme/widgets` leaves two.
+ *  Written after `seedDeliveryFixture`, which writes the delivery settings it is read under. */
+export async function seedSecondRepositoryPull(): Promise<void> {
+  await sql(
+    `INSERT INTO delivery_pull_requests (
+       repo, number, title, url, author, created_at, merged_at, additions, deletions, rework, issue_key, sessions, partial
+     ) VALUES
+       ('acme/gadgets', 3, 'feat: a merged gadget', 'https://github.com/acme/gadgets/pull/3', 'octocat',
+        '2024-06-01T04:00:00Z', '2024-06-01T05:00:00Z', 6, 2, false, null, ARRAY[]::text[], false)`
+  );
 }

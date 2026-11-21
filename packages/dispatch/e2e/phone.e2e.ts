@@ -207,7 +207,7 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
   }
 });
 
-test("a phone thread trap wraps Tab from a held composer's last control @phone", async ({
+test("a phone sheet trap wraps Tab from its last control to its first past a held composer @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -234,29 +234,30 @@ test("a phone thread trap wraps Tab from a held composer's last control @phone",
 
     // The hold makes none of the composer's controls `disabled` - its fieldset is `aria-disabled`
     // and its fields read-only - so the focus a reader has in it stays, and the last control the
-    // trap reaches can be one of the composer's own.
+    // trap reaches can be one of the composer's own. The first control a reader can reach -
+    // enabled and on screen - is marked before the key, and the focus starts on the last.
     await expect(form.locator(":disabled")).toHaveCount(0);
-    const focused = await sheet.evaluate((container) => {
-      const controls = [
+    const startedOnLast = await sheet.evaluate((container) => {
+      const enabled = [
         ...container.querySelectorAll<HTMLElement>(
           'a[href], button, textarea, input, select, [tabindex]:not([tabindex="-1"])'
         ),
       ].filter((control) => !control.matches(":disabled") && control.getClientRects().length > 0);
-      const last = controls.at(-1);
-      if (last === undefined) throw new Error("expected a focus target");
+      const first = enabled[0];
+      const last = enabled.at(-1);
+      if (first === undefined || last === undefined || first === last)
+        throw new Error("expected two enabled focus targets");
+      first.dataset.e2eFirstControl = "";
       last.focus();
       return document.activeElement === last;
     });
-    expect(focused).toBe(true);
+    expect(startedOnLast).toBe(true);
     await page.keyboard.press("Tab");
-    expect(await activeElementInside(page, '[data-testid="margin-sheet"]')).toBe(true);
     expect(
-      await sheet.evaluate(
-        (container) =>
-          document.activeElement instanceof HTMLElement &&
-          container.contains(document.activeElement) &&
-          !document.activeElement.matches(":disabled")
-      )
+      await page.evaluate(
+        () => document.activeElement?.hasAttribute("data-e2e-first-control") ?? false
+      ),
+      "Tab from the sheet's last control wraps to its first"
     ).toBe(true);
     refuse();
   } finally {
