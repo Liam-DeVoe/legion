@@ -2167,6 +2167,26 @@ REFERENCES_ARM = re.compile(r"^references\)$(.*?)^;;$", re.M | re.S)
 LANE_FILES = re.compile(r'^lane_files="([^"]*)"', re.M)
 
 
+# Where a run: step's text may start the lane script's path: the start of a line or a word, a
+# quote, an `=`, a `(` or a backtick, each also before `./`, and a variable's or an expression's
+# end before a `/` (`"$GITHUB_WORKSPACE/<script>"`, `${{ github.workspace }}/<script>`,
+# `$(git rev-parse --show-toplevel)/<script>`).
+LANE_SCRIPT_START = r"(?:^|[\s'\"=(`]|(?:^|[\s'\"=(`])\./|(?:\$[A-Za-z_][A-Za-z0-9_]*|[})])/)"
+
+
+def runs_lane_script(holder: dict, job: dict, step: dict) -> bool:
+    """Whether a run: step names LANE_SCRIPT as a whole word of its run: text after one of
+    LANE_SCRIPT_START's starts, by its path from the repository root or from the directory the
+    step runs in; nothing that goes on the path after it (`.old`, a longer name) counts. This
+    reads only where the references lane's spec files are read from: which step starts a script
+    is not proven by its text (around_job), so a lane started some other way is read as run from
+    no step, and rule 22 fails rather than holding the filter to nothing."""
+    run = str(step.get("run", ""))
+    workdir = step_workdir(holder, job, step)
+    paths = {LANE_SCRIPT, os.path.relpath(LANE_SCRIPT, workdir)} if workdir != "." else {LANE_SCRIPT}
+    return any(re.search(rf"{LANE_SCRIPT_START}{re.escape(path)}(?![\w.-])", run) for path in paths)
+
+
 def check_references_lane(filters: dict, quantifiers: dict, problems: list[Annotation]) -> list:
     """Rule 22: every spec file the references lane runs is one the dispatch_references filter
     matches. That filter names less than its job reads on purpose (EXCLUDED holds it to no gate's
@@ -2206,7 +2226,7 @@ def check_references_lane(filters: dict, quantifiers: dict, problems: list[Annot
     runs = [(f'job {job_id} step "{step_label(step or {})}"', step_workdir(browser, job or {}, step or {}))
             for job_id, job in (browser.get("jobs") or {}).items()
             for step in (job or {}).get("steps") or []
-            if names_script(browser, job or {}, step or {}, LANE_SCRIPT)]
+            if runs_lane_script(browser, job or {}, step or {})]
     if not runs:
         problems.append(error(BROWSER_WORKFLOW, f"no step of {BROWSER_WORKFLOW} runs {LANE_SCRIPT}, so the "
                                                 f"directory its references lane's spec files are read from is "

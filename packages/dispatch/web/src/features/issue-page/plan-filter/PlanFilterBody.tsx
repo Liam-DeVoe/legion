@@ -49,7 +49,7 @@ import {
   type TreeNode,
 } from "../issue-tree";
 import { useRowOnScreen } from "../NodeRow";
-import type { FailedRead } from "../outline-reads";
+import type { FailedRead, ViewReads } from "../outline-reads";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS, PLAN_WORDS, PRESET_NAMES, STATE_LINES } from "../page-words";
 import { FailedLineLeaves, FailedReadLine } from "../slots/failed-read-line";
@@ -144,12 +144,21 @@ export type PlanReads =
  */
 export function PlanFilterBody({
   emptyLine,
+  namesLine,
   plan,
   published,
   reads,
   root,
   ...tree
 }: ComponentProps<typeof IssueTree> & {
+  /** The names' line while the page's names reads stand failed (`outline-reads.ts`'s
+   *  `useViewReads`), the outline's own: its words and a Retry that asks those reads again, and
+   *  none while they do not stand failed. Every reference the bars, the chips and the steps draw
+   *  waits on those names (`published`), so while they stand failed each is drawn as its address
+   *  or as nothing; the line says why. The body draws it over the tree after the lines of its
+   *  own reads (`reads`), as the outline draws it after the lines of the reads its rows come
+   *  from. */
+  namesLine: ViewReads["names"];
   /** The whole plan's tasks, as the Plan view gives them with no words filter on
    *  (`slots/view-plan.tsx`): the order and the chart's places are worked out from them, and
    *  `root`, the view, chooses which of those places are drawn. */
@@ -276,6 +285,18 @@ export function PlanFilterBody({
             message={UNREADABLE_LINES[read]}
             onRetry={retry}
             retrying={retrying}
+          />
+        </div>
+      ))}
+      {/* The names' line, the outline's own (`namesLine`), after the view's own reads' lines and
+          over the tree, in an element that names it as each of those names its read. */}
+      {namesLine.map((line) => (
+        <div className="mb-2.5" data-plan-unreadable={line.key} key={line.key}>
+          <FailedReadLine
+            failure={line.failure}
+            message={line.message}
+            onRetry={line.retry}
+            retrying={line.retrying}
           />
         </div>
       ))}
@@ -1045,12 +1066,12 @@ function BarRow({
   // The statements the task serves, each a chip: the parent the filter draws as no row, where it
   // is a statement, and each statement the task is also under. The parent is drawn as a chip
   // beside those, not as a row's text line, so it is named as they are and not through
-  // `node-line.tsx`'s `ParentLink`, which draws a parent as the text line of a row: each by the
-  // line the names store projects beside its name from the reading the page published for it,
-  // its first block that holds words (`KnownReferences.lines`), a reference inside it read as its
-  // short form, since a name inside a name resolves nothing, cut as every chip of the page names
-  // a block (`chipName`). One the store holds no line for yet, and a parent the model gives no
-  // address, is named by nothing, as a chip draws nothing until its name comes.
+  // `node-line.tsx`'s `NodeParentLine`, which draws a parent as the text line of a row: each by
+  // the line the names store projects beside its name from the reading the page published for
+  // it, its first block that holds words (`KnownReferences.lines`), a reference inside it read as
+  // its short form, since a name inside a name resolves nothing, cut as every chip of the page
+  // names a block (`chipName`). One the store holds no line for yet, and a parent the model gives
+  // no address, is named by nothing, as a chip draws nothing until its name comes.
   //
   // Each chip's React key, unique within the task and the same on every render. Two chips of one
   // task can carry the same reference: the server refuses a pointer named twice only by its raw

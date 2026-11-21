@@ -124,21 +124,21 @@ export function ThreadList({
   );
   // A thread wants its mark's height in the document, or its block's for one whose mark is
   // gone; one whose placement has not been measured yet stacks below the card before it.
-  const topFor = useCallback(
-    (thread: Thread, origin: number | undefined) => {
+  const wantedTop = useCallback(
+    (thread: Thread, origin: number) => {
       const placement = placementFor(thread, markPlacements, blockPlacements);
       if (placement === undefined) {
         return undefined;
       }
       const mark = anchorElementFor(thread);
-      if (mark === null || origin === undefined) {
+      if (mark === null) {
         return placement.top;
       }
       return mark.getBoundingClientRect().top - origin;
     },
     [blockPlacements, markPlacements]
   );
-  const { cardRef, height, region, topOf } = useCardStack(anchored, threadKey, topFor);
+  const { cardRef, height, region, topOf } = useCardStack(anchored, threadKey, wantedTop);
 
   const card = (thread: Thread, composerClassName?: string) => (
     <ThreadCard

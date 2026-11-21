@@ -23,7 +23,6 @@ import {
   type PublishedReferences,
   type ReferenceNameReading,
   ReferenceNamesProvider,
-  usePublishReferenceNames,
 } from "../../refs/reference-names";
 import { firstWordedBlock } from "../../refs/tree-fragment";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -31,6 +30,7 @@ import { useKeymapScope } from "../../shell/keymap";
 import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
 import { firstLineOf, type NodeChip, type ParentLine, type TreeNode } from "../issue-tree";
+import { NO_FAILED_READS } from "../outline-reads";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   CONTROL_LABELS,
@@ -40,7 +40,7 @@ import {
   PLAN_WORDS,
   STATE_LINES,
 } from "../page-words";
-import { publishedChips, publishedNames } from "../projection-fixture";
+import { Publisher, publishedChips, publishedNames } from "../projection-fixture";
 import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
@@ -246,14 +246,6 @@ function publishedPlan(tasks: readonly TreeNode[]): PublishedReferences {
   );
 }
 
-/** Publishes `published` to the names store, as the page publishes its batched read beside the
- *  view it draws (`slots/view-plan.tsx`, `useIssueTree.ts`): in the layout phase of the commit
- *  that draws the body, after its rows have rendered. */
-function Publisher({ published }: { published: PublishedReferences }): ReactNode {
-  usePublishReferenceNames(published);
-  return null;
-}
-
 /** The plan document, as the issue's read names it. */
 const PLAN_ARTIFACT = "artifact-plan";
 
@@ -340,6 +332,7 @@ function renderBody(
                     focusReveal
                     holdsEscape={false}
                     isClosed={false}
+                    namesLine={NO_FAILED_READS}
                     onEditing={() => {}}
                     plan={plan ?? shown.children}
                     published={names}

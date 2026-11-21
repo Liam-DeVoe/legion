@@ -10133,6 +10133,63 @@ test("a failed asks read draws its line over the tree and opens the page on its 
   }
 });
 
+/** Draws the stage under the view `preset`, whose body is `[data-<preset>-body]`, with the names
+ *  read refused once, and reads the outline's names line there: in the outline's words, over the
+ *  view's tree, and gone once its Retry has read the names again. `view` names the view in a
+ *  failure. */
+async function namesLineOverView(preset: "plan" | "verification", view: string): Promise<void> {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  names.mockRejectedValueOnce(serverDown());
+  try {
+    const body = renderAddressedBody(presetPath(KEY, preset), TWO_THREADS, StageSlot);
+    const { container } = body.view;
+    const lineSelector = `[data-${preset}-body] [data-${preset}-unreadable="names"]`;
+    const line = await waitFor(() => {
+      const drawn = container.querySelector<HTMLElement>(lineSelector);
+      expect(drawn, `the ${view} drew no line for the names read`).not.toBeNull();
+      return drawn as HTMLElement;
+    }, OWN_WORDS);
+    expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.names_unreadable);
+    const tree = container.querySelector(`[data-${preset}-body] [role="tree"]`);
+    if (tree === null) throw new Error(`the ${view} drew no tree`);
+    expect(
+      (line.compareDocumentPosition(tree) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      `the ${view}'s names line is not drawn over its tree`
+    ).toBe(true);
+    const retry = line.querySelector<HTMLElement>(FAILED_READ_RETRY);
+    if (retry === null) throw new Error(`the ${view}'s names line drew no Retry`);
+
+    await user.click(retry);
+    await waitFor(
+      () =>
+        expect(
+          container.querySelector(lineSelector),
+          `the ${view}'s names line stayed once the names answered`
+        ).toBeNull(),
+      OWN_WORDS
+    );
+    expect(names.mock.calls.length, "the Retry did not ask the names again").toBe(2);
+  } finally {
+    names.mockRestore();
+  }
+}
+
+// The Verification view drew its rows from the page's names and said nothing when their read
+// failed: every reference in a row and a parent line stayed its raw address, and every "Also
+// under" line went, with no word of why and no Retry. It draws the outline's names line over the
+// view, after its own reads' lines, and its Retry reads the names again.
+test("under the Verification view, a failed names read draws the outline's names line over the view, and its Retry reads the names again", async () => {
+  await namesLineOverView("verification", "Verification view");
+});
+
+// The Plan view, the same: its bars, chips and steps wait on the page's names, and said nothing
+// when their read failed.
+test("under the Plan view, a failed names read draws the outline's names line over the view, and its Retry reads the names again", async () => {
+  await namesLineOverView("plan", "Plan view");
+});
+
 /** Where the focus is in `container`: the id of the row that holds it, a failed read's Retry
  *  named by what its line says (`onRetryOf`), or no row. */
 function focusPlace(container: HTMLElement): string {

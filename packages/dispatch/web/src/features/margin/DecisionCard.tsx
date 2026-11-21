@@ -135,15 +135,13 @@ export function DecisionList({
   // A card wants its block's height in the document; one whose block has no placement yet
   // stacks below the card before it.
   const wantedTop = useCallback(
-    (item: DecisionMarginItem, origin: number | undefined) => {
+    (item: DecisionMarginItem, origin: number) => {
       const placement = blockPlacements.get(item.blockId);
       if (placement === undefined) return undefined;
       const block = document.querySelector<HTMLElement>(
         `[data-block-id="${CSS.escape(item.blockId)}"]`
       );
-      return block === null || origin === undefined
-        ? placement.top
-        : block.getBoundingClientRect().top - origin;
+      return block === null ? placement.top : block.getBoundingClientRect().top - origin;
     },
     [blockPlacements]
   );

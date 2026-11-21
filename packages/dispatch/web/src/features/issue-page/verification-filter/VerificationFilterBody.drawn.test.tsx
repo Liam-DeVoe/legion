@@ -17,18 +17,21 @@ import { countEngineParses, displayTree } from "../../../__tests__/display-trees
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
+import type {
+  ArtifactBlock,
+  CheckBlock,
+  IssueCheckResults,
+  IssueCoverage,
+} from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import {
-  type PublishedReferences,
-  ReferenceNamesProvider,
-  usePublishReferenceNames,
-} from "../../refs/reference-names";
+import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
-import type { NodeChip, TreeNode } from "../issue-tree";
+import { issueDetails } from "../decisions-filter/decisions-fixtures";
+import { type IssueTreeReads, type TreeNode, targetNaming } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
+import { NO_FAILED_READS } from "../outline-reads";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   CHECK_WHEN_WORDS,
@@ -47,9 +50,10 @@ import {
   VERIFICATION_WORDS,
 } from "../page-words";
 import { presetView } from "../presets";
-import { publishedChips, publishedNames } from "../projection-fixture";
+import { Publisher, publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
 import { useVerificationReads } from "../slots/view-verification";
+import { blockNodeId, treeContext } from "../tree-drafts";
 import { shortCommit } from "./statement-state";
 import {
   type FailedRead,
@@ -66,6 +70,7 @@ import {
   node,
   OTHER_COMMIT,
   result,
+  SPEC_SLUG,
   statementNode,
   verificationView,
 } from "./verification-fixtures";
@@ -105,34 +110,59 @@ interface DrawOptions {
   readonly whole?: TreeNode;
 }
 
-/** What the page publishes for the statements `root` holds, at any depth, as its batched read
- *  names a block of the issue (`issue-tree.ts`'s `chipNaming`): each statement whose node holds
- *  a reading of its words by that reading, which the names store projects the line a chip names
- *  it by from (`KnownReferences.lines`), and every statement's address as one the page asks
- *  for. */
-function publishedStatements(root: TreeNode): PublishedReferences {
-  const chips: NodeChip[] = [];
-  const walk = (at: TreeNode): void => {
-    if (at.statement === true && at.reference !== undefined) {
-      chips.push({
-        answered: at.tree !== undefined,
-        gone: false,
-        ...(at.tree === undefined ? {} : { reading: { tree: at.tree } }),
-        ref: at.reference,
-      });
-    }
-    for (const child of at.children) walk(child);
-  };
-  walk(root);
-  return publishedChips(chips);
+/** Every statement `root` holds, at any depth, that has an address. */
+function statementsOf(root: TreeNode): TreeNode[] {
+  return [
+    ...(root.statement === true && root.reference !== undefined ? [root] : []),
+    ...root.children.flatMap(statementsOf),
+  ];
 }
 
-/** Publishes `published` to the names store, as the page publishes its batched read beside the
- *  view it draws (`slots/view-verification.tsx`, `useIssueTree.ts`): in the layout phase of the
- *  commit that draws the body, after its rows have rendered. */
-function Publisher({ published }: { published: PublishedReferences }): ReactNode {
-  usePublishReferenceNames(published);
-  return null;
+/** The reads the page names `statements` from, as its own reads hold them (`IssueTreeReads`):
+ *  the issue, whose spec they are blocks of; the spec's blocks read, which gives each its kind,
+ *  so one whose words hold none is named by the page's word for that kind; and the batched read's
+ *  answer for each statement whose node holds a reading of its words, as that read answers a
+ *  block (`text_tree`). A statement whose node holds no reading has no answer, as one the read
+ *  has not answered for yet. */
+function statementReads(statements: readonly TreeNode[]): IssueTreeReads {
+  const issue = issueDetails();
+  const blocks = statements.map((statement): ArtifactBlock => {
+    const id = statement.id.slice(blockNodeId(SPEC_SLUG, "").length);
+    return {
+      attributes: [],
+      from: 0,
+      id,
+      references: { asks: 0, comments: 0 },
+      to: 1,
+      token: id,
+      type: "requirement",
+    };
+  });
+  return {
+    documents: [{ artifactId: issue.primary_artifact_id, blocks }],
+    issue,
+    targets: statements.flatMap(({ reference, text, tree }) =>
+      reference === undefined || tree === undefined
+        ? []
+        : [{ gone: false, kind: "block", name: text, ref: reference, text_tree: tree }]
+    ),
+  };
+}
+
+/** What the page publishes for `statements`: what its batched read names them by, by the page's
+ *  own rule (`targetNaming`) over their reads (`statementReads`, unless a case hands the reads it
+ *  built its chips from), and every statement's address as one the page asks for, answered or
+ *  not yet. */
+function publishedStatements(
+  statements: readonly TreeNode[],
+  reads: IssueTreeReads = statementReads(statements)
+): PublishedReferences {
+  return {
+    ...targetNaming(reads),
+    asked: new Set(
+      statements.flatMap(({ reference }) => (reference === undefined ? [] : [reference]))
+    ),
+  };
 }
 
 /** A query client for one drawn body, which answers nothing on its own. */
@@ -148,7 +178,8 @@ function testClient(): QueryClient {
  *  query that is not empty once trimmed, as `presetView` reads it. It is drawn inside
  *  `NoTooltips`, as the slot draws it, so an author is named as the page names one, and where
  *  `staged` inside `ViewStage` around that, as the page's stage draws the slot; under the names
- *  store, with `published` published to it and handed to the body, as the slot hands it. A case
+ *  store, with `published` published to it and handed to the body, as the slot hands it, and no
+ *  names line (`NO_FAILED_READS`), as the slot hands it while no names read stands failed. A case
  *  that draws the body again with other reads passes it to `rerender` with the same `client`. */
 function bodyOf(
   statements: readonly TreeNode[],
@@ -168,13 +199,14 @@ function bodyOf(
   const whole =
     given ??
     (queryTyped(query) ? presetView(issue, "verification", "", new Set(named)).root : undefined);
-  const published = givenPublished ?? publishedStatements(issue);
+  const published = givenPublished ?? publishedStatements(statementsOf(issue));
   const slot = (
     <NoTooltips>
       <Publisher published={published} />
       <VerificationFilterBody
         checks={checks}
         context={view.context}
+        namesLine={NO_FAILED_READS}
         published={published}
         reads={reads}
         view={view.root}
@@ -825,9 +857,9 @@ test("a statement is marked as context, with its words and the node they came fr
 });
 
 // A statement's parent line is the link a reader follows to the node its words came from where
-// that node has an address, as the outline's parent line is (`NodeRow.tsx`'s `ParentLink`), and
-// the link is a tab stop, since the tree's keys move between rows and reach no link inside one. A
-// parent with no address is named by its words alone.
+// that node has an address, as the outline's parent line is (`node-line.tsx`'s
+// `NodeParentLine`), and the link is a tab stop, since the tree's keys move between rows and
+// reach no link inside one. A parent with no address is named by its words alone.
 test("a statement's parent line links the node it came from where that node has an address", () => {
   const served = passing("c-one");
   const other = passing("c-two");
@@ -2151,7 +2183,7 @@ test("a check's words draw their links from the results read's tree", async () =
 });
 
 // R8 and INFRA-1196 decision 350 over a statement's parent line, which the view draws as the
-// outline draws a parent line (`node-line.tsx`'s `ParentLink`): a reference in the parent's
+// outline draws a parent line (`node-line.tsx`'s `NodeParentLine`): a reference in the parent's
 // words reads as the words its author wrote while the page's batched read has not answered for
 // it, and as its target's name once it has, and the line reads none itself.
 test("a statement's parent line reads a reference as its target's name, and as its author's words until it resolves", async () => {
@@ -2280,18 +2312,15 @@ test("a check under two statements names the other by its words with no mark of 
   const numbered = read(statementNode("r4", "1\\. Stand the page up first."));
   // A statement of no card of this view, which a check may still name.
   const stranger = read(statementNode("r9", "A statement this view does not draw."));
-  // A check's row under one statement, naming the others it serves as the tree names them: each
-  // chip carries the reading the page names its target by (`NodeChip.reading`).
+  // The reads the page names every statement from, and a check's row under one statement naming
+  // the others it serves as the tree names them, from those reads: each chip is the page's own
+  // for its target (`treeContext`), and the page publishes from the same reads.
+  const all = [plain, marked, picture, numbered, stranger];
+  const reads = statementReads(all);
+  const { chipOf } = treeContext(reads);
   const under = (block: CheckBlock, others: readonly TreeNode[]): TreeNode => ({
     ...checkNode(block),
-    alsoUnder: others.map(
-      (other): NodeChip => ({
-        answered: true,
-        gone: false,
-        ...(other.tree === undefined ? {} : { reading: { tree: other.tree } }),
-        ref: other.reference ?? "",
-      })
-    ),
+    alsoUnder: others.map((other) => chipOf(other.reference ?? "")),
   });
   const view = drawBody(
     [
@@ -2308,7 +2337,8 @@ test("a check under two statements names the other by its words with no mark of 
       { ...picture, children: [under(thrice, [plain, marked]), under(pictured, [plain])] },
       { ...numbered, children: [under(counted, [plain])] },
     ],
-    [twice, thrice, pictured, counted]
+    [twice, thrice, pictured, counted],
+    { published: publishedStatements(all, reads) }
   );
   try {
     // The trail of a check's row under a statement, and the words of each target it names.

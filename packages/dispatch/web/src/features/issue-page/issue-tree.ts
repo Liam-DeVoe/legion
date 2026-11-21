@@ -16,6 +16,7 @@ import type {
 } from "../../api/types";
 import type { PublishedReferences, ReferenceNameReading } from "../refs/reference-names";
 import type { DispatchReferenceRoute } from "../refs/routes";
+import { referenceTargetKind } from "../refs/target-id";
 import type { TextSource } from "../refs/text-references";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
 import { chipWords } from "./node-row-chip";
@@ -523,7 +524,7 @@ export function lineReading(node: {
  *  words (`row-references.ts`) each cut it again here, where they draw it, and draw one target
  *  alike. */
 export function chipName(route: DispatchReferenceRoute | undefined, name: string): string {
-  const block = route !== undefined && "block" in route && route.block !== undefined;
+  const block = route !== undefined && referenceTargetKind(route) === "block";
   return chipWords(block ? drawnLine(firstLineOf(name)) : name);
 }
 
@@ -541,15 +542,13 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  */
 export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
   const context = treeContext(reads);
-  return chipNaming(
-    (reads.targets ?? []).map((target) => [target.ref, context.chipOf(target.ref)] as const)
-  );
+  return chipNaming((reads.targets ?? []).map((target) => context.chipOf(target.ref)));
 }
 
 /**
- * How the page names each target the batched reference read answered, by its reference and the
- * chip naming it (`targetNaming`). Each reference is in one of the four, read from its chip in
- * one walk, so the four cannot disagree.
+ * How the page names each target the batched reference read answered, by the chip naming it
+ * (`targetNaming`), under the chip's own reference (`NodeChip.ref`). Each reference is in one of
+ * the four, read from its chip in one walk, so the four cannot disagree.
  *
  * - **`readings`**: how each target that something answers to now is named, by its address: the
  *   reading of a chip naming it (`NodeChip.reading`), which the store projects.
@@ -562,18 +561,16 @@ export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "
  *   issue's block it sent no words for - which a surface reads for itself, as a link to the
  *   target does (R8).
  */
-export function chipNaming(
-  entries: Iterable<readonly [reference: string, chip: NodeChip]>
-): Omit<PublishedReferences, "asked"> {
+export function chipNaming(chips: Iterable<NodeChip>): Omit<PublishedReferences, "asked"> {
   const ambiguous = new Set<string>();
   const gone = new Set<string>();
   const unnamed = new Set<string>();
   const readings = new Map<string, ReferenceNameReading>();
-  for (const [reference, chip] of entries) {
-    if (chip.ambiguous === true) ambiguous.add(reference);
-    else if (chip.gone) gone.add(reference);
-    else if (chip.reading === undefined) unnamed.add(reference);
-    else readings.set(reference, chip.reading);
+  for (const chip of chips) {
+    if (chip.ambiguous === true) ambiguous.add(chip.ref);
+    else if (chip.gone) gone.add(chip.ref);
+    else if (chip.reading === undefined) unnamed.add(chip.ref);
+    else readings.set(chip.ref, chip.reading);
   }
   return { ambiguous, gone, readings, unnamed };
 }
