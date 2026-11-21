@@ -90,8 +90,9 @@
 // without HTML escaping, and a body that carries no schema is sent byte for byte as it came.
 //
 // Every call of a run with a Final carries its schema at the protocol's path. A call whose schema
-// the transport cannot put back, because the body holds none there, holds one of another shape
-// than Final's, or is no JSON, goes out as the SDK wrote it and logs one warning to Request.Log
+// the transport cannot put back, because the body holds none there, holds one of another JSON
+// kind than Final's, or is no JSON, or because Final is no JSON the transport can read, such as
+// one that holds a key twice, goes out as the SDK wrote it and logs one warning to Request.Log
 // naming the protocol and the reason, once for the call and not again on its retry.
 //
 // A tool's input schema (Tool.Schema) is not put back: the same two adapters send its keys

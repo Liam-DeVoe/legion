@@ -1187,18 +1187,12 @@ func TestAQuestionAboutAnUnrecordedIssueLaunchesNothing(t *testing.T) {
 	if got := told.Load(); got != 0 {
 		t.Fatalf("GitHub intake was told %d sets after a question about LEGION-9, want none: a question widens no intake", got)
 	}
-	w.launchedMu.Lock()
-	kept, held := w.launched[strings.ToLower("LEGION-9")]
-	w.launchedMu.Unlock()
-	if held {
-		t.Fatalf("a question about LEGION-9 kept %+v for the issue, want nothing kept", kept)
-	}
 	if requests, asked, webhook := github.requests.Load(), installs.asks(), client.webhookChecks(); requests != 0 || len(asked) != 0 || len(webhook) != 0 {
 		t.Fatalf("a question about LEGION-9 made %d requests of GitHub, the installation reads %v and the webhook App checks %v; want none: a question prepares nothing",
 			requests, asked, webhook)
 	}
 	if _, _, err := w.launchRepository(ctx, "LEGION-9"); err != nil || client.detailReads("LEGION-9") != 2 || installs.reads("implement zeta/tools") != 1 {
-		t.Fatalf("LEGION-9's launch after the question = %v after %d reads of Dispatch and %d of the implement App's installation; want Dispatch read again and the repository prepared",
+		t.Fatalf("LEGION-9's launch after the question = %v after %d reads of Dispatch and %d of the implement App's installation; want Dispatch read again and the repository prepared, which shows the question kept nothing for the issue",
 			err, client.detailReads("LEGION-9"), installs.reads("implement zeta/tools"))
 	}
 

@@ -1,12 +1,10 @@
 package agentloop
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -54,7 +52,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	}
 	messages := append(history, input...)
 
-	transport := newModelTransport(req.Model.Endpoint, req.Final, cmp.Or(req.Log, slog.Default()))
+	transport := newModelTransport(req.Model.Endpoint, req.Final, req.Log)
 	model, options, err := languageModel(req, transport.client())
 	if err != nil {
 		return Result{}, err

@@ -2,6 +2,7 @@ package agentloop
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"encoding/json/jsontext"
@@ -30,18 +31,19 @@ type modelTransport struct {
 	// final is the run's Request.Final, and nil for a run with no Final and for a decision.
 	final json.RawMessage
 	// log takes the warning for a call whose schema inFinalOrder could not put back. It is
-	// never nil.
+	// never nil: newModelTransport puts slog.Default() in place of a nil one.
 	log *slog.Logger
 }
 
 // newModelTransport is the transport one Run or one Decide makes its model calls through, over
 // the default transport, for the endpoint whose protocol, token and query parameters it carries,
-// the run's Final, which a decision has none of, and log, the run's Request.Log resolved, which
-// a decision passes as slog.Default() since its transport never warns.
+// the run's Final, which a decision has none of, and log, the run's Request.Log, which a decision
+// passes as nil since its transport never warns. A nil log is slog.Default(), resolved here once
+// for both callers.
 func newModelTransport(endpoint Endpoint, final json.RawMessage, log *slog.Logger) *modelTransport {
 	return &modelTransport{
 		base: http.DefaultTransport, kind: endpoint.Kind, token: endpoint.Token, query: endpoint.Query,
-		final: final, log: log,
+		final: final, log: cmp.Or(log, slog.Default()),
 	}
 }
 
@@ -152,9 +154,10 @@ func finalSchemaPath(kind Kind) []string {
 // back in the order of Request.Final: every byte of the body stays as it came but for that
 // schema's objects, each of which takes the order of the same object in Final (appendInOrder);
 // why is doc.go's "The structured reply". A run with no Final and a decision are sent byte for
-// byte as they came. So are a body that carries no schema at the path, a schema not of Final's
-// shape, and a body that is no JSON, which is the provider's to refuse; but every call of a run
-// with a Final carries its schema there, so each of these logs one warning for the call.
+// byte as they came. So are a body that carries no schema at the path, a schema of another JSON
+// kind than Final's, a Final that is no JSON the transport can read, and a body that is no JSON,
+// which is the provider's to refuse; but every call of a run with a Final carries its schema
+// there, so each of these logs one warning for the call.
 func (t *modelTransport) inFinalOrder(body []byte) []byte {
 	path := finalSchemaPath(t.kind)
 	if t.final == nil || path == nil {
@@ -184,12 +187,26 @@ func (t *modelTransport) inFinalOrder(body []byte) []byte {
 	}
 	// appendInOrder appends a value whose kind is not Final's as it stands, which for the
 	// schema itself would put nothing back.
-	if schema := body[start:end]; jsontext.Value(schema).Kind() == jsontext.Value(t.final).Kind() {
+	schema := body[start:end]
+	sent, want := jsontext.Value(schema).Kind(), jsontext.Value(t.final).Kind()
+	if sent == want {
 		if ordered, ok := appendInOrder(append(make([]byte, 0, len(body)), body[:start]...), schema, t.final); ok {
 			return append(ordered, body[end:]...)
 		}
+	} else if name, ok := jsonKinds[want]; ok {
+		return unordered(fmt.Sprintf("the schema at %s is a JSON %s where Final is a JSON %s",
+			strings.Join(path, "."), jsonKinds[sent], name))
 	}
-	return unordered("the schema at " + strings.Join(path, ".") + " is not of Final's shape")
+	// The walk to the schema read every value of the body, so what could not be read here is
+	// Final: a key it holds twice, or bytes that are no JSON.
+	return unordered("Final is no JSON the transport can read")
+}
+
+// jsonKinds names the kind each JSON value begins with, for a warning's reason.
+var jsonKinds = map[jsontext.Kind]string{
+	jsontext.KindBeginObject: "object", jsontext.KindBeginArray: "array", jsontext.KindString: "string",
+	jsontext.KindNumber: "number", jsontext.KindTrue: "true", jsontext.KindFalse: "false",
+	jsontext.KindNull: "null",
 }
 
 // appendInOrder appends sent, a value of the schema a request body carries, to dst with each

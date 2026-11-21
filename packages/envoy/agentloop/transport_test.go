@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestRetryableBoundsTheWaitTheEndpointNames: the one retry of a model call reads the wait the
@@ -241,7 +243,7 @@ func TestTheRetryAndTheRereadCarryTheSchemaInFinalsOrder(t *testing.T) {
 	transport := newModelTransport(Endpoint{
 		Kind:  AnthropicMessages,
 		Token: func(context.Context) (string, error) { return "key", nil },
-	}, json.RawMessage(final), slog.Default())
+	}, json.RawMessage(final), nil)
 	transport.base = base
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://model.example/v1/messages", strings.NewReader(sent))
 	if err != nil {
@@ -268,10 +270,12 @@ func TestTheRetryAndTheRereadCarryTheSchemaInFinalsOrder(t *testing.T) {
 }
 
 // TestASchemaNotPutBackIsSentAsItCameWithOneWarning: a call of a run with a Final whose body holds
-// no schema at its protocol's path, holds one of another shape than Final's, or is no JSON is sent
-// byte for byte as it came, its retry too, and logs one warning naming the protocol and which of
-// the three it was, since such a call sends the schema in the SDK's order, which the Anthropic and
-// Responses adapters sort (inFinalOrder). A body whose schema is put back logs nothing.
+// no schema at its protocol's path, for a member missing or a value on the path that is no object,
+// holds one of another JSON kind than Final's, or is no JSON, or whose Final is no JSON the
+// transport can read, is sent byte for byte as it came, its retry too, and logs one warning naming
+// the protocol and which of these it was, since such a call sends the schema in the SDK's order,
+// which the Anthropic and Responses adapters sort (inFinalOrder). A body whose schema is put back
+// logs nothing.
 func TestASchemaNotPutBackIsSentAsItCameWithOneWarning(t *testing.T) {
 	t.Parallel()
 	const final = `{"type":"object","properties":{"kind":{"type":"string"},"text":{"type":"string"}}}`
@@ -279,6 +283,8 @@ func TestASchemaNotPutBackIsSentAsItCameWithOneWarning(t *testing.T) {
 		name string
 		kind Kind
 		body string
+		// final is the run's Final, where that is not the table's.
+		final string
 		// sent is what each attempt carries, where that is not body itself.
 		sent string
 		// reason is the warning's, and empty where the schema is put back and nothing is logged.
@@ -287,9 +293,17 @@ func TestASchemaNotPutBackIsSentAsItCameWithOneWarning(t *testing.T) {
 		{name: "no schema at the path", kind: OpenAIChat,
 			body:   `{"model":"m","response_format":{"type":"json_schema","json_schema":{"name":"reply","strict":true}}}`,
 			reason: `no member "schema" on the path response_format.json_schema.schema`},
+		{name: "a value on the path that is no object", kind: OpenAIResponses,
+			body: `{"model":"m","text":{"format":"plain"}}`, reason: "text.format is no JSON object"},
 		{name: "a schema that is an array where Final is an object", kind: OpenAIResponses,
 			body:   `{"model":"m","text":{"format":{"type":"json_schema","schema":[{"type":"string"},{"type":"object"}]}}}`,
-			reason: "the schema at text.format.schema is not of Final's shape"},
+			reason: "the schema at text.format.schema is a JSON array where Final is a JSON object"},
+		// Final holds the key twice, not the body's schema: the walk to the schema reads the whole
+		// body and refuses one whose schema holds a key twice as no JSON object.
+		{name: "a Final that holds a key twice", kind: AnthropicMessages,
+			final:  `{"type":"object","type":"object","properties":{"kind":{"type":"string"}}}`,
+			body:   `{"model":"m","output_config":{"format":{"schema":{"properties":{"kind":{"type":"string"}},"type":"object"}}}}`,
+			reason: "Final is no JSON the transport can read"},
 		{name: "a body that is no JSON", kind: AzureAnthropic,
 			body: `{"model":"m","output_config":{"format":`, reason: "the body is no JSON object"},
 		{name: "a schema put back", kind: AnthropicMessages,
@@ -300,12 +314,12 @@ func TestASchemaNotPutBackIsSentAsItCameWithOneWarning(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			logs := &recordingHandler{}
+			logs := &logtest.Recorder{}
 			base := &recordingBase{statuses: []int{http.StatusServiceUnavailable, http.StatusOK}}
 			transport := newModelTransport(Endpoint{
 				Kind:  c.kind,
 				Token: func(context.Context) (string, error) { return "key", nil },
-			}, json.RawMessage(final), slog.New(logs))
+			}, json.RawMessage(cmp.Or(c.final, final)), slog.New(logs))
 			transport.base = base
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://model.example/v1/call", strings.NewReader(c.body))
 			if err != nil {
@@ -324,7 +338,7 @@ func TestASchemaNotPutBackIsSentAsItCameWithOneWarning(t *testing.T) {
 				}
 			}
 			var logged []string
-			for _, r := range logs.records {
+			for _, r := range logs.Records() {
 				attrs := make(map[string]string)
 				r.Attrs(func(a slog.Attr) bool {
 					attrs[a.Key] = a.Value.String()
@@ -343,20 +357,3 @@ func TestASchemaNotPutBackIsSentAsItCameWithOneWarning(t *testing.T) {
 		})
 	}
 }
-
-// recordingHandler is a slog.Handler that keeps every record it is given, so a test reads what a
-// logger of its own was told and leaves the default logger alone.
-type recordingHandler struct {
-	records []slog.Record
-}
-
-func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
-
-func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
-	h.records = append(h.records, r.Clone())
-	return nil
-}
-
-func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-
-func (h *recordingHandler) WithGroup(string) slog.Handler { return h }
