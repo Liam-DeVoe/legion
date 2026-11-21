@@ -1346,9 +1346,9 @@ const legionPaused = z.object({
  * `questionsForController` is every question the answer loop passed to the controller in the last
  * seven days, newest first, at most 100, never null: the `agent-question` notice is a live wake
  * only, so a controller that starts later reads here what it missed (contract 203). It is optional
- * for the same reason `wakesWaiting` is: a reader before 203 refuses the key, empty as surely as
- * naming a question, so the route strips it for a caller below 203, read the same way, and for that
- * caller alone (`api.stateFor`, `withoutQuestionsForController`). */
+ * for the same reason `wakesWaiting` is: only a reader built before #2788 refuses the key, and a
+ * later one below 203 drops it, so the route strips it for a caller below 203, read the same way,
+ * and for that caller alone (`api.stateFor`, `withoutQuestionsForController`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),
   contract: legionContract.optional(),

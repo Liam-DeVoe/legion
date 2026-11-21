@@ -74,3 +74,40 @@ func TestAMarkedSendToAFinishedRoleWhoseOtherHolderLapsedIsHandedToItsDaemon(t *
 	}
 	assertNothingKept(t, client, role)
 }
+
+// A lookup of the finished role's other holder that does not answer decides nothing about that
+// holder: it may be live, so the marked send is neither handed to the stopped session's daemon
+// nor kept. It is answered as a failed read of the role's claim is (refuseRoleClaimRead): the
+// bus-unavailable 503, with no hand-off and nothing on the role's kept lane, so the sender sends
+// again once the read answers.
+func TestAMarkedSendToAFinishedRoleWhoseHolderLookupFailsIsRefusedAndNotHandedOff(t *testing.T) {
+	rig := newKnownSessionRig(t)
+	const principal = "system:serviceaccount:dispatch:example-dispatch"
+	useDispatchPrincipal(rig.deps, principal)
+	const agent, holder = "ses_finished_role_stopped_unread", "ses_finished_role_unread_holder"
+	finished := legionAgentEntry(agent, "INFRA-206", "reviewer")
+	finished.Finished = true
+	role := finished.RoleToken
+	withLegionAgent(t, rig.deps, finished)
+	rig.register(t, agent, nil)
+	rig.stop(t, agent)
+	rig.record(t, agent)
+	// The holder's record stands in the bucket alone, so the resolution reads the bucket for it,
+	// and that read fails.
+	claimRoleBeyondTheSessionCache(t, rig.harness, holder, role)
+	failed := failTheNextSessionRead(t, rig.harness.sessions)
+	client := rig.harness.client
+
+	got := sendMarkedByDispatch(t, rig, principal, agent, role, "what did the review find?")
+	if !failed.Load() {
+		t.Fatalf("no read of the session bucket failed, so this send did not meet a failed lookup of %s", holder)
+	}
+	if got.status != http.StatusServiceUnavailable {
+		t.Fatalf("a send marked with %s to its stopped session %s while the lookup of %s fails: status %d, body %s; want 503",
+			role, agent, holder, got.status, got.raw)
+	}
+	if count, _ := handoffs(t, client, agent); count != 0 {
+		t.Fatalf("the stream holds %d hand-offs for %s, want none: the lookup of %s did not answer", count, agent, holder)
+	}
+	assertNothingKept(t, client, role)
+}
