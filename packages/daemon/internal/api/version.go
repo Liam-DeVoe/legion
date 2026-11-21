@@ -3072,4 +3072,21 @@ package api
 // From this entry the last number of answers.go's SupportedContracts is `api.OwnerPlanContract`,
 // and `shapedAnswersContract` and `repositoriesLiveContract` stay 193 and 202. Read the base's own
 // number and every open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 211
+//
+// 218: an issue whose plan merges the work of several tasks merges more than once in one run, and
+// each merge opens a production check of its own, so an issue can hold several open checks at
+// once. Each issue of `GET /legion/v1/state` and of `GET /legion/v1/issues/{key}/record` gains
+// `checks`: each open check (`api.CheckView`), oldest first, absent while none is open. `check`
+// stays, the newest open check, so a reader of one check reads what it read before. A plugin below
+// 218 is served each issue with no `checks` and with its `check` (shaping.go's band,
+// `withoutChecks`); a check's own fields and values are those `check` carries, so no value strip
+// is owed.
+// (This entry takes 218, above the 211 of the change it stands on: a reading of
+// `const DaemonAPIVersion` at the head of each of the 414 open pull requests and of each branch
+// that stands on 211 with no pull request yet, made between 2026-11-21T18:50:24Z and 18:53:02Z,
+// read all 476 and found 214 declared by #4592, 216 by one such branch, and nothing at 215, 217 or
+// 218; the numbers of those branches are given out in order, and 218 is this change's. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line. From this entry the last number of answers.go's SupportedContracts is
+// `api.checksContract`.)
+const DaemonAPIVersion = 218
