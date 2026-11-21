@@ -2,6 +2,7 @@ package textversions
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent holds the reach before the start of a
@@ -257,20 +259,19 @@ func reachFixture(t *testing.T) (*store.Store, *events.Broker, *filler) {
 // never later than T0 - 1 s (store.ComputeTextVersionsReach), so a reach read within a second of
 // start stays before it whatever the computation reads; past that margin only start's own
 // transaction, or an event that carries it, holds the reach before start, which is what the
-// reach tests prove.
+// reach tests prove. The wait is Eventually's minute at a pace of its own, 100 ms, since each
+// read of the clock is a statement to the database.
 func pastTheMargin(t *testing.T, database *store.Store, start time.Time) {
 	t.Helper()
 	past := start.Add(time.Second + 100*time.Millisecond)
-	for {
-		var now time.Time
-		if err := database.Pool.QueryRow(t.Context(), `select clock_timestamp()`).Scan(&now); err != nil {
-			t.Fatalf("read the database's clock: %v", err)
-		}
-		if now.After(past) {
-			return
-		}
-		time.Sleep(past.Sub(now))
-	}
+	testwait.WithinPolling(t, testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond,
+		fmt.Sprintf("the database's clock to pass %s", past.Format(time.RFC3339Nano)), func() bool {
+			var now time.Time
+			if err := database.Pool.QueryRow(t.Context(), `select clock_timestamp()`).Scan(&now); err != nil {
+				t.Fatalf("read the database's clock: %v", err)
+			}
+			return now.After(past)
+		})
 }
 
 // requireReachBefore holds the reach the fill stored, and the reach a read computes now
@@ -294,23 +295,20 @@ func requireReachBefore(t *testing.T, database *store.Store, at time.Time, when 
 // once a second has passed since the last of them and no transaction holds it back.
 func awaitReachPast(t *testing.T, database *store.Store, times ...time.Time) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		reach, reached, err := database.TextVersionsReach(t.Context())
-		if err != nil {
+	var reach time.Time
+	var reached bool
+	if !testwait.Holds(15*time.Second, 100*time.Millisecond, func() bool {
+		var err error
+		if reach, reached, err = database.TextVersionsReach(t.Context()); err != nil {
 			t.Fatalf("read the reach: %v", err)
 		}
 		past := reached
 		for _, at := range times {
 			past = past && reach.After(at)
 		}
-		if past {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the reach is %s (reached: %t) 15 s on; want it past %v", reach, reached, times)
-		}
-		time.Sleep(100 * time.Millisecond)
+		return past
+	}) {
+		t.Fatalf("the reach is %s (reached: %t) 15 s on; want it past %v", reach, reached, times)
 	}
 }
 

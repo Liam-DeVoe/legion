@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Fill is a keyword fill a test runs as a serving process runs it (textversions.Run, through the
@@ -87,14 +88,10 @@ func (f *Fill) Logged(t testing.TB, prefix string) bool {
 }
 
 // AwaitLine waits until the fill logs a line whose message starts with prefix, and fails the test
-// once within has passed.
+// once within has passed, with the fill's log as it stands then.
 func (f *Fill) AwaitLine(t testing.TB, prefix string, within time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for !f.Logged(t, prefix) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the keyword fill logged no %q line within %v:\n%s", prefix, within, f.Log())
-		}
-		time.Sleep(20 * time.Millisecond)
+	if !testwait.Holds(within, 20*time.Millisecond, func() bool { return f.Logged(t, prefix) }) {
+		t.Fatalf("the keyword fill logged no %q line within %v:\n%s", prefix, within, f.Log())
 	}
 }

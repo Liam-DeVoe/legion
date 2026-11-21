@@ -1,14 +1,12 @@
 package textversions
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestACutCommentBodyIsRebuiltFromItsFirstRevision writes a comment longer than an event carries,
@@ -48,7 +47,7 @@ func TestACutCommentBodyIsRebuiltFromItsFirstRevision(t *testing.T) {
 	edited := "A new opening paragraph, written before the others once the rotation was planned.\n\n" + first
 	edit := editComment(t, database, broker, comment.id, edited)
 
-	var logs bytes.Buffer
+	var logs logtest.Buffer
 	got := decideAndWrite(t, database, &logs, readLoggedEvents(t, database, comment.event, edit))
 
 	created := startedBy(t, got, comment.event)
@@ -116,7 +115,7 @@ func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
 		indexComment(t, database, comment.id, long)
 		edit := editComment(t, database, broker, comment.id, "The plan moved to the issue's spec.\n\n"+long)
 
-		var logs bytes.Buffer
+		var logs logtest.Buffer
 		got := decideAndWrite(t, database, &logs, readLoggedEvents(t, database, comment.event, edit))
 		requireKeptEventText(t, database, got, &logs, comment.id, comment.event, long)
 	})
@@ -129,7 +128,7 @@ func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
 		// A batch bound to 1 byte decides the comment.created alone and leaves the cut edit to
 		// the next batch, which is the one that warns of it.
 		batch := readLoggedEvents(t, database, comment.event, firstEdit, secondEdit)
-		var logs bytes.Buffer
+		var logs logtest.Buffer
 		if bounded, err := decideBoundTo1Byte(t, database, &logs, batch); err != nil || bounded != 1 {
 			t.Fatalf("the batch bound to 1 byte decided %d of the comment's events (%v), want its comment.created alone", bounded, err)
 		}
@@ -152,7 +151,7 @@ func TestACutEditThatKeepsTheBodyStartsNoVersion(t *testing.T) {
 	broker := events.NewBroker()
 	long := longCommentBody()
 	comment := writeComment(t, database, broker, long, true)
-	var logs bytes.Buffer
+	var logs logtest.Buffer
 	first := decideAndWrite(t, database, &logs, readLoggedEvents(t, database, comment.event))
 	if created := startedBy(t, first, comment.event); created.BodyFrom != bodyFromRow || created.Body != long {
 		t.Fatalf("the comment.created version holds %d bytes from %q, want the comment's %d from %q",
@@ -243,7 +242,7 @@ func TestAReversedPairOfCutEditsKeepsEachEditsText(t *testing.T) {
 					t.Fatalf("event %d (%s) is read as owned by %s, want the comment's owner, %s", e.ID, e.Type, read, test.owner)
 				}
 			}
-			var logs bytes.Buffer
+			var logs logtest.Buffer
 			got := decideAndWrite(t, database, &logs, batch)
 			aCut, _ := model.EventBody(aBody)
 			bCut, _ := model.EventBody(bBody)
@@ -500,7 +499,7 @@ func TestAnIssueEventBeforeAnyVersionOfItsIssueIsWarnedOfOnce(t *testing.T) {
 // requireKeptEventText holds the version event starts of comment id, whose body was body when
 // the event was written, to the event's cut text: body_from cut, as decided and as written, one
 // cut body in the batch, and one warning, naming the comment and the event.
-func requireKeptEventText(t *testing.T, database *store.Store, got decided, logs *bytes.Buffer, id string, event int64, body string) {
+func requireKeptEventText(t *testing.T, database *store.Store, got decided, logs *logtest.Buffer, id string, event int64, body string) {
 	t.Helper()
 	cut, truncated := model.EventBody(body)
 	if !truncated {
@@ -541,7 +540,7 @@ func requireKeptEventText(t *testing.T, database *store.Store, got decided, logs
 // warning, with every attribute as its text.
 func requireWarnedOnceByItsBatch(t *testing.T, database *store.Store, batch []event, message, issue string, event int64) (decided, map[string]string) {
 	t.Helper()
-	var logs bytes.Buffer
+	var logs logtest.Buffer
 	decidedEvents, err := decideBoundTo1Byte(t, database, &logs, batch)
 	if err != nil || decidedEvents != 1 {
 		t.Fatalf("the batch bound to 1 byte decided %d of its %d events (%v), want the first alone", decidedEvents, len(batch), err)
@@ -566,7 +565,7 @@ func requireWarnedOnceByItsBatch(t *testing.T, database *store.Store, batch []ev
 // decideBoundTo1Byte decides the versions of batch as a batch bound to 1 byte decides them, with
 // the warnings logged to logs, in a transaction it rolls back, and answers how many of batch's
 // events it decided.
-func decideBoundTo1Byte(t *testing.T, database *store.Store, logs *bytes.Buffer, batch []event) (int, error) {
+func decideBoundTo1Byte(t *testing.T, database *store.Store, logs *logtest.Buffer, batch []event) (int, error) {
 	t.Helper()
 	tx, _ := textversionstest.BeginTransaction(t, database)
 	defer func() { _ = tx.Rollback(context.Background()) }()
@@ -809,7 +808,7 @@ func readBatch(t *testing.T, database *store.Store, after, through int64) []even
 
 // decideAndWrite decides the versions of a batch of events and writes them, in one transaction,
 // as the fill's batch does, with the warnings logged to logs.
-func decideAndWrite(t *testing.T, database *store.Store, logs *bytes.Buffer, batch []event) decided {
+func decideAndWrite(t *testing.T, database *store.Store, logs *logtest.Buffer, batch []event) decided {
 	t.Helper()
 	ctx := t.Context()
 	var got decided
@@ -839,30 +838,24 @@ func startedBy(t *testing.T, got decided, event int64) version {
 }
 
 // loggedWarnings is each WARN record of logs, a JSON handler's output, with every attribute as
-// its text.
-func loggedWarnings(t *testing.T, logs *bytes.Buffer) []map[string]string {
+// its text. JSONLines decodes a number to a float64, which is written back without an exponent,
+// so an event id reads as the log wrote it.
+func loggedWarnings(t *testing.T, logs *logtest.Buffer) []map[string]string {
 	t.Helper()
 	var warnings []map[string]string
-	lines := bufio.NewScanner(bytes.NewReader(logs.Bytes()))
-	lines.Buffer(nil, 1<<20)
-	for lines.Scan() {
-		var record map[string]any
-		decoder := json.NewDecoder(bytes.NewReader(lines.Bytes()))
-		decoder.UseNumber()
-		if err := decoder.Decode(&record); err != nil {
-			t.Fatalf("read a log record: %v: %q", err, lines.Text())
-		}
+	for _, record := range logtest.JSONLines(t, logs.String()) {
 		if record["level"] != "WARN" {
 			continue
 		}
 		attributes := make(map[string]string, len(record))
 		for key, value := range record {
-			attributes[key] = fmt.Sprint(value)
+			if number, ok := value.(float64); ok {
+				attributes[key] = strconv.FormatFloat(number, 'f', -1, 64)
+			} else {
+				attributes[key] = fmt.Sprint(value)
+			}
 		}
 		warnings = append(warnings, attributes)
-	}
-	if err := lines.Err(); err != nil {
-		t.Fatalf("read the log: %v", err)
 	}
 	return warnings
 }

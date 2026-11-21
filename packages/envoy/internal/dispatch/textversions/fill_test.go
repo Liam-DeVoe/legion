@@ -1,10 +1,7 @@
 package textversions
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +21,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
+	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestTheFillContinuesFromItsCursorAfterARestart writes 3,000 events of every kind a rule reads,
@@ -43,7 +42,7 @@ func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	var firstLogs bytes.Buffer
+	var firstLogs logtest.Buffer
 	first := testFiller(database, events.NewHorizon(database.Pool), &firstLogs)
 	committed := 0
 	first.rest = func(ctx context.Context, _ time.Duration) error {
@@ -67,7 +66,7 @@ func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 	}
 
 	second := storetest.SecondProcess(t, database)
-	var secondLogs bytes.Buffer
+	var secondLogs logtest.Buffer
 	if err := testFiller(second, events.NewHorizon(second.Pool), &secondLogs).toHorizon(t.Context()); err != nil {
 		t.Fatalf("the second process's fill: %v", err)
 	}
@@ -147,11 +146,10 @@ func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 				t.Fatalf("Await answered %d, below the third event %d", safe, ids[2])
 			}
 			passed := time.Now()
-			for textversionstest.RowsOf(t, database, ids...) < len(ids) {
-				if time.Since(passed) > time.Minute {
-					t.Fatalf("the three events had %d rows a minute after the horizon passed them", textversionstest.RowsOf(t, database, ids...))
-				}
-				time.Sleep(50 * time.Millisecond)
+			if !testwait.Holds(time.Minute, 50*time.Millisecond, func() bool {
+				return textversionstest.RowsOf(t, database, ids...) >= len(ids)
+			}) {
+				t.Fatalf("the three events had %d rows a minute after the horizon passed them", textversionstest.RowsOf(t, database, ids...))
 			}
 			t.Logf("the rows came %s after the horizon passed the events", time.Since(passed).Round(time.Millisecond))
 			select {
@@ -192,7 +190,7 @@ func TestTheFillStartsAgainAfterTheEventLogIsReset(t *testing.T) {
 			database := storetest.Open(t)
 			textversionstest.SeedProject(t, database)
 			broker := events.NewBroker()
-			var logs bytes.Buffer
+			var logs logtest.Buffer
 			fill := testFiller(database, events.NewHorizon(database.Pool), &logs)
 			ctx := t.Context()
 			const oldIssues = 8
@@ -649,7 +647,7 @@ func TestTheCursorKeepsTheLowestRulesVersionThatWroteUpToIt(t *testing.T) {
 // event reads at most batchBytes (batchText). It answers the batches' lines, in order.
 func fillWithinTheBound(t *testing.T, database *store.Store, want []textversionstest.Written) []logLine {
 	t.Helper()
-	var logs bytes.Buffer
+	var logs logtest.Buffer
 	fill := testFiller(database, events.NewHorizon(database.Pool), &logs)
 	started := time.Now()
 	if err := fill.toHorizon(t.Context()); err != nil {
@@ -874,33 +872,29 @@ func readCursorRow(t *testing.T, database *store.Store) cursorRow {
 
 // logLine is what the tests read of one line a fill logged.
 type logLine struct {
-	Msg    string `json:"msg"`
-	First  int64  `json:"first_event"`
-	Cursor int64  `json:"cursor"`
-	Events int    `json:"events"`
+	Msg    string
+	First  int64
+	Cursor int64
+	Events int
 }
 
-// logLines reads every line of logs, a JSON handler's output, in order.
-func logLines(t *testing.T, logs *bytes.Buffer) []logLine {
+// logLines reads every line of logs, a JSON handler's output, in order: its msg, first_event,
+// cursor and events. JSONLines decodes a number to a float64, which holds an event id exactly.
+func logLines(t *testing.T, logs *logtest.Buffer) []logLine {
 	t.Helper()
 	var lines []logLine
-	scanner := bufio.NewScanner(bytes.NewReader(logs.Bytes()))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for scanner.Scan() {
-		var line logLine
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			t.Fatalf("read a logged line %q: %v", scanner.Text(), err)
-		}
-		lines = append(lines, line)
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("read the logged lines: %v", err)
+	for _, record := range logtest.JSONLines(t, logs.String()) {
+		msg, _ := record["msg"].(string)
+		first, _ := record["first_event"].(float64)
+		cursor, _ := record["cursor"].(float64)
+		batched, _ := record["events"].(float64)
+		lines = append(lines, logLine{Msg: msg, First: int64(first), Cursor: int64(cursor), Events: int(batched)})
 	}
 	return lines
 }
 
 // batchLines is the batch lines of logs, in order.
-func batchLines(t *testing.T, logs *bytes.Buffer) []logLine {
+func batchLines(t *testing.T, logs *logtest.Buffer) []logLine {
 	t.Helper()
 	var batches []logLine
 	for _, line := range logLines(t, logs) {

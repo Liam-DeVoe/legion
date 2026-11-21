@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // RowsOf counts the keyword table's rows of the events ids.
@@ -83,22 +84,20 @@ func requireRows(t testing.TB, database *store.Store, want []Written, only bool)
 }
 
 // AwaitRows waits until every event of ids has its one row, running each between reads when it
-// is set, and fails once within has passed.
+// is set, and fails once within has passed, with the count of rows it read last.
 func AwaitRows(t testing.TB, database *store.Store, ids []int64, within time.Duration, each func()) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		rows := RowsOf(t, database, ids...)
-		if rows == len(ids) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the events %v had %d rows within %v; want %d", ids, rows, within, len(ids))
+	var rows int
+	if !testwait.Holds(within, 50*time.Millisecond, func() bool {
+		if rows = RowsOf(t, database, ids...); rows == len(ids) {
+			return true
 		}
 		if each != nil {
 			each()
 		}
-		time.Sleep(50 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("the events %v had %d rows within %v; want %d", ids, rows, within, len(ids))
 	}
 }
 
