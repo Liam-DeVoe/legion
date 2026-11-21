@@ -331,17 +331,21 @@ var jjArgMax = 2_097_152
 
 // checkArgMax decides, before setAuthors rewrites rewrites, the current ids of the commits it
 // would rewrite, whether the push can still run once each revision argument has the words the
-// step would give it after that rewrite (revisionGiven). Those may be the ids of its commits
-// whatever its primary form: a read that jj refuses, a check of the form that fails, or a commit
-// the form would add, makes revisionGiven fall to them. So the step counts an argument with a
-// commit that the rewrite would move in the larger of its word as the role wrote it and the ids of
-// every commit of its set (revisionSets, jjIDsGiven), each as long as the id that stands for it
-// after the rewrite, and every other argument as the role wrote it (largestGiven). Where the push's
-// command with those words would not be under jjArgMax bytes (commandSize), the step prints one
-// line that names the argument with the most ids, their number and the limit (asWritten), and
-// answers errJJAsWritten: setAuthors rewrites nothing, and the push runs with the role's own
-// words, but for an argument with a commit that the fill of a commit with no author moved
-// (jjStep.given). Else it answers nil.
+// step would give it after that rewrite (revisionGiven). The step cannot know those words before
+// the rewrite: an argument with a commit that the rewrite would move goes as the role wrote it
+// where jj then resolves it to the commits it sends, else as its primary form where jj resolves
+// that to them, and else as the ids of its commits, which a read that jj refuses, a check of the
+// form that fails, or a commit the form would add, makes revisionGiven fall to. So the step counts
+// such an argument at the largest of the three: the ids of every commit of its set (revisionSets,
+// jjIDsGiven), each as long as the id that stands for it after the rewrite; one word of
+// jjWordBound - 1 bytes, since revisionGiven gives the primary form only where its word is under
+// jjWordBound bytes (checkedPrimary); and its word as the role wrote it, which may be longer than
+// the bound. It counts every other argument as the role wrote it (largestGiven). Where the push's
+// command counted so would not be under jjArgMax bytes (commandSize), the step prints one line
+// that names the argument with the most ids, their number and the limit (asWritten), and answers
+// errJJAsWritten: setAuthors rewrites nothing, and the push runs with the role's own words, but
+// for an argument with a commit that the fill of a commit with no author moved (jjStep.given).
+// Else it answers nil.
 //
 // The commits the rewrite would move of an argument are its followed commits (revisionCommits)
 // that stand now for one of rewrites or for a descendant of one, which a metaedit moves: the
@@ -360,8 +364,8 @@ func (s *jjStep) checkArgMax(rewrites []string) error {
 			asIDs[i] = jjIDsGiven(prefix, s.revisionSets[i])
 		}
 	}
-	given, widest := s.largestGiven(asIDs, func(*jjFollowed) bool { return true })
-	if widest < 0 || s.commandSize(given) < jjArgMax {
+	size, widest := s.largestGiven(asIDs, func(*jjFollowed) bool { return true })
+	if widest < 0 || size < jjArgMax {
 		return nil
 	}
 	descendants, err := s.eachID(jjWords("(", jjCommitIDs(rewrites), ")::"))
@@ -372,33 +376,36 @@ func (s *jjStep) checkArgMax(rewrites []string) error {
 	for _, id := range descendants {
 		moves[id] = true
 	}
-	given, widest = s.largestGiven(asIDs, func(f *jjFollowed) bool { return moves[f.commit] || f.commit != f.origin })
-	if widest < 0 || s.commandSize(given) < jjArgMax {
+	size, widest = s.largestGiven(asIDs, func(f *jjFollowed) bool { return moves[f.commit] || f.commit != f.origin })
+	if widest < 0 || size < jjArgMax {
 		return nil
 	}
 	_, argument := s.push.revision(widest)
 	return s.asWritten("set the author", fmt.Sprintf("revision `%s` would go to the push as the ids of its %d commits, and the push's arguments and environment would not be under %d bytes", argument, len(asIDs[widest].ids), jjArgMax))
 }
 
-// largestGiven is each revision argument as checkArgMax counts it: one with a followed commit that
-// moves, as moves says, in the larger (givenSize) of its word as the role wrote it and asIDs's
-// words of it, and every other as the role wrote it. widest is the place of the argument with the
-// most ids among the first, or -1 where there is none.
-func (s *jjStep) largestGiven(asIDs []jjGiven, moves func(*jjFollowed) bool) (given []jjGiven, widest int) {
-	given, widest = make([]jjGiven, len(s.push.revisions)), -1
+// largestGiven is the bytes of the push's command (commandSize) with each revision argument as
+// checkArgMax counts it, and widest, the place of the argument with the most ids among those with
+// a followed commit that moves, as moves says, or -1 where there is none. Such an argument counts
+// at the largest (givenSize, jjSize) of asIDs's words of it, one word of jjWordBound - 1 bytes,
+// the longest word of a primary form (checkedPrimary), and its word as the role wrote it. Every
+// other argument counts at its word as the role wrote it.
+func (s *jjStep) largestGiven(asIDs []jjGiven, moves func(*jjFollowed) bool) (size, widest int) {
+	written := make([]jjGiven, len(s.push.revisions))
+	primary, extra := jjSize("")+jjWordBound-1, 0
+	widest = -1
 	for i, commits := range s.revisionCommits {
-		given[i] = s.written(i)
+		written[i] = s.written(i)
 		if !slices.ContainsFunc(commits, moves) {
 			continue
 		}
-		if s.givenSize(i, asIDs[i]) > s.givenSize(i, given[i]) {
-			given[i] = asIDs[i]
-		}
+		own := s.givenSize(i, written[i])
+		extra += max(s.givenSize(i, asIDs[i]), primary, own) - own
 		if widest < 0 || len(asIDs[i].ids) > len(asIDs[widest].ids) {
 			widest = i
 		}
 	}
-	return given, widest
+	return s.commandSize(written) + extra, widest
 }
 
 // givenSize is the bytes that revision argument i, as g gives it, takes of the push's command

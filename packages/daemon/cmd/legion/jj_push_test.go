@@ -1917,11 +1917,21 @@ func TestARevisionArgumentSendsTheCommitsItNamedBeforeTheStep(t *testing.T) {
 // under the shortest primary form of an argument that names three commits the step rewrites.
 const rolePushLowBound = 100
 
-// rolePushLowArgMax is the step's limit of a command, in bytes, that the rows of
+// rolePushLowArgMax is the step's limit of a command, in bytes, that two rows of
 // TestAPushPastTheLimitOfACommandSetsNoAuthor set (rolePushArgMaxVariable): under the environment
 // alone of any push of these tests, which holds the table, a PATH of temporary directories and the
 // role's identity.
 const rolePushLowArgMax = 1000
+
+// rolePushGapBound is the step's bound of a word of ids, in bytes, that a row of
+// TestAPushPastTheLimitOfACommandSetsNoAuthor sets (rolePushBoundVariable), and how many bytes
+// over the push's environment its limit of a command is (rolePushArgMaxVariable). That is over
+// what the push's command takes beside that environment with the argument as the role wrote it or
+// as the ids of its three commits, each some 130 bytes: with the push's other words, the dry run's
+// flags, the jj it runs and the variables that the form's jj and legion jj add, some 800 bytes. A
+// word of the bound in place of the argument takes more than the bound alone, so the command with
+// it is over the limit.
+const rolePushGapBound = 4096
 
 // rolePushIDsHistory is how many commits the history of
 // TestARevisionPastTheBoundGetsItsIDsInWordsOfItsOption has: enough that their ids, joined by
@@ -2156,53 +2166,72 @@ func TestARevisionPastALoweredBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 
 // rolePushPastTheLimit is what the line `legion jj: could not set the author: …; the push runs as
 // written` says of a push whose command, with revision argument as the ids of its n commits, would
-// not be under rolePushLowArgMax bytes.
-func rolePushPastTheLimit(argument string, n int) string {
-	return "revision `" + argument + "` would go to the push as the ids of its " + strconv.Itoa(n) + " commits, and the push's arguments and environment would not be under " + strconv.Itoa(rolePushLowArgMax) + " bytes"
+// not be under limit bytes.
+func rolePushPastTheLimit(argument string, n, limit int) string {
+	return "revision `" + argument + "` would go to the push as the ids of its " + strconv.Itoa(n) + " commits, and the push's arguments and environment would not be under " + strconv.Itoa(limit) + " bytes"
 }
 
-// The pushes of a revision argument of two commits on main that the step would rewrite, with the
-// step's limit of a command lowered to rolePushLowArgMax bytes, under any push's command, and its
-// bound of a word of ids left at 100,000 bytes, over the argument's primary form; the step's
-// rewrite would still move the argument's commits, so its words could be the ids of its commits
-// after that rewrite, and the step decides before it rewrites anything that the push's command
-// would then pass the limit. It sets no author, prints one line `legion jj: could not set the
-// author: revision `<argument>` would go to the push as the ids of its 2 commits, …` that names
-// the limit, and the push runs as written, exit 0, with no change divergent and origin holding no
-// ref beside main but those of -c:
+// The pushes of a revision argument of commits on main that the step would rewrite, with the
+// step's limit of a command lowered under the push's command with the largest words the step could
+// give the argument after that rewrite: the argument as the role wrote it, its primary form, a
+// word under the step's bound of a word of ids, or the ids of its commits. The step decides before
+// it rewrites anything that the push's command would then pass the limit. It sets no author,
+// prints one line `legion jj: could not set the author: revision `<argument>` would go to the push
+// as the ids of its <n> commits, …` that names the limit, and the push runs as written, exit 0,
+// with no change divergent and origin holding no ref beside main but those of -c:
 //
 //   - `-c "<C1> | <C2>"`, C1 and C2 two commits that the reviewer made with the implementer's
-//     trailer: the step prints no rewrite and runs no metaedit (a recording jj ahead of the real
-//     one sees none), the real push gets the role's own words, every byte, and origin holds C1
-//     and C2 as they were, with the reviewer's author, as jj alone leaves them on a twin state
-//     made the same way;
+//     trailer, with the limit lowered to rolePushLowArgMax bytes, under any push's command, and
+//     the bound left at 100,000 bytes: the step prints no rewrite and runs no metaedit (a
+//     recording jj ahead of the real one sees none), the real push gets the role's own words,
+//     every byte, and origin holds C1 and C2 as they were, with the reviewer's author, as jj alone
+//     leaves them on a twin state made the same way;
+//   - `-c "<C1> | <C2> | <C3>"`, three such commits, with the bound lowered to rolePushGapBound
+//     bytes and the limit to that many bytes over the push's environment: the push's command is
+//     under the limit with the argument as the role wrote it or as the ids of its commits, and not
+//     with a word of the bound in its place, which its primary form after the rewrite can be up
+//     to. The step prints, runs and sends as for `-c "<C1> | <C2>"`;
 //   - `-c "<E> | <C>"`, E a commit with an empty author and the implementer's trailer, which the
 //     step fills before it decides, and C one that the reviewer made with the implementer's
-//     trailer: the step prints the rewrite of E alone and runs one metaedit, that fill, and the
-//     real push sends E as the fill left it, with the implementer's author, in place of the
-//     hidden E, and C as it was, with the reviewer's author.
+//     trailer, with the limit lowered to rolePushLowArgMax bytes: the step prints the rewrite of E
+//     alone and runs one metaedit, that fill, and the real push sends E as the fill left it, with
+//     the implementer's author, in place of the hidden E, and C as it was, with the reviewer's
+//     author.
 func TestAPushPastTheLimitOfACommandSetsNoAuthor(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
+	// asWritten makes n commits on main that the reviewer made with the implementer's trailer,
+	// under the limit f sets, and answers the push `-c "<C1> | … | <Cn>"`, what that push must
+	// leave, and what jj alone leaves.
+	asWritten := func(f *rolePushFixture, n int) ([]string, rolePushWant, rolePushWant) {
+		ids := make([]string, n)
+		alone := rolePushWant{same: map[string]rolePushIdentity{}}
+		for i := range ids {
+			c := f.commitOn(rev, impl, "main", rolePushMessage("work "+strconv.Itoa(i+1), "implementer"))
+			ids[i] = c.commit
+			alone.same[c.commit] = rev
+			alone.refs = append(alone.refs, rolePushRef{ref: "refs/heads/push-" + c.change[:12], commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}}})
+		}
+		args := []string{"git", "push", "-c", strings.Join(ids, " | ")}
+		want := alone
+		want.cannotSet, want.cannotSetNames = 1, rolePushPastTheLimit(args[3], n, f.argMax)
+		want.noMetaedit = true
+		want.pushed = func(words []string) {
+			if !slices.Equal(words, args) {
+				f.t.Errorf("the real push ran with %q, want the role's own words %q", words, args)
+			}
+		}
+		return args, want, alone
+	}
 	rolePushRunNamed(t, []rolePushNamedRow{
 		{name: "-c <C1> | <C2>", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
 			f.argMax = rolePushLowArgMax
-			c1 := f.commitOn(rev, impl, "main", rolePushMessage("work 1", "implementer"))
-			c2 := f.commitOn(rev, impl, "main", rolePushMessage("work 2", "implementer"))
-			args := []string{"git", "push", "-c", c1.commit + " | " + c2.commit}
-			alone := rolePushWant{same: map[string]rolePushIdentity{c1.commit: rev, c2.commit: rev}}
-			for _, c := range []rolePushChange{c1, c2} {
-				alone.refs = append(alone.refs, rolePushRef{ref: "refs/heads/push-" + c.change[:12], commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}}})
-			}
-			want := alone
-			want.cannotSet, want.cannotSetNames = 1, rolePushPastTheLimit(args[3], 2)
-			want.noMetaedit = true
-			want.pushed = func(words []string) {
-				if !slices.Equal(words, args) {
-					f.t.Errorf("the real push ran with %q, want the role's own words %q", words, args)
-				}
-			}
-			return args, want, alone
+			return asWritten(f, 2)
+		}},
+		{name: "-c <C1> | <C2> | <C3>, the bound of a word lowered", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
+			f.bound = rolePushGapBound
+			f.argMax = rolePushSize(f.env(f.path, impl)...) + rolePushGapBound
+			return asWritten(f, 3)
 		}},
 		{name: "-c <E> | <C>, E with an empty author", setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
 			f.argMax = rolePushLowArgMax
@@ -2217,7 +2246,7 @@ func TestAPushPastTheLimitOfACommandSetsNoAuthor(t *testing.T) {
 				rewrites:  []rolePushRewrite{{role: "implementer", author: impl, change: e.change, old: e.commit}},
 				same:      map[string]rolePushIdentity{c.commit: rev},
 				metaedits: 1,
-				cannotSet: 1, cannotSetNames: rolePushPastTheLimit(args[3], 2),
+				cannotSet: 1, cannotSetNames: rolePushPastTheLimit(args[3], 2, f.argMax),
 			}
 			return args, want, rolePushWant{}
 		}},
