@@ -163,10 +163,11 @@ test("no skill or prompt promises an update round no daemon can open", () => {
   }
 });
 
-// R20: the controller relays nothing. Where a tree owns a clear defect, its reply under the
-// finder's comment or ask names the owner, and the finder writes to that owner itself. So every
-// `Not filed:` reply of the controller's that names a role is one the finder's findings.md acts
-// on, word for word but its placeholders, and no reply says the controller wrote to the owner.
+// Where a tree owns a clear defect, the controller's reply under the finder's comment or ask names
+// the owner: the finder writes to it, or, for a person's `Hand it to the owning tree` on an old ask,
+// the controller already wrote and the finder writes nothing. A finder that reads a reply it has no
+// rule for opens a second ask, so every `Not filed:` reply of the controller's that names a role is
+// one the finder's findings.md acts on, word for word but its placeholders.
 test("every Not filed reply the controller writes that names an owner is one the finder acts on", () => {
   // Both files are read by one map, so the two sides are parsed alike.
   const [controller = new Set<string>(), finder = new Set<string>()] = [
@@ -184,7 +185,6 @@ test("every Not filed reply the controller writes that names an owner is one the
   );
   expect(controller.size).toBeGreaterThan(0);
   expect([...controller].filter((form) => !finder.has(form))).toEqual([]);
-  expect([...controller].filter((form) => /written to/.test(form))).toEqual([]);
 });
 
 // The controller's `gh` acts as the review App (LEGION-668): the skill must say how it checks a

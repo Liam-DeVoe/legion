@@ -1167,8 +1167,8 @@ A deployment that sets the member makes these four things true:
 - The account grants `roles/iam.workloadIdentityUser` to the principal, in that pool, of each Kubernetes ServiceAccount the project's pods run as, the controller's pod included:
   `principal://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/subject/system:serviceaccount:<namespace>:<service account>`.
   `<namespace>` is `runtime.kubernetes.namespace`, and `<service account>` is each such ServiceAccount.
-  At this release every pod, the controller's included, runs as the one that `runtime.kubernetes.pod.service_account` names (`ServiceAccountName`, `manifest.go`), so that is one principal.
-  This grant takes the place of the account's grant to the pod's own principal, the first item of the list under "What a pod signs in as, and what a deployment grants for it" above.
+  Every pod runs as the one that `runtime.kubernetes.pod.service_account` names (`ServiceAccountName`, `manifest.go`), except the daemon-launched controller's pod where `runtime.kubernetes.pod.controller_service_account` names an account of its own, so that is one principal, or two with that account.
+  This grant takes the place of the account's grant to the pods' own principals, the first item of the list under "What a pod signs in as, and what a deployment grants for it" above.
 
 - The Security Token Service API (`sts.googleapis.com`) and the IAM Service Account Credentials API (`iamcredentials.googleapis.com`) are enabled.
 
@@ -1184,7 +1184,7 @@ Turn `writer_audience` on in this order:
    A pod keeps the session flags it was created with, and a writer audience added is a moved session store.
    So each pod takes the writer token when it is replaced: an issue pod by its update round, and the controller's pod at the next launch into it.
 
-3. When every pod shows the writer setting, remove the account's grant to the pod's own principal.
+3. When every pod shows the writer setting, remove the account's grant to the pods' own principals, the controller's account's included where it has one.
    A pod shows it when its launcher container's command carries `--session-writer-audience`, and its proxy's start line ends `with the launcher's writer token`.
    Until that grant is gone, the pod's own credentials still impersonate the account, and every process that holds them can sign in as it.
 
@@ -1192,7 +1192,7 @@ A pod created under the member keeps `--session-writer-audience` in its launcher
 A daemon before the release that adds `writer_audience` sends no `agentExecutable`, and it refuses the member by name, as a key it does not know.
 So turn `writer_audience` off on this release first, and roll back below it only after that, in this order:
 
-1. On the release that carries the member, restore the account's grant to the pod's own principal, remove `writer_audience` from `legion.yaml`, and restart the daemon on the file.
+1. On the release that carries the member, restore the account's grant to the pods' own principals, the controller's account's included where it has one, remove `writer_audience` from `legion.yaml`, and restart the daemon on the file.
    The grant comes first, because a pod created without the member impersonates the account with the pod's own credentials, and Google refuses them without the grant.
    Keep the writer pool, its provider and the account's grant to the pool's principal until step 2 is done: until its replacement, a pod that carries the fifth flag still exchanges the writer token, and each new generation in it proves a dial with that token.
    This release reads the fifth flag of every pod (`sessionProxyFlagsIn`, `internal/runtime/sandbox/addresses.go`), so each pod that carries it holds a moved session store.
@@ -9090,7 +9090,7 @@ The image probe's pod runs as `service_account`, so the probe at boot does not c
 create that ServiceAccount in `runtime.kubernetes.namespace` before naming it.
 It is the `legion-daemon` service's own pod because `BROKER_SERVICES` maps the account it runs as to `legion-daemon`.
 A service may name several accounts, so a controller given an account of its own keeps that service's secrets only when `BROKER_SERVICES` also names that account for `legion-daemon`.
-With `agent_secrets.exchange_audience` set, the controller's pod also projects an exchange token of its own account and trades it as an issue pod does (`exchangeTokenProjection`, `manifest.go`), and the broker refuses a pod-sessions registration of an account that neither `BROKER_EXCHANGE_ACCOUNTS` nor `BROKER_EXCHANGE_READ_ACCOUNTS` lists (`403 POD_ACCOUNT_NOT_LISTED`, `packages/envoy/internal/broker/api/handlers_pod_sessions.go`).
+With `agent_secrets.exchange_audience` set, the controller's pod also projects an exchange token of its own account and trades it as an issue pod does (`exchangeTokenProjection`, `manifest.go`), and the broker refuses a pod-sessions registration of an account that neither `BROKER_EXCHANGE_ACCOUNTS` nor `BROKER_EXCHANGE_READ_ACCOUNTS` lists (`403 POD_ACCOUNT_NOT_LISTED`, `packages/envoy/internal/cipher/api/handlers_pod_sessions.go`).
 So a controller given an account of its own loses that trade unless one of those two lists names its account too.
 Its `slack_post` replies with `LEGION_SLACK_BOT_TOKEN`, the Slack app's bot token, which the operator stores as a shared agent secret (owner `shared`, tier `agent`), so the broker grants it with no person asked to every session enrolled with it, the controller's and every issue pod's among them, whatever service or person the session belongs to.
 Legion sets no affinity on it, so under Karpenter it lands wherever the pool has room for it (on GKE Autopilot it usually gets a node of its own, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and it is annotated `karpenter.sh/do-not-disrupt:
