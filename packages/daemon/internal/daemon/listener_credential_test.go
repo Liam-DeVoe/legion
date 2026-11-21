@@ -350,15 +350,22 @@ func TestTheDaemonsListenerTokenIsItsOwnDaemonToken(t *testing.T) {
 	if err := credentials.listener.publisher(listener.URL).Publish(t.Context(), notify.RoleTopicPrefix+"legion-example-architect", "a notice", map[string]any{}, "dedupe-1"); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	requests := listener.received()
-	if len(requests) != 1 {
-		t.Fatalf("the listener received %d requests, want the one publish", len(requests))
+	// The boot reads the controller role first under the same token (listenerCredentialOf); the
+	// token read here is the publish's.
+	var publishes []listenerRequest
+	for _, request := range listener.received() {
+		if request.method == http.MethodPost {
+			publishes = append(publishes, request)
+		}
 	}
-	token, found := strings.CutPrefix(requests[0].header.Get("Authorization"), "DPoP ")
+	if len(publishes) != 1 {
+		t.Fatalf("the listener received %d publishes, want the one", len(publishes))
+	}
+	token, found := strings.CutPrefix(publishes[0].header.Get("Authorization"), "DPoP ")
 	if !found || token == "" {
-		t.Fatalf("the publish carried Authorization %q, want the broker's token under DPoP", requests[0].header.Get("Authorization"))
+		t.Fatalf("the publish carried Authorization %q, want the broker's token under DPoP", publishes[0].header.Get("Authorization"))
 	}
-	requireDPoP(t, listener.URL, requests[0], token)
+	requireDPoP(t, listener.URL, publishes[0], token)
 
 	request, err := http.NewRequest(http.MethodPost, rig.URL+"/v1/oauth/introspect", strings.NewReader(url.Values{"token": {token}}.Encode()))
 	if err != nil {
