@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/nats-io/nats.go"
 )
@@ -127,7 +126,7 @@ type SessionPull struct {
 // server delivers each message it delivered and was not acked for again only once its ack wait
 // has passed, or at a restart (RestartAtFloor).
 func (s *SessionConsumers) Pull(ctx context.Context, sessionID, name string) (*SessionPull, error) {
-	if name == "" || strings.ContainsAny(name, `.*>/\`) || strings.ContainsFunc(name, unicode.IsSpace) {
+	if !consumerNameToken(name) {
 		return nil, fmt.Errorf("%w: consumer %q", ErrNoSessionConsumerName, name)
 	}
 	if err := s.client.ensureConnWithContext(ctx); err != nil {

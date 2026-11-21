@@ -129,10 +129,17 @@ var ErrNoStreamID = fmt.Errorf("bus: %s carries no %s metadata", Stream, StreamI
 // would make no valid consumer name, or one that reaches into another API subject, so such a session
 // gets no consumer.
 func SessionConsumerName(sessionID string) (string, bool) {
-	if sessionID == "" || strings.ContainsAny(sessionID, `.*>/\`) || strings.ContainsFunc(sessionID, unicode.IsSpace) {
+	if !consumerNameToken(sessionID) {
 		return "", false
 	}
 	return sessionConsumerPrefix + sessionID, true
+}
+
+// consumerNameToken reports whether s can stand in a consumer's name as nats-server takes it: not
+// empty, with no '.', '*', '>', path separator or white space. SessionConsumerName checks a
+// session id by it, and Pull the consumer name a call answered.
+func consumerNameToken(s string) bool {
+	return s != "" && !strings.ContainsAny(s, `.*>/\`) && !strings.ContainsFunc(s, unicode.IsSpace)
 }
 
 // sessionConsumerNameOf is SessionConsumerName(sessionID), or ErrNoSessionConsumerName for a session

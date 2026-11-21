@@ -330,8 +330,14 @@ func decodeStrict(data []byte, v any) error {
 // consumerName reports whether name can name a consumer: nats-server refuses an empty name, one
 // longer than 255 bytes, and one holding '.', '*', '>', a path separator or whitespace.
 func consumerName(name string) bool {
-	return name != "" && len(name) <= 255 && !strings.ContainsAny(name, `.*>/\`) &&
-		!strings.ContainsFunc(name, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+	return name != "" && len(name) <= 255 && !refusedNameChars(name)
+}
+
+// refusedNameChars reports whether s holds a character no consumer name or key token holds: '.',
+// '*', '>', a path separator, white space or a control character. consumerName and CheckKey keep
+// their own length limits beside it.
+func refusedNameChars(s string) bool {
+	return strings.ContainsAny(s, `.*>/\`) || strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
 }
 
 // check refuses a record that is not key's or sets a field that is not well formed: a name no
@@ -474,7 +480,7 @@ func CheckDurableKey(key string) error {
 // more, whose fixed name the server refused with its 10102 answer (ErrKeyTooLong). So no key a
 // family writes holds a '.', and every key that does is a system key (SentinelKey).
 func CheckKey(logical string) error {
-	if logical == "" || strings.ContainsAny(logical, `.*>/\`) || strings.ContainsFunc(logical, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+	if logical == "" || refusedNameChars(logical) {
 		return fmt.Errorf("%w: %q", ErrInvalidKey, logical)
 	}
 	if len(logical) > maxFixedNameKey {
