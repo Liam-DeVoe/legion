@@ -4,19 +4,11 @@
 # members' projects, the minters of each Google service account an RBAC finding names, the
 # projects' ancestors, fleet registration and the hold writers. Sourced by
 # operator-token-minters.sh, whose header says what each step checks.
-# --- live: GKE IAM on the projects of the fleet's other GKE members. GKE authorizes IAM beside
-# RBAC, so a holder there of a guard right's container.* permission (a guarded namespace,
-# ServiceAccount or pod, or an escalation right by which it grants itself one) has it on that member
-# as its RBAC would, and a holder of the IAM writers there grants itself any of them
-# (MEMBER_PERMISSIONS). --project's holders are the GKE IAM step's. ---
+# --- live: GKE IAM on the projects of the fleet's other GKE members, each once
+# (member_project_iam): the Workload Identity step ran it for each project whose clusters it read,
+# and this runs it for any it has not. --project's holders are the GKE IAM step's. ---
 for other in $(printf '%s\n' ${OTHER_PROJECTS[@]+"${!OTHER_PROJECTS[@]}"} | sort); do
-  check="gke:$other"
-  CHECK_STEP[$check]="live: GKE IAM on project $other, of a fleet member"
-  CHECK_RESOURCE[$check]="//cloudresourcemanager.googleapis.com/projects/$other"
-  CHECK_PERMS[$check]="${MEMBER_PERMISSIONS[*]}"
-  scope_of "$other"
-  CHECK_SCOPE[$check]="$SCOPE_OF" CHECK_SCOPE_FLAG[$check]="$SCOPE_OF_FLAG" CHECK_SCOPE_ERROR[$check]="$SCOPE_OF_ERROR"
-  live_iam "$check"
+  member_project_iam "$other"
 done
 
 # --- live: minters of each Google service account an RBAC finding names (on a cluster, a fleet

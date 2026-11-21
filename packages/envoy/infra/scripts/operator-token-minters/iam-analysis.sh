@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# shellcheck disable=SC2034,SC2153,SC2154 # globals set and read across the sourced files, in operator-token-minters.sh's order
+# shellcheck disable=SC2004,SC2034,SC2153,SC2154 # globals set and read across the sourced files, in operator-token-minters.sh's order; CHECK_* are associative (checks.sh declares them), which this file alone cannot show
 # operator-token-minters/iam-analysis.sh: Policy Analyzer's scope, its analysis, and how a live IAM
 # check judges its holders and their impersonators. Sourced by operator-token-minters.sh, whose
 # header says what each step checks.
@@ -101,9 +101,12 @@ live_iam() {
     return
   fi
   mark
-  # The GKE IAM step's holders: who may impersonate one of them, by name, takes its IAM permissions
-  # on the clusters (named_rights asks it).
-  [ "$check" != gke ] || cp "$WORK/analysis.rec" "$WORK/gke-analysis.rec"
+  # The GKE IAM step's holders, and a fleet member project's: who may impersonate one of them, by
+  # name, takes its IAM permissions on the clusters that project authorizes (named_rights asks it).
+  case "$check" in
+    gke) cp "$WORK/analysis.rec" "$WORK/gke-analysis.rec" ;;
+    gke:*) cp "$WORK/analysis.rec" "$WORK/gke-analysis-${check#gke:}.rec" ;;
+  esac
   if [ "$check" = dbsecret ] && [ "$RBAC_OK" != true ]; then
     unknown "$step" "the RBAC step's principals' reviews for get on it could not be made (live: RBAC)"
   fi
@@ -134,4 +137,24 @@ live_iam() {
   if unchanged; then
     pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and $chains impersonation chains, each from such a principal or by design${2:+; $2}"
   fi
+}
+
+# member_project_iam PROJECT: the step "live: GKE IAM on project PROJECT, of a fleet member", once per
+# project. GKE authorizes IAM beside RBAC on a member in a project other than --project, so a holder
+# there of a guard right's container.* permission (a guarded namespace, ServiceAccount or pod, or an
+# escalation right by which it grants itself one) has it on that member as its RBAC would, and a
+# holder of the IAM writers there grants itself any of them (MEMBER_PERMISSIONS). The Workload
+# Identity step runs it before reading that project's clusters, whose named rights ask who may
+# impersonate each holder it lists.
+declare -A MEMBER_IAM_DONE=()
+member_project_iam() {
+  local check="gke:$1"
+  [ -z "${MEMBER_IAM_DONE[$1]:-}" ] || return 0
+  MEMBER_IAM_DONE[$1]=1
+  CHECK_STEP[$check]="live: GKE IAM on project $1, of a fleet member"
+  CHECK_RESOURCE[$check]="//cloudresourcemanager.googleapis.com/projects/$1"
+  CHECK_PERMS[$check]="${MEMBER_PERMISSIONS[*]}"
+  scope_of "$1"
+  CHECK_SCOPE[$check]="$SCOPE_OF" CHECK_SCOPE_FLAG[$check]="$SCOPE_OF_FLAG" CHECK_SCOPE_ERROR[$check]="$SCOPE_OF_ERROR"
+  live_iam "$check"
 }

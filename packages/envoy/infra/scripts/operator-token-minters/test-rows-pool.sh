@@ -41,7 +41,10 @@
 #        refused scope listing each read UNKNOWN; a fleet with no scope says so;
 #   (bp) legacy ABAC on the operator's cluster, the identity service on another cluster of the
 #        project, and legacy ABAC on a GKE fleet member in another project (from its describe) each
-#        read UNKNOWN on that cluster's step.
+#        read UNKNOWN on that cluster's step;
+#   (bt) on a GKE fleet member in another project, apps/deployer that may impersonate, by name,
+#        dev@example.com, who holds roles/container.admin on that member's project alone, exits 1
+#        naming the user and the member's cluster.
 
 # --- (g) A second cluster of the project. ---
 if row g; then
@@ -445,4 +448,19 @@ settings_row() {
 if row bp; then
   each settings_row operator-abac other-identity member-abac
   passed "(bp) legacy ABAC or the identity service on the operator's cluster, another of the project, or a GKE fleet member reads UNKNOWN"
+fi
+
+# --- (bt) Impersonating, by name, a user whose power is the member project's IAM: GKE's IAM authorizer
+# on the member judges an impersonated user by that project's IAM, so the member's own project's
+# holders are asked by name on its cluster, as --project's are on every cluster. ---
+if row bt; then
+  base_world
+  grade_member
+  iam "$grade_res" roles/container.admin user:dev@example.com
+  subject_grant grade-cluster "$(sa_subject apps deployer)" impersonate "" users "" "" dev@example.com
+  run
+  want_status 1 "apps/deployer may impersonate dev@example.com by name on the fleet member"
+  want_line "FINDING system:serviceaccount:apps:deployer: impersonate users dev@example.com cluster-wide on cluster example-grade/us-east1/grade-cluster" \
+    "apps/deployer may impersonate dev@example.com by name on the fleet member"
+  passed "(bt) who may impersonate, by name, a holder of a fleet member project's GKE IAM permissions on that member exits 1 naming the user"
 fi
