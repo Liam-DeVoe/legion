@@ -780,7 +780,8 @@ type PhaseRow struct {
 	// number in the same transaction. It is what makes the work a durable fact of the record
 	// rather than of the one outbox row that carried it: a claim behind the entry is sent this
 	// task again, however that row ended. Empty on a row no entry has been raised on, and on one
-	// ClearGeneration reset, whose re-admitted tree's promotion writes the task again.
+	// ClearGeneration reset, whose re-admitted tree's promotion writes the task again. A retry of
+	// the entry leaves it as it stands and writes its own task beside it (EntryGivenTask).
 	EntryTask string
 	// EntryVerbatim says the sweep's send of a root architect's entry again sends EntryTask as
 	// written (workflow's SendArchitectStart). Only the resume of a root a person answered sets
@@ -836,6 +837,40 @@ type PhaseRow struct {
 	// stands, and a retry restarts the held phase on it. The role's next entry, raised by a move
 	// from a phase before retro, ends that.
 	EntryFrom phase.Phase
+	// EntryGivenTask is the last task a phase worker was given for the entry EntryGivenEntry
+	// names, in the issue's generation EntryGivenGeneration names, as it was composed, before the
+	// daemon decorated its send with the base-merge sentence a testing task of a parent ends with
+	// and the reviewer's two sentences of its review round, which EntryTask carries (workflow's
+	// enter and namingTheReviewRound). The raise of a phase worker's entry writes the work it
+	// raises the entry with (workflow's enter), and a retry of the entry writes its own task, which
+	// names the retry's reason (workflow's restart): the architect's retry of a held phase, a todo
+	// on a held root and the operator's restart each hand the role the entry its row already
+	// names, and leave EntryTask as the entry was raised with it, or empty where a generation's
+	// clear emptied it. The columns are written for phase workers alone: the architect's row
+	// keeps them at their defaults, since the one reader holds accepting, the architect's phase,
+	// with a task of its own.
+	//
+	// Its one reader is the admission pass's stop of a parent whose start is written and not
+	// delivered or whose worker is in the middle of its phase (workflow's entryWork,
+	// StopForChildren): the hold keeps it, after the turn that took it has ended too, and the
+	// return decorates it once (dispatch://INFRA-3320 R9 and R12). It is read only where
+	// EntryGivenEntry is Entry and EntryGivenGeneration is the issue's generation, so what the
+	// hold keeps is a fact of the record and never a reading of the task's text.
+	EntryGivenTask string
+	// EntryGivenEntry is the entry EntryGivenTask was given for, written with it. It is 0, beside
+	// an empty task, on every row a daemon upgraded in place found and on every row a generation's
+	// clear reset (ClearGeneration). An earlier release names none of the three columns, so an
+	// entry it raises leaves this at an entry before, which the read passes over.
+	EntryGivenEntry int64
+	// EntryGivenGeneration is the issue's generation (Issue.Generation) EntryGivenTask was given
+	// in, written with it, and 0 where EntryGivenEntry is 0. An earlier release's generation clear
+	// empties EntryTask and leaves the given task beside the entry it keeps; where that clear
+	// gives the issue a generation of its own (its rerun, its adoption, its re-admission as a
+	// root), the issue's generation passes this one, and the read passes the task over. A member
+	// of a tree whose root such a release re-admits keeps its own generation, so its given task
+	// outlives that clear (docs/kubernetes.md, the rollback of the release that holds a parent's
+	// start, says what that costs).
+	EntryGivenGeneration int64
 }
 
 // Completed says whether the role completed its current phase: its completion reported a commit
@@ -2638,13 +2673,6 @@ type Store interface {
 	// without its first, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
-	// ClaimPhaseTask is the text of the task the claim token holds pending for phase at of run
-	// generation at entry itself, and "" where it holds none or entry is 0: of the deliveries
-	// supervise.Machine.RetireStoppedTask retires for that phase, the one of that entry alone. Its one
-	// reader is the admission pass's stop of a phase under its worker (workflow's
-	// StopForChildren), which holds that task as the start the return gives back. It is a read of
-	// its own, and RoleRuns reads no task text, because no other rule over a run reads it.
-	ClaimPhaseTask(ctx context.Context, tx pgx.Tx, token claim.Token, at phase.Phase, generation uint64, entry int64) (string, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.

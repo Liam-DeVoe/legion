@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -34,8 +35,9 @@ const pnForwardMerge = "merge the default branch main into the branch, push, and
 // pnBaseMerge is the sentence the testing task of a parent carries once, and the testing task of
 // an issue with no Dispatch child carries not at all: the tester's rule for every round of a
 // parent (dispatch://INFRA-3320 R12 and R14), where a parent is an issue with a Dispatch child of
-// any status in the daemon's copy. workflow's task and ResumePhaseTask end a testing task of a
-// parent with it.
+// any status in the daemon's copy. The start of a phase worker of a parent in testing ends the
+// task it composed with it (workflow's withBaseMergeRunFor), the phase's resume task among them;
+// neither workflow's task nor ResumePhaseTask adds it.
 const pnBaseMerge = "Test the head merged with the tip of the pull request's base branch, read at the round's start once that tip carries each needed child's merge, in a checkout of your own outside the issue's workspace that you never push; record each result at the head with an `--observed` line naming that base commit, a carried pass too; size the round over the whole tested tree's difference."
 
 // pnMergedChildren is the words with which the task a return starts names the children that
@@ -1305,6 +1307,78 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			t.Fatalf("%s after the sign_off = %s, want retro", parent, got.Phase)
 		}
 		assertStepWrites(t, pool, parent, start("step", 5, 1, 1), end("passed", "step", 5, 1, 1), start("retro", 0, 1, 1))
+	})
+
+	// A reviewer the admission pass stops in the middle of reviewing, whose pull request then
+	// merges during the wait, goes back to reviewing on the task it was given, and that task is
+	// named its round once, by the raise of the return's own entry (dispatch://INFRA-3320 R12,
+	// workflow's namingTheReviewRound): the return's task names one commit and one entry, the
+	// return's. The hold keeps the task as it was composed, with none of the round's sentences.
+	// Two entries are read: one this release raised, at the tester's pass, whose phases row keeps
+	// the task the reviewer was given as it was composed, and one the release before raised, whose
+	// stored task carries the round's sentences and which is held as the reviewer's resume work.
+	t.Run("a reviewer stopped in the middle of reviewing whose pull request merged during the wait comes back naming one commit and one entry", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			// stop records the parent with its reviewer in the middle of reviewing, its pull
+			// request #42 open, and answers the task the hold is to keep.
+			stop func(*testing.T, *pgxpool.Pool, *Admission) string
+		}{
+			{name: "on an entry this release raised", stop: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) string {
+				spSeedParent(t, pool, spParent, phase.Testing, true, nil)
+				pwPullRequest(t, pool, spParent, record.PullRequestOpen)
+				pwApplied(t, pool, admission, "api", "tested", intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester,
+					Claim: "tester", Summary: "every check passed", Verdict: "pass", Commit: "head-42", HandoffRecord: "test-1", HandoffVersion: 1})
+				reviewing := pnWorkerStart(t, pool, spParent, claim.RoleReviewer)
+				named := reviewround.Sentences("", reviewing.Entry)
+				if !strings.HasSuffix(reviewing.Task, named) {
+					t.Fatalf("the reviewer's start after the tester's pass = %+v, want its task ending with its round's sentences %q", reviewing, named)
+				}
+				putWorkerClaim(t, pool, spParent, spParent, claim.RoleReviewer, 1, supervise.StateWorking, "")
+				pwDeliver(t, pool, pwRoleToken(t, spParent, claim.RoleReviewer), reviewing)
+				return strings.TrimSuffix(reviewing.Task, named)
+			}},
+			{name: "on an entry the release before raised", stop: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) string {
+				token := pwMidPhase(t, pool, spParent, phase.Reviewing, supervise.StateWorking, "")
+				spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleReviewer, Claim: token, Entry: 3,
+					EntryTask: pwTask(spParent, phase.Reviewing) + reviewround.Sentences("", 3), EntryRaisedAt: fixedNow.Add(-time.Hour)})
+				return workflow.ResumePhaseTask(issue(t, pool, spParent))
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				pool := migratedPool(t)
+				admission := pnAdmission(t, pool, 2)
+				composed := tc.stop(t, pool, admission)
+				seedMirrorChild(t, pool, spChild, "todo", spParent)
+
+				spPass(t, pool, admission)
+
+				wait := pwHeld(t, pool, spParent, phase.Reviewing, "the admission pass stopped the reviewer's reviewing phase", spChild+" (todo)")
+				pwApplied(t, pool, admission, "github", "merged", intake.PullRequestMerged{Repo: "acme/widgets", Number: 42, MergeSHA: "merge-42"})
+				stopped := spPhaseRow(t, pool, spParent, claim.RoleReviewer)
+				if back := pnChildDone(t, pool, admission); back.Phase != phase.Reviewing || back.ChildrenWait != nil {
+					t.Fatalf("the parent after its child is done = phase %s, held start %+v; want reviewing, the start it held", back.Phase, back.ChildrenWait)
+				}
+
+				work := pnWorkerStart(t, pool, spParent, claim.RoleReviewer).Task
+				for _, label := range []string{reviewround.CommitLabel + ":", reviewround.EntryLabel + ":"} {
+					if got := strings.Count(work, label); got != 1 {
+						t.Fatalf("the reviewer's task after the return = %q, which says %q %d times; want once", work, label, got)
+					}
+				}
+				row := spPhaseRow(t, pool, spParent, claim.RoleReviewer)
+				if entry := fmt.Sprintf(" %s: %d.", reviewround.EntryLabel, row.Entry); row.Entry != stopped.Entry+1 || !strings.HasSuffix(work, entry) {
+					t.Fatalf("the reviewer's task after the return = %q on its row's entry %d; want it to end with the return's entry %d, above the stopped %d: %q",
+						work, row.Entry, stopped.Entry+1, stopped.Entry, entry)
+				}
+				if named := pnMergedChildren(spParent, pnMerged(spChild, 51)); !strings.HasPrefix(work, wait.Task) || !strings.Contains(work, named) {
+					t.Fatalf("the reviewer's task after the return = %q, want the held task %q followed by %q", work, wait.Task, named)
+				}
+				if wait.Task != composed {
+					t.Fatalf("the held task = %q, want the task the reviewer was given as it was composed, %q, with none of its round's sentences", wait.Task, composed)
+				}
+			})
+		}
 	})
 
 	// The held list of dispatch://INFRA-2964, on this model: a waiting parent under a root a person

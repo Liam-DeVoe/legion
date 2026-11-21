@@ -2674,10 +2674,45 @@ Upgrade, and roll back, every daemon of one database in the same change.
 
 This release adds a phase, `awaiting_children`, in which an issue whose phases have started waits while a Dispatch child of it is open, holding no slot, and keeps the start it held until no child of it is open (dispatch://INFRA-3320 R9 to R13).
 Its migration `20261114232555_awaiting_children` adds the phase to `issues_phase_check` and adds six columns to `issues`: the held start, `children_wait_start`, `children_wait_task`, `children_wait_reason`, `children_wait_since` and `children_wait_children`, which the check `issues_children_wait_shape` ties to the phase, and `children_waited_at`, which outlives it.
-It adds one column to `phases` beside the phase entry, `entry_from`: the phase the move that raised a role's entry left, null where no move raised it (`record.PhaseRow.EntryFrom`), which the admission pass and the release of a hold read to leave a parent standing on an entry a role's move back raised out of `retro` or `merging` where it stands, and to restart such a held phase on it.
+It adds four columns to `phases` beside the phase entry.
+`entry_from` is the phase the move that raised a role's entry left, null where no move raised it (`record.PhaseRow.EntryFrom`), which the admission pass and the release of a hold read to leave a parent standing on an entry a role's move back raised out of `retro` or `merging` where it stands, and to restart such a held phase on it.
+`entry_given_task`, `entry_given_entry` and `entry_given_generation` are the last task a phase worker was given for an entry, as it was composed, that entry, and the issue's generation it was given in (`record.PhaseRow.EntryGivenTask`, `EntryGivenEntry` and `EntryGivenGeneration`), `''`, 0 and 0 until this release writes them, and on every architect's row: the raise of an entry writes the work it is raised with, and a retry of the entry writes the retry's own task, beside `entry_task`, which keeps the text the role was sent with the daemon's decorations of a send, the base-merge sentence of a testing task of a parent and the reviewer's two sentences of its review round.
+The admission pass holds the given task for a parent whose start has not reached its worker, or whose worker it stops in the middle of its phase, where the given entry is the entry the row stands on and the given generation is the issue's, after the turn that took the task has ended too, and the return decorates the task it gives back once.
 The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261119185013_outbox_kinds_with_the_basis_seeds`).
 That migration also keeps `phase_ended` in the kind check, and this release queues rows of it again: the message that tells a parent's worker that the admission pass ended its phase.
 The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
+
+**Before the deploy, list the parents that the first admission pass after it stops.**
+That pass (admit's `childrenWaits`) moves into `awaiting_children` every started parent of a running tree that has an open Dispatch child: an issue in `planning` through `accepting` whose pull request has not merged, with its tree's root in the workflow and not lingering.
+An open child is one that `record.ChildOpen` reads as open, a child filed in the backlog or triage and never released among them.
+The migration leaves `phases.entry_from` null on every row it finds, so that pass also stops a parent whose role stands on an entry that a move back out of `retro` or `merging` raised, which a later pass, reading the column this release writes, leaves where it stands.
+Where such a parent's worker is in the middle of its phase, the pass retires the task its claim holds for that phase (`retire_task`) and sends that worker a `phase_ended` message in the middle of its turn, which tells it to push what it has and stop.
+A parent in `accepting`, or one whose start has not reached its worker, is moved with no `phase_ended` message, and the architect of every parent the pass moves gets one `awaiting-children` notice.
+The migration leaves `phases.entry_given_task` empty on every row it finds, so for a parent whose worker is in the middle of its phase, or whose start has not reached its worker, on an entry the release before raised, that pass holds the work that entry was raised with (`entry_task`): for a worker the release before retried on that entry, not the retry's task and reason, which that release kept on the queued start row and the claim's pending delivery, neither of which the pass reads, and for a reviewer, whose `entry_task` that release stored with the two sentences of its review round, the phase's resume task, which says to carry the phase's work on.
+The return gives that work back with the daemon's sentences once: the base-merge sentence of a tester of a parent, and the reviewer's round for the entry the return raises.
+This read lists those parents, after the reading of dispatch://INFRA-2192/artifact/parent-waits-reading-sh (version 6): one line for each, with its phase, its tree and its open children.
+It reads the running daemon's state with `legion state --json`, and every issue of the daemon's project from Dispatch in one listing, `GET /api/v1/issues?project=<key>` with the key the state names in `.daemon.project`, with `DISPATCH_URL` set to the daemon's `dispatch_url` and `DISPATCH_TOKEN_FILE` to its `dispatch_token_file`, in bash, which gives curl the token as a header file and never as an argument.
+It groups the listing's open children by their `.parent`, and one rule, `live`, says whether an issue the state records is still in the workflow, for a parent, its tree's root and a child alike:
+
+```bash
+legion state --json > state.json
+project=$(jq -r '.daemon.project' state.json)
+curl -sSf -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues?project=$project" > issues.json
+jq -r --slurpfile listed issues.json '.issues as $I
+  | def live($r): $r != null and $r.phase != "done" and (($r.status | IN("triage", "icebox", "backlog", "done")) | not);
+    def open($c): if ($c.status | IN("done", "icebox")) then false
+      elif $I[$c.key].tree == $c.key then live($I[$c.key])
+      elif ($c.status | IN("backlog", "triage")) then $I[$c.key] == null or live($I[$c.key])
+      else true end;
+  (reduce ($listed[0][] | select(.parent != null and open(.))) as $c ({}; .[$c.parent] += [$c.key])) as $open
+  | .issues[] | $I[.tree // ""] as $root
+  | select((.phase | IN("planning", "implementing", "testing", "reviewing", "accepting")) and live(.)
+      and (.pullRequest.state // "") != "merged" and live($root) and $root.lingerUntil == null
+      and $open[.key] != null)
+  | "\(.key) \(.phase) tree=\(.tree) open=\($open[.key] | join(","))"' state.json
+```
+
+The read takes each child's status from Dispatch, where the pass takes it from the daemon's copy of Dispatch's issues, which a boot's listing of the project refreshes (`record.ChildWaits`): a child filed since the daemon last listed is in the read, and reaches the pass once the deploy's boot has listed it.
 
 An earlier daemon reads this much of the release:
 
@@ -2686,6 +2721,10 @@ An earlier daemon reads this much of the release:
 
 - **`phases.entry_from`.**
   An earlier daemon names it in no statement: its inserts leave it null and its upserts leave it as it is, so an entry that release raises keeps the phase of the entry before it, which this release, rolled forward, would read as the move that raised the new entry.
+
+- **`phases.entry_given_task`, `phases.entry_given_entry` and `phases.entry_given_generation`.**
+  An earlier daemon names them in no statement: its inserts leave them `''`, 0 and 0 and its upserts leave them as they are, so an entry that release raises leaves `entry_given_entry` at an entry before it, and its generation clear leaves the given task beside the entry it keeps and the `entry_task` it empties.
+  This release, rolled forward, reads a given task only for the entry and the issue's generation it was given for, so it holds for such an entry what it holds for an entry the release before raised (**Before the deploy**, above), and for an issue that clear gave a new generation, its rerun, its adoption or its re-admission as a root, the phase's resume task.
 
 - **The new notice kinds and the new supervise operation.**
   An earlier release refuses a notice of any of the four kinds (`unknown notice kind`, `validNoticeKind` in its `record/outbox.go`) and a supervise row whose op is `retire_task` (`unknown supervise operation`, `validSuperviseOp`).
@@ -2754,6 +2793,11 @@ update public.phases set entry_from = null where entry_from is not null;
 ```
 
 What it costs: once this release is rolled forward, a parent whose phase's role stood on an entry a role's move back raised out of `retro` or `merging` before the rollback reads as standing on an entry no move raised, so the first admission pass that finds an open child of it, or a retry of its hold, moves it into `awaiting_children`, as it moves any parent of a phase before `retro`.
+
+`phases.entry_given_task`, `phases.entry_given_entry` and `phases.entry_given_generation` take no statement.
+Their correctness rests on no clear: this release reads a given task only where its entry is the entry the row stands on and its generation is the issue's, so an entry the earlier release raises, and a generation it gives an issue it clears, are read as the release before leaves them.
+A clear would do harm: an entry this release raised, and the earlier release left standing, would read as one the release before raised, so the hold of a tester of a parent would be its `entry_task`, which this release wrote with the base-merge sentence, and a return on that held task would give the sentence twice.
+What it costs: a member of a tree whose root the earlier release re-admitted keeps its own generation, so where that release raised no entry of it afterwards, the given task of its entry from before the rollback stays readable beside the `entry_task` that clear emptied, and the first admission pass that stops it holds that task where the release before would hold the phase's resume task.
 
 **Where the rollback cannot wait, move each issue out of `awaiting_children` before the earlier image is pinned, with every daemon of the database stopped.**
 The statement takes each one where this release's return would have taken it (workflow's `ReturnFromChildren`): a held start of `planning` or `implementing` goes back to that phase, and a held start of `testing`, `reviewing` or `accepting` goes to `testing`, since no round before the wait tested the head on a base that carries each needed child's merge.
@@ -2827,36 +2871,6 @@ Run them only when every daemon of the database is stopped, and roll back every 
 **Each project's daemon image moves first, and its worker image with it or after it.**
 The skills and role prompts that name the new phase ship with this release: the prompts are embedded in the `legion` binary, and the release links its plugin pair.
 A rollback moves each project's worker image back with its daemon image.
-
-**Before the deploy, list the parents that the first admission pass after it stops.**
-That pass (admit's `childrenWaits`) moves into `awaiting_children` every started parent of a running tree that has an open Dispatch child: an issue in `planning` through `accepting` whose pull request has not merged, with its tree's root in the workflow and not lingering.
-An open child is one that `record.ChildOpen` reads as open, a child filed in the backlog or triage and never released among them.
-The migration leaves `phases.entry_from` null on every row it finds, so that pass also stops a parent whose role stands on an entry that a move back out of `retro` or `merging` raised, which a later pass, reading the column this release writes, leaves where it stands.
-Where such a parent's worker is in the middle of its phase, the pass retires the task its claim holds for that phase (`retire_task`) and sends that worker a `phase_ended` message in the middle of its turn, which tells it to push what it has and stop.
-A parent in `accepting`, or one whose start has not reached its worker, is moved with no `phase_ended` message, and the architect of every parent the pass moves gets one `awaiting-children` notice.
-This read lists those parents, after the reading of dispatch://INFRA-2192/artifact/parent-waits-reading-sh (version 6): one line for each, with its phase, its tree and its open children.
-It reads the running daemon's state with `legion state --json`, and every issue of the daemon's project from Dispatch in one listing, `GET /api/v1/issues?project=<key>` with the key the state names in `.daemon.project`, with `DISPATCH_URL` set to the daemon's `dispatch_url` and `DISPATCH_TOKEN_FILE` to its `dispatch_token_file`, in bash, which gives curl the token as a header file and never as an argument.
-It groups the listing's open children by their `.parent`, and one rule, `live`, says whether an issue the state records is still in the workflow, for a parent, its tree's root and a child alike:
-
-```bash
-legion state --json > state.json
-project=$(jq -r '.daemon.project' state.json)
-curl -sSf -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues?project=$project" > issues.json
-jq -r --slurpfile listed issues.json '.issues as $I
-  | def live($r): $r != null and $r.phase != "done" and (($r.status | IN("triage", "icebox", "backlog", "done")) | not);
-    def open($c): if ($c.status | IN("done", "icebox")) then false
-      elif $I[$c.key].tree == $c.key then live($I[$c.key])
-      elif ($c.status | IN("backlog", "triage")) then $I[$c.key] == null or live($I[$c.key])
-      else true end;
-  (reduce ($listed[0][] | select(.parent != null and open(.))) as $c ({}; .[$c.parent] += [$c.key])) as $open
-  | .issues[] | $I[.tree // ""] as $root
-  | select((.phase | IN("planning", "implementing", "testing", "reviewing", "accepting")) and live(.)
-      and (.pullRequest.state // "") != "merged" and live($root) and $root.lingerUntil == null
-      and $open[.key] != null)
-  | "\(.key) \(.phase) tree=\(.tree) open=\($open[.key] | join(","))"' state.json
-```
-
-The read takes each child's status from Dispatch, where the pass takes it from the daemon's copy of Dispatch's issues, which a boot's listing of the project refreshes (`record.ChildWaits`): a child filed since the daemon last listed is in the read, and reaches the pass once the deploy's boot has listed it.
 
 #### Rolling back below the release that trims an issue pod's volume
 
@@ -3380,7 +3394,7 @@ The migrations recorded above this one are these.
 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
 20261114064234_design_gate_basis, of dispatch://INFRA-3320, adds the basis and kept-approval columns of `design_gates` and `issues.view_of`, and touches none of the six, so the block holds over it and leaves the columns standing, which the earlier release names in no statement ([Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open)).
-20261114232555_awaiting_children, of dispatch://INFRA-3320 too, adds the phase `awaiting_children` to `issues_phase_check`, six columns of `issues` and `phases.entry_from`, and touches none of the six, so the block holds over it; a rollback to a release before it takes the steps of that same section first.
+20261114232555_awaiting_children, of dispatch://INFRA-3320 too, adds the phase `awaiting_children` to `issues_phase_check`, six columns of `issues`, `phases.entry_from`, `phases.entry_given_task`, `phases.entry_given_entry` and `phases.entry_given_generation`, and touches none of the six, so the block holds over it; a rollback to a release before it takes the steps of that same section first.
 20261115194357_project_pause, of dispatch://INFRA-3759, adds the tables `project_pauses`, `project_pause_stops` and `project_pause_pod_holds`, two columns of `pod_resumes` and one of `outbox`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the steps of its own section, [Rolling back the project pause](#rolling-back-the-project-pause), come before the earlier image is pinned.
 20261116144907_claim_sessions adds the table `claim_sessions`, which holds each name of a session to the claim that first recorded it, and fills it from each claim's session and the session it last abandoned; it touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement, and at the roll forward each boot holds again every name no row holds that a claim's row still records, its current session and file and the session it last abandoned (`HoldRecordedSessions`), not a session the earlier release recorded and then replaced.
 20261116165926_role_holders_publish adds `role_holders_publish` to `outbox_kind_check` and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)).

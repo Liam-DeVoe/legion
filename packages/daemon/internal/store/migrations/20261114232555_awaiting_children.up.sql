@@ -35,6 +35,39 @@
 -- release raises keeps the phase of the entry before it; the rollback section of
 -- docs/kubernetes.md named below clears the column for that reason.
 --
+-- phases.entry_given_task, phases.entry_given_entry and phases.entry_given_generation are the
+-- last task a phase worker was given for an entry, as it was composed, that entry, and the
+-- issue's generation it was given in (record.PhaseRow.EntryGivenTask, EntryGivenEntry,
+-- EntryGivenGeneration): the work a raise of the entry was composed with (workflow's enter), or
+-- the task of a retry of the entry, which names the retry's reason (workflow's restart: the
+-- architect's retry of a held phase, a todo on a held root and the operator's restart). They are
+-- written for phase workers alone, and an architect's row keeps them at '', 0 and 0.
+-- phases.entry_task stays the text the role was sent when the entry was raised, which carries the
+-- daemon's decorations of a send: the base-merge sentence that ends a testing task of a parent
+-- and the reviewer's two sentences of its review round. A generation's clear resets the three
+-- columns beside entry_task, since a member of a re-admitted tree keeps its own generation. Their
+-- one reader is the admission pass's stop of a parent whose start is written and not delivered or
+-- whose worker is in the middle of its phase (workflow's entryWork, StopForChildren): it holds the
+-- given task where entry_given_entry is the row's entry and entry_given_generation the issue's
+-- generation, and the return decorates what it holds once.
+--
+-- The migration leaves every row it finds at '', 0 and 0 and fills nothing in: the stop reads such
+-- a row, and every row whose given task is not of its entry in the issue's generation, as one
+-- whose entry the release before raised. That release stored entry_task as it was composed for
+-- every role but the reviewer, since it adds no base-merge sentence, so the hold is entry_task:
+-- the work the entry was raised with, and not the task and reason of a retry that release made,
+-- which it kept on the queued start row and the claim's pending delivery, neither of which the
+-- stop reads. It stored the reviewer's entry_task with the round's two sentences, so the
+-- reviewer's hold is its resume task (workflow's ResumePhaseTask), which carries neither, and the
+-- return names the round once; so is the hold of a row whose entry_task a clear emptied. An
+-- earlier release names the three columns in no statement: its inserts leave them '', 0 and 0,
+-- and its upserts leave them as they are. So an entry it raises leaves entry_given_entry at an
+-- entry before, and its generation clear of an issue it reruns, adopts or re-admits as a root
+-- leaves entry_given_generation below the issue's new generation, each of which the stop passes
+-- over, and no rollback statement clears them. Its clear of a re-admitted tree's member, which
+-- keeps its generation, leaves the given task readable beside the emptied entry_task;
+-- docs/kubernetes.md's rollback section named below says what that costs.
+--
 -- A daemon of an earlier release cannot run on this schema while a parent is in awaiting_children:
 -- it does not know the phase, and a write of such a row that leaves the phase without clearing the
 -- held-start columns fails the shape check below. It names children_wait_children and
@@ -69,3 +102,6 @@ alter table issues add constraint issues_children_wait_shape check (
 alter table issues add column children_waited_at timestamptz;
 
 alter table phases add column entry_from text check (entry_from <> '');
+alter table phases add column entry_given_task text not null default '';
+alter table phases add column entry_given_entry bigint not null default 0;
+alter table phases add column entry_given_generation bigint not null default 0;

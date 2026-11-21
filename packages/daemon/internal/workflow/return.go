@@ -161,11 +161,7 @@ func (e *Engine) resumeRun(ctx context.Context, tx pgx.Tx, issue record.Issue) e
 		}
 		return e.closeAwaitingMerge(ctx, tx, issue)
 	}
-	parent, err := e.testingParent(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
-	return e.start(ctx, tx, issue, owner, returnToWorkTask(issue, parent), issue.Phase)
+	return e.start(ctx, tx, issue, owner, returnToWorkTask(issue), issue.Phase)
 }
 
 // runOwner is the role whose worker carries on the phase issue stands in, "" where none does: a
@@ -222,12 +218,11 @@ func (e *Engine) StartCarriedRun(ctx context.Context, tx pgx.Tx, root record.Iss
 
 // returnToWorkTask is what the worker of the phase an issue stands in is told when the issue comes
 // back into Legion's work after a stop (ReturnToWork): the phase's resume task (ResumePhaseTask),
-// since the phase's work is under way, with why the entry it is handed is a new one. A testing
-// task of a parent ends with the base-merge sentence (withBaseMergeRun), as every testing task of
-// a parent does; parent says whether issue is a parent, as ResumePhaseTask's does.
-func returnToWorkTask(issue record.Issue, parent bool) string {
-	text := continueLine(issue) + fmt.Sprintf(" Resume the existing phase work: %s came back into Legion's work after a stop, and this is a new entry of the phase it stood in.", issue.Key)
-	return withBaseMergeRun(text, issue.Phase, parent)
+// since the phase's work is under way, with why the entry it is handed is a new one. It is the
+// work as it was composed, as every task is: the start that sends it ends a testing task of a
+// parent with the base-merge sentence (enter, withBaseMergeRunFor).
+func returnToWorkTask(issue record.Issue) string {
+	return continueLine(issue) + fmt.Sprintf(" Resume the existing phase work: %s came back into Legion's work after a stop, and this is a new entry of the phase it stood in.", issue.Key)
 }
 
 // queuedRoot says whether issue holds its own gate and has still to make its first start

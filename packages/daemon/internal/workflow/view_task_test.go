@@ -96,7 +96,7 @@ func TestEveryPhaseTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
 			if planner != want {
 				t.Fatalf("the planner's task = %q, want %q", planner, want)
 			}
-			if got := ResumePhaseTask(recordedRoot(t, pool), false); !strings.HasPrefix(got, want+" ") {
+			if got := ResumePhaseTask(recordedRoot(t, pool)); !strings.HasPrefix(got, want+" ") {
 				t.Fatalf("the resume task of the planning phase = %q, want it to open with %q", got, want)
 			}
 

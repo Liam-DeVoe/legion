@@ -2397,7 +2397,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "view_of",
 			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "children_wait_children", "children_waited_at",
 			"holds_gate", "retained_until", "carried_generation", "carried_gate", "parked_by_architect", "pending_close", "seen_seq"},
-		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "entry_from", "handoff_record", "handoff_version", "reviewed_head"},
+		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "entry_from", "entry_given_task", "entry_given_entry", "entry_given_generation", "handoff_record", "handoff_version", "reviewed_head"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened", "basis_issue", "basis_artifact_id", "basis_version", "basis_approved_seq", "basis_approved_at", "basis_approver", "basis_serves", "basis_reason", "basis_session", "basis_registered_at", "basis_pending_ask", "kept_person_version", "kept_person_seq", "kept_person_at", "rests_on", "basis_moves"},
@@ -2726,48 +2726,6 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 			t.Fatalf("the answer holds %s, a role the store has no claim of", merger)
 		}
 	})
-}
-
-// ClaimPhaseTask reads the text of the task a claim holds for one phase of one run at the entry
-// asked alone, as the admission pass's stop of a phase holds the task its worker was given for the
-// entry the phase stands on (workflow's givenTask), and nothing for a task of another phase,
-// another run or another entry, for no entry named, or for a token no claim stands under.
-func TestClaimPhaseTaskReadsTheTaskOfThatPhaseRunAndEntry(t *testing.T) {
-	ctx := context.Background()
-	st := migratedStore(t)
-	records := NewStore()
-	implementer := claim.Token("legion-legion-legion-208-implementer")
-	held := supervise.Claim{Token: implementer, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer,
-		Generation: 1, State: supervise.StateWorking, Session: "ses_implementer", SessionFile: "/tmp/implementer.jsonl"}
-	const retry = "Continue LEGION-208. Issue: LEGION-208. Phase: implementing. Reason: the runner is back."
-	if err := st.PutClaimAndDelivery(ctx, held, supervise.Delivery{ID: "outbox:21", Task: retry, Generation: 1, Phase: phase.Implementing,
-		Entry: 3, QueuedAt: time.Now(), ConfirmedAt: time.Now()}); err != nil {
-		t.Fatalf("record the implementer's claim and the retry's task it holds: %v", err)
-	}
-	for _, tc := range []struct {
-		name       string
-		token      claim.Token
-		at         phase.Phase
-		generation uint64
-		entry      int64
-		want       string
-	}{
-		{name: "its own entry", token: implementer, at: phase.Implementing, generation: 1, entry: 3, want: retry},
-		{name: "a later entry", token: implementer, at: phase.Implementing, generation: 1, entry: 4},
-		{name: "no entry named", token: implementer, at: phase.Implementing, generation: 1, entry: 0},
-		{name: "an earlier entry", token: implementer, at: phase.Implementing, generation: 1, entry: 2},
-		{name: "another phase", token: implementer, at: phase.Testing, generation: 1, entry: 3},
-		{name: "another run", token: implementer, at: phase.Implementing, generation: 2, entry: 3},
-		{name: "no claim", token: "legion-legion-legion-208-tester", at: phase.Implementing, generation: 1, entry: 3},
-	} {
-		inTx(t, st, func(tx pgx.Tx) {
-			got, err := records.ClaimPhaseTask(ctx, tx, tc.token, tc.at, tc.generation, tc.entry)
-			if err != nil || got != tc.want {
-				t.Fatalf("%s: the task %s holds for %s of run %d at entry %d = %q, %v; want %q", tc.name, tc.token, tc.at,
-					tc.generation, tc.entry, got, err, tc.want)
-			}
-		})
-	}
 }
 
 // A root keeps one relayed decision per Dispatch reference, the newest by its time: a later one
