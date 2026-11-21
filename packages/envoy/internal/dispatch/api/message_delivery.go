@@ -815,6 +815,9 @@ func (s *server) deliverMessageResuming(
 	// A direct message is written to the session it names and invites its answer; nothing about
 	// one says a reply is unwanted. A copy Dispatch queues for its session says the same.
 	wanted := contracts.ExpectsReplyOptional
+	// The project every send of the attempt names, and the copy Dispatch queues for an unknown
+	// session too, so one rule decides both copies' subject (messageProject).
+	project := messageProject(message)
 	takeover := s.newTakeoverRetry()
 	var outcome sendOutcome
 	// held is whether this sender still holds the attempt's claim when its tries end. A renew that
@@ -823,9 +826,8 @@ func (s *server) deliverMessageResuming(
 	held := true
 	err = takeover.retry(ctx,
 		func() string {
-			// A targeted message names no project here: the listener chooses it (listenerSendInput).
 			outcome = s.sendResolvedDelivery(
-				ctx, pending.resolved, "", message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
+				ctx, pending.resolved, project, message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
 			)
 			return outcome.failure
 		},
@@ -842,9 +844,22 @@ func (s *server) deliverMessageResuming(
 		return model.MessageDelivery{}, err
 	}
 	if held && s.mayQueueForUnknownSession(message, pending, connectedOnly, outcome.failure) {
-		outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure)
+		outcome = s.queueForUnknownSession(ctx, message, pending, project, key, wanted, outcome.failure)
 	}
 	return s.completeMessageDelivery(ctx, message, actor, pending, outcome)
+}
+
+// messageProject is the project a targeted message is sent under (dispatchenvoy.SendInput.Project):
+// its issue's project, which an issue's key names (contracts.IssueProject), and contracts.NoProject
+// for a message of no issue, named as such rather than left out, so the listener's send and the
+// copy Dispatch queues for a session it does not know (queuedEnvelope) take one project.
+func messageProject(message model.Message) string {
+	if message.IssueKey != nil {
+		if project, ok := contracts.IssueProject(*message.IssueKey); ok {
+			return project
+		}
+	}
+	return contracts.NoProject
 }
 
 // renewMessageDeliveryClaim prepares one more try of an attempt this sender holds, after a try a

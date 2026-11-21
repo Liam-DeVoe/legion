@@ -263,10 +263,11 @@ type SendInput struct {
 	// every send of a message whose agents-route request asked for it. Unset, the field is left
 	// out of the body.
 	ConnectedOnly bool
-	// Project is the project the delivered thing is of, a project key: the comment's project for
-	// a comment mention (api.listenerSendInput). It reaches the listener as the body's project,
-	// which the listener takes for the message's own (listenerwire.SendRequest.Project). Empty,
-	// the field is left out and the listener chooses it, as for every send before the field.
+	// Project is the project the delivered thing is of, a project key or contracts.NoProject:
+	// every Dispatch send names one (api.listenerSendInput), the comment's project for a comment
+	// mention and the message's, or NoProject, for a targeted message. It reaches the listener as
+	// the body's project, which the listener takes for the message's own
+	// (listenerwire.SendRequest.Project). Empty, the field is left out and the listener chooses it.
 	Project string
 }
 

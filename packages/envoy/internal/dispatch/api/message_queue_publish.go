@@ -44,11 +44,10 @@ func (s *server) mayQueueForUnknownSession(
 }
 
 // queueForUnknownSession queues a targeted message for a session no store of the listener's holds:
-// it publishes onto the session's own subject, in the form every reader takes
-// (contracts.LegacyAgentSubject, through contracts.AgentSendEnvelope), the envelope the
-// listener's send route would have stored for this attempt, under the same dedupe key, and
-// answers as a send to a stopped session does - queued, with the envelope it stored, or with
-// none and duplicate when the stream already held it.
+// it publishes onto the session's own subject under project (messageProject), through
+// contracts.AgentSendEnvelope, the envelope the listener's send route would have stored for this
+// attempt, under the same dedupe key, and answers as a send to a stopped session does - queued,
+// with the envelope it stored, or with none and duplicate when the stream already held it.
 //
 // The listener's delivery of that copy finds no record of the session and gives it up after its
 // retry window with the agent wake, which brings a released Legion pod back. The session reads the
@@ -60,11 +59,11 @@ func (s *server) mayQueueForUnknownSession(
 // A publish that fails queues nothing: the attempt then settles failed with failure and the
 // publish's own error, so the person can retry it.
 func (s *server) queueForUnknownSession(
-	ctx context.Context, message model.Message, pending pendingMessageDelivery, key string,
+	ctx context.Context, message model.Message, pending pendingMessageDelivery, project, key string,
 	wanted contracts.ExpectsReply, failure string,
 ) sendOutcome {
 	envelope := queuedEnvelope(listenerSendInput(
-		pending.resolved.attemptSessionID, pending.resolved.Delivery, "", message.Body, key,
+		pending.resolved.attemptSessionID, pending.resolved.Delivery, project, message.Body, key,
 		pending.urgency, wanted, pending.frame, false,
 	))
 	// The listener refuses to store an envelope that does not validate, and so does this.
@@ -90,13 +89,14 @@ func queueFailure(failure string, err error) string {
 }
 
 // queuedEnvelope is the envelope the listener's send route stores for input: built with the
-// builder that route uses (contracts.AgentSendEnvelope), on the session's own subject under
-// AgentSendDedupeKey(session, idempotency key), from the message Client.Send writes its body from
-// (dispatchenvoy.SendInput.EnvelopeMessage). A send that did reach the listener and the copy
+// builder that route uses (contracts.AgentSendEnvelope), on the session's own subject under the
+// project the send names (dispatchenvoy.SendInput.Project, the body project the listener takes),
+// under AgentSendDedupeKey(session, idempotency key), from the message Client.Send writes its body
+// from (dispatchenvoy.SendInput.EnvelopeMessage). A send that did reach the listener and the copy
 // Dispatch queued are then one message under one stream id (bus.ForwardMsgID), which the stream
 // stores once.
 func queuedEnvelope(input dispatchenvoy.SendInput) contracts.Envelope {
-	return contracts.AgentSendEnvelope(contracts.NoProject, input.TargetSession, input.IdempotencyKey, input.EnvelopeMessage())
+	return contracts.AgentSendEnvelope(input.Project, input.TargetSession, input.IdempotencyKey, input.EnvelopeMessage())
 }
 
 // AgentPublishRecorder is the AgentPublisher of a test process that has no NATS: the browser

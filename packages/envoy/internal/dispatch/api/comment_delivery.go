@@ -163,11 +163,11 @@ func (s *server) sendResolvedDelivery(
 }
 
 // listenerSendInput is the listener send of one delivery to sessionID in mode delivery, carrying
-// frame, of project: the comment's project for a comment mention, which the listener takes for the
-// message's own (dispatchenvoy.SendInput.Project), and empty for a targeted message, whose project
-// the listener chooses. A targeted message Dispatch queues itself, for a session no store of the
-// listener's holds, is the envelope this send would have stored (queuedEnvelope), so both are
-// built here.
+// frame, of project, which every Dispatch send names (dispatchenvoy.SendInput.Project): the
+// comment's project for a comment mention (commentProject), the message's for a targeted message
+// (messageProject), contracts.NoProject for one of no project. A targeted message Dispatch queues
+// itself, for a session no store of the listener's holds, is the envelope this send would have
+// stored (queuedEnvelope), so both are built here, from one project.
 func listenerSendInput(
 	sessionID, delivery, project, body, idempotencyKey string, urgency *string,
 	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
@@ -195,6 +195,16 @@ func listenerSendInput(
 		ConnectedOnly:  connectedOnly,
 		Project:        project,
 	}
+}
+
+// commentProject is the project a mention of the comment whose comment.created event is created is
+// sent under: the event's owner's project (loadCommentCreatedEvent, the event log's own), and
+// contracts.NoProject should the event name none, so the send names a project always.
+func commentProject(created model.Event) string {
+	if created.Project == "" {
+		return contracts.NoProject
+	}
+	return created.Project
 }
 
 // commentExpectsReply is what a mention of one comment wants back. A comment that joins no ask
@@ -789,7 +799,7 @@ func (s *server) deliverResolvedCommentMention(
 		}
 		// A comment mention is never the live view's model and thinking switch, so it asks for no
 		// connected session: a stopped session the listener knows takes it when it runs again.
-		outcome = s.sendResolvedDelivery(ctx, target, created.Project, stored.Body, key, nil, wanted, frame, false)
+		outcome = s.sendResolvedDelivery(ctx, target, commentProject(created), stored.Body, key, nil, wanted, frame, false)
 		return outcome.failure
 	}
 	if decided && claimed.pending.SessionID == nil {

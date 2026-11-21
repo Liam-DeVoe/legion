@@ -253,7 +253,7 @@ func resolveRoleHolders(ctx context.Context, deps Deps, events []*batchEvent, re
 			if !ok {
 				continue
 			}
-			dest.forward = forwardOf(event.event.Project, dest.role, event.item, result.resolution, result.err)
+			dest.forward = forwardOf(event.event.Project, roleKey(event.event.Project, dest.role), event.item, result.resolution, result.err)
 			dest.forward.mentionKeys = dest.mentionKeys
 			dest.forward.settledKeys = dest.settledKeys
 			if roleCopyWaitsForAMention(event, *dest) {
@@ -670,7 +670,7 @@ func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope
 		key = contracts.RoleClaimKey(under, role)
 	}
 	resolution, err := resolveRole(ctx, deps, key)
-	return forwardOf(project, role, item, resolution, err)
+	return forwardOf(project, key, item, resolution, err)
 }
 
 // forwardOf maps a role's resolution to how item reaches it, as the listener's role lane maps the
@@ -710,7 +710,8 @@ func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope
 // send that every holder takes.
 //
 // project is the project of the event item carries, which every arm's copy is sent under
-// (roleForward.project).
+// (roleForward.project), and role the role's claim key under the project it works for there
+// (roleKey), which a copy no holder takes is kept by (keptOrSkipped): its lane is that key's.
 func forwardOf(project, role string, item contracts.Envelope, resolution roles.Resolution, err error) *roleForward {
 	forward := forwardArm(role, item, resolution, err)
 	forward.project = project
@@ -943,7 +944,8 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 // unless a drain that read the cursor before this handover reaches the agent subject ahead of it.
 // A keep the outbox retried stamps the retry's own time, the stream having kept the copy the
 // first publish stored. project is the project of the event the copy carries, which the handover's
-// forward goes under as the route's own would (roleForward.project).
+// forward goes under as the route's own would (roleForward.project), and role the claim key the
+// copy was kept for (roleForward.keptFor), which is both the lane and the claim the handover reads.
 func handOverKept(ctx context.Context, deps Deps, sender bus.Sender, project, role string, item contracts.Envelope, keptAt time.Time, handed *keptHandovers) {
 	if err := handOverKeptCopy(ctx, deps, sender, project, role, item, keptAt, handed); err != nil && !lostToContextEnd(ctx, err) {
 		slog.Warn("dispatch outbox: the copy kept for a role was not handed to the holder that claimed it",
@@ -965,7 +967,7 @@ func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, project
 	if deps.KeptLanes == nil {
 		return nil
 	}
-	resolution, err := resolveRole(ctx, deps, roleKey(project, role))
+	resolution, err := resolveRole(ctx, deps, role)
 	if err != nil {
 		return fmt.Errorf("resolve the holder of role %s, which a copy was just kept for: %w", role, err)
 	}

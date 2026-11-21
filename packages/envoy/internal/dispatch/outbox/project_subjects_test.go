@@ -350,3 +350,71 @@ func TestAFallbackCopyResolvesItsRoleInBothForms(t *testing.T) {
 			wrong, contracts.RoleSubject("PUB", "reviewer"))
 	}
 }
+
+// TestABatchKeepsEachProjectsRoleCopyOnItsOwnLane (resolveRoleHolders, roleKey, keptOrSkipped):
+// PRIV-1 and PUB-1 are each routed to reviewer, which nobody holds, and each has a message. The
+// batch keeps PRIV-1's copy on reviewer's lane under PRIV (bus.KeptRoleSubject("PRIV.reviewer"))
+// and PUB-1's under PUB, each under the id every writer of that lane keeps it under, and a Legion
+// role routed from PUB keeps its own lane: no copy of one project's role waits on another
+// project's lane for that project's holder.
+//
+// Control, in the test: the lanes the role's name alone gives, today's key, are one lane for both
+// copies, and the same check fails naming it.
+func TestABatchKeepsEachProjectsRoleCopyOnItsOwnLane(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	const legionRole = "legion-pub-pub-2-architect"
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee, owner, visibility) values
+			('PRIV', 'PRIV', 'alice', 'alice', 'private'), ('PUB', 'PUB', 'alice', 'alice', 'public');
+		insert into issues (key, project_key, number, title, route, created_by, rank) values
+			('PRIV-1', 'PRIV', 1, 'PRIV-1', 'role:reviewer', '{"kind":"user","id":"alice"}', 'U'),
+			('PUB-1', 'PUB', 1, 'PUB-1', 'role:reviewer', '{"kind":"user","id":"alice"}', 'U'),
+			('PUB-2', 'PUB', 2, 'PUB-2', 'role:`+legionRole+`', '{"kind":"user","id":"alice"}', 'U');
+	`); err != nil {
+		t.Fatalf("create PRIV and PUB: %v", err)
+	}
+	byEvent := map[string]string{}
+	for _, key := range []string{"PRIV-1", "PUB-1", "PUB-2"} {
+		byEvent[fmt.Sprintf("dispatch-%d", appendHoldMessage(t, database, broker, key).ID)] = key
+	}
+	publisher := &keepRecorder{}
+	deps := Deps{Store: database, Publisher: publisher, Broker: broker, RoleClaims: roleClaimStub{}, Sessions: roleClaimStub{}}
+	if _, err := scanBatch(ctx, deps, unfenced{}, holding(t, deps).instance); err != nil {
+		t.Fatalf("scan the batch: %v", err)
+	}
+	want := map[string]string{
+		"PRIV-1": bus.KeptRoleSubject("PRIV.reviewer"),
+		"PUB-1":  bus.KeptRoleSubject("PUB.reviewer"),
+		"PUB-2":  bus.KeptRoleSubject(legionRole),
+	}
+	wrongLanes := func(lanes map[string]string) []string {
+		var wrong []string
+		for key, lane := range want {
+			if lanes[key] != lane {
+				wrong = append(wrong, fmt.Sprintf("%s kept on %q, want %q", key, lanes[key], lane))
+			}
+		}
+		slices.Sort(wrong)
+		return wrong
+	}
+	got := map[string]string{}
+	for _, kept := range publisher.keeps() {
+		key := byEvent[kept.item.DedupeKey]
+		if _, twice := got[key]; twice {
+			t.Fatalf("%s was kept twice: on %q and %q", key, got[key], kept.subject)
+		}
+		got[key] = kept.subject
+		if kept.msgID != bus.KeptMsgID(kept.item.DedupeKey, strings.TrimPrefix(kept.subject, bus.KeptRoleSubjectPrefix)) {
+			t.Errorf("%s was kept under %q, want the id every writer of %s keeps it under", key, kept.msgID, kept.subject)
+		}
+	}
+	if wrong := wrongLanes(got); len(wrong) != 0 {
+		t.Fatalf("the batch kept %v, want each project's copy on its own lane: %v", got, wrong)
+	}
+	bare := map[string]string{"PRIV-1": bus.KeptRoleSubject("reviewer"), "PUB-1": bus.KeptRoleSubject("reviewer"), "PUB-2": bus.KeptRoleSubject(legionRole)}
+	if wrong := wrongLanes(bare); len(wrong) != 2 {
+		t.Fatalf("control: the role's name alone as the lane misread %v, want PRIV-1 and PUB-1 named", wrong)
+	}
+}
