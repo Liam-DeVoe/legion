@@ -209,7 +209,7 @@ func TestPodUpdateGoesThroughAProcessASecondClaimStartsWhileTheFirstWaits(t *tes
 // runtime refused its relaunch for want of the pod's round, so its launch waits on the pod and it
 // has no process to answer. The planner failed, so the round asks it nothing. The round waits for
 // neither of them: it replaces the pod before its bound, through the locator the refusal named,
-// and its one line names the planner in failedNotWaitedFor and the implementer in
+// and its one line names the planner in notWaitedFor and the implementer in
 // waitingOnThePodNotWaitedFor.
 //
 // The control is a line with one of the two fields empty: this test then fails and names that
@@ -239,7 +239,7 @@ func TestPodUpdateReplacementLineNamesEachClaimTheRoundDidNotWaitFor(t *testing.
 	if len(lines) != 1 || lines[0]["atTheBound"] != false {
 		t.Fatalf("the replacement was logged %+v, want one line that no bound made", lines)
 	}
-	wantField(t, lines[0], "failedNotWaitedFor", claim.RolePlanner)
+	wantField(t, lines[0], "notWaitedFor", claim.RolePlanner)
 	wantField(t, lines[0], "waitingOnThePodNotWaitedFor", claim.RoleImplementer)
 }
 
@@ -314,49 +314,54 @@ func TestTheRoundReadsThePodAClaimsLaunchWaitsOn(t *testing.T) {
 }
 
 // The round's answer set: a claim whose launch waits on the round's own pod is one the round is
-// recorded on — with a session or without, since it may be the issue's only claim — and one the
+// posted to — with a session or without, since it may be the issue's only claim — and one the
 // replacement waits on no answer of, since it has no process in that pod. With a session and no
 // answer, the gone-pod report names it as having lost what it left unpushed, as any member: its
 // process can have died in that pod before its relaunch was refused. The replacement's line names
 // it too (unwaitedOnThePod), and also where it does not record the round yet, which the report
 // does not, since that claim is no member of the round. With an answer to the round, it pushed its
-// work before the pod went, and neither names it. With no session it never had a worker, and
-// neither names anything of it. A claim with a session that waits on another pod, and every claim
-// with no process that waits on none, is weighed as before. A claim with no session that waits on
-// another pod is no way to this round's pod and never had a worker, so this round reads nothing
-// of it.
+// work before the pod went, and neither names it. With no session it is posted the round only as
+// a way to the pod, and neither names anything of it. A claim with a session that waits on another
+// pod, and every claim with no process that waits on none, is weighed as any claim is: a claim the
+// daemon suspended is passed over and waited for by nobody (roundAsks, dispatch://INFRA-4109 R1),
+// and a member with no session that waits on no pod of this round is named lost, since the round
+// is posted to no such claim and it forgot its session after the post (lostClaims). A claim with
+// no session that waits on another pod is no way to this round's pod, so the round is not posted
+// to it.
 func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 	round := podUpdateRound
+	clock := roundClock{now: podUpdateStart, grace: podUpdateGrace}
 	answeredIt := waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true)
 	signalled := podUpdateStart
 	answeredIt.UpdateSignalledAt = &signalled
 	for name, tc := range map[string]struct {
-		claim                             supervise.Claim
-		blocking, waiting, lost, unwaited bool
+		claim                           supervise.Claim
+		posted, waiting, lost, unwaited bool
 	}{
 		"it waits on the round's pod, with a session": {
-			claim:    waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true),
-			blocking: true, lost: true, unwaited: true},
+			claim:  waitingOn(t, claim.RoleImplementer, podUpdatePod, round, true),
+			posted: true, lost: true, unwaited: true},
 		"it waits on the round's pod, with a session, and answered the round": {
-			claim: answeredIt, blocking: true},
+			claim: answeredIt, posted: true},
 		"it waits on the round's pod, with a session, and records no round": {
-			claim:    waitingOn(t, claim.RoleImplementer, podUpdatePod, "", true),
-			blocking: true, unwaited: true},
+			claim:  waitingOn(t, claim.RoleImplementer, podUpdatePod, "", true),
+			posted: true, unwaited: true},
 		"it waits on the round's pod, with no session": {
-			claim: waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), blocking: true},
+			claim: waitingOn(t, claim.RoleImplementer, podUpdatePod, round, false), posted: true},
 		"it waits on another pod, with a session": {
-			claim: waitingOn(t, claim.RoleImplementer, podUpdateReplacementPod, round, true), blocking: true, waiting: true, lost: true},
+			claim: waitingOn(t, claim.RoleImplementer, podUpdateReplacementPod, round, true), posted: true, waiting: true, lost: true},
 		"it waits on another pod, with no session": {
-			claim: waitingOn(t, claim.RoleImplementer, podUpdateReplacementPod, round, false)},
+			claim: waitingOn(t, claim.RoleImplementer, podUpdateReplacementPod, round, false), lost: true},
 		"it is suspended and waits on no pod": {
 			claim: supervise.Claim{Token: mustClaimToken(t, podUpdateIssue, claim.RoleImplementer), Issue: podUpdateIssue, Role: claim.RoleImplementer,
 				State: supervise.StateSuspended, Session: "ses_implementer", UpdateRound: round},
-			blocking: true, waiting: true, lost: true},
+			posted: true, lost: true},
 		"it runs in the round's pod": {
-			claim: runningIn(t, claim.RoleImplementer, podUpdatePod, round), blocking: true, waiting: true, lost: true},
+			claim: runningIn(t, claim.RoleImplementer, podUpdatePod, round), posted: true, waiting: true, lost: true},
 		"it has no session, no process and waits on no pod": {
 			claim: supervise.Claim{Token: mustClaimToken(t, podUpdateIssue, claim.RoleImplementer), Issue: podUpdateIssue, Role: claim.RoleImplementer,
-				State: supervise.StateQueued, UpdateRound: round}},
+				State: supervise.StateQueued, UpdateRound: round},
+			lost: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			group := []supervise.Claim{tc.claim}
@@ -365,8 +370,8 @@ func TestTheRoundWaitsOnNoAnswerOfAClaimWhoseLaunchWaitsOnItsPod(t *testing.T) {
 				got    []supervise.Claim
 				want   bool
 			}{
-				{"blockingClaims", blockingClaims(group, round), tc.blocking},
-				{"waitingClaims", waitingClaims(group, round), tc.waiting},
+				{"postedClaims", postedClaims(group, round), tc.posted},
+				{"waitingClaims", waitingClaims(group, round, clock), tc.waiting},
 				{"lostClaims", lostClaims(group, round), tc.lost},
 				{"unwaitedOnThePod", unwaitedOnThePod(group, round), tc.unwaited},
 			} {
