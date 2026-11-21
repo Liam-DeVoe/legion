@@ -734,14 +734,15 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 }
 
 // workerEntries is the phases rows of every issue of issues that phaseWorkerOf can select — an
-// issue of this project whose phase has a worker role — read in one statement
+// issue of this project with a worker role where it stands, read with the issue
+// (workflow.OpenRoleOf, so a step of a role of the deployment counts) — read in one statement
 // (record.Store.PhaseEntries), and no statement where there is none: the rows the claim of each
 // candidate's worker is read from (record.WorkerClaimOf).
 func (a *Admission) workerEntries(ctx context.Context, tx pgx.Tx, issues []record.Issue) (map[record.PhaseRole]record.PhaseEntry, error) {
 	keys := make([]string, 0, len(issues))
 	seen := make(map[string]struct{}, len(issues))
 	for _, issue := range issues {
-		if issue.Project != a.project || workflow.OpenPhaseRole(issue.Phase) == "" {
+		if issue.Project != a.project || workflow.OpenRoleOf(issue) == "" {
 			continue
 		}
 		if _, dup := seen[issue.Key]; dup {

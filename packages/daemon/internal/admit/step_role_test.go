@@ -122,6 +122,39 @@ func TestTheAdmissionReadsTheRunningDeploymentRole(t *testing.T) {
 		}
 	})
 
+	// The checker's step is worked by key a's agent, `…-implementer`, whose claim holds the role
+	// checker and is the claim the checker's phases row names: the silent list reads that claim's
+	// run, so it names the step's agent last stepped when that claim last stepped. A read of the
+	// checker's own token would find no claim, and the silent agent would go untold.
+	t.Run("the silent list reads the claim of a keyed checker's step", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 2)
+		admission.UseWorkerSilence(silenceBound, backgroundBound)
+		registerController(t, pool)
+		const key = "LEGION-721"
+		working := seedQuietRoot(t, pool, key, "A", phase.Step)
+		runAtCheckerStep(t, pool, key, working.Generation)
+		keyed := putWorkerClaim(t, pool, key, key, claim.RoleImplementer, working.Generation, supervise.StateReady, "")
+		if _, err := pool.Exec(context.Background(), `update claims set role = $2 where token = $1`, string(keyed), string(checker)); err != nil {
+			t.Fatal(err)
+		}
+		inTx(t, pool, func(tx pgx.Tx) {
+			if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: checker, Claim: keyed,
+				StepTask: "a", StepPlace: 2}); err != nil {
+				t.Fatalf("seed the checker's row naming %s: %v", keyed, err)
+			}
+		})
+		silentStep := fixedNow.Add(-2 * time.Hour)
+		steppedAt(t, pool, keyed, silentStep)
+
+		tick(t, pool, admission, "tick-1")
+
+		silent := tickNotice(t, pool).Silent
+		if len(silent) != 1 || silent[0].Issue != key || silent[0].Role != checker || !silent[0].LastStep.Equal(silentStep) {
+			t.Fatalf("the tick names %#v as silent, want %s's checker, last stepped at %s: the run of %s, the claim of its step", silent, key, silentStep, keyed)
+		}
+	})
+
 	t.Run("the entry repair sends the checker its entry's work", func(t *testing.T) {
 		pool := migratedPool(t)
 		const root, key = "LEGION-740", "LEGION-741"
