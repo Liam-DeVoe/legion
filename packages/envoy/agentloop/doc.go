@@ -89,6 +89,11 @@
 // every value but an object or an array keeps the bytes the SDK wrote, a key is written again
 // without HTML escaping, and a body that carries no schema is sent byte for byte as it came.
 //
+// Every call of a run with a Final carries its schema at the protocol's path. A call whose schema
+// the transport cannot put back, because the body holds none there, holds one of another shape
+// than Final's, or is no JSON, goes out as the SDK wrote it and logs one warning to Request.Log
+// naming the protocol and the reason, once for the call and not again on its retry.
+//
 // A tool's input schema (Tool.Schema) is not put back: the same two adapters send its keys
 // sorted, as that run's requests show, so a tool whose input has more than one property is
 // offered them sorted, and the model writes a call's arguments in that order. A call's input is

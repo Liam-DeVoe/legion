@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/url"
 	"time"
 )
@@ -299,6 +300,9 @@ type Request struct {
 	OnText    func(delta string) error
 	OnPartial func(snapshot json.RawMessage) error
 	OnStep    func(Step) error
+	// Log takes the run's warnings, such as a call whose Final schema could not be put back in
+	// Final's order (doc.go, "The structured reply"). A nil Log logs to slog.Default().
+	Log *slog.Logger
 }
 
 // Usage is what one model call, or a whole run, consumed and what it cost.

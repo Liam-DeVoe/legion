@@ -14,8 +14,12 @@ body: |-
   key the SDK adds that `Final` lacks keeps its place after `Final`'s own, every value but an
   object or an array keeps the bytes the SDK wrote, a key is written again without HTML escaping,
   and a request with no `Final` is sent byte for byte as before.
-  The secrets broker's model judge's schema now reaches its provider as written, `verdict` before
-  `reason`, on every protocol, where the Anthropic and Responses adapters had sent `reason` first.
+  The secrets broker's model judge now declares `reason` before `verdict`, so its schema reaches
+  its provider in the order it did on `anthropic-messages`, `azure-anthropic` and
+  `openai-responses`, and on `openai-chat` it moves from `verdict`, `reason` to `reason`,
+  `verdict`. A call whose schema the transport cannot put back, because its body holds none at the
+  protocol's path, holds one of another shape than `Final`'s, or is no JSON, is sent as the SDK
+  wrote it and logs one warning to the new `Request.Log`, or to `slog.Default()` where it is nil.
 time: 2026-11-21T04:28:35.000000000Z
 custom:
     Issue: pr2230

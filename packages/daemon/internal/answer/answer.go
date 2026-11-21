@@ -182,7 +182,8 @@ type Request struct {
 	// asked for have returned, and a run that finds the project paused ends with ErrPaused
 	// before its next model call or gh call.
 	Paused func() bool
-	// Log takes the answer's `answers: answered` line; slog.Default() when nil.
+	// Log takes the answer's `answers: answered` line and the model loop's warnings
+	// (agentloop.Request.Log); slog.Default() when nil.
 	Log *slog.Logger
 }
 
@@ -397,6 +398,7 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 			}
 			return nil
 		},
+		Log: req.Log,
 	})
 	reply := Reply{Calls: len(result.Steps), Usage: usageOf(result.Usage, r.price), CostUSD: result.Usage.CostUSD}
 	if runErr != nil && ctx.Err() != nil {

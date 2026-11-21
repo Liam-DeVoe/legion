@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/serverwait"
@@ -27,14 +29,19 @@ type modelTransport struct {
 	query url.Values
 	// final is the run's Request.Final, and nil for a run with no Final and for a decision.
 	final json.RawMessage
+	// log takes the warning for a call whose schema inFinalOrder could not put back. It is
+	// never nil.
+	log *slog.Logger
 }
 
 // newModelTransport is the transport one Run or one Decide makes its model calls through, over
-// the default transport, for the endpoint whose protocol, token and query parameters it carries
-// and the run's Final, which a decision has none of.
-func newModelTransport(endpoint Endpoint, final json.RawMessage) *modelTransport {
+// the default transport, for the endpoint whose protocol, token and query parameters it carries,
+// the run's Final, which a decision has none of, and log, the run's Request.Log resolved, which
+// a decision passes as slog.Default() since its transport never warns.
+func newModelTransport(endpoint Endpoint, final json.RawMessage, log *slog.Logger) *modelTransport {
 	return &modelTransport{
-		base: http.DefaultTransport, kind: endpoint.Kind, token: endpoint.Token, query: endpoint.Query, final: final,
+		base: http.DefaultTransport, kind: endpoint.Kind, token: endpoint.Token, query: endpoint.Query,
+		final: final, log: log,
 	}
 }
 
@@ -144,31 +151,45 @@ func finalSchemaPath(kind Kind) []string {
 // inFinalOrder is body with the schema it carries at its protocol's path (finalSchemaPath) put
 // back in the order of Request.Final: every byte of the body stays as it came but for that
 // schema's objects, each of which takes the order of the same object in Final (appendInOrder);
-// why is doc.go's "The structured reply". A run with no Final, a body that carries no schema at
-// the path, and a body that is no JSON, which is the provider's to refuse, are sent byte for byte
-// as they came.
+// why is doc.go's "The structured reply". A run with no Final and a decision are sent byte for
+// byte as they came. So are a body that carries no schema at the path, a schema not of Final's
+// shape, and a body that is no JSON, which is the provider's to refuse; but every call of a run
+// with a Final carries its schema there, so each of these logs one warning for the call.
 func (t *modelTransport) inFinalOrder(body []byte) []byte {
 	path := finalSchemaPath(t.kind)
 	if t.final == nil || path == nil {
 		return body
 	}
-	start, end := 0, len(body)
-	for _, name := range path {
-		members, ok := jsonParts(body[start:end], jsontext.KindBeginObject)
-		if !ok {
-			return body
-		}
-		i := slices.IndexFunc(members, func(m jsonPart) bool { return m.name == name })
-		if i < 0 {
-			return body
-		}
-		start, end = start+members[i].start, start+members[i].end
-	}
-	ordered, ok := appendInOrder(append(make([]byte, 0, len(body)), body[:start]...), body[start:end], t.final)
-	if !ok {
+	// Such a call sends the schema as the SDK wrote it, sorted on the Anthropic and Responses
+	// adapters, which is the order this function is here to undo, so it must not go unseen.
+	unordered := func(reason string) []byte {
+		t.log.Warn("agentloop: the final schema was not put back in its caller's order, so this call sends it as the SDK wrote it",
+			"protocol", string(t.kind), "reason", reason)
 		return body
 	}
-	return append(ordered, body[end:]...)
+	start, end := 0, len(body)
+	for i, name := range path {
+		members, ok := jsonParts(body[start:end], jsontext.KindBeginObject)
+		if !ok {
+			if i == 0 {
+				return unordered("the body is no JSON object")
+			}
+			return unordered(strings.Join(path[:i], ".") + " is no JSON object")
+		}
+		j := slices.IndexFunc(members, func(m jsonPart) bool { return m.name == name })
+		if j < 0 {
+			return unordered(fmt.Sprintf("no member %q on the path %s", name, strings.Join(path, ".")))
+		}
+		start, end = start+members[j].start, start+members[j].end
+	}
+	// appendInOrder appends a value whose kind is not Final's as it stands, which for the
+	// schema itself would put nothing back.
+	if schema := body[start:end]; jsontext.Value(schema).Kind() == jsontext.Value(t.final).Kind() {
+		if ordered, ok := appendInOrder(append(make([]byte, 0, len(body)), body[:start]...), schema, t.final); ok {
+			return append(ordered, body[end:]...)
+		}
+	}
+	return unordered("the schema at " + strings.Join(path, ".") + " is not of Final's shape")
 }
 
 // appendInOrder appends sent, a value of the schema a request body carries, to dst with each
