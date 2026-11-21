@@ -1125,8 +1125,9 @@ const legionAppInstallations = z.object({
  * runtime. The daemon writes `repo` on every entry and each other key only once it holds
  * something. What Dispatch answered of its webhook App is in the block's `withoutWebhookApp`
  * alone. The controller's `read_state` summary reads `repo`, `servedAs`, `apps` and `readError`
- * to print `legion state`'s line for each repository not served (`LEGION_ANSWER_READS`), and
- * every key stays optional, since the summary leaves out what an entry does not carry. */
+ * to print `legion state`'s line for each repository whose last read failed or that a role App is
+ * not installed on (`LEGION_ANSWER_READS`), and every key stays optional, since the summary
+ * leaves out what an entry does not carry. */
 const legionLiveRepository = z.object({
   repo: nonEmptyString.optional(),
   servedAs: nonEmptyString.optional(),
