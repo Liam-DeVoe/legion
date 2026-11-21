@@ -420,22 +420,30 @@ func request(ctx context.Context, nc *nats.Conn, subject string, body []byte, ou
 	return nil, nil
 }
 
-// streamState is the first_seq and last_seq the stream's info answers now.
-func streamState(ctx context.Context, nc *nats.Conn, stream string) (first, last uint64, err error) {
+// streamInfo is what the walk reads of the stream's info: its first_seq and last_seq now, and when
+// the stream was made, which a stream deleted and made again under the bucket's name changes.
+type streamInfo struct {
+	first, last uint64
+	created     time.Time
+}
+
+// streamState is the stream's info now.
+func streamState(ctx context.Context, nc *nats.Conn, stream string) (streamInfo, error) {
 	var info struct {
-		State struct {
+		Created time.Time `json:"created"`
+		State   struct {
 			FirstSeq uint64 `json:"first_seq"`
 			LastSeq  uint64 `json:"last_seq"`
 		} `json:"state"`
 	}
 	refused, err := request(ctx, nc, "$JS.API.STREAM.INFO."+stream, nil, &info)
 	if err != nil {
-		return 0, 0, err
+		return streamInfo{}, err
 	}
 	if refused != nil {
-		return 0, 0, fmt.Errorf("kvrecords: the info of %s: %d %s", stream, refused.ErrCode, refused.Description)
+		return streamInfo{}, fmt.Errorf("kvrecords: the info of %s: %d %s", stream, refused.ErrCode, refused.Description)
 	}
-	return info.State.FirstSeq, info.State.LastSeq, nil
+	return streamInfo{first: info.State.FirstSeq, last: info.State.LastSeq, created: info.Created}, nil
 }
 
 // Write takes the copy of bucket's stream through nc into dir, which must not exist yet, and signs
@@ -443,11 +451,12 @@ func streamState(ctx context.Context, nc *nats.Conn, stream string) (first, last
 // every sequence from first_seq to last_seq in order, then reads the info again and walks on to
 // the new last_seq, until a pass ends at the last_seq it began with, within the walk's bounds. A
 // sequence answered 10037, no message found, is left out, and a message whose subject is no key of
-// the bucket is listed in the manifest's Foreign and has no record; any other error, a last_seq that
-// fell during the walk (the stream made again), or a walk past its bounds, stops the walk, and
-// nothing is written. A writer that keeps last_seq moving, which any grant holding a JetStream
-// request can do by naming a key of the bucket as a request's reply, so makes the walk fail at its
-// bound: it fails closed, with no copy, and the copy is taken again or under a hold. The files are
+// the bucket is listed in the manifest's Foreign and has no record; any other error, a stream made
+// again during the walk (its created time changed between two info reads, or its last_seq fell),
+// or a walk past its bounds, stops the walk, and nothing is written. A writer that keeps last_seq
+// moving, which any grant holding a JetStream request can do by naming a key of the bucket as a
+// request's reply, so makes the walk fail at its bound: it fails closed, with no copy, and the copy
+// is taken again or under a hold. The files are
 // written into a directory of their own beside dir and moved to dir whole. The manifest it answers
 // names the copy by its ManifestSHA256, which a reader passes to Read.
 func Write(ctx context.Context, nc *nats.Conn, bucket, dir string, key ed25519.PrivateKey) (Manifest, error) {
@@ -458,13 +467,13 @@ func Write(ctx context.Context, nc *nats.Conn, bucket, dir string, key ed25519.P
 		return Manifest{}, fmt.Errorf("kvrecords: %s exists already, or cannot be read (%v); a copy is written into a new directory", dir, err)
 	}
 	stream := "KV_" + bucket
-	first, last, err := streamState(ctx, nc, stream)
+	info, err := streamState(ctx, nc, stream)
 	if err != nil {
 		return Manifest{}, err
 	}
-	manifest := Manifest{Format: Format, Bucket: bucket, Stream: stream, TakenAt: time.Now().UTC(), FirstSeq: first, LastSeq: last,
+	manifest := Manifest{Format: Format, Bucket: bucket, Stream: stream, TakenAt: time.Now().UTC(), FirstSeq: info.first, LastSeq: info.last,
 		Foreign: []ForeignMessage{}}
-	records, err := walk(ctx, nc, &manifest)
+	records, err := walk(ctx, nc, &manifest, info.created)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -507,8 +516,9 @@ func Write(ctx context.Context, nc *nats.Conn, bucket, dir string, key ed25519.P
 }
 
 // walk is records.jsonl's bytes for manifest's stream, walked from its FirstSeq to the last_seq
-// the walk ends at, which it writes into manifest.LastSeq with the number of records.
-func walk(ctx context.Context, nc *nats.Conn, manifest *Manifest) ([]byte, error) {
+// the walk ends at, which it writes into manifest.LastSeq with the number of records. created is
+// when the stream the walk began on was made: every later info read must name the same stream.
+func walk(ctx context.Context, nc *nats.Conn, manifest *Manifest, created time.Time) ([]byte, error) {
 	stream := manifest.Stream
 	prefix := "$KV." + manifest.Bucket + "."
 	var records bytes.Buffer
@@ -558,11 +568,15 @@ func walk(ctx context.Context, nc *nats.Conn, manifest *Manifest) ([]byte, error
 			records.WriteByte('\n')
 			manifest.Records++
 		}
-		_, last, err := streamState(ctx, nc, stream)
+		info, err := streamState(ctx, nc, stream)
 		if err != nil {
 			return nil, err
 		}
+		last := info.last
 		switch {
+		case !info.created.Equal(created):
+			return nil, fmt.Errorf("kvrecords: %s was made again during the walk: its info names a stream made at %s, not the one made at %s that the walk began on",
+				stream, info.created.UTC().Format(time.RFC3339Nano), created.UTC().Format(time.RFC3339Nano))
 		case last < manifest.LastSeq:
 			return nil, fmt.Errorf("kvrecords: %s's last_seq fell from %d to %d during the walk: the stream was made again or lost messages, so the walk is of no one stream",
 				stream, manifest.LastSeq, last)
