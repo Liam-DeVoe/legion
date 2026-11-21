@@ -330,7 +330,7 @@ func TestMaterializeProviderKeysRefusesAFileKeyItCannotUse(t *testing.T) {
 	}
 	missing := filepath.Join(dir, "missing")
 	for _, tc := range []struct{ name, file, want string }{
-		{"a missing file", missing, "provider_keys.ANTHROPIC_API_KEY names a file that could not be read: open: no such file or directory"},
+		{"a missing file", missing, "provider_keys.ANTHROPIC_API_KEY names a file that could not be read: it does not exist"},
 		{"an empty file", empty, "provider_keys.ANTHROPIC_API_KEY names " + empty + ", which is empty"},
 		{"a file others can read", shared, "provider_keys.ANTHROPIC_API_KEY " + shared + " is readable by its group or others (mode 0644); chmod 0600 it"},
 		{"a directory", dir, "provider_keys.ANTHROPIC_API_KEY names " + dir + ", which is not a regular file"},

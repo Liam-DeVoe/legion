@@ -1378,7 +1378,7 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 	t.Run("a missing operator token file", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{omitToken: true})
-		c.refused("operator_token_file names a file that could not be read: open: no such file or directory")
+		c.refused("operator_token_file names a file that could not be read: it does not exist")
 		c.wantNoSecretRequest()
 	})
 	t.Run("a blank operator token file", func(t *testing.T) {
@@ -1406,7 +1406,7 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
 		os.Remove(filepath.Join(c.dir, "nats-seed"))
-		c.refused("nats_nkey_seed_file names a file that could not be read: open: no such file or directory")
+		c.refused("nats_nkey_seed_file names a file that could not be read: it does not exist")
 		c.wantNoSecretRequest()
 	})
 	t.Run("a NATS nkey seed file holding no user seed", func(t *testing.T) {
@@ -1433,7 +1433,7 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
 		os.Remove(filepath.Join(c.dir, "dispatch-token"))
-		c.refused("dispatch_token_file names a file that could not be read: open: no such file or directory")
+		c.refused("dispatch_token_file names a file that could not be read: it does not exist")
 		c.wantNoSecretRequest()
 	})
 	t.Run("a missing instructions file", func(t *testing.T) {

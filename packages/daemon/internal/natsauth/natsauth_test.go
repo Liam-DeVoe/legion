@@ -146,11 +146,11 @@ func TestAnUnusableSeedIsAnErrorNamingItsSource(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		{"a missing key file", missing, map[string]string{"NATS_NKEY_SEED_FILE": good}, "nats_nkey_seed_file names a file that could not be read: open: no such file or directory"},
+		{"a missing key file", missing, map[string]string{"NATS_NKEY_SEED_FILE": good}, "nats_nkey_seed_file names a file that could not be read: it does not exist"},
 		{"a blank key file", blank, nil, "nats_nkey_seed_file names " + blank + ", which is empty"},
 		{"a key file holding no seed", notASeed, map[string]string{"NATS_NKEY_SEED": userSeed}, "nats_nkey_seed_file (" + notASeed + ") does not hold a valid nkey seed"},
 		{"a key file holding an account seed", accountSeed, nil, "nats_nkey_seed_file (" + accountSeed + ") holds an nkey seed that is not a user's"},
-		{"a missing file", "", map[string]string{"NATS_NKEY_SEED_FILE": missing, "NATS_NKEY_SEED": userSeed}, "NATS_NKEY_SEED_FILE names a file that could not be read: open: no such file or directory"},
+		{"a missing file", "", map[string]string{"NATS_NKEY_SEED_FILE": missing, "NATS_NKEY_SEED": userSeed}, "NATS_NKEY_SEED_FILE names a file that could not be read: it does not exist"},
 		{"a blank file", "", map[string]string{"NATS_NKEY_SEED_FILE": blank}, "NATS_NKEY_SEED_FILE names " + blank + ", which is empty"},
 		{"an empty pointer", "", map[string]string{"NATS_NKEY_SEED_FILE": "", "NATS_NKEY_SEED": userSeed}, "NATS_NKEY_SEED_FILE is set but empty"},
 		{"a file holding no seed", "", map[string]string{"NATS_NKEY_SEED_FILE": notASeed}, "NATS_NKEY_SEED_FILE (" + notASeed + ") does not hold a valid nkey seed"},

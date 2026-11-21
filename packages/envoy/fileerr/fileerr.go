@@ -1,7 +1,9 @@
 // Package fileerr is why a file a setting names could not be read, in fixed words: the class of
 // the filesystem error, never its text. An *fs.PathError quotes the path, and the path a setting
 // holds can be a credential pasted where the path goes, so a refusal names the setting and this
-// class, never the path. It is the envoy module's and the daemon's one reading of such an error.
+// class, never the path. It is the daemon's one reading of such an error, and the broker's,
+// Dispatch's and the listener's for their secret and token files; envoy's agent-secrets commands
+// keep internal/redact.File, which names the call and the system's errno in the same spirit.
 package fileerr
 
 import (

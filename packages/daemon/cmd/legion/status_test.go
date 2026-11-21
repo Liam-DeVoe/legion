@@ -119,7 +119,7 @@ func TestStatusRefusesAnOperatorTokenFileItCannotRead(t *testing.T) {
 	d := newControllerDaemon(t)
 	absent := filepath.Join(t.TempDir(), "absent")
 	code, _, errb := issueStatus(t, "LEGSMOKE-3", "backlog", "--operator-token-file", absent, "--port", strconv.Itoa(d.port))
-	if code != 1 || !strings.Contains(errb, "--operator-token-file names a file that could not be read: open: no such file or directory") || strings.Contains(errb, absent) {
+	if code != 1 || !strings.Contains(errb, "--operator-token-file names a file that could not be read: it does not exist") || strings.Contains(errb, absent) {
 		t.Fatalf("legion issue status = %d, stderr %q", code, errb)
 	}
 	if n := len(d.requests()); n != 0 {

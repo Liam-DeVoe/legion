@@ -1060,7 +1060,7 @@ func TestClaimsRefusesAnOperatorTokenFileItCannotRead(t *testing.T) {
 				want := "legion claims " + sub[0] + ": --operator-token-file "
 				if !strings.HasPrefix(errb, want+"names "+path+", which ") &&
 					!strings.HasPrefix(errb, want+path+" is readable by its group or others (mode 0640); chmod 0600 it") &&
-					!strings.HasPrefix(errb, want+"names a file that could not be read: open: ") {
+					!strings.HasPrefix(errb, want+"names a file that could not be read: ") {
 					t.Fatalf("stderr = %q, want it to start %q and name the path or the reason", errb, want)
 				}
 				if strings.Contains(errb, "could not be read") && strings.Contains(errb, path) {

@@ -70,13 +70,13 @@ func TestAnUnusableDaemonSeedIsAnErrorNamingItsSource(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		{"a missing key file", missing, map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": good}, "nats_daemon_nkey_seed_file names a file that could not be read: open: no such file or directory"},
+		{"a missing key file", missing, map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": good}, "nats_daemon_nkey_seed_file names a file that could not be read: it does not exist"},
 		{"a blank key file", blank, pane, "nats_daemon_nkey_seed_file names " + blank + ", which is empty"},
 		{"a key file holding no seed", notASeed, map[string]string{"NATS_DAEMON_NKEY_SEED": userSeed}, "nats_daemon_nkey_seed_file (" + notASeed + ") does not hold a valid nkey seed"},
 		{"a key file holding an account seed", accountSeed, nil, "nats_daemon_nkey_seed_file (" + accountSeed + ") holds an nkey seed that is not a user's"},
 		{"a key file others can read", public, nil, "nats_daemon_nkey_seed_file " + public + " is readable by its group or others (mode 0604); chmod 0600 it"},
 		{"a key file its group can read and write", writable, nil, "nats_daemon_nkey_seed_file " + writable + " is readable by its group or others (mode 0660); chmod 0600 it"},
-		{"a missing file", "", map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": missing, "NATS_DAEMON_NKEY_SEED": userSeed}, "NATS_DAEMON_NKEY_SEED_FILE names a file that could not be read: open: no such file or directory"},
+		{"a missing file", "", map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": missing, "NATS_DAEMON_NKEY_SEED": userSeed}, "NATS_DAEMON_NKEY_SEED_FILE names a file that could not be read: it does not exist"},
 		{"a blank file", "", map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": blank}, "NATS_DAEMON_NKEY_SEED_FILE names " + blank + ", which is empty"},
 		{"an empty pointer", "", map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": "", "NATS_DAEMON_NKEY_SEED": userSeed, "NATS_NKEY_SEED": userSeed}, "NATS_DAEMON_NKEY_SEED_FILE is set but empty"},
 		{"a file holding no seed", "", map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": notASeed}, "NATS_DAEMON_NKEY_SEED_FILE (" + notASeed + ") does not hold a valid nkey seed"},

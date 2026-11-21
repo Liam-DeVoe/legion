@@ -102,7 +102,7 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 			env:  func(t *testing.T, v *issueVolume) { t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token+".absent") },
 			code: 1,
 			says: func(*issueVolume) string {
-				return "LEGION_PROVISION_TOKEN_FILE names a file that could not be read: open: no such file or directory"
+				return "LEGION_PROVISION_TOKEN_FILE names a file that could not be read: it does not exist"
 			},
 		},
 		{
