@@ -1976,18 +1976,20 @@ test.skipIf(skip)(
 // The operator's controller marks its start unsent at `session_start`, and while the mark stands,
 // a startup card waits for the start turn. Two ways leave that start unsent for good: the start
 // claim's registration that never answers (the daemon unreachable mid-request), and a session
-// launched without the start word on its command line. No clock ends the hold (pi-envoy's
-// src/card-wake.ts): the operator at the terminal is the one who can act on either, and their own
-// first turn clears the mark. So the card takes no turn of its own however long the mark stands;
-// the operator's first turn is the session's first, with the card in its context, and exactly one
-// wake follows it, since that turn's reply ran the operator's request rather than reading the card.
+// launched without the start word on its command line. No clock ends an unsent mark's hold
+// (pi-envoy's src/card-wake.ts; only a sent one keeps a 30 s cap from its send): the operator at
+// the terminal is the one who can act on either, and their own first turn clears the mark. So the
+// card takes no turn of its own however long the mark stands; the operator's first turn is the
+// session's first, with the card in its context, and exactly one wake follows it, since that
+// turn's reply ran the operator's request rather than reading the card.
 //
-// How long "however long" is: past the 30 s at which main's STARTUP_TURN_CAP_MS gave the card its
-// own turn, read from pi-envoy's own record of when each check that held decided (R4: the
-// program's own record of when it acted, across the process boundary). A check that held 30 s or
-// more after the first one that held is a hold that outlasted main's cap with no wake; a cap put
-// back shows here as a wake before it. pi-envoy reads the mark again every STARTUP_TURN_POLL_MS,
-// and an unseen startup card holds the check back for STARTUP_CARD_CAP_MS from its send.
+// How long "however long" is: past the 30 s at which main's STARTUP_TURN_CAP_MS, which now caps
+// only a sent mark, gave the card its own turn, read from pi-envoy's own record of when each check
+// that held decided (R4: the program's own record of when it acted, across the process boundary).
+// A check that held 30 s or more after the first one that held is a hold that outlasted main's cap
+// with no wake; a cap put back on the unsent mark shows here as a wake before it. pi-envoy reads
+// the mark again every STARTUP_TURN_POLL_MS, and an unseen startup card holds the check back for
+// STARTUP_CARD_CAP_MS from its send.
 const MAIN_STARTUP_TURN_CAP_MS = 30_000;
 const STARTUP_CARD_CAP_MS = 30_000;
 const STARTUP_TURN_POLL_MS = 1_000;

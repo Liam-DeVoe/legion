@@ -499,12 +499,13 @@ export function createControllerSession(deps: {
    * (`markStartupTurnPending`) and claims nothing: the Envoy entry opens the session's agent
    * subject at its own `session_start`, and a card that arrives from here until the start command
    * sends the start finds the mark, so it takes no turn and its wake waits for the start turn
-   * (`packages/pi-envoy/src/card-wake.ts`), for as long as the mark stands. The send marks it
-   * sent; the session's first `agent_start` (an operator turn started before the command, after
-   * which the start message goes as a follow-up) and its shutdown clear it, and so does a claim
-   * that fails before the send or hands over to a new session (`claimOnce`). With neither a start
-   * nor an operator turn (a claim that never answers, a start command that never runs), the cards
-   * wait for the operator's first turn: the operator is at this terminal.
+   * (`packages/pi-envoy/src/card-wake.ts`), for as long as the unsent mark stands. The send marks
+   * it sent, which holds them for at most 30 s more; the session's first `agent_start` (an
+   * operator turn started before the command, after which the start message goes as a follow-up)
+   * and its shutdown clear it, and so does a claim that fails before the send or hands over to a
+   * new session (`claimOnce`). With neither a start nor an operator turn (a claim that never
+   * answers, a start command that never runs), the cards wait for the operator's first turn: the
+   * operator is at this terminal.
    */
   const handleSessionStart = async (context: SessionContext): Promise<void> => {
     if (!daemonLaunchedController(process.env)) {

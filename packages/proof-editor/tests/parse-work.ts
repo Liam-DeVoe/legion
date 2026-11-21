@@ -37,7 +37,7 @@
  * - `milkdownRunnerCalls` of src/lib-headless.ts: each mdast node and mark Milkdown's parser state
  *   hands a spec's runner, counted where this package builds the specs, with no patch; and
  *   `milkdownMarkOpens`, each mark a runner opens (an ask nested inside asks opens one, not one
- *   for each ask around it: src/dispatch-marks.ts).
+ *   for each ask around it, unless a block closed inside it: src/dispatch-marks.ts).
  * - `htmlFlowResolveSteps` of src/html-flow.ts: each event the HTML (flow) resolver reads and
  *   each its splice shifts, which the tokenizer's count does not see.
  * - `blockIdWalkSteps` and `leafMarkWalkSteps` (src/editor/schema/block-ids.ts and leaf-marks.ts):
@@ -52,7 +52,9 @@
  *   handed the events `postprocess` gives it and the events content's resolver gives it; the GFM
  *   and front matter extensions, their resolvers handed the events, their compile handlers the
  *   token and the compile's own state (whose stack is the tree it builds) and their transforms the
- *   tree; and `mdast-util-from-markdown`'s compile, handed the events. micromark's document
+ *   tree; the `:::` containers' compile handlers (`mdast-util-directive`'s) the same way, the
+ *   containers' resolver counting its own steps (`directiveScanSteps`, above); and
+ *   `mdast-util-from-markdown`'s compile, handed the events. micromark's document
  *   tokenizer hands its events on through the Proxy itself (`document.resolveAll`, set below on
  *   micromark's own initializer): the steps go to subtokenize until `postprocessedEvents` moves,
  *   which is the moment `postprocess` hands them to the compile, and to the compile after it.
@@ -560,13 +562,26 @@ function countCompileExtension(plugin: string, extension: CompileExtension): voi
   });
 }
 
-/** The extensions whose parse work the rows count by Proxy, by the plugin that installs them. */
-const COUNTED_EXTENSIONS = new Set(["remarkGfm", "remarkFrontmatter"]);
+/** The extensions whose parse work the rows count by Proxy, by the plugin that installs them: GFM,
+ *  front matter, and the `:::` containers (src/lib-remark-directive-plugin.ts), whose compile
+ *  handlers are `mdast-util-directive`'s. */
+const COUNTED_EXTENSIONS = new Set(["remarkGfm", "remarkFrontmatter", "remarkContainerDirectives"]);
+
+/**
+ * The plugins of `COUNTED_EXTENSIONS` whose micromark extension is counted by its own count, not
+ * by Proxy: the `:::` container is this package's document construct, its resolver counts its own
+ * steps (`directiveScanSteps`), and micromark's document tokenizer runs a construct's `resolveAll`
+ * after its initializer's (`create-tokenizer.js`), so a Proxy put in front of it would take away
+ * the one `document.resolveAll` hands the events on through, and with it the counts of subtokenize
+ * and the compile.
+ */
+const SELF_COUNTED_SYNTAX = new Set(["remarkContainerDirectives"]);
 
 /**
  * `observeParser` for the rows (src/lib-headless.ts): counts each stage of every parse `processor`
- * runs through a Proxy, while a row reads one. Each plugin's transform is handed the tree, and the
- * GFM and front matter plugins' micromark and compile extensions what each part of them takes.
+ * runs through a Proxy, while a row reads one. Each plugin's transform is handed the tree, the GFM
+ * and front matter plugins' micromark and compile extensions what each part of them takes, and the
+ * container directive plugin's compile extension what it takes.
  */
 export function countParseStages(processor: Processor): void {
   processor.attachers.forEach(([attacher, ...settings], index) => {
@@ -576,13 +591,15 @@ export function countParseStages(processor: Processor): void {
       const micromarkBefore = (this.data("micromarkExtensions") ?? []).length;
       const compileBefore = (this.data("fromMarkdownExtensions") ?? []).length;
       const transformer = (attacher as (...options: unknown[]) => unknown).apply(this, options);
-      if (COUNTED_EXTENSIONS.has(name)) {
+      if (COUNTED_EXTENSIONS.has(name) && !SELF_COUNTED_SYNTAX.has(name)) {
         for (const extension of (this.data("micromarkExtensions") ?? []).slice(micromarkBefore)) {
           countExtension(
             `${name}'s micromark resolvers' steps on the events`,
             extension as Record<string, unknown>
           );
         }
+      }
+      if (COUNTED_EXTENSIONS.has(name)) {
         for (const extension of (this.data("fromMarkdownExtensions") ?? []).slice(compileBefore)) {
           for (const one of Array.isArray(extension) ? extension : [extension]) {
             countCompileExtension(name, one as CompileExtension);

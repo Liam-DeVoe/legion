@@ -13,6 +13,7 @@ import {
   type CardDelivery,
   type CardWake,
   STARTUP_CARD_CAP_MS,
+  STARTUP_TURN_CAP_MS,
   STARTUP_TURN_POLL_MS,
   unreadCards,
 } from "./card-wake";
@@ -703,6 +704,70 @@ describe("while the start-turn mark names the session", () => {
     expect(host.sent).toEqual([wakeMessage(oneCard)]);
   });
 
+  // A sent mark is read again at each poll, as an unsent one is, since the Legion entry clears it
+  // with no host event when its send fails; the read before the cap is armed for the time left to
+  // it, so the cap is read at its own moment.
+  test("holds the wake until the cap once the start was sent, then wakes: a start the host failed", async () => {
+    const host = cardWakeHarness();
+    host.markSent(host.clock() - 10_500);
+    host.setIdle(true);
+    host.message(host.card("sent-mark").message);
+    await host.fire();
+    expect(host.sent).toEqual([]);
+    expect(host.delays.at(-1)).toBe(STARTUP_TURN_POLL_MS);
+    // 19.5 s are left to the cap: 19 polls read the mark and send nothing, and the last read is
+    // armed for the half second left.
+    for (let polls = 1; polls <= 19; polls += 1) {
+      host.advance(STARTUP_TURN_POLL_MS);
+      await host.fire();
+      expect(host.sent).toEqual([]);
+    }
+    expect(host.delays.at(-1)).toBe(500);
+
+    host.advance(500);
+    await host.fire();
+    expect(host.sent).toEqual([wakeMessage(oneCard)]);
+  });
+
+  test("caps a start sent while the wake checked an unsent mark at the send's own time", async () => {
+    const host = cardWakeHarness({ mode: "tui" });
+    host.markUnsent();
+    host.setIdle(true);
+    host.message(host.card("sent-later").message);
+    await host.fire();
+    host.advance(5_000);
+    host.markSent(host.clock());
+    host.advance(STARTUP_TURN_CAP_MS - 5_000);
+    await host.fire();
+    expect(host.sent).toEqual([]);
+    // The send's cap is 5 s off: the reads before it, one a poll, send nothing.
+    for (let polls = 1; polls < 5; polls += 1) {
+      expect(host.delays.at(-1)).toBe(STARTUP_TURN_POLL_MS);
+      host.advance(STARTUP_TURN_POLL_MS);
+      await host.fire();
+      expect(host.sent).toEqual([]);
+    }
+    expect(host.delays.at(-1)).toBe(STARTUP_TURN_POLL_MS);
+
+    host.advance(STARTUP_TURN_POLL_MS);
+    await host.fire();
+    expect(host.sent).toEqual([wakeMessage(oneCard)]);
+  });
+
+  test("ignores a mark whose start was sent the cap ago or more", async () => {
+    const rpc = cardWakeHarness();
+    rpc.markSent(rpc.clock() - STARTUP_TURN_CAP_MS);
+    rpc.setIdle(true);
+    rpc.message(rpc.card("stale-mark").message);
+    await rpc.fire();
+    expect(rpc.sent).toEqual([wakeMessage(oneCard)]);
+
+    const terminal = cardWakeHarness({ mode: "tui" });
+    terminal.markSent(terminal.clock() - STARTUP_TURN_CAP_MS);
+    terminal.setIdle(true);
+    expect(terminal.card("stale-mark-terminal").delivery).toMatchObject(aside);
+  });
+
   test("ignores a mark that names another session, unsent or sent", async () => {
     const rpcUnsent = cardWakeHarness();
     rpcUnsent.markUnsent("ses_task_subagent");
@@ -788,7 +853,7 @@ describe("while the start-turn mark names the session", () => {
         host.setIdle(true);
         host.end();
         await host.fire();
-        host.advance(STARTUP_CARD_CAP_MS);
+        host.advance(STARTUP_TURN_CAP_MS);
         await host.fire();
         expect(host.sent).toEqual([]);
       });

@@ -19,7 +19,7 @@
 import { $markSchema, $markAttr, $remark } from '@milkdown/kit/utils';
 import type { Attrs, Mark as ProseMirrorMark, Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 import type { EditorView } from '@milkdown/kit/prose/view';
-import type { Root } from '@milkdown/kit/transformer';
+import type { ParserState, Root } from '@milkdown/kit/transformer';
 import type { Transformer } from 'unified';
 
 import { generateMarkId } from 'proof-sdk-upstream/src/formats/marks.js';
@@ -94,8 +94,33 @@ type DispatchMarkNode = {
 
 export const dispatchAskAttr = $markAttr('dispatchAsk', () => ({}));
 
-/** How many asks of each id and author the markdown parser has open, per parser state. */
-const openAskSpans = new WeakMap<object, Map<string, number>>();
+/** The asks the markdown parser has open on one parser state: their attrs, outermost first, how
+ *  many of each id and author, and whether the ask marks the state holds are still those of every
+ *  open ask (`intact`). A node closing ends that, since `closeNode` resets the state's open marks to
+ *  none (@milkdown/transformer's `#closeNodeAndPush`). */
+interface OpenAsks {
+  readonly attrs: Attrs[];
+  readonly counts: Map<string, number>;
+  intact: boolean;
+}
+
+const openAskSpans = new WeakMap<ParserState, OpenAsks>();
+
+/** `state`'s open asks, made the first time an ask's runner is handed it, with its `closeNode`
+ *  wrapped so a node that closes marks them no longer intact: ParserState holds `closeNode` as a
+ *  property of its own, so the wrapper replaces it on that one state. */
+function openAsksOf(state: ParserState): OpenAsks {
+  const known = openAskSpans.get(state);
+  if (known !== undefined) return known;
+  const asks: OpenAsks = { attrs: [], counts: new Map(), intact: true };
+  const closeNode = state.closeNode;
+  state.closeNode = () => {
+    asks.intact = false;
+    return closeNode();
+  };
+  openAskSpans.set(state, asks);
+  return asks;
+}
 
 export const dispatchAskSchema = $markSchema('dispatchAsk', (ctx) => ({
   attrs: {
@@ -127,25 +152,38 @@ export const dispatchAskSchema = $markSchema('dispatchAsk', (ctx) => ({
       const n = node as DispatchMarkNode;
       const attrs = n.attrs || {};
       const askAttrs = { id: attrs.id ?? null, by: attrs.by ?? 'unknown' };
-      // Two readers' asks may cover the same text, so their spans nest. ParserState's closeMark
-      // drops every open mark of the type it is handed, so closing an ask by its type would close
-      // the asks around it too, each to be opened again: an ask nested D deep would open about
-      // D²/2 marks. The ask closes its own mark alone instead: closeMark calls `removeFromSet` on
-      // what it is handed (@milkdown/transformer's ParserState), and a mark's `removeFromSet`
-      // removes that mark and no other, so an ask opens one mark and closes one whatever its
-      // depth. An ask the same as one around it (its id and its author) adds no mark, since the
-      // set keeps one of two equal marks, and closes none.
-      const open = openAskSpans.get(state) ?? new Map<string, number>();
-      openAskSpans.set(state, open);
+      // Two readers' asks may cover the same text, so their spans nest. Once an ask's content is
+      // read, the open ask marks are those of the asks around it, in their order, whatever closed
+      // inside it, as the earlier runner gave them: it closed every ask mark there and opened
+      // each enclosing ask again, about D²/2 marks for an ask D deep. This one does that only after
+      // a node closed inside the ask, since `closeNode` drops every open mark, the enclosing asks'
+      // with them: once for each such close at most, the first ask that ends after it restoring
+      // them. Otherwise the ask marks are still the enclosing asks' and this ask's, and the ask
+      // closes its own mark alone: closeMark calls `removeFromSet` on what it is handed
+      // (@milkdown/transformer's ParserState), and a mark's `removeFromSet` removes that mark and
+      // no other. An ask the same as one around it (its id and its author) adds no mark, since
+      // the set keeps one of two equal marks, so it closes none there.
+      const asks = openAsksOf(state);
+      // No ask open: no ask mark is either, whatever closed since the last one.
+      if (asks.attrs.length === 0) asks.intact = true;
       const key = JSON.stringify([askAttrs.id, askAttrs.by]);
-      const around = open.get(key) ?? 0;
-      if (around === 0) state.openMark(markType, askAttrs);
-      open.set(key, around + 1);
+      const around = asks.counts.get(key) ?? 0;
+      state.openMark(markType, askAttrs);
+      asks.attrs.push(askAttrs);
+      asks.counts.set(key, around + 1);
       try {
         state.next((n.children as never[]) || []);
       } finally {
-        open.set(key, around);
-        if (around === 0) state.closeMark(markType.create(askAttrs) as unknown as typeof markType);
+        asks.attrs.pop();
+        if (around === 0) asks.counts.delete(key);
+        else asks.counts.set(key, around);
+        if (!asks.intact) {
+          state.closeMark(markType);
+          for (const outer of asks.attrs) state.openMark(markType, outer);
+          asks.intact = true;
+        } else if (around === 0) {
+          state.closeMark(markType.create(askAttrs) as unknown as typeof markType);
+        }
       }
     },
   },

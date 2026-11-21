@@ -295,6 +295,25 @@ const shapes: HeavyShape[] = [
     refusedInReadOnlyMode: /Cannot create node for doc/,
   },
   {
+    // Each typed block is a `:::` container, whose compile handlers are `mdast-util-directive`'s,
+    // counted by Proxy as GFM's are (`COUNTED_EXTENSIONS`, tests/parse-work.ts): a handler that
+    // walked the blocks built before its own, or the tree they stand in, would read about the
+    // square of the blocks. tests/nested-directive.test.ts's bodies open at most 32 containers,
+    // which bounds how often a handler runs there. The container's resolver reads about 127
+    // directive-scan steps a block, so each block holds a line of text, as a reader writes one:
+    // 64 characters a block, 1.98 directive-scan steps a character (2026-11-21).
+    name: "500 typed blocks side by side, each a line of text",
+    grow: (size) =>
+      ":::callout{}\nA line of text that a typed block holds, too.\n:::\n\n".repeat(size),
+    full: 500,
+    opensContainers: true,
+    opensDirectives: true,
+    expectDoc: (doc) => {
+      expect(doc.childCount).toBe(500);
+      expect(nodesOf(doc, "callout")).toBe(500);
+    },
+  },
+  {
     // Every image is the label of a link, a mark no inline leaf may carry, so `withoutLeafMarks`
     // changes each: a walk that copied a node's earlier children again for each child it changed
     // would copy about the square of the paragraph.

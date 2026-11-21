@@ -2,7 +2,7 @@
  * Two readers' asks may cover the same text: the `dispatchAsk` schema declares `excludes: ''`, so
  * a second ask over part of the first adds its own mark instead of cutting the first out of the
  * overlap, removing one ask removes that mark's instance, never every ask on its text, and an ask
- * span nested in another reads back from markdown as both.
+ * span nested in another reads back from markdown as both, in the document main's parser gave.
  */
 
 import { expect, test } from "bun:test";
@@ -74,3 +74,107 @@ test("an ask span nested inside another reads back from markdown as both asks", 
     a2: "brown",
   });
 });
+
+/** The opening tag of reader `id`'s ask. */
+const ask = (id: string) => `<span data-dispatch="ask" data-id="${id}" data-by="user:${id}">`;
+/** Markdown of `lines`, each a block of its own. */
+const blocks = (...lines: string[]) => `${lines.join("\n\n")}\n`;
+/** A document of `paragraphs`, each the JSON main printed for it. */
+const docJson = (...paragraphs: string[]) => `{"type":"doc","content":[${paragraphs.join(",")}]}`;
+
+// Asks nested inline and across blocks. An ask's opening and closing tags each on a line of their
+// own are blocks of HTML, which `normalizeSplitDispatchSpans` pairs into one ask holding whole
+// paragraphs, and Milkdown's parser drops every open mark each time a paragraph closes. Each
+// expected document is main's: the same markdown parsed by `createHeadlessProof()` at 8a9540682d
+// (main before #4437), in both modes, and printed as `JSON.stringify(doc.toJSON())` with each
+// random `blockId` written as "<id>", one paragraph a line here. The runner #4437 had at
+// 1c711353dc gave `after` in the first row no mark, and `b2` and `a2` in the third none.
+const nestedAsks: (readonly [string, string, string])[] = [
+  [
+    "the block-level shape A{P(first), B{P(inner)}, P(after)}",
+    blocks(ask("a"), "first", ask("b"), "inner", "</span>", "after", "</span>"),
+    docJson(
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"first"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"b","by":"user:b"}}],"text":"inner"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"after"}]}'
+    ),
+  ],
+  [
+    "an ask nested inline in another",
+    `The ${ask("a")}quick ${ask("b")}brown</span> fox</span> jumps.\n`,
+    docJson(
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","text":"The "},{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"quick "},{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}},{"type":"dispatchAsk","attrs":{"id":"b","by":"user:b"}}],"text":"brown"},{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":" fox"},{"type":"text","text":" jumps."}]}'
+    ),
+  ],
+  [
+    "two block asks nested in a third, A{P(a1), B{P(b1), C{P(c1)}, P(b2)}, P(a2)}",
+    blocks(
+      ask("a"),
+      "a1",
+      ask("b"),
+      "b1",
+      ask("c"),
+      "c1",
+      "</span>",
+      "b2",
+      "</span>",
+      "a2",
+      "</span>"
+    ),
+    docJson(
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"a1"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"b","by":"user:b"}}],"text":"b1"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"c","by":"user:c"}}],"text":"c1"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}},{"type":"dispatchAsk","attrs":{"id":"b","by":"user:b"}}],"text":"b2"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"a2"}]}'
+    ),
+  ],
+  [
+    "an ask closed right after its child ask, A{P(first), B{P(inner)}} then P(outside)",
+    blocks(ask("a"), "first", ask("b"), "inner", "</span>", "</span>", "outside"),
+    docJson(
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"first"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"b","by":"user:b"}}],"text":"inner"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","text":"outside"}]}'
+    ),
+  ],
+  [
+    "an inline ask in a block ask's later paragraph, A{P(first), P(B{x} y)}",
+    blocks(ask("a"), "first", `${ask("b")}x</span> y`, "</span>"),
+    docJson(
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"first"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"b","by":"user:b"}}],"text":"x"},{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":" y"}]}'
+    ),
+  ],
+  [
+    "two block asks side by side in a third, A{P(a1), B{P(b1)}, C{P(c1)}, P(a2)}",
+    blocks(ask("a"), "a1", ask("b"), "b1", "</span>", ask("c"), "c1", "</span>", "a2", "</span>"),
+    docJson(
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"a1"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"b","by":"user:b"}}],"text":"b1"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}},{"type":"dispatchAsk","attrs":{"id":"c","by":"user:c"}}],"text":"c1"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"a2"}]}'
+    ),
+  ],
+  [
+    "the same ask nested in itself, A{P(a1), A{P(a2)}, P(a3)}",
+    blocks(ask("a"), "a1", ask("a"), "a2", "</span>", "a3", "</span>"),
+    docJson(
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"a1"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"a2"}]}',
+      '{"type":"paragraph","attrs":{"blockId":"<id>"},"content":[{"type":"text","marks":[{"type":"dispatchAsk","attrs":{"id":"a","by":"user:a"}}],"text":"a3"}]}'
+    ),
+  ],
+];
+
+for (const [shape, markdown, main] of nestedAsks) {
+  test(`${shape} parses to main's document, byte for byte`, async () => {
+    for (const readOnly of [false, true]) {
+      const { parseMarkdown } = await createHeadlessProof({ readOnly });
+      const parsed = JSON.stringify(parseMarkdown(markdown).toJSON(), (key, value) =>
+        key === "blockId" ? "<id>" : value
+      );
+      expect({ readOnly, parsed }).toEqual({ readOnly, parsed: main });
+    }
+  });
+}
