@@ -1,3 +1,5 @@
+import { onTestFinished } from "bun:test";
+
 import { createHeadlessProof, type HeadlessProofEditor } from "@legion/proof-editor/headless";
 
 import { compiledBlockSchema } from "../doc/schema";
@@ -111,7 +113,7 @@ export interface InstalledParseWorker {
    *  engine takes to load and send them: it waits for the post itself, not for a number of tasks,
    *  so a lazy load that a slow or loaded machine, or the cold-load lane, holds back still ends in
    *  the body. Nothing here bounds it: a body that never comes is ended by the row's own deadline,
-   *  which names the row. */
+   *  and the row then fails naming the bodies it waited for and the bodies the engine sent. */
   waitForRequests(count: number): Promise<void>;
 }
 
@@ -150,7 +152,30 @@ export function installFakeParseWorker({
       return Promise.resolve();
     }
     const { promise, resolve } = Promise.withResolvers<void>();
-    waits.push({ count, resolve });
+    let resolved = false;
+    waits.push({
+      count,
+      resolve: () => {
+        resolved = true;
+        resolve();
+      },
+    });
+    // Bun 1.4.4 runs a row's `onTestFinished` after the row's `afterEach` hooks, the preload's
+    // included, for a row its deadline ended too and on every rerun, and reports what it throws
+    // against that row; a hook registered mid-row, after awaits, attaches to the row running. So a
+    // wait still outstanding when the row ends fails it naming what it waited for, beside Bun's own
+    // "timed out" line, with no bound of the fixture's own, and the throw skips none of the row's
+    // other hooks, which have already run.
+    onTestFinished(() => {
+      if (!resolved) {
+        throw new Error(
+          `The parse worker had ${taken.length} ${taken.length === 1 ? "body" : "bodies"} when ` +
+            `the row ended, and the row waited for ${count}: a body longer than ` +
+            "markdownWorkerThreshold is still parsed on the page's own thread, or the Markdown " +
+            "engine never loaded."
+        );
+      }
+    });
     return promise;
   }
 
