@@ -40,6 +40,12 @@ const tokens: Record<string, StandInApp> = {
     login: "a-person",
     permissions: reviewPermissions,
   },
+  // An App that reads contents and writes none, which no Legion role can push as.
+  ghs_reader_505_secret: {
+    id: 505,
+    slug: "example-reader",
+    permissions: { contents: "read", checks: "read", pull_requests: "read" },
+  },
 };
 const allTokens = Object.keys(tokens);
 

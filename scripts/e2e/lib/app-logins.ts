@@ -1,61 +1,79 @@
-// scripts/e2e/lib/app-logins.ts: the bot login of each Legion role App a legion.yaml configures,
-// as GitHub names it today, and the proof that the credential configured for each App belongs to
-// the App id configured with it. GraphQL's viewer, under an installation token of the App, answers
-// the App's bot login, `<slug>[bot]`, and `GET /apps/<slug>` under the same token answers the
-// App's id and declared permissions: the identity the daemon reads at boot for each role it
-// commits, pushes and reviews as (packages/daemon/internal/appauth, tokenIdentity). A stage proof
-// compares GitHub's records with these instead of with a name of its own, so an App renamed on
-// GitHub changes what this prints and no script, and a name another App takes over later is never
-// mistaken for Legion's. lib/github-apps.sh's check_github_apps runs it.
+// scripts/e2e/lib/app-logins.ts: the bot login of the one Legion GitHub App a legion.yaml
+// configures (`github_apps.implement`, the name the daemon's configuration keeps for it), as GitHub
+// names it today, and the proof that the credential configured for the App belongs to the App id
+// configured with it. GraphQL's viewer, under an installation token of the App, answers the App's
+// bot login, `<slug>[bot]`, and `GET /apps/<slug>` under the same token answers the App's id and
+// declared permissions: the identity the daemon reads at boot for the App every role commits,
+// pushes and reviews as (packages/daemon/internal/appauth, tokenIdentity). A stage proof compares
+// GitHub's records with these instead of with a name of its own, so an App renamed on GitHub
+// changes what this prints and no script, and a name another App takes over later is never
+// mistaken for Legion's. lib/github-apps.sh's check_github_apps runs it. A `github_apps.review`
+// beside it is read for nothing, as the daemon reads it for nothing but a warning (internal/config,
+// warnedKeys): one App serves every role.
 //
-//   bun scripts/e2e/lib/app-logins.ts [--roles <role>[,<role>]] <legion.yaml> [<GitHub API URL>]
-//     prints {"implement":"<slug>[bot]","review":"<slug>[bot]"} (the roles --roles names, both by
-//     default) and exits 0, or names what it could not read or prove on stderr and exits 1; without
-//     <legion.yaml>, or with a --roles it does not know, it exits 2 with its usage. The API URL
-//     defaults to https://api.github.com, the one the daemon calls. An App whose id is not the
-//     configured app_id is refused, naming both ids, and so is an App without the write permission
-//     its role's work needs (roleWrites), which also refuses the two Apps swapped whole.
+//   bun scripts/e2e/lib/app-logins.ts [--roles implement] <legion.yaml> [<GitHub API URL>]
+//     prints {"implement":"<slug>[bot]"} and exits 0, or names what it could not read or prove on
+//     stderr and exits 1; without <legion.yaml>, or with a --roles it does not know, it exits 2
+//     with its usage. The API URL defaults to https://api.github.com, the one the daemon calls. An
+//     App whose id is not the configured app_id is refused, naming both ids, and so is an App that
+//     cannot write contents, since every role that pushes does so as it, or, where the config names
+//     a repository under verdict_repositories, cannot write checks (whyWrite, verdictWrites).
 //
-// An App's credential is one of the two command fields, and exactly one of them, as the daemon
+// The App's credential is one of the two command fields, and exactly one of them, as the daemon
 // admits exactly one (internal/config, readGitHubApp):
-//   `token_command`, which lib/github-apps.sh writes for the implement role, is run as the daemon
-//     runs it (internal/appauth, runTokenCommand): `sh -c`, stdin closed, the environment less the
-//     NATS seed variables (internal/runtime, WithoutNATSSeeds) and less every inherited
-//     LEGION_GITHUB_ variable, with LEGION_GITHUB_OWNER and LEGION_GITHUB_READ_ONLY then set by
-//     this runner alone, as the daemon sets those two and drops what it inherited under them. The
-//     one difference, which is this proof's own ask rather than the daemon's shape: both are set
-//     empty here, where a daemon mint names the owner it is minting on, because AppLogin proves
-//     the release of every installation. So a command branching on `${LEGION_GITHUB_OWNER:+…}`
-//     takes the broad branch here and the owner's branch under the daemon.
+//   `token_command`, which lib/github-apps.sh writes where the App takes the secrets broker's
+//     release, is run as the daemon runs it (internal/appauth, runTokenCommand): `sh -c`, stdin
+//     closed, the environment less the NATS seed variables (internal/runtime, WithoutNATSSeeds)
+//     and less every inherited LEGION_GITHUB_ variable, with LEGION_GITHUB_OWNER and
+//     LEGION_GITHUB_READ_ONLY then set by this runner alone, as the daemon sets those two and
+//     drops what it inherited under them. The one difference, which is this proof's own ask
+//     rather than the daemon's shape: both are set empty here, where a daemon mint names the owner
+//     it is minting on, because AppLogin proves the release of every installation. So a command
+//     branching on `${LEGION_GITHUB_OWNER:+…}` takes the broad branch here and the owner's branch
+//     under the daemon.
 //     Its stdout is read as the secrets broker's release, whose first installation token is the
 //     one proved.
-//   `private_key_command`, which lib/github-apps.sh writes for the review role so that the daemon
-//     mints and renews that App's tokens out of its key by itself, as a reviewer pod does, is run
-//     as the daemon runs that one (internal/config, executePrivateKeyCommand): the same `sh -c`
+//   `private_key_command`, which lib/github-apps.sh writes where the operator gives the App's key
+//     command, so that the daemon mints and renews the App's tokens out of its key by itself, is
+//     run as the daemon runs that one (internal/config, executePrivateKeyCommand): the same `sh -c`
 //     with stdin closed and the NATS seed variables dropped, but neither of those two variables
 //     touched, since the daemon sets neither of them for a key command. Its trimmed stdout is the
 //     App's PEM, which signs an App JWT here, and that JWT mints the token that is proved.
 // Either command's stderr is relayed and kept for a failure's message alone. The key path proves
 // at least what the token path proves: the token it mints goes through the same viewer and
-// `GET /apps/<slug>` observations, so the App's bot login, its id and its role's write permission
-// are read from GitHub for a key-configured App exactly as they are for a token-configured one.
+// `GET /apps/<slug>` observations, so the App's bot login, its id and its write permissions are
+// read from GitHub for a key-configured App exactly as they are for a token-configured one.
 // A credential stays in this process's memory: no token, no JWT and no byte of a key is printed,
 // written to a file, or handed to another process.
 
 import { createSign } from "node:crypto";
 import { writeSync } from "node:fs";
 
-/** The two App roles `github_apps` names (internal/appauth, Implement and Review). */
-export type AppRole = "implement" | "review";
+/** The one App's member of `github_apps` (internal/config, readGitHubApps): the daemon keeps the
+ * name `implement` for it, and every role acts as it. */
+export type AppRole = "implement";
 export type AppLogins = Partial<Record<AppRole, string>>;
-const appRoles: readonly AppRole[] = ["implement", "review"];
-/** The App permission each role's work cannot run without: the implement App pushes the issue's
- * branch, and the review App posts the tester's and architect's check runs. The implement App
- * holds `checks: read` alone, so the review role configured with it, the two swapped whole, is
- * refused here rather than hours later at the first check run. `GET /apps/<slug>` answers the
- * App's declared permissions, not one installation's granted set, so this catches a wrong App and
- * not an installation that has not accepted a permission the App has since asked for. */
-const roleWrites: Record<AppRole, string> = { implement: "contents", review: "checks" };
+const appRoles: readonly AppRole[] = ["implement"];
+/** The App permissions a config's work cannot run without, each with why: every role that pushes
+ * the issue's branch does so as the App, and where the config names a verdict repository the
+ * daemon writes the check run legion-verdict there as the App (verdictWrites). `GET /apps/<slug>`
+ * answers the App's declared permissions, not one installation's granted set, so this catches a
+ * wrong App and not an installation that has not accepted a permission the App has since asked
+ * for. */
+const whyWrite = {
+  contents: "every role that pushes does so as the App, so it is not Legion's App",
+  checks:
+    "the daemon writes legion-verdict as the App on each repository the config names under verdict_repositories",
+} as const;
+export type AppWrite = keyof typeof whyWrite;
+/** The permissions the App must write for the config `text`: contents always, and checks when it
+ * names a repository under verdict_repositories (internal/config, readVerdictRepositories). */
+export function verdictWrites(text: string): AppWrite[] {
+  const repositories = member(Bun.YAML.parse(text), "verdict_repositories");
+  return Array.isArray(repositories) && repositories.length > 0
+    ? ["contents", "checks"]
+    : ["contents"];
+}
 
 /** The credential fields an App of `github_apps` may configure, in the order a message names
  * them. */
@@ -530,18 +548,19 @@ async function mintedInstallationToken(
 /** The bot login GitHub gives the App `source` names: GraphQL's viewer under an installation
  * token of the App — the first of the release its token_command prints, or the one its
  * private_key_command's key mints (mintedInstallationToken) — `<slug>[bot]`, whose
- * `GET <api>/apps/<slug>` must answer `source.appId` and its role's write permission
- * (roleWrites). Every failure names the App by its role and id: a command that fails or prints
+ * `GET <api>/apps/<slug>` must answer `source.appId` and write each of `writes` (whyWrite).
+ * Every failure names the App by its role and id: a command that fails or prints
  * no credential, a GitHub that never answered, an answer that is not 2xx, a viewer that is no
- * App's bot, one whose App id is not `source.appId` (naming both ids), and one without its
- * role's write permission. A token command the secrets broker refused outright, holding no
- * secret under the name it gave, also names the input that gives that role's App its
- * credential, since the fix is there and not on GitHub. */
+ * App's bot, one whose App id is not `source.appId` (naming both ids), and one without a
+ * write permission it needs. A token command the secrets broker refused outright, holding no secret under
+ * the name it gave, also names the input that gives the App its credential, since the fix is
+ * there and not on GitHub. */
 export async function appLogin(
   role: AppRole,
   source: AppCredentialSource,
   api: string,
-  now: () => Date = () => new Date()
+  now: () => Date = () => new Date(),
+  writes: readonly AppWrite[] = ["contents"]
 ): Promise<string> {
   const app = `the ${role} App (app_id ${source.appId})`;
   const field = `github_apps.${role}.${source.kind}`;
@@ -563,18 +582,9 @@ export async function appLogin(
       const reason = error instanceof Error ? error.message : String(error);
       if (unknownSecretPattern.test(reason)) {
         // The command's whole stderr is in `reason`, wherever in it the broker's refusal
-        // landed, and the role is in hand here, so the one failure an input fixes can name that
-        // input. The implement App is the only role whose credential is a broker secret's name,
-        // and lib/github-apps.sh's require_app_inputs refuses LEGION_E2E_REVIEW_APP_SECRET by
-        // name; so a review role carrying a token_command, which a hand-written
-        // github_apps.yaml can still have, is told what the review App does take instead of an
-        // input it would be refused for setting.
-        const fix =
-          role === "implement"
-            ? "set LEGION_E2E_IMPLEMENT_APP_SECRET to the name of a github-app secret this deployment's broker holds for that App"
-            : "the review App's credential is its own key rather than a broker secret, so set LEGION_E2E_REVIEW_APP_KEY_COMMAND to a command that prints that App's PEM private key and give the App the private_key_command that reads it";
+        // landed, so the one failure an input fixes can name that input.
         throw new Error(
-          `${app}: the secrets broker serves no github-app secret under the name ${field} gives (UNKNOWN_SECRET): ${fix}`
+          `${app}: the secrets broker serves no github-app secret under the name ${field} gives (UNKNOWN_SECRET): set LEGION_E2E_IMPLEMENT_APP_SECRET to the name of a github-app secret this deployment's broker holds for that App`
         );
       }
       throw new Error(`${app}: ${reason}`);
@@ -607,31 +617,30 @@ export async function appLogin(
       `${read} answered App id ${id}, want ${source.appId}: ${gave} another App's token`
     );
   }
-  const permission = roleWrites[role];
-  const granted = member(member(answer, "permissions"), permission);
-  if (granted !== "write" && granted !== "admin") {
-    throw new Error(
-      `${read} answered permissions.${permission} ${JSON.stringify(granted ?? null)}, want write: the ${role} role's work needs it, so the App is not the ${role} App`
-    );
+  for (const permission of writes) {
+    const granted = member(member(answer, "permissions"), permission);
+    if (granted !== "write" && granted !== "admin") {
+      throw new Error(
+        `${read} answered permissions.${permission} ${JSON.stringify(granted ?? null)}, want write: ${whyWrite[permission]}`
+      );
+    }
   }
   return login;
 }
 
-/** The bot logins of the Apps of `roles`, refusing a config whose two roles resolve to one App,
- * which the daemon refuses at boot too (internal/daemon, mintAtBoot). */
+/** The bot login of the App of each of `roles`, the one App's alone (appRoles). */
 export async function appLogins(
   configPath: string,
   api: string,
   roles: readonly AppRole[] = appRoles
 ): Promise<AppLogins> {
-  const sources = appCredentialSources(await Bun.file(configPath).text(), roles);
+  const text = await Bun.file(configPath).text();
+  const sources = appCredentialSources(text, roles);
+  const writes = verdictWrites(text);
   const logins: AppLogins = {};
   for (const role of roles) {
     const source = sources[role];
-    if (source !== undefined) logins[role] = await appLogin(role, source, api);
-  }
-  if (logins.implement !== undefined && logins.implement === logins.review) {
-    throw new Error(`both github_apps roles are the App ${logins.review}: the workflow needs two`);
+    if (source !== undefined) logins[role] = await appLogin(role, source, api, undefined, writes);
   }
   return logins;
 }
@@ -655,7 +664,7 @@ if (import.meta.main) {
   if (roles === undefined || configPath === undefined || configPath === "") {
     writeAll(
       2,
-      "usage: bun scripts/e2e/lib/app-logins.ts [--roles <role>[,<role>]] <legion.yaml> [<GitHub API URL>]\n"
+      "usage: bun scripts/e2e/lib/app-logins.ts [--roles implement] <legion.yaml> [<GitHub API URL>]\n"
     );
     process.exit(2);
   }

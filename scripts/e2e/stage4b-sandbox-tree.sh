@@ -91,18 +91,20 @@
 #   the variable's name in its place.
 # - LEGION_E2E_ENVOY_TOKEN_SECRET_ID (required) is the Secrets Manager id of the production Envoy
 #   listener's API token. The repository carries neither credential.
-# - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_ID name
-#   another deployment's two role Apps: each App's numeric id, and the name of the secrets broker
-#   github-app secret the `agent-secrets` client releases the implement App's installation tokens
-#   from (lib/github-apps.sh). Each defaults to this deployment's own, so a run here sets none.
-# - LEGION_E2E_REVIEW_APP_KEY_COMMAND (required, no default) is shell text that prints the review
-#   App's PEM private key on stdout. prerequisites runs it once, here on the driver, in the
-#   operator's own environment — so it may read their HOME and their own gcloud or kubectl
-#   configuration — into $work/app-key/review/key.pem, 0600 in a directory of mode 0700, which
-#   cleanup removes on every exit. The daemon never runs it: that App's private_key_command is a
-#   `cat` of that file, and the daemon mints and renews that App's tokens from the key it reads
-#   there. The repository carries neither the key nor the command, and the run prints neither.
-#   prerequisites proves both Apps from their tokens against GitHub (GraphQL's viewer, then
+# - LEGION_E2E_IMPLEMENT_APP_ID and LEGION_E2E_IMPLEMENT_APP_SECRET name another deployment's one
+#   GitHub App, which every role acts as: its numeric id, and the name of the secrets broker
+#   github-app secret the `agent-secrets` client releases its installation tokens from
+#   (lib/github-apps.sh). Each defaults to this deployment's own, so a run here sets none.
+# - LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND (optional) is shell text that prints the App's PEM private
+#   key on stdout, in place of the broker's release (key mode). prerequisites runs it once, here on
+#   the driver, in the operator's own environment — so it may read their HOME and their own gcloud
+#   or kubectl configuration — into $work/app-key/implement/key.pem, 0600 in a directory of mode
+#   0700, which cleanup removes on every exit. The daemon never runs it: the App's
+#   private_key_command is a `cat` of that file, from whose key the daemon mints and renews the
+#   App's tokens and the verdict token it writes legion-verdict on the smoke repository with
+#   (verdict_repositories names it in key mode, and each verdict the run asserts is then asserted
+#   as that check too). The repository carries neither the key nor the command, and the run prints
+#   neither. prerequisites proves the App from its token against GitHub (GraphQL's viewer, then
 #   GET /apps/<slug>) before the run's first write anywhere; the daemon's github_apps is the block
 #   proved.
 # - LEGION_E2E_PROJECT (default LEGSMOKE, a Dispatch project key: [A-Z][A-Z0-9]{1,9}, exactly
@@ -1265,18 +1267,14 @@ record_pair() {
   printf '%s\n' "$stem" >"$evidence/review-pair/session-stem" || return 1
   pair_recorded=1
 }
-# reviewer_decision CHANGES writes `approve` to $work/review-decision once the review App has
-# approved the pull request's head, or `changes` once it has posted CHANGES reviews requesting
-# changes, and fails while it has done neither. The wait's own poll records what it saw, so a head
-# that moves after the approval (retro's commit) cannot change the answer.
+# reviewer_decision ISSUE ROUND writes the newest verdict the daemon records of ISSUE's reviewer
+# (reviewer_newest_verdict), `approve` or `changes`, to $work/review-decision once it records ROUND
+# verdicts or more, the newest from the reviewer's claim, and fails before then. The wait's own
+# poll records what it saw, so a later verdict cannot change the answer.
 reviewer_decision() {
-  if reviewer_approved_head; then
-    echo approve >"$work/review-decision"
-  elif reviewer_requested_changes "$1"; then
-    echo changes >"$work/review-decision"
-  else
-    return 1
-  fi
+  local newest
+  newest=$(reviewer_newest_verdict "$1" "$2") || return 1
+  printf '%s\n' "${newest%% *}" >"$work/review-decision"
 }
 
 # planning_tasks ISSUE counts the planning tasks in ISSUE's planner session: the user messages the
@@ -2655,8 +2653,8 @@ full_agent_task_id() {
 }
 # full_agent_subagent_verdict SESSION APP OTHER reads a subagent's session and prints whether one of
 # its own bash calls returned APP (login), whether its yield was accepted (yield: an accepted yield
-# ends a subagent, as review-pair reads it), whether any bash returned OTHER (other, the other App,
-# which must be false), and its bash results trimmed.
+# ends a subagent, as review-pair reads it), whether any bash returned OTHER (other, an account no
+# role acts as, which must be false), and its bash results trimmed.
 # shellcheck disable=SC2016 # $app, $other and $bash are jq's own variables
 full_agent_subagent_verdict() {
   session_jq "$1" -c --arg app "$2" --arg other "$3" 'include "stage4b-tools";
@@ -2678,7 +2676,7 @@ full_agent_summary() {
 # full_agent_common_asserts WHO EXCERPT NONCE APP OTHER: the four assertions the role loop and the
 # merger block of full-agent-tools share, WHO the fail lines' prefix: an edit result and a read
 # result carry `edited NONCE`, a bash call running gh api graphql answered APP, the role's own App,
-# and no bash result carries OTHER, the other App. The notebook negative stays in each block, after
+# and no bash result carries OTHER, an account no role acts as. The notebook negative stays in each block, after
 # its own further assertions, so neither block's order of fail lines moves.
 full_agent_common_asserts() {
   local who=$1 excerpt=$2 nonce=$3 app=$4 other=$5
@@ -2689,7 +2687,7 @@ full_agent_common_asserts() {
   tool_result_answered "$excerpt" bash 'gh api graphql' "$app" ||
     fail "$who: no result of a bash call running gh api graphql carries $app, so gh did not answer as $who's App; its bash results: $(tool_result_quotes "$excerpt" bash)"
   ! tool_result_said "$excerpt" bash "$other" ||
-    fail "$who: a bash result carries $other, the other App; its bash results: $(tool_result_quotes "$excerpt" bash)"
+    fail "$who: a bash result carries $other, an account no role acts as; its bash results: $(tool_result_quotes "$excerpt" bash)"
 }
 # agent_pid POD ROLE prints the pid of ROLE's Oh My Pi in POD (agent_pid_sh).
 agent_pid() {
@@ -2896,7 +2894,7 @@ cleanup() {
   # one the checks set. Inside this EXIT trap BASH_COMMAND is still the command the trap interrupted,
   # so the warning names the line alone.
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
-  # First, whatever the rest of the teardown does: the review App's private key, which
+  # First, whatever the rest of the teardown does: the App's private key, which
   # prerequisites resolved the operator's key command into for the daemon to read. $work goes
   # below, but only once the teardown that can hang or be killed has run.
   rm -rf "$work/app-key" || true
@@ -2936,7 +2934,7 @@ cleanup() {
   remove_run_container "$pg_container"
   remove_run_container "$session_db_container"
   rm -rf "$work"
-  # The review App's private key must be gone, whatever else the teardown did: the lib's own check
+  # The App's private key must be gone, whatever else the teardown did: the lib's own check
   # of the directory the removals above were to take (lib/github-apps.sh, app_key_left), printing
   # the CHECK line this script writes its teardown checks in. Left behind, it is a failed teardown
   # check like the ones above, which the verdict names and the exit status below carries.
@@ -3201,7 +3199,7 @@ audit_failure() { echo "the run wrote outside $project or subscribed outside it:
 
 begin prerequisites
 for tool in go docker jq curl ss kubectl aws gh bun jj mise shellcheck secrets agent-secrets setpriv npm; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-require_app_inputs implement review
+require_app_inputs implement
 # The host's jq compiles every lib/*.jq module this script includes, read from the script itself: a
 # jq that cannot parse one would otherwise fail the run at the first checkpoint to include it, hours
 # in. The two fails keep the loop from passing vacuously over a list read wrong.
@@ -3323,11 +3321,11 @@ esac
   fail "LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset or not an email: it names the person, by the email they signed in to production Dispatch with, whom the run's project names as its default assignee"
 [[ $envoy_token_secret_id =~ ^[A-Za-z0-9/_+=.@:-]+$ ]] ||
   fail "LEGION_E2E_ENVOY_TOKEN_SECRET_ID is unset or not a Secrets Manager secret id or ARN"
-# Legion's two role Apps proved against GitHub before the run's first write anywhere
-# (lib/github-apps.sh); legion.yaml's github_apps is the block proved. The review App's key
-# command runs once, here, in this shell's own environment, into $work/app-key, which the daemon
-# reads the key from and cleanup removes.
-write_github_apps --key-dir "$work/app-key" implement review
+# Legion's App proved against GitHub before the run's first write anywhere (lib/github-apps.sh);
+# legion.yaml's github_apps is the block proved, and in key mode its verdict_repositories names the
+# smoke repository. A key command runs once, here, in this shell's own environment, into
+# $work/app-key, which the daemon reads the key from and cleanup removes.
+write_github_apps --key-dir "$work/app-key" --verdict-repository "$repo" implement
 read_app_logins
 # The gateway's health endpoint is at its origin.
 gateway_origin=$(sed -E 's#^(https://[^/]+).*#\1#' <<<"$gateway")
@@ -3600,8 +3598,7 @@ EOF
 write_legion_config
 out=$("$work/legion" config check --config "$work/legion.yaml" 2>&1) || fail "legion config check refused the proof's config: $out"
 note "$out"
-implement_app=$(role_app implementer)
-review_app=$(role_app reviewer)
+legion_app=$(role_app)
 create_route_configmap
 create_providers_secret
 production_baseline
@@ -4521,36 +4518,37 @@ POST /legion/v1/operator/claims/{token}/resume" ] ||
   fail "the daemon logged operator request lines for $held_architect with routes '$(tr '\n' ' ' <<<"$held_routes")', want one suspend and then one resume"
 note "the operator's resume relaunched $held_architect and the held notice arrived ($(notice_deliveries "$tree1" architect "$held_needle") phase-finished notices now); the daemon logged one api: operator request line for the suspend and one for the resume"
 # The adoption on top of a described commit: the tester's @ is a new empty change authored by the
-# reviewer App, and the implementer's pushed commit keeps its author.
+# App, and the implementer's pushed commit keeps its author, the App too.
 adoption=$(workspace_jj "$tree1" log -r '@|@-' --no-graph -T 'if(empty, "empty", "change") ++ "|" ++ author.name() ++ "\n"')
 note "after the tester's adoption: $(tr '\n' ' ' <<<"$adoption")"
-[ "$(sed -n 1p <<<"$adoption")" = "empty|$review_app" ] || fail "the tester's adoption left @ as '$(sed -n 1p <<<"$adoption")', want a new empty change authored by $review_app"
-[ "$(sed -n 2p <<<"$adoption" | cut -d'|' -f2)" = "$implement_app" ] || fail "the adoption rewrote the implementer's commit author: '$(sed -n 2p <<<"$adoption")'"
+[ "$(sed -n 1p <<<"$adoption")" = "empty|$legion_app" ] || fail "the tester's adoption left @ as '$(sed -n 1p <<<"$adoption")', want a new empty change authored by $legion_app"
+[ "$(sed -n 2p <<<"$adoption" | cut -d'|' -f2)" = "$legion_app" ] || fail "the adoption rewrote the implementer's commit author: '$(sed -n 2p <<<"$adoption")'"
 pass
 
 begin github-credential
 # Each role's GitHub App token is a file its plain gh and git read (LEGION-631): the implementer's
-# namespaces hold the implement App's hosts.yml under /var/run/legion/gh, the reviewer's the review
-# App's, each bound there by that role's role-init from its own gh-<role> volume of its own role
-# Secret, which the pod's one `roles` container mounts under the role's directory of the roles
-# directory. Neither reads the other's: inside a role's namespaces the roles directory is covered
-# empty and /proc lists the role's own processes alone, so no path reaches a sibling's files, and
-# what the role sees at /var/run/legion/gh is its own directory's (the hashes match the container's
-# copy under that role's directory and differ between the two roles). The agent's environment names
+# namespaces hold the hosts.yml of the App's implementer token set under /var/run/legion/gh, the
+# reviewer's that of its reviewer set, each bound there by that role's role-init from its own
+# gh-<role> volume of its own role Secret, which the pod's one `roles` container mounts under the
+# role's directory of the roles directory. Neither reads the other's: inside a role's namespaces
+# the roles directory is covered empty and /proc lists the role's own processes alone, so no path
+# reaches a sibling's files, and what the role sees at /var/run/legion/gh is its own directory's
+# (the hashes match the container's copy under that role's directory and differ between the two
+# roles, whose tokens are two). Both act on GitHub as the one App. The agent's environment names
 # GH_CONFIG_DIR and no tool pin, no grant file (the `legion` tool mints its grants in-process; no
 # agent runs `legion` from bash), its PATH has no worker-bin shim, and a task subagent it launches
-# runs the same gh with the same credential. The pushes on legion/<issue> were made by the
-# implement App itself with plain jj: GitHub's record of the pull request's head names the implement
-# App, and that head has its check runs (acceptance 4a). No phase pushes a commit to hand off: no
-# commit of the pull request changes only .legion/, and the planner's handoff, as every role's, is
-# a record on the Dispatch issue written under the planner's claim session (assert_handoff_record).
+# runs the same gh with the same credential. The pushes on legion/<issue> were made by the App
+# itself with plain jj: GitHub's record of the pull request's head names the App, and that head
+# has its check runs (acceptance 4a). No phase pushes a commit to hand off: no commit of the pull
+# request changes only .legion/, and the planner's handoff, as every role's, is a record on the
+# Dispatch issue written under the planner's claim session (assert_handoff_record).
 gh_pod=$(claim_sandbox "$tree1" implementer) || fail "tree 1's implementer has no Sandbox locator"
 gh_bin=$(pod_exec "$gh_pod" implementer sh -c 'command -v gh') || fail "no gh in the implementer's namespaces of $gh_pod"
 [ "$gh_bin" = /opt/legion/bin/gh ] || fail "the implementer's gh is $gh_bin, want the image's wrapper /opt/legion/bin/gh"
 status=$(pod_exec "$gh_pod" implementer sh -c "$gh_wrapper_env GH_CONFIG_DIR=$gh_config_dir GH_TOKEN= GITHUB_TOKEN= GH_HOST= gh auth status 2>&1") || fail "gh auth status in the implementer's namespaces failed: $(scrub <<<"$status" | head -5)"
 grep -q "x-access-token" <<<"$status" || fail "gh auth status in the implementer's namespaces names no x-access-token account: $(scrub <<<"$status" | head -5)"
 for role in implementer reviewer; do
-  want=$(role_app "$role")
+  want=$legion_app
   viewer=$(pod_viewer "$gh_pod" "$role") || fail "gh in the $role's namespaces of $gh_pod answered no viewer"
   [ "$viewer" = "$want" ] || fail "gh in the $role's namespaces of $gh_pod acts as $viewer, want $want"
   assert_gh_files "$gh_pod" "$role" "the $role's namespaces"
@@ -4609,12 +4607,12 @@ for role in architect planner implementer tester reviewer merger; do
   gh_log_line written "$gh_pod" "$role" >/dev/null || fail "the daemon log has no 'github credential written' line for $role of $gh_pod"
 done
 ! grep -qE '/legion/v1/(gh-token|git-credential|provisioning-credential)' "$daemon_log" || fail "the daemon log names a token route: $(grep -E '/legion/v1/(gh-token|git-credential|provisioning-credential)' "$daemon_log" | head -3 | scrub)"
-# A task subagent inherits the same credential: its gh answers the implement App from the same
+# A task subagent inherits the same credential: its gh answers the App from the same
 # files, and no bash command of the implementer's between the instruction and the reply ran legion,
 # which no agent runs from bash.
 sub_label="Stage 4b credential proof (subagent)"
 send_agent "$tree1" implementer "$sub_label: launch one task subagent whose only job is to run exactly gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login in its bash tool and reply with the exact output. Run no bash command yourself. Then reply with one line: SUB-VIEWER= followed by the subagent's exact output. Wait after reporting."
-on_tree "$tree1" until_true 600 "the implementer to report its subagent's gh viewer" session_contains "$tree1" implementer "SUB-VIEWER=$implement_app"
+on_tree "$tree1" until_true 600 "the implementer to report its subagent's gh viewer" session_contains "$tree1" implementer "SUB-VIEWER=$legion_app"
 legion_commands=$(bash_legion_commands "$tree1" implementer "$sub_label")
 [ -z "$legion_commands" ] || fail "the implementer ran a legion command for the subagent proof, which no agent runs from bash: $(tr '\n' ' ' <<<"$legion_commands" | cut -c1-300)"
 # No jj refusal (acceptance 4c): the pane's bash runs `jj undo --help` as any jj command, and the
@@ -4622,7 +4620,7 @@ legion_commands=$(bash_legion_commands "$tree1" implementer "$sub_label")
 undo_label="Stage 4b jj proof"
 send_agent "$tree1" implementer "$undo_label: run exactly jj undo --help in your bash tool, run nothing else, and reply with one line: JJ-UNDO= followed by the exact first line of its output. Wait after reporting."
 on_tree "$tree1" until_true 600 "the implementer to report jj undo --help's first line" session_contains "$tree1" implementer "JJ-UNDO=Undo the last operation"
-# The pushes: the implementer's head by the implement App. GitHub's record of the commit (its
+# The pushes: the implementer's head by the App. GitHub's record of the commit (its
 # committer, the account the pane's git identity maps to, which is the App whose token the pane
 # pushes with) is read for the head: the repository's events feed is lossy (a push can be missing
 # from it while later ones are listed), so it is no oracle.
@@ -4630,7 +4628,7 @@ pr_head=$(gh -R "$repo" pr view "$pr_number" --json headRefOid --jq .headRefOid)
 [ -n "$pr_head" ] || fail "pull request #$pr_number has no head"
 actor=$(timeout 60 gh api "repos/$repo/commits/$pr_head" --jq '.committer.login // "nobody"') || fail "GitHub could not read the implementer's head $pr_head on $repo"
 printf '%s %s %s\n' "$pr_head" "$actor" "the implementer's head" >>"$evidence/github-credential-pushes.txt"
-[ "$actor" = "$implement_app" ] || fail "the implementer's head $pr_head on legion/$tree1 was committed by $actor, want $implement_app"
+[ "$actor" = "$legion_app" ] || fail "the implementer's head $pr_head on legion/$tree1 was committed by $actor, want $legion_app"
 # No handoff-only push (A2): the pull request's commits, each one's files read whole before they are
 # judged (pull_request_legion_only_commits), hold none that changes only .legion/; the planner's
 # handoff is its Dispatch record, written under the planner's claim session; and the daemon recorded
@@ -4650,7 +4648,7 @@ if pod_exec "$gh_pod" implementer sh -c "GH_CONFIG_DIR=/nonexistent GH_TOKEN= GI
   fail "gh in the implementer's namespaces with GH_CONFIG_DIR=/nonexistent still answered a viewer"
 fi
 grep -q GH_TOKEN "$evidence/github-credential-negative.txt" || fail "gh with GH_CONFIG_DIR=/nonexistent failed without gh's own not-logged-in message: $(cat "$evidence/github-credential-negative.txt")"
-note "in $gh_pod the implementer's gh ($gh_bin, GH_CONFIG_DIR=$gh_config_dir) is $implement_app and the reviewer's $review_app from different hosts.yml files, each role's namespaces seeing its own gh-<role> copy and an empty roles directory, no grant file or App login is in the environment; the implementer's subagent answered $implement_app with no legion command, and its own bash ran jj undo --help; GitHub records the implementer's head $pr_head as $implement_app's, with check runs; no commit of pull request #$pr_number changes only .legion/; the planner's handoff is its Dispatch record under its claim session, and the daemon recorded the head as the implementer's completion"
+note "in $gh_pod the implementer's gh ($gh_bin, GH_CONFIG_DIR=$gh_config_dir) and the reviewer's are both $legion_app, from different hosts.yml files, each role's namespaces seeing its own gh-<role> copy and an empty roles directory, no grant file or App login is in the environment; the implementer's subagent answered $legion_app with no legion command, and its own bash ran jj undo --help; GitHub records the implementer's head $pr_head as $legion_app's, with check runs; no commit of pull request #$pr_number changes only .legion/; the planner's handoff is its Dispatch record under its claim session, and the daemon recorded the head as the implementer's completion"
 pass
 
 begin conflict-no-takeover
@@ -4784,60 +4782,26 @@ on_tree "$tree1" wait_for_phase "$tree1" reviewing 1200
 assert_handoff_record "$tree1" tester testing 0
 on_tree "$tree1" wait_for_worker "$tree1" reviewer
 record_resident "$tree1" reviewer || fail "tree 1's reviewer has no session and pod to keep: $(claim_view "$tree1" reviewer)"
-# A round no review decides (LEGION-326): the reviewer comments instead of deciding, and completes.
-# The daemon leaves the issue in reviewing and tells the architect, naming the head. The proof's
-# instructions hold every agent until a targeted message gives its next operation, so the driver
-# then tells the architect only to handle that notice as its role says, naming no topic, head or
-# decision: the architect takes those from the notice and asks the reviewer for the decision over
-# Envoy. The requested correction then starts another implementer/tester/reviewer cycle.
-# The proof counts only messages the architect sent after the reviewer's completion. An architect acting on
-# the notice unprompted, as it must where no driver holds it, is not what this checkpoint proves
-# (LEGION-413).
-send_agent "$tree1" reviewer "Stage 4b proof review operation: review pull request #$pr_number in $repo as your role requires, running the deep and code-quality review passes your instructions name as task subagents. This round deliberately proves what the daemon does with a round no review decides: submit your review as $review_app as a COMMENT review with no inline comment, never APPROVE or REQUEST_CHANGES, take the round's other steps in the order your role gives, and complete the reviewer handoff. Submit no other review until you are asked for the round's decision; when you are, your decision is REQUEST_CHANGES with exactly one inline comment, on the last line of $smoke_file, asking for the line \`$(round_line 1)\` to be appended below the lines already there. The spec permits that correction. Your completion is already recorded: submit that decision on the completed handoff's head without writing another handoff or calling handoff_complete again. This exact smoke instruction takes precedence over your own review."
+# The first review round: the reviewer runs its deep and code-quality passes (the review pair,
+# recorded below), posts its findings as a COMMENT review with one inline comment, which decides
+# nothing, and ends the round with its verdict changes through its handoff completion. Every role
+# acts as the one App, the pull request's author, so GitHub takes no approval and no request for
+# changes from the reviewer: the daemon decides the round on the verdict it records. The requested
+# correction then starts another implementer/tester/reviewer cycle.
+send_agent "$tree1" reviewer "Stage 4b proof review operation: review pull request #$pr_number in $repo as your role requires, running the deep and code-quality review passes your instructions name as task subagents. Your verdict this round is changes: post your findings as one COMMENT review with exactly one inline comment, on the last line of $smoke_file, asking for the line \`$(round_line 1)\` to be appended below the lines already there. The spec permits that correction. Take the round's other steps in the order your role gives, and complete the reviewer handoff with verdict changes on the head you reviewed. This exact smoke instruction takes precedence over your own review."
 pair_session=$(claim_session_file "$tree1" reviewer) || fail "the reviewer on $tree1 has no session file"
 on_tree "$tree1" until_true 1800 "the reviewer's two thermonuclear dispatches to reach an outcome" pair_settled
 record_pair || fail "the reviewer's session and its review pair could not be recorded"
 note "the review pair's dispatches are kept in $evidence/review-pair ($(jq -r -s 'map("\(.agent): \(.calls | length) calls, \(.results | length) results, \(.deliveries | length) deliveries") | join("; ")' "$evidence"/review-pair/thermonuclear-*.json))"
-on_tree "$tree1" until_true 1800 "$review_app's COMMENT review of pull request #$pr_number" reviewer_commented
-on_tree "$tree1" until_true 900 "the daemon to record the reviewer's completion of $tree1's round" reviewer_completed "$tree1"
-# The ask baseline is read here, not before the reviewer is instructed: the notice is written in the
-# completion's own transaction and the architect needs a model turn after it, so no real ask can
-# precede this read, while a message the architect sent the reviewer earlier in the round (a reply to
-# the reviewer's own round report) stays out of the count, the path and the saved lines.
-asked_before=$(architect_messages "$tree1" reviewer)
-# At the completion, before the architect can have asked anything: no approval yet, and the round
-# still open.
-early_approvals=$(review_app_reviews '.state == "APPROVED"' id) || fail "read the reviews on pull request #$pr_number"
-[ -z "$early_approvals" ] || fail "the reviewer approved pull request #$pr_number before anyone asked it for the round's decision"
-issue_phase "$tree1" reviewing >/dev/null || fail "$tree1 left reviewing on a round no review decided"
-on_tree "$tree1" until_true 300 "the review-stuck notice on $tree1's architect" notice_delivered "$tree1" architect "$(notice_needle review-stuck "$tree1")"
-stuck=$(notice_line "$tree1" architect "$(notice_needle review-stuck "$tree1")" | head -1 || true)
-printf '%s\n' "$stuck" >"$evidence/notice-review-stuck.jsonl"
-# The head the notice names is the one the completion left, which GitHub's current head can have
-# moved past since: it must be a commit of the pull request, and the reviewer's completion wrote it.
-stuck_head=$(grep -oE 'APPROVE of head [0-9a-f]{40}' <<<"$stuck" | head -1 | awk '{print $4}' || true)
-[ -n "$stuck_head" ] || fail "the review-stuck notice on $tree1's architect names no head: $stuck"
-pr_commits=$(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha') || fail "read the commits of pull request #$pr_number"
-grep -qx -- "$stuck_head" <<<"$pr_commits" || fail "the review-stuck notice names $stuck_head, which is no commit of pull request #$pr_number"
-grep -qF -- "the reviewer's completion" <<<"$stuck" || fail "the review-stuck notice was not written by the reviewer's completion: $stuck"
-note "the reviewer commented and completed; $tree1 stayed in reviewing and its architect was told review-stuck naming $stuck_head (kept in $evidence/notice-review-stuck.jsonl)"
-# What the checkpoint proves is that a stuck round got unstuck. An ask the architect made on its own,
-# before the driver sent its message, is the production behaviour, so it counts too, as the stronger
-# pass, and the run notes it.
-asked_unprompted=$(architect_messages "$tree1" reviewer)
-send_agent "$tree1" architect "Stage 4b proof review-stuck operation: handle the daemon's review-stuck notice on $tree1 now, exactly as your role says to handle a review-stuck notice."
-architect_asked() { [ "$(architect_messages "$tree1" reviewer)" -gt "$asked_before" ]; }
-on_tree "$tree1" until_true 900 "$tree1's architect, sent the review-stuck operation, to ask the reviewer for the round's decision" architect_asked
-notice_line "$tree1" reviewer "notifications.role.$(claim_token "$tree1" architect)" | tail -n +"$((asked_before + 1))" >"$evidence/architect-ask.jsonl"
-[ "$asked_unprompted" -le "$asked_before" ] || note "the architect asked the reviewer before the driver's message"
-on_tree "$tree1" until_true 1800 "$review_app's round 1 decision on pull request #$pr_number" reviewer_decision 1
-[ "$(<"$work/review-decision")" = changes ] || fail "the reviewer approved pull request #$pr_number in round 1, which the proof asked to request changes"
+on_tree "$tree1" until_true 1800 "$legion_app's COMMENT review of pull request #$pr_number" reviewer_commented
+on_tree "$tree1" until_true 1800 "the daemon's record of the reviewer's round 1 verdict on pull request #$pr_number" reviewer_decision "$tree1" 1
+[ "$(<"$work/review-decision")" = changes ] || fail "the reviewer's round 1 verdict on pull request #$pr_number is approve, where the proof asked for changes"
 on_tree "$tree1" wait_for_phase "$tree1" implementing 1200
 assert_handoff_record "$tree1" reviewer reviewing 1
-assert_review_of_head "$tree1" 1 CHANGES_REQUESTED
+assert_reviewer_verdict "$tree1" 1 changes
 thread_id=$(reviewer_thread 2>"$work/reviewer-thread.err") ||
-  fail "the reviewer's round 1 review did not leave one thread of its own: $(cat "$work/reviewer-thread.err")"
-note "the reviewer's round 1 review opened one thread, $thread_id"
+  fail "the reviewer's round 1 COMMENT review did not leave one thread of its own: $(cat "$work/reviewer-thread.err")"
+note "the reviewer's round 1 COMMENT review opened one thread, $thread_id"
 on_tree "$tree1" wait_for_worker "$tree1" implementer
 on_tree "$tree1" send_agent "$tree1" implementer "Stage 4b proof correction round 1: make the correction the review names (append the line \`$(round_line 1)\` to $smoke_file), push it to pull request #$pr_number, answer the review's thread as your role says, write the implementation handoff, then call the legion tool's handoff_complete: a push alone does not finish this round."
 # The task line delivered for the new round opens a sleep 300 turn before the implementer reads the operation, so the budget carries that turn.
@@ -4854,31 +4818,31 @@ on_tree "$tree1" wait_for_phase "$tree1" reviewing 1200
 assert_handoff_record "$tree1" tester testing 1
 on_tree "$tree1" wait_for_worker "$tree1" reviewer
 # A bot's thread for the re-review (acceptance 4d): the proof human, a GitHub App and so a bot
-# account that is none of Legion's role Apps, opens one now, after the implementer's correction
+# account that is not Legion's App, opens one now, after the implementer's correction
 # round and before the reviewer's, so the implementer's own round of resolutions never touches it:
-# the reviewer, which GitHub refuses resolveReviewThread on the implementer's pull request, replies
-# on it and names its node id to the implementer over Envoy as accepted, and the implementer, live
-# after its phase, resolves it with its own gh as the pull request's author (LEGION-631: the daemon
-# has no thread route).
+# the reviewer, whose role leaves a thread's resolution to the implementer, replies on it and names
+# its node id to the implementer over Envoy as accepted, and the implementer, live after its phase,
+# resolves it with its own gh as the pull request's author (LEGION-631: the daemon has no thread
+# route).
 bot_thread=$(post_bot_thread 2>"$work/bot-thread.err") ||
   fail "the proof human could not open a bot review thread on pull request #$pr_number: $(cat "$work/bot-thread.err")"
 bot_thread_id=$(bot_thread_node_id "$bot_thread") || fail "the bot's review thread (first comment $bot_thread) has no node id on pull request #$pr_number"
 note "the proof bot opened review thread $bot_thread_id (first comment $bot_thread) on pull request #$pr_number"
-# The re-review's decision is the reviewer's own: the proof names the head, never the verdict.
-on_tree "$tree1" send_agent "$tree1" reviewer "Stage 4b proof re-review: review pull request #$pr_number in $repo as your role requires, the thread your round 1 review opened included. A bot also left one review thread on the pull request asking whether the file change is needed: reply on it (the change is needed: the spec asks for it) and name its thread id to the implementer as accepted with envoy_publish to the implementer's role topic, as your role says for a bot's thread; the implementer resolves it. The decision is yours; take the round's steps in the order your role gives, and complete the reviewer handoff."
-on_tree "$tree1" until_true 1800 "$review_app's re-review decision on pull request #$pr_number" reviewer_decision 2
-# Read both threads at once: the reviewer's own, and the bot's, as the approval left them (the
-# bot's may still be open here: the implementer resolves it on the reviewer's message, which the
-# approval does not wait for; review-thread waits).
+# The re-review's verdict is the reviewer's own: the proof names the head, never the verdict.
+on_tree "$tree1" send_agent "$tree1" reviewer "Stage 4b proof re-review: review pull request #$pr_number in $repo as your role requires, the thread your round 1 review opened included. A bot also left one review thread on the pull request asking whether the file change is needed: reply on it (the change is needed: the spec asks for it) and name its thread id to the implementer as accepted with envoy_publish to the implementer's role topic, as your role says for a bot's thread; the implementer resolves it. The verdict is yours; take the round's steps in the order your role gives, post your findings as one COMMENT review (GitHub takes no approval or request for changes from the pull request's author, whose App you act as), and complete the reviewer handoff with your verdict on the head you reviewed."
+on_tree "$tree1" until_true 1800 "the daemon's record of the reviewer's re-review verdict on pull request #$pr_number" reviewer_decision "$tree1" 2
+# Read both threads at once: the reviewer's own, and the bot's, as the verdict left them (the bot's
+# may still be open here: the implementer resolves it on the reviewer's message, which the verdict
+# does not wait for; review-thread waits).
 decision=$(<"$work/review-decision")
 review_thread "$thread_id" >"$evidence/review-thread-at-approval.json" ||
-  fail "read the reviewer's thread $thread_id when its re-review decision landed"
+  fail "read the reviewer's thread $thread_id when its re-review verdict landed"
 review_thread "$bot_thread_id" >"$evidence/bot-thread-at-approval.json" ||
-  fail "read the bot's thread $bot_thread_id when the re-review decision landed"
+  fail "read the bot's thread $bot_thread_id when the re-review verdict landed"
 [ "$decision" = approve ] ||
-  fail "the reviewer requested changes again on its re-review of pull request #$pr_number; its thread then read $(jq -c . "$evidence/review-thread-at-approval.json")"
-note "the reviewer approved pull request #$pr_number at its head; its thread then read isResolved $(jq -r .isResolved "$evidence/review-thread-at-approval.json"), the bot's isResolved $(jq -r .isResolved "$evidence/bot-thread-at-approval.json")"
-# The approval moves tree 1 to accepting, where no worker starts and the board keeps needs_review:
+  fail "the reviewer's re-review verdict on pull request #$pr_number is changes again; its thread then read $(jq -c . "$evidence/review-thread-at-approval.json")"
+note "the reviewer's verdict on pull request #$pr_number is approve; its thread then read isResolved $(jq -r .isResolved "$evidence/review-thread-at-approval.json"), the bot's isResolved $(jq -r .isResolved "$evidence/bot-thread-at-approval.json")"
+# The verdict approve moves tree 1 to accepting, where no worker starts and the board keeps needs_review:
 # the tree's architect, told by the reviewer's phase-finished notice, accepts with sign_off or sends
 # the issue back. The wait is for accepting itself, read within a poll of the reviewer's completion;
 # the architect acts on no notice under the proof's instructions, so the issue stands there until
@@ -4887,6 +4851,7 @@ note "the reviewer approved pull request #$pr_number at its head; its thread the
 # architect keeps its pod.
 on_tree "$tree1" until_true 900 "$tree1 to leave reviewing for accepting" issue_phase "$tree1" accepting
 state_file accepting
+assert_reviewer_verdict "$tree1" 2 approve
 until_true 180 "the architect to receive the reviewer's phase-finished notice, its acceptance cue" notice_delivered "$tree1" architect \
   "$(notice_needle phase-finished "$tree1")"'\n  message:\n    kind: phase-finished\n    role: reviewer\n    phase: reviewing'
 # No worker starts at accepting: the implementer's claim holds no retro task (a start row's task is
@@ -4894,14 +4859,14 @@ until_true 180 "the architect to receive the reviewer's phase-finished notice, i
 # that resolves the bot's thread, so its state alone says nothing), and the daemon queued no status
 # write.
 pending_phase=$(claim_pending_phase "$tree1" implementer)
-[ "$pending_phase" != retro ] || fail "the implementer of $tree1 holds a retro task at accepting: the approval started a worker"
+[ "$pending_phase" != retro ] || fail "the implementer of $tree1 holds a retro task at accepting: the verdict started a worker"
 jq -e --arg issue "$tree1" '[.pendingStatusWrites[]? | select(.issue == $issue)] | length == 0' "$evidence/accepting.json" >/dev/null ||
   fail "a status write is pending for $tree1 at accepting, which writes none: $(jq -c --arg issue "$tree1" '[.pendingStatusWrites[]? | select(.issue == $issue)]' "$evidence/accepting.json")"
 jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and (.admission.trees | index($issue)) != null' "$evidence/accepting.json" >/dev/null ||
   fail "$tree1 still holds an admission slot at accepting, or its tree is not live: $(jq -c '{active: .admission.active, trees: .admission.trees}' "$evidence/accepting.json")"
 dispatch_status_is "$tree1" needs_review >/dev/null ||
   fail "Dispatch shows $tree1 $(dispatch_get "issues/$tree1" | jq -r .status) at accepting, want needs_review, which the move to accepting leaves alone"
-note "the reviewer's approval moved $tree1 to accepting (no worker started, the slot given back, the board still needs_review, the architect holding the reviewer's phase-finished notice)"
+note "the reviewer's verdict approve moved $tree1 to accepting (no worker started, the slot given back, the board still needs_review, the architect holding the reviewer's phase-finished notice)"
 pass
 
 begin children-first-acceptance
@@ -5001,31 +4966,41 @@ if issue_phase "$tree1" retro >/dev/null; then
   send_agent "$tree1" implementer "Stage 4b proof retro: write the required retro handoff for pull request #$pr_number and complete the phase. Do not change the approved implementation."
 fi
 on_tree "$tree1" wait_for_phase "$tree1" merging 1800
-note "$tree1 moved planner → implementer → tester → reviewer (changes requested) → implementer → tester → reviewer (approved) → accepting (the architect's sign_off, held until $child3 and $child4 left) → retro → merging with real agents; $repo#$pr_number changes $smoke_file"
+note "$tree1 moved planner → implementer → tester → reviewer (verdict changes) → implementer → tester → reviewer (verdict approve) → accepting (the architect's sign_off, held until $child3 and $child4 left) → retro → merging with real agents; $repo#$pr_number changes $smoke_file"
 pass
 
 begin review-thread
 # Threads are resolved by id, by the pull request's author, and on no magic word (LEGION-631): the
 # implementer answered the reviewer's round 1 thread in its correction round and resolved it with
 # its own gh (the pull request author's resolveReviewThread) before it completed, so the record
-# tree-reviewed took after the correction reads resolved with the implementer's reply newest; the
+# tree-reviewed took after the correction reads resolved with the App's reply newest; the
 # reviewer's re-review answered it in its own words and left the resolution standing, so the
-# record at the approval reads resolved with the reviewer's reply newest. The bot's thread, opened
-# after the implementer's last run, was answered by the reviewer alone, which GitHub refuses
-# resolveReviewThread as the review App: it named the thread's node id to the implementer over
-# Envoy, and the implementer, live after its phase, resolved it with its own gh, so the thread
-# reads resolved with the reviewer's reply on it, and the implementer's session holds the
-# reviewer's delivery naming the id (the resolver is not read from GitHub: only the author's App
-# can resolve, and the daemon has no route to). The route a plugin before `DaemonAPIVersion`'s
-# LEGION-631 entry (`internal/api/version.go`) posted to answers 404 (acceptance 4).
-thread_resolved_by "$evidence/review-thread-after-correction.json" implementer ||
-  fail "after the correction round the reviewer's thread $thread_id read $(jq -c . "$evidence/review-thread-after-correction.json"), want isResolved true with the implementer's reply as its newest submitted comment"
-thread_resolved_by "$evidence/review-thread-at-approval.json" reviewer ||
-  fail "when the reviewer approved, its thread $thread_id read $(jq -c . "$evidence/review-thread-at-approval.json"), want isResolved true with the reviewer's reply as its newest submitted comment"
-on_tree "$tree1" until_true 600 "the implementer's resolution of the bot's thread $bot_thread_id, which the reviewer named to it" bot_thread_resolved "$bot_thread" reviewer
+# record at the verdict reads resolved with a later reply of the App's newest. Every role writes
+# as the one App, so the reviewer's answer is told from the implementer's reply by coming after it
+# (reviewer_answered_after), not by its author. The bot's thread, opened after the implementer's
+# last run, was answered by the reviewer alone, which leaves its resolution to the implementer: it
+# named the thread's node id to the implementer over Envoy, and the implementer, live after its
+# phase, resolved it with its own gh, so the thread reads resolved with the App's reply on it, and
+# the implementer's session holds the reviewer's delivery naming the id (the resolver is not read
+# from GitHub, and the daemon has no route to resolve). The route a plugin before
+# `DaemonAPIVersion`'s LEGION-631 entry (`internal/api/version.go`) posted to answers 404
+# (acceptance 4).
+# reviewer_answered_after FILE BEFORE: the thread FILE holds is resolved, its newest submitted
+# comment is the App's, and it holds more submitted comments than BEFORE, the record of the same
+# thread after the implementer's correction.
+reviewer_answered_after() {
+  thread_resolved_by "$1" &&
+    jq -e --slurpfile before "$2" '([.comments[] | select(.state == "SUBMITTED")] | length)
+      > ([$before[0].comments[] | select(.state == "SUBMITTED")] | length)' "$1" >/dev/null
+}
+thread_resolved_by "$evidence/review-thread-after-correction.json" ||
+  fail "after the correction round the reviewer's thread $thread_id read $(jq -c . "$evidence/review-thread-after-correction.json"), want isResolved true with the App's reply as its newest submitted comment"
+reviewer_answered_after "$evidence/review-thread-at-approval.json" "$evidence/review-thread-after-correction.json" ||
+  fail "when the reviewer gave its verdict approve, its thread $thread_id read $(jq -c . "$evidence/review-thread-at-approval.json"), want isResolved true with a reply of the App's newer than the implementer's of the correction round"
+on_tree "$tree1" until_true 600 "the implementer's resolution of the bot's thread $bot_thread_id, which the reviewer named to it" bot_thread_resolved "$bot_thread"
 review_thread "$bot_thread_id" >"$evidence/bot-thread-resolved.json" || fail "read the bot's thread $bot_thread_id once resolved"
-thread_resolved_with_reply "$evidence/bot-thread-resolved.json" reviewer ||
-  fail "the bot's thread $bot_thread_id read $(jq -c . "$evidence/bot-thread-resolved.json"), want isResolved true with a submitted reply of the reviewer's"
+thread_resolved_with_reply "$evidence/bot-thread-resolved.json" ||
+  fail "the bot's thread $bot_thread_id read $(jq -c . "$evidence/bot-thread-resolved.json"), want isResolved true with a submitted reply of the App's"
 on_tree "$tree1" until_true 120 "the reviewer's Envoy message naming $bot_thread_id in the implementer's session" notice_delivered "$tree1" implementer "$bot_thread_id"
 notice_line "$tree1" implementer "$bot_thread_id" >"$evidence/bot-thread-named-to-implementer.jsonl"
 threads_code=$(curl -sS --max-time 20 -o "$evidence/threads-resolve-404.json" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
@@ -5033,20 +5008,21 @@ threads_code=$(curl -sS --max-time 20 -o "$evidence/threads-resolve-404.json" -w
   fail "the daemon's API did not answer the deleted threads route probe: $(scrub <<<"$threads_code")"
 [ "$threads_code" = 404 ] || fail "POST /legion/v1/threads/resolve answered $threads_code $(cat "$evidence/threads-resolve-404.json"), want 404: the daemon still serves a thread route"
 # Controls: the implementer's record left unresolved (an answer that closed nothing, the rule before
-# this head), and the reviewer's thread with a later implementer reply appended (a resolution the
-# reviewer did not answer), both fail; the bot's record left unresolved, or stripped of the
-# reviewer's reply (a resolution of a thread nobody adjudicated), fails too.
+# this head), and the reviewer's thread at the verdict cut back to the comments it held after the
+# correction (a resolution the reviewer did not answer), both fail; the bot's record left
+# unresolved, or stripped of the App's reply (a resolution of a thread nobody adjudicated), fails
+# too.
 jq '.isResolved = false' "$evidence/review-thread-after-correction.json" >"$evidence/review-thread-unresolved-negative.json"
-expect_failure review-thread-answered-unresolved thread_resolved_by "$evidence/review-thread-unresolved-negative.json" implementer
-jq --arg author "$(role_app_slug implementer)" '.comments += [{author: $author, body: "Fixed in 0000000: the line is appended.", state: "SUBMITTED"}]' \
+expect_failure review-thread-answered-unresolved thread_resolved_by "$evidence/review-thread-unresolved-negative.json"
+jq --slurpfile before "$evidence/review-thread-after-correction.json" '.comments |= .[:($before[0].comments | length)]' \
   "$evidence/review-thread-at-approval.json" >"$evidence/review-thread-unanswered-negative.json"
-expect_failure review-thread-not-answered-by-reviewer thread_resolved_by "$evidence/review-thread-unanswered-negative.json" reviewer
+expect_failure review-thread-not-answered-by-reviewer reviewer_answered_after "$evidence/review-thread-unanswered-negative.json" "$evidence/review-thread-after-correction.json"
 jq '.isResolved = false' "$evidence/bot-thread-resolved.json" >"$evidence/bot-thread-unresolved-negative.json"
-expect_failure bot-thread-answered-unresolved thread_resolved_with_reply "$evidence/bot-thread-unresolved-negative.json" reviewer
-jq --arg author "$(role_app_slug reviewer)" '.comments |= [.[0]] + [.[1:][] | select(.author != $author)]' "$evidence/bot-thread-resolved.json" >"$evidence/bot-thread-unanswered-negative.json"
-expect_failure bot-thread-not-answered-by-reviewer thread_resolved_with_reply "$evidence/bot-thread-unanswered-negative.json" reviewer
-thread_resolved_by "$evidence/review-thread-after-correction.json" implementer || fail "the thread record failed its own check after its controls"
-note "the reviewer's thread $thread_id: resolved by the implementer after the correction ($(jq -r '[.comments[] | select(.state == "SUBMITTED")] | last | .body | split("\n")[0]' "$evidence/review-thread-after-correction.json")), answered by the reviewer at the approval; the bot's thread $bot_thread_id: answered by the reviewer ($(jq -r --arg author "$(role_app_slug reviewer)" '[.comments[] | select(.state == "SUBMITTED" and .author == $author)] | last | .body | split("\n")[0]' "$evidence/bot-thread-resolved.json")), named to the implementer over Envoy ($evidence/bot-thread-named-to-implementer.jsonl) and resolved by the implementer's gh (isResolved $(jq -r .isResolved "$evidence/bot-thread-at-approval.json") at the approval, true now); POST /legion/v1/threads/resolve answers $threads_code"
+expect_failure bot-thread-answered-unresolved thread_resolved_with_reply "$evidence/bot-thread-unresolved-negative.json"
+jq --arg author "$(role_app_slug)" '.comments |= [.[0]] + [.[1:][] | select(.author != $author)]' "$evidence/bot-thread-resolved.json" >"$evidence/bot-thread-unanswered-negative.json"
+expect_failure bot-thread-not-answered-by-reviewer thread_resolved_with_reply "$evidence/bot-thread-unanswered-negative.json"
+thread_resolved_by "$evidence/review-thread-after-correction.json" || fail "the thread record failed its own check after its controls"
+note "the reviewer's thread $thread_id: resolved by the implementer after the correction ($(jq -r '[.comments[] | select(.state == "SUBMITTED")] | last | .body | split("\n")[0]' "$evidence/review-thread-after-correction.json")), answered by the reviewer at the verdict; the bot's thread $bot_thread_id: answered by the reviewer ($(jq -r --arg author "$(role_app_slug)" '[.comments[] | select(.state == "SUBMITTED" and .author == $author)] | last | .body | split("\n")[0]' "$evidence/bot-thread-resolved.json")), named to the implementer over Envoy ($evidence/bot-thread-named-to-implementer.jsonl) and resolved by the implementer's gh (isResolved $(jq -r .isResolved "$evidence/bot-thread-at-approval.json") at the verdict, true now); POST /legion/v1/threads/resolve answers $threads_code"
 pass
 
 begin completion-closed
@@ -5098,9 +5074,10 @@ begin full-agent-tools
 # driven from eval, web_search, bash over the toolchain, write, edit and read, and a task subagent.
 # The GitHub identity is the App login GraphQL's viewer answers (REST /user is refused for an
 # installation token), read from the `gh api graphql` call's own result, in the role's bash and in
-# the subagent it dispatches, which must act as the same App and never the other: the implementer
-# and the merger are the implement App's bot, every other role the review App's (role_app,
-# lib/workflow.sh, from the logins read_app_logins read from GitHub). The subagent's own session,
+# the subagent it dispatches, which must act as the App and never as another account: every role
+# acts as the App's bot (role_app, lib/workflow.sh, from the login read_app_logins read from
+# GitHub), and the negative is the proof human's login (proof_human_login), the one other GitHub
+# identity this run holds. The subagent's own session,
 # beside its parent's, must hold that bash result and end in an accepted yield. The control:
 # notebook, a tool nothing asked for, has no result in any session, since a result is the tool's by
 # the call it answers. This is dispatch://LEGION-578's
@@ -5130,12 +5107,11 @@ done
 on_tree "$tree1" until_true 900 "tree 1's merger to answer $merger_nonce-answer" assistant_said "$tree1" merger "$merger_nonce-answer"
 for role in architect planner implementer tester reviewer; do
   nonce=${fa_nonce[$role]}
-  app=$(role_app "$role")
-  other=$(role_app reviewer)
-  [ "$app" != "$other" ] || other=$(role_app implementer)
+  app=$legion_app
+  other=$proof_human_login
   # The session is fetched once, from the instruction's delivery on, and every read below judges
-  # that excerpt: the negatives (the other App, notebook) would otherwise read the role's earlier
-  # work, where a reviewer's gh pr view names the implementer's App as the author. The excerpt is
+  # that excerpt: the negatives (the proof human's login, notebook) would otherwise read the role's
+  # earlier work, where a role reads the pull request a proof human's thread is on. The excerpt is
   # kept for the record.
   excerpt=$evidence/full-agent-tools/$role.jsonl
   claim_session_text "$tree1" "$role" | awk -v mark="$nonce" 'found || index($0, mark) { found = 1; print }' >"$excerpt" ||
@@ -5168,8 +5144,8 @@ for role in architect planner implementer tester reviewer; do
   ! tool_ran "$excerpt" notebook || fail "$role's session shows the notebook tool ran, which nothing asked for"
   note "$role as $app: $(full_agent_summary "$excerpt" "$app"); its subagent $id answered $app and yielded"
 done
-merger_app=$(role_app merger)
-merger_other=$(role_app reviewer)
+merger_app=$legion_app
+merger_other=$proof_human_login
 excerpt=$evidence/full-agent-tools/merger.jsonl
 claim_session_text "$tree1" merger | awk -v mark="$merger_nonce" 'found || index($0, mark) { found = 1; print }' >"$excerpt" ||
   fail "the merger on $tree1 has no readable session"
@@ -5290,7 +5266,7 @@ jq -e --argjson route "$route_models" 'all(.[]; . as $m | any($route[]; . == $m)
 pass
 
 begin github-credential-refresh
-# The hour boundary (LEGION-631): the review App's lease the daemon minted at boot lasts an hour,
+# The hour boundary (LEGION-631): the architect's lease the daemon minted at boot lasts an hour,
 # the daemon re-mints it once fewer than twenty minutes remain and rewrites the architect's role
 # Secret, and the kubelet rewrites the projected hosts.yml in the architect's container in place,
 # so the file read at issue-independence and the file now differ, in the same pod, with nothing sent
@@ -5332,7 +5308,7 @@ refreshed_after_read() {
 }
 on_tree "$tree1" until_true 2700 "the daemon to refresh the architect's github credential" refreshed_after_read
 lease_lines=$(gh_lease_lines)
-# Every refresh against its own antecedent: made with the review App, at least fifteen minutes
+# Every refresh against its own antecedent: made with the architect's token set, at least fifteen minutes
 # before the lease it replaces expires (the daemon re-mints once fewer than twenty remain, appauth
 # refreshWindow, and its write follows within the minute), for a lease that expires later.
 previous=
@@ -5340,7 +5316,7 @@ refreshed_at=
 while IFS= read -r line; do
   if [ -n "$previous" ]; then
     [ "$(jq -r .msg <<<"$line")" = "sandbox runtime: github credential refreshed" ] || fail "the architect's lease chain carries a second 'written' line after the first; the pod's Secret was written anew: $line"
-    [ "$(jq -r .app <<<"$line")" = review ] || fail "the architect's credential was refreshed with app $(jq -r .app <<<"$line"), want review: $line"
+    [ "$(jq -r .app <<<"$line")" = architect ] || fail "the architect's credential was refreshed with app $(jq -r .app <<<"$line"), want architect, its token set: $line"
     line_s=$(date -d "$(jq -r .time <<<"$line")" +%s) || fail "a refreshed line's time is not a time: $line"
     antecedent_expiry=$(jq -r .expiresAt <<<"$previous")
     antecedent_expiry_s=$(date -d "$antecedent_expiry" +%s) || fail "a lease line's expiresAt is not a time: $previous"
@@ -5361,7 +5337,7 @@ propagation=$(( $(date -d "$propagated_at" +%s) - refreshed_s ))
 gh_after_token=$(gh_hosts_token "$gh_pod" architect) || fail "could not read the architect's refreshed hosts.yml"
 [ -n "$gh_after_token" ] && [ "$gh_after_token" != "$gh_before_token" ] || fail "the architect's hosts.yml changed but names the token it had at issue-independence"
 viewer=$(pod_viewer "$gh_pod" architect) || fail "the architect's gh answered no viewer after the refresh"
-[ "$viewer" = "$(role_app architect)" ] || fail "the architect's gh acts as $viewer after the refresh, want $(role_app architect)"
+[ "$viewer" = "$legion_app" ] || fail "the architect's gh acts as $viewer after the refresh, want $legion_app"
 note "the daemon refreshed the architect's credential at $refreshed_at; the container's hosts.yml had changed by $propagated_at ($propagation s after the daemon's write — an upper bound when the change predates this check, which polls every few seconds), and the architect's gh is $viewer on it"
 # The old token stops working at its own expiry: GitHub keeps it valid until then, which is what
 # lets a gh that started on it finish. Both calls run from this shell; the tokens are its variables
@@ -5374,7 +5350,7 @@ fi
 old_answer=$(GH_TOKEN="$gh_before_token" GITHUB_TOKEN='' GH_HOST='' GH_CONFIG_DIR="$work/no-gh" "$real_gh" api graphql -f query='{viewer{login}}' 2>&1 | scrub) && fail "the architect's token read at issue-independence still answers GitHub after its lease's expiry $before_expiry: $old_answer"
 grep -qi "bad credentials\|401" <<<"$old_answer" || fail "the architect's token read at issue-independence was refused for another reason than its expiry: $old_answer"
 new_answer=$(GH_TOKEN="$gh_after_token" GITHUB_TOKEN='' GH_HOST='' GH_CONFIG_DIR="$work/no-gh" "$real_gh" api graphql -f query='{viewer{login}}' --jq .data.viewer.login 2>&1 | scrub) || fail "the architect's refreshed token does not answer GitHub: $new_answer"
-[ "$new_answer" = "$(role_app architect)" ] || fail "the architect's refreshed token answers as $new_answer, want $(role_app architect)"
+[ "$new_answer" = "$legion_app" ] || fail "the architect's refreshed token answers as $new_answer, want $legion_app"
 unset gh_before_token gh_after_token
 note "after $before_expiry the token read at issue-independence answers 401 and the refreshed one $new_answer"
 pass
@@ -5763,8 +5739,8 @@ until_true 300 "controllerLocator in the state" sh -c "'$work/legion' state --js
 controller_session=$(daemon_state | jq -r .controllerLocator.sessionId)
 note "controllerLocator $(daemon_state | jq -c .controllerLocator)"
 # The operator-launched controller's own gh bundle, $work/controller-state/gh: from the repository
-# owner's directory it answers tree 1's pull request's state and the review App's viewer, a
-# directory elsewhere answers neither, the stderr names the review App and the bundle's owners, and
+# owner's directory it answers tree 1's pull request's state and the App's viewer, a
+# directory elsewhere answers neither, the stderr names the App and the bundle's owners, and
 # the daemon's credential refresh log exists.
 [ -n "$pr_number" ] || fail "the controller's GitHub credential check needs tree 1's pull request, but pr_number is empty"
 controller_gh=$work/controller-state/gh/${gh_config_dir##*/}
@@ -5774,14 +5750,14 @@ case "$state" in
   *) fail "the operator-launched controller's gh answered pull request state '$state' for $repo#$pr_number, want OPEN, MERGED or CLOSED" ;;
 esac
 viewer=$(operator_gh "$controller_gh" api graphql -f query='{viewer{login}}' --jq .data.viewer.login 2>&1) || fail "the operator-launched controller's gh answered no viewer: $(scrub <<<"$viewer")"
-[ "$viewer" = "$(role_app controller)" ] || fail "the operator-launched controller's gh answered viewer $viewer, want the review App's $(role_app controller)"
+[ "$viewer" = "$legion_app" ] || fail "the operator-launched controller's gh answered viewer $viewer, want the App's $legion_app"
 if out=$(operator_gh /nonexistent pr view "$pr_number" -R "$repo" --json state -q .state 2>&1); then
   fail "gh with GH_CONFIG_DIR=/nonexistent unexpectedly answered pull request state: $(scrub <<<"$out")"
 fi
-grep -qF "[legion] the controller's gh acts as the review App for owners ${gh_config_dir##*/} (read-only) from $work/controller-state/gh" "$evidence/logs/controller.stderr" ||
-  fail "controller.stderr does not name the review App, ${gh_config_dir##*/} and $work/controller-state/gh: $(cat "$evidence/logs/controller.stderr")"
+grep -qF "[legion] the controller's gh acts as the App for owners ${gh_config_dir##*/} (read-only) from $work/controller-state/gh" "$evidence/logs/controller.stderr" ||
+  fail "controller.stderr does not name the App, ${gh_config_dir##*/} and $work/controller-state/gh: $(cat "$evidence/logs/controller.stderr")"
 [ -f "$work/controller-state/github-credential.log" ] || fail "$work/controller-state/github-credential.log does not exist"
-note "the operator-launched controller's gh: pull request state $state, viewer $viewer from $controller_gh; GH_CONFIG_DIR=/nonexistent failed; controller.stderr names the review App and its owners; github-credential.log exists"
+note "the operator-launched controller's gh: pull request state $state, viewer $viewer from $controller_gh; GH_CONFIG_DIR=/nonexistent failed; controller.stderr names the App and its owners; github-credential.log exists"
 # The controller's first turn starts itself (LEGION-392): nothing is ever typed into its pane, so
 # its session's first user message is the start message `legion controller start` carries as
 # LEGION_CONTROLLER_START_MESSAGE (daemon.ControllerStartMessage, internal/daemon/controller.go),
@@ -6197,7 +6173,7 @@ begin daemon-controller-liveness
 # 1. up, the negative control: `controller: daemon`, the controller's pod sized to run. The
 #    controller the daemon launches registers and holds the role, and the driver reads the log after
 #    two boot timeouts and more; phase 1 also checks this controller's gh, from its pod's
-#    /var/run/legion/gh, against tree 1's pull request and the review App's viewer.
+#    /var/run/legion/gh, against tree 1's pull request and the App's viewer.
 # 2. down: the same with the pod's CPU request past any node's. The daemon re-adopts the running
 #    controller, the driver deletes its pod, and the verdict waits through the relaunch's failed
 #    launches.
@@ -6271,7 +6247,7 @@ if [ -n "$skip_controller" ]; then
   note "STAGE4B_SKIP_CONTROLLER: the daemon-launched controller's GitHub credential is not checked"
 else
 # The controller the daemon launched: its gh, from its owner's directory of the pod's gh bundle,
-# answers tree 1's pull request's state and the review App's viewer, the bundle holds that directory
+# answers tree 1's pull request's state and the App's viewer, the bundle holds that directory
 # with both gh files and nothing else, since a bundle holds one directory per owner account the App
 # is installed on and no directory for a repository (INFRA-2543 R2), beside the other owners'
 # directories and the kubelet's own entries alone (assert_gh_files), and the real gh with
@@ -6284,7 +6260,7 @@ case "$state" in
   *) fail "the daemon-launched controller's gh answered pull request state '$state' for $repo#$pr_number, want OPEN, MERGED or CLOSED" ;;
 esac
 viewer=$(pod_viewer "$pod" "$container") || fail "the daemon-launched controller's gh in $pod/$container answered no viewer"
-[ "$viewer" = "$(role_app controller)" ] || fail "the daemon-launched controller's gh answered viewer $viewer, want the review App's $(role_app controller)"
+[ "$viewer" = "$legion_app" ] || fail "the daemon-launched controller's gh answered viewer $viewer, want the App's $legion_app"
 assert_gh_files "$pod" "$container" "the daemon-launched controller's container $pod/$container"
 if out=$(pod_exec "$pod" "$container" sh -c "GH_CONFIG_DIR=/nonexistent GH_TOKEN= GITHUB_TOKEN= GH_HOST= /usr/local/bin/gh pr view $pr_number -R $repo --json state -q .state" 2>&1); then
   fail "gh with GH_CONFIG_DIR=/nonexistent in $pod/$container unexpectedly answered pull request state: $(scrub <<<"$out")"
