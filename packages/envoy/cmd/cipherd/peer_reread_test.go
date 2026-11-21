@@ -47,7 +47,7 @@ func (s *abandoningCall) DescribeSecret(ctx context.Context, in *secretsmanager.
 // line for it; a reread whose context ended during its metadata read merged nothing and is that
 // context's error, which the listener logs. The first merged a new version of the App's value, so
 // it drops the name from the airlock proxy's cache; the second merged no version, so it drops
-// nothing (policy.Current.MovedByReread).
+// nothing (policy.Lookup.Moved).
 //
 // The named revert: peerReread returns RefreshOne's error whole; the value-read row then answers
 // ErrValueUnchecked and this test fails.
@@ -135,14 +135,14 @@ func TestAPeersRereadDropsEveryNameServedFromTheValueItRead(t *testing.T) {
 
 // TestAPeersRereadDropsAMintedSourcesNamesOnlyWhenItMovedTheValueVersion: a minted name's held
 // value is a token the proxy minted from the stored value, so a reread drops the names of a type
-// source (policy.Current.MovedByReread) only when it moved that source's value version
+// source (policy.Lookup.Moved) only when it moved that source's value version
 // (policy.Set.ValueVersion): a reread of the source or of a profile of it that finds the version
 // the live policy held drops nothing, and the proxy goes on spending the token it holds, rather
 // than minting again for every held grant of every profile at one public call. A reread that
 // moved it drops every profile of it. A stored value has no version the policy tracks, so its
 // reread is the only signal of a new value, and drops every name served from it each time.
 //
-// The named revert: dropReread drops current.RereadNames(name) whatever the version did; the two
+// The named revert: peerReread drops current.RereadNames(name) whatever the version did; the two
 // rows of an unmoved github-app source then drop its names and this test fails.
 func TestAPeersRereadDropsAMintedSourcesNamesOnlyWhenItMovedTheValueVersion(t *testing.T) {
 	local := secrets.NewLocal(

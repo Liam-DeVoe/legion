@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -27,6 +26,14 @@ type Profiles struct {
 	// digests is Digest of each profile of list, at the same index, computed once as the file is
 	// read, since every set Current makes live carries it (apply).
 	digests []string
+	// index is the index in list of the profile of each name, the first where the file repeats a
+	// name (only DecodeProfiles reads such a file), so Lookup, Digest and SourceOf read a name
+	// without walking the file.
+	index map[string]int
+	// of is, for each source a profile of another name uses, those profiles' names in the file's
+	// order (Of). index and of are built once as the file is read, since every set Current makes
+	// live and every reread reads them.
+	of map[string][]string
 	// fileDigest is the SHA-256, in hex, of the file's bytes as ParseProfiles read them, and ""
 	// for the zero Profiles and for DecodeProfiles' answer. ProfilesAppliedMessage writes it.
 	fileDigest string
@@ -112,16 +119,17 @@ type profileEntry struct {
 const maxGuidanceRunes = 2000
 
 // ParseProfiles reads a profiles file and refuses one the broker would not serve. It decodes the
-// file strictly (proxyrules.Decode: a field the broker does not know, and anything after the file's
+// file strictly (decodeProfiles: a field the broker does not know, and anything after the file's
 // one object, are refused), and then holds each profile, in the file's order, to the file's shape:
 // a name a caller can ask for, held once; a source of that form; a tier of agent or human;
 // requesters of a person's or a service's shape, and never an empty list, which would serve the
 // profile to nobody; a maxGrant of at least a second; a github block of GitHub logins, repositories
-// of those accounts, at most secrets.MaxNarrowedRepositories of them, and permissions at levels
-// GitHub gives, metadata at read among them; a google block of scope names; never both; and a
-// proxy block whose hosts are in the one grammar a rules host is written in (rulehost.Refusal),
-// which proxyrules.Validate, the Lean model's answer, accepts, and whose guidance the judge reads
-// whole. Each refusal names the profile by its index and name and the field it refuses.
+// of those accounts, at most secrets.MaxNarrowedRepositories of them and, where it names any, one
+// of each account at least, and permissions at levels GitHub gives, metadata at read among them; a
+// google block of scope names; never both; and a proxy block whose hosts are in the one grammar a
+// rules host is written in (rulehost.Refusal), which proxyrules.Validate, the Lean model's answer,
+// accepts, and whose guidance the judge reads whole. Each refusal names the profile by its index
+// and name and the field it refuses.
 //
 // It reads no secret: whether a profile fits its source, and is no looser than it, is the policy
 // load's question. Nor does it read the deployment's services: CheckRequesters does, at the boot.
@@ -160,22 +168,6 @@ func DecodeProfiles(data []byte) (Profiles, error) {
 	return readProfiles(entries)
 }
 
-// decodeProfiles is the strict decode both readers share. The file is one JSON object,
-// {"profiles": [...]}, and a file with no profiles list, or a null one, is refused rather than
-// read as a file of no profiles: a file of no profiles says so, {"profiles": []}.
-func decodeProfiles(data []byte) ([]profileEntry, error) {
-	var file struct {
-		Profiles *[]profileEntry `json:"profiles"`
-	}
-	if err := proxyrules.Decode(data, &file); err != nil {
-		return nil, err
-	}
-	if file.Profiles == nil {
-		return nil, errors.New(`"profiles" is missing or null: the file is one JSON object {"profiles": [...]}, and a file of no profiles is {"profiles": []}`)
-	}
-	return *file.Profiles, nil
-}
-
 // readProfiles answers each entry in the one form the broker serves it in. The entries have been
 // checked when ParseProfiles calls it, so the forms it falls back to for a value the rules refuse
 // (a login as written) are DecodeProfiles' alone; a maxGrant that is no duration has no form.
@@ -200,11 +192,20 @@ func readProfiles(entries []profileEntry) (Profiles, error) {
 		}
 		list = append(list, p)
 	}
-	digests := make([]string, len(list))
-	for i := range list {
-		digests[i] = digestOf(list[i])
+	profiles := Profiles{list: list, digests: make([]string, len(list)), index: make(map[string]int, len(list))}
+	for i, profile := range list {
+		profiles.digests[i] = digestOf(profile)
+		if _, repeated := profiles.index[profile.Name]; !repeated {
+			profiles.index[profile.Name] = i
+		}
+		if profile.Source != profile.Name {
+			if profiles.of == nil {
+				profiles.of = map[string][]string{}
+			}
+			profiles.of[profile.Source] = append(profiles.of[profile.Source], profile.Name)
+		}
 	}
-	return Profiles{list: list, digests: digests}, nil
+	return profiles, nil
 }
 
 // read is a github block in the form the broker serves: logins lowercased and sorted, each
@@ -334,9 +335,9 @@ func (e profileEntry) checkRequesters(refuse func(field, why string) error) erro
 
 // check holds a github block to its shape: accounts that are GitHub logins, each once whatever
 // its case; repositories, when present, at least one and at most secrets.MaxNarrowedRepositories,
-// each account/name of an account the block names; and permissions, at least one, each a
-// permission's name at a level GitHub gives it, and metadata at read among them
-// (secrets.MetadataPermission).
+// each account/name of an account the block names, and at least one of each account it names; and
+// permissions, at least one, each a permission's name at a level GitHub gives it, and metadata at
+// read among them (secrets.MetadataPermission).
 func (b *GitHubBlock) check(refuse func(field, why string) error) error {
 	if b == nil {
 		return nil
@@ -388,7 +389,10 @@ func (b *GitHubBlock) check(refuse func(field, why string) error) error {
 
 // checkRepositories holds github.repositories to its shape. Absent names none, so the token
 // reaches every repository of the installation; present but empty is refused, since a list that
-// matched nothing would otherwise get that widest token.
+// matched nothing would otherwise get that widest token. Present, it names a repository of every
+// account the block names: a token cut to repositories is minted only on the accounts they are
+// of, so an account none of them is of would never be minted, and a target on it would be refused
+// as outside the profile.
 func checkRepositories(repositories, accounts []string, refuse func(field, why string) error) error {
 	switch {
 	case repositories == nil:
@@ -398,6 +402,7 @@ func checkRepositories(repositories, accounts []string, refuse func(field, why s
 	case len(repositories) > secrets.MaxNarrowedRepositories:
 		return refuse("github.repositories", fmt.Sprintf("names %d repositories; a token takes at most %d", len(repositories), secrets.MaxNarrowedRepositories))
 	}
+	named := make([]string, 0, len(repositories))
 	for j, repository := range repositories {
 		field := fmt.Sprintf("github.repositories[%d]", j)
 		account, name, ok := strings.Cut(repository, "/")
@@ -413,6 +418,12 @@ func checkRepositories(repositories, accounts []string, refuse func(field, why s
 		}
 		if !secrets.ValidRepositoryName(name) {
 			return refuse(field, fmt.Sprintf("%q names a repository GitHub cannot hold: a name is ASCII letters, digits, '.', '-' and '_', and neither . nor ..", repository))
+		}
+		named = append(named, login)
+	}
+	for j, login := range accounts {
+		if !slices.Contains(named, login) {
+			return refuse(fmt.Sprintf("github.accounts[%d]", j), fmt.Sprintf("names %s, but github.repositories names no repository of it, so no token would ever be minted on it: name a repository of it, or leave it out", login))
 		}
 	}
 	return nil
@@ -495,12 +506,32 @@ func (p Profiles) CheckRequesters(services []string) error {
 // Lookup finds the profile a caller asks for by name, or nil. The profile points into p, so
 // every Lookup of one name answers the one profile the file was read into.
 func (p Profiles) Lookup(name string) *Profile {
-	for i := range p.list {
-		if p.list[i].Name == name {
-			return &p.list[i]
-		}
+	if i, held := p.index[name]; held {
+		return &p.list[i]
 	}
 	return nil
+}
+
+// SourceOf is the name of what name is served from, and whether p holds a profile of that name:
+// the source of that profile, as the file names it, whether the broker serves or refuses it; and
+// name itself, with false, for a name p holds no profile of, which is a stored secret served by
+// its own name, a source asked for by its own name, or a name the broker has never heard of. It
+// is the one reading of a profile's source: a reread reads the stored secret it names, a refused
+// value refuses it, and a withhold of one name of a source withholds each (Set.Withholds).
+func (p Profiles) SourceOf(name string) (string, bool) {
+	if i, held := p.index[name]; held {
+		return p.list[i].Source, true
+	}
+	return name, false
+}
+
+// Of is the names of the profiles of other names made from source, in the file's order, whether
+// the broker serves or refuses them, and nil for a source no profile of another name uses: a
+// source only a profile of its own name uses, a profile's name, which is never a source, and a
+// name p holds nothing of. Such a source is served only through them (Set.ProfilesOf). The answer
+// is p's own and is never changed.
+func (p Profiles) Of(source string) []string {
+	return p.of[source]
 }
 
 // Names is each profile's name in the file's order. It exists for `profiles check`, whose report
@@ -534,10 +565,8 @@ func (p Profiles) ProxyRules() proxyrules.Rules {
 // no others. Guidance is left out because it tells the judge how to decide requests to come and
 // changes nothing a live grant may do, so writing it ends no grant.
 func (p Profiles) Digest(name string) string {
-	for i := range p.list {
-		if p.list[i].Name == name {
-			return p.digests[i]
-		}
+	if i, held := p.index[name]; held {
+		return p.digests[i]
 	}
 	return ""
 }

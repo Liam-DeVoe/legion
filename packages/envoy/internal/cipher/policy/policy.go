@@ -768,23 +768,24 @@ type Set struct {
 	// each version and type it has not decoded, and refuses the secret only when the decoder does
 	// (ReasonValueMalformed).
 	versions map[string]string
-	// ProfilesOf is, for each source a profile of another name uses, those profiles' names, in the
-	// profiles file's order, whether they pass or fail: such a source is served only through them,
-	// so Evaluate refuses its own name (ErrServedOnlyAsProfiles), naming those that pass, unless a
-	// profile holds that name too. It is nil for a set no profiles were applied to
-	// (Profiles.apply).
-	ProfilesOf map[string][]string
+	// profiles is the profiles file applied to the set (Profiles.apply), and the zero Profiles for
+	// a set none were applied to. Every reading of a profile's source and of a source's profiles
+	// is its (Profiles.SourceOf, Profiles.Of), built once as the file was read.
+	profiles Profiles
 	// profileRefused is, for each name a request may ask for that the set refuses because of the
 	// profiles file, its refusal as Refused holds it: each failed profile's name, and each
 	// github-app secret no profile names (ReasonGitHubAppNoProfile). Evaluate answers it
 	// ErrProfileRefused. Refused itself is keyed by store id, which Evaluate, holding no prefix,
 	// cannot form.
 	profileRefused map[string]Refusal
-	// profileSources is ProfilesOf read the other way: for each profile of another name, whether
-	// it passes or fails, its source's name. It is how source reads the source of a profile the
-	// set refuses, which serves no Secret to carry it.
-	profileSources map[string]string
 }
+
+// ProfilesOf is the names of the profiles of other names the set's profiles file makes from
+// source, in the file's order, whether they pass or fail (Profiles.Of): such a source is served
+// only through them, so Evaluate refuses its own name (ErrServedOnlyAsProfiles), naming those
+// that pass, unless a profile holds that name too. It is nil for a source no profile of another
+// name uses, and for every name of a set no profiles were applied to (Profiles.apply).
+func (s *Set) ProfilesOf(source string) []string { return s.profiles.Of(source) }
 
 // ValueVersion is the version of the type secret name's value as s lists it, and "" for a name s
 // lists no type secret's value for: what a mint the decoder refuses hands Current.RefuseValue, so

@@ -255,7 +255,7 @@ func TestARereadAnswersACallerWithNoSessionAtOnceAndRereadsAfter(t *testing.T) {
 	mux := http.NewServeMux()
 	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		RereadOverallLimit: &rereadsFreely,
-		NotifyReread:       func(_ context.Context, name string, _ *policy.Set) { notified <- name }})
+		NotifyReread:       func(_ context.Context, name string, _ []string) { notified <- name }})
 	// NEW_KEY is in the store only from now on, so only a reread can make the broker serve it.
 	local.Put(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
 
@@ -395,7 +395,7 @@ func TestAPanicInARereadsPeerNoticeNamesTheStep(t *testing.T) {
 		SecretsStore:  secrets.StoreAWS,
 		SecretsPrefix: policytest.Prefix,
 		SecretsKMSKey: policytest.KeyARN,
-		NotifyReread:  func(context.Context, string, *policy.Set) { panic("a peer-notice defect") },
+		NotifyReread:  func(context.Context, string, []string) { panic("a peer-notice defect") },
 	})
 	logged := policytest.CaptureLog(t)
 	recorder := httptest.NewRecorder()

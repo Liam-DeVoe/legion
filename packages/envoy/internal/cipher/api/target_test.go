@@ -20,14 +20,14 @@ import (
 )
 
 // targetProfiles is the profiles file of every test here. APP_KEY, agent tier, is served by its
-// own name on two accounts and every repository, and as PROOFS_READ on two repositories of one
-// of them. HUMAN_APP_KEY, human tier, whose github-owners tag names three accounts, is served by
+// own name on two accounts and every repository, and as PROOFS_READ on one repository of acme and
+// two of ada. HUMAN_APP_KEY, human tier, whose github-owners tag names three accounts, is served by
 // its own name, as GITHUB_READ, a bare token of all three, and as ADA_TOKEN, a bare token of
 // one. DEEL_API_KEY, a stored value, is served behind the proxy as DEEL_PROXIED, with no github
 // block.
 var targetProfiles = policytest.ProfilesFile(
 	policytest.AppProfile("APP_KEY"),
-	`{"name": "PROOFS_READ", "source": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean", "ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}}`,
+	`{"name": "PROOFS_READ", "source": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["acme/site", "ada/lean", "ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}}`,
 	`{"name": "HUMAN_APP_KEY", "github": {"accounts": ["acme", "ada", "example-org"], "permissions": {"metadata": "read"}}}`,
 	`{"name": "GITHUB_READ", "source": "HUMAN_APP_KEY", "github": {"accounts": ["acme", "ada", "example-org"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}}`,
 	`{"name": "ADA_TOKEN", "source": "HUMAN_APP_KEY", "github": {"accounts": ["ada"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}}`,
@@ -84,11 +84,10 @@ func (s *profileServer) requireTargetRefused(t *testing.T, status int, reply wir
 }
 
 // TestTargetOutsideTheProfileIsRefused: a target narrows its profile and never widens it. An
-// account the profile does not name, a repository it does not name, and an account it names no
-// repository of are each refused 400 TARGET_REFUSED, naming the profile's accounts and
-// repositories, before anything is written or minted. A target inside the profile, the account
-// or a repository it names, is granted; on a profile that names no repository, any repository of
-// its accounts is inside it.
+// account the profile does not name and a repository it does not name are each refused 400
+// TARGET_REFUSED, naming the profile's accounts and repositories, before anything is written or
+// minted. A target inside the profile, the account or a repository it names, is granted; on a
+// profile that names no repository, any repository of its accounts is inside it.
 func TestTargetOutsideTheProfileIsRefused(t *testing.T) {
 	s := newTargetServer(t)
 	for _, row := range []struct {
@@ -96,10 +95,8 @@ func TestTargetOutsideTheProfileIsRefused(t *testing.T) {
 		locations     []string
 		words         []string
 	}{
-		{"an account the profile does not name", "PROOFS_READ", []string{"https://github.com/example-org"}, []string{"PROOFS_READ", "example-org", "acme, ada", "ada/lean, ada/proofs"}},
-		{"a repository the profile does not name", "PROOFS_READ", []string{"https://github.com/ada/proofs", "https://github.com/ada/site"}, []string{"PROOFS_READ", "ada/proofs, ada/site", "acme, ada", "ada/lean, ada/proofs"}},
-		{"an account the profile names no repository of", "PROOFS_READ", []string{"https://github.com/acme"}, []string{"PROOFS_READ", "acme, ada", "ada/lean, ada/proofs"}},
-		{"a repository of an account the profile names no repository of", "PROOFS_READ", []string{"https://github.com/acme/lean"}, []string{"PROOFS_READ", "acme/lean", "acme, ada", "ada/lean, ada/proofs"}},
+		{"an account the profile does not name", "PROOFS_READ", []string{"https://github.com/example-org"}, []string{"PROOFS_READ", "example-org", "acme, ada", "acme/site, ada/lean, ada/proofs"}},
+		{"a repository the profile does not name", "PROOFS_READ", []string{"https://github.com/ada/proofs", "https://github.com/ada/site"}, []string{"PROOFS_READ", "ada/proofs, ada/site", "acme, ada", "acme/site, ada/lean, ada/proofs"}},
 		{"an account a profile of every repository does not name", "APP_KEY", []string{"https://github.com/example-org/site"}, []string{"APP_KEY", "example-org/site", "acme, ada", "every repository"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {

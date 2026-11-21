@@ -250,7 +250,7 @@ func TestProfilesCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 		{
 			"a file that is not JSON",
 			"{\"profiles\": [\n  {\"name\": \"GITHUB_ADMIN_PAT\", \"proxy\": {\"hosts\": [\"api.github.com\"]}},\n]}",
-			[]string{"not JSON", "byte offset", "line 3", "column 1"},
+			[]string{"not JSON", "invalid character ','", "byte offset 86", "line 2", "column 71"},
 		},
 		{
 			"a field the broker does not know",
@@ -403,7 +403,7 @@ func TestProfilesCheckReportsWhatChangedAgainstTheOldFile(t *testing.T) {
 ]}`)
 	now := profilesFile(t, `{"profiles": [
   {"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP", "tier": "agent", "requesters": ["legion-daemon"], "maxGrant": "1h",
-   "github": {"accounts": ["example-org", "ada"], "repositories": ["ada/proofs"], "permissions": {"contents": "read", "metadata": "read", "pull_requests": "read"}, "value": "token"},
+   "github": {"accounts": ["example-org", "ada"], "repositories": ["ada/proofs", "example-org/legion"], "permissions": {"contents": "read", "metadata": "read", "pull_requests": "read"}, "value": "token"},
    "proxy": {"hosts": ["api.github.com", "uploads.github.com"], "headers": ["authorization", "x-api-key"],
     "allow": [{"method": "POST", "pathPrefix": "/v1/"}], "kind": "aws", "judge": 600, "guidance": "grant for the release job"}}
 ]}`)
@@ -417,7 +417,7 @@ profile "GITHUB_READ": tier the source's → agent
 profile "GITHUB_READ": requesters the source's → legion-daemon
 profile "GITHUB_READ": maxGrant the source's → 1h0m0s
 profile "GITHUB_READ": github.accounts ada added
-profile "GITHUB_READ": github.repositories every repository the installation reaches → ada/proofs
+profile "GITHUB_READ": github.repositories every repository the installation reaches → ada/proofs example-org/legion
 profile "GITHUB_READ": github.permissions pull_requests read added
 profile "GITHUB_READ": github.value installations → token
 profile "GITHUB_READ": proxy.hosts uploads.github.com added

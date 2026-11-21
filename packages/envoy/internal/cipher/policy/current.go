@@ -269,24 +269,36 @@ var ErrValueUnchecked = errors.New("the reread merged the secret's tags, and its
 // ended: a caller may be waiting on it, and a reread nobody waits on is bounded by ctx's own
 // deadline. When ctx ends before that read is recorded - its Store.Read cut
 // short, or its wait for the writer lock - the reread has merged what it read, and its value read
-// did not finish: RefreshOne answers ErrValueUnchecked wrapping ctx's error, rather than a Lookup
-// the value read never checked. What the reread merged stays live, and the value is read at the
-// next load or reread. Each of its callers tells that apart from a reread that merged nothing:
-// the reread route answers a session's 503 REQUEST_ENDED, and logs it as a failed reread when it
-// ran after a 202 that nobody waits on, and tells the other pods to reread the name either way,
-// since this pod now serves the tags it read; the miss path takes it as its request's own
-// failure; and the reread listener (cmd/cipherd), which a peer's notification drives, takes it as
-// a reread that ran.
+// did not finish: RefreshOne answers ErrValueUnchecked wrapping ctx's error, with a Lookup that
+// holds Moved alone rather than one the value read never checked. What the reread merged stays
+// live, and the value is read at the next load or reread. Each of its callers tells that apart
+// from a reread that merged nothing: the reread route answers a session's 503 REQUEST_ENDED, and
+// logs it as a failed reread when it ran after a 202 that nobody waits on, and tells the other
+// pods to reread the name either way, since this pod now serves the tags it read; the miss path
+// takes it as its request's own failure; and the reread listener (cmd/cipherd), which a peer's
+// notification drives, takes it as a reread that ran.
+//
+// Once name passes CheckName, the answer's Moved is every name whose value the reread may have
+// moved (movedByReread), read against the live set as it stood when RefreshOne began, whatever
+// the reread came to: the names whose held values the airlock's proxy drops (cmd/cipherd). It is
+// set on an error too, ErrValueUnchecked or a reread that merged nothing, since a peer's
+// notification is the signal that a stored value has a new one even where this pod's own reread
+// failed. RefreshOne takes that set itself, so no caller reads what moved against another one.
 func (c *Current) RefreshOne(ctx context.Context, name string) (Lookup, error) {
 	if err := c.CheckName(name); err != nil {
 		return Lookup{}, err
 	}
+	before := c.Get()
+	lk, err := c.refreshOne(ctx, name)
+	lk.Moved = c.movedByReread(name, before)
+	return lk, err
+}
+
+// refreshOne is RefreshOne for a name CheckName passed, but for Moved.
+func (c *Current) refreshOne(ctx context.Context, name string) (Lookup, error) {
 	// A profile's name is no secret in the store: the secret a reread of it reads is its source,
 	// and the answer is the profile as the policy then serves or refuses it.
-	read, profile := name, c.loader.Profiles.Lookup(name)
-	if profile != nil {
-		read = profile.Source
-	}
+	read, profile := c.loader.Profiles.SourceOf(name)
 	lk, reads, err := c.reread(ctx, read)
 	if err != nil {
 		return Lookup{}, err
@@ -295,7 +307,7 @@ func (c *Current) RefreshOne(ctx context.Context, name string) (Lookup, error) {
 		return Lookup{}, fmt.Errorf("%w: %w", ErrValueUnchecked, err)
 	}
 	live := c.Get()
-	if profile != nil {
+	if profile {
 		return profileLookup(live, name), nil
 	}
 	if lk.Served {
@@ -318,19 +330,16 @@ func profileLookup(set *Set, name string) Lookup {
 
 // RereadNames is every name a reread of name may have given a new value: the stored secret the
 // reread reads, which is name or, for a profile's name, the profile's source (RefreshOne), and
-// each profile of that source in the live policy (Set.ProfilesOf), since every one of them is
-// served from that one stored value. The airlock's proxy holds a grant's values by the name the
-// grant was released under, a profile's own name for a profile, so a reread that moved that
-// value (MovedByReread) drops each of these from it (cmd/cipherd), and a new value of a source
-// reaches every profile of it rather than only a grant of the name that was reread. A name no
-// profile is of, or that the policy has never heard of, is itself alone.
+// each profile of that source (Profiles.Of), since every one of them is served from that one
+// stored value. The airlock's proxy holds a grant's values by the name the grant was released
+// under, a profile's own name for a profile, so a reread that moved that value (Lookup.Moved)
+// drops each of these from it (cmd/cipherd), and a new value of a source reaches every profile of
+// it rather than only a grant of the name that was reread. A name no profile is of, or that the
+// policy has never heard of, is itself alone.
 func (c *Current) RereadNames(name string) []string {
-	source := name
-	if profile := c.loader.Profiles.Lookup(name); profile != nil {
-		source = profile.Source
-	}
+	source, _ := c.loader.Profiles.SourceOf(name)
 	names := []string{source}
-	for _, profile := range c.Get().ProfilesOf[source] {
+	for _, profile := range c.loader.Profiles.Of(source) {
 		if !slices.Contains(names, profile) {
 			names = append(names, profile)
 		}
@@ -341,19 +350,19 @@ func (c *Current) RereadNames(name string) []string {
 	return names
 }
 
-// MovedByReread is the names whose value a reread of name may have moved, read against before,
-// the live set as it stood before that reread: RereadNames(name) where the reread moved the value
-// version (Set.ValueVersion) of a name served from the stored secret it read, or where neither set
-// lists a version of any of them, and none where both list the same versions. A type secret's
-// served names each carry its value version, which a reread moves only when the store holds a new
-// value, so a reread that finds the value the policy held gave no name a new one: what a proxy
-// holds of it was minted from that same value and is spent until it nears its expiry, rather than
-// minted again for each held grant of each profile of the source at every reread anyone may ask
-// for. A stored value has no version the policy lists, and nor does a name neither set serves, so
-// for those the reread is the only signal of a new value, and every one of its names is moved.
-// The live set is read after the reread, so a reload that moved a version in between counts as
-// moved too.
-func (c *Current) MovedByReread(name string, before *Set) []string {
+// movedByReread is the names whose value a reread of name may have moved, read against before,
+// the live set as it stood when RefreshOne began: RereadNames(name) where the reread moved the
+// value version (Set.ValueVersion) of a name served from the stored secret it read, or where
+// neither set lists a version of any of them, and none where both list the same versions. A type
+// secret's served names each carry its value version, which a reread moves only when the store
+// holds a new value, so a reread that finds the value the policy held gave no name a new one:
+// what a proxy holds of it was minted from that same value and is spent until it nears its
+// expiry, rather than minted again for each held grant of each profile of the source at every
+// reread anyone may ask for. A stored value has no version the policy lists, and nor does a name
+// neither set serves, so for those the reread is the only signal of a new value, and every one of
+// its names is moved. The live set is read after the reread, so a reload that moved a version in
+// between counts as moved too.
+func (c *Current) movedByReread(name string, before *Set) []string {
 	names := c.RereadNames(name)
 	live := c.Get()
 	listed := false
@@ -615,9 +624,7 @@ func (c *Current) RefuseValue(ctx context.Context, name, version, secretType str
 	// A profile has no value of its own: what a release of it decoded is its source's, so the
 	// refusal is the source's, as a load's would be, and every profile of the source is refused
 	// with it (withhold).
-	if profile := c.loader.Profiles.Lookup(name); profile != nil {
-		name = profile.Source
-	}
+	name, _ = c.loader.Profiles.SourceOf(name)
 	if c.lock(ctx) != nil {
 		return
 	}

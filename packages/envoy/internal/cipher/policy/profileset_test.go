@@ -418,8 +418,8 @@ func TestASourceIsServedOnlyThroughItsProfiles(t *testing.T) {
 		if secret, served := set.Secrets[row.source]; served {
 			t.Errorf("%s is served by its own name (%+v); want it served only through %v", row.source, secret, row.profiles)
 		}
-		if !slices.Equal(set.ProfilesOf[row.source], row.profiles) {
-			t.Errorf("ProfilesOf[%s] = %v; want %v", row.source, set.ProfilesOf[row.source], row.profiles)
+		if got := set.ProfilesOf(row.source); !slices.Equal(got, row.profiles) {
+			t.Errorf("ProfilesOf(%s) = %v; want %v", row.source, got, row.profiles)
 		}
 		_, err := set.Evaluate(row.source, policy.Requester{Operator: appOwner})
 		if !errors.Is(err, policy.ErrServedOnlyAsProfiles) || !errors.Is(err, policy.ErrUnknownSecret) {
@@ -692,10 +692,10 @@ func TestARereadNamesEveryNameServedFromTheValueItReads(t *testing.T) {
 	}
 }
 
-// TestARereadMovesTheNamesOfAMintedSourceOnlyWhenItMovesItsValueVersion: MovedByReread is the
-// names a reread of a name gave a new value, read against the live set as it stood before that
-// reread. For a type source each served name carries its value version (Set.ValueVersion), so a
-// reread of the source or of a profile of it that finds the version the policy held moves
+// TestARereadMovesTheNamesOfAMintedSourceOnlyWhenItMovesItsValueVersion: RefreshOne's Moved is
+// the names a reread of a name gave a new value, read against the live set as it stood when the
+// reread began. For a type source each served name carries its value version (Set.ValueVersion),
+// so a reread of the source or of a profile of it that finds the version the policy held moves
 // nothing, and one that finds a new version moves every name RereadNames gives: the source and
 // each profile of it. A stored value has no version the policy lists, so its reread is the only
 // signal of a new value, and every reread of it moves every name served from it.
@@ -725,20 +725,20 @@ func TestARereadMovesTheNamesOfAMintedSourceOnlyWhenItMovesItsValueVersion(t *te
 				`{"name": "`+appSourceName+`", `+acmeRead+`}`,
 				readProfile,
 			), daemonService)
-			before := cur.Get()
 			if row.newValue {
 				// A new version of the App's value: a trailing space, which the decoder still reads.
 				store.Put(policytest.TypeSecret(appSourceName, appOwner, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)+" "))
 			}
-			if _, err := cur.RefreshOne(t.Context(), row.reread); err != nil {
+			lk, err := cur.RefreshOne(t.Context(), row.reread)
+			if err != nil {
 				t.Fatalf("RefreshOne(%s): %v", row.reread, err)
 			}
 			var got []string
-			if moved := cur.MovedByReread(row.reread, before); moved != nil {
-				got = slices.Sorted(slices.Values(moved))
+			if lk.Moved != nil {
+				got = slices.Sorted(slices.Values(lk.Moved))
 			}
 			if !slices.Equal(got, row.want) {
-				t.Errorf("MovedByReread(%s) = %v; want %v", row.reread, got, row.want)
+				t.Errorf("RefreshOne(%s).Moved = %v; want %v", row.reread, got, row.want)
 			}
 		})
 	}
