@@ -427,7 +427,7 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	if again := r.dispatch.latest(r.a7, "test"); again.Body != daemonRecord.Body || again.Author.ID != tester.session {
 		t.Fatalf("the rewritten test record = %+v, want the same body under %s", again, tester.session)
 	}
-	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "tested", Verdict: "pass", HandoffID: rewritten.id, HandoffVersion: rewritten.version})
+	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "tested", Verdict: "pass", Commit: "c0ffee00000000000000000000000000000000aa", HandoffID: rewritten.id, HandoffVersion: rewritten.version})
 	if status != http.StatusOK {
 		t.Fatalf("the tester's completion naming its own record = %d %+v, want 200", status, failure)
 	}
@@ -478,7 +478,7 @@ func (r *handoffRecordsLive) notNew() {
 	r.note("the tester's shim was prompted: %q", task.Message)
 	test := r.write(tester.session, r.renew, "test", r.smallBody(r.renew, "test", "round 1 fails"))
 	r.note("handoff-write as %s: %s", tester.session, test.line)
-	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "a criterion fails", Verdict: "fail", HandoffID: test.id, HandoffVersion: test.version})
+	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "a criterion fails", Verdict: "fail", Commit: "c0ffee00000000000000000000000000000000aa", HandoffID: test.id, HandoffVersion: test.version})
 	if status != http.StatusOK {
 		t.Fatalf("the tester's failing completion = %d %+v, want 200", status, failure)
 	}

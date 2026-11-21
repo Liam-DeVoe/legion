@@ -697,7 +697,7 @@ func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testi
 			seedIssueAt(t, h, "LEGION-208", phase.Implementing)
 			reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
 			named := tc.record(h, reviewer)
-			recorder := h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "reviewed", HandoffID: named, HandoffVersion: 1})
+			recorder := h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "reviewed", Verdict: "changes", Commit: headSHA, HandoffID: named, HandoffVersion: 1})
 			if tc.code == "" {
 				completion(t, recorder)
 				if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row == nil || row.HandoffRecord != named || row.HandoffVersion != 1 {
@@ -728,7 +728,7 @@ func TestHandoffCompleteRecordsALateCompletionOfReviewingWhileTheIssueIsAcceptin
 	seedApproval(t, h, "LEGION-208", "ccddee")
 	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
 	own := reviewer.writeHandoff("review", 1)
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "approved", HandoffID: own, HandoffVersion: 1}))
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "approved", Verdict: "approve", Commit: "ccddee", HandoffID: own, HandoffVersion: 1}))
 	if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row == nil || row.HandoffRecord != own || row.HandoffVersion != 1 {
 		t.Fatalf("the reviewer's row after its late completion = %+v, want it naming %s version 1", row, own)
 	}
@@ -856,7 +856,7 @@ func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *te
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pass", Commit: "bbccdd"}), http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN")
 
-	request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: written, HandoffVersion: 1}
+	request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1}
 	completion(t, h.complete(request))
 	// A retried completion of the same phase naming the same record changes nothing, and says so.
 	request.GrantID = tester.grant(t)
@@ -868,7 +868,7 @@ func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *te
 		t.Fatalf("handoff facts = %#v, want one deduplicated fact", got)
 	}
 	fact, ok := got[0].(intake.HandoffComplete)
-	if !ok || fact.Role != claim.RoleTester || fact.Verdict != "pass" || fact.HandoffRecord != written || fact.Commit != "" {
+	if !ok || fact.Role != claim.RoleTester || fact.Verdict != "pass" || fact.HandoffRecord != written || fact.Commit != headSHA {
 		t.Fatalf("handoff fact = %#v", got[0])
 	}
 }
@@ -1348,7 +1348,7 @@ func TestHandoffCompleteAcceptsACompletionFromATurnNoDeliveryBacks(t *testing.T)
 		t.Fatalf("pending after the turn = %+v, want it retired", pending)
 	}
 
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion from a notice-started turn = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 }
@@ -1384,7 +1384,7 @@ func TestAStaleCompletionDoesNotTakeTheNewRunsKey(t *testing.T) {
 	ctx := context.Background()
 	complete := func() *httptest.ResponseRecorder {
 		t.Helper()
-		return h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
+		return h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
 	}
 
 	// The worker is still on generation 1's task while the issue has moved to 2: refused, and the
@@ -1541,7 +1541,7 @@ func TestTheRunAClaimServesSurvivesARestart(t *testing.T) {
 	if restarted := h.supervisor.restart(t, tester.token); restarted.Claim().ServingGeneration != 1 {
 		t.Fatalf("the rebuilt claim serves generation %d, want 1", restarted.Claim().ServingGeneration)
 	}
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion after the restart = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 	if completion := lastCompletion(t, facts); completion.Generation != 1 {
@@ -1590,7 +1590,7 @@ func TestACompletionFromATurnThatStartedLateNamesTheTaskTheWorkerHolds(t *testin
 		t.Fatalf("pending after the acknowledgement = %+v, want it delivered and unconfirmed", p)
 	}
 
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion from the late turn = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 	if completion := lastCompletion(t, facts); completion.Generation != 1 {
@@ -1741,7 +1741,7 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 			}
 
 			recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-				HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
+				Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("the completion from the late turn = %d, want 200; body %s", recorder.Code, recorder.Body)
 			}
@@ -1827,7 +1827,7 @@ func TestACompletionInAForeignTurnIsNotTheRefusedTasksRun(t *testing.T) {
 				notice()
 			}
 
-			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
+			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
 			if !tc.accepted {
 				refused(t, h.complete(request), http.StatusConflict, "HANDOFF_NO_RUN")
 				return
@@ -1872,7 +1872,7 @@ func TestAnOperatorsTaskLeavesTheRunTheClaimIsServing(t *testing.T) {
 		t.Fatalf("end the operator's turn: %v", err)
 	}
 
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion after the operator's task = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 	if completion := lastCompletion(t, facts); completion.Generation != 1 {
@@ -2003,7 +2003,7 @@ func TestHandoffCompleteAdoptsTheRunOfTheTaskTheClaimIsHolding(t *testing.T) {
 		Task: "test LEGION-208", ID: "outbox:77", Generation: 1, Phase: phase.Testing, Entry: 1})
 
 	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("the completion of the held task = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 	if completion := lastCompletion(t, facts); completion.Generation != 1 {
@@ -2205,7 +2205,7 @@ func TestHandoffCompleteCarriesTheRunOfTheTaskBeingWorked(t *testing.T) {
 				tester.replaceRegistration(t)
 			}
 
-			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
+			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
 			if delivered != 2 {
 				// A completion attributed to the run that is over is refused before the workflow.
 				if message := refused(t, h.complete(request), http.StatusConflict, "HANDOFF_STALE_GENERATION"); !strings.Contains(message, fmt.Sprintf("generation %d's", delivered)) {

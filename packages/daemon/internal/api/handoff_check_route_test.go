@@ -322,7 +322,7 @@ func TestAPhaseCompletionNamingAWakeIsRefused(t *testing.T) {
 		t.Fatalf("facts = %#v, want none: the refusal is written before the fact is applied", got)
 	}
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-		HandoffID: handoff, HandoffVersion: 1}))
+		Commit: headSHA, HandoffID: handoff, HandoffVersion: 1}))
 	if got := facts.recorded(); len(got) != 1 {
 		t.Fatalf("facts after the completion without a time = %#v, want the one completion", got)
 	}

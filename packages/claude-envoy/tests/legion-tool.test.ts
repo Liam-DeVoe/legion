@@ -146,7 +146,7 @@ test("declares the five phase-worker operations under one op, and names the Envo
       issue: { type: "string" },
       since: { type: "string" },
       summary: { type: "string" },
-      verdict: { enum: ["pass", "pending", "fail"] },
+      verdict: { enum: ["pass", "pending", "fail", "approve", "changes"] },
       wake_at: { type: "string" },
       plan_rating: { type: "integer", minimum: 1, maximum: 5 },
       plan_reason: { type: "string" },

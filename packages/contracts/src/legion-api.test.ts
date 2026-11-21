@@ -44,6 +44,7 @@ import {
   LegionRegisterResponse,
   LegionReleaseRecordsRequest,
   LegionReleaseRecordsResponse,
+  LegionReviewVerdictRequest,
   LegionRootCloseRequest,
   LegionSessionActivity,
   LegionSignOffRequest,
@@ -162,6 +163,13 @@ const schemas: Record<string, z.ZodType> = {
   // a name of the rating Go writes and the contract does not read fails the gate above, and the
   // case "the rated completion the daemon reads parses under the contract's names" below.
   "handoff-complete-request-rated.json": LegionHandoffCompleteRequest,
+  // `api.HandoffCompleteRequest` as the reviewer's completion of reviewing sends it (contract
+  // 200): its verdict approve on the head its record names, carrying the tester's pass from
+  // `testedCommit`. Written by `internal/api`'s TestReviewerVerdictBodiesGolden, with the two
+  // below: the reviewer's verdict past review (`api.ReviewVerdictRequest`) and its empty answer.
+  "handoff-complete-request-reviewer.json": LegionHandoffCompleteRequest,
+  "review-verdict-request.json": LegionReviewVerdictRequest,
+  "review-verdict.json": LegionEmptyResponse,
   // Nor this one: the daemon's verdict on each case of a rating, which internal/api's
   // TestPlanRatingCasesGolden posts as its raw body to the completion that ends a retro and writes
   // down as the route answered it, so that the case "the request schema takes exactly the ratings

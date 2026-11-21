@@ -38,7 +38,10 @@ import (
 // phase (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open
 // pull request on its branch, or a merged one recorded (implementationPullRequest:
 // HANDOFF_NO_PULL_REQUEST). A check report carries no commit and no record (nothing was pushed or
-// written) and a Verdict of pass, pending or fail; a tester's completion a Verdict of pass or fail.
+// written) and a Verdict of pass, pending or fail; a tester's completion a Verdict of pass or fail,
+// and a reviewer's a Verdict of approve or changes (reviewerVerdictOf), each on the head its Commit
+// names (VERDICT_COMMIT_REQUIRED). TestedCommit is the reviewer's alone (VERDICT_ROLE_FORBIDDEN
+// from every other role): the commit of the tester's pass that its verdict carries to Commit.
 // WakeAt is the check report's alone: on a pending it is when the checking agent asks to be woken
 // for its next look, which no other verdict and no phase completion carries (checkReport). It is a
 // pointer so that a report naming no time is told from one naming a time at all: with the field
@@ -61,6 +64,7 @@ type HandoffCompleteRequest struct {
 	Summary        string     `json:"summary"`
 	Verdict        string     `json:"verdict"`
 	Commit         string     `json:"commit,omitempty"`
+	TestedCommit   string     `json:"testedCommit,omitempty"`
 	HandoffID      string     `json:"handoffId,omitempty"`
 	HandoffVersion int        `json:"handoffVersion,omitempty"`
 	WakeAt         *time.Time `json:"wakeAt,omitempty"`
@@ -183,6 +187,15 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// and answer from different decisions — a run taken before a delivery was confirmed beside
 	// the entry that confirmation left.
 	c := machine.Claim()
+	// testedCommit is the reviewer's word alone, the commit of the tester's pass its verdict
+	// carries to the head it reviewed, so it is refused from every other role before either path
+	// below reads anything, a check report's included: a check report is the tester's or the
+	// implementer's.
+	if req.TestedCommit != "" && grant.Role != claim.RoleReviewer {
+		writeFailure(w, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", fmt.Sprintf(
+			"only a reviewer reports testedCommit, the commit of the tester's pass its verdict carries to the head it reviewed; send this %s's completion again without it, and nothing was recorded", grant.Role))
+		return
+	}
 	// A completion is a check report when the caller's own live assignment is a look of its
 	// issue's production check (the doc above), and a phase completion otherwise.
 	if look := c.ServingCheck(); look.Look > 0 {
@@ -214,13 +227,29 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if (grant.Role == claim.RoleImplementer || grant.Role == claim.RoleMerger) && !requireFailureFields(w, field{"commit", req.Commit}) {
 		return
 	}
-	if grant.Role == claim.RoleTester && req.Verdict != "pass" && req.Verdict != "fail" {
-		writeFailure(w, http.StatusBadRequest, "TESTER_VERDICT_REQUIRED", "tester verdict must be pass or fail")
-		return
-	}
-	if grant.Role != claim.RoleTester && req.Verdict != "" {
-		writeFailure(w, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester may report a verdict")
-		return
+	// A verdict is the tester's pass or fail, or the reviewer's approve or changes (reviewerVerdictOf,
+	// which takes a reviewer on the contract before the reviewer's verdict at that contract's
+	// words), and either is a verdict on the head its handoff record names, which the completion
+	// reports as its commit (VERDICT_COMMIT_REQUIRED, past the record below). Every other role
+	// reports none.
+	verdict := req.Verdict
+	switch grant.Role {
+	case claim.RoleTester:
+		if verdict != "pass" && verdict != "fail" {
+			writeFailure(w, http.StatusBadRequest, "TESTER_VERDICT_REQUIRED", "tester verdict must be pass or fail")
+			return
+		}
+	case claim.RoleReviewer:
+		var refusal string
+		if verdict, refusal = reviewerVerdictOf(req.Verdict, c.PluginContract); refusal != "" {
+			writeFailure(w, http.StatusBadRequest, "REVIEWER_VERDICT_REQUIRED", refusal)
+			return
+		}
+	default:
+		if verdict != "" {
+			writeFailure(w, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester or a reviewer may report a verdict")
+			return
+		}
 	}
 	// A wake is a production check's pending report alone: it names when that check's next look is
 	// due, and a phase ends with no look to follow it. The contract says so for every client
@@ -336,6 +365,15 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			"phase %s of %s ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing", of, issue.Key))
 		return
 	}
+	// A verdict is a verdict on one head, the head the handoff record names, which the completion
+	// reports as its commit. It is held to one past every fence above and past the record itself,
+	// so a completion those refuse is told what they say rather than to name a head first, and a
+	// record read back as this completion's own is what is missing that head.
+	if verdict != "" && req.Commit == "" {
+		writeFailure(w, http.StatusBadRequest, "VERDICT_COMMIT_REQUIRED", fmt.Sprintf(
+			"the %s's verdict is a verdict on one head, and this completion names no commit: name that head as `head` in the body of your handoff record, write the record again with `dispatch handoff-write`, and complete again; nothing was recorded", grant.Role))
+		return
+	}
 	treeGeneration, pass := position.treeGeneration, position.pass
 	// One phase's completion is identified by where the issue stands — its generation, phase, and
 	// pass through that phase — with the role and what it reported: the handoff record a
@@ -344,12 +382,16 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// another commit (the record is the phase's handoff); the next phase's completion at the same
 	// commit (the implementer's retro, standing on its implementing pass's last push) is a
 	// different one, since the phase and the role are in the key; and so is a second report of the
-	// same phase naming another verdict — the tester's corrected pass or fail, the only field a
-	// role may report differently of one handoff — since a refusal the workflow commits is
-	// recorded as processed, and a corrected report must not be answered as that refusal's
-	// duplicate. The summary is left out on purpose: a call that only rewords it is the same
-	// completion, and the first one is what the workflow took. The position is read before the
-	// fact's own transaction: should the issue move in between, the engine re-reads
+	// same phase naming another verdict or another testedCommit — the tester's corrected pass or
+	// fail, the reviewer's corrected approve or changes and the tested commit that verdict carries,
+	// the only fields a role may report differently of one handoff — since a refusal the workflow
+	// commits is recorded as processed, and a corrected report must not be answered as that
+	// refusal's duplicate. The verdict is the one the workflow is handed (a stale reviewer's pass
+	// is its approve), and a testedCommit is keyed only where one is named, so every completion
+	// that names none keeps the key it had before the field. The summary is left out on purpose: a
+	// call that only rewords it is the same completion, and the first one is what the workflow
+	// took. The position is read before the fact's own transaction: should the issue move in
+	// between, the engine re-reads
 	// it there and refuses a completion whose role no longer owns the phase, or whose run is no
 	// longer the issue's (workflow's HANDOFF_STALE_GENERATION guard).
 	//
@@ -368,7 +410,10 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
 	}
-	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%d:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, pass, reported, req.Verdict)
+	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%d:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, pass, reported, verdict)
+	if req.TestedCommit != "" {
+		eventID += ":" + req.TestedCommit
+	}
 	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.lingers && reported != position.lastHandoff {
 		if !s.implementationPullRequest(w, r, issue, position.pullRequest, eventID) {
 			return
@@ -380,7 +425,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// answered already received and the first rating stands, and a completion the workflow
 	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
 	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
-		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
+		Summary: req.Summary, Verdict: verdict, Commit: req.Commit, TestedCommit: req.TestedCommit,
 		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract})
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
@@ -938,8 +983,9 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 // testing, and reviewing pass from the last — the handoff record the implementer last named for a
 // file-backed phase (record.PhaseRow.LastHandoff), the phase entry the completing role's current
 // phase is on (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start
-// that raised it moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record,
-// nil while none is recorded, and its production check, nil while none was ever opened.
+// that raised it moved the issue back (record.PhaseRow.EntryMovedBack), the claim whose completion
+// that role's row records (record.PhaseRow.Claim, "" while none has completed), its pull request
+// record, nil while none is recorded, and its production check, nil while none was ever opened.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
@@ -947,6 +993,7 @@ type completionPosition struct {
 	pass           int
 	entry          int64
 	entryMovedBack bool
+	completedBy    claim.Token
 	lastHandoff    string
 	pullRequest    *record.PullRequest
 	check          *record.ProductionCheck
@@ -990,6 +1037,6 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		return completionPosition{}, err
 	}
 	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), pass: pass,
-		lastHandoff: lastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
+		lastHandoff: lastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack, completedBy: completing.Claim,
 		pullRequest: pr, check: check}, tx.Commit(ctx)
 }

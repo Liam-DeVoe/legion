@@ -366,6 +366,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
   type WorkflowClient = {
     readonly grant: (body: object) => Promise<unknown>;
     readonly handoffComplete: (body: object) => Promise<unknown>;
+    readonly reviewVerdict: (body: object) => Promise<unknown>;
     readonly issueStatus: (body: object) => Promise<unknown>;
     readonly freshSession: (body: object) => Promise<unknown>;
     readonly compact: (body: object) => Promise<unknown>;
@@ -400,6 +401,20 @@ test("posts every Stage 3 workflow request through its matching route", async ()
         handoffVersion: 2,
       },
       "handoff-complete.json",
+    ],
+    // The reviewer's verdict on a head that moved past review names the head and the tester's
+    // pass it carries there; the daemon answers an empty object.
+    [
+      "reviewVerdict",
+      "/legion/v1/review-verdict",
+      {
+        grantId: "grant-208",
+        verdict: "approve",
+        commit: "c0de0000000000000000000000000000000000ff",
+        testedCommit: "7e57000000000000000000000000000000000aa1",
+        summary: "The merge forward changes no code that runs.",
+      },
+      "review-verdict.json",
     ],
     [
       "issueStatus",

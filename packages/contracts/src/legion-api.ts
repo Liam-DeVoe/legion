@@ -1833,14 +1833,19 @@ export function legionPlanRatingLoneField(
  * the implementer's completion before it goes when its `implement` record names no head, when the
  * commit its workspace stands on (`@-`) is not on `legion/<issue>@origin`, and when the record's
  * head is not that pushed `@-`; a record naming no head leaves the planner's, the tester's and
- * the reviewer's completion without one. Retro and every completion of a phase its
+ * the reviewer's completion without one, which the daemon refuses for the tester's and the
+ * reviewer's verdict (`VERDICT_COMMIT_REQUIRED`). Retro and every completion of a phase its
  * role does not work report the commit the workspace stands on instead, the merger's reports the
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
- * `verdict` is `pass`
- * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
- * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
- * on the wire, as the Go field is. `wakeAt` is the check report's alone (contract 54): when the
+ * `verdict` is `pass` or `fail` for the tester's completion, `approve` or `changes` for the
+ * reviewer's (`LEGION_REVIEWER_VERDICTS`, `REVIEWER_VERDICT_REQUIRED`; contract 200), `pass`,
+ * `pending` or `fail` for a check report (`CHECK_VERDICT_REQUIRED`), and the empty string for
+ * every other completion (`VERDICT_ROLE_FORBIDDEN`); it stays a string on the wire, as the Go
+ * field is. `testedCommit` is the reviewer's alone (contract 200; `VERDICT_ROLE_FORBIDDEN` from
+ * every other role): the commit of the tester's pass its verdict carries to `commit`, where no
+ * commit since that one changes code that runs. `wakeAt` is the check report's alone (contract
+ * 54): when the
  * checking agent asks to be woken for its next look, which a pending report on a look that is not
  * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
  * completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a `LegionInstant`, not a `timestamp`:
@@ -1856,6 +1861,7 @@ export const LegionHandoffCompleteRequest = z
     summary: nonEmptyString,
     verdict: z.string(),
     commit: nonEmptyString.optional(),
+    testedCommit: nonEmptyString.optional(),
     handoffId: nonEmptyString.optional(),
     handoffVersion: z.number().int().positive().optional(),
     wakeAt: LegionInstant.optional(),
@@ -1866,6 +1872,27 @@ export const LegionHandoffCompleteRequest = z
     (request) => legionPlanRatingLoneField(request.planRating, request.planReason) === undefined,
     { message: "planRating and planReason appear together" }
   );
+
+/** The reviewer's verdict on the head it reviewed (contract 200): `approve`, the head may merge,
+ * or `changes`, the head needs changes. The daemon takes no other word of a reviewer on that
+ * contract (`REVIEWER_VERDICT_REQUIRED`). */
+export const LEGION_REVIEWER_VERDICTS = ["approve", "changes"] as const;
+
+/** `api.ReviewVerdictRequest`, the reviewer's verdict past review (`POST
+ * /legion/v1/review-verdict`, contract 200): the round's recorded reviewer's `verdict` on
+ * `commit`, the head its issue's pull request moved to while the issue stands in accepting, retro
+ * or merging, with `testedCommit` where the verdict carries the tester's pass to that head, and
+ * `summary`. It writes no handoff and ends no phase. The daemon refuses a caller that is not that
+ * reviewer (`VERDICT_CALLER_FORBIDDEN`), an issue that does not stand past its review
+ * (`VERDICT_NOT_PAST_REVIEW`) and a commit that is not the pull request's current head
+ * (`VERDICT_HEAD_NOT_CURRENT`); it answers an empty object. */
+export const LegionReviewVerdictRequest = z.strictObject({
+  grantId: nonEmptyString,
+  verdict: z.enum(LEGION_REVIEWER_VERDICTS),
+  commit: nonEmptyString,
+  testedCommit: nonEmptyString.optional(),
+  summary: nonEmptyString,
+});
 
 /** `api.IssueStatusRequest`, the controller's explicit board-status write. */
 export const LegionIssueStatusRequest = z.strictObject({

@@ -1,6 +1,7 @@
 import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import {
   LEGION_PHASES,
+  LEGION_REVIEWER_VERDICTS,
   LegionGateRegisterRequest,
   type LegionGrant,
   type LegionIssue,
@@ -71,6 +72,23 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   controller: ["read_state", "set_status", "fresh_session", "compact", "pause", "resume"],
 };
 
+/** The reviewer's operation beyond the phase ops: its verdict on a head its pull request moved to
+ * past review. The tool offers it to a reviewer session alone (operationsOf). */
+const REVIEWER_OPERATIONS: readonly string[] = ["review_verdict"];
+
+/** A reviewer session's operations: a phase worker's, and the reviewer's own. */
+const REVIEWER_SESSION_OPERATIONS: readonly string[] = [
+  ...OPERATIONS["phase-worker"],
+  ...REVIEWER_OPERATIONS,
+];
+
+/** The operations `active` may call: its kind's, and a reviewer's own beside a reviewer's. */
+function operationsOf(active: LegionToolSession): readonly string[] {
+  return active.kind === "phase-worker" && active.role === "reviewer"
+    ? REVIEWER_SESSION_OPERATIONS
+    : OPERATIONS[active.kind];
+}
+
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_gate: ["issue", "artifactId", "version", "step"],
@@ -86,6 +104,7 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   compact: ["issue", "role"],
   pause: ["reason"],
   resume: [],
+  review_verdict: ["verdict", "commit", "testedCommit", "summary"],
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
@@ -298,7 +317,7 @@ function toolSchema(pi: PiApi): unknown {
   const z = pi.zod;
   const phaseOp = phaseOpParameters(z);
   return z.object({
-    op: z.enum([...OPERATIONS.architect, ...OPERATIONS.controller]),
+    op: z.enum([...OPERATIONS.architect, ...REVIEWER_OPERATIONS, ...OPERATIONS.controller]),
     issue: phaseOp.issue,
     since: phaseOp.since,
     artifactId: z
@@ -332,6 +351,13 @@ function toolSchema(pi: PiApi): unknown {
     decision: z.enum(["retry", "escalate"]).optional(),
     summary: phaseOp.summary,
     verdict: phaseOp.verdict,
+    testedCommit: phaseOp.testedCommit,
+    commit: z
+      .string()
+      .describe(
+        "review_verdict's head: the pull request's current head, the commit your verdict is on"
+      )
+      .optional(),
     wake_at: phaseOp.wake_at,
     plan_rating: phaseOp.plan_rating,
     plan_reason: phaseOp.plan_reason,
@@ -437,6 +463,11 @@ export function createLegionTool(deps: {
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
       after:
         PHASE_OP_SENTENCES.requestBackwardMove +
+        "review_verdict is the reviewer's alone: when the head of the pull request moves while its issue stands past its review " +
+        "(accepting, retro or merging), it sends the verdict on the new head, `verdict` approve or changes, `commit` that head, " +
+        "`testedCommit` where the verdict carries the tester's pass to it, and `summary`. It writes no handoff and ends no phase. The " +
+        "daemon takes it only from the reviewer whose completion ended the issue's review round (VERDICT_CALLER_FORBIDDEN), only past " +
+        "review (VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). " +
         "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
         "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
         "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
@@ -533,8 +564,12 @@ export function createLegionTool(deps: {
       try {
         const active = session(context);
         const operation = requiredString(parameters, "legion", "op");
-        if (!OPERATIONS[active.kind].includes(operation)) {
-          throw new Error(`${operation} is not available to a ${active.kind} session`);
+        if (!operationsOf(active).includes(operation)) {
+          throw new Error(
+            REVIEWER_OPERATIONS.includes(operation)
+              ? `${operation} is the reviewer's alone, and not available to a ${active.kind === "controller" ? "controller" : active.role} session`
+              : `${operation} is not available to a ${active.kind} session`
+          );
         }
         if (active.kind !== "controller" && isPhaseOp(operation)) {
           const answer = await executePhaseOp(
@@ -701,6 +736,31 @@ export function createLegionTool(deps: {
             await (operation === "park_child"
               ? client.childPark(request)
               : client.childRerun(request));
+            return jsonSuccess({});
+          }
+          case "review_verdict": {
+            // Validated whole before its grant is minted: the reviewer's two words, the head the
+            // verdict is on, and the tester's pass it carries there where it names one. It ends no
+            // phase, so no reminder is answered: the reviewer's phase ended with its completion.
+            const verdict = LEGION_REVIEWER_VERDICTS.find((word) => word === parameters.verdict);
+            if (verdict === undefined) {
+              throw new Error(
+                `review_verdict requires verdict ${LEGION_REVIEWER_VERDICTS.join(" or ")}`
+              );
+            }
+            const commit = requiredString(parameters, operation, "commit");
+            const summary = requiredString(parameters, operation, "summary");
+            const tested =
+              parameters.testedCommit === undefined
+                ? {}
+                : { testedCommit: requiredString(parameters, operation, "testedCommit") };
+            await client.reviewVerdict({
+              grantId: await mintClaimGrant(client, active),
+              verdict,
+              commit,
+              summary,
+              ...tested,
+            });
             return jsonSuccess({});
           }
           default:

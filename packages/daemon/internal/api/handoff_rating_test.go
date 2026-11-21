@@ -89,7 +89,7 @@ func TestARatingOutsideTheRetroIsRefused(t *testing.T) {
 		request func(c liveClaim) HandoffCompleteRequest
 	}{
 		{name: "the tester in testing", at: phase.Testing, role: claim.RoleTester, request: func(c liveClaim) HandoffCompleteRequest {
-			return HandoffCompleteRequest{Summary: "tests pass", Verdict: "pass", HandoffID: c.writeHandoff("test", 1), HandoffVersion: 1}
+			return HandoffCompleteRequest{Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: c.writeHandoff("test", 1), HandoffVersion: 1}
 		}},
 		{name: "the implementer in implementing", at: phase.Implementing, role: claim.RoleImplementer, request: func(c liveClaim) HandoffCompleteRequest {
 			return HandoffCompleteRequest{Summary: "implemented", Commit: headSHA, HandoffID: c.writeHandoff("implement", 1), HandoffVersion: 1}
@@ -851,7 +851,7 @@ func TestALateCompletionWhileTheIssueStandsInRetroEndsNoRetro(t *testing.T) {
 		t.Fatalf("the reviewer's plugin declared contract %d, below PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
 	}
 	own := reviewer.writeHandoff("review", 1)
-	late := HandoffCompleteRequest{Summary: "approved", HandoffID: own, HandoffVersion: 1}
+	late := HandoffCompleteRequest{Summary: "approved", Verdict: "approve", Commit: "ccddee", HandoffID: own, HandoffVersion: 1}
 
 	rated := late
 	rated.GrantID, rated.PlanRating, rated.PlanReason = reviewer.grant(t), new(4), new("The plan fit the work.")

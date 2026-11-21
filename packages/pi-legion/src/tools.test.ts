@@ -173,9 +173,14 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "the daemon accepts a completion only from the role working the issue's current phase, " +
   "or a role's first completion of the phase it left, which it records and which moves nothing, " +
   "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-  "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
-  "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
-  "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow). " +
+  "architect), `verdict` on a phase completion is the tester's pass|fail and the reviewer's approve|changes (approve: the head you " +
+  "reviewed may merge; changes: it needs changes), each on the head your record names, and `testedCommit`, from the reviewer alone, " +
+  "names the commit of the tester's pass that the reviewer's verdict carries to that head, where no commit since that one changes code " +
+  "that runs. The daemon refuses a verdict from any other role there and a testedCommit from any role but the reviewer " +
+  "(VERDICT_ROLE_FORBIDDEN), a tester's or a reviewer's verdict with no head (VERDICT_COMMIT_REQUIRED), and a reviewer's word that " +
+  "is neither approve nor changes (REVIEWER_VERDICT_REQUIRED). `verdict` is pass|pending|fail on a production check report (pending: " +
+  "production does not carry the merge yet, or carries it with a requirement only the deploy can show still unobserved and a look " +
+  "still to follow). " +
   "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
   "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
   "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
@@ -213,6 +218,11 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
   "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
   "counts a review round. " +
+  "review_verdict is the reviewer's alone: when the head of the pull request moves while its issue stands past its review " +
+  "(accepting, retro or merging), it sends the verdict on the new head, `verdict` approve or changes, `commit` that head, " +
+  "`testedCommit` where the verdict carries the tester's pass to it, and `summary`. It writes no handoff and ends no phase. The " +
+  "daemon takes it only from the reviewer whose completion ended the issue's review round (VERDICT_CALLER_FORBIDDEN), only past " +
+  "review (VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). " +
   "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
   "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
   "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
@@ -342,6 +352,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "read_release_records",
         "handoff_complete",
         "ready_for_update",
+        "review_verdict",
         "read_state",
         "set_status",
         "fresh_session",
@@ -387,7 +398,13 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     },
     decision: { type: "string", enum: ["retry", "escalate"] },
     summary: { type: "string" },
-    verdict: { type: "string", enum: ["pass", "pending", "fail"] },
+    verdict: { type: "string", enum: ["pass", "pending", "fail", "approve", "changes"] },
+    testedCommit: { type: "string" },
+    commit: {
+      type: "string",
+      description:
+        "review_verdict's head: the pull request's current head, the commit your verdict is on",
+    },
     wake_at: { type: "string" },
     plan_rating: { type: "integer", minimum: 1, maximum: 5 },
     plan_reason: { type: "string" },
@@ -444,7 +461,7 @@ test("a root architect's handoff_complete is refused as unavailable before its a
     content: [
       {
         type: "text",
-        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason; handoff_complete is not available to a root architect session, which runs no phase',
+        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, testedCommit, wake_at, plan_rating, plan_reason; handoff_complete is not available to a root architect session, which runs no phase',
       },
     ],
   });
@@ -850,10 +867,11 @@ test("read_release_records reads the window with this session's claim, and repor
   });
 });
 
-// Every role reads one description, and the daemon accepts a verdict from the tester alone
-// (VERDICT_ROLE_FORBIDDEN): it may not leave another role to infer from its own instructions that
-// it reports one.
-test("the legion tool's description gives a verdict to the tester alone", () => {
+// Every role reads one description, and the daemon accepts the tester's two words from the tester
+// and the reviewer's two from the reviewer alone (VERDICT_ROLE_FORBIDDEN,
+// REVIEWER_VERDICT_REQUIRED): it may not leave a role to infer from its own instructions which
+// word is its own.
+test("the legion tool's description says who sends which verdict word", () => {
   const tool = createLegionTool({
     pi,
     daemon: recordingDaemon({}).daemon,
@@ -865,8 +883,104 @@ test("the legion tool's description gives a verdict to the tester alone", () => 
     resolveDocument: noDocumentLookup,
     session: () => claimSession("reviewer"),
   });
-  expect(tool.description).toContain("`verdict` pass|fail from the tester alone");
+  expect(tool.description).toContain(
+    "`verdict` on a phase completion is the tester's pass|fail and the reviewer's approve|changes"
+  );
+  expect(tool.description).not.toContain("from the tester alone");
   expect(tool.description).not.toContain("when your role's instructions require one");
+});
+
+// The reviewer's verdict on a head that moved past review goes through review_verdict, which the
+// tool offers to a reviewer session alone: it posts a fresh grant with the verdict, the head and
+// the tester's pass the verdict carries there to `POST /legion/v1/review-verdict`, and closes no
+// phase. Every other session is refused the operation by name before any grant is minted, and a
+// word that is no verdict of the reviewer's, or a call naming no head, is refused the same way.
+test("review_verdict is offered to a reviewer session alone, and posts the verdict, the commit and testedCommit", async () => {
+  const head = "c0de0000000000000000000000000000000000ff";
+  const tested = "7e57000000000000000000000000000000000aa1";
+  const call = {
+    op: "review_verdict",
+    verdict: "approve",
+    commit: head,
+    testedCommit: tested,
+    summary: "The merge forward changes no code that runs.",
+  };
+  const toolOver = (active: LegionToolSession, completed: string[] = []) => {
+    const { posted, daemon } = goldenDaemon({
+      "/legion/v1/grants": "grant.json",
+      "/legion/v1/review-verdict": "review-verdict.json",
+    });
+    const tool = createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: async () => daemonFixture("grant.json") as never,
+      onPhaseCompleted: () => completed.push("completed"),
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => active,
+    });
+    return { posted, tool };
+  };
+
+  const completed: string[] = [];
+  const { posted, tool } = toolOver(claimSession("reviewer"), completed);
+  await expect(tool.execute("", call, undefined, undefined, context())).resolves.toEqual({
+    content: [{ type: "text", text: "{}" }],
+    details: {},
+  });
+  const { grantId } = daemonFixture("grant.json");
+  expect(posted).toEqual([
+    [
+      "/legion/v1/grants",
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
+    ],
+    [
+      "/legion/v1/review-verdict",
+      {
+        grantId,
+        verdict: "approve",
+        commit: head,
+        testedCommit: tested,
+        summary: "The merge forward changes no code that runs.",
+      },
+    ],
+  ]);
+  expect(completed).toEqual([]);
+
+  for (const [parameters, refusal] of [
+    [{ ...call, verdict: "pass" }, "review_verdict requires verdict approve or changes"],
+    [{ ...call, commit: " " }, "review_verdict requires commit"],
+    [{ ...call, round: "pod:1" }, 'review_verdict does not accept field "round"'],
+  ] as const) {
+    const refused = toolOver(claimSession("reviewer"));
+    await expect(
+      refused.tool.execute("", parameters, undefined, undefined, context())
+    ).resolves.toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining(refusal) }],
+    });
+    expect(refused.posted).toEqual([]);
+  }
+
+  for (const active of EVERY_SESSION.filter(
+    (session) => session.kind === "controller" || session.role !== "reviewer"
+  )) {
+    const other = toolOver(active);
+    const who = active.kind === "controller" ? "controller" : active.role;
+    await expect(other.tool.execute("", call, undefined, undefined, context())).resolves.toEqual({
+      content: [
+        {
+          type: "text",
+          text: `review_verdict is the reviewer's alone, and not available to a ${who} session`,
+        },
+      ],
+      details: {},
+      isError: true,
+    });
+    expect(other.posted).toEqual([]);
+  }
 });
 
 test("a workflow refusal tells the agent both its code and message", async () => {
@@ -1109,7 +1223,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     [
       claimSession("tester"),
       { summary: "x", verdict: "maybe" },
-      "verdict is pass, pending or fail",
+      "verdict is pass, pending, fail, approve or changes",
     ],
     [claimSession("planner"), { summary: "x", phase: "plan" }, 'does not accept field "phase"'],
   ] as const;
@@ -1132,7 +1246,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(pendingOnPhase.content).toEqual([
     {
       type: "text",
-      text: "handoff_complete's verdict is pass or fail on a phase completion; pending is a production check's",
+      text: "handoff_complete's verdict on a phase completion is the tester's pass or fail or the reviewer's approve or changes; pending is a production check's",
     },
   ]);
   expect(calls.at(-1)).toEqual(["state", undefined]);

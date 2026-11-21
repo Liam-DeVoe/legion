@@ -752,7 +752,7 @@ func upgradeCompletionAccepted(t *testing.T, st *store.Store, engine *workflow.E
 		Pool: st.Pool(), Handlers: []intake.Handler{engine}, Record: record.NewStore(), Grants: grants,
 		Dispatch: handoffs, Log: quietLogger(),
 	}).Handler
-	body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the tests pass", Verdict: "pass",
+	body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the tests pass", Verdict: "pass", Commit: "c0ffee00000000000000000000000000000000aa",
 		HandoffID: handoffs.write(issue.Key, "test", c.Session), HandoffVersion: 1})
 	if err != nil {
 		t.Fatal(err)

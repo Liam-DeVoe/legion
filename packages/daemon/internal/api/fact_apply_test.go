@@ -141,13 +141,15 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 			"its adoption of children recorded in other trees names no one issue (intake.IssueOf), so apply asks RunsAStep, the read TestTheRecordNamesTheAgentOfARunThatIsNotEnded holds, and this table drives no adoption"},
 		"POST /legion/v1/roots/close":    {none: "its root has started no phase: admitted and awaiting a person run no step (workflow's stepOf)"},
 		"POST /legion/v1/children/rerun": {none: "its child is out of the workflow, at phase done, which runs no step"},
+		"POST /legion/v1/review-verdict": {none: "the reviewer sends it only past review, where it runs no step: accepting's step is the architect's, " +
+			"retro's the implementer's and merging's the merger's"},
 		"POST /legion/v1/handoff/complete": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
 			seedIssueAt(t, r.h, "LEGION-208", phase.Testing)
 			tester := newLiveClaim(t, r.h, "LEGION-208", claim.RoleTester)
 			r.runs(t, "LEGION-208", testingPlace, tester.token)
 			written := tester.writeHandoff("test", 1)
 			return []agentRequest{{tester.token, func() *httptest.ResponseRecorder {
-				return r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: written, HandoffVersion: 1})
+				return r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1})
 			}}}
 		}},
 		"POST /legion/v1/phase/backward": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
