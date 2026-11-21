@@ -51,16 +51,16 @@ type issuerEntry struct {
 }
 
 // NewIssuerSet returns a set verifying tokens each of issuers issues to audience, and reads
-// nothing (NewLazyVerifier). keySpacing is the FailureSpacing of each issuer's key set
-// (WithKeyFailureSpacing); zero spaces nothing. The issuers' URLs are distinct, as the
-// configuration that names them refuses a repeated one; a token naming a URL twice listed goes to
-// the first.
+// nothing (NewLazyVerifier). keySpacing spaces the reads of each issuer's key set, whether or not
+// it has been read (WithSpacedKeyReads); zero spaces nothing. The issuers' URLs are distinct, as
+// the configuration that names them refuses a repeated one; a token naming a URL twice listed goes
+// to the first.
 func NewIssuerSet(issuers []NamedIssuer, audience string, keySpacing time.Duration) *IssuerSet {
 	set := &IssuerSet{entries: make([]issuerEntry, 0, len(issuers))}
 	for _, issuer := range issuers {
 		set.entries = append(set.entries, issuerEntry{
 			issuer:   issuer,
-			verifier: NewLazyVerifier(issuer.URL, audience, WithKeyFailureSpacing(keySpacing)),
+			verifier: NewLazyVerifier(issuer.URL, audience, WithSpacedKeyReads(keySpacing)),
 		})
 	}
 	return set

@@ -835,7 +835,7 @@ RULES = {
          "cmd/spec-check/main_test.go:432 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "
          "lists at :69 and its built binary reads")),
     f"{ENVOY}/internal/cipher/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem",
-                                                            "internal/cipher/config/config_test.go:1839,1869 Load the URL whose sslrootcert is this bundle (rdsBundle :1799), which pgx reads to build the root pool")),
+                                                            "internal/cipher/config/config_test.go:1841,1871 Load the URL whose sslrootcert is this bundle (rdsBundle :1801), which pgx reads to build the root pool")),
     f"{ENVOY}/internal/cipher/store/storetest/storetest_test.go": [
         run(f"{ENVOY}/internal/cipher/store/storetest", ["."], "internal/cipher/store/storetest/storetest_test.go:22 go list -deps .", mode="build")],
     f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:85")),
@@ -2439,19 +2439,19 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names.test.sh:23 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:254 runs it too: the pull request's text is the guard's other surface"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:261 runs it too: the pull request's text is the guard's other surface"),
     ], lib=False),
     harness("check_private_names_terms_test", "Test the private-name check's term list", f"{SCRIPTS}/check-private-names-terms.test.sh", [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-terms.test.sh:24 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:254 runs it, over a pull request's text naming a term"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:261 runs it, over a pull request's text naming a term"),
     ], lib=False),
     harness("check_private_names_keys_test", "Test the private-name check's issue-key rule", f"{SCRIPTS}/check-private-names-keys.test.sh", [
-        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-keys.test.sh:24 sources it for its fixtures"),
+        (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-keys.test.sh:26 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:254 runs it, over a pull request's new text"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:261 runs it, over a pull request's new text"),
     ], lib=False),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
@@ -2731,10 +2731,10 @@ GATES = [
     # The comment on PRIVATE_NAMES_PORT_BUILD above says why the step is a job.
     gate("private_names_port", PRIVATE_NAMES_PORT_JOB, runs=[PRIVATE_NAMES_PORT_BUILD], reads=reads(
         (f"{SCRIPTS}/check-private-names-port.test.sh", at(PRIVATE_NAMES_PORT_JOB, PRIVATE_NAMES_PORT_STEP)),
-        (TEST_LIB, "check-private-names-port.test.sh:63 sources it for check/is/summary"),
+        (TEST_LIB, "check-private-names-port.test.sh sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh",
          "the frozen script every case of check-private-names-port.test.sh runs beside the "
-         "engine, symlinked into each fixture (:213,421,467,556)"),
+         "engine, symlinked into each fixture (its four `ln -s \"$frozen_script\"` lines)"),
     ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod")),
 
     # What is left of the test job once the daemon's Go suite and the private-name port harness

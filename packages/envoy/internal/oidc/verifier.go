@@ -116,6 +116,10 @@ type Verifier struct {
 	// as ErrExpired: an exp it reads is from a payload whose signature, issuer or audience failed,
 	// and says nothing about a token's age.
 	skipExpiry bool
+	// keys is the key source NewWithKeys checks signatures against, which LazyVerifier.Key answers
+	// from, so a caller that needs the key itself reads the one cache the verifier reads. It is nil
+	// for a verifier NewWithKeys did not build, which no LazyVerifier holds.
+	keys KeySource
 }
 
 // New reads the issuer's OIDC discovery document now and returns a verifier for
@@ -147,10 +151,11 @@ type KeySource interface {
 // both from one *Keys makes one discovery read at boot, keeps one set in
 // memory, and bounds the reads a token naming an unpublished key id prompts at
 // one per MinRefresh across both of them. A LazyVerifier builds its verifier
-// with it too, over the Keys its read of the discovery document makes (NewKeys).
-// Over an IssuerSet's issuer, it verifies that issuer's tokens for an audience
-// other than the set's, reading the issuer's discovery document and key set
-// only as the set reads them, as the broker's NATS auth service does.
+// with it too, over the Keys its read of the discovery document makes (NewKeys),
+// and answers LazyVerifier.Key from those keys. Over an IssuerSet's issuer, it
+// verifies that issuer's tokens for an audience other than the set's, reading
+// the issuer's discovery document and key set only as the set reads them, as
+// the broker's NATS auth service does.
 func NewWithKeys(issuer, audience string, keys KeySource) *Verifier {
 	return &Verifier{
 		// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the
@@ -164,6 +169,7 @@ func NewWithKeys(issuer, audience string, keys KeySource) *Verifier {
 		}),
 		issuer:   issuer,
 		audience: audience,
+		keys:     keys,
 	}
 }
 
@@ -188,24 +194,11 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 	}
 }
 
-// Issues reports whether raw's iss claim, read without verifying anything, names this verifier's
-// issuer, Google's scheme-less spelling included when the verifier is Google's (namesIssuer). A
-// caller that trusts several issuers picks with it the one verifier a token is for, so a token of
-// one issuer never makes another's verifier fetch its keys; Verify still checks the issuer with
-// everything else. raw is read with every space removed (stripSpaces), as Verify reads it, so a
-// token with a trailing line feed or a space inside a segment picks the verifier its compact form
-// picks. It reads unverified text, so it picks a verifier and decides nothing about a caller: no
-// claim anyone is admitted on comes from it.
-func (v *Verifier) Issues(raw string) bool {
-	iss, err := UnverifiedIssuer(raw)
-	return err == nil && v.namesIssuer(iss)
-}
-
 // UnverifiedIssuer is raw's iss claim, read without verifying anything, from raw with every space
 // removed (stripSpaces) as Verify reads it. A raw that is not three dot-separated segments whose
 // middle one is a base64url claim set answers an empty iss and the reason. A caller that trusts
-// several issuers picks with it the one verifier a token is for, as Issues and IssuerSet do; no
-// claim anyone is admitted on comes from it.
+// several issuers picks with it the one verifier a token is for, as LazyVerifier.Issues and
+// IssuerSet do; no claim anyone is admitted on comes from it.
 func UnverifiedIssuer(raw string) (string, error) {
 	claims, err := decodeUnverifiedClaims(stripSpaces(raw))
 	if err != nil {

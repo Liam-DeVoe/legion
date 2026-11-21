@@ -173,14 +173,7 @@ func (d *discovery[T]) logFailure(err error) {
 // down. Until the discovery document has been read, Verify and Key fail with
 // ErrIssuerUnavailable.
 type LazyVerifier struct {
-	discovery *discovery[lazyIssuer]
-}
-
-// lazyIssuer is what one read of a LazyVerifier's discovery document makes: the issuer's key set,
-// and the verifier that checks tokens against it.
-type lazyIssuer struct {
-	verifier *Verifier
-	keys     *Keys
+	discovery *discovery[*Verifier]
 }
 
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
@@ -190,13 +183,15 @@ func NewLazyVerifier(issuer, audience string, options ...LazyVerifierOption) *La
 	for _, option := range options {
 		option(&settings)
 	}
-	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (lazyIssuer, error) {
+	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
 		keys, err := NewKeys(ctx, issuer)
 		if err != nil {
-			return lazyIssuer{}, err
+			return nil, err
 		}
-		keys.FailureSpacing = settings.keyFailureSpacing
-		return lazyIssuer{verifier: NewWithKeys(issuer, audience, keys), keys: keys}, nil
+		if settings.spacedKeyReads {
+			keys.FailureSpacing, keys.SpaceRefreshes = settings.keySpacing, true
+		}
+		return NewWithKeys(issuer, audience, keys), nil
 	})}
 }
 
@@ -206,14 +201,22 @@ type LazyVerifierOption func(*lazyVerifierSettings)
 // lazyVerifierSettings are what the options of one NewLazyVerifier set; the zero value is a
 // verifier read as New reads one.
 type lazyVerifierSettings struct {
-	keyFailureSpacing time.Duration
+	// spacedKeyReads is whether WithSpacedKeyReads was given, and keySpacing the spacing it gave.
+	spacedKeyReads bool
+	keySpacing     time.Duration
 }
 
-// WithKeyFailureSpacing sets the FailureSpacing of the verifier's key set (Keys), so that while
-// the issuer's key set cannot be read, the tokens that arrive cost it one read per spacing rather
-// than one each. A verifier made without it reads the key set again at every token that needs it.
-func WithKeyFailureSpacing(spacing time.Duration) LazyVerifierOption {
-	return func(settings *lazyVerifierSettings) { settings.keyFailureSpacing = spacing }
+// WithSpacedKeyReads spaces the reads of the verifier's key set (Keys) by spacing, whether or not
+// the set has been read before: it sets the set's FailureSpacing to spacing and its
+// SpaceRefreshes, so while the issuer's key set cannot be read, the tokens that arrive cost it one
+// read per spacing rather than one each, as the broker reads its cluster issuers. A verifier made
+// without it reads its key set as New's does, spacing only the reads of a set never read, by
+// DefaultKeysFailureSpacing. A spacing of zero reads the key set again at every token that needs
+// it, and holds no failed read over to a later token (Keys.FailureSpacing).
+func WithSpacedKeyReads(spacing time.Duration) LazyVerifierOption {
+	return func(settings *lazyVerifierSettings) {
+		settings.spacedKeyReads, settings.keySpacing = true, spacing
+	}
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not
@@ -225,11 +228,11 @@ func (v *LazyVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
 // VerifyClaims is Verifier.VerifyClaims once the issuer is discovered, as Verify is Verifier.Verify:
 // it also unmarshals the payload the signature covers into each of into.
 func (v *LazyVerifier) VerifyClaims(ctx context.Context, raw string, into ...any) (Claims, error) {
-	issuer, err := v.discovery.discover(ctx)
+	verifier, err := v.discovery.discover(ctx)
 	if err != nil {
 		return Claims{}, err
 	}
-	return issuer.verifier.VerifyClaims(ctx, raw, into...)
+	return verifier.VerifyClaims(ctx, raw, into...)
 }
 
 // Key is Keys.Key on the key set Verify reads, once the issuer is discovered, discovering it
@@ -239,15 +242,53 @@ func (v *LazyVerifier) VerifyClaims(ctx context.Context, raw string, into ...any
 // where Keys.Key answers ErrKeySet, since a key set that cannot be read decides nothing about the
 // token, as Verify classifies the same error. Every other error is Keys.Key's.
 func (v *LazyVerifier) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error) {
-	issuer, err := v.discovery.discover(ctx)
+	verifier, err := v.discovery.discover(ctx)
 	if err != nil {
 		return nil, err
 	}
-	key, err := issuer.keys.Key(ctx, kid, alg)
+	key, err := verifier.keys.Key(ctx, kid, alg)
 	if errors.Is(err, ErrKeySet) {
 		return nil, fmt.Errorf("%w: %w", ErrIssuerUnavailable, err)
 	}
 	return key, err
+}
+
+// VerifyGoogleIdentity is Verifier.VerifyGoogleIdentity once the issuer is discovered, discovering
+// it first as Verify does; before that every error matches ErrIssuerUnavailable.
+func (v *LazyVerifier) VerifyGoogleIdentity(ctx context.Context, raw string) (Claims, error) {
+	verifier, err := v.discovery.discover(ctx)
+	if err != nil {
+		return Claims{}, err
+	}
+	return verifier.VerifyGoogleIdentity(ctx, raw)
+}
+
+// Issues reports whether raw's iss claim, read without verifying anything, names this verifier's
+// issuer, Google's scheme-less spelling included when the verifier is Google's (issuerNamed). A
+// caller that trusts several issuers picks with it the one verifier a token is for, so a token of
+// one issuer never makes another's verifier read its issuer; Verify still checks the issuer with
+// everything else. It reads unverified text, so it picks a verifier and decides nothing about a
+// caller: no claim anyone is admitted on comes from it. It reads nothing the discovery document
+// holds, so it answers the same before the issuer is discovered as after: a caller picks the
+// verifier a token is for while that issuer is down, and the token is then answered as one that
+// verifier could not check. raw is read with every space removed (UnverifiedIssuer), as Verify
+// reads it, so a token with a trailing line feed or a space inside a segment picks the verifier
+// its compact form picks.
+func (v *LazyVerifier) Issues(raw string) bool {
+	iss, err := UnverifiedIssuer(raw)
+	return err == nil && issuerNamed(v.discovery.issuer, iss)
+}
+
+// DiscoveredVerifier is a LazyVerifier whose issuer is discovered already, verifying with v: for a
+// caller that builds a Verifier itself, from keys it holds (NewWithKeys), and hands it where a
+// LazyVerifier is taken. It is nil for a nil v, so an unconfigured verifier stays one.
+func DiscoveredVerifier(v *Verifier) *LazyVerifier {
+	if v == nil {
+		return nil
+	}
+	discovered := newDiscovery(v.issuer, func(context.Context) (*Verifier, error) { return v, nil })
+	discovered.value, discovered.discovered = v, true
+	return &LazyVerifier{discovery: discovered}
 }
 
 // Discover reads the issuer's discovery document unless it has been read; its error matches

@@ -60,9 +60,9 @@ func TestVerifyGoogleIdentityReadsTheAccount(t *testing.T) {
 // a verifier of https://accounts.google.com. A token of either spelling that fails is refused
 // for what is wrong with it, not as another issuer's: the class is what an operator reads, and
 // what a caller that tries several verifiers takes "not mine" from (ErrIssuer). Both spellings
-// also pick Google's verifier (Issues), and no other issuer does. Issues reads a token as Verify
-// does, every space removed, so each white-spaced form of a token picks the verifier its compact
-// form picks.
+// also pick Google's verifier (LazyVerifier.Issues), and no other issuer does. Issues reads a token
+// as Verify does, every space removed, so each white-spaced form of a token picks the verifier its
+// compact form picks.
 func TestGooglesSchemelessIssuerIsGooglesOwn(t *testing.T) {
 	issuer := oidctest.New(t)
 	signing := oidctest.NewKey(t, "google-signing-key")
@@ -72,6 +72,7 @@ func TestGooglesSchemelessIssuerIsGooglesOwn(t *testing.T) {
 		t.Fatalf("NewKeys(%s): %v", issuer.URL(), err)
 	}
 	google := NewWithKeys(GoogleIssuer, googleTestAudience, keys)
+	lazy := DiscoveredVerifier(google)
 	for _, spelling := range []string{GoogleIssuer, "accounts.google.com"} {
 		claims := googleIdentityClaims(issuer, "another-audience")
 		claims["iss"] = spelling
@@ -79,11 +80,11 @@ func TestGooglesSchemelessIssuerIsGooglesOwn(t *testing.T) {
 		if _, err := google.VerifyGoogleIdentity(context.Background(), raw); !errors.Is(err, ErrAudience) {
 			t.Errorf("iss %q for another audience: err = %v, want %v", spelling, err, ErrAudience)
 		}
-		if !google.Issues(raw) {
+		if !lazy.Issues(raw) {
 			t.Errorf("iss %q does not pick Google's verifier", spelling)
 		}
 		for name, spaced := range whiteSpaced(raw) {
-			if !google.Issues(spaced) {
+			if !lazy.Issues(spaced) {
 				t.Errorf("iss %q with %s does not pick Google's verifier", spelling, name)
 			}
 		}
@@ -94,11 +95,11 @@ func TestGooglesSchemelessIssuerIsGooglesOwn(t *testing.T) {
 	if _, err := google.VerifyGoogleIdentity(context.Background(), raw); !errors.Is(err, ErrIssuer) {
 		t.Errorf("another issuer: err = %v, want %v", err, ErrIssuer)
 	}
-	if google.Issues(raw) {
+	if lazy.Issues(raw) {
 		t.Errorf("another issuer picks Google's verifier")
 	}
 	for name, spaced := range whiteSpaced(raw) {
-		if google.Issues(spaced) {
+		if lazy.Issues(spaced) {
 			t.Errorf("a token of another issuer with %s picks Google's verifier", name)
 		}
 	}
