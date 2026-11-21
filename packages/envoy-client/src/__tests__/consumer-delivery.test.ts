@@ -1146,6 +1146,29 @@ describe("gaps", () => {
       envoy: { notice: "project messages may be missing", detail: "held and dropped" },
     });
   });
+
+  // The edge marks a gap its GitHub rule made `Envoy-Gap-Reason: repository_withheld`: events of a
+  // repository the session's projects do not hold were withheld, not lost, so the notice must not
+  // say messages may be missing. The control above (an unknown reason) keeps the retention words.
+  test("a frame marked repository_withheld tells the withheld repository, not a loss", () => {
+    const { delivery, gaps } = setup();
+    delivery.receive(relay({ seq: 1, gap: true, gapReason: "repository_withheld" }));
+
+    expect(gaps).toEqual([
+      {
+        kind: "repository_withheld",
+        message:
+          "Envoy withheld GitHub events of a repository this session's projects do not hold, so they were not delivered; no message was lost.",
+      },
+    ]);
+    expect(decode(gapNoticeText(gaps[0] as ConsumerGapNotice))).toEqual({
+      envoy: {
+        notice: "repository events withheld",
+        detail:
+          "Envoy withheld GitHub events of a repository this session's projects do not hold, so they were not delivered; no message was lost.",
+      },
+    });
+  });
 });
 
 describe("what the registration resumes at", () => {

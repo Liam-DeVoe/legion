@@ -154,12 +154,31 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
 Every edge refusal's body is `listenerwire.EdgeRefusal`, whose comment in `listenerwire/listenerwire.go` names each reason and says how a client reads a refused registration's `refused` list.
 
 Every listener that checks broker tokens records the registering token's projects on the session's entry in `envoy_sessions` (`session.SessionEntry.Projects`).
-The edge's send and read rules read that record, and no answer of the API carries it.
+The edge's send and read rules and the required privacy mode read that record. Every session object the API answers carries it as `"projects"` (sorted, `[]` for none), and so does the registration's answer.
 
 On every listener, a role claim's key is `store.RoleClaimKeyOf` of the name it was claimed under, and that function's comment says which key each name gets.
 A free-form role under a project (`PRIV.lead-reviewer`) is that project's own claim, keyed `<project>.<role>`, beside the claim of the same name under no project;
 every other name keeps its bare role name as its key.
 `POST /v1/roles/set` refuses with `400`, naming both projects, a Legion role under any project but the one its own name gives (`contracts.ClaimProject`), and the edge's role and publish rules read a role's project by that function too.
+
+## The required privacy mode
+
+`ENVOY_PROJECT_PRIVACY_REQUIRED=true` with `ENVOY_PROJECT_PRIVACY_URL`, the secrets broker's base URL, starts a listener in the required privacy mode (`cmd/listener/project_privacy.go`).
+With both unset the listener is in the all-public mode: it reads nothing, and every project is public.
+The listener refuses to start, naming the variable, on the flag with a blank URL, on the flag without `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` or `ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`, on a URL without the flag, and on any value of the flag but `true`.
+
+- **The read**: each decision that a project's privacy changes reads the broker's `GET /v1/project-privacy` again (`k7Reader`). The listener keeps nothing between decisions. A read that fails, or that does not give a whole answer, is unknown for every project, and an unknown project counts as private.
+- **Callers**: a broker token sees the projects it lists, or every public project when it lists none. A projected service-account token whose subject `ENVOY_ALL_PROJECTS_ACCOUNTS` lists sees every project. Every caller sees a subject of no project and a GitHub subject.
+  A write of a project the caller does not see gets `403 project_not_listed`. A route that cannot read the privacy answer gets `503` with the `refilling` code.
+- **Writes**: `POST /v1/messages/send` chooses the message's project (the body's `project`, else the sender's one listed project, else the target's one, else `_`). The caller and the target must both see it. `POST /v1/messages/publish`, `POST /v1/roles/set` and `POST /v1/interests/subscribe` refuse a project the caller does not see.
+- **Reads**: `GET /v1/roles/<project>.<role>` answers only the holder of that project's claim. `GET /v1/sessions`, `GET /v1/registry/{session_id}`, the `/v1/interests/` reads and the `/v1/legion/agents` reads show only the sessions, roles, topics and agents the caller sees; any other session gets the `404` of an unknown one.
+- **Roles**: a free-form role's message of project P goes to the holder of `P.<role>`. It goes to the role's holder under no project only when P is public (`roles.ResolveHolder`). A holder gets it only when its stored projects see P.
+- **Relay** (`cmd/listener/privacy_hold.go`): a frame of a project goes to a session whose token lists the project. It is withheld from a session whose token lists other projects. A session whose token lists none gets it when a new read says the project is public. While the read is unknown, the listener holds the frame in memory (`holdLimits`). When it drops held frames, the next frame it sends carries `Envoy-Gap: true` and `Envoy-Gap-Reason: privacy_hold`. A frame of no project is never held.
+- **Slack**: an event of a channel that one private project lists goes on `notifications.legion.<token>.slack.…` (`contracts.PrivateSlackSubject`), and nothing of it goes on `notifications.slack.>`. A channel that two private projects list gets no lane.
+- **Bus**: each of the listener's three bus clients ends its connection name with `privacyRequiredSuffix` (`bus.WithPrivacyRequired`). A hub rendered private admits a listener only by that name.
+- **Readiness**: `GET /v1/privacy-readiness` answers only an `ENVOY_ALL_PROJECTS_ACCOUNTS` caller and reads again at each call: `200 {"instance","required":true,"source","read":"answered"}`, `503` with `"read":"failed"`, or, in the all-public mode, `200` with `"required":false`, `"source":""` and `"read":"none"`.
+
+Dispatch's `DISPATCH_PROJECT_PRIVACY_REQUIRED=true` puts the events outbox's role holders in the same mode (`cmd/dispatch/outbox_deps.go`). Set it together with the listeners' setting.
 
 ## Local end-to-end
 

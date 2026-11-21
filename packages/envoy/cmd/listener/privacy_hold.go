@@ -98,12 +98,47 @@ type heldLane struct {
 
 // sessionHold is one session's held lanes, whether its next relayed frame carries the hold's gap,
 // whether this listener set its record's held marker, and when its lanes are next read again.
+//
+// A hold runs from the first frame of the session decided while its project's privacy was unknown
+// until a read answers (decideHeld): open while it runs. It marks one relayed frame with its gap
+// however many frames it drops (told), so a long hold tells the session once; a hold that ends and
+// begins anew marks one frame again.
 type sessionHold struct {
 	lanes    map[string]*heldLane
 	bytes    int64
 	gap      bool
 	marked   bool
 	nextRead time.Time
+	open     bool
+	told     bool
+}
+
+// begin opens the hold when none is open, its gap not yet told.
+func (hold *sessionHold) begin() {
+	if !hold.open {
+		hold.open, hold.told = true, false
+	}
+}
+
+// dropped marks the session's next relayed frame with the hold's gap, unless a frame of the open
+// hold already carried it.
+func (hold *sessionHold) dropped() {
+	if !hold.open || !hold.told {
+		hold.gap = true
+	}
+}
+
+// takeGap reports whether the next relayed frame carries the hold's gap, and clears it; a gap told
+// while the hold is open is the hold's one.
+func (hold *sessionHold) takeGap() bool {
+	if !hold.gap {
+		return false
+	}
+	hold.gap = false
+	if hold.open {
+		hold.told = true
+	}
+	return true
 }
 
 // oldest is when hold's oldest held frame was held, and whether it holds one.
@@ -163,7 +198,7 @@ func (m *sessionRelays) decideFrame(ctx context.Context, sessionID string, msg b
 		return nil
 	}
 	counters := m.privacy.counted()
-	set, err := m.privacy.read(ctx)
+	set, err := m.readBeforeDrop(ctx, sessionID)
 	if err != nil {
 		counters.decisions.Inc([2]string{"answer", decisionUnknown})
 		counters.unknown.Inc([2]string{"reason", unknownReasonOf(err)})
@@ -217,6 +252,7 @@ func (m *sessionRelays) hold(ctx context.Context, sessionID, project string, msg
 		hold = &sessionHold{lanes: map[string]*heldLane{}}
 		h.sessions[sessionID] = hold
 	}
+	hold.begin()
 	if len(hold.lanes) == 0 {
 		hold.nextRead = frame.heldAt.Add(limits.redecide)
 	}
@@ -258,7 +294,7 @@ func (m *sessionRelays) hold(ctx context.Context, sessionID, project string, msg
 // dropLocked counts n of hold's frames dropped for reason and marks its next relayed frame with
 // the gap. The caller holds m.holds.mu.
 func (m *sessionRelays) dropLocked(hold *sessionHold, reason string, n int) {
-	hold.gap = true
+	hold.dropped()
 	m.privacy.counted().heldDropped.Add(int64(n), [2]string{"reason", reason})
 }
 
@@ -285,6 +321,10 @@ func (m *sessionRelays) decideHeld(ctx context.Context, sessionID string, set pr
 	h := m.holds
 	h.mu.Lock()
 	hold := h.sessions[sessionID]
+	if hold != nil {
+		// A read answered: the hold, if one was open, has ended.
+		hold.open = false
+	}
 	if hold == nil || len(hold.lanes) == 0 {
 		h.mu.Unlock()
 		return nil
@@ -333,6 +373,27 @@ func compareSeq(a, b uint64) int {
 		return 1
 	}
 	return 0
+}
+
+// readBeforeDrop is a fresh privacy read for sessionID's relay, which runs inline in its loop: while
+// frames are held for the session it waits no later than when the oldest of them reaches
+// holdLimits.undecided, so a read the source answers late never holds that frame past its limit.
+// A read cut short there is unknown, and the loop drops the frame on time (redecideHeld).
+func (m *sessionRelays) readBeforeDrop(ctx context.Context, sessionID string) (privateSet, error) {
+	m.holds.mu.Lock()
+	hold := m.holds.sessions[sessionID]
+	var oldest time.Time
+	held := false
+	if hold != nil {
+		oldest, held = hold.oldest()
+	}
+	m.holds.mu.Unlock()
+	if !held {
+		return m.privacy.read(ctx)
+	}
+	readCtx, cancel := context.WithDeadline(ctx, oldest.Add(holdLimits.undecided))
+	defer cancel()
+	return m.privacy.read(readCtx)
 }
 
 // heldDue is when sessionID's held lanes are next due a decision - a read again, or the drop of a
@@ -402,7 +463,7 @@ func (m *sessionRelays) redecideHeld(ctx context.Context, sessionID string) []bu
 	if empty {
 		return nil
 	}
-	set, err := m.privacy.read(ctx)
+	set, err := m.readBeforeDrop(ctx, sessionID)
 	if err != nil {
 		m.privacy.counted().unknown.Inc([2]string{"reason", unknownReasonOf(err)})
 		return nil
@@ -418,11 +479,10 @@ func (m *sessionRelays) takeGap(sessionID string) bool {
 	m.holds.mu.Lock()
 	defer m.holds.mu.Unlock()
 	hold := m.holds.sessions[sessionID]
-	if hold == nil || !hold.gap {
+	if hold == nil || !hold.takeGap() {
 		return false
 	}
-	hold.gap = false
-	if len(hold.lanes) == 0 && !hold.marked {
+	if len(hold.lanes) == 0 && !hold.marked && !hold.open {
 		delete(m.holds.sessions, sessionID)
 	}
 	return true
@@ -472,7 +532,7 @@ func (m *sessionRelays) writeHeldMarker(ctx context.Context, sessionID string, h
 		hold = &sessionHold{lanes: map[string]*heldLane{}}
 		m.holds.sessions[sessionID] = hold
 	}
-	hold.gap = true
+	hold.dropped()
 }
 
 // forgetHeld drops every frame held for sessionID, whose relay this listener no longer runs: the

@@ -65,6 +65,11 @@ export const RelayHeader = {
 export const RelayGapReason = {
   /** The listener dropped frames it held while their project's privacy could not be read. */
   privacyHold: "privacy_hold",
+  /**
+   * The edge listener withheld GitHub events of a repository the session's projects do not hold,
+   * while it could not read which repositories those are: withheld by rule, not lost.
+   */
+  repositoryWithheld: "repository_withheld",
 } as const;
 
 /**
@@ -210,7 +215,7 @@ export interface ConsumerEpoch {
  * renders a failure notice (`envoyNoticeText`, `gapNoticeFields`).
  */
 export interface ConsumerGapNotice {
-  readonly kind: "retention_gap" | "stream_recreated" | "privacy_hold";
+  readonly kind: "retention_gap" | "stream_recreated" | "privacy_hold" | "repository_withheld";
   readonly message: string;
 }
 
@@ -221,6 +226,8 @@ const GAP_MESSAGES: Record<ConsumerGapNotice["kind"], string> = {
     "Envoy's notification stream was recreated, so messages published to this session before that may be lost.",
   privacy_hold:
     "Envoy dropped messages it held while their project's privacy could not be read, so some project messages to this session may be missing.",
+  repository_withheld:
+    "Envoy withheld GitHub events of a repository this session's projects do not hold, so they were not delivered; no message was lost.",
 };
 
 /**
@@ -673,6 +680,8 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
     // hold's drop is another loss than that one, so it is told whatever the answer told.
     if (frame.gap) {
       if (frame.gapReason === RelayGapReason.privacyHold) tellGap("privacy_hold");
+      else if (frame.gapReason === RelayGapReason.repositoryWithheld)
+        tellGap("repository_withheld");
       else if (!gapTold) tellGap("retention_gap");
     }
     gapTold = false;
@@ -842,6 +851,7 @@ const GAP_NOTICE_NAMES: Record<ConsumerGapNotice["kind"], string> = {
   retention_gap: "messages may be missing",
   stream_recreated: "stream recreated",
   privacy_hold: "project messages may be missing",
+  repository_withheld: "repository events withheld",
 };
 
 /** What a gap notice says, field by field. */
