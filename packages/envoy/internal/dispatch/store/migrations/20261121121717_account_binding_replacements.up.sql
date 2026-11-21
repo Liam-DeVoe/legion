@@ -10,22 +10,29 @@
 -- before the recording could have minted it while the binding was off (through either build: an
 -- earlier build never records the account a mint is bound to), and a replaced account's broker
 -- credentials would never be revoked at the broker. With the binding on, the sign-in would have
--- revoked every such credential and owed the broker. So the database keeps each change made while
--- the binding is off, as it keeps sub_recorded_at, whichever build changes people.sub:
+-- revoked every such credential and owed the broker. So each change made while the binding is off
+-- is kept, whichever build changes people.sub:
 --
 --   - account_binding_replacements, one row per change: the address (people.email), the account
 --     it replaced (null for the address's first recording, which replaced none), and when (the
---     change's people.sub_recorded_at, which the before trigger people_sub_recorded_at stamps from
+--     change's people.sub_recorded_at, which the before trigger people_binding_columns stamps from
 --     the database's clock, the time a token's created_at is compared with).
+--   - A sign-in of a build with the binding that read it as off keeps its own change, in its own
+--     transaction, by that reading (store.PgPeopleStore.SignInSubject, store.keepAccountChangeSQL),
+--     and notifies dispatch_broker_revocations.
 --   - people_account_binding_replacement, an AFTER INSERT OR UPDATE OF sub trigger on people, for
 --     a row that records an account it did not record before (sub is never taken off:
---     people_sub_recorded_at refuses that). It keeps the row only while a build without the
+--     people_binding_columns refuses that), keeps the change a build without the binding makes,
+--     whose sign-in knows nothing of the binding. It keeps the row only while a build without the
 --     binding is in the fleet (account_binding_fleet_read, over the windows store.AccountBindingHolds
 --     passes: store.OwnerLockLegacyWindow, 600 seconds, and store.OwnerLockMarkWindow, 3600,
---     spelled here as TestTheReplacementTriggerReadsTheFleetOverTheBindingsWindows holds them):
---     with the binding on, the sign-in revokes and owes itself. It notifies
---     dispatch_broker_revocations, so the revocation loop (api.RunBrokerRevocations) wakes and
---     watches for the binding to start.
+--     spelled here as TestTheReplacementTriggerReadsTheFleetOverTheBindingsWindows holds them),
+--     as such a build is while it serves, by its own registration. It decides nothing for a
+--     sign-in of a build with the binding: it reads the fleet again when it fires, after that
+--     sign-in read it, and the two readings can differ (an arrival holding the binding's gate
+--     uncommitted, or a process deregistering in between), so it adds at most the row that
+--     sign-in keeps or deletes itself. It notifies dispatch_broker_revocations, so the revocation
+--     loop (api.RunBrokerRevocations) wakes and watches for the binding to start.
 --
 -- The binding reads the rows in two ways, both only while it holds (store.AccountBindingHolds):
 --
@@ -43,7 +50,8 @@
 --     runs it for every address with a row.
 --
 -- A sign-in that finds the binding holding revokes and owes its own change in its own transaction,
--- and deletes any row kept for it there (store.PgPeopleStore.SignInSubject).
+-- and deletes any row the trigger kept for it there; one that finds it off keeps its own change
+-- there (store.PgPeopleStore.SignInSubject).
 --
 -- The function pins search_path = pg_catalog, public, pg_temp and names every table and function
 -- with its schema, as the binding's guards do (20261119065002).
@@ -54,6 +62,10 @@
 --
 -- Locks: CREATE TRIGGER takes people SHARE ROW EXCLUSIVE until the commit, so a sign-in waits for
 -- an instant; the table is new.
+--
+-- This header was edited in place after the migration was pushed, its statements unchanged; the
+-- line below names the text before the edit, so a database that applied that text still boots.
+-- replaces: 20261121121717_account_binding_replacements.up.sql sha256:8cdda387540ca0f09c7372ea6230e2f17425d7bc71451c5d24865331e139dc62
 create table public.account_binding_replacements (
   email text not null,
   replaced_subject text,

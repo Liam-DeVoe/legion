@@ -212,11 +212,13 @@ func signInMemberKind(email string, kind model.MemberKind) error {
 // nothing when another account signs in, the sign-in records the account and ends the sessions as
 // that build does (the database's triggers end them, and stamp sub_recorded_at, whichever build
 // changes sub) and revokes and owes nothing, logged at WARN with the account it replaced, so no
-// revocation stands on a replacement that build would have recorded without it. The database keeps
-// such a replacement, whichever build makes it (account_binding_replacements, migration
-// 20261121121717), and a sign-in that finds the binding holding catches up the address's kept
-// replacements first (CatchUpAccountBinding, logged at WARN), then deletes the one its own
-// replacement keeps, which it revokes and owes itself.
+// revocation stands on a replacement that build would have recorded without it. Such a sign-in
+// keeps its change, a replacement or the address's first recording, in its own transaction
+// (keepAccountChangeSQL, account_binding_replacements, migration 20261121121717), by the reading
+// it revoked nothing on, so the binding catches it up once it holds; the database's trigger keeps
+// the change a build without the binding makes. A sign-in that finds the binding holding catches
+// up the address's kept changes first (CatchUpAccountBinding, logged at WARN), then deletes the
+// one the trigger may keep for its own change, which it revokes and owes itself.
 //
 // A restricted sign-in (an account outside the Workspace) never takes a full member's address
 // (takesAMembersAddress): it writes nothing and returns auth.ErrAddressHeldByMember, read once
@@ -298,6 +300,10 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	if binding {
 		if _, err := tx.Exec(ctx, `delete from account_binding_replacements where email = $1`, email); err != nil {
 			return fmt.Errorf("record sign-in of %q: delete the replacement it revokes and owes itself: %w", email, err)
+		}
+	} else if replaced || firstRecording {
+		if _, err := tx.Exec(ctx, keepAccountChangeSQL, email, stored, BrokerRevocationsChannel); err != nil {
+			return fmt.Errorf("record sign-in of %q: keep the account change it revokes and owes nothing for: %w", email, err)
 		}
 	}
 	if len(owed) > 0 && s.brokerRevocationIssuer != "" {

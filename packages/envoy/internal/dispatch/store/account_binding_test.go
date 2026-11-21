@@ -12,6 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The account binding's fleet (AccountBindingHolds, migration 20261120222130_account_binding_fleet):
@@ -401,10 +403,11 @@ func TestASignInBesideABuildWithoutTheBindingRevokesAndOwesNothing(t *testing.T)
 }
 
 // keptReplacements answers the accounts the database keeps as replaced at email while the binding
-// was off (account_binding_replacements), in the order they were replaced.
+// was off (account_binding_replacements), in the order they were replaced, a first recording's
+// as the empty string.
 func keptReplacements(t *testing.T, s *Store, email string) []string {
 	t.Helper()
-	rows, err := s.Pool.Query(context.Background(), `select replaced_subject from account_binding_replacements where email = $1 order by replaced_at`, email)
+	rows, err := s.Pool.Query(context.Background(), `select coalesce(replaced_subject, '') from account_binding_replacements where email = $1 order by replaced_at`, email)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,8 +442,9 @@ func owedSubjects(t *testing.T, s *Store, email string) []string {
 // account-a, owes the broker a revocation of account-a and of account-b, each naming account-c as
 // the holder, and deletes the kept rows; a second catch-up does nothing.
 //
-// Control, run by hand: with the trigger people_account_binding_replacement dropped, nothing is
-// kept, so nothing is revoked or owed and the row fails.
+// Control, run by hand: with the trigger people_account_binding_replacement dropped, account-c's
+// replacement through a build without the binding is not kept (account-b's, this build's
+// sign-in keeps itself), and the row fails at the replacements kept.
 func TestAReplacementMadeWhileTheBindingIsOffIsCaughtUpOnceItHolds(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
@@ -565,5 +569,187 @@ func TestACatchUpOwesNothingToTheAccountThatHoldsTheAddressAgain(t *testing.T) {
 	}
 	if got := owedSubjects(t, database, email); !slices.Equal(got, []string{"account-b"}) {
 		t.Errorf("the broker is owed the revocations of %q; want account-b's alone", got)
+	}
+}
+
+// holdUnboundPublish begins the dashboard publish of a build without the binding on a connection
+// of its own and holds it uncommitted, as its asset write holds it (legion-envoy-v32.34.0's
+// dashboard.Publish: the insert, the assets, then the commit): its insert holds the binding's gate
+// exclusively, and its mark is not committed.
+func holdUnboundPublish(t *testing.T, s *Store) pgx.Tx {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.ConnectConfig(ctx, s.Pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close(context.Background()) })
+	publish, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publish.Exec(ctx, `insert into dashboard_builds (build, entry, commit, owner_lock_protocol) values ('unbound', '', 'unbound0build', 1)`); err != nil {
+		t.Fatalf("publish as a build without the binding: %v", err)
+	}
+	if !bindingGateHeld(t, s, conn.PgConn().PID()) {
+		t.Fatal("the held publish of a build without the binding holds no binding gate")
+	}
+	return publish
+}
+
+// A sign-in that reads the binding as off keeps its own change (keepAccountChangeSQL), whatever
+// the trigger people_account_binding_replacement reads when the sign-in's update fires it: the
+// fleet can change between the two readings. While a build without the binding arrives, its
+// dashboard publish holds the binding's gate exclusively and uncommitted, so the sign-in's try of
+// the gate fails and it revokes and owes nothing, while the trigger finds no such build in what
+// is committed; and a process without the binding whose mark has aged out can deregister after
+// the sign-in read it and before the trigger reads. In each case the sign-in keeps the change and
+// wakes the revocation loop, and once the binding holds (the arrival rolled back, or committed
+// and aged out, or the process gone) the catch-up revokes the token recording no account made in
+// the overlap and owes the broker the replaced account, naming the holder. A first recording made
+// during an arrival is kept too, and its catch-up revokes and owes as a first recording with the
+// binding on does.
+//
+// Controls, run by hand: with SignInSubject's keepAccountChangeSQL removed, every case keeps
+// nothing and fails at "kept"; with only its notification removed, every case fails at
+// "announced".
+func TestASignInThatReadsTheBindingOffKeepsItsChangeWhateverTheTriggerReads(t *testing.T) {
+	ctx := context.Background()
+	arrival := func(commit bool) func(t *testing.T, s *Store, email string, signIn func() error) {
+		return func(t *testing.T, s *Store, email string, signIn func() error) {
+			publish := holdUnboundPublish(t, s)
+			if err := signIn(); err != nil {
+				t.Fatalf("the sign-in while a publish without the binding holds the gate: %v", err)
+			}
+			if !commit {
+				if err := publish.Rollback(ctx); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err := publish.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			ageBindingMark(t, s, OwnerLockMarkWindow+time.Minute)
+		}
+	}
+	deregistering := func(t *testing.T, s *Store, email string, signIn func() error) {
+		instance := registerFleetProcess(t, s, OwnerLockProtocol, 0)
+		ageBindingMark(t, s, OwnerLockMarkWindow+time.Minute)
+		row, err := s.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer row.Rollback(ctx)
+		if _, err := row.Exec(ctx, `select from people where email = $1 for update`, email); err != nil {
+			t.Fatal(err)
+		}
+		signedIn := make(chan error, 1)
+		go func() { signedIn <- signIn() }()
+		// The sign-in reads the fleet right after the address's lock and before it reaches the
+		// address's row, which the test holds.
+		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			select {
+			case err := <-signedIn:
+				t.Fatalf("the sign-in ended (%v) while the test held the address's row; want it to wait there, after its fleet read", err)
+			default:
+			}
+			var waits bool
+			if err := s.Pool.QueryRow(ctx, `
+				select exists (select from pg_stat_activity where datname = current_database() and $1::integer = any(pg_blocking_pids(pid)))`,
+				row.Conn().PgConn().PID()).Scan(&waits); err != nil {
+				t.Fatal(err)
+			}
+			if waits {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the sign-in did not wait for the address's row within 10s")
+			}
+		}
+		if _, err := s.Pool.Exec(ctx, `delete from server_processes where instance = $1::uuid`, instance); err != nil {
+			t.Fatal(err)
+		}
+		if err := row.Rollback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-signedIn; err != nil {
+			t.Fatalf("the sign-in, once the address's row was let go: %v", err)
+		}
+	}
+	for _, c := range []struct {
+		name           string
+		firstRecording bool
+		window         func(t *testing.T, s *Store, email string, signIn func() error)
+	}{
+		{"a replacement while a publish without the binding holds the gate, which rolls back", false, arrival(false)},
+		{"a replacement while a publish without the binding holds the gate, which commits and ages out", false, arrival(true)},
+		{"a replacement read beside a process without the binding that deregisters before the trigger reads", false, deregistering},
+		{"a first recording while a publish without the binding holds the gate, which rolls back", true, arrival(false)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			database := migratedEmptyStore(t)
+			people := brokerPeople(database)
+			const email = "kept-by-the-sign-in@example.com"
+			var before string
+			want := AccountBindingCatchUp{Replaced: []string{"account-a"}, TokensRevoked: 1, Owed: []string{"account-a"}, Holder: "account-b"}
+			wantKept := []string{"account-a"}
+			if c.firstRecording {
+				if _, err := database.Pool.Exec(ctx, `insert into people (email) values ($1)`, email); err != nil {
+					t.Fatal(err)
+				}
+				before = mintToken(t, database.Pool, email, "of an account that never signed in", "account-z")
+				want = AccountBindingCatchUp{FirstRecording: true, TokensRevoked: 2, Owed: []string{"account-z"}, Holder: "account-b"}
+				wantKept = []string{""}
+			} else {
+				signInAll(t, people, email, "account-a")
+				before = mintToken(t, database.Pool, email, "token-a", "account-a")
+			}
+			listener, err := database.Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Release()
+			if _, err := listener.Exec(ctx, `listen `+BrokerRevocationsChannel); err != nil {
+				t.Fatal(err)
+			}
+
+			c.window(t, database, email, func() error {
+				return people.SignInSubject(ctx, email, "account-b", "refresh-account-b", model.MemberFull)
+			})
+			overlap := mintToken(t, database.Pool, email, "made in the overlap", "")
+			if _, revoked := tokenState(t, database.Pool, before); revoked {
+				t.Errorf("account-b's sign-in, which read the binding as off, revoked the token from before it; want nothing revoked")
+			}
+			if got := owedSubjects(t, database, email); len(got) != 0 {
+				t.Errorf("account-b's sign-in, which read the binding as off, owes the broker %q; want nothing", got)
+			}
+			if kept := keptReplacements(t, database, email); !slices.Equal(kept, wantKept) {
+				t.Errorf("account-b's sign-in, which read the binding as off, left %q kept; want %q, kept by the sign-in itself", kept, wantKept)
+			}
+			wait, cancel := context.WithTimeout(ctx, 10*time.Second)
+			_, err = listener.Conn().WaitForNotification(wait)
+			cancel()
+			if err != nil {
+				t.Errorf("account-b's sign-in kept its change without announcing it on %s (%v); want the revocation loop woken", BrokerRevocationsChannel, err)
+			}
+
+			if holds, _ := bindingHolds(t, database); !holds {
+				t.Fatal("the binding does not hold once the build without it is gone; the row cannot read the catch-up")
+			}
+			held, caught, err := CatchUpAccountBindingOf(ctx, database.Pool, email, testRevocationIssuer)
+			if err != nil || !held {
+				t.Fatalf("the catch-up once the binding holds answered held %t, %v", held, err)
+			}
+			if !reflect.DeepEqual(caught, want) {
+				t.Errorf("the catch-up did %+v; want %+v", caught, want)
+			}
+			if _, revoked := tokenState(t, database.Pool, overlap); !revoked {
+				t.Error("the catch-up left the token made in the overlap, which records no account, live; want it revoked")
+			}
+			if got := owedSubjects(t, database, email); !slices.Equal(got, want.Owed) {
+				t.Errorf("once the binding holds the broker is owed the revocations of %q; want %q", got, want.Owed)
+			}
+		})
 	}
 }

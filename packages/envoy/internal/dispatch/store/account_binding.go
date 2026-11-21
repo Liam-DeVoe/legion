@@ -72,6 +72,30 @@ func AccountBindingHolds(ctx context.Context, tx pgx.Tx) (bool, error) {
 	return holds, nil
 }
 
+// keepAccountChangeSQL keeps the change of $1's Google account that a sign-in made in its
+// transaction while it read the account binding as off (PgPeopleStore.SignInSubject), for the
+// catch-up (CatchUpAccountBinding): the account it replaced, $2, empty for the address's first
+// recording, and the recording time the database stamped on the change (people.sub_recorded_at),
+// in account_binding_replacements (migration 20261121121717). It announces it on $3,
+// BrokerRevocationsChannel, so the revocation loop wakes at the commit and watches for the binding
+// to hold. A row the trigger people_account_binding_replacement kept for the same change has the
+// same key, so it adds nothing then.
+//
+// The sign-in keeps the change by the reading it revoked nothing on, not by the trigger's own
+// reading, which comes later and can differ: an arrival of a build without the binding holds the
+// binding's gate exclusively, uncommitted, through its whole dashboard publish (or its
+// registration's wait), so the sign-in's try of the gate fails while the trigger sees no such
+// build in what is committed; and a process without the binding whose mark has aged out can
+// deregister between the two readings. Left to the trigger, such a change would be revoked by
+// nobody and kept for nobody.
+const keepAccountChangeSQL = `
+	with kept as (
+		insert into account_binding_replacements (email, replaced_subject, replaced_at)
+		select email, nullif($2, ''), sub_recorded_at from people where email = $1
+		on conflict do nothing
+	)
+	select pg_notify($3, '')`
+
 // AccountBindingCatchUp is what one catch-up of an address did (CatchUpAccountBinding): the
 // accounts its kept changes replaced, in the order they were replaced; whether one of them was the
 // address's first recording, which replaced none; how many of its personal tokens it revoked; the
