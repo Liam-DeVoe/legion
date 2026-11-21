@@ -420,8 +420,8 @@ marked with tags or annotations:
   person approves every release, only someone the secret names may ask, and the grant is short
   enough to review while it is live; one that is not is refused `admin-tier`,
   `admin-requesters` or `max-grant-required`. A person approves every release of one even where
-  a deployment runs a model judge: the judge refuses an administrator's secret, so a rules entry
-  that gives the judge seconds of that name cannot undo the tag
+  a deployment runs a model judge: the judge refuses an administrator's secret, so a profile's
+  `proxy` block that gives the judge seconds of that name cannot undo the tag
   ([The model judge](#the-model-judge)). Set it with
   `agent-secrets secret create|retag --admin true`.
 - **`max-grant`** is optional, except on an `admin` secret and on a `google-service-account` one:
@@ -1491,15 +1491,16 @@ list Dispatch's own account and nothing else.
 ### The model judge
 
 A deployment may configure a **model judge** (`packages/envoy/internal/cipher/judge`). Who decides
-a request is a setting of its keys, in the airlock rules file:
+a request is a setting of its keys, in each profile's `proxy` block in the profiles file
+(`BROKER_PROFILES_FILE`):
 
 - **Nobody**: an agent-tier key is granted at once to the sessions its tags allow, as before.
-- **The judge**: a key whose rules entry has a `judge` value, the longest lifetime in seconds the
-  judge may grant, and no `admin` tag. The entry may also carry `guidance`: the key owner's
-  instruction saying when the judge should grant it. The entry names at least one host, as every
-  entry does, so the value of a key the judge decides stays behind the airlock.
-- **A person**: every other key, and every administrator's key whatever the rules file says. The
-  person decides on the broker page, as before.
+- **The judge**: a key whose profile's `proxy` block has a `judge` value, the longest lifetime in
+  seconds the judge may grant, and no `admin` tag. The block may also carry `guidance`: the key
+  owner's instruction saying when the judge should grant it. The block names at least one host, as
+  every proxy block does, so the value of a key the judge decides stays behind the airlock.
+- **A person**: every other key, and every administrator's key whatever the profiles file says.
+  The person decides on the broker page, as before.
 
 The judge decides a request when every key in it that needs a decision is a judge key. A request
 with any key a person decides is that person's whole. The broker reads the answer when it writes
@@ -1524,7 +1525,7 @@ and never for one it joined to a request already pending, so one record is judge
 35 seconds, and the model call inside it 20. The run makes six checks first, in order, and stops
 at the first that fails, asking the model nothing:
 
-1. each key the judge decides has a `judge` value in its rules entry;
+1. each key the judge decides has a `judge` value in its profile's `proxy` block;
 2. the grant's lifetime — the `--ttl` its session signed, else the broker's default — is at most
    15 minutes and at most each of those keys' seconds;
 3. the tag policy, read again now, still answers approval for each key the judge decides, and
@@ -1545,7 +1546,7 @@ A key the session gets at once, such as an agent-tier key, may stand beside the 
 needs no decision: the judge decides nothing of it, the model is not shown it, and the judge's
 grant releases it with the rest.
 
-A request that passes them all goes to one model, with each key's name, rules entry and guidance,
+A request that passes them all goes to one model, with each key's name, `proxy` block and guidance,
 the reason, and the issue and ask the reason points at. The model follows the guidance and reads
 everything an agent wrote as data to judge rather than as instructions. It answers `grant` or
 `deny`. The run reads the request's state once more immediately before that call and asks nothing
