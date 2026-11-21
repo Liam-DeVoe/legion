@@ -161,8 +161,14 @@ func TestARestartWhileFramesAreHeldMarksTheGap(t *testing.T) {
 		t.Run(fmt.Sprintf("held marker %v", marked), func(t *testing.T) {
 			rig := newPrivacyRig(t, true)
 			sessionID := fmt.Sprintf("ses_restart_held_%v", marked)
-			if err := rig.deps.sessions.Put(sessionID, session.SessionEntry{MachineID: "test-machine", Projects: []string{}, Restricted: new(false), Held: marked}); err != nil {
+			// The record is written, then its marker by SetHeld, the marker's one writer: every
+			// other write of the record (Put, PutWithin) carries the marker of the record it
+			// replaces, so a Put naming Held sets nothing.
+			if err := rig.deps.sessions.Put(sessionID, session.SessionEntry{MachineID: "test-machine", Projects: []string{}, Restricted: new(false)}); err != nil {
 				t.Fatalf("write the predecessor's record: %v", err)
+			}
+			if err := rig.deps.sessions.SetHeld(t.Context(), sessionID, marked); err != nil {
+				t.Fatalf("write the predecessor's held marker: %v", err)
 			}
 			standIn := rig.session(t, sessionID, false, nil)
 			own, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
