@@ -177,14 +177,14 @@ func Holds(a Answer, test func(body []byte) bool) bool { return test(a.bytes()) 
 // case instead and only those windows compared, which on a megabyte of answer measured about half
 // the time the copy alone took.
 func ContainsFold(body []byte, phrase string) bool {
-	first := string([]byte{phrase[0], phrase[0] - 'a' + 'A'})
+	first, wanted := string([]byte{phrase[0], phrase[0] - 'a' + 'A'}), []byte(phrase)
 	for from := 0; from+len(phrase) <= len(body); from++ {
 		at := bytes.IndexAny(body[from:len(body)-len(phrase)+1], first)
 		if at < 0 {
 			return false
 		}
 		from += at
-		if bytes.EqualFold(body[from:from+len(phrase)], []byte(phrase)) {
+		if bytes.EqualFold(body[from:from+len(phrase)], wanted) {
 			return true
 		}
 	}
