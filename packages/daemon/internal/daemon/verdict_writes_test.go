@@ -144,6 +144,20 @@ func (g *verdictGitHub) serve(t *testing.T) http.HandlerFunc {
 				return
 			}
 			_, _ = w.Write([]byte(pull))
+		case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "collaborators" && parts[2] == "permission":
+			// a-writer has write access, a-reader read access; every bot is an App, which GitHub
+			// may give write access and the daemon never reads as a person.
+			login := parts[1]
+			switch {
+			case login == "a-writer":
+				answer(map[string]any{"permission": "write", "user": map[string]any{"login": login, "type": "User"}})
+			case login == "a-reader":
+				answer(map[string]any{"permission": "read", "user": map[string]any{"login": login, "type": "User"}})
+			case strings.HasSuffix(login, "[bot]"):
+				answer(map[string]any{"permission": "write", "user": map[string]any{"login": login, "type": "Bot"}})
+			default:
+				http.NotFound(w, r)
+			}
 		case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "commits" && parts[2] == "check-runs":
 			if r.Header.Get("Authorization") != verdictBearer() {
 				t.Errorf("the check runs of %s were listed with %q, want the verdict token", parts[1], r.Header.Get("Authorization"))
@@ -219,13 +233,17 @@ func (g *verdictGitHub) recorded() ([]fakeWrite, []string) {
 
 // verdictRig is CAPTURE-1 on acme/widgets' pull request 86 at head code, the workflow runtime
 // that writes legion-verdict on acme/widgets as the verdict repository entries say, its writer and
-// its merge-state reader running, its log kept, and the fake GitHub it writes on.
+// its merge-state reader running, its log kept, the fake GitHub it writes on, and the head of each
+// write the workflow asked for (workflow.Config.WriteVerdict), in order.
 type verdictRig struct {
 	pool   *store.Pool
 	w      *workflowRuntime
 	github *verdictGitHub
 	logs   *syncBuffer
 	n      int
+
+	mu    sync.Mutex
+	asked []string
 }
 
 func newVerdictRig(t *testing.T, tokens appauth.Tokens, entries []config.VerdictRepository, seed func(*testing.T, *store.Pool)) *verdictRig {
@@ -241,7 +259,12 @@ func newVerdictRig(t *testing.T, tokens appauth.Tokens, entries []config.Verdict
 		verdicts: newVerdictWriter(entries),
 	}
 	w.engine = workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, AppLogin: verdictAppLogin,
-		ReadMergeState: w.queueMergeState, WriteVerdict: w.queueVerdictWrite}, log)
+		ReadMergeState: w.queueMergeState, WriteVerdict: func(issue, repo string, number int, head string) {
+			rig.mu.Lock()
+			rig.asked = append(rig.asked, head)
+			rig.mu.Unlock()
+			w.queueVerdictWrite(issue, repo, number, head)
+		}}, log)
 	w.handlers = []intake.Handler{w.engine, w.verdictFacts()}
 	rig.w = w
 	ctx, cancel := context.WithCancel(context.Background())
@@ -256,6 +279,47 @@ func (rig *verdictRig) apply(t *testing.T, fact intake.Fact) {
 	t.Helper()
 	rig.n++
 	applyFact(t, rig.pool, "test", fmt.Sprintf("verdict-%d", rig.n), fact, rig.w.handlers...)
+}
+
+// askedHeads is the head of each write the workflow asked for so far.
+func (rig *verdictRig) askedHeads() []string {
+	rig.mu.Lock()
+	defer rig.mu.Unlock()
+	return slices.Clone(rig.asked)
+}
+
+// review applies fact, a webhook's review, as intake delivers it: with its author's write access
+// read from GitHub by the daemon's own reader (reviewerCanWrite, which the fake answers) for the
+// reviews intake reads it for - a request for changes of a recorded pull request, and an approval
+// or a request for changes of an outside one (intake's resolveReviewPermission, which
+// TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied and
+// TestLegionVerdictAnOutsidePullRequestIsAFactOnAVerdictRepositoryAlone hold) - and with none
+// for every other, as intake leaves it.
+func (rig *verdictRig) review(t *testing.T, fact intake.Fact) {
+	t.Helper()
+	canWrite := func(review intake.PullRequestReview) bool {
+		t.Helper()
+		ok, err := rig.w.reviewerCanWrite(context.Background(), review)
+		if err != nil {
+			t.Fatalf("read %s's permission: %v", review.Author, err)
+		}
+		return ok
+	}
+	switch review := fact.(type) {
+	case intake.PullRequestReview:
+		if review.Decides() {
+			review.AuthorCanWrite = canWrite(review)
+		}
+		fact = review
+	case intake.OutsideReview:
+		if review.Deciding() {
+			review.AuthorCanWrite = canWrite(review.PullRequestReview)
+		}
+		fact = review
+	default:
+		t.Fatalf("%T is no review", fact)
+	}
+	rig.apply(t, fact)
 }
 
 // written waits until the writer holds no write queued or running.
@@ -284,6 +348,20 @@ func verdictWrites(t *testing.T, pool *store.Pool, head string) []store.VerdictW
 	return writes
 }
 
+// verdictReviews is every review the store records of acme/widgets' pull request number.
+func verdictReviews(t *testing.T, pool *store.Pool, number int) []store.VerdictReview {
+	t.Helper()
+	var reviews []store.VerdictReview
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		var err error
+		reviews, err = store.VerdictReviewsTx(context.Background(), tx, ghrepo.MustParse("acme/widgets"), number)
+		return err
+	}); err != nil {
+		t.Fatalf("read the reviews of pull request %d: %v", number, err)
+	}
+	return reviews
+}
+
 // The rows of CAPTURE-1's phases these rigs seed: the tester's pass at code, and a reviewer that
 // has given no verdict yet.
 var (
@@ -305,10 +383,11 @@ func reviewerVerdict(verdict, commit string, n int) intake.HandoffComplete {
 		Verdict: verdict, Commit: commit, HandoffRecord: fmt.Sprintf("review-%d", n), HandoffVersion: n}
 }
 
-// personsReview is a webhook's review of pull request 86 at code by a person with write access.
+// personsReview is a webhook's review of pull request 86 at code by a-writer, a person with write
+// access, as GitHub delivers it: its write access is the daemon's to read (verdictRig.review).
 func personsReview(id int64, state string) intake.PullRequestReview {
 	return intake.PullRequestReview{Repo: "acme/widgets", Number: 86, ID: id, State: state, CommitID: "code", HeadSHA: "code",
-		Author: "a-writer", AuthorCanWrite: true, SubmittedAt: time.Date(2026, 11, 21, 6, 0, int(id), 0, time.UTC)}
+		Author: "a-writer", SubmittedAt: time.Date(2026, 11, 21, 6, 0, int(id), 0, time.UTC)}
 }
 
 // approvedAndWritten applies the reviewer's approve at code to a rig reviewingWithPass seeded, and
@@ -373,7 +452,8 @@ func TestLegionVerdictAStaleBlockedAfterTheWriteStillSettlesTheApprove(t *testin
 }
 
 // C2: a push of a new head writes nothing on that head: a check run belongs to one commit, and no
-// verdict names the new one.
+// verdict names the new one. The new head holds no verdict, so a write asked for there would write
+// nothing either: what the test holds is that the push asks for none.
 func TestLegionVerdictAPushWritesNothingOnTheNewHead(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
 	rig.approvedAndWritten(t)
@@ -381,6 +461,9 @@ func TestLegionVerdictAPushWritesNothingOnTheNewHead(t *testing.T) {
 	rig.written(t)
 	if runs := rig.github.legionRuns("code-2"); len(runs) != 0 {
 		t.Fatalf("legion-verdict runs on the pushed head = %+v, want none", runs)
+	}
+	if asked := rig.askedHeads(); !slices.Equal(asked, []string{"code"}) {
+		t.Fatalf("the workflow asked for writes on %v, want only the approve's on code", asked)
 	}
 	if writes, _ := rig.github.recorded(); len(writes) != 1 {
 		t.Fatalf("writes = %+v, want only the approve's", writes)
@@ -416,7 +499,7 @@ func TestLegionVerdictAFailedWriteIsLoggedForTheWritersSweep(t *testing.T) {
 }
 
 // Review Focus 1: an approve at H1 after a push made H2 writes on H1 only, and H2 has no
-// legion-verdict.
+// legion-verdict: no write is asked for on H2, which holds no verdict.
 func TestLegionVerdictAtAnOldHeadWritesNothingOnTheNewHead(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
 	rig.apply(t, intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 86, Branch: "legion/CAPTURE-1", Before: "code", HeadSHA: "code-2"})
@@ -428,6 +511,9 @@ func TestLegionVerdictAtAnOldHeadWritesNothingOnTheNewHead(t *testing.T) {
 	if runs := rig.github.legionRuns("code-2"); len(runs) != 0 {
 		t.Fatalf("legion-verdict runs on the new head = %+v, want none", runs)
 	}
+	if asked := rig.askedHeads(); !slices.Equal(asked, []string{"code"}) {
+		t.Fatalf("the workflow asked for writes on %v, want only the approve's on code", asked)
+	}
 }
 
 // Review Focus 2: a person's request for changes after the writer's success turns the writer's own
@@ -435,7 +521,7 @@ func TestLegionVerdictAtAnOldHeadWritesNothingOnTheNewHead(t *testing.T) {
 func TestLegionVerdictPersonsLateRefusalTurnsSuccessToFailure(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
 	run := rig.approvedAndWritten(t)
-	rig.apply(t, personsReview(1, "changes_requested"))
+	rig.review(t, personsReview(1, "changes_requested"))
 	rig.written(t)
 	runs := rig.github.legionRuns("code")
 	if len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "failure" {
@@ -458,7 +544,7 @@ func TestLegionVerdictASuccessWhoseVerdictNoLongerStandsTurnsToFailure(t *testin
 	if _, err := rig.pool.Exec(context.Background(), `update phases set verdict = '', handoff_commit = '' where issue = 'CAPTURE-1' and role = 'tester'`); err != nil {
 		t.Fatalf("clear the tester's pass: %v", err)
 	}
-	rig.apply(t, personsReview(1, "approved"))
+	rig.review(t, personsReview(1, "approved"))
 	rig.written(t)
 	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "failure" {
 		t.Fatalf("legion-verdict runs on code = %+v, want run %d turned to failure", runs, run.ID)
@@ -474,9 +560,9 @@ func TestLegionVerdictASuccessWhoseVerdictNoLongerStandsTurnsToFailure(t *testin
 func TestLegionVerdictPersonsApprovalLiftsTheirRefusal(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
 	run := rig.approvedAndWritten(t)
-	rig.apply(t, personsReview(1, "changes_requested"))
+	rig.review(t, personsReview(1, "changes_requested"))
 	rig.written(t)
-	rig.apply(t, personsReview(2, "approved"))
+	rig.review(t, personsReview(2, "approved"))
 	rig.written(t)
 	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "success" {
 		t.Fatalf("legion-verdict runs on code = %+v, want run %d back at success", runs, run.ID)
@@ -493,9 +579,9 @@ func TestLegionVerdictPersonsApprovalLiftsTheirRefusal(t *testing.T) {
 func TestLegionVerdictAnApprovalDeliveredLateLiftsNoLaterRefusal(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
 	run := rig.approvedAndWritten(t)
-	rig.apply(t, personsReview(2, "changes_requested"))
+	rig.review(t, personsReview(2, "changes_requested"))
 	rig.written(t)
-	rig.apply(t, personsReview(1, "approved"))
+	rig.review(t, personsReview(1, "approved"))
 	rig.written(t)
 	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].ID != run.ID || runs[0].Conclusion != "failure" {
 		t.Fatalf("legion-verdict runs on code = %+v, want run %d left at failure", runs, run.ID)
@@ -506,7 +592,7 @@ func TestLegionVerdictAnApprovalDeliveredLateLiftsNoLaterRefusal(t *testing.T) {
 // writes nothing: only the reviewer's verdict approves a head a Legion issue owns.
 func TestLegionVerdictPersonsApprovalWritesNothingOnALegionHead(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
-	rig.apply(t, personsReview(1, "approved"))
+	rig.review(t, personsReview(1, "approved"))
 	rig.written(t)
 	if writes, _ := rig.github.recorded(); len(writes) != 0 {
 		t.Fatalf("writes = %+v, want none", writes)
@@ -516,10 +602,11 @@ func TestLegionVerdictPersonsApprovalWritesNothingOnALegionHead(t *testing.T) {
 // The outside pull request 90 of acme/widgets, on a branch no issue owns, at head out-1.
 var outsideOpened = intake.OutsidePullRequest{Repo: "acme/widgets", Number: 90, Branch: "feature/faster-builds", HeadSHA: "out-1"}
 
-// outsideReview is a webhook's review of pull request 90 at out-1.
-func outsideReview(id int64, author string, person bool, state string) intake.OutsideReview {
+// outsideReview is a webhook's review of pull request 90 at out-1, as GitHub delivers it: its
+// author's write access is the daemon's to read (verdictRig.review).
+func outsideReview(id int64, author, state string) intake.OutsideReview {
 	return intake.OutsideReview{PullRequestReview: intake.PullRequestReview{Repo: "acme/widgets", Number: 90, ID: id, State: state,
-		CommitID: "out-1", HeadSHA: "out-1", Author: author, AuthorCanWrite: person, SubmittedAt: time.Date(2026, 11, 21, 6, 0, int(id), 0, time.UTC)}}
+		CommitID: "out-1", HeadSHA: "out-1", Author: author, SubmittedAt: time.Date(2026, 11, 21, 6, 0, int(id), 0, time.UTC)}}
 }
 
 // nothingSeeded seeds no issue.
@@ -536,20 +623,20 @@ func TestLegionVerdictOnAnOutsideHead(t *testing.T) {
 		reviews []intake.OutsideReview
 		want    []string
 	}{
-		{"the CI reviewer approves", []intake.OutsideReview{outsideReview(1, ciReviewer, false, "approved")}, []string{"success"}},
-		{"the CI reviewer asks for changes", []intake.OutsideReview{outsideReview(1, ciReviewer, false, "changes_requested")}, []string{"failure"}},
+		{"the CI reviewer approves", []intake.OutsideReview{outsideReview(1, ciReviewer, "approved")}, []string{"success"}},
+		{"the CI reviewer asks for changes", []intake.OutsideReview{outsideReview(1, ciReviewer, "changes_requested")}, []string{"failure"}},
 		{"a person asks for changes after the CI reviewer's approval", []intake.OutsideReview{
-			outsideReview(1, ciReviewer, false, "approved"), outsideReview(2, "a-writer", true, "changes_requested")}, []string{"success", "failure"}},
-		{"a bot that is not the CI reviewer", []intake.OutsideReview{outsideReview(1, "another-bot[bot]", false, "approved")}, nil},
-		{"a person approves", []intake.OutsideReview{outsideReview(1, "a-writer", true, "approved")}, []string{"success"}},
-		{"an account with no write access approves", []intake.OutsideReview{outsideReview(1, "a-reader", false, "approved")}, nil},
+			outsideReview(1, ciReviewer, "approved"), outsideReview(2, "a-writer", "changes_requested")}, []string{"success", "failure"}},
+		{"a bot that is not the CI reviewer", []intake.OutsideReview{outsideReview(1, "another-bot[bot]", "approved")}, nil},
+		{"a person approves", []intake.OutsideReview{outsideReview(1, "a-writer", "approved")}, []string{"success"}},
+		{"an account with no write access approves", []intake.OutsideReview{outsideReview(1, "a-reader", "approved")}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, nothingSeeded)
 			rig.apply(t, outsideOpened)
 			var concluded []string
 			for _, review := range tc.reviews {
-				rig.apply(t, review)
+				rig.review(t, review)
 				rig.written(t)
 				if runs := rig.github.legionRuns("out-1"); len(runs) == 1 {
 					concluded = append(concluded, runs[0].Conclusion)
@@ -569,7 +656,7 @@ func TestLegionVerdictOnAnOutsideHead(t *testing.T) {
 func TestLegionVerdictRecordsAnOutsidePullRequestWithItsHeadAndReviews(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, nothingSeeded)
 	rig.apply(t, outsideOpened)
-	rig.apply(t, outsideReview(1, "a-writer", true, "approved"))
+	rig.review(t, outsideReview(1, "a-writer", "approved"))
 	rig.written(t)
 	widgets := ghrepo.MustParse("acme/widgets")
 	if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
@@ -601,17 +688,20 @@ const otherProjectsLine = "verdict: no daemon writes legion-verdict here: the he
 // Review Focus 5 and C2: a legion/<KEY> head of another project on a verdict repository gets no
 // write from this daemon, whose project is not KEY's, and one line once per pull request says why:
 // the daemon of KEY's project writes it, on a repository that daemon names. A review of that
-// pull request writes nothing either.
+// pull request writes nothing either, and is not recorded: it is that project's daemon's to read.
 func TestLegionVerdictAnotherProjectsIssueHeadIsLoggedNotWritten(t *testing.T) {
 	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, nothingSeeded)
 	rig.apply(t, intake.PullRequestOpened{Repo: "acme/widgets", Number: 91, Branch: "legion/OTHER-1", HeadSHA: "other-1", Base: "main"})
 	rig.apply(t, intake.PullRequestSynchronized{Repo: "acme/widgets", Number: 91, Branch: "legion/OTHER-1", Before: "other-1", HeadSHA: "other-2"})
 	review := intake.OutsideReview{PullRequestReview: intake.PullRequestReview{Repo: "acme/widgets", Number: 91, ID: 5, State: "approved",
-		CommitID: "other-2", HeadSHA: "other-2", Author: "a-writer", AuthorCanWrite: true}}
-	rig.apply(t, review)
+		CommitID: "other-2", HeadSHA: "other-2", Author: "a-writer"}}
+	rig.review(t, review)
 	rig.written(t)
 	if writes, _ := rig.github.recorded(); len(writes) != 0 {
 		t.Fatalf("writes = %+v, want none on another project's issue branch", writes)
+	}
+	if reviews := verdictReviews(t, rig.pool, 91); len(reviews) != 0 {
+		t.Fatalf("the reviews recorded of pull request 91 = %+v, want none of another project's issue branch", reviews)
 	}
 	lines := loggedMessages(t, rig.logs.String(), otherProjectsLine)
 	if len(lines) != 1 || lines[0]["repository"] != "acme/widgets" || lines[0]["pull_request"] != float64(91) || lines[0]["issue"] != "OTHER-1" {
@@ -627,7 +717,7 @@ func TestLegionVerdictWritesOnNoRepositoryItsEntriesDoNotName(t *testing.T) {
 	})
 	rig.apply(t, reviewerVerdict("approve", "code", 1))
 	rig.apply(t, outsideOpened)
-	rig.apply(t, outsideReview(1, "a-writer", true, "approved"))
+	rig.review(t, outsideReview(1, "a-writer", "approved"))
 	rig.written(t)
 	if got, _ := capturePhase(t, rig.pool); got != phase.Accepting {
 		t.Fatalf("the issue is in %s, want accepting on the clean merge state its record holds", got)
@@ -655,7 +745,7 @@ func TestLegionVerdictTokenModeWritesNothingAndSaysWhyOnce(t *testing.T) {
 	rig.apply(t, reviewerVerdict("changes", "code", 1))
 	rig.written(t)
 	rig.apply(t, outsideOpened)
-	rig.apply(t, outsideReview(1, ciReviewer, false, "approved"))
+	rig.review(t, outsideReview(1, ciReviewer, "approved"))
 	rig.written(t)
 	if writes, _ := rig.github.recorded(); len(writes) != 0 {
 		t.Fatalf("writes = %+v, want none in token mode", writes)
@@ -783,6 +873,124 @@ func TestLegionVerdictQueuesNoWriteOnARepositoryItsEntriesDoNotName(t *testing.T
 	w.queueVerdictWrite("CAPTURE-1", "acme/widgets", 86, "code")
 	if target, ok := writer.next(); !ok || target.repository.String() != "acme/widgets" || target.head != "code" {
 		t.Fatalf("the writer took %+v, %v; want the write on acme/widgets, which GitHub serves as the entry's cybermonklabs/widgets", target, ok)
+	}
+}
+
+// A write asked for on a pull request of a verdict repository that no record holds - one opened
+// before the daemon heard its repository, whose first event here is a review - reads that pull
+// request from GitHub once (GET /pulls/{number}, decideVerdict). On a branch that is no issue's it
+// is recorded as an outside pull request at the head GitHub shows and decided as one; on another
+// project's issue branch it is that project's, logged once and not written; on this project's
+// issue branch that no record holds it has no verdict here; and one GitHub shows closed merges
+// nothing, so it is neither recorded nor written on, as a closed Legion pull request is not.
+func TestLegionVerdictReadsAPullRequestNoRecordHoldsFromGitHub(t *testing.T) {
+	pull := func(state, ref string) string {
+		return fmt.Sprintf(`{"number":92,"state":%q,"base":{"ref":"main"},"head":{"ref":%q,"sha":"out-9"}}`, state, ref)
+	}
+	for _, tc := range []struct {
+		name, pull string
+		want       []string
+		recorded   bool
+		logged     bool
+	}{
+		{name: "a branch that is no issue's", pull: pull("open", "feature/faster-tests"), want: []string{"success"}, recorded: true},
+		{name: "another project's issue branch", pull: pull("open", "legion/OTHER-2"), logged: true},
+		{name: "this project's issue branch, which no record holds", pull: pull("open", "legion/CAPTURE-9")},
+		{name: "a pull request GitHub shows closed", pull: pull("closed", "feature/faster-tests")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, nothingSeeded)
+			rig.github.mu.Lock()
+			rig.github.pulls[92] = tc.pull
+			rig.github.mu.Unlock()
+			rig.review(t, intake.OutsideReview{PullRequestReview: intake.PullRequestReview{Repo: "acme/widgets", Number: 92, ID: 9, State: "approved",
+				CommitID: "out-9", HeadSHA: "out-9", Author: "a-writer", SubmittedAt: time.Date(2026, 11, 21, 6, 0, 9, 0, time.UTC)}})
+			rig.written(t)
+			var concluded []string
+			for _, run := range rig.github.legionRuns("out-9") {
+				concluded = append(concluded, run.Conclusion)
+			}
+			if !slices.Equal(concluded, tc.want) {
+				t.Fatalf("legion-verdict on out-9 concluded %v, want %v", concluded, tc.want)
+			}
+			var sighted store.OutsidePullRequest
+			var found bool
+			if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+				var err error
+				sighted, found, err = store.OutsidePullRequestTx(context.Background(), tx, ghrepo.MustParse("acme/widgets"), 92)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if found != tc.recorded || found && sighted.Head != "out-9" {
+				t.Fatalf("the outside pull request 92 reads %+v (found %v), want found %v at out-9", sighted, found, tc.recorded)
+			}
+			if lines := loggedMessages(t, rig.logs.String(), otherProjectsLine); tc.logged != (len(lines) == 1 && lines[0]["issue"] == "OTHER-2") || len(lines) > 1 {
+				t.Fatalf("lines = %v, want one naming OTHER-2: %v", lines, tc.logged)
+			}
+		})
+	}
+}
+
+// C2's tester half: the tester's verdict changes a Legion head's verdict, so its completion asks
+// for a write at the commit it tested (workflow's askMergeState), and a fail there writes failure.
+func TestLegionVerdictTheTestersFailWritesFailureOnTheCommitItTested(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, func(t *testing.T, pool *store.Pool) {
+		seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
+	})
+	rig.apply(t, intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested",
+		Verdict: "fail", Commit: "code", HandoffRecord: "test-1", HandoffVersion: 1})
+	rig.written(t)
+	if asked := rig.askedHeads(); !slices.Equal(asked, []string{"code"}) {
+		t.Fatalf("the workflow asked for writes on %v, want one on code, the commit the tester tested", asked)
+	}
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].Conclusion != "failure" {
+		t.Fatalf("legion-verdict runs on code = %+v, want one concluding failure", runs)
+	}
+}
+
+// R19's status half, over a status the daemon holds: once the daemon's own status stands at a head,
+// a verdict that turns the head's conclusion sets a status of the daemon's own at the new state over
+// it, since GitHub reads the newest status of each context, with no foreign id.
+func TestLegionVerdictSetsItsOwnStatusAgainWhenTheConclusionTurns(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+	rig.github.mu.Lock()
+	rig.github.statuses = append(rig.github.statuses, fakeStatus{ID: 600, Head: "code", Context: verdict.CheckName, State: "failure", Creator: verdictAppLogin})
+	rig.github.mu.Unlock()
+	rig.approvedAndWritten(t)
+	rig.review(t, personsReview(1, "changes_requested"))
+	rig.written(t)
+	rig.github.mu.Lock()
+	statuses := slices.Clone(rig.github.statuses)
+	rig.github.mu.Unlock()
+	var states []string
+	for _, status := range statuses {
+		states = append(states, status.State)
+	}
+	if !slices.Equal(states, []string{"failure", "success", "failure"}) {
+		t.Fatalf("the legion-verdict statuses on code, oldest first, are %v; want the foreign failure, the daemon's success over it, then the daemon's failure", states)
+	}
+	lines := rig.writeLines(t)
+	if last := lines[len(lines)-1]; last["kind"] != "status" || last["conclusion"] != "failure" || last["foreign_id"] != float64(0) {
+		t.Fatalf("the last legion_verdict_write line = %v, want the daemon's own status at failure, over no foreign one", last)
+	}
+}
+
+// A review names the commit it read (commit_id), and that is the one head it is a verdict at, as
+// the workflow's refusal holds it (workflow's review): a review that names none is recorded at no
+// head and asks for no write, rather than at the head the pull request stood at when GitHub sent it.
+func TestLegionVerdictAReviewNamingNoCommitIsNoVerdict(t *testing.T) {
+	rig := newVerdictRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, nothingSeeded)
+	rig.apply(t, outsideOpened)
+	review := outsideReview(1, "a-writer", "approved")
+	review.CommitID = ""
+	rig.review(t, review)
+	rig.written(t)
+	if runs := rig.github.legionRuns("out-1"); len(runs) != 0 {
+		t.Fatalf("legion-verdict runs on out-1 = %+v, want none from a review that names no commit", runs)
+	}
+	if reviews := verdictReviews(t, rig.pool, 90); len(reviews) != 0 {
+		t.Fatalf("the reviews recorded of pull request 90 = %+v, want none", reviews)
 	}
 }
 

@@ -362,8 +362,9 @@ type verdictDecision struct {
 // Every other pull request is an outside one, decided from its reviews and, where the entry takes
 // them, its side reviewer's verdict (outsideInputs). A pull request no record holds yet - one
 // opened before the daemon heard its repository - is read from GitHub once (GET /pulls/{number}):
-// a legion/<KEY> head is KEY's, and any other is recorded as an outside pull request at the head
-// GitHub shows and decided as one.
+// one GitHub shows closed merges nothing and has no verdict, as a closed Legion pull request is
+// written on by nobody (workflow's askVerdictWrite); a legion/<KEY> head is KEY's; and any other is
+// recorded as an outside pull request at the head GitHub shows and decided as one.
 func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.VerdictRepository, repository ghrepo.Repository, number int, head string) (verdictDecision, error) {
 	if other := w.verdicts.otherIssue(repository.String(), number); other != "" {
 		return verdictDecision{otherIssue: other}, nil
@@ -402,6 +403,9 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 	pull, err := w.readVerdictPullRequest(ctx, repository, number)
 	if err != nil {
 		return verdictDecision{}, err
+	}
+	if pull.State != "open" {
+		return verdictDecision{kind: headOutside}, nil
 	}
 	if key, issueBranch := claim.BranchIssue(pull.Head.Ref); issueBranch {
 		if !claim.KeyOfProject(w.dispatchProject, key) {
@@ -802,14 +806,13 @@ func (w *workflowRuntime) recordLegionReview(ctx context.Context, tx pgx.Tx, fac
 	return err
 }
 
-// recordReview records review under repo at the commit it read, or at the pull request's head the
-// event carried where it names none, and answers that head ("" for a review that names neither,
-// which records nothing).
+// recordReview records review under repo at the commit it read (commit_id), and answers that head:
+// the one a review is a verdict at, as the workflow holds a person's refusal at it (workflow's
+// review) and asks for the write there (askMergeState). A review that names none records nothing
+// and answers "", rather than standing at the pull request's head the event carried, which is not
+// the code the review read.
 func (w *workflowRuntime) recordReview(ctx context.Context, tx pgx.Tx, repo string, review intake.PullRequestReview) (string, error) {
 	head := review.CommitID
-	if head == "" {
-		head = review.HeadSHA
-	}
 	if head == "" {
 		return "", nil
 	}
