@@ -3,6 +3,7 @@ package grapherase
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -91,6 +92,13 @@ type Operator struct {
 	Host         string `json:"host,omitempty"`
 }
 
+// NotRecounted is one project of Erasure.Recounted whose count after the commit failed, with the
+// error that ended it (recountTermStats).
+type NotRecounted struct {
+	Project string
+	Error   string
+}
+
 // Erasure is one run of `envoy-dispatch erase`: the node it addressed, every row it would
 // delete, rewrite, redact or leave (Listing), and - once Applied - what it did.
 type Erasure struct {
@@ -113,10 +121,19 @@ type Erasure struct {
 	// erased text and the approvals whose digest covered those bytes.
 	Versions []ErasedVersion `json:"versions"`
 	Reviews  []ErasedReview  `json:"reviews"`
-	// Documents is the node's own document when its stored history is replaced, and Recounted
-	// the projects whose term statistics the run counted again.
+	// Documents is the node's own document when its stored history is replaced.
 	Documents []ErasedDocument `json:"documents"`
-	Recounted []string         `json:"recounted"`
+	// Recounted are the projects whose term statistics counted words of the items the run
+	// deleted or rewrote: under its locks the run took the lexemes it removed out of them
+	// (api.ForgetErasedTermsTx), and after its commit it counts each again in full, outside its
+	// locks (recountTermStats). The record is written before that count, so it holds the
+	// projects and not how their count went.
+	Recounted []string `json:"recounted"`
+	// NotRecounted are the projects of Recounted whose count after the commit failed. Their
+	// statistics hold none of the erased words and lack the counts of the lexemes the run took
+	// out that other items still hold, until the project's next refresh pass, which counts it in
+	// full. It is not recorded, for the reason above.
+	NotRecounted []NotRecounted `json:"-"`
 	// Writers are who wrote or answered the node, each once and in order: the person or session
 	// at the far end of every authored_by, decided_by and answered_by tuple out of an ask's node
 	// or a block's - a decision's, a reading's - that the run deletes, asserted or retracted. Once
@@ -245,7 +262,21 @@ func (e *Erasure) Write(w io.Writer) {
 		fmt.Fprintf(w, "  redacted: %s %d\n", rows.Table, rows.Rows)
 	}
 	if len(e.Recounted) > 0 {
-		fmt.Fprintf(w, "  term statistics counted again: %s\n", strings.Join(e.Recounted, ", "))
+		fmt.Fprintf(w, "  term statistics: the erased words taken out of %s under the locks\n", strings.Join(e.Recounted, ", "))
+	}
+	var counted []string
+	for _, project := range e.Recounted {
+		if !slices.ContainsFunc(e.NotRecounted, func(failed NotRecounted) bool { return failed.Project == project }) {
+			counted = append(counted, project)
+		}
+	}
+	if len(counted) > 0 {
+		fmt.Fprintf(w, "  term statistics counted again after the commit: %s\n", strings.Join(counted, ", "))
+	}
+	for _, failed := range e.NotRecounted {
+		fmt.Fprintf(w, "  term statistics of %s not counted again after the commit (%s): they hold none of the erased "+
+			"words, and lack the counts of the words taken out that other items still hold until the next refresh "+
+			"pass, which counts %s in full\n", failed.Project, failed.Error, failed.Project)
 	}
 	fmt.Fprintf(w, "  text_trees swept after the commit: %d\n", e.Swept)
 }

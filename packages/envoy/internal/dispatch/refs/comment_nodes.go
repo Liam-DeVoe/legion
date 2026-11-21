@@ -162,7 +162,7 @@ func (w CommentWrite) BaseAttributes() int64 { return w.baseAttributes }
 // Queue queues the write on b: its one store write of every node and every tuple
 // (graphstore.QueueWrite), and then the node named on each comment's row, which has to follow the
 // store write of the nodes: the row's foreign key names the node.
-func (w CommentWrite) Queue(b *store.WriteBatch) error {
+func (w CommentWrite) Queue(b *store.WriteBatch) {
 	graphstore.QueueWrite(b, w.Nodes, w.Tuples)
 	b.Queue("name the nodes of a comment batch on their rows", `
 		update comments c
@@ -170,7 +170,6 @@ func (w CommentWrite) Queue(b *store.WriteBatch) error {
 		from unnest($1::text[], $2::text[]) as p (id, address)
 		where c.id = p.id::uuid
 	`, w.ids, w.ids, graphstore.KindComment)
-	return nil
 }
 
 // commentWriteOf builds the write of one batch of comments rows (CommentWrite). One write writes

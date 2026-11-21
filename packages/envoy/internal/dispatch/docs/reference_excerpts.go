@@ -364,7 +364,11 @@ func planBlockIndex(
 		return nil, nil, graphstore.Uncaused{}, err
 	}
 	recordBlockIndex(ctx, tx, artifactID, indexing.Held())
-	return slices.Concat(indexing.Moved(), cited), indexing.Queue, indexing.Stated(), nil
+	indexBlocks := func(b *store.WriteBatch) error {
+		indexing.Queue(b)
+		return nil
+	}
+	return slices.Concat(indexing.Moved(), cited), indexBlocks, indexing.Stated(), nil
 }
 
 // heldBlockIndex is what artifactID's block index holds as a plan of it reads it: as the

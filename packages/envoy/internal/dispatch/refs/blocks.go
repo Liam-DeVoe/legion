@@ -686,10 +686,10 @@ func (b BlockIndexing) Held() BlockIndex {
 // pair takes this version and versionAt, and the source event QueueStamp gives it. On the
 // document's first indexing (no block rows yet), a new pair dates instead from the document's own
 // refs row for that target, when one exists.
-func (b BlockIndexing) Queue(batch *store.WriteBatch) error {
+func (b BlockIndexing) Queue(batch *store.WriteBatch) {
 	if !b.won {
 		graphstore.QueueNodes(batch, b.stated)
-		return nil
+		return
 	}
 	artifactID, version := b.artifactID, b.version
 	b.queueStand(batch)
@@ -730,7 +730,6 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) error {
 		insert into document_indexed_versions (artifact_id, version) values ($1, $2)
 		on conflict (artifact_id, version) do nothing
 	`, artifactID, version)
-	return nil
 }
 
 // IndexBlocks indexes version's blocks of artifactID in tx at once: the document's index read
@@ -777,7 +776,10 @@ func IndexBlocks(
 	if err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
-	if err := store.RunWrite(ctx, tx, indexing.Queue); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		indexing.Queue(b)
+		return nil
+	}); err != nil {
 		return nil, false, graphstore.Uncaused{}, err
 	}
 	return slices.Concat(indexing.Moved(), cited), indexing.Won(), indexing.Stated(), nil
