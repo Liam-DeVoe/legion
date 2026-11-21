@@ -264,14 +264,12 @@ func checkHeldValues(held []UncausedTuple) error {
 }
 
 // heldTuplesRead is whether the check of a write held for its cause, or the run its batch is made
-// for, reads any tuple the write holds (QueueCaused): a relation the pointer type rules hold, a
-// part_of at a kind that takes a node reserved for its author or out of a lens, or a fact marked
-// as changing its node.
+// for, reads any tuple the write holds (QueueCaused): a relation its write phase reads
+// (readInWritePhase), or a fact marked as changing its node.
 func heldTuplesRead(held []UncausedTuple) bool {
 	for index := range held {
 		tuple := &held[index].Tuple
-		if tuple.Changes || tuple.ToKind != KindValue && (pointerRuleOf(tuple.Kind, tuple.FromKind) != nil ||
-			placesUnderAuthorOnly(tuple.Kind, tuple.ToKind, tuple.ToID) || placesLens(tuple.Kind, tuple.FromKind)) {
+		if tuple.Changes || readInWritePhase(tuple.Kind, tuple.FromKind, tuple.ToKind, tuple.ToID) {
 			return true
 		}
 	}

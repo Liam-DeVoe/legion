@@ -414,14 +414,12 @@ var errPointerInArms = errors.New("a pointer tuple, a part_of at a kind that tak
 // holds.
 func refusePointersInArms(tuples []Tuple, claims []Claim) error {
 	for index := range tuples {
-		if tuple := &tuples[index]; tuple.ToKind != KindValue && (pointerRuleOf(tuple.Kind, tuple.FromKind) != nil ||
-			placesUnderAuthorOnly(tuple.Kind, tuple.ToKind, tuple.ToID) || placesLens(tuple.Kind, tuple.FromKind)) {
+		if tuple := &tuples[index]; readInWritePhase(tuple.Kind, tuple.FromKind, tuple.ToKind, tuple.ToID) {
 			return fmt.Errorf("%w: %s out of %s", errPointerInArms, tuple.Kind, tuple.FromKind)
 		}
 	}
 	for index := range claims {
-		if claim := &claims[index]; claim.ToKind != KindValue && (pointerRuleOf(claim.Kind, claim.FromKind) != nil ||
-			placesUnderAuthorOnly(claim.Kind, claim.ToKind, claim.ToID) || placesLens(claim.Kind, claim.FromKind)) {
+		if claim := &claims[index]; readInWritePhase(claim.Kind, claim.FromKind, claim.ToKind, claim.ToID) {
 			return fmt.Errorf("%w: %s out of %s", errPointerInArms, claim.Kind, claim.FromKind)
 		}
 	}
@@ -481,6 +479,17 @@ func placesUnderAuthorOnly(kind, toKind, toID string) bool {
 // whose write records the row of the document it places the lens on (queueLensArtifactIDs).
 func placesLens(kind, fromKind string) bool {
 	return kind == TuplePartOf && fromKind == KindLens
+}
+
+// readInWritePhase is whether a write reads its relation of kind, out of a node of fromKind at the
+// node toKind and toID name, in its own write phase: a relation the pointer type rules hold
+// (pointerRuleOf), a part_of at a kind that takes a node reserved for its author
+// (placesUnderAuthorOnly), and a lens's part_of (placesLens). The arms of a caller's statement
+// refuse each such relation (refusePointersInArms), and a write held for its cause copies the
+// held tuples it reads for it (heldTuplesRead). An attribute, whose far end is a value, is none.
+func readInWritePhase(kind, fromKind, toKind, toID string) bool {
+	return toKind != KindValue && (pointerRuleOf(kind, fromKind) != nil ||
+		placesUnderAuthorOnly(kind, toKind, toID) || placesLens(kind, fromKind))
 }
 
 // ErrNoDocumentRow is a write that places a lens on a document, or on a block of one, at whose
