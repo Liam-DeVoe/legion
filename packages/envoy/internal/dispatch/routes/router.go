@@ -169,8 +169,8 @@ type AppContextOptions struct {
 	GitHubAPIBase string
 	OIDC          api.ServiceTokenVerifier
 	// OIDCAccounts are the service-account subjects the API admits, and AccessAccounts those that
-	// read the membership answer (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS, DISPATCH_ACCESS_ACCOUNTS).
-	// See api.DepsInput.
+	// read the routes of the read class accessAccount (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS,
+	// DISPATCH_ACCESS_ACCOUNTS). See api.DepsInput.
 	OIDCAccounts   []string
 	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
@@ -1180,23 +1180,14 @@ func sameHost(origin, host string) bool {
 }
 
 // sameHostName reports whether host, a request's Host, names the host of origin, at any port: the
-// names compared as sameHost compares them (hostName). It is the host a browser keeps cookies by.
+// names compared as sameHost compares them (HostName). It is the host a browser keeps cookies by.
 func sameHostName(origin, host string) bool {
 	_, own, ok := strings.Cut(origin, "://")
-	return ok && hostName(own) == hostName(host)
-}
-
-// hostName is the name of host, a Host header or an origin's host: lower case, with any port, an
-// IPv6 literal's brackets and every trailing dot taken off.
-func hostName(host string) string {
-	if name, _, err := net.SplitHostPort(host); err == nil {
-		host = name
-	}
-	return strings.TrimRight(strings.Trim(strings.ToLower(host), "[]"), ".")
+	return ok && HostName(own) == HostName(host)
 }
 
 // hostKey is host, a Host header or an origin's host under scheme, as sameHost compares it: its
-// name (hostName), then its port as a decimal number with no leading zeros, none for the scheme's
+// name (HostName), then its port as a decimal number with no leading zeros, none for the scheme's
 // default; a port that is no string of digits is kept as written, which no origin's port equals.
 func hostKey(scheme, host string) string {
 	port := ""
@@ -1211,7 +1202,19 @@ func hostKey(scheme, host string) string {
 	if scheme == "https" && port == "443" || scheme == "http" && port == "80" {
 		port = ""
 	}
-	return hostName(host) + " " + port
+	return HostName(host) + " " + port
+}
+
+// HostName is the name of host, a Host header, an origin's host or a URL's host name, as the
+// router compares hosts (sameHost, sameHostName): lower case, with any port, an IPv6 literal's
+// brackets and every trailing dot taken off. Boot compares the outside origin's host with the
+// canonical origin's by it (cmd/dispatch's checkOutsideOrigin), so it refuses every pair the router
+// would read as one host.
+func HostName(host string) string {
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		host = name
+	}
+	return strings.TrimRight(strings.Trim(strings.ToLower(host), "[]"), ".")
 }
 
 // enforceCookieOrigin refuses an unsafe request that presents a browser's credential, a session
