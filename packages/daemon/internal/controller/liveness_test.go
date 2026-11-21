@@ -213,8 +213,9 @@ func TestProbeIsUnknown(t *testing.T) {
 // Every line the probe logs names the lookup without envoy_url's userinfo, where a deployment
 // writes the listener's credential: a made-up token written as the user, and a made-up password
 // holding a "'", which a text rule stops reading at. The refused lookup logs its "url"; the
-// unreachable one also logs the HTTP client's error, which quoted the URL with its user name. The
-// control is the same probe logging p.lookup, whose lines hold both.
+// unreachable one also logs the HTTP client's error, which quotes the request's URL. The probe
+// requests the lookup without the userinfo, so neither can name it, and sends it as Basic auth,
+// as the HTTP client sends a URL's own, when no bearer token is configured.
 func TestProbeLogsNoCredentialOfTheEnvoyURL(t *testing.T) {
 	const userToken, quotedUserinfo = "madeUpEnvoyToken0123", "legion:madeUpEnvoy'Password0123"
 	withUser := func(base, user string) string { return strings.Replace(base, "://", "://"+user+"@", 1) }
@@ -232,11 +233,15 @@ func TestProbeLogsNoCredentialOfTheEnvoyURL(t *testing.T) {
 			if !strings.Contains(log.String(), "url="+base+"/v1/roles/") {
 				t.Errorf("%s: the log %q does not name the lookup without its userinfo", name, log.String())
 			}
-			for _, secret := range []string{userToken, "madeUpEnvoy"} {
-				if strings.Contains(log.String(), secret) {
-					t.Errorf("%s: the log names the credential: %s", name, log.String())
-				}
+			// Both made-up credentials begin with this, so it catches either.
+			if strings.Contains(log.String(), "madeUpEnvoy") {
+				t.Errorf("%s: the log names the credential: %s", name, log.String())
 			}
 		}
+	}
+	var log bytes.Buffer
+	newTestProber(withUser(served, quotedUserinfo), "", &log).Probe(context.Background(), "ses_ctl")
+	if user, password, ok := (&http.Request{Header: http.Header{"Authorization": {l.bearer}}}).BasicAuth(); !ok || user+":"+password != quotedUserinfo {
+		t.Errorf("with no bearer token the lookup carried Authorization %q, want envoy_url's userinfo as Basic auth", l.bearer)
 	}
 }

@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -55,51 +54,28 @@ type ProberOptions struct {
 // (`ENVOY_SESSION_LIVE_WINDOW`), and names the holder's state in the 404 it answers for any
 // other, so the daemon keeps no staleness window of its own to drift from it.
 type Prober struct {
+	// lookup is the role lookup's URL without envoy_url's userinfo, the one URL the request and
+	// every log line use, so no line can name the listener's credential; user is that userinfo,
+	// sent as Basic auth when no bearer token is (as the HTTP client sends a URL's own).
 	lookup string
-	// shown is lookup as a log line names it: without its userinfo, where envoy_url carries the
-	// listener's credential.
-	shown  string
+	user   *url.Userinfo
 	token  string
 	log    *slog.Logger
 	client *http.Client
 }
 
-// NewProber is a Prober over opts.
+// NewProber is a Prober over opts. An envoy_url that does not parse, which the loader refuses
+// (config.validURL), leaves no lookup, and every probe of it is Unknown.
 func NewProber(opts ProberOptions) *Prober {
-	p := &Prober{
-		lookup: strings.TrimRight(opts.EnvoyURL, "/") + "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project))),
-		token:  opts.EnvoyToken,
-		log:    opts.Log,
-		client: &http.Client{Timeout: probeTimeout},
+	p := &Prober{token: opts.EnvoyToken, log: opts.Log, client: &http.Client{Timeout: probeTimeout}}
+	if parsed, err := url.Parse(strings.TrimRight(opts.EnvoyURL, "/")); err == nil {
+		p.user, parsed.User = parsed.User, nil
+		p.lookup = parsed.String() + "/v1/roles/" + url.PathEscape(string(claim.ControllerToken(opts.Project)))
 	}
-	p.shown = withoutUserinfo(p.lookup)
 	if p.log == nil {
 		p.log = slog.Default()
 	}
 	return p
-}
-
-// withoutUserinfo is raw with no user name or password, read by url.Parse and written again, so a
-// credential holding a "'" or another byte a text rule stops at is dropped whole. The loader
-// refuses an envoy_url with an "@" after its host (config.validURL), so the userinfo url.Parse
-// reads is all there is. A URL it cannot read is named by the setting alone.
-func withoutUserinfo(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return "envoy_url's controller role lookup"
-	}
-	parsed.User = nil
-	return parsed.String()
-}
-
-// shownError is err with any *url.Error in it naming p.shown in place of the URL it quotes: an
-// unreachable listener's error from the HTTP client quotes the request's URL with its user name.
-func (p *Prober) shownError(err error) error {
-	var quoting *url.Error
-	if errors.As(err, &quoting) {
-		quoting.URL = p.shown
-	}
-	return err
 }
 
 // The listener's live-holder answer is listenerwire.RoleHolder (roleGetHandler,
@@ -116,17 +92,24 @@ func (p *Prober) shownError(err error) error {
 // alive: Gone and Unknown each log why, naming the listener and, where the listener named them,
 // both sessions or the holder's state.
 func (p *Prober) Probe(ctx context.Context, session string) Liveness {
+	if p.lookup == "" {
+		p.log.Warn("controller liveness: envoy_url does not parse as a URL, so the controller role lookup cannot be sent")
+		return Unknown
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.lookup, nil)
 	if err != nil {
-		p.log.Warn("controller liveness: build the role lookup", "url", p.shown, "error", p.shownError(err))
+		p.log.Warn("controller liveness: build the role lookup", "url", p.lookup, "error", err)
 		return Unknown
 	}
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
+	} else if p.user != nil {
+		password, _ := p.user.Password()
+		request.SetBasicAuth(p.user.Username(), password)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", p.shown, "error", p.shownError(err))
+		p.log.Warn("controller liveness: the Envoy listener is unreachable", "url", p.lookup, "error", err)
 		return Unknown
 	}
 	defer response.Body.Close()
@@ -137,18 +120,18 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		// controller is gone.
 		if readErr != nil {
 			p.log.Warn("controller liveness: the Envoy listener's 404 to the controller role lookup could not be read to its end",
-				"url", p.shown, "session", session, "error", readErr)
+				"url", p.lookup, "session", session, "error", readErr)
 			return Unknown
 		}
 		var refusal listenerwire.RoleRefusal
 		_ = json.Unmarshal(body, &refusal)
 		if refusal.HolderState == notify.StateUnresponsive {
 			p.log.Info("controller liveness: the controller role's holder is unresponsive, not gone; the controller is left as it is",
-				"url", p.shown, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
+				"url", p.lookup, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
 			return Unknown
 		}
 		p.log.Info("controller liveness: the controller role has no live holder; the controller is gone",
-			"url", p.shown, "session", session, "reason", refusal.Reason, "holderState", refusal.HolderState)
+			"url", p.lookup, "session", session, "reason", refusal.Reason, "holderState", refusal.HolderState)
 		return Gone
 	}
 	if response.StatusCode != http.StatusOK {
@@ -156,12 +139,12 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		if p.token == "" {
 			reason += " with no bearer token sent"
 		}
-		p.log.Warn("controller liveness: "+reason, "url", p.shown, "status", response.StatusCode)
+		p.log.Warn("controller liveness: "+reason, "url", p.lookup, "status", response.StatusCode)
 		return Unknown
 	}
 	var answer listenerwire.RoleHolder
 	if readErr != nil || json.Unmarshal(body, &answer) != nil || answer.Holder == "" || answer.LastSeen == nil {
-		p.log.Warn("controller liveness: the Envoy listener answered the controller role lookup with an unreadable body", "url", p.shown)
+		p.log.Warn("controller liveness: the Envoy listener answered the controller role lookup with an unreadable body", "url", p.lookup)
 		return Unknown
 	}
 	if answer.Holder != session {
