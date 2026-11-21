@@ -1116,6 +1116,15 @@ function InboxBody({
   const declinesOut = useInboxWrites(AskDeclineWritesContext).out;
   const clarificationsOut = useInboxWrites(AskClarificationWritesContext).out;
   const repliesOut = useInboxWrites(AskReplyWritesContext).out;
+  /** Whether ask `id` has an Assign to me, a hand-on, an answer, a decline or a question back
+   *  out: what keeps its row where the reader saw it (`heldRow`), and what names that row to the
+   *  list's anchor as leaving, so the two always agree. */
+  const askWriteOut = (id: string) =>
+    assignsOut.has(id) ||
+    handOnsOut.has(id) ||
+    answersOut.has(id) ||
+    declinesOut.has(id) ||
+    clarificationsOut.has(id);
   // The row the reader's hand is on (focus or pointer), read from the DOM as last committed. When
   // the server has dropped it (answered or resolved elsewhere) or handed its turn the other way
   // (their own ask-back, an agent's note or reply), it is kept - `held` - where the reader last
@@ -1882,6 +1891,9 @@ function InboxBody({
   const sameLayout = presentedBands.current.layout === layout;
   const held: PlacedRow[] = [];
   const keptBands = new Set<string>();
+  // The Reply rows this list last drew whose reply is out, by id. The anchor is told they are
+  // leaving, as it is told of the rows an ask write keeps.
+  const replying = new Set<string>();
   let handHeld: PlacedRow | undefined;
   for (const placed of presented.current) {
     const id = rowId(placed.row);
@@ -1889,12 +1901,9 @@ function InboxBody({
     const out = sameLayout && (snoozing.has(id) || bulkSnoozing.has(id));
     const written =
       placed.row.kind === "ask"
-        ? assignsOut.has(id) ||
-          handOnsOut.has(id) ||
-          answersOut.has(id) ||
-          declinesOut.has(id) ||
-          clarificationsOut.has(id)
+        ? askWriteOut(id)
         : placed.row.thread.kind === "ask" && repliesOut.has(placed.row.thread.thread_id);
+    if (written && placed.row.kind !== "ask") replying.add(id);
     if (!inHand && !out && !written) continue;
     const listed = byId.get(id);
     const kept = heldRow(
@@ -2603,8 +2612,8 @@ function InboxBody({
   // away (`leaving`): the rows after them move up into their place, as the reader asked. Those
   // are the rows a Dismiss or a Move to Inbox is taking off the view (`dismissedHere`), the rows
   // a snooze write, a row's own or the bar's, moves to another band in the commit that lets go of
-  // them, and the rows an Assign to me, a hand-on, an answer, a decline or a question back lets
-  // go of, which then leave the list where the read no longer lists them there.
+  // them, and the rows an Assign to me, a hand-on, an answer, a decline, a question back or a
+  // reply lets go of, which then leave the list where the read no longer lists them there.
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch
@@ -2625,11 +2634,8 @@ function InboxBody({
           dismissedHere(id) ||
           snoozing.has(id) ||
           bulkSnoozing.has(id) ||
-          assignsOut.has(id) ||
-          handOnsOut.has(id) ||
-          answersOut.has(id) ||
-          declinesOut.has(id) ||
-          clarificationsOut.has(id)
+          askWriteOut(id) ||
+          replying.has(id)
         }
         ref={viewport}
         rootRef={listRef}

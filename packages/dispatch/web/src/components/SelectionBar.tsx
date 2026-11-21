@@ -279,10 +279,13 @@ function firstMarkShown(
  *  (`ROW_SELECTOR`). A list's sticky head, or other chrome the rows scroll under, can stand over a
  *  row whose box is in sight, and is what the page draws there then. A row that will move up is
  *  drawn at that point only once the rows above it have gone, so there a part of any element of
- *  `listed`, the list's rows and the headings that go with them, stands for its own. A mark with
- *  its centre out of the window shows half of itself at most, and one whose edge only touches the
- *  window's edge shows none of itself. Where the engine names no element at a point inside the
- *  window (happy-dom lays nothing out), the box and the centre decide alone. */
+ *  `listed`, the list's rows and the headings that go with them, stands for its own. That holds
+ *  for a point in a row nested inside such an element, as an Inbox row draws an ask card's
+ *  `<article>`. It holds too for a point inside the list that is in none of its rows: a gap its
+ *  spacing leaves between them. The list is the element that holds the row that moves up. A mark
+ *  with its centre out of the window shows half of itself at most, and one whose edge only
+ *  touches the window's edge shows none of itself. Where the engine names no element at a point
+ *  inside the window (happy-dom lays nothing out), the box and the centre decide alone. */
 function markShown(
   mark: HTMLElement,
   clips: Map<Element, boolean>,
@@ -296,8 +299,15 @@ function markShown(
   if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) return false;
   const drawn = document.elementFromPoint(x, y);
   if (drawn === null || (mark.closest(ROW_SELECTOR) ?? mark).contains(drawn)) return true;
-  const under = moved === undefined ? null : drawn.closest(ROW_SELECTOR);
-  return under !== null && listed.has(under);
+  if (moved === undefined) return false;
+  // Rows nest, so every row around the point is tried, the innermost first.
+  const inner = drawn.closest(ROW_SELECTOR);
+  for (let row = inner; row !== null; row = row.parentElement?.closest(ROW_SELECTOR) ?? null) {
+    if (listed.has(row)) return true;
+  }
+  // A point of the list that none of its rows holds is a gap its spacing leaves between them.
+  const list = moved.row.parentElement;
+  return list?.contains(drawn) === true && (inner === null || !list.contains(inner));
 }
 
 /**

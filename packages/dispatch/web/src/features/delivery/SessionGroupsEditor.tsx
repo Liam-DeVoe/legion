@@ -42,15 +42,14 @@ const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasse
 
 /** One group: its name, renamable, its members, each removable, and the window's selected
  *  sessions to add, drawn as an item of the editor's list of groups, keyed by the group's id.
- *  While any group write is pending, every mutating button is disabled so a second click cannot
- *  race the one request that decides the membership. A write of this card's own that lands keeps
- *  them disabled until the live update carrying it brings the group's new `updated_at`, or takes
- *  the group away (`useHoldUntilDrawn`); a refusal lets them go at once. That update fills the
- *  name again from the stored group in place, so the card and its buttons stay the same
- *  elements, and the page's rescue gives the focus back to the button the reader pressed once it
- *  is enabled again. Rename with no new name and Add selected with no session to add are held by
- *  `aria-disabled`, not `disabled` (`heldPress`): each keeps its Tab stop, so it keeps the focus
- *  its own write gave back to it, and a press on it does nothing. */
+ *  While any group write is pending, every mutating button is held so a second click cannot race
+ *  the one request that decides the membership. A write of this card's own that lands keeps them
+ *  held until the live update carrying it brings the group's new `updated_at`, or takes the group
+ *  away (`useHoldUntilDrawn`); a refusal lets them go at once. That update fills the name again
+ *  from the stored group in place, so the card and its buttons stay the same elements. Rename
+ *  with no new name and Add selected with no session to add are held as well. Every hold is by
+ *  `aria-disabled`, not `disabled` (`heldPress`): a held button keeps its Tab stop and the focus
+ *  the reader's press left on it, and a press on it does nothing. */
 function GroupCard({
   group,
   storedTitle,
@@ -96,8 +95,7 @@ function GroupCard({
         />
         <button
           className={secondaryButtonCompact}
-          disabled={held}
-          {...heldPress(nothingToRename, () =>
+          {...heldPress(held || nothingToRename, () =>
             send({
               group,
               method: "PATCH",
@@ -125,8 +123,7 @@ function GroupCard({
             <button
               aria-label={`Remove ${text.sessionText(session, storedTitle(session))}`}
               className={dismissButtonText}
-              disabled={held}
-              onClick={() =>
+              {...heldPress(held, () =>
                 send({
                   group,
                   method: "PATCH",
@@ -134,7 +131,7 @@ function GroupCard({
                     api.updateDeliverySessionGroup(group.id, { remove: [session] }, bounds),
                   what: `the removal of ${text.sessionText(session, storedTitle(session))} from ${group.name}`,
                 })
-              }
+              )}
               type="button"
             >
               ✕
@@ -145,8 +142,7 @@ function GroupCard({
       <div className="flex gap-2">
         <button
           className={secondaryButtonCompact}
-          disabled={held}
-          {...heldPress(addable.length === 0, () =>
+          {...heldPress(held || addable.length === 0, () =>
             send({
               group,
               method: "PATCH",
@@ -160,15 +156,14 @@ function GroupCard({
         </button>
         <button
           className={`${secondaryButtonCompact} ${dangerText}`}
-          disabled={held}
-          onClick={() =>
+          {...heldPress(held, () =>
             send({
               group,
               method: "DELETE",
               run: (bounds) => api.deleteDeliverySessionGroup(group.id, bounds),
               what: `the deletion of the group ${group.name}`,
             })
-          }
+          )}
           type="button"
         >
           Delete group

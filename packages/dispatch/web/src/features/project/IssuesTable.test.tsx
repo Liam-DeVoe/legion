@@ -1245,6 +1245,51 @@ test("Take out of epic whose issues stay listed keeps the bar held until the lis
   expect(focusedName()).toBe("Select CORE-2");
 });
 
+// Start next over three queued issues writes one step at a time, and each step starts only once
+// the one before it is answered, long after the press that began the action. The whole action is
+// still that press's, so once the list read after it settles and the bar goes, the bar's hand-off
+// puts the focus on the checkbox of the issue marked last, which the list still holds, and never
+// on the page's body.
+test("Start next over three queued issues from the bar, its steps answered one after another, hands the focus to the issue marked last", async () => {
+  const user = userEvent.setup();
+  // What answers each step's write, in the order the steps are sent.
+  const answers: ((saved: Issue) => void)[] = [];
+  const send = spyOn(api, "send").mockImplementation(() => {
+    const answer = Promise.withResolvers<Issue>();
+    answers.push(answer.resolve);
+    return answer.promise as never;
+  });
+  restores.push(() => send.mockRestore());
+  table(
+    Array.from({ length: 10 }, (_, index) =>
+      issue(`CORE-${index + 1}`, { labels: ["legion"], rank: String(index).padStart(3, "0") })
+    ),
+    "",
+    { rescued: true }
+  );
+  await screen.findByRole("row", { name: "CORE-10 Work CORE-10" });
+  for (const key of ["CORE-8", "CORE-9", "CORE-10"])
+    await user.click(screen.getByRole("checkbox", { name: `Select ${key}` }));
+  act(() =>
+    within(screen.getByRole("toolbar", { name: "Selected issues" }))
+      .getByRole("button", { name: /^Start next$/ })
+      .focus()
+  );
+  await user.keyboard("{Enter}");
+  // The steps move CORE-10 up first, then CORE-9, then CORE-8.
+  for (const [step, key] of ["CORE-10", "CORE-9", "CORE-8"].entries()) {
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(step + 1));
+    // A frame and a task, by when a press whose action had been answered would have ended.
+    await afterRescue();
+    expect(focusedName()).toBe("Start next");
+    await act(async () => answers[step]?.(savedIssue(key)));
+  }
+  await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+  await waitFor(() => expect(focusedName()).toBe("Select CORE-10"));
+  await afterRescue();
+  expect(focusedName()).toBe("Select CORE-10");
+});
+
 test("leaving the table clears what the bar says it will act on", async () => {
   const user = userEvent.setup();
   const { view } = table([issue("CORE-1")]);
