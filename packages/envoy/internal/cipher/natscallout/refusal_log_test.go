@@ -209,7 +209,7 @@ func requireLiveAdmittedAtOnce(t *testing.T, url string, live *session, behind s
 func TestARefusedRefreshLogsNoKeptAnswer(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
-	dispatch := &dispatchAnswers{answers: map[string][]string{"OPS": {"acme/ops"}, "PUB": {"acme/pub"}}}
+	dispatch := &dispatchAnswers{projects: map[string]bool{"OPS": true, "PUB": true}}
 	tokens := map[string]platformToken{"token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	var logged bytes.Buffer
 	deps := Deps{

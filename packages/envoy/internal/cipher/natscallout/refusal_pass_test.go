@@ -20,9 +20,7 @@ func TestTNOneProjectRefusingBrokerRefusesEveryHeldDaemon(t *testing.T) {
 		{Kind: KindDaemon, Account: pubDaemonAccount},
 		{Kind: KindDaemon, Account: otherDaemonAccount},
 	}
-	dispatch := &dispatchAnswers{answers: map[string][]string{
-		"PUB": {"acme/pub"}, "OTHER": {"acme/other"},
-	}}
+	dispatch := &dispatchAnswers{projects: map[string]bool{"PUB": true, "OTHER": true}}
 	deps := heldDeps(t,
 		map[string]platformToken{"token": {
 			account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour),

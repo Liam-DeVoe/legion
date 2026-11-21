@@ -26,7 +26,8 @@ import (
 // event is a message of no project, so a held daemon hears every repository's events.
 // Each project's answer is the one Dispatch last gave about it (heldAccess), held on its own. It
 // is refused, naming why: an account no exchange entry lists, or whose entry names no project;
-// Dispatch refusing the broker's own account token in the newest refresh; a project Dispatch has
+// Dispatch refusing the broker's own account token, until a refresh that Dispatch answers with no
+// such refusal (a refresh that cannot reach Dispatch keeps it); a project Dispatch has
 // not yet answered about; a project Dispatch does not hold, or whose answer says the entry's
 // person cannot see it; and a grant entry natsgrant.WithinProjects cannot hold. ParseServices
 // refuses a dispatch or listener entry with "-" at start, since their grants carry KV calls.
@@ -36,18 +37,25 @@ import (
 // A daemon entry held this way is narrowed to natsgrant.WithinProjects(natsgrant.Daemon(), scope),
 // whose consumers are the ones a Legion daemon opens once it opens its consumers per project, and
 // which holds a daemon to those consumers by name, not by their filter. So no deployment may list
-// a daemon entry with "-" until the release gate for that daemon opens, each reading below read
-// once:
-//   - both `packages/envoy/scripts/daemon-release-gate.sh --listeners <the commit that lands it>`
-//     and `daemon-release-gate.sh <that commit>` print GATE OPEN;
-//   - the stored-wake read: a legion-go-<project>-ready consumer created then would deliver
-//     nothing but listener_ready;
-//   - the consumer-filter read: each legion-go-<project>-* durable of the daemon, read with
-//     CONSUMER.INFO, filters on that project's own lane and nothing wider, since the held grant
-//     reads a wider durable whole.
+// a daemon entry with "-" until the plan's precondition holds. Here it is word for word, with
+// each plan task it names written as what it does, in brackets:
 //
-// The change that lists daemon entries with "-" waits on that gate, with those readings quoted in
-// its pull request.
+//	Held until `daemon-release-gate.sh --listeners <the commit that landed [the daemon that
+//	opens its consumers per project]>` and `daemon-release-gate.sh <the commit that landed [the
+//	daemon that opens its consumers per project]>` both print `GATE OPEN`, each read once and
+//	quoted where this step is turned on, and the stored-wake read below finds nothing a
+//	`legion-go-<P>-ready` consumer created then would deliver but `listener_ready`.
+//
+//	And the consumer-filter read, [that daemon's] deploy-4 production read, quoted where this
+//	step is turned on: every daemon durable `legion-go-<P>-{dispatch,wake,ready,github}` carries
+//	exactly its kind's filter set (`-dispatch` and `-wake` the project's own lane, `-ready` the
+//	shared wake subject's `listener_ready` only, `-github` `notifications.github.>`), none on
+//	`notifications.dispatch.issue.>` or the whole shared wake subject, and every daemon runs a
+//	build at or after deploy 4 (`daemon-release-gate.sh` prints `GATE OPEN` for that commit), so
+//	no static-grant daemon can widen one again; a failed read prints UNKNOWN and holds the step.
+//
+// Both commands are in packages/envoy/scripts. The change that lists daemon entries with "-"
+// waits on that precondition, with those readings quoted in its pull request.
 func scopeGrant(deps Deps, entry ServiceEntry, grant natsgrant.Permissions) (natsgrant.Permissions, error) {
 	if entry.AllProjects {
 		return grant, nil

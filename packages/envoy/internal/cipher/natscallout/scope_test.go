@@ -51,14 +51,13 @@ func exchangeOf(projects map[string][]string) func(string) (string, []string, bo
 // dispatchAnswers is a Deps.Access standing in for Dispatch: each project's answer, or
 // projectaccess.ErrProjectNotFound for one it does not hold, counting the asks about each. As
 // Dispatch answers, a project is visible to no person when it is private, and to entryPerson
-// unless unseen names it. Like K3's, its answer carries no repository, whatever Dispatch maps to
-// the project.
+// unless unseen names it. Like K3's, its answer carries no repository.
 type dispatchAnswers struct {
-	mu      sync.Mutex
-	answers map[string][]string // project → the repositories Dispatch maps to it
-	private map[string]bool
-	unseen  map[string]bool // private projects entryPerson cannot see
-	failing error
+	mu       sync.Mutex
+	projects map[string]bool // the projects Dispatch holds
+	private  map[string]bool
+	unseen   map[string]bool // private projects entryPerson cannot see
+	failing  error
 	// failingFor fails the asks about one project alone, beside the others' answers.
 	failingFor map[string]error
 	asked      map[string]int
@@ -75,7 +74,7 @@ func (d *dispatchAnswers) access(ctx context.Context, project, person string) (p
 	}
 	d.asked[project]++
 	asks, failing := d.asked[project], cmp.Or(d.failing, d.failingFor[project])
-	_, held := d.answers[project]
+	held := d.projects[project]
 	private, unseen := d.private[project], d.unseen[project]
 	release := d.release
 	d.mu.Unlock()
@@ -110,7 +109,7 @@ func (d *dispatchAnswers) fail(err error) {
 func (d *dispatchAnswers) drop(project string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	delete(d.answers, project)
+	delete(d.projects, project)
 }
 
 // hide takes entryPerson off project's access list, or with hidden false puts them back on it.
@@ -163,7 +162,7 @@ func TestADaemonEntryIsHeldToItsExchangeProjects(t *testing.T) {
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	exchange := map[string][]string{pubDaemonAccount: {"PUB"}}
-	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}, "PRIV": {"acme/priv"}}}
+	dispatch := &dispatchAnswers{projects: map[string]bool{"PUB": true, "PRIV": true}}
 
 	decision, err := Decide(t.Context(), heldDeps(t, tokens, exchange, dispatch, services), services, serviceRequest("pub-daemon-token"))
 	require.NoError(t, err)
@@ -233,7 +232,7 @@ func TestAnAdmissionNeverWaitsOnDispatch(t *testing.T) {
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	release := make(chan struct{})
-	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}, blockAfter: 1, release: release}
+	dispatch := &dispatchAnswers{projects: map[string]bool{"PUB": true}, blockAfter: 1, release: release}
 	deps := Deps{
 		ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB"}}),
 		Access: dispatch.access,
@@ -289,7 +288,7 @@ func TestAHeldAnswerFollowsDispatchAndOutlivesItsOutage(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
-	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}, private: map[string]bool{"PUB": true}}
+	dispatch := &dispatchAnswers{projects: map[string]bool{"PUB": true}, private: map[string]bool{"PUB": true}}
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}}, dispatch, services)
 
 	dispatch.fail(errors.New("dial tcp: connection refused"))
@@ -321,8 +320,8 @@ func TestDispatchRefusingTheBrokersTokenRefusesAHeldConnection(t *testing.T) {
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{
-		answers: map[string][]string{"OPS": {"acme/ops"}, "PUB": {"acme/pub"}},
-		private: map[string]bool{"OPS": true, "PUB": true},
+		projects: map[string]bool{"OPS": true, "PUB": true},
+		private:  map[string]bool{"OPS": true, "PUB": true},
 	}
 	var logged bytes.Buffer
 	deps := Deps{
@@ -374,7 +373,7 @@ func TestTheServiceAsksDispatchAgainOnItsOwn(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
-	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}, private: map[string]bool{"PUB": true}}
+	dispatch := &dispatchAnswers{projects: map[string]bool{"PUB": true}, private: map[string]bool{"PUB": true}}
 	log := &logtest.Buffer{}
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
@@ -407,7 +406,7 @@ func TestAnAccountWithNoExchangeEntryIsRefused(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
 	tokens := map[string]platformToken{"other-daemon-token": {account: otherDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
-	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}}
+	dispatch := &dispatchAnswers{projects: map[string]bool{"PUB": true}}
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}}, dispatch, services)
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("other-daemon-token"))
@@ -420,7 +419,7 @@ func TestAnUnknownProjectRefusesTheConnection(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
-	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}}
+	dispatch := &dispatchAnswers{projects: map[string]bool{"PUB": true}}
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB", "GONE"}}, dispatch, services)
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
@@ -440,9 +439,9 @@ func TestAProjectItsPersonCannotSeeRefusesTheConnection(t *testing.T) {
 		"unseen-token": {account: otherDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
 	dispatch := &dispatchAnswers{
-		answers: map[string][]string{"PRIV": {"acme/priv"}, "PRIV2": {"acme/priv2"}},
-		private: map[string]bool{"PRIV": true, "PRIV2": true},
-		unseen:  map[string]bool{"PRIV2": true},
+		projects: map[string]bool{"PRIV": true, "PRIV2": true},
+		private:  map[string]bool{"PRIV": true, "PRIV2": true},
+		unseen:   map[string]bool{"PRIV2": true},
 	}
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PRIV"}, otherDaemonAccount: {"PRIV2"}}, dispatch, services)
 
@@ -463,7 +462,7 @@ func TestAnEntryNamingNoProjectIsRefusedByName(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
 	tokens := map[string]platformToken{"empty-token": {account: otherDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
-	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}}
+	dispatch := &dispatchAnswers{projects: map[string]bool{"PUB": true}}
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}, otherDaemonAccount: nil}, dispatch, services)
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("empty-token"))
@@ -477,7 +476,7 @@ func TestAGrantThatCannotBeHeldToItsProjectsIsRefusedByName(t *testing.T) {
 	now := time.Now()
 	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
-	dispatch := &dispatchAnswers{answers: map[string][]string{"pub": {"acme/pub"}}}
+	dispatch := &dispatchAnswers{projects: map[string]bool{"pub": true}}
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"pub"}}, dispatch, services)
 
 	_, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))

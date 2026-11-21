@@ -11,9 +11,10 @@ body: |-
   and counting it under a label of its own, an account no exchange entry lists
   (`no_exchange_entry`), an entry naming no project (`no_exchange_projects`), a project Dispatch
   has not yet answered about (`project_access_unknown`, which the client retries), Dispatch
-  refusing the broker's own account token (a 401 or 403) on any question of the newest refresh
-  (`project_access_refused`, logged at error once a refresh, as the token exchange refuses every
-  trade then), a project Dispatch does not hold (`project_not_found`), one the entry's person
+  refusing the broker's own account token (a 401 or 403) on any question of a refresh, until a
+  refresh that Dispatch answers with no such refusal, a refresh that cannot reach Dispatch keeping
+  it (`project_access_refused`, logged at error once a refresh, as the token exchange refuses
+  every trade then), a project Dispatch does not hold (`project_not_found`), one the entry's person
   cannot see (`project_not_visible`), and a grant that cannot be held to projects
   (`grant_not_holdable`). A dispatch or listener entry with `-` is now refused at startup, as a
   measurement entry's is. A daemon entry with `*` is also granted its account's own reply prefix.
