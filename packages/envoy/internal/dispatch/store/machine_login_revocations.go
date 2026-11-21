@@ -60,7 +60,7 @@ const machineLoginApprovalsLockSQL = `select %s(hashtextextended('machine_login_
 // block for a broker restored alone takes it too. Taking it again in tx returns at once.
 func LockMachineLoginApprovals(ctx context.Context, tx pgx.Tx, email string) error {
 	if _, err := tx.Exec(ctx, fmt.Sprintf(machineLoginApprovalsLockSQL, "pg_advisory_xact_lock"), email); err != nil {
-		return fmt.Errorf("wait for the machine-login approvals of %s in flight: %w", email, err)
+		return fmt.Errorf("wait for a person's machine-login approvals in flight: %w", err)
 	}
 	return nil
 }
@@ -86,7 +86,7 @@ func RecordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, email string) 
 		on conflict (email) do update
 		set generation = machine_login_revocations.generation + 1, recorded_at = clock_timestamp(), done_at = null
 	`, email); err != nil {
-		return fmt.Errorf("record the revocation of %s's machine logins: %w", email, err)
+		return fmt.Errorf("record the revocation of a person's machine logins: %w", err)
 	}
 	return nil
 }
@@ -105,7 +105,7 @@ var ErrMachineLoginApprovalInFlight = errors.New("store: another holder has the 
 func tryMachineLoginApprovals(ctx context.Context, tx pgx.Tx, email string) error {
 	var held bool
 	if err := tx.QueryRow(ctx, fmt.Sprintf(machineLoginApprovalsLockSQL, "pg_try_advisory_xact_lock"), email).Scan(&held); err != nil {
-		return fmt.Errorf("take the machine-login approval lock of %s: %w", email, err)
+		return fmt.Errorf("take a person's machine-login approval lock: %w", err)
 	}
 	if !held {
 		return ErrMachineLoginApprovalInFlight
@@ -129,7 +129,7 @@ func HoldMachineLoginApprovals(ctx context.Context, tx pgx.Tx, email string) (ow
 	if err := tx.QueryRow(ctx, `
 		select exists (select 1 from machine_login_revocations where email = lower(btrim($1)) and done_at is null)
 	`, email).Scan(&owed); err != nil {
-		return false, fmt.Errorf("read whether the revocation of %s's machine logins is owed: %w", email, err)
+		return false, fmt.Errorf("read whether the revocation of a person's machine logins is owed: %w", err)
 	}
 	return owed, nil
 }
