@@ -162,12 +162,21 @@ func (a holdAnswer) num(name string) int64 {
 // do sends method path with token as its bearer and body as its JSON, and answers what came back.
 func (r *holdRig) do(method, path, token string, body any) holdAnswer {
 	r.t.Helper()
-	var payload io.Reader
+	var raw []byte
 	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if raw, err = json.Marshal(body); err != nil {
 			r.t.Fatal(err)
 		}
+	}
+	return r.doRaw(method, path, token, raw)
+}
+
+// doRaw is do with raw as the body's bytes, none when raw is nil.
+func (r *holdRig) doRaw(method, path, token string, raw []byte) holdAnswer {
+	r.t.Helper()
+	var payload io.Reader
+	if raw != nil {
 		payload = bytes.NewReader(raw)
 	}
 	request, err := http.NewRequest(method, r.url+path, payload)
@@ -183,14 +192,14 @@ func (r *holdRig) do(method, path, token string, body any) holdAnswer {
 		r.t.Fatalf("%s %s: %v", method, path, err)
 	}
 	defer response.Body.Close()
-	raw, err := io.ReadAll(response.Body)
+	answered, err := io.ReadAll(response.Body)
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	answer := holdAnswer{status: response.StatusCode, body: raw}
-	if len(bytes.TrimSpace(raw)) > 0 {
-		if err := json.Unmarshal(raw, &answer.fields); err != nil {
-			r.t.Fatalf("%s %s answered %d with a body that is no JSON object: %s", method, path, response.StatusCode, raw)
+	answer := holdAnswer{status: response.StatusCode, body: answered}
+	if len(bytes.TrimSpace(answered)) > 0 {
+		if err := json.Unmarshal(answered, &answer.fields); err != nil {
+			r.t.Fatalf("%s %s answered %d with a body that is no JSON object: %s", method, path, response.StatusCode, answered)
 		}
 	}
 	return answer
@@ -804,4 +813,36 @@ func TestTheHoldRoutesCarryTheirSignatures(t *testing.T) {
 		t.Errorf("the restore answers signed_at %q, which is no RFC 3339 time: %v", again.str("signed_at"), err)
 	}
 	rig.requireSigned("the restored row", again.fields, signedrecord.HoldRow(uint64(again.num("gen")), again.str("phase"), again.str("hold_id"), againAt))
+}
+
+// A hold route's refusal of a body that does not decode names the field and the kind of failure,
+// never the value: a records PUT whose expected_gen is a number out of range, and one whose body
+// is not JSON, are each 400 bad_request, and the message holds no part of the value, which the
+// operator's commands copy into their own errors. The routes store nothing.
+//
+// Run by hand, the control is the routes at bb2b623923, which echo json's message: `body must be
+// one valid JSON object: json: cannot unmarshal number 1844674407370955161600123456789 into Go
+// struct field holdRecordBody.expected_gen of type int64`.
+func TestAHoldBodyRefusalNamesNoValue(t *testing.T) {
+	rig := newHoldRig(t)
+	op := rig.operator()
+	rig.bootstrap()
+	rig.move(1, "prepare", "hold-v")
+	before := rig.holdTables()
+	const canary = "1844674407370955161600123456789"
+	body := rig.recordBody("hold-v", "cohort", "cohort", 0, `{"sessions":[]}`)
+	body["expected_gen"] = json.Number(canary)
+	refused := rig.do(http.MethodPut, "/v1/nats-hold/records", op, body).
+		require(t, "a records PUT whose expected_gen is out of range", http.StatusBadRequest, "bad_request")
+	if message := refused.str("message"); strings.Contains(message, canary) || !strings.Contains(message, `"expected_gen"`) {
+		t.Errorf("the refusal's message is %q: it holds the value, or names no field", message)
+	}
+	notJSON := rig.doRaw(http.MethodPut, "/v1/nats-hold/records", op, []byte(`{"hold_id":"hold-v","kind":CANARY-BARE-4f1c}`)).
+		require(t, "a records PUT that is not JSON", http.StatusBadRequest, "bad_request")
+	if message := notJSON.str("message"); strings.Contains(message, "CANARY") || strings.Contains(message, "'C'") || !strings.Contains(message, "byte") {
+		t.Errorf("the refusal's message is %q: it holds part of the value, or names no byte", message)
+	}
+	if after := rig.holdTables(); after != before {
+		t.Fatalf("a refused body changed the hold's tables:\nbefore %s\nafter %s", before, after)
+	}
 }

@@ -2,6 +2,7 @@ package natshold_test
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"testing"
 	"time"
@@ -83,7 +84,13 @@ func TestTheHoldReadIsTheStoresRead(t *testing.T) {
 
 // The read takes its own deadline, ReadDeadline, over the connection's acquire and the whole
 // transaction, whatever deadline its caller's context carries: a read held behind a lock on the row
-// fails within it rather than waiting.
+// fails with its deadline rather than waiting, though its caller's context has none.
+//
+// The lock is a real Postgres's, so the test keeps a wall-clock bound, but waits on the fact: the
+// read returns an error that is its deadline's, and the bound is a ceiling a loaded machine does
+// not reach (ReadDeadline and ten seconds), so the test fails only when the read waits on the lock,
+// which it then does until the holder's rollback when the test ends. The read is not shorter than
+// its deadline, since a timer does not fire early.
 func TestTheHoldReadEndsAtItsDeadline(t *testing.T) {
 	pool, schema := testPool(t)
 	ctx := context.Background()
@@ -100,12 +107,22 @@ func TestTheHoldReadEndsAtItsDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := time.Now()
-	_, _, err = natshold.Read(ctx, pool, schema)
-	elapsed := time.Since(started)
-	if err == nil {
-		t.Fatal("a read held behind an exclusive lock answered no error")
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := natshold.Read(ctx, pool, schema)
+		done <- err
+	}()
+	const ceiling = natshold.ReadDeadline + 10*time.Second
+	select {
+	case err = <-done:
+	case <-time.After(ceiling):
+		t.Fatalf("a read held behind an exclusive lock had not returned after %s, its deadline being %s", ceiling, natshold.ReadDeadline)
 	}
-	if elapsed > natshold.ReadDeadline+250*time.Millisecond {
-		t.Fatalf("a read held behind an exclusive lock took %s, want at most its deadline of %s", elapsed, natshold.ReadDeadline)
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a read held behind an exclusive lock answered %v after %s, want its deadline's error", err, elapsed)
+	}
+	if elapsed < natshold.ReadDeadline {
+		t.Fatalf("a read held behind an exclusive lock ended after %s, before its deadline of %s", elapsed, natshold.ReadDeadline)
 	}
 }

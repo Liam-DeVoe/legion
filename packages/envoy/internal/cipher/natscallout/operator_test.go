@@ -141,6 +141,16 @@ func (l *decisionLog) since(name string, n int) []decided {
 	return slices.Clone(l.byName[name][n:])
 }
 
+// latest is the last decision admitting name, the zero decided when there is none.
+func (l *decisionLog) latest(name string) decided {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if decisions := l.byName[name]; len(decisions) > 0 {
+		return decisions[len(decisions)-1]
+	}
+	return decided{}
+}
+
 // after waits for a decision admitting name past the first n, and returns the latest.
 func (l *decisionLog) after(t *testing.T, name string, n int) decided {
 	t.Helper()

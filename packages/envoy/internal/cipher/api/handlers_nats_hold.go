@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -156,7 +157,8 @@ func writeHoldRefusal(w http.ResponseWriter, status int, code, message string, c
 
 // readHoldBody decodes r's body into v as readJSON does, at most maxJSONBodyBytes (413
 // too_large), no field v does not declare and nothing after the value (400 bad_request),
-// answering in the hold routes' refusal.
+// answering in the hold routes' refusal, whose message names the field and the kind of failure
+// (holdBodyFault), never a value the body holds.
 func readHoldBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	decoder := json.NewDecoder(r.Body)
@@ -172,9 +174,32 @@ func readHoldBody(w http.ResponseWriter, r *http.Request, v any) bool {
 	case errors.As(err, &tooLarge):
 		writeHoldRefusal(w, http.StatusRequestEntityTooLarge, "too_large", fmt.Sprintf("request body exceeds %d bytes", maxJSONBodyBytes), nil)
 	default:
-		writeHoldRefusal(w, http.StatusBadRequest, "bad_request", "body must be one valid JSON object: "+err.Error(), nil)
+		writeHoldRefusal(w, http.StatusBadRequest, "bad_request", "body must be one valid JSON object: "+holdBodyFault(err), nil)
 	}
 	return false
+}
+
+// holdBodyFault is err, a JSON decoder's, as the kind of failure alone: a syntax error at its
+// byte, a field whose value does not decode to its Go type, an unknown field, a body that ends
+// early or holds more than one value. json's own message holds a number's digits when it is out of
+// range and a character of the input at a syntax error, and a hold body holds a record's value, so
+// the message is never json's.
+func holdBodyFault(err error) string {
+	var syntax *json.SyntaxError
+	var typed *json.UnmarshalTypeError
+	switch {
+	case errors.As(err, &syntax):
+		return fmt.Sprintf("a JSON syntax error at byte %d", syntax.Offset)
+	case errors.As(err, &typed) && typed.Field != "":
+		return fmt.Sprintf("the field %q does not decode to Go %s", typed.Field, typed.Type)
+	case errors.As(err, &typed):
+		return "the body is not a JSON object"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "the body ends before its JSON value does"
+	case strings.HasPrefix(err.Error(), "json: unknown field "):
+		return "it holds a field the route does not take"
+	}
+	return "the body holds more than one JSON value, or does not decode"
 }
 
 // holdSignedAt reads a body's signed_at: RFC 3339 at a whole microsecond, the precision a
