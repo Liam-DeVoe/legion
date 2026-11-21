@@ -869,10 +869,10 @@ extensionHandlers:
 ```
 
 When the limit is under 30 s, the gate logs one warning at start that names the key, the host's
-limit and the review's limit. It still reviews each write. The key must be at least 15,000 ms,
-since the gate does not bind on a limit that leaves under 10 s for a verdict. A session set under
-15,000 ms gets a gate that does not load, and a gate that did not load refuses every Dispatch
-write it would have reviewed.
+limit and the review's limit. It still reviews each gated Dispatch write. The key must be at least
+15,000 ms, since the gate does not bind on a limit that leaves under 10 s for a verdict. A session
+set under 15,000 ms gets a gate that does not load, and a gate that did not load refuses every
+Dispatch write it would have reviewed.
 
 `OMP_ASKGATE_DUMP` names a file that gets the two prompts of each model call.
 

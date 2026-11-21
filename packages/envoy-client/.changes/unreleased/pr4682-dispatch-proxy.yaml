@@ -9,7 +9,9 @@ body: |-
   `/api/v1/issues/<key>/comments` that carries an `Idempotency-Key`, and refuses every other
   request with its own code: `405 PROXY_METHOD_REFUSED`, `400 PROXY_TARGET_REFUSED`,
   `502 PROXY_TRADE_REFUSED` or `502 PROXY_DISPATCH_UNREACHABLE`. It gives back Dispatch's status,
-  headers and body as Dispatch sent them, follows no redirect, and trades again only when its
-  token has less than 300 seconds to live or after a `BROKER_TOKEN_NOT_ACTIVE` answer. It exits
+  headers and body as Dispatch sent them (an answer with a `Content-Encoding` other than
+  `identity` comes back without its `Content-Length`, with its body chunked), follows no redirect,
+  and trades again only when its token has less than 300 seconds to live or after a
+  `BROKER_TOKEN_NOT_ACTIVE` answer. It exits
   with its command's status and prints
   `dispatch proxy: <n> requests, <m> trades, <r> after BROKER_TOKEN_NOT_ACTIVE` on standard error.

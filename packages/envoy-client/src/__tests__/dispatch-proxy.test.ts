@@ -467,11 +467,25 @@ interface Received {
   readonly body: Buffer;
 }
 
-/** A JSON answer with the headers the stand-in sends beside each. */
+/** One answer the stand-in Dispatch gave: the path it answered and the headers it sent. */
+interface Answered {
+  readonly path: string;
+  /** By lower-case name, as `Headers` keeps them. */
+  readonly headers: Readonly<Record<string, string>>;
+}
+
+/** A JSON answer with the headers the stand-in sends beside each, its `Content-Length` among
+ *  them. */
 function jsonAnswer(value: unknown, status = 200, headers: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify(value), {
+  const text = JSON.stringify(value);
+  return new Response(text, {
     status,
-    headers: { "Content-Type": "application/json", "X-Dispatch-Test": "kept", ...headers },
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": String(Buffer.byteLength(text)),
+      "X-Dispatch-Test": "kept",
+      ...headers,
+    },
   });
 }
 
@@ -485,14 +499,16 @@ const FORBIDDEN = {
 const NOT_FOUND = { code: "NOT_FOUND", error: "issue DSP-404 not found" };
 
 /**
- * A Dispatch that records each request (method, path, query, headers and body bytes) and answers
- * by path: the issue list, a binary document version of 1 MiB and 7 bytes, a 302 to a host that
- * does not resolve and one to its own issue list, its own 403 and 404, a 201 for the comment
- * POST, and on `DEAD_FIRST` a 401 `BROKER_TOKEN_NOT_ACTIVE` for the first request and for any
- * request that presents that request's token again (`dispatch-dead-token.test.ts`'s `deadFirst`).
+ * A Dispatch that records each request (method, path, query, headers and body bytes) and each
+ * answer it gives (the path and the headers it sent), and answers by path: the issue list, a
+ * binary document version of 1 MiB and 7 bytes, a 302 to a host that does not resolve and one to
+ * its own issue list, its own 403 and 404, a 201 for the comment POST, and on `DEAD_FIRST` a 401
+ * `BROKER_TOKEN_NOT_ACTIVE` for the first request and for any request that presents that
+ * request's token again (`dispatch-dead-token.test.ts`'s `deadFirst`).
  */
 function standInDispatch() {
   const received: Received[] = [];
+  const answered: Answered[] = [];
   const blob = randomBytes(BLOB_BYTES);
   const deadPresented: string[] = [];
   let url = "";
@@ -515,6 +531,7 @@ function standInDispatch() {
       return new Response(blob, {
         headers: {
           "Content-Type": "application/octet-stream",
+          "Content-Length": String(blob.length),
           "Content-Disposition": 'attachment; filename="blob.bin"',
           ETag: '"v1"',
           "X-Dispatch-Test": "kept",
@@ -547,12 +564,14 @@ function standInDispatch() {
         headers,
         body: Buffer.from(await request.arrayBuffer()),
       });
-      return answerTo(request.method, pathname, headers);
+      const answer = answerTo(request.method, pathname, headers);
+      answered.push({ path: pathname, headers: Object.fromEntries(answer.headers.entries()) });
+      return answer;
     },
   });
   servers.push(server);
   url = `http://127.0.0.1:${server.port}`;
-  return { url, port: server.port, received, blob };
+  return { url, port: server.port, received, answered, blob };
 }
 
 /** A Dispatch URL nothing listens at: a server's port, once that server has stopped. */
@@ -985,6 +1004,37 @@ test("gives back the status, the end-to-end headers and a binary body of 1 MiB a
     "/api/v1/issues/DSP-403",
     "/api/v1/issues/DSP-404",
   ]);
+  expect((await finish(run)).code).toBe(0);
+}, 15_000);
+
+test("gives back Dispatch's Content-Length with the body, unchunked, when the answer carries no Content-Encoding but identity", async () => {
+  const broker = standInBroker({ kind: "token", seconds: 3600 });
+  const dispatch = standInDispatch();
+  const run = await startedProxy(podProxyEnvironment(broker.url, dispatch.url));
+
+  // Written by hand, so the row reads the proxy's header lines and its body's framing as they
+  // came over the socket.
+  const paths = [BLOB_PATH, "/api/v1/issues/DSP-403", "/api/v1/issues/DSP-404"];
+  const answers = new Map<string, Answer>();
+  for (const path of paths) answers.set(path, await rawRequest(run.socket, rawGet(path)));
+
+  expect(dispatch.answered.map((answered) => answered.path)).toEqual(paths);
+  for (const { path, headers: sent } of dispatch.answered) {
+    const answer = answers.get(path);
+    // Dispatch sent a length, and no content encoding.
+    expect(sent["content-length"], path).toBeDefined();
+    expect(sent["content-encoding"], path).toBeUndefined();
+    expect(answer?.headers["content-length"], path).toBe(sent["content-length"]);
+    expect(answer?.headers["transfer-encoding"], path).toBeUndefined();
+    expect(answer?.body.length, path).toBe(Number(sent["content-length"]));
+  }
+  expect(answers.get(BLOB_PATH)?.body.equals(dispatch.blob)).toBe(true);
+  expect(JSON.parse(answers.get("/api/v1/issues/DSP-403")?.body.toString("utf8") ?? "")).toEqual(
+    FORBIDDEN
+  );
+  expect(JSON.parse(answers.get("/api/v1/issues/DSP-404")?.body.toString("utf8") ?? "")).toEqual(
+    NOT_FOUND
+  );
   expect((await finish(run)).code).toBe(0);
 }, 15_000);
 

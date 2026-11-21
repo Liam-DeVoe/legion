@@ -420,14 +420,17 @@ function forwardedHeaders(incoming: IncomingHttpHeaders): Record<string, string>
   return headers;
 }
 
-/** Dispatch's end-to-end headers, as the proxy gives them back (R3). `Content-Length` is the one
- *  `node:http` writes for the body it sends. */
+/** Dispatch's end-to-end headers, as the proxy gives them back (R3). Its `Content-Length` comes
+ *  back as Dispatch sent it where the answer carries no `Content-Encoding`, or
+ *  `Content-Encoding: identity`, so the tool reads the length Dispatch gave; under any other
+ *  `Content-Encoding` it is left out, and `node:http` sends the body chunked. */
 function answeredHeaders(headers: Headers): Record<string, string | string[]> {
   const named = connectionNamed(headers.get("connection"));
+  const encoding = (headers.get("content-encoding") ?? "identity").trim().toLowerCase();
   const kept: Record<string, string | string[]> = {};
   headers.forEach((value, name) => {
-    if (HOP_BY_HOP.has(name) || named.has(name)) return;
-    if (name === "content-length" || name === "set-cookie") return;
+    if (HOP_BY_HOP.has(name) || named.has(name) || name === "set-cookie") return;
+    if (name === "content-length" && encoding !== "identity") return;
     kept[name] = value;
   });
   const cookies = headers.getSetCookie();
@@ -555,7 +558,10 @@ async function serve(
 /**
  * Dispatch's answer to the tool as Dispatch sent it (R3): its status, its end-to-end headers and
  * its body, streamed as it arrives with no total deadline, since some routes stream
- * (`/api/v1/going/requests/{id}/stream`). A redirect is given back, never followed.
+ * (`/api/v1/going/requests/{id}/stream`). A body whose `Content-Length` {@link answeredHeaders}
+ * gives back goes out unchunked, with that length; any other body goes out chunked. A body that
+ * breaks off ends the connection, so the tool reads a cut answer as one. A redirect is given
+ * back, never followed.
  */
 async function giveBack(answer: Response, response: ServerResponse): Promise<void> {
   response.writeHead(answer.status, answeredHeaders(answer.headers));
