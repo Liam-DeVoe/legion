@@ -295,6 +295,23 @@ func workTable() []workRow {
 			extracted(func(n int) string {
 				return procedureCheck("If the run fails, " + strings.Repeat("read the log, ", n) + "send the report.")
 			})},
+		{"many sentences of one text, each with a way out that the whole text reads", ruleStopNoSpace, 300,
+			extracted(units(":::check{#c}\nDispatch reads it.", " Dispatch checks a%d.B now.", end))},
+		{"many lines of one text, each with a way out that the whole text reads", ruleStopNoSpace, 300,
+			extracted(units(":::check{#c}\nDispatch reads it.", "\u2028Dispatch checks a%d.B now.", end))},
+		{"one claim that refers to many footnotes, each of whose ways out takes a verb away", "ste100-synonym-rotation", 300,
+			extracted(func(n int) string {
+				return units(":::check{#c}\nDispatch keeps it", "[^%d]", ".\n:::\n\n")(n) + units("", "[^%d]: It checks Foo%[1]d.Validate at boot.\n\n", "")(n)
+			})},
+		{"a chain of footnotes, each of whose ways out takes a verb away", "ste100-synonym-rotation", 300,
+			extracted(func(n int) string {
+				var markdown strings.Builder
+				markdown.WriteString(":::check{#c}\nDispatch keeps it[^1].\n:::\n\n")
+				for index := 1; index <= n; index++ {
+					fmt.Fprintf(&markdown, "[^%d]: It checks Foo%[1]d.Validate at boot[^%d].\n\n", index, index+1)
+				}
+				return markdown.String()
+			})},
 	}
 }
 

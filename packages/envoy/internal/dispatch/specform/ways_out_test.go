@@ -125,6 +125,11 @@ func claimOf(body string) Text {
 	return Text{Node: "c-claim", Kind: KindClaim, Body: body, Where: where}
 }
 
+// claimNamed is a claim of the check node whose words are body.
+func claimNamed(node, body string) Text {
+	return Text{Node: node, Kind: KindClaim, Body: body, Where: where}
+}
+
 // quotedRun is a statement whose two sentences ste-lint reads as one piece of 23 words, as no
 // piece ends at a stop that a closing quote follows: the user and the host apart make 21 words of
 // the second sentence, and a piece of 26.
@@ -238,12 +243,15 @@ func TestEachWayOutOfARefusalPasses(t *testing.T) {
 		// of 26 words of two sentences that ste-lint joins at the closing quote, so only the paths
 		// are left; and the code font of a footnote's Foo.Validate takes its verb away beside a
 		// text that uses "check", which leaves no group of two verbs, and beside one that uses
-		// "confirms", which gives the text a new finding, so there only the space is left.
+		// "confirms", which gives the text a new finding, so there only the space is left; but a
+		// text that uses "confirms" and refers to no footnote gives no finding with it, so beside
+		// such a text both are left.
 		own(claimOf("Dispatch checks Foo.Validate at boot. It validated the file.")),
 		own(claimOf("Dispatch removes Foo.Delete at boot. It deleted the file.")),
 		own(statement(quotedRun)),
 		inNote("1", noted(KindStatement, "Dispatch checks each record.", "It calls Foo.Validate at boot.")),
 		inNote("1", noted(KindClaim, "Dispatch confirms each record.", "It checks Foo.Validate at boot.")),
+		inNote("1", noted(KindClaim, "Dispatch keeps each record.", "It checks Foo.Validate at boot."), claimNamed("c-other", "Dispatch confirms the log.")),
 	} {
 		c := planted()
 		texts := row.read(t)
@@ -312,7 +320,10 @@ func TestEachWayOutOfARefusalPasses(t *testing.T) {
 // where no quote joins them; a way out of a list item of two sentences that ends in "and" changes
 // the item that the finding of dangling-conjunction quotes, so it gives none, while the item that
 // ends in a stop gives both; and the code font of a footnote's Foo.Validate is a way out beside a
-// text that uses "keeps" or "checks", and none beside one that uses "confirms".
+// text that uses "keeps" or "checks", and none beside one that uses "confirms", while a text that
+// uses "confirms" and refers to no footnote, beside one that uses "keeps" and refers to it, leaves
+// it a way out: no text that holds the footnote gives a new finding, though "check" and "confirm"
+// stand in the judgment after it.
 func TestAWayOutStaysWhereTheOtherFindingsStayAsTheyWere(t *testing.T) {
 	for _, test := range []struct {
 		row  wayRow
@@ -360,6 +371,8 @@ func TestAWayOutStaysWhereTheOtherFindingsStayAsTheyWere(t *testing.T) {
 		{inNote("1", noted(KindClaim, "Dispatch keeps each record.", "It checks Foo.Validate at boot.")), map[Rule]int{ruleStopNoSpace: 2}},
 		{inNote("1", noted(KindStatement, "Dispatch checks each record.", "It calls Foo.Validate at boot.")), map[Rule]int{ruleStopNoSpace: 1}},
 		{inNote("1", noted(KindClaim, "Dispatch confirms each record.", "It checks Foo.Validate at boot.")), map[Rule]int{ruleStopNoSpace: 1}},
+		{inNote("1", noted(KindClaim, "Dispatch keeps each record.", "It checks Foo.Validate at boot."), claimNamed("c-other", "Dispatch confirms the log.")),
+			map[Rule]int{ruleStopNoSpace: 2}},
 	} {
 		got := map[Rule]int{}
 		for _, each := range judgedAll(planted(), test.row.read(t)) {
@@ -500,5 +513,37 @@ func TestAFindingPastTheEighthOfASentenceIsRefusedWithNoWayOutOffered(t *testing
 		if eighth := ways[last-1]; strings.Contains(eighth, note) || eighth == "" || details[last-1] != test.base(test.names[last-1]) {
 			t.Errorf("%q: the %dth finding is %q with the ways out %q, want its ways out and no note", test.body, maxJudgedInSentence, details[last-1], eighth)
 		}
+	}
+}
+
+// The judge reads a text that ste-lint reads as more than one line whole for each way out
+// (wholeText.lines), so it reads such a text for the ways out of its first maxJudgedInSentence
+// findings only, and reads it a bounded number of times however many lines it holds. A finding
+// after them is still refused and named, and the words of its ways out say that Dispatch offers no
+// way out of it, not that none exists (wholeNote). Control: the eighth finding, on the eighth line,
+// gives its ways out.
+func TestAFindingPastTheEighthOfATextReadWholeIsRefusedWithNoWayOutOffered(t *testing.T) {
+	var lines, words []string
+	for index := 1; index <= maxJudgedInSentence+1; index++ {
+		words = append(words, fmt.Sprintf("a%d.B", index))
+		lines = append(lines, fmt.Sprintf("Dispatch reads a%d.B at boot.", index))
+	}
+	body := strings.Join(lines, "\u2028")
+	var details, ways []string
+	for _, each := range Check(planted(), Input{Texts: []Text{claimOf(body)}}) {
+		if each.Rule == ruleStopNoSpace {
+			details, ways = append(details, each.Detail), append(ways, each.Ways)
+		}
+	}
+	if len(details) != len(words) {
+		t.Fatalf("%q: %d findings of %s, want %d: %q", body, len(details), ruleStopNoSpace, len(words), details)
+	}
+	last := len(details) - 1
+	const note = "Dispatch offers ways out for the first 8 findings of a text that ste-lint reads as more than one line or as code, so it offers none for this one, though one can exist"
+	if want := stopNoSpace(words[last]); details[last] != want || ways[last] != note {
+		t.Errorf("%q: the finding after the %dth is %q with the ways out %q, want %q with %q", body, maxJudgedInSentence, details[last], ways[last], want, note)
+	}
+	if eighth := ways[last-1]; strings.Contains(eighth, note) || eighth == "" || details[last-1] != stopNoSpace(words[last-1]) {
+		t.Errorf("%q: the %dth finding is %q with the ways out %q, want its ways out and no note", body, maxJudgedInSentence, details[last-1], eighth)
 	}
 }

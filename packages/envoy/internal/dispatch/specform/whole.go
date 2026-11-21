@@ -37,7 +37,13 @@ import (
 // the sentences of its finding and the pieces of ste-lint that run through them, not with the
 // text. A text that ste-lint reads as more than one line, as it ends a line at a line break such as
 // \v or U+2028 that the one line of a text keeps (ste.Lines), the judge reads whole for each way
-// out instead (lines), since ste-lint ends a list item and a piece at such a break.
+// out instead (lines), since ste-lint ends a list item and a piece at such a break; and so it
+// reads a text whose line opens a code fence, of which ste-lint reads nothing (ste.OpensFence).
+// Each such reading reads the whole text, so the judge reads such a text for the ways out of its
+// first maxJudgedInSentence findings only, as it reads a sentence for those of the first
+// maxJudgedInSentence findings of the sentence, and the work of a judgment stays in proportion to
+// its text (the work table's row of many lines of one text). A finding after them is still refused
+// and named, and its detail says that Dispatch offers no way out of it (wholeNote).
 type wholeText struct {
 	line string
 	// spans is the bytes of each sentence of the line, from the end of the one before it, so that
@@ -47,11 +53,14 @@ type wholeText struct {
 	at    map[string][]int
 	// held is the verbs of each footnote that the text holds (footnotesHeld.verbs). elsewhere, for
 	// the text of a footnote, reports whether a way out that changes the verbs of its words from
-	// one set to another can change a finding of the rule synonym-rotation of the footnotes and the
-	// texts that the footnote stands beside (footnoteJudge.rotationCanChange).
+	// one set to another gives a finding of the rule synonym-rotation of the footnotes and the
+	// texts that hold the footnote that the judgment does not give (footnoteJudge.rotationCanChange).
+	// lines is whether the judge reads the text whole for each way out, and readFor each finding
+	// whose ways out it read so.
 	held      []ste.Verbs
 	elsewhere func(before, after ste.Verbs) bool
 	lines     bool
+	readFor   map[wayKey]bool
 	// The fields below are read once (load): the Spread of each sentence; the sentences that each
 	// member of a synonym group stands in, in order, with its first place in each; the words of the
 	// piece of ste-lint that runs on into each sentence from the ones before it (left), and that
@@ -91,7 +100,7 @@ type wholeWay struct {
 // newWholeText is line as the judge reads it whole, with held, the verbs of its footnotes, and
 // elsewhere for the text of a footnote (nil for a text).
 func newWholeText(line string, held []ste.Verbs, elsewhere func(before, after ste.Verbs) bool) *wholeText {
-	w := &wholeText{line: line, held: held, elsewhere: elsewhere, at: map[string][]int{}, lines: ste.Lines(line) > 1}
+	w := &wholeText{line: line, held: held, elsewhere: elsewhere, at: map[string][]int{}, lines: ste.Lines(line) > 1 || ste.OpensFence(line)}
 	for index, each := range sentencesOf(line) {
 		w.spans = append(w.spans, line[each.start:each.end])
 		w.at[each.in(line)] = append(w.at[each.in(line)], index)
@@ -149,12 +158,14 @@ func (w *wholeText) load() {
 
 // passes reports whether way, a way out of finding written at each place of its words in the
 // sentences of the text that places names, writes a text that gives no finding of the rules that
-// read more than one sentence that the text does not give as many times (wholeText). A place that
-// is no sentence of the text, such as an address or a title, changes none of its words.
-func (w *wholeText) passes(finding wayKey, way wayOut, places []unitKey) bool {
+// read more than one sentence that the text does not give as many times (wholeText), and whether
+// the judge read it (read): a text that the judge reads whole it reads for the ways out of the
+// first maxJudgedInSentence findings that ask, and no more. A place that is no sentence of the
+// text, such as an address or a title, changes none of its words.
+func (w *wholeText) passes(finding wayKey, way wayOut, places []unitKey) (passed, read bool) {
 	key := wholeWay{finding, way}
 	if passed, ok := w.passed[key]; ok {
-		return passed
+		return passed, true
 	}
 	changed := map[int]writtenSentence{}
 	for _, place := range places {
@@ -168,8 +179,17 @@ func (w *wholeText) passes(finding wayKey, way wayOut, places []unitKey) bool {
 			}
 		}
 	}
-	passed := true
+	passed = true
 	if len(changed) > 0 {
+		if w.lines && !w.readFor[finding] {
+			if len(w.readFor) >= maxJudgedInSentence {
+				return false, false
+			}
+			if w.readFor == nil {
+				w.readFor = map[wayKey]bool{}
+			}
+			w.readFor[finding] = true
+		}
 		w.load()
 		passed = w.writesNoNewFinding(changed)
 	}
@@ -177,7 +197,7 @@ func (w *wholeText) passes(finding wayKey, way wayOut, places []unitKey) bool {
 		w.passed = map[wholeWay]bool{}
 	}
 	w.passed[key] = passed
-	return passed
+	return passed, true
 }
 
 // writesNoNewFinding reports whether the text with the sentences of changed in place of its own

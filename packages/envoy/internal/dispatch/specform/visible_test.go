@@ -475,6 +475,9 @@ func TestAFootnoteIsJudgedOnceAndGivesEachFindingOnce(t *testing.T) {
 			[]string{`claim c1 ste100-synonym-rotation: in its footnote [^n] (1 other text also refers to it): with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
 		{"two verbs for one action in two footnotes that refer to each other", claims(2, "It checks the size.[^b]") + "\n[^b]: It confirms the type.[^n]\n", 0,
 			[]string{`claim c1 ste100-synonym-rotation: in its footnote [^n] (1 other text also refers to it): with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
+		{"two verbs for one action in a loop of footnotes that a footnote with no verb refers to", ":::check{#ring}\nDispatch keeps it.[^a]\n:::\n\n" +
+			"[^a]: The note.[^n]\n\n[^n]: It checks the size.[^b]\n\n[^b]: It confirms the type.[^n]\n", 0,
+			[]string{`claim ring ste100-synonym-rotation: in the footnote [^n], which its footnote [^a] refers to, and 1 text refers to [^n]: with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},
 		{"two verbs for one action in a footnote that a footnote with no verb refers to", ":::check{#top}\nDispatch keeps it.[^a]\n:::\n\n" +
 			"[^a]: The note.[^b]\n\n[^b]: It checks the size.[^c]\n\n[^c]: It confirms the type.\n", 0,
 			[]string{`claim top ste100-synonym-rotation: in the footnote [^b], which its footnote [^a] refers to: with the words of the footnotes that it refers to: ASD-STE100 does not permit two verbs for one action: "check" and "confirm"`}},

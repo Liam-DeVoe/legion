@@ -13,7 +13,9 @@ import (
 // judge reads one sentence at most this many times for each way out a finding can give, and the
 // work of a judgment stays in proportion to its text (the work table's rows of many stops and many
 // addresses of a person in one sentence). A finding past this many of one sentence is still
-// refused and named, and its detail says that Dispatch offers no way out of it (pastNote).
+// refused and named, and its detail says that Dispatch offers no way out of it (pastNote). A text
+// that the judge reads whole for each way out it reads for the ways out of this many findings of
+// the text, in the same way (wholeText.passes, wholeNote).
 const maxJudgedInSentence = 8
 
 // pastNote is what the detail of a finding past the first maxJudgedInSentence findings of its
@@ -21,25 +23,31 @@ const maxJudgedInSentence = 8
 var pastNote = fmt.Sprintf("Dispatch offers ways out for the first %d findings of a sentence, so it offers none for this one, though one can exist",
 	maxJudgedInSentence)
 
-// offer is the ways out that a judge offers a finding (ways), and whether the finding stands past
-// the first maxJudgedInSentence findings of its sentence, whose ways out the judge did not read
-// (past).
+// wholeNote is what the detail of a finding says whose ways out the judge would read in a text
+// that it reads whole, past the first maxJudgedInSentence findings of that text (wholeText.passes),
+// so the writer knows that Dispatch offers no way out of it, not that none exists.
+var wholeNote = fmt.Sprintf("Dispatch offers ways out for the first %d findings of a text that ste-lint reads as more than one line or as code, so it offers none for this one, though one can exist",
+	maxJudgedInSentence)
+
+// offer is the ways out that a judge offers a finding (ways), and what the finding says of the ways
+// out that the judge did not read (note): pastNote for a finding past the first
+// maxJudgedInSentence findings of its sentence, wholeNote for one past those of a text that the
+// judge reads whole, or nothing.
 type offer struct {
 	ways [maxWays]wayOut
-	past bool
+	note string
 }
 
 // said is the words that give the ways out of the finding of the offer (broken.waysSaid): ways,
-// what the finding says of the ways out that it gives, with pastNote after them for a finding past
-// the findings whose ways out the judge reads.
+// what the finding says of the ways out that it gives, with the offer's note after them.
 func (o offer) said(ways string) string {
 	switch {
-	case !o.past:
+	case o.note == "":
 		return ways
 	case ways == "":
-		return pastNote
+		return o.note
 	}
-	return ways + ". " + pastNote
+	return ways + ". " + o.note
 }
 
 // wayJudge offers a way out of a finding only where the text that it writes gives no finding that
@@ -178,9 +186,10 @@ func (j *wayJudge) survey(find func()) {
 // place of each that passes no reading (passes) at some place of the finding (survey), or that the
 // whole text that it writes at each place refuses (wholeText.passes). A finding
 // past maxJudgedInSentence of the findings of a unit that holds it gives none, and its offer says
-// so (past); so does one whose sentence is not known at some place (unit ""), with no word of it,
-// and one that survey did not see. A nil judge offers ways as they are, and so does each judge a
-// finding that gives none.
+// so (pastNote), as does one past maxJudgedInSentence of the findings of a text that the judge
+// reads whole (wholeNote); so does one whose sentence is not known at some place (unit ""), with no
+// word of it, and one that survey did not see. A nil judge offers ways as they are, and so does
+// each judge a finding that gives none.
 func (j *wayJudge) offered(unit string, address bool, rule Rule, from string, ways [maxWays]wayOut) offer {
 	if j == nil || ways == ([maxWays]wayOut{}) {
 		return offer{ways: ways}
@@ -197,9 +206,9 @@ func (j *wayJudge) offered(unit string, address bool, rule Rule, from string, wa
 	places := j.places[key]
 	for _, at := range places {
 		if j.rank[place{key, at}] >= maxJudgedInSentence {
-			given.past = true
+			given.note = pastNote
 		}
-		if at.text == "" || given.past {
+		if at.text == "" || given.note != "" {
 			given.ways = [maxWays]wayOut{}
 		}
 	}
@@ -219,7 +228,15 @@ func (j *wayJudge) offered(unit string, address bool, rule Rule, from string, wa
 	}
 	if j.whole != nil {
 		for index, way := range given.ways {
-			if way != (wayOut{}) && !j.whole.passes(key, way, places) {
+			if way == (wayOut{}) {
+				continue
+			}
+			passed, read := j.whole.passes(key, way, places)
+			if !read {
+				given.ways, given.note = [maxWays]wayOut{}, wholeNote
+				break
+			}
+			if !passed {
 				given.ways[index] = wayOut{}
 			}
 		}

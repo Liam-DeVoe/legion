@@ -698,6 +698,13 @@ func Lines(text string) int {
 	return len(lines)
 }
 
+// OpensFence reports whether text, read as one line, opens or closes a code fence for ste-lint,
+// which reads no word of such a line: the line, with its white space at both ends taken away,
+// starts with three backticks or three tildes (isFence).
+func OpensFence(text string) bool {
+	return isFence(strip(text))
+}
+
 // LongSentence is the finding of the rule long-sentence for a piece of words, as Lint gives it,
 // and whether a piece of so many words breaks the rule.
 func LongSentence(words int) (Finding, bool) {

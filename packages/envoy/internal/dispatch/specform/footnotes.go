@@ -61,16 +61,25 @@ type footnoteJudge struct {
 	// counted is, for each footnote that a text holds, the footnotes with sentences that it holds,
 	// until their sentences pass maxSentences, and verbs the verbs of the synonym groups that it
 	// and the footnotes that it holds use (carry). gives is the verbs of each synonym group that a
-	// footnote rotates with the footnotes that it refers to (rotations).
+	// footnote rotates with the footnotes that it refers to (rotations), and rings and ring the
+	// loops of the footnotes (footnoteRings).
 	counted map[*Footnote]*sentenceCount
 	verbs   map[*Footnote]ste.Verbs
 	gives   map[*Footnote]ste.Verbs
+	rings   []footnoteRing
+	ring    map[*Footnote]int
 	// inStatement is, for each footnote that a statement holds, the count of sentences of the
 	// largest such statement (statements).
 	inStatement map[*Footnote]int
-	// users is how many texts of prose and footnotes use each verb of the synonym groups in their own
-	// words, by its bit in ste.Verbs, read once (rotationCanChange).
-	users []int
+	// The fields below are what rotationCanChange reads, each the first time that a way out asks:
+	// the sets of a synonym group in each ring (ringCount) and below each text (textCount), the
+	// verbs of each text's words, the texts of prose that refer to each ring, and the place of each
+	// footnote that a text of prose holds (formPlace).
+	ringCounts    map[ringGroup]ringCount
+	textCounts    map[ringGroup]verbCount
+	textVerbsRead map[int]ste.Verbs
+	textsOfRing   [][]int
+	formPlaces    map[*Footnote]string
 }
 
 // footnoteJudgment is one footnote judged: the findings of the form rules, the findings of the
@@ -138,7 +147,7 @@ func (j *footnoteJudge) judgment(note *Footnote) *footnoteJudgment {
 		return judged
 	}
 	judged := &footnoteJudgment{judge: newWayJudge(j.c, j.people, kindFootnote, note.Held.Shown != "")}
-	judged.judge.elsewhere = func(before, after ste.Verbs) bool { return j.rotationCanChange(before, after) }
+	judged.judge.elsewhere = func(before, after ste.Verbs) bool { return j.rotationCanChange(note, before, after) }
 	judged.judge.survey(func() { j.find(note, judged) })
 	j.judged[note] = judged
 	return judged
@@ -164,64 +173,6 @@ func (j *footnoteJudge) findings(note *Footnote) *footnoteJudgment {
 func (j *footnoteJudge) find(note *Footnote, judged *footnoteJudgment) {
 	judged.form, judged.sentences, judged.verbs = formBreaks(kindFootnote, oneLine(note.Body), footnotesHeld{}, judged.judge)
 	judged.references = heldBreaks(j.c, j.people, note.Body, note.Held, judged.judge)
-}
-
-// rotationCanChange reports whether a way out of a finding of a footnote that changes the verbs of
-// the synonym groups that the footnote's words use from before to after can give a finding of the
-// rule synonym-rotation that the verbs of footnotes give: of the footnote with the footnotes that
-// it refers to (rotations), and of each text that holds it (held). Such a finding is of the verbs
-// of one group that two parts or more use together, so a new one can stand only in a group whose
-// verbs the way out changes and of which, after it, the footnote and the other texts and footnotes
-// of the judgment use two verbs or more: in a group of fewer, no text or footnote gives such a
-// finding after the way out. The finding of the footnote's own words is wholeText's to read.
-func (j *footnoteJudge) rotationCanChange(before, after ste.Verbs) bool {
-	if j.users == nil {
-		j.countUsers()
-	}
-	var others ste.Verbs
-	for bit, count := range j.users {
-		if own := before&(1<<bit) != 0; count > 1 || count == 1 && !own {
-			others |= 1 << bit
-		}
-	}
-	for _, group := range (before ^ after).GroupsEach() {
-		if ((after | others) & group).Count() > 1 {
-			return true
-		}
-	}
-	return false
-}
-
-// countUsers counts, for each verb of the synonym groups, the texts of prose and the footnotes that
-// use it in their own words (users): each footnote that a text holds once.
-func (j *footnoteJudge) countUsers() {
-	j.users = make([]int, 64)
-	add := func(verbs ste.Verbs) {
-		for bit := range j.users {
-			if verbs&(1<<bit) != 0 {
-				j.users[bit]++
-			}
-		}
-	}
-	seen := map[*Footnote]bool{}
-	var walk []*Footnote
-	for _, text := range j.texts {
-		if prose(text.Kind) && text.Kind != KindLine {
-			_, verbs := ste.LintVerbs(oneLine(text.Body))
-			add(verbs)
-		}
-		walk = append(walk, text.Notes...)
-	}
-	for len(walk) > 0 {
-		note := walk[len(walk)-1]
-		walk = walk[:len(walk)-1]
-		if seen[note] {
-			continue
-		}
-		seen[note] = true
-		add(j.judgment(note).verbs)
-		walk = append(walk, note.Notes...)
-	}
 }
 
 // statements is, for each footnote that a statement holds, the count of sentences of the largest
@@ -306,13 +257,23 @@ func (j *footnoteJudge) walk(text Text, given map[*Footnote]bool, visit func(via
 	}
 }
 
-// placed is found, the findings of note, with the place in front of each detail: the footnote, the
-// footnote that the text refers to when it holds note through it, and how many other texts refer
-// to each.
+// placed is found, the findings of note, with the place in front of each detail (placeWords).
 func (j *footnoteJudge) placed(via, note *Footnote, found []broken) []broken {
 	if len(found) == 0 {
 		return nil
 	}
+	place := j.placeWords(via, note)
+	placed := make([]broken, len(found))
+	for index, each := range found {
+		each.detail = place + ": " + each.detail
+		placed[index] = each
+	}
+	return placed
+}
+
+// placeWords is the place of a finding of note: the footnote, the footnote that the text refers to
+// when it holds note through it (via), and how many other texts refer to each.
+func (j *footnoteJudge) placeWords(via, note *Footnote) string {
 	place := fmt.Sprintf("in its footnote [^%s]%s", note.Label, others(j.referrers[note]-1, "it"))
 	if via != note {
 		place = fmt.Sprintf("in the footnote [^%s], which its footnote [^%s] refers to%s", note.Label, via.Label, others(j.referrers[via]-1, "[^"+via.Label+"]"))
@@ -320,12 +281,7 @@ func (j *footnoteJudge) placed(via, note *Footnote, found []broken) []broken {
 			place += fmt.Sprintf(", and %s to [^%s]", textCount(direct), note.Label)
 		}
 	}
-	placed := make([]broken, len(found))
-	for index, each := range found {
-		each.detail = place + ": " + each.detail
-		placed[index] = each
-	}
-	return placed
+	return place
 }
 
 // others says how many other texts also refer to what, when any do.
@@ -446,62 +402,35 @@ func (j *footnoteJudge) carry() {
 			walk = append(walk, referrers[note]...)
 		}
 	}
-	j.rotations(order, referrers)
+	j.rotations(order)
 }
 
 // rotations finds, for each footnote that a text holds, the verbs of each synonym group that it
 // breaks the rule synonym-rotation in with the footnotes that it refers to (gives), once carry has
-// carried the verbs: two verbs or more of the group that it and the footnotes that it holds use
-// together, where neither its own words, which are Lint's finding of it, nor one footnote that it
-// refers to holds them all (ste.Rotations). Where one footnote that it refers to holds them all,
-// that footnote gives the finding or rotates them in its own words, or a footnote that it holds in
-// turn does: so each group that a footnote gives or rotates in its own words is given for each
-// footnote that holds that footnote with the same verbs of the group (given), walking back along
-// the references. Footnotes that refer to each other in a loop hold the same verbs, so a group that
-// they rotate together and that none of them gives is given by the first footnote of the loop in
-// the order of the texts. Each footnote takes each group once, so the work is in proportion to the
-// footnotes and their references.
-func (j *footnoteJudge) rotations(order []*Footnote, referrers map[*Footnote][]*Footnote) {
+// carried the verbs. It reads the footnotes as their rings (footnoteRings): footnotes that refer to
+// each other in a loop hold each other, and so use the same verbs. A ring gives a group's finding
+// where it and the footnotes that it holds use two verbs or more of the group together, and neither
+// the words of one footnote of the ring, which are Lint's finding of that footnote, nor one
+// footnote outside the ring that it refers to uses each of them (ste.Rotations). Such a footnote
+// gives that finding itself, rotates them in its own words, or holds a ring that does, in turn. So
+// one finding stands for each group however many footnotes hold its verbs, and the first footnote
+// of the ring in the order of the texts gives it: for a footnote that is no loop, the footnote
+// itself. A ring reads each reference to a footnote outside it once, so the work is in proportion
+// to the footnotes and their references.
+func (j *footnoteJudge) rotations(order []*Footnote) {
+	j.rings, j.ring = footnoteRings(order)
 	j.gives = map[*Footnote]ste.Verbs{}
-	given := map[*Footnote]ste.Verbs{}
-	// spread adds groups, each verb of each group, to given of source, and of each footnote that
-	// holds it with the same verbs of the group.
-	spread := func(source *Footnote, groups ste.Verbs) {
-		type step struct {
-			note   *Footnote
-			groups ste.Verbs
+	for _, ring := range j.rings {
+		verbs := j.verbs[ring.notes[0]]
+		rotated := verbs.Rotated()
+		for _, note := range ring.notes {
+			rotated &^= usesAll(verbs, j.judgment(note).verbs)
 		}
-		walk := []step{{source, groups}}
-		for len(walk) > 0 {
-			each := walk[len(walk)-1]
-			walk = walk[:len(walk)-1]
-			added := each.groups &^ given[each.note]
-			if added == 0 {
-				continue
-			}
-			given[each.note] |= added
-			for _, referrer := range referrers[each.note] {
-				walk = append(walk, step{referrer, added &^ (j.verbs[referrer] ^ j.verbs[each.note]).Groups()})
-			}
+		for _, below := range ring.below {
+			rotated &^= usesAll(verbs, j.verbs[j.rings[below].notes[0]])
 		}
-	}
-	var held []ste.Verbs
-	for _, note := range order {
-		own, all := j.judgment(note).verbs, j.verbs[note]
-		if all == 0 {
-			continue
-		}
-		held = held[:0]
-		for _, child := range note.Notes {
-			held = append(held, j.verbs[child])
-		}
-		j.gives[note] = ste.Rotations(own, held)
-		spread(note, (j.gives[note] | own.Rotated()&^(own^all).Groups()).Groups())
-	}
-	for _, note := range order {
-		if lost := j.verbs[note].Rotated() &^ given[note]; lost != 0 {
-			j.gives[note] |= lost
-			spread(note, lost.Groups())
+		if rotated != 0 {
+			j.gives[ring.notes[0]] = rotated
 		}
 	}
 }
