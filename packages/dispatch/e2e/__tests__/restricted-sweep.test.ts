@@ -43,7 +43,7 @@ import {
   readCheckFile,
   sweepScript,
 } from "./restricted-sweep-index";
-import { noReadCheckBase, printedRuns, type StackRuns } from "./restricted-sweep-stack";
+import { noReadCheckBase, printedRuns, type StackRuns, worker } from "./restricted-sweep-stack";
 
 /** The script run alone, with these variables and PATH and TMPDIR, as a child that starts nothing. */
 function script(env: Readonly<Record<string, string | undefined>>) {
@@ -630,9 +630,9 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       expect(stdout).not.toMatch(/^found .* none(,|$)/m);
       // The worker session wrote only in TGT, so it marks a row of TGT; carol also works in OWN,
       // which bob sees, so she does not.
-      expect(stdout).toMatch(/^found {3}actor ses-tgt-worker$/m);
+      expect(stdout).toMatch(new RegExp(`^found {3}actor ${worker}$`, "m"));
       expect(stdout).not.toMatch(/^found {3}actor carol@example\.com$/m);
-      expect(stdout).toMatch(/^found {3}conversation-file ses-tgt-worker\/\S+$/m);
+      expect(stdout).toMatch(new RegExp(`^found {3}conversation-file ${worker}/\\S+$`, "m"));
       expect(stdout).toMatch(/^ok {6}GET \/api\/v1\/agents: 200, no row of TGT \(can fail\)$/m);
       // carol's direct message to the worker, by the session's list and by its own routes.
       expect(stdout).toMatch(/^found {3}direct-message [0-9a-f-]{36}$/m);
@@ -818,11 +818,14 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       // The agents list names the worker session, which wrote only in TGT: R4's clause for
       // sessions, which a run that marked no session could not fail.
       expect(stdout).toMatch(
-        /^FAIL {4}GET \/api\/v1\/agents: the member is answered 200 holding ses-tgt-worker, a row of TGT: /m
+        new RegExp(
+          `^FAIL {4}GET /api/v1/agents: the member is answered 200 holding ${worker}, a row of TGT$`,
+          "m"
+        )
       );
       // A direct message to a session of TGT alone, which the merge base lists to every caller.
       expect(stdout).toMatch(
-        /^FAIL {4}GET \/api\/v1\/agents\/\{session_id\}\/messages: the member is answered 200 holding [0-9a-f-]{36}, a row of TGT: /m
+        /^FAIL {4}GET \/api\/v1\/agents\/\{session_id\}\/messages: the member is answered 200 holding [0-9a-f-]{36}, a row of TGT$/m
       );
       // The GitHub proxy forwards the member's read of TGT's repository, a pull request it holds.
       expect(stdout).toMatch(
@@ -831,7 +834,7 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       // With no read check, the build answers bob that the App is installed on TGT's repository,
       // where it answers a missing repository as not installed.
       expect(stdout).toContain(
-        '\nFAIL    GET /api/v1/github/app-installation/{owner}/{repo}: the member is answered 200 {"installed":true} for TGT\'s object, where a missing one is answered 200 {"installed":false}\n'
+        "\nFAIL    GET /api/v1/github/app-installation/{owner}/{repo}: the member is answered 200 for TGT's object, otherwise than a missing one answered 200\n"
       );
       // The routes of the project's content the seed writes so that each can fail, each of which
       // the build with no read check answers bob.

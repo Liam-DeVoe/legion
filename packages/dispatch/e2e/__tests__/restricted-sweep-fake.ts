@@ -27,7 +27,7 @@ import type { ServerWebSocket } from "bun";
 import { createEncoder, toUint8Array, writeVarString, writeVarUint } from "lib0/encoding";
 
 import { type BoundName, runBounded } from "./bounded-subprocess";
-import { dispatchPackage, sweepScript } from "./restricted-sweep-index";
+import { dispatchPackage, getRows, sweepScript } from "./restricted-sweep-index";
 
 export const fullToken = "the-full-members-token";
 export const memberCookie = "dsession=the-restricted-members-cookie";
@@ -133,6 +133,16 @@ export interface FakeShape {
   readonly sharedRepo?: boolean;
   readonly full?: readonly Leak[];
   readonly feed?: FeedShape;
+  /** The GET patterns of the route index a run reads, which the fake's own index (GET /api/v1)
+   *  lists too, as a deployment's lists the routes its route table holds; the whole index when
+   *  unset. */
+  readonly rows?: readonly string[];
+}
+
+/** The fake's own route index, GET /api/v1, as the server answers it: every GET route the run's
+ *  route index holds. */
+function routeIndexOf(fake: FakeShape): unknown {
+  return { routes: (fake.rows ?? getRows).map((path) => ({ method: "GET", path })) };
 }
 
 /** The lookup the full member is answered, by exact path and query: TGT's objects, and OWN's, the
@@ -156,6 +166,7 @@ function lookup(target: string, fake: FakeShape): unknown {
     ...(fake.sharedRepo === true ? { repo: sharedRepository } : {}),
   };
   const answers: Record<string, unknown> = {
+    "/api/v1": routeIndexOf(fake),
     "/api/v1/whoami": { kind: "agent", owner: "carol@example.com" },
     "/api/v1/projects": [{ key: "OWN" }, { key: "TGT" }],
     "/api/v1/projects/TGT/access": { project: "TGT", people: [] },
@@ -344,6 +355,7 @@ export function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
         }
         const leak = leaks.find((planted) => planted.matches(target));
         if (leak !== undefined) return Response.json(leak.body, { status: leak.status });
+        if (target === "/api/v1") return Response.json(routeIndexOf(fake));
         if (installation !== null) return Response.json({ installed });
         if (proxied !== null) return notInstalledOn(proxied[1] ?? "");
         if (namesTgt(target) || missingValues.some((value) => target.includes(value))) {
@@ -449,7 +461,6 @@ const indexes = temporaryDirectories("restricted-sweep-index");
  *  only the rows that rule needs. */
 export interface RunShape extends FakeShape {
   readonly env?: Readonly<Record<string, string | undefined>>;
-  readonly rows?: readonly string[];
   /** The bound the run is stopped at: `short` for a run over the rows a rule needs, and
    *  `wholeIndexSweep` for the one run over the whole route index. */
   readonly bound?: BoundName;

@@ -149,7 +149,18 @@ marker_in() {
     | first(splits("\n") | select(length > 0)
         | (., (split("\"") as $parts | $parts | keys[] | select(. % 2 == 1) | $parts[.]))
         | row($m; false)) // empty' "$1" 2>/dev/null ||
-    printf 'an answer the markers could not be read in: %s\n' "$(head_of "$1" 120)" >>"$work/unknown"
+    printf 'an answer the markers could not be read in\n' >>"$work/unknown"
+}
+
+# shown MARKER: a row of the project as a line names it: a key, an id or another value the lookup
+# found, never text a person wrote, so the issue's title is named by its issue. A line names what
+# the answer held, never the answer: the log of a run on a public runner is public.
+shown() {
+  if [ -n "$issue_title" ] && [ "$1" = "$issue_title" ]; then
+    printf 'the title of %s' "$issue"
+  else
+    printf '%s' "$1"
+  fi
 }
 
 # masked FILE VALUE... masks literal fills, their URL and JSON encodings, every RFC 3339 instant
@@ -309,7 +320,7 @@ filled_member() {
   call restricted "$target" "$work/rt"
   rt=$status
   if ! is_judgeable "$rt"; then
-    unproven "$label: the member is answered $rt, which no rule judges: $(head_of "$work/rt")"
+    unproven "$label: the member is answered $rt, which no rule judges"
     return
   fi
   # The answer is read for rows before it is compared with anything, so an answer alike for a
@@ -317,9 +328,9 @@ filled_member() {
   marker=$(masked_marker "$work/rt" ${t_list[@]+"${t_list[@]}"})
   if [ -n "$marker" ]; then
     if is_refusal "$rt"; then
-      fail "$label: the refusal $rt holds $marker, a row of $project: $(head_of "$work/rt")"
+      fail "$label: the refusal $rt holds $(shown "$marker"), a row of $project"
     else
-      fail "$label: the member is answered $rt holding $marker, a row of $project: $(head_of "$work/rt")"
+      fail "$label: the member is answered $rt holding $(shown "$marker"), a row of $project"
     fi
     return
   fi
@@ -335,13 +346,13 @@ filled_member() {
     printf 'ok      %s: %s, no row of %s (%s)\n' "$label" "$rt" "$project" "$can_text"
   elif is_2xx "$rt" && is_refusal "$rm"; then
     # The object exists for the member where a missing one does not, an empty answer included.
-    fail "$label: the member is answered $rt for $project's object, where a missing one is refused $rm: $(head_of "$work/rt")"
+    fail "$label: the member is answered $rt for $project's object, where a missing one is refused $rm"
   elif [ "$strict" = 1 ] && is_judgeable "$rm"; then
     # Any answer of its own for the project's object, a refusal such as 400 ARTIFACT_LINKED
     # included, where a missing one is answered otherwise, says the object exists.
-    fail "$label: the member is answered $rt for $project's object, otherwise than a missing one answered $rm: $(head_of "$work/rt")"
+    fail "$label: the member is answered $rt for $project's object, otherwise than a missing one answered $rm"
   else
-    unproven "$label: the member is answered $rt, where a missing one is answered $rm: $(head_of "$work/rt")"
+    unproven "$label: the member is answered $rt, where a missing one is answered $rm"
   fi
 }
 
@@ -363,7 +374,7 @@ list_member() {
   rt=$status
   marker=$(marker_in "$work/rt")
   if is_judgeable "$rt" && [ -n "$marker" ]; then
-    fail "$label: the member is answered $rt holding $marker, a row of $project: $(head_of "$work/rt")"
+    fail "$label: the member is answered $rt holding $(shown "$marker"), a row of $project"
     return
   fi
   if is_refusal "$rt"; then
@@ -373,7 +384,7 @@ list_member() {
   elif is_judgeable "$rt" && [ "$rt" = "$ft" ]; then
     printf 'ok      %s: %s, as the full member is answered (%s)\n' "$label" "$rt" "$can_text"
   else
-    unproven "$label: the member is answered $rt, the full member $ft: $(head_of "$work/rt")"
+    unproven "$label: the member is answered $rt, the full member $ft"
   fi
 }
 
@@ -411,14 +422,14 @@ as_missing_member() {
   call restricted "$3" "$work/rm"
   rm=$status
   if ! is_judgeable "$rt" || ! is_judgeable "$rm"; then
-    unproven "$label: the member is answered $rt, and $rm for a missing one, which no rule judges: $(head_of "$work/rt")"
+    unproven "$label: the member is answered $rt, and $rm for a missing one, which no rule judges"
     return
   fi
   marker=$(masked_marker "$work/rt" ${t_list[@]+"${t_list[@]}"})
   if [ -n "$marker" ]; then
-    fail "$label: the member is answered $rt holding $marker, a row of $project: $(head_of "$work/rt")"
+    fail "$label: the member is answered $rt holding $(shown "$marker"), a row of $project"
   elif ! alike "$rt" "$work/rt" "$rm" "$work/rm" ${both_list[@]+"${both_list[@]}"}; then
-    fail "$label: the member is answered $rt $(head_of "$work/rt") for $project's object, where a missing one is answered $rm $(head_of "$work/rm")"
+    fail "$label: the member is answered $rt for $project's object, otherwise than a missing one answered $rm"
   elif [ "$can" = 0 ]; then
     unproven "$label: the member is answered $rt, as a missing one is, but $why"
   else
@@ -466,7 +477,7 @@ proxy_member() {
   call restricted "$3" "$work/rm"
   rm=$status
   if ! proxy_answer "$rt" "$work/rt" || ! proxy_answer "$rm" "$work/rm"; then
-    unproven "$label: the member is answered $rt, and $rm for a repository the App is not installed on, which no rule judges: $(head_of "$work/rt")"
+    unproven "$label: the member is answered $rt, and $rm for a repository the App is not installed on, which no rule judges"
   elif alike "$rt" "$work/rt" "$rm" "$work/rm" "$name" no-such-repo; then
     if [ "$can" = 0 ]; then
       unproven "$label: the member is answered $rt, but $why"
@@ -480,7 +491,7 @@ proxy_member() {
       printf 'ok      %s: 403 (%s)\n' "$label" "$can_text"
     fi
   else
-    fail "$label: the member is answered $rt for $project's repository, where one the App is not installed on is answered $rm: $(head_of "$work/rt")"
+    fail "$label: the member is answered $rt for $project's repository, where one the App is not installed on is answered $rm"
   fi
 }
 
@@ -522,15 +533,15 @@ agent_view_full() {
 agent_view_member() {
   local label=$1 answer
   agent_answer restricted "$work/agent-member" "$2"
-  answer=$(head_of "$work/agent-member")
+  answer=$(head -n 1 "$work/agent-member" | cut -d ' ' -f 1-2)
   refusal_body "$work/agent-member" "$work/agent-body"
   if [ -n "$(marker_in "$work/agent-body")" ]; then
-    fail "$label: the member is answered $(frames_of "$work/agent-member"), holding $(marker_in "$work/agent-body"), a row of $project"
+    fail "$label: the member is answered $(frames_of "$work/agent-member"), holding $(shown "$(marker_in "$work/agent-body")"), a row of $project"
   elif [ "$agent_exit" != 0 ] || grep -q '^closed ' "$work/agent-member"; then
     unproven "$label: the member's view was answered $(frames_of "$work/agent-member")"
   else
     case $answer in
-      'http 403 '* | 'http 404 '*) printf 'ok      %s: the member'"'"'s upgrade is refused: %s (%s)\n' "$label" "$answer" "$can_text" ;;
+      'http 403' | 'http 404') printf 'ok      %s: the member'"'"'s upgrade is refused: %s (%s)\n' "$label" "$answer" "$can_text" ;;
       'http '*) unproven "$label: the member's upgrade is answered $answer" ;;
       *)
         if no_one_answers "$work/agent-member"; then
@@ -652,8 +663,14 @@ query_kind() {
     issue | parent | ref) echo issue ;;
     artifact) echo document ;;
     repo) echo repository ;;
-    # A person or a session is no project's node; the rest name no object.
-    author_session | parent_agent | assignee | approver | person | author | session) echo skip ;;
+    # A session or a person is no project's node, but a list a filter by one names reads rows of
+    # the projects it worked in: a filter by a session is filled with a session of the project
+    # alone, which the member must be answered as one nobody holds, and a filter by a person with
+    # a person of the project, whose answer the markers read. `session` is the session a caller
+    # acts as, no filter. The rest name no object.
+    author_session | parent_agent) echo project-session ;;
+    assignee | approver | person | author) echo person ;;
+    session) echo skip ;;
     advances | after | at | before | blocks | closed_before | closed_since | component | cursor | deployed | \
       download | exclude_issue | exclude_issues | from | ids | keywords_only | kind | label | limit | max_chars | \
       moved | offset | open | order | pinned | priority | q | rework | route_status | since | source_kind | state | \
@@ -682,6 +699,8 @@ sweep_queries() {
       comment) target=$comment missing=00000000-0000-4000-8000-000000000002 ;;
       repository) target=$proxy_repo missing=${proxy_repo%%/*}/no-such-repo strict=0 ;;
       title) target=$issue_title missing='zz no such words zz' strict=0 ;;
+      project-session) target=$dm_session missing=ses-nosuchsession ;;
+      person) target=$person missing=nobody@example.com strict=0 ;;
       # Both ends of a block link must name a document: the issue's spec and the project's own.
       document-refs) [ -z "$issue" ] || [ -z "$pdoc_slug" ] || [ -z "$ref_prefix" ] || target=$issue ;;
     esac
@@ -750,9 +769,33 @@ sweep_filled() {
   fi
 }
 
-# sweep_routes: every GET row of the route index, then the reads no row of it makes: the direct
-# message by the routes that read one message, the live socket's agent view of its session, and
-# the GitHub proxy, each read filled with the repository only the project's issues resolve to.
+# route_drift: the deployment's own route index (GET /api/v1, read as the run's own caller) may
+# list no GET route the route index the sweep walks (routes.txt) lacks: the sweep never called
+# one it does, so it cannot say that route kept the project from the member, and the run is
+# UNKNOWN, naming it. A test hook (a `_test` path) is mounted only under DISPATCH_TEST_HOOKS, which
+# no deployment sets. An index that lists no route at all says nothing either way.
+route_drift() {
+  local who=restricted listed
+  [ "$mode" != fills ] || who=full
+  call "$who" /api/v1 "$work/route-index"
+  if [ "$status" != 200 ] ||
+    ! jq -e '.routes | type == "array" and length > 0' "$work/route-index" >/dev/null 2>&1; then
+    unproven "GET /api/v1: the deployment's route index answered $status and listed no route, so the sweep cannot tell whether it lists a GET route routes.txt lacks"
+    return
+  fi
+  jq -r '.routes[] | select(.method == "GET") | .path | select(type == "string")' "$work/route-index" |
+    sort -u >"$work/listed-routes"
+  awk '$1 == "GET" { print $2 }' "$routes" | sort -u >"$work/swept-routes"
+  comm -23 "$work/listed-routes" "$work/swept-routes" | grep -v -e '/_test/' -e '/_test$' >"$work/unswept-routes"
+  while IFS= read -r listed; do
+    unproven "GET $listed: the deployment lists it and the route index routes.txt does not, so the sweep did not call it"
+  done <"$work/unswept-routes"
+}
+
+# sweep_routes: every GET row of the route index, held to the deployment's own (route_drift), then
+# the reads no row of it makes: the direct message by the routes that read one message, the live
+# socket's agent view of its session, and the GitHub proxy, each read filled with the repository
+# only the project's issues resolve to.
 sweep_routes() {
   local method pattern suffix shape path proxy_sha=0123456789abcdef0123456789abcdef01234567
   # Each GET path's query parameters, from the API document, one `path param` line each.
@@ -773,6 +816,7 @@ sweep_routes() {
     esac
   done <"$routes"
   [ "$rows" -gt 0 ] || unknown "the route index $routes holds no GET row"
+  route_drift
   for suffix in '' /blocks; do
     if [ -z "$dm_message" ]; then
       not_filled "GET /api/v1/messages/{id}$suffix (a direct message)" "the lookup found no direct message the full member reads"

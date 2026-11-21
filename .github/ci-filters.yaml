@@ -2061,6 +2061,7 @@ dispatch_project_access:
   - 'packages/envoy/**'
   - 'packages/dispatch/e2e/**'
   - 'packages/contracts/**'
+  - 'packages/test-fixtures/src/**'
   - 'scripts/e2e/lib/two-builds.sh'
   - 'scripts/e2e/lib/rig.sh'
   - 'scripts/e2e/lib/loopback-dsn.sh'

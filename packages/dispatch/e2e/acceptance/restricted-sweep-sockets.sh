@@ -49,7 +49,7 @@ doc_socket() {
     masked "$work/doc-body" "$doc" >"$work/doc-refusal" || unknown 'could not mask the document refusal'
     marker=$(marker_in "$work/doc-refusal")
     if [ -n "$marker" ]; then
-      fail "/ws/doc/{room}: the refusal holds $marker, a row of $project: $answer"
+      fail "/ws/doc/{room}: the refusal holds $(shown "$marker"), a row of $project"
     else
       case $answer in
         'denied '* | 'http 403 '* | 'http 404 '*) printf 'ok      /ws/doc/{room}: %s (control: admitted to their own document)\n' "$answer" ;;
@@ -118,13 +118,13 @@ live_socket() {
   if [ "$mode" = one ] && { [ ! -e "$work/ready-full" ] || ! alive "$watcher_full"; }; then
     live_result="the full member's feed did not stay subscribed: it was sent $(frames_of "$work/live-full")"
   elif grep -q '^closed refused ' "$work/live-restricted"; then
-    live_result="the member's events subscription was refused: $(head_of "$work/live-restricted")"
+    live_result="the member's events subscription was refused: $(frames_of "$work/live-restricted")"
   elif [ ! -e "$work/ready-restricted" ] && alive "$watcher_restricted"; then
     live_result="the member's feed did not start in 30 s"
   elif [ -e "$work/ready-restricted" ] && ! alive "$watcher_restricted"; then
     live_result="the member's feed ended before the observation window started"
   elif [ ! -e "$work/ready-restricted" ] && ! grep -E -q '^http (403|404) ' "$work/live-restricted"; then
-    live_result="the member's probe ended without subscribing or refusing the upgrade: $(head_of "$work/live-restricted")"
+    live_result="the member's probe ended without subscribing or refusing the upgrade: $(frames_of "$work/live-restricted")"
   elif [ "$mode" = one ]; then
     live_writes
   fi
@@ -139,7 +139,7 @@ live_socket() {
       post_as restricted "/api/v1/agents/$(uri "$member_session")/messages" "$work/own-message.json"
       own_message=$posted
       [ -n "$own_message" ] ||
-        live_result="the member's direct message to their own session $member_session answered $status: $(head_of "$work/body")"
+        live_result="the member's direct message to their own session $member_session answered $status"
     fi
   fi
   if [ -z "$live_result" ]; then
@@ -193,9 +193,9 @@ live_socket() {
   marker=$(marker_in "$work/live-body")
   first_line=$(head -n 1 "$work/live-restricted")
   if [ -n "$marker" ] && [ -n "$refused_upgrade" ]; then
-    fail "/ws/live: the member's refused upgrade holds $marker, a row of $project: $(head_of "$work/live-restricted")"
+    fail "/ws/live: the member's refused upgrade holds $(shown "$marker"), a row of $project"
   elif [ -n "$marker" ]; then
-    fail "/ws/live: the member is sent an event holding $marker, of $project: $(head_of "$work/live-restricted")"
+    fail "/ws/live: the member is sent an event holding $(shown "$marker"), of $project"
   elif [ -n "$live_result" ]; then
     unproven "/ws/live: $live_result"
   elif [ "$mode" = one ] && { [ "$full_exit" != 0 ] || ! jq -s -e --arg c "$written" --arg m "$written_message" '
@@ -205,16 +205,16 @@ live_socket() {
     and any(.[]; .type == "event" and any(.. | strings; . == $m))' "$work/live-full" >/dev/null 2>&1; }; then
     unproven "/ws/live: the control did not hold: the full member's feed did not cover $live_seconds s and receive comment $written and direct message $written_message: it was sent $(frames_of "$work/live-full")"
   elif [ "$restricted_exit" != 0 ]; then
-    unproven "/ws/live: the member's feed gave no answer: $(head_of "$work/live-restricted")"
+    unproven "/ws/live: the member's feed gave no answer: $(frames_of "$work/live-restricted")"
   else
     case $first_line in
       'http 403 '* | 'http 404 '*) printf 'ok      /ws/live: the member'"'"'s upgrade is refused: %s\n' "$(head_of "$work/live-restricted")" ;;
-      'http '*) unproven "/ws/live: the member's upgrade is answered $(head_of "$work/live-restricted")" ;;
+      'http '*) unproven "/ws/live: the member's upgrade is answered $(frames_of "$work/live-restricted")" ;;
       *)
         if [ ! -e "$work/ready-restricted" ] || ! jq -s -e '
           length > 0 and .[0].type == "events_start"
           and all(.[]; type == "object" and (.type | type == "string"))' "$work/live-restricted" >/dev/null 2>&1; then
-          unproven "/ws/live: the member's feed did not cover the observation window: $(head_of "$work/live-restricted")"
+          unproven "/ws/live: the member's feed did not cover the observation window: $(frames_of "$work/live-restricted")"
         elif ! grep -F -q -e "$own_message" "$work/live-restricted"; then
           unproven "/ws/live: the control did not hold: the member was not sent their own direct message to $member_session"
         else
@@ -245,7 +245,7 @@ own_message_read() {
   if [ "$status" = 200 ] && grep -F -q -e "$1" "$work/body"; then
     printf 'ok      GET /api/v1/messages/{id} (the member'"'"'s own direct message): 200 (control)\n'
   else
-    unproven "GET /api/v1/messages/{id} (the member's own direct message): the control did not hold: the member is answered $status for their own direct message: $(head_of "$work/body")"
+    unproven "GET /api/v1/messages/{id} (the member's own direct message): the control did not hold: the member is answered $status for their own direct message"
   fi
 }
 

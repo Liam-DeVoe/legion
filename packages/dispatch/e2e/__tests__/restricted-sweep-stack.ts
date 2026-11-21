@@ -16,11 +16,13 @@
  *  - `keyed` serves this checkout's build too, and sweeps a target project keyed as the route
  *    index's example issue key.
  *
- *  Every write goes through the server's routes as a person or an agent makes it, but two the
+ *  Every write goes through the server's routes as a person or an agent makes it, but three the
  *  stack has no route for: bob's member kind, which the outside sign-in writes and this stack does
- *  not have, and a merged pull request of TGT's repository, which the delivery reconcile writes
- *  from GitHub. Both are written as those writers write them (`restricted-member.e2e.ts` and
- *  `acceptance/project-access.sh` write the same two). */
+ *  not have; a merged pull request of TGT's repository, which the delivery reconcile writes from
+ *  GitHub; and the project bob's own session worked in, which the event log records only for a
+ *  session a broker-issued token proved, and this stack's agents hold the shared bearer. Each is
+ *  written as its writer writes it (`restricted-member.e2e.ts` and `acceptance/project-access.sh`
+ *  write the first two, `events.queueSessionProject` the third). */
 
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,8 +40,9 @@ const bob = "bob@outside.example";
 const carol = "carol@example.com";
 /** The agent bearer `e2e/run-server.sh` pins. */
 const sharedToken = "e2e-token";
-/** The session the seed's agent writes name, and the one the fake Envoy lists. */
-const worker = "ses-tgt-worker";
+/** The session the seed's agent writes name, and the one the fake Envoy lists: a session uuid, as
+ *  Envoy names one, which the live socket's agent view of it reads. */
+export const worker = "5e55107a-0c0a-4f00-8b2c-7a26e7000001";
 /** bob's own session, in OWN, which the live check's control message goes to. */
 const ownSession = "ses-own-worker";
 /** How long one sweep may run before it is stopped: a run against the local stack takes about 40 s
@@ -430,12 +433,19 @@ async function seed(
     body: "An agent remark.",
     actor,
   });
-  // bob's own session works in OWN: an agent comment places it there, as one places the worker in
-  // the target, so bob sees it and the live check's control message to it reaches bob's feed.
+  // bob's own session works in OWN: it comments on OWN's issue, and the project it acted in is
+  // recorded as the event log records it for a proved session, so bob sees the session and the
+  // live check's control message to it reaches bob's feed. A build that records no session's
+  // projects (the control's, which holds no read check) has no table to write it to.
   await send(origin, agent, "POST", "/api/v1/issues/OWN-1/comments", 201, {
     body: "An agent remark of bob's own session.",
     actor: { kind: "session", id: ownSession },
   });
+  await sqlAt(database, [
+    "do $$ begin if to_regclass('public.session_projects') is not null then " +
+      "execute 'insert into session_projects (session_id, project_key) values ($1, $2)' " +
+      `using '${ownSession}', 'OWN'; end if; end $$`,
+  ]);
   await send(origin, asCarol, "POST", `/api/v1/issues/${first}/asks`, 201, {
     question: "Is this the right plan?",
   });

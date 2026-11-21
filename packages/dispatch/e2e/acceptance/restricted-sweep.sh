@@ -175,14 +175,17 @@
 #   FAIL     exit 1: the member was answered a row of the project, admitted to its document's
 #            room, sent an event of it or more of its session's conversation than that no one
 #            answers for it, or a route held to a missing object's answer answered them otherwise
-#            for the project's. The verdict names the first route that did.
+#            for the project's. The verdict names the first route that did. A FAIL line names the
+#            route, the status and the row of the project the answer held (a key or an id; the
+#            issue's title by its issue), never the answer's text: a public runner's log is public.
 #   UNKNOWN  exit 2: anything that proved nothing, which is never a pass: an input refused, a
 #            tool missing, an identity that is not what it must be, a kind of object the lookup
 #            did not find, a row it could not fill, an answer no rule judges (401, 429, a 5xx, no
 #            answer) to either member, no row that could fail, a GitHub proxy read or a row of a
 #            route held to a missing object's answer that could not fail, fills a runner cannot
-#            read, a subscription the server ended or refused, or a socket control that did not
-#            hold.
+#            read, a subscription the server ended or refused, a socket control that did not
+#            hold, or a GET route the deployment's own index (GET /api/v1) lists and routes.txt
+#            lacks, which the sweep never called.
 #   FILLS    exit 0 (fills mode): the file is whole, and where it is.
 #   WRITER   exit 0 when every write was delivered, 1 when one was not (writer mode).
 #
@@ -404,7 +407,7 @@ is_count "$call_seconds" && [ "$call_seconds" -gt 0 ] || unknown "SWEEP_CALL_SEC
 pace=${SWEEP_PACE_SECONDS:-0.1}
 is_seconds "$pace" || unknown "SWEEP_PACE_SECONDS must be a number of seconds: $pace"
 
-for tool in curl jq bun mktemp sed awk grep sort; do
+for tool in curl jq bun mktemp sed awk grep sort comm; do
   command -v "$tool" >/dev/null 2>&1 || unknown "$tool is not on PATH"
 done
 curl_version=$(curl --version 2>/dev/null | awk 'NR == 1 { print $2 }')

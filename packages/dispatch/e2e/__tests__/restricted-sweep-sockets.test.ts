@@ -33,9 +33,7 @@ describe.skipIf(withoutTools)("the document socket", () => {
         feed: { doc: true, docRefusal: { error: "refused", project: "TGT" } },
         rows: ["/api/v1/whoami"],
       });
-      expect(failures(stdout)).toEqual([
-        `/ws/doc/{room}: the refusal holds TGT, a row of TGT: http 404 {"error":"refused","project":"TGT"}`,
-      ]);
+      expect(failures(stdout)).toEqual(["/ws/doc/{room}: the refusal holds TGT, a row of TGT"]);
       expect(code).toBe(1);
     },
     rowLimit("short")
@@ -65,7 +63,7 @@ describe.skipIf(withoutTools)("the live socket's event feed", () => {
         rows: ["/api/v1/whoami"],
       });
       expect(failures(stdout)).toEqual([
-        `/ws/live: the member's refused upgrade holds TGT, a row of TGT: http 404 {"error":"refused","project":"TGT"}`,
+        "/ws/live: the member's refused upgrade holds TGT, a row of TGT",
       ]);
       expect(code).toBe(1);
     },
@@ -199,7 +197,7 @@ describe.skipIf(withoutTools)("the live socket's event feed", () => {
       expect(found).toHaveLength(1);
       expect(found[0]).toMatch(
         new RegExp(
-          `^/ws/live: the member is sent an event holding ([0-9a-f-]{36}|${tgt.session}), of TGT: `
+          `^/ws/live: the member is sent an event holding ([0-9a-f-]{36}|${tgt.session}), of TGT$`
         )
       );
       expect(code).toBe(1);

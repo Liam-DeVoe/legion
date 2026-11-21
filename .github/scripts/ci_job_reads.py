@@ -3048,12 +3048,12 @@ GATES = [
          "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated API "
          "document every committed recording's body is held to, which this job's test step runs"),
         (f"{ENVOY}/internal/dispatch/api/testdata/routes.txt",
-         "packages/dispatch/e2e/__tests__/restricted-sweep.test.ts:42-50 (the new URL at :43) and "
-         "restricted-sweep-judging.test.ts:33-41 (the new URL at :34), and e2e/acceptance/restricted-sweep.sh, "
+         "packages/dispatch/e2e/__tests__/restricted-sweep-index.ts:14-16 (the new URL at :15), which "
+         "restricted-sweep.test.ts and restricted-sweep-judging.test.ts import, and e2e/acceptance/restricted-sweep.sh, "
          "which both run: the route index the sweep walks row by row"),
         (f"{ENVOY}/internal/dispatch/githubapi/proxy.go",
-         "packages/dispatch/e2e/__tests__/restricted-sweep.test.ts:305-307, the new URL at :306: the GitHub "
-         "proxy's readable expression, which the sweep's proxy reads are held to"),
+         "packages/dispatch/e2e/__tests__/restricted-sweep-index.ts:18-20, the new URL at :19, which restricted-sweep.test.ts "
+         "imports: the GitHub proxy's readable expression, which the sweep's proxy reads are held to"),
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("scripts/e2e/lib/process-tree.sh", "packages/dispatch/e2e/acceptance/replace-blocks.sh:109 sources it, and "
@@ -3641,6 +3641,8 @@ GATES = [
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh sources it"),
         ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:143 runs it (start_held), which two-builds.sh's "
                                          "start_server holds each Dispatch server's port through"),
+        (TEST_FIXTURES_SRC, "packages/dispatch/e2e/__tests__/restricted-sweep.test.ts and restricted-sweep-fake.ts import "
+                            "@legion/test-fixtures, and the sweep's step runs restricted-sweep.test.ts"),
     ) + ceiling_reads(PROJECT_ACCESS) + setup_go(PROJECT_ACCESS, f"{ENVOY}/go.mod")
       + bun_job(PROJECT_ACCESS) + CI_SELF),
 

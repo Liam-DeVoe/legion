@@ -40,7 +40,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         { rows: ["/api/v1/artifacts/{id}/asks"] }
       );
       expect(failures(stdout)).toEqual([
-        "GET /api/v1/artifacts/{id}/asks: the member is answered 200 for TGT's object, where a missing one is refused 404: []",
+        "GET /api/v1/artifacts/{id}/asks: the member is answered 200 for TGT's object, where a missing one is refused 404",
       ]);
       expect(stdout).toContain(
         "\nFAIL: 1 answers gave the member what TGT holds, the first: GET /api/v1/artifacts/{id}/asks: "
@@ -61,7 +61,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         { rows: ["/api/v1/issues/{key}/comments"] }
       );
       expect(failures(stdout)).toEqual([
-        `GET /api/v1/issues/{key}/comments: the member is answered 200 holding ${tgt.comment}, a row of TGT: [{"id":"${tgt.comment}"}]`,
+        `GET /api/v1/issues/{key}/comments: the member is answered 200 holding ${tgt.comment}, a row of TGT`,
       ]);
       expect(code).toBe(1);
     },
@@ -83,7 +83,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         { rows: ["/api/v1/artifacts/{id}/comments"] }
       );
       expect(failures(stdout)).toEqual([
-        `GET /api/v1/artifacts/{id}/comments: the member is answered 400 for TGT's object, otherwise than a missing one answered 404: ${JSON.stringify(refusal)}`,
+        "GET /api/v1/artifacts/{id}/comments: the member is answered 400 for TGT's object, otherwise than a missing one answered 404",
       ]);
       expect(code).toBe(1);
     },
@@ -98,7 +98,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         { rows: ["/api/v1/inbox"] }
       );
       expect(failures(stdout)).toEqual([
-        `GET /api/v1/inbox: the member is answered 200 holding ${tgt.ask}, a row of TGT: [{"id":"${tgt.ask}","issue_key":"${tgt.issue}"}]`,
+        `GET /api/v1/inbox: the member is answered 200 holding ${tgt.ask}, a row of TGT`,
       ]);
       expect(code).toBe(1);
     },
@@ -122,7 +122,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
       };
       const { stdout } = await sweep([at("/api/v1", 200, index)], { rows: ["/api/v1"] });
       expect(failures(stdout)).toEqual([]);
-      expect(stdout).toContain("\nok      GET /api/v1: 200, no row of TGT (can fail)\n");
+      expect(stdout).toContain("\nok      GET /api/v1: 200, no row of TGT (blind)\n");
     },
     rowLimit("short")
   );
@@ -184,7 +184,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         rows: ["/api/v1/inbox"],
       });
       expect(failures(stdout)).toEqual([
-        `GET /api/v1/inbox: the member is answered 200 holding ${marker}, a row of TGT: ${JSON.stringify(item)}`,
+        `GET /api/v1/inbox: the member is answered 200 holding ${marker}, a row of TGT`,
       ]);
       expect(code).toBe(1);
     },
@@ -243,7 +243,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         { rows: ["/api/v1/agents"] }
       );
       expect(failures(stdout)).toEqual([
-        `GET /api/v1/agents: the member is answered 200 holding ${tgt.session}, a row of TGT: [{"session_id":"${tgt.session}","title":"Works on TGT"}]`,
+        `GET /api/v1/agents: the member is answered 200 holding ${tgt.session}, a row of TGT`,
       ]);
       expect(code).toBe(1);
     },
@@ -274,7 +274,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         { rows: ["/api/v1/search"] }
       );
       expect(failures(stdout)).toEqual([
-        `GET /api/v1/search?q=: the member is answered 200 holding TGT, a row of TGT: {"took_ms":3,"results":[{"kind":"document","project":"TGT"}]}`,
+        "GET /api/v1/search?q=: the member is answered 200 holding TGT, a row of TGT",
       ]);
       expect(code).toBe(1);
     },
@@ -292,7 +292,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         { rows: ["/api/v1/agents/{session_id}/messages"] }
       );
       expect(failures(stdout)).toEqual([
-        `GET /api/v1/agents/{session_id}/messages: the member is answered 200 holding ${tgt.directMessage}, a row of TGT: ${JSON.stringify(listed)}`,
+        `GET /api/v1/agents/{session_id}/messages: the member is answered 200 holding ${tgt.directMessage}, a row of TGT`,
       ]);
       expect(code).toBe(1);
     },
@@ -328,7 +328,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         { rows: ["/api/v1/whoami"] }
       );
       expect(failures(stdout)).toEqual([
-        `GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: the member is answered 200 for TGT's repository, where one the App is not installed on is answered 503: ${JSON.stringify(pull)}`,
+        "GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: the member is answered 200 for TGT's repository, where one the App is not installed on is answered 503",
       ]);
       expect(code).toBe(1);
     },
@@ -450,7 +450,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
       });
       expect(failures(stdout)).toEqual([]);
       expect(stdout).toContain(
-        `\nUNKNOWN GET ${pulls}: the member is answered ${status}, and ${status} for a repository the App is not installed on, which no rule judges: `
+        `\nUNKNOWN GET ${pulls}: the member is answered ${status}, and ${status} for a repository the App is not installed on, which no rule judges\n`
       );
       expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
       expect(code).toBe(2);
@@ -486,6 +486,82 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     rowLimit("short")
   );
 
+  // A list filtered by a session reads what that session wrote: filtered by the project's session
+  // alone, the member must be answered as for a session nobody holds.
+  test(
+    "a list filtered by the project's session that answers the member a row of the project is a FAIL",
+    async () => {
+      const { code, stdout } = await sweep(
+        [at(`/api/v1/asks/open?author_session=${tgt.session}`, 200, [{ id: tgt.ask }])],
+        { rows: ["/api/v1/asks/open"] }
+      );
+      expect(failures(stdout)).toEqual([
+        `GET /api/v1/asks/open?author_session=: the member is answered 200 holding ${tgt.ask}, a row of TGT`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the row above: the same filter answered as for a session nobody holds.
+  test(
+    "a list filtered by the project's session answered as for a session nobody holds is no FAIL, and can fail",
+    async () => {
+      const { stdout } = await sweep([], { rows: ["/api/v1/asks/open"] });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain("\nok      GET /api/v1/asks/open?author_session=: 404 (can fail)\n");
+    },
+    rowLimit("short")
+  );
+
+  // The deployment's own route index lists a GET route the route index the sweep walks lacks:
+  // the sweep never called it, so its silence there proves nothing. A test hook is no deployment's.
+  test(
+    "a GET route the deployment lists and routes.txt lacks leaves the run UNKNOWN, naming it",
+    async () => {
+      const index = {
+        routes: [
+          { method: "GET", path: "/api/v1/whoami" },
+          { method: "GET", path: "/api/v1/a-route-of-a-newer-server" },
+          { method: "POST", path: "/api/v1/a-write-of-a-newer-server" },
+          { method: "GET", path: "/api/v1/artifacts/_test/rooms" },
+        ],
+      };
+      const { code, stdout } = await sweep([at("/api/v1", 200, index)], {
+        ...served,
+        rows: ["/api/v1/whoami"],
+      });
+      expect(stdout.split("\n").filter((line) => line.startsWith("UNKNOWN GET /api/v1/a"))).toEqual(
+        [
+          "UNKNOWN GET /api/v1/a-route-of-a-newer-server: the deployment lists it and the route index routes.txt does not, so the sweep did not call it",
+        ]
+      );
+      expect(stdout).not.toContain("_test/rooms: the deployment lists it");
+      expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
+  // A public runner's log is public: a FAIL names the route, the status and the row of the
+  // project the answer held, and never copies the answer, whose text the leak would republish.
+  test(
+    "a FAIL names the row of the project the member was answered, and none of the answer's text",
+    async () => {
+      const words = "words only a member of TGT may read";
+      const { code, stdout } = await sweep(
+        [at("/api/v1/inbox", 200, [{ issue_key: tgt.issue, body: words }])],
+        { rows: ["/api/v1/inbox"] }
+      );
+      expect(failures(stdout)).toEqual([
+        `GET /api/v1/inbox: the member is answered 200 holding ${tgt.issue}, a row of TGT`,
+      ]);
+      expect(stdout).not.toContain(words);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
   // GET /api/v1/github/app-installation/{owner}/{repo} answers a repository its caller may not see
   // as one the App is not installed on. Filled with TGT's repository, which the App is installed
   // on, the member must be answered exactly as for a missing repository; where the App is installed
@@ -499,7 +575,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         { ...served, rows: [appInstallation] }
       );
       expect(failures(stdout)).toEqual([
-        `GET ${appInstallation}: the member is answered 200 {"installed":true} for TGT's object, where a missing one is answered 200 {"installed":false}`,
+        `GET ${appInstallation}: the member is answered 200 for TGT's object, otherwise than a missing one answered 200`,
       ]);
       expect(code).toBe(1);
     },

@@ -950,7 +950,13 @@ repository only its issues resolve to. It also asks one question of the project 
 file `SWEEP_CONVERSATION_FILE` names, since no route lists those either. Then every GET row of the
 route index (`packages/envoy/internal/dispatch/api/testdata/routes.txt`) is called as the member,
 its wildcards filled with those objects, and each list once more for each of its query parameters
-that names a project's object (read from the API document). A direct message to a session that
+that names a project's object (read from the API document): a filter by a session
+(`author_session`, `parent_agent`) with a session of the project alone, answered to the member as
+one nobody holds, and a filter by a person (`assignee`, `author`, `approver`, `person`) with a
+person of the project, whose answer the markers read; `session`, the session a caller acts as, is
+no filter. A GET route the deployment's own index (`GET /api/v1`) lists and `routes.txt` lacks was
+never called, and leaves the run `UNKNOWN`, naming it; a test hook (a `_test` path) is no
+deployment's. A direct message to a session that
 worked in the project alone is read by its own routes too, the live socket's agent view of that
 session must answer the member as a session no one answers for, and every read the GitHub proxy
 forwards (`/api/github/rest/`, `githubapi/proxy.go`'s `readable`) is called with the repository
@@ -1035,8 +1041,10 @@ side, a rate limit or an outage, is no answer. `PASS` (exit 0) needs every GET r
 called, every kind of object found, at least one row that can fail and every socket control held;
 `FAIL` (exit 1) names each answer that gave the member a row of the project and, in its verdict,
 the first; everything that proved nothing, a project the full member finds nothing of among them,
-is `UNKNOWN` (exit 2). `SWEEP_PACE_SECONDS` (0.1 by default) pauses before each request, which
-keeps a run far under an edge's per-address request limit.
+is `UNKNOWN` (exit 2). A `FAIL` line names the route, the status and the row of the project the
+answer held (a key or an id; the issue's title by its issue), never the answer's text, since a
+public runner's log is public. `SWEEP_PACE_SECONDS` (0.1 by default) pauses before each request,
+which keeps a run far under an edge's per-address request limit.
 `e2e/__tests__/restricted-sweep-judging.test.ts`, `-sockets.test.ts` and `-split.test.ts` hold each
 judging rule alone, against a fake Dispatch (`restricted-sweep-fake.ts`) that keeps every route
 from the member but the one a row plants a leak in, and hold the sweep to calling every GET row,

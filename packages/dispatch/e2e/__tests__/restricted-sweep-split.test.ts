@@ -156,7 +156,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
         at(`/api/v1/issues/${tgt.issue}/comments`, 200, [{ id: tgt.comment }]),
       ]);
       expect(failures(stdout)).toEqual([
-        `GET /api/v1/issues/{key}/comments: the member is answered 200 holding ${tgt.comment}, a row of TGT: [{"id":"${tgt.comment}"}]`,
+        `GET /api/v1/issues/{key}/comments: the member is answered 200 holding ${tgt.comment}, a row of TGT`,
       ]);
       expect(code).toBe(1);
     },
@@ -173,7 +173,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
         at(`/api/v1/github/app-installation/${tgt.repository}`, 200, { installed: true }),
       ]);
       expect(failures(stdout)).toEqual([
-        `GET ${appInstallation}: the member is answered 200 {"installed":true} for TGT's object, where a missing one is answered 200 {"installed":false}`,
+        `GET ${appInstallation}: the member is answered 200 for TGT's object, otherwise than a missing one answered 200`,
       ]);
       expect(code).toBe(1);
     },
@@ -197,7 +197,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       ]);
       expect(failures(stdout)).toEqual([]);
       expect(stdout).toContain(
-        "\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: the member is answered 503, and 503 for a repository the App is not installed on, which no rule judges: "
+        "\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: the member is answered 503, and 503 for a repository the App is not installed on, which no rule judges\n"
       );
       expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
       expect(code).toBe(2);
