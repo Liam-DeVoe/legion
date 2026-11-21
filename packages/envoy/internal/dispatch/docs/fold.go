@@ -204,16 +204,10 @@ func runsThrough(version persistence.Version, updates updateSource) ([][]byte, e
 
 // runsDocument is runs applied in order to one document of maxPending pending items, as a room
 // decodes its load (decodeStoredState), under the load grant ctx carries or one of its own weighed
-// on the runs' bytes and the structs their headers declare (holdLoad, copyWeight,
-// declaredStructs), read before this decode builds any of them. A run that does not decode is
-// ErrDocumentUnloadable.
+// on the runs' bytes and the structs their headers declare (holdLoad, storedCopyWeight), read
+// before this decode builds any of them. A run that does not decode is ErrDocumentUnloadable.
 func runsDocument(ctx context.Context, runs [][]byte, maxPending int) (*crdt.Doc, error) {
-	var bytes, structs int64
-	for _, run := range runs {
-		bytes += int64(len(run))
-		structs += int64(declaredStructs(run))
-	}
-	release, err := holdLoad(ctx, copyWeight(bytes, structs))
+	release, err := holdLoad(ctx, storedCopyWeight(runs...))
 	if err != nil {
 		return nil, err
 	}
@@ -280,14 +274,18 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 		}
 		return nil
 	}
-	cover := func(structs int64) error {
+	cover := func(updates [][]byte) error {
 		if rows <= 1 {
 			return nil
+		}
+		var structs int64
+		for _, update := range updates {
+			structs += int64(declaredStructs(update))
 		}
 		return slot.take(ctx, copyWeight(bytes, structs))
 	}
 	if bytes > p.foldBuffer() {
-		if err := cover(0); err != nil {
+		if err := cover(nil); err != nil {
 			return err
 		}
 		if p.beforeFold != nil {
@@ -314,13 +312,7 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 	if err := commit(); err != nil {
 		return err
 	}
-	var structs int64
-	if rows > 1 {
-		for _, update := range updates {
-			structs += int64(declaredStructs(update))
-		}
-	}
-	if err := cover(structs); err != nil {
+	if err := cover(updates); err != nil {
 		return err
 	}
 	if p.beforeFold != nil {

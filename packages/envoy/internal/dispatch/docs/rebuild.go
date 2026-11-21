@@ -723,7 +723,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 // slot of the pod's load concurrency, whose wait ends with ctx, held here rather than by the read,
 // since the check runs inside it, and given back once the history is the rebuild's.
 func (s *Service) rebuildSource(ctx context.Context, artifactID, decided string) (*crdt.Doc, persistence.Version, string, map[crdt.ClientID]uint64, error) {
-	ctx, _, done := withLoadSlot(ctx)
+	ctx, slot, done := withLoadSlot(ctx)
 	defer done()
 	read, err := loadDecodedHistory(ctx, s.persistence, artifactID, s.maxPendingItems, nil)
 	var unapplied *unappliedHistory
@@ -748,9 +748,10 @@ func (s *Service) rebuildSource(ctx context.Context, artifactID, decided string)
 	if parked := s.parkedPastRoomCaps(history); parked != nil {
 		return history, read.loaded.Version, parked.Error(), historyClients(history), nil
 	}
-	// The grant nearACap takes is the stored history's weight, its bytes and the structs its
-	// headers declare (storedCopyWeight), which loadDecodedHistory took on this same slot.
-	why, near, err := nearACap(ctx, history, storedCopyWeight(read.loaded.Update), int64(len(read.loaded.Update)))
+	// The grant loadDecodedHistory took on this slot, the stored history's weight - its bytes and
+	// the structs its headers declare (storedCopyWeight) - already covers the check's decode, so
+	// nearACap is handed what the slot holds and takes nothing more.
+	why, near, err := nearACap(ctx, history, slot.bytes, int64(len(read.loaded.Update)))
 	if err != nil {
 		return nil, 0, "", nil, fmt.Errorf("%w: weigh document %s before its rebuild: %v", ErrServiceUnavailable, artifactID, err)
 	}

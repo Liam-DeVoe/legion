@@ -89,11 +89,6 @@ const roomCopies = 2
 // that backlog holds of its heap. The term charges a parked struct in both copies where only the
 // live one holds it - the replica applies only what each commit integrated
 // (renderedReplica.takeLocked) - which errs on the side of the budget.
-//
-// A caller that can reach no document passes no structs, and zero means the state term alone
-// decides: what a fold passes for rows it has not read yet (foldRead). A site that holds the bytes
-// of a stored history reads the structs they declare from their headers before anything decodes
-// them instead (storedCopyWeight).
 func roomWeight(stateBytes, structs int64) int64 {
 	return max(stateBytes*bytesOfHeapAStateByte, structs*bytesOfHeapAStruct) * roomCopies
 }
@@ -203,19 +198,30 @@ func roomChargeWeight(stateBytes, structs, parkedRanges int64) int64 {
 // figure the slot was sized from, the heaviest whole-document decode measured and more
 // (loadSlotBytes), and a copy capped at it can always be admitted on its own, however heavy the
 // document, since the pool is never smaller than one slot (newLoadSlots).
+//
+// A caller that can reach no document passes no structs, and zero means the state term alone
+// decides: what a fold passes for rows it has not read yet (foldRead). A site that holds the bytes
+// of a stored history reads the structs they declare from their headers before anything decodes
+// them instead (storedCopyWeight).
 func copyWeight(stateBytes, structs int64) int64 {
 	return min(max(max(stateBytes*bytesOfHeapAStateByte, structs*bytesOfHeapAStruct), 1), loadSlotBytes)
 }
 
-// storedCopyWeight is what one copy decoded from state, a V1 update of stored history or a whole
-// encoded state, takes of the pod's load concurrency: its bytes and the structs its client groups
-// declare at copyWeight (declaredStructs), read from the headers alone before anything decodes it.
-// The declared count is never below what the decode builds - it reads every struct a header
-// declares, and merges runs only once they are read - so a struct-dense history is weighed by its
-// structs, where its bytes alone were weighed before: a 3,583,504-byte history of 200,000 empty
-// paragraphs decodes into a copy of 125,094,000 bytes of heap, 34.91 a byte of its state, which its
-// bytes alone granted 60,919,568 and its 200,000 declared structs grant 126,000,000
+// storedCopyWeight is what one copy decoded from states takes of the pod's load concurrency: a V1
+// update of stored history or a whole encoded state, or a log's runs applied in order to one
+// document (runsDocument), weighed at copyWeight on their bytes and the structs their client
+// groups declare (declaredStructs), read from the headers alone before anything decodes them. The
+// declared count is never below what the decode builds - it reads every struct a header declares,
+// and merges runs only once they are read - so a struct-dense history is weighed by its structs,
+// where its bytes alone were weighed before: a 3,583,504-byte history of 200,000 empty paragraphs
+// decodes into a copy of 125,094,000 bytes of heap, 34.91 a byte of its state, which its bytes
+// alone granted 60,919,568 and its 200,000 declared structs grant 126,000,000
 // (TestADecodeOfStoredStateIsGrantedWhatItsCopyHolds).
-func storedCopyWeight(state []byte) int64 {
-	return copyWeight(int64(len(state)), int64(declaredStructs(state)))
+func storedCopyWeight(states ...[]byte) int64 {
+	var bytes, structs int64
+	for _, state := range states {
+		bytes += int64(len(state))
+		structs += int64(declaredStructs(state))
+	}
+	return copyWeight(bytes, structs)
 }

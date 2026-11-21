@@ -117,10 +117,9 @@ body: |-
     counts against 64 claims a socket and 64 a person a document a UTC day, past either of which the
     update is refused the same way. An id the stored history names may be claimed only by a person
     who edited the document after the history first named it, and only for 30 days after the
-    database first served
-    this build. An edit under an id another person claimed, at clocks the room holds with different
-    content, is refused rather than dropped in silence, where one update carries such edits under at
-    most 4 claimed ids.
+    database first served this build. An edit under an id another person claimed, at clocks the
+    room holds with different content, is refused rather than dropped in silence, where one update
+    carries such edits under at most 4 claimed ids.
 
     The open documents are charged a memory budget under the Go soft memory limit the server now
     sets at boot, 90 per cent of its container's limit, so the collector works harder as the heap
@@ -215,9 +214,8 @@ body: |-
     client id the room allows, and answers a frame only once its commit is stored. At this pin a
     keystroke into a document of 40,000 clients no longer walks every client for that check, the
     check is told which of its runs judges a drain, the room keeps no record of a server write
-    as the sender of what that write parked, an unsubscribed callback keeps nothing it captured
-    reachable, and an apply's owner can give back what it holds for the apply before the commit's
-    observers run. It carries the three fixes of `v1.55.1-theorem.14` as well: the record of who
+    as the sender of what that write parked, and an unsubscribed callback keeps nothing it captured
+    reachable. It carries the three fixes of `v1.55.1-theorem.14` as well: the record of who
     parked each struct holds only what the room's queue holds, a parked string a merge cuts at its
     front keeps only its own part, and a sync reply carrying a sync step 1 is dropped, rather than
     answered outside the bound on a first sync's answer and relayed to every other browser.

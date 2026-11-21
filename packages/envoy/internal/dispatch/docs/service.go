@@ -832,11 +832,8 @@ func (s *Service) cancelSuppressedPersistence(room string, slot *suppressSlot) {
 		return
 	}
 	slots := s.suppressed[room]
-	for index, candidate := range slots {
-		if candidate == slot {
-			slots = slices.Delete(slots, index, index+1)
-			break
-		}
+	if index := slices.Index(slots, slot); index >= 0 {
+		slots = slices.Delete(slots, index, index+1)
 	}
 	if len(slots) == 0 {
 		delete(s.suppressed, room)

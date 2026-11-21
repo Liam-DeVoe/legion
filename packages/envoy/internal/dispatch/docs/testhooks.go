@@ -352,7 +352,7 @@ func (s *Service) NearDecodeCapForTest(ctx context.Context, artifactID string) e
 	if structs := structCeiling(decoded.doc); structs != target {
 		return fmt.Errorf("document %s's history decodes to %d structs with the deleted characters, want %d", artifactID, structs, target)
 	}
-	if why, near, err := nearACap(ctx, decoded.doc, copyWeight(int64(len(stored.Update)), 0), int64(len(stored.Update))); err != nil || !near {
+	if why, near, err := nearACap(ctx, decoded.doc, storedCopyWeight(stored.Update), int64(len(stored.Update))); err != nil || !near {
 		return fmt.Errorf("document %s's history is not near a cap with the deleted characters (%q, %v)", artifactID, why, err)
 	}
 	return nil

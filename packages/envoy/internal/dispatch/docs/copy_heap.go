@@ -126,6 +126,18 @@ func heavyUpdateWeight(update []byte) (weight int64, heavy bool) {
 	return copyWeight(int64(len(update)), int64(declared)), true
 }
 
+// holdUpdateLoad holds what a decode of update, a browser's, takes of the pod's load concurrency
+// as heavyUpdateWeight judges it, and returns what ends the hold: a heavy update's copy cost,
+// waited for without a deadline (holdServerLoad), and nothing for a lighter one. A lighter
+// update's decode never touches the pool, since even a take of nothing waits while takers are
+// queued for it (semaphore.Weighted.TryAcquire), and a keystroke's decode must not.
+func holdUpdateLoad(ctx context.Context, update []byte) func() {
+	if weight, heavy := heavyUpdateWeight(update); heavy {
+		return holdServerLoad(ctx, weight)
+	}
+	return func() {}
+}
+
 // loadSlotsName is what the slots are logged as (logLoadSlot).
 const loadSlotsName = "load"
 
@@ -318,6 +330,14 @@ func (g *loadSlot) take(ctx context.Context, bytes int64) error {
 		g.slots.taken(held)
 	}
 	return nil
+}
+
+// raise makes g hold bytes more than it holds now, waiting within ctx as take does. The sum is
+// capped at one slot, as every copy's weight is (copyWeight): the pool may hold one slot alone,
+// and a take past it would never be admitted. A holder of nothing holds 0 bytes, so its raise is
+// its first take.
+func (g *loadSlot) raise(ctx context.Context, bytes int64) error {
+	return g.take(ctx, min(g.bytes+bytes, loadSlotBytes))
 }
 
 // acquire takes bytes of the pool for g, waiting within ctx and telling a test's hook as the wait

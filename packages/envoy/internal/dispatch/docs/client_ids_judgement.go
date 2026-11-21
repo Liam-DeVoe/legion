@@ -382,8 +382,8 @@ func (s *Service) settleClients(info websocket.PeerUpdateInfo, judged clientJudg
 	s.markLanded(info.Room, info.Doc, connection, judged.writesOwn, judged.marks)
 }
 
-// markParkedLanded marks, for socket, a browser connection whose parked frames a later commit of
-// the room landed - another browser's apply whose drain filled their gap, or a server write's -
+// markParkedLanded marks, for connection, a browser connection whose parked frames a later commit
+// of the room landed - another browser's apply whose drain filled their gap, or a server write's -
 // the rows of the ids those frames reached past the room (reached, parkedNeeds) that await the
 // socket's mark: its own, and each from mintedClientFloor up its updates showed are its person's
 // (socketClients.unmarked). The commit that landed them was no apply of the socket's, so its
@@ -393,27 +393,27 @@ func (s *Service) settleClients(info websocket.PeerUpdateInfo, judged clientJudg
 // could take while the stored history named the id. It runs once the room's store holds the
 // landing commit, and marks as settleClients does (markLanded). A socket that ended before the
 // landing is listed no longer (parkedWaits.note) and marks nothing: its row stays unmarked.
-func (s *Service) markParkedLanded(room string, live *crdt.Doc, socket *connectionState, reached crdt.StateVector) {
-	if socket == nil || socket.clients == nil {
+func (s *Service) markParkedLanded(room string, live *crdt.Doc, connection *connectionState, reached crdt.StateVector) {
+	if connection == nil || connection.clients == nil {
 		return
 	}
-	clients := socket.clients
+	clients := connection.clients
 	_, reachesOwn := reached[clients.own]
-	s.markLanded(room, live, socket, reachesOwn && clients.isOwn(clients.own), clients.awaitingMarks(reached))
+	s.markLanded(room, live, connection, reachesOwn && clients.isOwn(clients.own), clients.awaitingMarks(reached))
 }
 
-// markLanded starts the marks an apply of socket's left due in room (settleClients,
+// markLanded starts the marks an apply of connection's left due in room (settleClients,
 // markParkedLanded): of the socket's own id, where own says the apply wrote under it, its row did
 // not say an edit had landed as the socket was admitted and doc, the room's document, holds a
 // struct under it; and of each of marks, ids whose rows await the socket's mark, that doc holds a
 // struct under. Each runs off the caller's goroutine, one at a time for each id
 // (socketClients.marking, startMark).
-func (s *Service) markLanded(room string, doc *crdt.Doc, socket *connectionState, own bool, marks []crdt.ClientID) {
-	clients := socket.clients
+func (s *Service) markLanded(room string, doc *crdt.Doc, connection *connectionState, own bool, marks []crdt.ClientID) {
+	clients := connection.clients
 	if own && !clients.landed.Load() && roomHolds(doc, clients.own) && clients.marking.CompareAndSwap(false, true) {
 		go func() {
 			defer clients.marking.Store(false)
-			if s.recordLanded(room, socket.actor, clients.own) {
+			if s.recordLanded(room, connection.actor, clients.own) {
 				clients.landed.Store(true)
 			}
 		}()
@@ -427,7 +427,7 @@ func (s *Service) markLanded(room string, doc *crdt.Doc, socket *connectionState
 	if len(starting) > 0 {
 		go func() {
 			for _, client := range starting {
-				clients.endMark(client, s.recordLanded(room, socket.actor, client))
+				clients.endMark(client, s.recordLanded(room, connection.actor, client))
 			}
 		}()
 	}

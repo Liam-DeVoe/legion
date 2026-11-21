@@ -139,7 +139,7 @@ func (s *Service) forkPoint(ctx context.Context, room string, live *crdt.Doc, cl
 	case fork != nil:
 		return fork, point, read, nil
 	}
-	fork, err = buildForkHeld(ctx, client, copied)
+	fork, err = buildForkHeld(ctx, client, copied, storedCopyWeight(copied))
 	if err != nil {
 		return nil, roomPoint{}, replicaRead{}, fmt.Errorf("fork live document: %w", err)
 	}

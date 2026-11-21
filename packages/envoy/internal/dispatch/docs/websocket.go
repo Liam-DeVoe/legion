@@ -319,12 +319,15 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 // It runs on the room's persistence worker, the one reader of the room's queue of updates to
 // store. Its decodes of a heavy update wait for their bytes of the pod's load concurrency as every
 // other decode does - the decode of the update itself (holdServerLoad, AppendUpdatesWithCredit)
-// and the ones its gate makes of a history replaced under the room (storedHistoryHolds) - since no
-// holder of that pool waits on this worker: a heavy apply gives its grant back as the room's own
-// update observer for its commit ends, before ygo's persistence observer hands the update to the
-// worker's queue (weighPeerUpdate, roomApplies.releaseGrant). Its decode of a lighter update, a
-// keystroke or a paste, takes nothing, as that update's apply took nothing (heavyUpdateWeight), so
-// a keystroke is stored, and answered, without waiting behind the heavy takers queued for the pool.
+// and the ones its gate makes of a history replaced under the room (storedHistoryHolds) - since the
+// one holder of that pool that waits on this worker, a joined transaction waiting for the
+// document's lock its gate's decodes hold, is ended by Join's WriteRequestBound, or for the
+// server's own two such transactions by their own deadline (gateAppend), and a heavy apply gives
+// its grant back as the room's own update observer for its commit ends, before ygo's persistence
+// observer hands the update to the worker's queue (weighPeerUpdate, roomApplies.releaseGrant). Its
+// decode of a lighter update, a keystroke or a paste, takes nothing, as that update's apply took
+// nothing (heavyUpdateWeight), so a keystroke is stored, and answered, without waiting behind the
+// heavy takers queued for the pool.
 func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room string, update []byte) (stored bool, err error) {
 	if a.service.roomFailed(room) {
 		// The failed room's update is dropped and its browser resends it to the room that
@@ -387,16 +390,8 @@ func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room 
 	// of the room stores them (AppendRoomUpdatesTx); a later call of an update the batch stored
 	// finds its class stored and decodes nothing.
 	//
-	// The read-back is a whole decode of the update, as heavy as the apply that made it. A heavy
-	// update's takes what its copy costs out of the pod's load concurrency, waiting for it without a
-	// deadline (holdServerLoad): the apply that made the update gave its own grant back before its
-	// commit reached this worker's queue (weighPeerUpdate). A lighter update's takes nothing, as its
-	// apply took nothing (heavyUpdateWeight): a keystroke's store, which the room answers the
-	// keystroke after, never queues behind the pool's heavy takers.
-	release := func() {}
-	if weight, heavy := heavyUpdateWeight(update); heavy {
-		release = holdServerLoad(ctx, weight)
-	}
+	// The read-back is a whole decode, held as heavyUpdateWeight judges the update (holdUpdateLoad).
+	release := holdUpdateLoad(ctx, update)
 	err = crdt.ApplyUpdateV1(newDocumentCopy(), update, nil)
 	release()
 	if err != nil {
@@ -980,10 +975,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		// here - a suppression slot's finish, a test's hook, the drain itself - which ygo carries
 		// past the commit's later observers, the persistence observer among them, and raises once
 		// they have run (crdt.Doc.Transact); and a failed test's hook ending the goroutine
-		// (runtime.Goexit). The observer has no other way out. The release is taken out of the
-		// apply's record as it is called, and the hook's own release as it returns gives back
-		// nothing once this one has, so the grant goes back once. A commit of any other origin
-		// holds no grant here and gives back nothing.
+		// (runtime.Goexit). The observer has no other way out.
 		defer replica.applies().releaseGrant(origin)
 		// A published write's update is already durable, and so is a catch-up's batch of another
 		// process's rows (remoteUpdateOrigin). Its suppression slot is finished here, before ygo's

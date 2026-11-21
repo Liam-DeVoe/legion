@@ -1290,6 +1290,15 @@ func (s *Service) failUnloadable(room string, cause error) error {
 	return fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, cause)
 }
 
+// refuseParkedRead is what a read answers for artifactID's stored history that parks past a
+// room's cap (parkedPastRoomCaps): it logs the cap and what the history parks
+// (parkedPastCapReadLine) and returns ErrDocumentUnloadable wrapping parked, as foldDocument and
+// storedWithUpdates do. Unlike failUnloadable it fails no room. parked is never nil.
+func refuseParkedRead(artifactID string, parked *parkedPastCap) error {
+	slog.Warn(parkedPastCapReadLine, parked.attrs(artifactID)...)
+	return fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, parked)
+}
+
 func renderTokenTree(tree *pmdoc.Node) (string, string, error) {
 	markdown, err := documentMarkdown(tree)
 	if err != nil {
@@ -2408,8 +2417,7 @@ func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unst
 		return nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
 	}
 	if parked := s.parkedPastRoomCaps(loaded.Doc); parked != nil {
-		slog.Warn(parkedPastCapReadLine, parked.attrs(artifactID)...)
-		return nil, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, parked)
+		return nil, refuseParkedRead(artifactID, parked)
 	}
 	doc := loaded.Doc
 	if doc == nil {
@@ -2417,9 +2425,7 @@ func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unst
 	}
 	if len(unstored) > 0 {
 		if weight, heavy := heavyUpdateWeight(unstored); heavy {
-			// The sum is capped at one slot, as every copy's weight is (copyWeight): the pool may
-			// hold one slot alone, and a take past it would never be admitted.
-			if err := slot.take(ctx, min(slot.bytes+weight, loadSlotBytes)); err != nil {
+			if err := slot.raise(ctx, weight); err != nil {
 				return nil, err
 			}
 		}

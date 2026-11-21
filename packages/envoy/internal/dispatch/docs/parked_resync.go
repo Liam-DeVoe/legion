@@ -52,23 +52,23 @@ type parkedWaits struct {
 }
 
 // parkedWait is one sender's frames that parked: origin, the origin ygo applies its updates with,
-// which the resync goes to; socket, the connection they came on, whose person the ids they reach
-// are marked landed for once they land (markParkedLanded), nil where the apply's context named
-// none; needs, the clock the room must hold each client to for all of them to have landed;
-// coveredAt, the commit position at which the room first held them, zero until it has; and
-// unwatch, which stops the watch that drops the sender as its connection ends, for a sender the
-// list drops first.
+// which the resync goes to and the list keys it by; connection, the connection they came on, whose
+// person the ids they reach are marked landed for once they land (markParkedLanded), nil where the
+// apply's context named none; needs, the clock the room must hold each client to for all of them
+// to have landed; coveredAt, the commit position at which the room first held them, zero until it
+// has; and unwatch, which stops the watch that drops the sender as its connection ends, for a
+// sender the list drops first.
 type parkedWait struct {
-	origin    any
-	socket    *connectionState
-	needs     crdt.StateVector
-	coveredAt uint64
-	unwatch   func() bool
+	origin     any
+	connection *connectionState
+	needs      crdt.StateVector
+	coveredAt  uint64
+	unwatch    func() bool
 }
 
-// dropLocked takes origin, whose wait is wait, off the list. The caller holds w.mu.
-func (w *parkedWaits) dropLocked(origin any, wait *parkedWait) {
-	delete(w.waits, origin)
+// dropLocked takes wait off the list. The caller holds w.mu.
+func (w *parkedWaits) dropLocked(wait *parkedWait) {
+	delete(w.waits, wait.origin)
 	w.held.Add(-1)
 	if wait.unwatch != nil {
 		wait.unwatch()
@@ -142,7 +142,7 @@ func (w *parkedWaits) note(connection context.Context, origin any, needs crdt.St
 	}
 	wait, listed := w.waits[origin]
 	if !listed {
-		wait = &parkedWait{origin: origin, socket: connectionOf(connection), needs: make(crdt.StateVector, len(needs))}
+		wait = &parkedWait{origin: origin, connection: connectionOf(connection), needs: make(crdt.StateVector, len(needs))}
 		w.waits[origin] = wait
 		w.held.Add(1)
 		if connection != nil {
@@ -160,7 +160,7 @@ func (w *parkedWaits) forget(origin any) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if wait, listed := w.waits[origin]; listed {
-		w.dropLocked(origin, wait)
+		w.dropLocked(wait)
 	}
 }
 
@@ -172,9 +172,9 @@ func (w *parkedWaits) dropUncovered() {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for origin, wait := range w.waits {
+	for _, wait := range w.waits {
 		if wait.coveredAt == 0 {
-			w.dropLocked(origin, wait)
+			w.dropLocked(wait)
 		}
 	}
 }
@@ -215,10 +215,10 @@ func (a *roomApplies) landedParked(through uint64) []*parkedWait {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	var landed []*parkedWait
-	for origin, wait := range w.waits {
+	for _, wait := range w.waits {
 		if wait.coveredAt != 0 && wait.coveredAt <= through {
 			landed = append(landed, wait)
-			w.dropLocked(origin, wait)
+			w.dropLocked(wait)
 		}
 	}
 	return landed
@@ -237,6 +237,6 @@ func (s *Service) resyncLanded(room string, instance *roomInstance, through uint
 	}
 	for _, wait := range s.roomWeighingOf(live).applies().landedParked(through) {
 		s.srv.ResyncPeer(wait.origin)
-		s.markParkedLanded(room, live, wait.socket, wait.needs)
+		s.markParkedLanded(room, live, wait.connection, wait.needs)
 	}
 }

@@ -686,10 +686,11 @@ func (s *Service) rebuildFork(ctx context.Context, write *liveWrite) (*crdt.Doc,
 		}
 		// The fork is weighed on the stored history's bytes and the structs its headers declare
 		// (storedCopyWeight), read before anything decodes it.
-		if err := write.coverFork(ctx, storedCopyWeight(loaded.Update)); err != nil {
+		weight := storedCopyWeight(loaded.Update)
+		if err := write.coverFork(ctx, weight); err != nil {
 			return nil, err
 		}
-		if fork, err = buildForkHeld(ctx, write.clientID, loaded.Update); err != nil {
+		if fork, err = buildForkHeld(ctx, write.clientID, loaded.Update, weight); err != nil {
 			return nil, fmt.Errorf("fork live document: %w", err)
 		}
 	} else {
@@ -908,11 +909,12 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 	}
 	// The fork is weighed on the stored history's bytes and the structs its headers declare
 	// (storedCopyWeight), read before anything decodes it.
-	if err := write.coverFork(ctx, storedCopyWeight(loaded.Update)); err != nil {
+	weight := storedCopyWeight(loaded.Update)
+	if err := write.coverFork(ctx, weight); err != nil {
 		loaded.Update = nil
 		return nil, err
 	}
-	fork, err := buildForkHeld(ctx, write.clientID, loaded.Update)
+	fork, err := buildForkHeld(ctx, write.clientID, loaded.Update, weight)
 	loaded.Update = nil
 	if err != nil {
 		// A room's load of the same history would fail it, as loadTree does.
@@ -950,12 +952,13 @@ func (s *Service) coldFork(ctx context.Context, write *liveWrite, head int64) (*
 // while it reads or waits for a lock, and holds its grant from before the decode until its fork
 // is dropped (releaseFork). The hold here therefore waits for nothing.
 //
-// A caller whose context carries no grant - a test that forks a room directly - takes one of the
-// server's own for the decode alone, weighed on the state it decodes, its bytes and the structs
-// its headers declare, as every other decode of stored state is (holdServerLoad,
-// storedCopyWeight).
-func buildForkHeld(ctx context.Context, client crdt.ClientID, state []byte) (*crdt.Doc, error) {
-	defer holdServerLoad(ctx, storedCopyWeight(state))()
+// weight is the state's own, its bytes and the structs its headers declare (storedCopyWeight),
+// which a cold fork's caller has already read to cover the fork (coldFork, rebuildFork) and hands
+// on rather than reads again. A caller whose context carries no grant - a test that forks a room
+// directly - takes one of the server's own of weight for the decode alone, as every other decode
+// of stored state is weighed (holdServerLoad).
+func buildForkHeld(ctx context.Context, client crdt.ClientID, state []byte, weight int64) (*crdt.Doc, error) {
+	defer holdServerLoad(ctx, weight)()
 	return buildFork(client, state)
 }
 

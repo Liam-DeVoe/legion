@@ -48,20 +48,19 @@
 -- integrated, not only parked behind a clock the room lacks - or once the document has stored a
 -- later edit that landed what such a socket had parked under the id while that socket was still
 -- open. A person holds at most 64 rows of minted ids in a document that never landed an edit: an
--- admission past that deletes, in the statement that writes
--- its own row, the person's one there presented least recently, and only one no socket has
--- presented for 15 minutes, which no open socket's is; where none is that old, the admission is
--- refused for the editor to retry. A row whose id never landed an edit and that nothing has
--- presented for 30 days is deleted by the hourly compaction sweep. A page that comes back after
--- either deletion and presents the id is given it again, its row written afresh, where no other
--- row names it by then, and so is another page of the same browser whose edit replays what the
--- first saved under the id, where the document holds no edit under it: what was typed offline
--- under it lands. Where another person's row names the id by then, the page is given a fresh id,
--- and the browser drops the edits saved under the old one that never landed. A claimed row is
--- written landed and never swept: its id could otherwise be claimed by another person while the
--- tab that holds it is still open and writing under it. The claims are bounded instead: a page
--- of this build's by the 30 days, and every claim by the 64 a socket and the 64 a person makes in
--- a document a day.
+-- admission past that deletes, in the statement that writes its own row, the person's one there
+-- presented least recently, and only one no socket has presented for 15 minutes, which no open
+-- socket's is; where none is that old, the admission is refused for the editor to retry. A row
+-- whose id never landed an edit and that nothing has presented for 30 days is deleted by the
+-- hourly compaction sweep. A page that comes back after either deletion and presents the id is
+-- given it again, its row written afresh, where no other row names it by then, and so is another
+-- page of the same browser whose edit replays what the first saved under the id, where the
+-- document holds no edit under it: what was typed offline under it lands. Where another person's
+-- row names the id by then, the page is given a fresh id, and the browser drops the edits saved
+-- under the old one that never landed. A claimed row is written landed and never swept: its id
+-- could otherwise be claimed by another person while the tab that holds it is still open and
+-- writing under it. The claims are bounded instead: a page of this build's by the 30 days, and
+-- every claim by the 64 a socket and the 64 a person makes in a document a day.
 create table document_client_ids (
   artifact_id uuid not null references artifacts (id) on delete cascade,
   client_id bigint not null check (client_id >= 0),

@@ -382,8 +382,7 @@ func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold col
 		return coldFold{}, err
 	}
 	if parked := s.parkedPastRoomCaps(loaded.Doc); parked != nil {
-		slog.Warn(parkedPastCapReadLine, parked.attrs(artifactID)...)
-		return coldFold{}, fmt.Errorf("%w: decode live document: %w", ErrDocumentUnloadable, parked)
+		return coldFold{}, refuseParkedRead(artifactID, parked)
 	}
 	// A rendering refused leaves the fold its tree, from which each read computes its own answer
 	// and refusal, as it would without the cache.

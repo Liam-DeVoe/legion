@@ -336,15 +336,22 @@ func gateAppend(ctx context.Context, q Queryer, room string, through int64, kind
 // structs their headers declare, as storedCopyWeight weighs one update, read before anything of
 // the run is decoded - so it covers the document and the run together until the run is judged.
 // Each take waits for its bytes, as foldRead's does, on the room's persistence worker as in a
-// transaction's flush of the room, and a wait ctx ends is the error.
+// transaction's flush of the room, and a wait ctx ends is the error. A fold that reads the history
+// again - its parked branch's diff, or a misread's runs (fold, documentThrough) - reads rows the
+// grant already covers, since the document's lock keeps them the rows the first pass read, so once
+// one pass has read every row without error no later pass weighs them again.
 func storedHistoryHolds(ctx context.Context, q Queryer, room string, head int64, updates []BrowserUpdate, maxPending int) (bool, error) {
 	ctx, slot, done := withLoadSlot(ctx)
 	defer done()
 	version := persistence.Version(head)
 	stored := storedUpdates(ctx, q, room, version)
+	var weighedAll bool
 	weighed := func(use func([]byte) error) error {
+		if weighedAll {
+			return stored(use)
+		}
 		var bytes, structs int64
-		return stored(func(update []byte) error {
+		err := stored(func(update []byte) error {
 			bytes += int64(len(update))
 			structs += int64(declaredStructs(update))
 			if err := slot.take(ctx, copyWeight(bytes, structs)); err != nil {
@@ -352,6 +359,8 @@ func storedHistoryHolds(ctx context.Context, q Queryer, room string, head int64,
 			}
 			return use(update)
 		})
+		weighedAll = err == nil
+		return err
 	}
 	doc, err := documentThrough(ctx, room, version, weighed, maxPending)
 	if err != nil || doc == nil {
@@ -365,9 +374,7 @@ func storedHistoryHolds(ctx context.Context, q Queryer, room string, head int64,
 		bytes += int64(len(update.Update))
 		structs += int64(declaredStructs(update.Update))
 	}
-	// The sum is capped at one slot, as every copy's weight is (copyWeight): the pool may hold one
-	// slot alone, and a take past it would never be admitted.
-	if err := slot.take(ctx, min(slot.bytes+copyWeight(bytes, structs), loadSlotBytes)); err != nil {
+	if err := slot.raise(ctx, copyWeight(bytes, structs)); err != nil {
 		return false, err
 	}
 	for _, update := range updates {

@@ -636,6 +636,18 @@ func (w *roomWeighing) roomScans() *roomScans {
 	return w.scans
 }
 
+// weighPending records after, what live's pending queue holds once an apply of the hook's or a
+// server write's has returned (roomApplies.notePending), and weighs the room again where either
+// figure it keeps of the queue moved, from the room's resident bytes, the structs it holds and the
+// delete ranges it parks (roomCharge.weigh). A document no room's load listed records and weighs
+// nothing.
+func (w *roomWeighing) weighPending(live *crdt.Doc, after crdt.PendingStats) {
+	applies := w.applies()
+	if applies.notePending(after) {
+		w.roomCharge().weigh(applies.residentBytes(), int64(applies.structsHeld(live)), applies.parkedRangeCount())
+	}
+}
+
 // roomStateBytes is the bytes of encoded state the room is tracked at (roomApplies.state), and
 // zero for a document no room's load listed, which is tracked at nothing.
 func (w *roomWeighing) roomStateBytes() int64 {

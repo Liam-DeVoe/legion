@@ -1454,7 +1454,7 @@ func TestADecodeOfStoredStateIsGrantedWhatItsCopyHolds(t *testing.T) {
 			return runsDocument(context.Background(), [][]byte{state}, maxUpdateItems)
 		}},
 		{"a write's fork of a stored history", func() (*crdt.Doc, error) {
-			return buildForkHeld(context.Background(), 0x5eed+1, state)
+			return buildForkHeld(context.Background(), 0x5eed+1, state, storedCopyWeight(state))
 		}},
 	} {
 		t.Run(site.name, func(t *testing.T) {
