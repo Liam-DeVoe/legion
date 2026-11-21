@@ -25,7 +25,10 @@ const workSamples = 3
 // ste-lint walk). With the five rows of the split and of the judge of the ways out, 10 more plain
 // runs at a load average of 414 to 978 gave a worst growth of 22.2 (the row "many claims that
 // refer to one long footnote of two verbs for one action"), and each of those five rows, a walk
-// that it guards broken, grew 60.5 times or more in 5 of 5 runs (the walks below).
+// that it guards broken, grew 60.5 times or more in 5 of 5 runs (the walks below). With the four
+// rows of the whole text and of the holders of a footnote, 10 more plain runs at a load average of
+// 299 to 634 gave a worst growth of 18.8 (the row "many sentences of one text, each with a way out
+// that the whole text reads").
 const (
 	workScale = 16
 	workBound = 32
@@ -136,7 +139,9 @@ func workRows(race bool) []workRow {
 // (32.5; 31.8 at 724), so its n is 2,048, where the footnotes of the other seven, "It.", keep the
 // table's time; and a chain of footnotes, each of whose ways out takes a verb away, whose walk, the
 // walk up from a footnote's ring that goes on where the verbs stay as they were, first passed it at
-// 64 (33.9), so its n is 128.
+// 64 (33.9), so its n is 128. At those n each of the four walks, broken in turn, failed its row in
+// 5 of 5 runs, 228.7, 169.4, 50.8 and 47.8 times or more, and failed no other row but the row of
+// many lines, which the first break also reads whole for each way out (153.5 times or more).
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
