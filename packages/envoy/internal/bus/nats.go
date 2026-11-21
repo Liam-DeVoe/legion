@@ -123,9 +123,12 @@ func WithReplicas(n int) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.replicas = n })
 }
 
-// withStreamSubjectsRefresh replaces streamSubjectsRefresh for one client, so a test can see the
-// client read the deployed subjects again without waiting a minute.
-func withStreamSubjectsRefresh(every time.Duration) ConnectOption {
+// WithStreamSubjectsRefresh replaces streamSubjectsRefresh for one client, so a test can see the
+// client read the deployed subjects again without waiting a minute, or hold that read off for the
+// whole of a window in which it counts what the client's connection sends. It is exported for the
+// tests of the programs that connect through this package, as WithKeepInterval is: no deployment
+// sets it, and no caller outside a test may.
+func WithStreamSubjectsRefresh(every time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.streamSubjectsRefresh = every })
 }
 
@@ -462,6 +465,11 @@ type Client struct {
 	// its connect (WithKeptBuckets) and the ones it opened since (KeepBucket). They are read and
 	// written under mu, so a pass takes the list as it stands when it starts.
 	keptBuckets []string
+	// keepPasses counts the keeper's passes that have ended, a pass that failed included (keep,
+	// keepPass), for a test that must know a pass ran after a change it made: a pass that finds
+	// nothing to restore logs nothing and sends no update, so the count is the one sign it ran. It
+	// says nothing of whether the pass did what it set out to; a failed pass logs that.
+	keepPasses atomic.Uint64
 }
 
 // Dial opens a tuned core NATS connection using envoy's standard options (5s connect timeout,

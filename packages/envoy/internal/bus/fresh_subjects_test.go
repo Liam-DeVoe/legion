@@ -36,7 +36,7 @@ func freshSubjectsClientVia(t *testing.T, uri, dial string) (*Client, nats.JetSt
 	if _, err := js.AddStream(&current); err != nil {
 		t.Fatalf("create the stream: %v", err)
 	}
-	client, err := Connect([]string{dial}, withStreamSubjectsRefresh(time.Hour))
+	client, err := Connect([]string{dial}, WithStreamSubjectsRefresh(time.Hour))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

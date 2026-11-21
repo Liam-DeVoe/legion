@@ -354,7 +354,7 @@ func streamInfoThroughRelay(t *testing.T) (*testnats.UnansweredRelay, *Client) {
 	}
 	t.Cleanup(owner.Close)
 	relay := testnats.StartUnansweredRelayOn(t, uri, streamInfoSubject)
-	client, err := Connect([]string{relay.URL()}, withStreamSubjectsRefresh(time.Hour))
+	client, err := Connect([]string{relay.URL()}, WithStreamSubjectsRefresh(time.Hour))
 	if err != nil {
 		t.Fatalf("connect through the relay: %v", err)
 	}
