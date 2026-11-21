@@ -178,45 +178,21 @@ type LazyVerifier struct {
 
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
 // discovery document is read by Discover, by Run, or by the first Verify or Key.
-func NewLazyVerifier(issuer, audience string, options ...LazyVerifierOption) *LazyVerifier {
-	var settings lazyVerifierSettings
-	for _, option := range options {
-		option(&settings)
-	}
+func NewLazyVerifier(issuer, audience string) *LazyVerifier {
+	return newLazyVerifier(issuer, audience, DefaultKeysFailureSpacing)
+}
+
+// newLazyVerifier is NewLazyVerifier with keySpacing as its key set's FailureSpacing, for an
+// IssuerSet whose caller chooses the spacing (NewIssuerSet).
+func newLazyVerifier(issuer, audience string, keySpacing time.Duration) *LazyVerifier {
 	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
 		keys, err := NewKeys(ctx, issuer)
 		if err != nil {
 			return nil, err
 		}
-		if settings.spacedKeyReads {
-			keys.FailureSpacing, keys.SpaceRefreshes = settings.keySpacing, true
-		}
+		keys.FailureSpacing = keySpacing
 		return NewWithKeys(issuer, audience, keys), nil
 	})}
-}
-
-// LazyVerifierOption changes how a LazyVerifier made by NewLazyVerifier reads its issuer.
-type LazyVerifierOption func(*lazyVerifierSettings)
-
-// lazyVerifierSettings are what the options of one NewLazyVerifier set; the zero value is a
-// verifier read as New reads one.
-type lazyVerifierSettings struct {
-	// spacedKeyReads is whether WithSpacedKeyReads was given, and keySpacing the spacing it gave.
-	spacedKeyReads bool
-	keySpacing     time.Duration
-}
-
-// WithSpacedKeyReads spaces the reads of the verifier's key set (Keys) by spacing, whether or not
-// the set has been read before: it sets the set's FailureSpacing to spacing and its
-// SpaceRefreshes, so while the issuer's key set cannot be read, the tokens that arrive cost it one
-// read per spacing rather than one each, as the broker reads its cluster issuers. A verifier made
-// without it reads its key set as New's does, spacing only the reads of a set never read, by
-// DefaultKeysFailureSpacing. A spacing of zero reads the key set again at every token that needs
-// it, and holds no failed read over to a later token (Keys.FailureSpacing).
-func WithSpacedKeyReads(spacing time.Duration) LazyVerifierOption {
-	return func(settings *lazyVerifierSettings) {
-		settings.spacedKeyReads, settings.keySpacing = true, spacing
-	}
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not

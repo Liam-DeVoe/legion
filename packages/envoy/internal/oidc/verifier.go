@@ -150,12 +150,13 @@ type KeySource interface {
 // exchange, to hand the key itself to the OAuth provider (Keys), and building
 // both from one *Keys makes one discovery read at boot, keeps one set in
 // memory, and bounds the reads a token naming an unpublished key id prompts at
-// one per MinRefresh across both of them. A LazyVerifier builds its verifier
-// with it too, over the Keys its read of the discovery document makes (NewKeys),
-// and answers LazyVerifier.Key from those keys. Over an IssuerSet's issuer, it
-// verifies that issuer's tokens for an audience other than the set's, reading
-// the issuer's discovery document and key set only as the set reads them, as
-// the broker's NATS auth service does.
+// one per MinRefresh while reads succeed, and one per FailureSpacing while they
+// fail, across both of them. A LazyVerifier builds its verifier with it too, over
+// the Keys its read of the discovery document makes (NewKeys), and answers
+// LazyVerifier.Key from those keys. Over an IssuerSet's issuer, it verifies that
+// issuer's tokens for an audience other than the set's, reading the issuer's
+// discovery document and key set only as the set reads them, as the broker's
+// NATS auth service does.
 func NewWithKeys(issuer, audience string, keys KeySource) *Verifier {
 	return &Verifier{
 		// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the

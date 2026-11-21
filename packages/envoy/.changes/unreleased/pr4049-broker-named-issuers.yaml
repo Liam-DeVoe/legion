@@ -6,11 +6,13 @@ body: |-
   its `iss` claim names.
   The broker reads each issuer in the background, so it starts and serves while one of them cannot
   be read, and it answers the tokens of that issuer `503 OIDC_ISSUER_UNAVAILABLE` until it can. It
-  answers the same to a token whose key it cannot read: a key it does not hold from its last good
-  read of the issuer's key set, while that key set cannot be read. It reads such a key set again at
-  most once in 5 seconds. At its start it logs `broker: kubernetes issuer` for each issuer, with
-  `read=true` or `read=false`. It logs `broker: kubernetes issuer cannot be read` once when it
-  starts to answer the tokens of an issuer it has read so. It logs
+  answers the same, and does not refuse the token as unverified, to a token whose key it cannot
+  read: one naming a key id it does not hold from its last good read of the issuer's key set, when
+  the read of that key set it waits on fails, and at once less than 5 seconds after one failed. It
+  reads such a key set again at most once in 5 seconds. At its start it logs
+  `broker: kubernetes issuer` for each issuer, with `read=true` or `read=false`. It logs
+  `broker: kubernetes issuer cannot be read` once when it starts to answer the tokens of an issuer
+  it has read so. It logs
   `broker: kubernetes issuer can be read again` once when an issuer it could not read, at its start
   or since, can be read, written by whichever comes first: a token of that issuer that verifies,
   or, for an issuer its start could not read, the background read of it. Before, it refused to
