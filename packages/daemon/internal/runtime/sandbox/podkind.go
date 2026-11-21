@@ -409,11 +409,11 @@ func (issuePod) provision(ctx context.Context, r *Runtime, l *launch, s *sandbox
 
 // controllerPod is the project controller's pod (`controller: daemon`): the controller's launcher
 // alone, working in the root of a volume of its own, which its Sandbox owns, so the working root a
-// pod leaves is the one its successor finds. It belongs to no tree and holds the review App's
-// GitHub credential like any verdict-only role (appauth.AppRoleFor). Its pod runs no init
-// container: it provisions no workspace, and the sessions directory that was the last thing such a
-// container made on its volume is gone, its sessions now rows in the session database
-// (initContainers).
+// pod leaves is the one its successor finds. It belongs to no tree and holds the owner's read
+// lease (appauth.ControllerCredential), as the controller's pane does. Its
+// pod runs no init container: it provisions no workspace, and the sessions directory that was the
+// last thing such a container made on its volume is gone, its sessions now rows in the session
+// database (initContainers).
 type controllerPod struct{}
 
 func (controllerPod) roles() []claim.Role { return []claim.Role{claim.RoleController} }

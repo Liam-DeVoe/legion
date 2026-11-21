@@ -44,7 +44,7 @@ func controllerSpec(t *testing.T) runtime.SpawnSpec {
 
 // The controller's pod is the runtime's other kind of pod: the controller's launcher alone, on a
 // volume of its own the Sandbox owns, so a relaunch finds its workspace where it left it. It
-// provisions no workspace but holds the review App's GitHub credential like any workflow role's:
+// provisions no workspace but holds its own GitHub credential like any workflow role's:
 // it runs no init container, since nothing on its volume needs preparing before the launcher
 // starts, and its labels name the controller and no tree or issue, so no tree's cleanup takes it
 // for one of the tree's issue pods. Where the runtime enrolls pods with the secrets broker it is
@@ -234,7 +234,7 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 
 // A controller launch mints no provisioning token: it has no repository, so a GitHub token source
 // that would refuse every mint leaves it running. It writes no provisioning Secret, only its one
-// launcher's role Secret, which holds the review App's gh bundle (each owner's two files and the
+// launcher's role Secret, which holds the controller's gh bundle (each owner's two files and the
 // default owner) beside the launcher token but no provisioning token, and its boot token reaches
 // its launcher in the start command, as every role's does.
 func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
@@ -246,7 +246,7 @@ func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
 		t.Errorf("the controller's launch wrote the provisioning Secret %s: %v", secretName(name), secret.Data)
 	}
 	if secret := g.secret(roleSecretName(name, claim.RoleController)); secret == nil || len(secret.Data) != 3+2*len(staticDirs) || len(secret.Data[LauncherTokenFile]) == 0 {
-		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the default, the bundle's renames and the review App's gh files of each owner, and nothing else", secret)
+		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the default, the bundle's renames and the controller's gh files of each owner, and nothing else", secret)
 	}
 	for _, role := range claim.Roles {
 		if g.secret(roleSecretName(name, role)) != nil {
@@ -264,7 +264,7 @@ func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
 	}
 }
 
-// A controller launch mints the review App's GitHub credential as a workflow role's does
+// A controller launch mints its GitHub credential as a workflow role's does
 // (writeLauncherSecrets), from the controller's own function (Options.ControllerCredential): a
 // credential source that refuses every mint fails the launch naming the controller role, exactly
 // as a refusing GitHubCredential would an issue pod's role.

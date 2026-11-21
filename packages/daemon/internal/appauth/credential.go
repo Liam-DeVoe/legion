@@ -17,7 +17,7 @@ import (
 )
 
 // ErrDefaultOwnerNotInstalled is ControllerCredential's refusal of a controller asked for a
-// default owner whose directory the review App's bundle does not hold: an owner that App is
+// default owner whose directory the controller's bundle does not hold: an owner the App is
 // installed on none of, and that no configured rename moved a repository away from. A bundle's
 // directories are the owners the App is installed on (bundleDirs), so the refusal says "not
 // installed" and the project's repository mapping has no part in it. The API answers it as
@@ -26,23 +26,22 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 
 // GitHubCredential is the one function every role's gh files come from (runtime.GitHubCredential)
 // over source: a bundle whose directories (GitHubDirs, built from the same description) each hold
-// one lease of the role's App, rendered as gh's hosts.yml and config.yml and named for the App and
-// its expiry so a log can say whose token it wrote. A directory is an owner account and nothing
-// smaller, because a lease is: every token this package mints reaches every repository its
-// installation holds and names no repository at all (INFRA-2543), so the installation is the
-// whole of what a role reaches and the bundle holds one directory per owner the role's App is
-// installed on.
+// one lease of the role's set (SetFor), rendered as gh's hosts.yml and config.yml and named for
+// the set and its expiry so a log can say whose token it wrote. A directory is an owner account
+// and nothing smaller, because a lease is: every token this package mints reaches every
+// repository its installation holds and names no repository at all, so the installation is the
+// whole of what a role reaches and the bundle holds one directory per owner the App is installed
+// on.
 //
 // Every one of those directories holds the lease of the owner it is named for, minted at the
-// role's own permissions — the implement App's write set, the review App's review set
-// (writePermissions, Tokens.Token) — and no directory holds a narrower one. A role's token is
-// its App's installation lease on one account: the account chose what that installation reaches
-// when it installed the App, the daemon asks GitHub to narrow it no further, and there is
-// therefore nothing narrower for a bundle to hold. So a role pushes to, opens a pull request in
-// and reviews a pull request of every repository its App reaches, whichever owner's it is, and
-// which repository its own issue names decides the bundle's default directory and nothing else
-// (INFRA-2543 R2). A reading lease in another owner's directory, which this bundle held until
-// that ruling, refused a role the work its App is installed for.
+// role's own set (writePermissions, Tokens.Token), and no directory holds a narrower one. A
+// role's token is the App's installation lease on one account: the account chose what that
+// installation reaches when it installed the App, the daemon asks GitHub to narrow it no
+// further, and there is therefore nothing narrower for a bundle to hold. So a role pushes to,
+// opens a pull request in and reviews a pull request of every repository the App reaches,
+// whichever owner's it is, as far as its set allows, and which repository its own issue names
+// decides the bundle's default directory and nothing else. A reading lease in another owner's
+// directory, which this bundle once held, refused a role the work the App is installed for.
 //
 // The one directory whose lease is minted on another account is the one a configured rename puts
 // in the bundle — an owner the App is installed on none of, which a resolving pair moved a
@@ -54,8 +53,8 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // the repository it moved is reached by the routing the bundle's pairs carry: a request for the
 // pair's `from` repository is answered from the `to` owner's directory, and every other
 // repository of the `from` owner from its own (bundleDirs, ghconfig.Bundle.Pairs). That is this
-// deployment's case, where the implement App's sjawhar installation holds 151 repositories and
-// not cybermonklabs/legion.
+// deployment's case, where the App's sjawhar installation holds 151 repositories and not
+// cybermonklabs/legion.
 //
 // A controller's bundle is the one bundle of reading leases, and is built from this same
 // description (ControllerCredential, Tokens.ReadToken): the two callers differ in the lease they
@@ -81,16 +80,16 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // name authorises nothing — the token in it does. A call that names no repository at all, which
 // a tmux tree pane whose claim the daemon records no repository for makes, takes the first owner
 // the mint answered for, sorted, as its default; its directories hold the role's own leases as
-// any other call's do, since what a role may do is its App's installation and not what its claim
-// records. An App installed nowhere at all is runtime.ErrNoGitHubOwner. Every controller bundle,
+// any other call's do, since what a role may do is its set on the App's installation and not what
+// its claim records. An App installed nowhere at all is runtime.ErrNoGitHubOwner. Every controller bundle,
 // the launch's and the API route's both, is asked for by owner instead (ControllerCredential).
 //
 // A mint for any owner but the default directory's that GitHub answers definitively about that
 // owner's installation — not installed, suspended, granted none of the role's permissions, the
 // permissions refused (leaveOutReason) — costs that owner's directory alone: it is left out, the
 // rest of the bundle is minted and served, and the directory is said on log naming the owner, the
-// App and the reason (mintBundle). One such installation would otherwise cost every role of the
-// App its gh and git within the hour its tokens last, for an owner the role's issue may never
+// set and the reason (mintBundle). One such installation would otherwise cost every role its gh
+// and git within the hour its tokens last, for an owner the role's issue may never
 // touch; leaving it out narrows a role's reach and never widens it. An owner whose name is no
 // directory's is left out and said in the same way, with no mint asked of it (bundleDirs). Every
 // other failure — GitHub's trouble, a rate limit — fails the bundle, which keeps the role's last
@@ -109,12 +108,11 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 func GitHubCredential(source Source, repos func() []ghrepo.Repository, renames ghrepo.Renames,
 	installed *Installed, left *LeftOut, log *slog.Logger) runtime.GitHubCredential {
 	return func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		appRole := AppRoleFor(role)
-		layout, err := installedLayout(ctx, source, appRole, role, repos, renames, installed, repo)
+		layout, err := installedLayout(ctx, source, role, repos, renames, installed, repo)
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
-		return mintBundle(ctx, source, appRole, role, false, layout.dflt, layout, left, log)
+		return mintBundle(ctx, source, role, false, layout.dflt, layout, left, log)
 	}
 }
 
@@ -122,31 +120,41 @@ func GitHubCredential(source Source, repos func() []ghrepo.Repository, renames g
 // once: a runtime makes one per walk and drops it at the walk's end (sandbox's
 // refreshGitHubCredentials and gitHubBundles, tmux's refreshGitHubCredentials).
 //
-// It is worth having because a bundle is a function of two things and no more: the App role the
-// claim role runs as (AppRoleFor) and the repository it is built for. The six roles of an issue
-// pod are therefore two bundles, where each build opens with a live read of every page of its
-// App's installations under a fresh JWT (GitHubCredential) — the walk of a twenty-pod project
-// made 120 of those reads a minute where 40 answer every bundle it needs, and a pod's launch
-// made six serial round trips to GitHub before its first role could start.
+// It is worth having because a bundle is a function of two things and no more: the set the claim
+// role's token holds (SetFor) and the repository it is built for. A walk that asks twice for one
+// role's bundle of one repository is handed the first build.
 //
-// It is a memo of one walk and no cache: every walk reads GitHub for what its bundles hold, as
-// INFRA-2543 R2 asks, and what stops is one walk asking the same question four times. A build
-// that fails is not kept either, so the walk's next role of that App asks again and fails
-// naming its own role, exactly as it did when every role built its own.
+// It also holds the walk's one read of the owners the App is installed on (installed,
+// walkInstallationsKey), which every bundle build opens with (GitHubCredential): the App is one,
+// so its installations are the same for every bundle of the walk, where each build reading them anew is a live read of
+// every page under a fresh JWT, or in token mode a release of every installation — six of them
+// for the six roles of one issue pod, and as many more for every other pod of the walk.
+//
+// It is a memo of one walk and no cache: every walk reads GitHub for what its bundles hold, and
+// what stops is one walk asking the same question again. A build or a read that fails is not
+// kept either, so the walk's next role asks again and fails naming its own role, exactly as it
+// did when every role built its own.
 //
 // A controller's bundle is asked for by owner (ControllerCredential) and belongs here not at
 // all: a controller pod and a controller pane hold the one role.
 type Bundles struct {
 	credential runtime.GitHubCredential
 	built      map[bundleKey]ghconfig.Bundle
+	// installed is the walk's one read of the owners the App is installed on, which a build
+	// reaches through its context (walkInstallationsKey), so a bundle function that is not
+	// GitHubCredential's reads nothing of it.
+	installed Installed
 }
 
-// bundleKey is what one bundle of a walk is held under: the App role it is minted as and the
-// repository it is built for, lowercased as GitHub compares a repository's two halves.
+// bundleKey is what one bundle of a walk is held under: the set its leases are minted with and
+// the repository it is built for, lowercased as GitHub compares a repository's two halves.
 type bundleKey struct {
-	app  AppRole
+	set  TokenSet
 	repo string
 }
+
+// walkInstallationsKey is the context key Bundle hands a build its walk's read under.
+type walkInstallationsKey struct{}
 
 // NewBundles is one walk's memo over credential, the runtime's own bundle function
 // (sandbox.Options.GitHubCredential, tmux.Options.GitHubCredential).
@@ -154,14 +162,15 @@ func NewBundles(credential runtime.GitHubCredential) *Bundles {
 	return &Bundles{credential: credential, built: map[bundleKey]ghconfig.Bundle{}}
 }
 
-// Bundle is role's gh bundle for repo, built once per App role and repository of the walk. A
-// walk is one goroutine, so the memo needs no lock of its own.
+// Bundle is role's gh bundle for repo, built once per set and repository of the walk, with the
+// walk's one read of the App's installations. A walk is one goroutine, so the memo needs no lock
+// of its own.
 func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-	key := bundleKey{app: AppRoleFor(role), repo: strings.ToLower(repo.String())}
+	key := bundleKey{set: SetFor(role), repo: strings.ToLower(repo.String())}
 	if built, held := b.built[key]; held {
 		return built, nil
 	}
-	built, err := b.credential(ctx, role, repo)
+	built, err := b.credential(context.WithValue(ctx, walkInstallationsKey{}, &b.installed), role, repo)
 	if err != nil {
 		return ghconfig.Bundle{}, err
 	}
@@ -171,18 +180,18 @@ func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repos
 
 // ControllerCredential is the controller's own bundle, and the one producer of it: a controller's
 // launch asks for it, and the API's controller route serves `legion controller start` from it
-// (internal/api's controllerGitHubCredential). It is the review App's read-only lease for every
-// owner that App is installed on, each reaching every repository its installation holds, since a
+// (internal/api's controllerGitHubCredential). It is the App's read-only lease for every owner
+// the App is installed on, each reaching every repository its installation holds, since a
 // controller writes to none and reads them all: it is the one bundle whose directories hold a
 // lease narrower than the App's own installation (Tokens.ReadToken, where a role's bundle holds
 // Tokens.Token in every directory), and it holds exactly the directories a role's bundle holds
-// for the same App (bundleDirs). Its default is the owner it is asked for — the
+// (bundleDirs). Its default is the owner it is asked for — the
 // one its launch recorded, which its GH_CONFIG_DIR names, and which over a configured rename may
 // be an alias owner — or the first owner the mint answered for, sorted, when it is asked for none.
 //
 // An owner the bundle holds no directory for is refused (ErrDefaultOwnerNotInstalled) before
 // anything is minted: the controller asks for its default over the API, and a default is no
-// authority to read an owner the review App is not installed on. That refusal is what bounds the
+// authority to read an owner the App is not installed on. That refusal is what bounds the
 // owner this route may be asked for, as the directories of a role's bundle bound `legion gh`. An App
 // installed nowhere at all is runtime.ErrNoGitHubOwner, which the route answers as a daemon with
 // nothing to act as. An owner whose lease cannot be minted is left out of the bundle, as it is of
@@ -194,8 +203,7 @@ func (b *Bundles) Bundle(ctx context.Context, role claim.Role, repo ghrepo.Repos
 func ControllerCredential(source Source, repos func() []ghrepo.Repository, renames ghrepo.Renames,
 	installed *Installed, left *LeftOut, log *slog.Logger) runtime.ControllerCredential {
 	return func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-		appRole := AppRoleFor(claim.RoleController)
-		layout, err := installedLayout(ctx, source, appRole, claim.RoleController, repos, renames, installed, ghrepo.Repository{})
+		layout, err := installedLayout(ctx, source, claim.RoleController, repos, renames, installed, ghrepo.Repository{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
@@ -206,21 +214,27 @@ func ControllerCredential(source Source, repos func() []ghrepo.Repository, renam
 		if owner != "" && slices.Contains(layout.refused, owner) {
 			return ghconfig.Bundle{}, noDirectoryName(owner)
 		}
-		return mintBundle(ctx, source, appRole, claim.RoleController, true, owner, layout, left, log)
+		return mintBundle(ctx, source, claim.RoleController, true, owner, layout, left, log)
 	}
 }
 
-// installedLayout is how both credentials open: it reads the owners appRole's App is installed
-// on, GitHub asked each time, records them in installed for the drift check (Installed), and
+// installedLayout is how both credentials open: it reads the owners the App is installed on,
+// GitHub asked each time — once per walk, for a build a walk's Bundles asks for
+// (walkInstallationsKey) — records them in installed for the drift check (Installed), and
 // describes the bundle those owners make for repo (bundleDirs). A read that fails fails the
-// bundle, naming the App and role, the role the bundle is for.
-func installedLayout(ctx context.Context, installations OwnerInstallations, appRole AppRole, role claim.Role,
+// bundle, naming the role the bundle is for.
+func installedLayout(ctx context.Context, installations OwnerInstallations, role claim.Role,
 	repos func() []ghrepo.Repository, renames ghrepo.Renames, installed *Installed, repo ghrepo.Repository) (bundleLayout, error) {
-	owners, err := installations.InstalledOwners(ctx, appRole)
-	if err != nil {
-		return bundleLayout{}, fmt.Errorf("read the owners the %s App is installed on for %s: %w", appRole, role, err)
+	walk, _ := ctx.Value(walkInstallationsKey{}).(*Installed)
+	owners, read := walk.Owners()
+	if !read {
+		var err error
+		if owners, err = installations.InstalledOwners(ctx); err != nil {
+			return bundleLayout{}, fmt.Errorf("read the owners the App is installed on for %s: %w", role, err)
+		}
+		walk.record(owners)
 	}
-	installed.record(appRole, owners)
+	installed.record(owners)
 	return bundleDirs(owners, repos, renames, repo)
 }
 
@@ -237,152 +251,120 @@ func installedLayout(ctx context.Context, installations OwnerInstallations, appR
 //
 // It is sticky, not timed: a directory stays recorded left out until a mint of it answers, which
 // clears it, and the comparison then names it once and the pod is replaced once, which is right.
-// It is kept per App role, and read for the App roles of the pod an answer is about alone
-// (left, GitHubDirs): a pod's projection is its roles' directory sets intersected (sandbox's
-// gitHubBundles), so a directory one of its own Apps does not reach is in no such pod's
-// projection, however readily the other App mints it — while what the other App's mint found
-// says nothing about a pod that does not run it. The project controller's pod runs the review
-// App alone: were the implement App's record read for it too, a controller launched before an
-// owner was served would never be found to lack that owner's directory, its gh would hold no
-// token for an owner the review App reaches, and in a project with no live issue pod nothing
-// would mint for the implement App to clear the record (INFRA-513).
+// It is kept per set, and read for the sets of the pod an answer is about alone (left,
+// GitHubDirs): a pod's projection is its roles' directory sets intersected (sandbox's
+// gitHubBundles), so a directory one of its own roles' sets could not mint is in no such pod's
+// projection, however readily another set mints it — while what another set's mint found says
+// nothing about a pod that runs no role of it. The project controller's pod runs the
+// controller's set alone: were an issue role's record read for it too, a controller launched
+// before an owner was served would never be found to lack that owner's directory, its gh would
+// hold no token for an owner its own set reaches, and in a project with no live issue pod nothing
+// would mint for that role to clear the record.
 //
 // A nil record holds nothing and names nothing left out: the API's controller route builds a
 // bundle of its own per request (internal/api's controllerGitHubCredential), and no pod's
 // projection is ever compared against that one.
 type LeftOut struct {
 	mu   sync.Mutex
-	dirs map[AppRole]map[string]bool
+	dirs map[TokenSet]map[string]bool
 }
 
 // NewLeftOut is a record of nothing: every directory the mapping names is served until a mint
 // of it fails.
-func NewLeftOut() *LeftOut { return &LeftOut{dirs: map[AppRole]map[string]bool{}} }
+func NewLeftOut() *LeftOut { return &LeftOut{dirs: map[TokenSet]map[string]bool{}} }
 
-// record holds what role's mint of the directory dir found: left, that the directory's lease
+// record holds what set's mint of the directory dir found: left, that the directory's lease
 // could not be minted, or, false, that the mint answered for it, which clears what an earlier
 // mint recorded.
-func (l *LeftOut) record(role AppRole, dir string, left bool) {
+func (l *LeftOut) record(set TokenSet, dir string, left bool) {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if !left {
-		delete(l.dirs[role], dir)
+		delete(l.dirs[set], dir)
 		return
 	}
 	if l.dirs == nil {
-		l.dirs = map[AppRole]map[string]bool{}
+		l.dirs = map[TokenSet]map[string]bool{}
 	}
-	if l.dirs[role] == nil {
-		l.dirs[role] = map[string]bool{}
+	if l.dirs[set] == nil {
+		l.dirs[set] = map[string]bool{}
 	}
-	l.dirs[role][dir] = true
+	l.dirs[set][dir] = true
 }
 
-// left reports that the last mint of dir as one of roles — the App roles of the pod the answer
-// is for — left it out of that role's bundle, so no pod of those Apps created now projects it
-// (GitHubDirs). A pod running one of them is told nothing by what the mints of an App it does
-// not run found.
-func (l *LeftOut) left(dir string, roles []AppRole) bool {
+// left reports that the last mint of dir of one of sets — the sets of the pod the answer is for —
+// left it out of that set's bundle, so no pod of those sets created now projects it
+// (GitHubDirs). A pod is told nothing by what the mints of a set it runs no role of found.
+func (l *LeftOut) left(dir string, sets []TokenSet) bool {
 	if l == nil {
 		return false
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for _, role := range roles {
-		if l.dirs[role][dir] {
+	for _, set := range sets {
+		if l.dirs[set][dir] {
 			return true
 		}
 	}
 	return false
 }
 
-// Installed is the daemon's record of the owner accounts each App's last bundle build read from
-// GitHub (OwnerInstallations): one record per project, made by internal/daemon beside the
-// LeftOut record and handed to the same three, so the drift check has an owner set to compare a
-// pod against without asking GitHub for one.
+// Installed is the daemon's record of the owner accounts the last bundle build read the App
+// installed on from GitHub (OwnerInstallations): one record per project, made by internal/daemon
+// beside the LeftOut record and handed to the same three, so the drift check has an owner set to
+// compare a pod against without asking GitHub for one.
 //
-// It is what it says and no more: the installations as the last bundle build of that App read
-// them, which may be a minute old and may have been read for another role of the same App.
-// That is what an honest comparison a pod is replaced on may use, while every bundle reads
-// GitHub itself: a pod is a thing of the last launch, so comparing it against the last read is
-// the question the drift check asks, and the bundle a replacement pod is handed is read fresh
-// whenever it is built. A role whose App no bundle has built for yet is recorded nothing, and
-// GitHubDirs then names no directory at all and leaves every pod where it is, as it does for a
-// bundle it cannot describe.
+// It is what it says and no more: the installations as the last bundle build read them, which
+// may be a minute old and may have been read for another role. That is what an honest
+// comparison a pod is replaced on may use, while every bundle reads GitHub itself: a pod is a
+// thing of the last launch, so comparing it against the last read is the question the drift
+// check asks, and the bundle a replacement pod is handed is read fresh whenever it is built.
+// Until any bundle has been built it records nothing, and GitHubDirs then names no directory at
+// all and leaves every pod where it is, as it does for a bundle it cannot describe.
 //
 // A nil record records nothing and answers for nothing, as a nil LeftOut does: the API's
 // controller route builds a bundle of its own per request (internal/api's
 // controllerGitHubCredential), and no pod's projection is ever compared against that one.
 type Installed struct {
 	mu sync.Mutex
-	// owners holds, per App role, the owner accounts that App's last bundle build read,
-	// lowercased and sorted.
-	owners map[AppRole][]string
+	// owners holds the owner accounts the last bundle build read, lowercased and sorted, once
+	// read is set.
+	owners []string
+	read   bool
 }
 
-// NewInstalled is a record of nothing: no App has been read yet, so no pod is compared against
-// anything until the first bundle of its Apps is built.
-func NewInstalled() *Installed { return &Installed{owners: map[AppRole][]string{}} }
+// NewInstalled is a record of nothing: the App has not been read yet, so no pod is compared
+// against anything until the first bundle is built.
+func NewInstalled() *Installed { return &Installed{} }
 
-// record holds the owners role's App was read installed on, replacing what an earlier bundle
-// read: an account that removed the App is gone from the answer at once, as it is from the
-// bundle that read it.
-func (i *Installed) record(role AppRole, owners []string) {
+// record holds the owners the App was read installed on, replacing what an earlier bundle read:
+// an account that removed the App is gone from the answer at once, as it is from the bundle that
+// read it.
+func (i *Installed) record(owners []string) {
 	if i == nil {
 		return
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if i.owners == nil {
-		i.owners = map[AppRole][]string{}
-	}
-	i.owners[role] = slices.Clone(owners)
+	i.owners, i.read = slices.Clone(owners), true
 }
 
-// Owners is the owner accounts role's App was installed on when its last bundle was built, and
-// whether any bundle of it has been built at all: what internal/daemon tells a launch its own
-// App reaches (daemon.RepositoriesClause), which may be a minute old and may have been read for
-// another role of the same App, as this record's own doc says. It is no set to mint from — a
-// bundle reads GitHub itself, at every build (GitHubCredential) — and the answer is the
-// record's own slice copied, so a caller that sorts or appends to it moves nothing here.
-func (i *Installed) Owners(role AppRole) ([]string, bool) {
+// Owners is the owner accounts the App was installed on when the last bundle was built, and
+// whether any bundle has been built at all: what internal/daemon tells a launch its token
+// reaches (daemon.RepositoriesClause), which may be a minute old and may have been read for
+// another role, as this record's own doc says. It is no set to mint from — a bundle reads GitHub
+// itself, at every build (GitHubCredential) — and the answer is the record's own slice copied, so
+// a caller that sorts or appends to it moves nothing here.
+func (i *Installed) Owners() ([]string, bool) {
 	if i == nil {
 		return nil, false
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	owners, read := i.owners[role]
-	return slices.Clone(owners), read
-}
-
-// shared is the owners every one of roles' Apps was last read installed on — their
-// intersection — and whether every one of them has been read at all. A pod's gh projection is
-// its roles' bundles intersected (sandbox's gitHubBundles), so an owner one of its Apps is not
-// installed on is in no such pod's projection however readily the other App mints it. A role
-// nothing has been read for leaves the answer unknown: a set built without it would name a pod
-// lacking for a directory an App that has never been read may well not hold.
-func (i *Installed) shared(roles []AppRole) ([]string, bool) {
-	if i == nil {
-		return nil, false
-	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	var shared []string
-	for at, role := range roles {
-		owners, read := i.owners[role]
-		if !read {
-			return nil, false
-		}
-		if at == 0 {
-			shared = slices.Clone(owners)
-			continue
-		}
-		shared = slices.DeleteFunc(shared, func(owner string) bool { return !slices.Contains(owners, owner) })
-	}
-	return shared, true
+	return slices.Clone(i.owners), i.read
 }
 
 // GitHubDirs is the directory names a gh bundle built now for repo would hold, sorted: the answer
@@ -390,29 +372,28 @@ func (i *Installed) shared(roles []AppRole) ([]string, bool) {
 // (sandbox.Options.GitHubDirs), since a pod's projection is fixed at the directories of its
 // creation. A zero repo is the controller's owner-only set, the bundle its pod was launched with.
 //
-// roles are the App roles of the pod that pod projection belongs to, which both records are read
-// for: the owners those Apps were last read installed on, intersected (installed, Installed),
-// less every directory a mint of those Apps could not fill (left, LeftOut). An issue pod
-// runs both Apps and projects what both their bundles hold, so an owner either App is not
-// installed on, and a directory either App left out, is in no projection of it; the project
-// controller's pod runs the review App alone and is handed every directory that App mints,
-// whatever the implement App's installation reaches (sandbox's movedGhDirs, which maps its pod's
-// kind's roles through AppRoleFor).
+// sets are the sets of the roles of the pod that projection belongs to: the answer is the owners
+// the App was last read installed on (installed, Installed), less every directory a mint of one
+// of those sets could not fill (left, LeftOut). An issue pod runs every workflow role and
+// projects what all their bundles hold, so a directory any of their sets left out is in no
+// projection of it; the project controller's pod runs the controller's set alone and is handed
+// every directory that set mints, whatever the issue roles' mints found (sandbox's movedGhDirs,
+// which maps its pod's kind's roles through SetFor).
 //
 // It mints nothing and calls GitHub not at all — the drift check reads it on every evaluation of
 // every pod, so a call to GitHub here would be one per pod per sweep — which is what the
 // Installed record is for: a bundle reads the installations itself, and this answers from what
-// the last bundle of those Apps read. Beside that it reads the same inputs a bundle does, the
-// configured renames and the repositories Dispatch maps to the project, through the same one
-// description (bundleDirs), so the set a pod is compared against and the set a pod would be
-// handed cannot drift apart.
+// the last bundle read. Beside that it reads the same inputs a bundle does, the configured
+// renames and the repositories Dispatch maps to the project, through the same one description
+// (bundleDirs), so the set a pod is compared against and the set a pod would be handed cannot
+// drift apart.
 //
 // Two answers are no set at all, and leave every pod where it is: an App no bundle has read the
-// installations of yet (Installed.shared), and a bundle no launch could write — a default
+// installations of yet (Installed.Owners), and a bundle no launch could write — a default
 // directory ghconfig refuses a name for, which is what GitHubCredential fails on. Any other
 // owner ghconfig refuses a name for is in no bundle and so in no answer here (bundleDirs).
-func GitHubDirs(repos func() []ghrepo.Repository, renames ghrepo.Renames, installed *Installed, left *LeftOut, roles []AppRole, repo ghrepo.Repository) []string {
-	owners, read := installed.shared(roles)
+func GitHubDirs(repos func() []ghrepo.Repository, renames ghrepo.Renames, installed *Installed, left *LeftOut, sets []TokenSet, repo ghrepo.Repository) []string {
+	owners, read := installed.Owners()
 	if !read {
 		return nil
 	}
@@ -422,7 +403,7 @@ func GitHubDirs(repos func() []ghrepo.Repository, renames ghrepo.Renames, instal
 	}
 	names := make([]string, 0, len(layout.dirs))
 	for _, dir := range layout.dirs {
-		if left.left(dir.name, roles) {
+		if left.left(dir.name, sets) {
 			continue
 		}
 		names = append(names, dir.name)
@@ -441,26 +422,27 @@ type bundleDir struct {
 
 // dirLease is the ask that mints one directory's lease: the owner whose installation mints it,
 // and whether it is that installation's reading lease — a controller's bundle, which holds
-// nothing else — or the App's own, which every directory of a role's bundle holds. Either is
-// minted on one account's installation and reaches every repository that installation holds
-// (INFRA-2543), which is why a directory names an owner and never a repository: there is no
-// narrower lease for a narrower directory to hold.
+// nothing else — or the role's own set's, which every directory of a role's bundle holds. Either
+// is minted on one account's installation and reaches every repository that installation holds,
+// which is why a directory names an owner and never a repository: there is no narrower lease for
+// a narrower directory to hold.
 type dirLease struct {
 	read  bool
 	owner string
 }
 
-// scope is what two directories hold the one lease under: the lease's kind and the owner whose
-// installation mints it, as the Manager keys its cache (leaseScope), so the grouping here and
-// the Manager's are the one rule. A configured rename's two owner directories share one scope.
-func (d dirLease) scope(role AppRole) scope { return leaseScope(d.read, role, d.owner) }
+// scope is what two directories hold the one lease under: the lease's kind, the set a write
+// lease is minted with, and the owner whose installation mints it, as the Manager keys its cache
+// (leaseScope), so the grouping here and the Manager's are the one rule. A configured rename's
+// two owner directories share one scope.
+func (d dirLease) scope(set TokenSet) scope { return leaseScope(d.read, set, d.owner) }
 
-// mint asks tokens for the lease, as the App role.
-func (d dirLease) mint(ctx context.Context, tokens Tokens, role AppRole) (Lease, error) {
+// mint asks tokens for the lease: the owner's read lease, or set's write lease.
+func (d dirLease) mint(ctx context.Context, tokens Tokens, set TokenSet) (Lease, error) {
 	if d.read {
-		return tokens.ReadToken(ctx, role, d.owner)
+		return tokens.ReadToken(ctx, d.owner)
 	}
-	return tokens.Token(ctx, role, d.owner)
+	return tokens.Token(ctx, set, d.owner)
 }
 
 // bundleLayout is a gh bundle as bundleDirs describes it: dirs, every directory it holds with
@@ -494,7 +476,7 @@ func (l bundleLayout) mintOwner(name string) string {
 // the reading lease of the same owners, and GitHubDirs names it, so no two of the three can
 // hold a directory the others do not.
 //
-// It takes two inputs rather than one. installed is the owner accounts the role's App is
+// It takes two inputs rather than one. installed is the owner accounts the App is
 // installed on, which decides the directories: a lease reaches every repository its
 // installation holds and names no repository at all (INFRA-2543), so the installation is the
 // whole of a role's reach and there is nothing smaller for a directory to stand for. repos is
@@ -609,9 +591,10 @@ func noDirectoryName(name string) error {
 }
 
 // leftOutDirectory is the key one line of a directory left out of a role's gh bundle is said
-// under: the App role, the owner, lowercased as a scope's is, and the reason (leaveOutReason).
+// under: the bundle's set, the owner, lowercased as a scope's is, and the reason
+// (leaveOutReason).
 type leftOutDirectory struct {
-	role   AppRole
+	set    TokenSet
 	owner  string
 	reason string
 }
@@ -626,17 +609,17 @@ var (
 	saidLeftOut   = map[leftOutDirectory]bool{}
 )
 
-// sayLeftOut says on log, at warn, that owner's directory is left out of role's gh bundle for
+// sayLeftOut says on log, at warn, that owner's directory is left out of set's gh bundle for
 // reason (leaveOutReason, or noDirectoryReason for a name that is no directory's), with status,
-// the mint's own failure or the refusal of the name, once per App role, owner and reason for
-// the life of the process (saidLeftOut): the role's other owners are served, and what its
-// bundle does not hold is said once rather than at every launch and every refresh, while a
-// reason that changes is news and costs one line. It carries no token: a mint's failure names
-// the ask and GitHub's answer to it and never a token (exchange, mintFromCommand), and the
-// refusal of a name carries the name alone. A caller that holds no logger of its own
-// (sandbox.Options.Log is one) says it on slog.Default.
-func sayLeftOut(log *slog.Logger, role AppRole, owner, reason string, status error) {
-	key := leftOutDirectory{role: role, owner: strings.ToLower(strings.TrimSpace(owner)), reason: reason}
+// the mint's own failure or the refusal of the name, once per set, owner and reason for the life
+// of the process (saidLeftOut): the role's other owners are served, and what its bundle does not
+// hold is said once rather than at every launch and every refresh, while a reason that changes
+// is news and costs one line. It carries no token: a mint's failure names the ask and GitHub's
+// answer to it and never a token (exchange, mintFromCommand), and the refusal of a name carries
+// the name alone. A caller that holds no logger of its own (sandbox.Options.Log is one) says it
+// on slog.Default.
+func sayLeftOut(log *slog.Logger, set TokenSet, owner, reason string, status error) {
+	key := leftOutDirectory{set: set, owner: strings.ToLower(strings.TrimSpace(owner)), reason: reason}
 	saidLeftOutMu.Lock()
 	said := saidLeftOut[key]
 	saidLeftOut[key] = true
@@ -648,7 +631,7 @@ func sayLeftOut(log *slog.Logger, role AppRole, owner, reason string, status err
 		log = slog.Default()
 	}
 	log.Warn("appauth: an owner's directory is left out of the role's gh bundle",
-		"app", string(role), "owner", owner, "reason", reason, "status", status.Error())
+		"set", string(set), "owner", owner, "reason", reason, "status", status.Error())
 }
 
 // noDirectoryReason is the reason an owner is left out of a bundle because its name is no
@@ -722,9 +705,10 @@ func leaveOutReason(err error) string {
 //
 // A layout with no owner at all is an App installed nowhere, and no configured rename's owner
 // beside it: runtime.ErrNoGitHubOwner, for both credentials.
-func mintBundle(ctx context.Context, tokens Tokens, appRole AppRole, role claim.Role, read bool, dflt string, layout bundleLayout, left *LeftOut, log *slog.Logger) (ghconfig.Bundle, error) {
+func mintBundle(ctx context.Context, tokens Tokens, role claim.Role, read bool, dflt string, layout bundleLayout, left *LeftOut, log *slog.Logger) (ghconfig.Bundle, error) {
+	set := SetFor(role)
 	if len(layout.owners) == 0 {
-		return ghconfig.Bundle{}, fmt.Errorf("the %s App for %s: %w", appRole, role, runtime.ErrNoGitHubOwner)
+		return ghconfig.Bundle{}, fmt.Errorf("the %s's gh bundle: %w", role, runtime.ErrNoGitHubOwner)
 	}
 	// The pairs are the layout's, whatever the mints answer: a pair whose `to` owner is left out
 	// of the bundle stays in the file and is refused where a request routes to that missing
@@ -738,7 +722,7 @@ func mintBundle(ctx context.Context, tokens Tokens, appRole AppRole, role claim.
 	// own is the lease the default directory holds, which every directory sharing it holds too:
 	// a configured rename's alias directory shares the lease of the owner the repository moved
 	// to, so the scope is what says whether a failure is the default's, never the name.
-	own := dirLease{read: read, owner: layout.mintOwner(dflt)}.scope(appRole)
+	own := dirLease{read: read, owner: layout.mintOwner(dflt)}.scope(set)
 	minted := make(map[scope]ghconfig.Rendered, len(layout.dirs))
 	failed := map[scope]error{}
 	// failures is why each owner left out was, naming it, for a bundle every one of whose
@@ -750,11 +734,11 @@ func mintBundle(ctx context.Context, tokens Tokens, appRole AppRole, role claim.
 	}
 	for _, dir := range layout.dirs {
 		hold := dirLease{read: read, owner: dir.owner}
-		key := hold.scope(appRole)
+		key := hold.scope(set)
 		if _, done := minted[key]; !done && failed[key] == nil {
-			rendered, err := dirEntry(ctx, tokens, appRole, hold)
+			rendered, err := dirEntry(ctx, tokens, set, hold)
 			if err != nil {
-				named := fmt.Errorf("mint the %s%s App lease for %s on %s: %w", how, appRole, role, hold.owner, err)
+				named := fmt.Errorf("mint the %slease of the %s on %s: %w", how, role, hold.owner, err)
 				if (dflt != "" && key == own) || ctx.Err() != nil || leaveOutReason(err) == "" {
 					return ghconfig.Bundle{}, named
 				}
@@ -768,20 +752,20 @@ func mintBundle(ctx context.Context, tokens Tokens, appRole AppRole, role claim.
 			bundle.Dirs[dir.name] = entry
 		}
 	}
-	dflt, err := bundleDefault(bundle, appRole, role, dflt, layout, failures)
+	dflt, err := bundleDefault(bundle, role, dflt, layout, failures)
 	if err != nil {
 		return ghconfig.Bundle{}, err
 	}
 	for _, dir := range layout.dirs {
 		_, held := bundle.Dirs[dir.name]
-		left.record(appRole, dir.name, !held)
+		left.record(set, dir.name, !held)
 		if !held {
-			err := failed[dirLease{read: read, owner: dir.owner}.scope(appRole)]
-			sayLeftOut(log, appRole, dir.owner, leaveOutReason(err), err)
+			err := failed[dirLease{read: read, owner: dir.owner}.scope(set)]
+			sayLeftOut(log, set, dir.owner, leaveOutReason(err), err)
 		}
 	}
 	for _, name := range layout.refused {
-		sayLeftOut(log, appRole, name, noDirectoryReason, noDirectoryName(name))
+		sayLeftOut(log, set, name, noDirectoryReason, noDirectoryName(name))
 	}
 	bundle.Default = dflt
 	return bundle, nil
@@ -797,7 +781,7 @@ func mintBundle(ctx context.Context, tokens Tokens, appRole AppRole, role claim.
 // later as one whose default holds no gh files (ghconfig.Bundle.Validate), long after the asks
 // that could say why. Where every one of those was GitHub refusing the lease, the refusal is
 // ErrNarrowingRefused, as each of them is.
-func bundleDefault(bundle ghconfig.Bundle, appRole AppRole, role claim.Role, dflt string, layout bundleLayout, failures []error) (string, error) {
+func bundleDefault(bundle ghconfig.Bundle, role claim.Role, dflt string, layout bundleLayout, failures []error) (string, error) {
 	if dflt != "" {
 		return dflt, nil
 	}
@@ -806,17 +790,18 @@ func bundleDefault(bundle ghconfig.Bundle, appRole AppRole, role claim.Role, dfl
 			return dir.name, nil
 		}
 	}
-	return "", fmt.Errorf("the %s App's gh bundle for %s holds no owner the App is installed on (%s): %w",
-		appRole, role, strings.Join(slices.Sorted(maps.Keys(layout.owners)), ", "), errors.Join(failures...))
+	return "", fmt.Errorf("the %s's gh bundle holds no owner the App is installed on (%s): %w",
+		role, strings.Join(slices.Sorted(maps.Keys(layout.owners)), ", "), errors.Join(failures...))
 }
 
-// dirEntry is the directory's lease, rendered as gh's two files. A lease is the owner's whole
-// installation, so there is nothing narrower to ask for and nothing to probe: a mint that fails
-// is the whole directory, which mintBundle leaves out or fails the bundle for.
-func dirEntry(ctx context.Context, tokens Tokens, appRole AppRole, hold dirLease) (ghconfig.Rendered, error) {
-	lease, err := hold.mint(ctx, tokens, appRole)
+// dirEntry is the directory's lease, rendered as gh's two files and labelled with set, the set
+// of the role the bundle is for, the controller's for its read leases too. A lease is the
+// owner's whole installation, so there is nothing narrower to ask for and nothing to probe: a
+// mint that fails is the whole directory, which mintBundle leaves out or fails the bundle for.
+func dirEntry(ctx context.Context, tokens Tokens, set TokenSet, hold dirLease) (ghconfig.Rendered, error) {
+	lease, err := hold.mint(ctx, tokens, set)
 	if err != nil {
 		return ghconfig.Rendered{}, err
 	}
-	return ghconfig.Render(lease.Token, string(appRole), lease.ExpiresAt), nil
+	return ghconfig.Render(lease.Token, string(set), lease.ExpiresAt), nil
 }

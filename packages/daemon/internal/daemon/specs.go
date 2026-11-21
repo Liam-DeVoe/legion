@@ -74,21 +74,21 @@ type specs struct {
 	// workflow does not record); nil for a daemon with no workflow, whose launches work no
 	// repository.
 	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
-	// appOwners is the owner accounts the role's own GitHub App is installed on AND the role's gh
+	// appOwners is the owner accounts the GitHub App is installed on AND the role's gh
 	// bundle holds a directory for, lowercased and sorted: the reach a worker's addressing names
 	// beside its own issue's repository, and the controller's after its design gate steps
 	// (RepositoriesClause). The two conditions are one rule, GitHubDirs': an installed owner the
 	// last bundle left out — not installed, suspended, granted none, permissions refused, or a
 	// login that is no directory name — holds no token this role could use, so naming it would
-	// promise a reach the role does not have. Under runtime: kubernetes the Apps read are the
-	// POD's (sandbox.PodAppRoles): an issue pod projects only the directories both Apps' bundles
-	// hold, so an owner one App alone reaches is in no container of that pod and `legion gh`
-	// refuses it there, while a tmux pane holds the role's own bundle and reads that App alone.
+	// promise a reach the role does not have. Under runtime: kubernetes the sets read are the
+	// POD's (sandbox.PodTokenSets): an issue pod projects only the directories every role's bundle
+	// holds, so an owner one set's mint was refused is in no container of that pod and `legion gh`
+	// refuses it there, while a tmux pane holds the role's own bundle and reads that set alone.
 	// The daemon answers it from
-	// what the last gh bundle of that App read from GitHub (appauth.Installed, plan.appOwners),
-	// which costs no read of its own on a launch; a role whose App no bundle has been built for
+	// what the last gh bundle read from GitHub (appauth.Installed, plan.appOwners),
+	// which costs no read of its own on a launch; a role no bundle has been built for
 	// yet — the first launch of a daemon that has built none — is answered the owners of the
-	// repositories the project is mapped, every one of which has both Apps installed, so the
+	// repositories the project is mapped, every one of which has the App installed, so the
 	// clause names a true part of the reach and never more than it. The daemon sets it at boot
 	// whether or not a workflow is configured; a nil one names no owner, as an App installed
 	// nowhere does.

@@ -721,8 +721,8 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{
 		Default: "acme",
 		Dirs: map[string]ghconfig.Rendered{
-			"acme":    ghconfig.Render("ghs_acme_write", "implement", expires),
-			"sjawhar": ghconfig.Render("ghs_sjawhar_write", "implement", expires),
+			"acme":    ghconfig.Render("ghs_acme_write", "implementer", expires),
+			"sjawhar": ghconfig.Render("ghs_sjawhar_write", "implementer", expires),
 		},
 		Pairs: []ghrepo.Rename{ghrepo.MustRename("octocat/moved", "sjawhar/moved"), ghrepo.MustRename("sjawhar/gone", "nobody/gone")},
 	}); err != nil {

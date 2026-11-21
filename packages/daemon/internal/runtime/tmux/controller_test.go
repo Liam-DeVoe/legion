@@ -125,7 +125,7 @@ func TestAControllerWithNoGitHubOwnerRunsWithGhActingAsNobody(t *testing.T) {
 	ctx := context.Background()
 	var logs strings.Builder
 	noOwner := func(_ context.Context, role claim.Role, _ ghrepo.Repository) (ghconfig.Bundle, error) {
-		return ghconfig.Bundle{}, fmt.Errorf("the review App for %s: %w", role, runtime.ErrNoGitHubOwner)
+		return ghconfig.Bundle{}, fmt.Errorf("the %s's gh bundle: %w", role, runtime.ErrNoGitHubOwner)
 	}
 	f := newFakeServerRuntimeWith(t, noOwner, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		func(o *Options) {

@@ -253,7 +253,7 @@ func (w *workflowRuntime) waitOutLimits(ctx context.Context, unheld []limitedRea
 // one row cannot read as an App missing (refusedRepository.apps).
 func unreadDefaultBranch(mapped mappedRepository, err error) refusedRepository {
 	return refusedRepository{Repo: mapped.Repo.String(), Reason: fmt.Sprintf("GitHub did not answer the read of its default branch: %v; Legion reads it again", err),
-		apps: appAnswers{answered: true, implement: true, review: true}, readErr: err, mappedDefault: mapped.Default}
+		apps: appAnswers{answered: true, installed: true}, readErr: err, mappedDefault: mapped.Default}
 }
 
 // limitAttributes is what a log line says of read's rate limit: how long GitHub asked the reader to

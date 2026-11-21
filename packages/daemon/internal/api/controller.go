@@ -60,15 +60,16 @@ type ControllerCredentialRequest struct {
 }
 
 // ControllerCredentialResponse is `POST /legion/v1/controller/github-credential`'s answer: the
-// review App's read-only token for every owner that App is installed on, and for an owner a
+// App's read-only token for every owner the App is installed on, and for an owner a
 // configured rename moved a repository away from (appauth.ControllerCredential), each one
 // rendered as the two
 // files gh reads (`ghconfig.Rendered`: Hosts for hosts.yml, Config for config.yml) and keyed by
 // lowercased owner; Default, the owner whose directory the controller's GH_CONFIG_DIR names (the
-// request's, or the first owner, sorted); the App name; the soonest of the tokens' expiries;
+// request's, or the first owner, sorted); App, the label the files are rendered under
+// (ghconfig.Rendered.App: "controller", the controller's set); the soonest of the tokens' expiries;
 // Renames, the configured pairs the bundle routes a moved repository by, each `<owner>/<name>`
 // as GitHub spells it, which a project configuring none answers without; and Installed, the
-// owner accounts the review App is installed on.
+// owner accounts the App is installed on.
 // `legion controller start` writes them under `<state_dir>/gh`, the owners' two files each in a
 // directory of its own and the pairs in the root's one file (ghconfig.WriteBundle), and
 // refreshes them every minute; the plugin never reads this route or that directory.
@@ -78,7 +79,7 @@ type ControllerCredentialResponse struct {
 	App       string                               `json:"app"`
 	ExpiresAt string                               `json:"expiresAt"`
 	Renames   []ControllerRename                   `json:"renames,omitempty"`
-	// Installed is the owner accounts the review App is installed on, lowercased and sorted,
+	// Installed is the owner accounts the App is installed on, lowercased and sorted,
 	// as the one read of GitHub that opened this bundle's build answered them
 	// (appauth.ControllerCredential), so the directories and the installations of one answer
 	// are one moment's. `legion controller start` tells its controller which owners its App
@@ -170,7 +171,7 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 }
 
 // controllerGitHubCredential is `legion controller start`'s refresh call: proving the current
-// controller capability buys the review App's fresh read-only tokens for every owner that App
+// controller capability buys the App's fresh read-only tokens for every owner the App
 // is installed on, each reaching every repository its own installation holds
 // (appauth.ControllerCredential), each rendered as the two files `gh` reads. The capability
 // compare runs under controllerMu, the same lock the mint and the controller-session grant take,
@@ -224,7 +225,7 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
 		return
 	}
-	// The owners this build reads the review App installed on are kept for the answer
+	// The owners this build reads the App installed on are kept for the answer
 	// (ControllerCredentialResponse.Installed) in a record of this request's own, so what the
 	// answer names is the read this bundle was built from and no other caller's. What a mint
 	// found refused is recorded nowhere (appauth.LeftOut): this bundle is built per request
@@ -249,7 +250,7 @@ func (s *server) controllerGitHubCredential(w http.ResponseWriter, r *http.Reque
 		writeFailure(w, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")
 		return
 	}
-	installed, _ := read.Owners(appauth.AppRoleFor(claim.RoleController))
+	installed, _ := read.Owners()
 	if installed == nil {
 		installed = []string{}
 	}

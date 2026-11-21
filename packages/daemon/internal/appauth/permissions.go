@@ -18,66 +18,78 @@ import (
 	"strings"
 )
 
-// writePermissions is the permission set a role's write token is asked for, one per App role:
-// what that App's roles do to the repositories they work in, and nothing else. It is what
-// the mint asks for of an installation granted all of it; an installation granted less is asked
-// for what it is granted (exchangeGranted), since GitHub answers a request naming a permission
-// the installation is not granted HTTP 422, minting nothing rather than leaving that one out.
+// writePermissions is the permission set each write token is asked for, one per TokenSet: what
+// that role does to the repositories it works in and nothing else, and for SetVerdict what the
+// daemon's own check writes need. It is what the mint asks for of an installation granted all of
+// it; an installation granted less is asked for what it is granted (exchangeGranted), since
+// GitHub answers a request naming a permission the installation is not granted HTTP 422, minting
+// nothing rather than leaving that one out. One App serves every set, so the set is the whole of
+// what tells one role's token from another's.
 //
 // Every entry has its user. workflows:write is a push that touches `.github/workflows`, which
-// GitHub refuses from a token without it; contents:write is that push and every other, each role
-// pushing its own commits; pull_requests:write is the pull request, its comments and its reviews;
-// actions:write is `gh run rerun`, a re-run being a write even though the role only reads what it
-// produces; metadata:read is every read of the repository itself, which GitHub requires of any
-// token. checks and statuses are the check runs and commit statuses of a head, and differ by App:
-// the review App's set asks for checks:write, its reviewer creating the check runs, and
-// statuses:read, because its roles read the commit statuses of a head, where the implement App's
-// asks for checks:read, what its roles read of those check runs, and statuses:write, which is what
-// the implement App declares. No role of either App posts a commit status: a tester's verdict is a
-// check run and a comment (docs/solutions/legion/one-role-keyed-table-decides-which-github-app-acts.md).
+// GitHub refuses from a token without it, and only the implementer and the merger, who write the
+// work's commits, ask for it: a wording fix another role finds in a workflow takes an
+// implementing round. contents:write is every other push, each role pushing its own commits; the
+// tester's set asks for contents:read instead, since the tester runs the work's own code under
+// its token and that code must not push a commit. pull_requests:write is the pull request, its
+// comments and its reviews; actions:write is `gh run rerun`, a re-run being a write even though
+// the role only reads what it produces; metadata:read is every read of the repository itself,
+// which GitHub requires of any token.
 //
-// attestations:read is in both sets, because a role reads the attestations of an artifact, such
-// as to check that an image was built from the default branch, and no role makes one: a release
-// workflow does. Neither set asks for more than read of it (readPermissions says where a token
-// without it was refused).
+// checks and statuses are the check runs and commit statuses of a head, and every role's set asks
+// for both at read, what a role reads of a head's CI: GitHub's checks:write covers every check
+// name, so a role holding it could write the required legion-verdict check run itself. The
+// daemon's verdict token (SetVerdict) is the one set that writes them: checks:write for the
+// legion-verdict check run, statuses:write only to write over a legion-verdict commit status the
+// daemon did not write, and contents, metadata and pull_requests at read for the head and the
+// pull request it writes them on. No role's set holds either at write, and Token refuses the
+// verdict set to every caller (errVerdictSet).
 //
-// The set says what the App's roles use, never what an installation holds: what an account has
-// approved is the account's, and the cut takes each mint's request down to it (exchangeGranted),
-// so an installation granted less than a set names is asked for less rather than refused.
+// attestations:read is in every role's set, because a role reads the attestations of an
+// artifact, such as to check that an image was built from the default branch, and no role makes
+// one: a release workflow does. No set asks for more than read of it (readPermissions says where
+// a token without it was refused).
 //
-// issues:write is in both sets, though the daemon itself reads and writes no GitHub issue: the
-// roles do, through their tokens. The implementer runs the work's own code, which may read an
+// The set says what a role uses, never what an installation holds: what an account has approved
+// is the account's, and the cut takes each mint's request down to it (exchangeGranted), so an
+// installation granted less than a set names is asked for less rather than refused.
+//
+// issues:write is in every role's set, though the daemon itself reads and writes no GitHub issue:
+// the roles do, through their tokens. The implementer runs the work's own code, which may read an
 // issue of the repository it works in and post or edit a comment there, such as a release script
-// marking that an issue's run should stop or be tried again. The tester runs that same code under
-// the review App, so that App's set needs what the code needs. The write lease already holds
-// contents:write and pull_requests:write wherever it reaches, so issues:write adds no new kind of
-// harm; giving the review App's other roles issues read alone would mean keying the set by
-// workflow role rather than by App, a larger change for no measured risk. A token whose request
-// names no issues permission is refused an issue of a private repository with 403 "Resource not
-// accessible by integration" (readPermissions says where that was measured).
+// marking that an issue's run should stop or be tried again, and the tester runs that same code
+// under its own token, so its set needs what the code needs. A role's write token already holds
+// pull_requests:write wherever it reaches, so issues:write adds no new kind of harm. A token
+// whose request names no issues permission is refused an issue of a private repository with 403
+// "Resource not accessible by integration" (readPermissions says where that was measured).
 //
-// Repository projects and packages are in neither set, though both Apps' installations hold
-// them: Legion writes no project and no package.
+// Repository projects and packages are in no set, though the App's installations hold them:
+// Legion writes no project and no package.
 //
-// security_events is the code-scanning alerts of the repository, and it differs by App as checks
-// does: the review App's set asks for write and the implement App's for read, its roles reading
-// which alerts stand on a head. The write is what a dismissal of an alert whose code is right
-// needs, and the set is keyed by App rather than by workflow role, so the token serves every role
-// the review App mints for — architect, planner, tester and reviewer (AppRoleFor, identity.go) —
-// and each of them can dismiss an alert, upload SARIF or delete an analysis. A dismissal names
-// the App in its dismissed_by, whichever of those roles made it, so which role acted is readable
-// only where the comment the dismissal carries says so; an upload or a deletion leaves neither.
+// security_events is the code-scanning alerts of the repository: write in the sets of the
+// architect, the planner, the tester, the reviewer and the controller, and read in the
+// implementer's and the merger's, which read which alerts stand on a head. The write is what a
+// dismissal of an alert whose code is right needs, and each role that holds it can dismiss an
+// alert, upload SARIF or delete an analysis. A dismissal names the App in its dismissed_by,
+// whichever role made it, so which role acted is readable only where the comment the dismissal
+// carries says so; an upload or a deletion leaves neither.
 //
 // It is here because, in key mode, a token minted without it is refused those reads whatever the
-// installation holds: measured on 2026-11-10, every code-scanning read of both role Apps answered
-// 403 with `X-Accepted-Github-Permissions: security_events=read` while the accounts' grants of
-// 2026-11-08 stood, because this file named the permission in neither set and GitHub mints a
+// installation holds: measured on 2026-11-10, every code-scanning read of both role Apps of that
+// time answered 403 with `X-Accepted-Github-Permissions: security_events=read` while the accounts'
+// grants of 2026-11-08 stood, because this file named the permission in no set and GitHub mints a
 // token carrying what the request names. A deployment in token mode asks its command for no
 // permissions at all (tokencommand.go): its profiles file decides them, and the profiles
-// docs/deployment.md gives name this set (deployment_doc_test.go holds them to it).
-var writePermissions = map[AppRole]map[string]string{
-	Implement: {"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
-	Review:    {"actions": "write", "attestations": "read", "checks": "write", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read"},
+// docs/deployment.md gives name these sets (deployment_doc_test.go holds them to it).
+var writePermissions = map[TokenSet]map[string]string{
+	SetImplementer: {"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "read", "workflows": "write"},
+	SetMerger:      {"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "read", "workflows": "write"},
+	SetArchitect:   {"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read"},
+	SetPlanner:     {"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read"},
+	SetTester:      {"actions": "write", "attestations": "read", "checks": "read", "contents": "read", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read"},
+	SetReviewer:    {"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read"},
+	SetController:  {"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read"},
+	SetVerdict:     {"checks": "write", "contents": "read", "metadata": "read", "pull_requests": "read", "statuses": "write"},
 }
 
 // readPermissions is the read set: what a read lease asks GitHub for, each permission at read. It
@@ -211,20 +223,19 @@ func narrowToGranted(asked, granted map[string]string) (map[string]string, []gra
 	return narrowed, short
 }
 
-// shortfallMessage is the message of the warn record a Manager logs once per App role, owner and
-// shortfall, when a mint asks for less than the role's set names because the installation is
-// granted less: the lease is served, and what the token cannot do is said once rather than at
-// every mint. It takes the role, the owner, what the installation is granted (granting), the
-// permission and the access asked for, what the request carries of it (minting), and the
-// permission and access to grant. It carries no token.
-const shortfallMessage = "appauth: the %s App's installation on %s is granted %s, where its token asks for %s: %s, so the token is minted %s; grant the App %s: %s and approve it on that account"
+// shortfallMessage is the message of the warn record a Manager logs once per owner and
+// shortfall, when a mint asks for less than its set names because the installation is granted
+// less: the lease is served, and what the token cannot do is said once rather than at every
+// mint. It takes the owner, what the installation is granted (granting), the token the mint was
+// for (mintRequest.token), the permission and the access asked for, what the request carries of
+// it (minting), and the permission and access to grant. It carries no token.
+const shortfallMessage = "appauth: the App's installation on %s is granted %s, where the %s token asks for %s: %s, so the token is minted %s; grant the App %s: %s and approve it on that account"
 
-// saidShortfall is the key one record of a shortfall is logged under: the App role, the owner
-// lowercased as a scope's is, and what the installation is granted of the permission. A second
-// mint of any scope of that role and owner logs nothing again, since the grant is the
-// installation's and the record is about the installation.
+// saidShortfall is the key one record of a shortfall is logged under: the owner lowercased as a
+// scope's is, and what the installation is granted of the permission against what was asked. A
+// second mint of any scope of that owner logs nothing again, whichever set it was for, since the
+// grant is the one App's installation's and the record is about the installation.
 type saidShortfall struct {
-	role  AppRole
 	owner string
 	grantShortfall
 }
@@ -233,13 +244,13 @@ type saidShortfall struct {
 // cut down to the access owner's account approved for the App (grantedPermissions,
 // narrowToGranted), with a warn record for each one left out or lowered (sayShortfalls). A
 // permission the installation is not granted is left out, where asking for it would make GitHub
-// refuse the mint whole (a 422) and cost the role every other permission of its set, and the gh
+// refuse the mint whole (a 422) and cost the token every other permission of its set, and the gh
 // bundle that mint belongs to (GitHubCredential).
 //
 // A cut that leaves no permission at all refuses the mint instead: GitHub reads a request with
 // no permissions as every permission the installation holds, so a body without them would mint
-// wider than the role's set asks for rather than narrower. The refusal names the role, the
-// owner and the set asked for (askedFor), and carries no token. A gh bundle leaves that owner's
+// wider than the set asks for rather than narrower. The refusal names the token, the owner and
+// the permissions asked for (askedFor), and carries no token. A gh bundle leaves that owner's
 // directory out over it, unless it is the bundle's own default (mintBundle).
 //
 // An installation its account suspended is refused by the read, before any token is asked of it
@@ -253,11 +264,11 @@ func (m *Manager) exchangeGranted(ctx context.Context, jwt, installation string,
 	if err != nil {
 		return Lease{}, err
 	}
-	permissions, short := narrowToGranted(request.permissions, granted)
-	m.sayShortfalls(request.role, request.owner, short)
+	permissions, short := narrowToGranted(request.permissions(), granted)
+	m.sayShortfalls(request, short)
 	if len(permissions) == 0 {
-		return Lease{}, fmt.Errorf("the %s App's installation on %s is granted none of the permissions its token asks for (%s), and a token request naming no permission holds every permission the installation has: %w",
-			request.role, request.owner, askedFor(request.permissions), errGrantedNone)
+		return Lease{}, fmt.Errorf("the App's installation on %s is granted none of the permissions the %s token asks for (%s), and a token request naming no permission holds every permission the installation has: %w",
+			request.owner, request.token(), askedFor(request.permissions()), errGrantedNone)
 	}
 	return m.exchange(ctx, jwt, installation, permissions)
 }
@@ -329,15 +340,18 @@ func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation stri
 	return payload.Permissions, nil
 }
 
-// sayShortfalls logs shortfallMessage at warn for each of short the first time a mint of role for
-// owner meets it, and nothing on any mint after it: the grant is the installation's and the
-// record is about the installation, which the owner names. Beside the message the record carries
-// what it says as fields, so a reader filtering the daemon's log finds it by them: the App, the
-// owner, the permission, the access the set asks for and the access the installation is granted,
-// empty where it is granted none.
-func (m *Manager) sayShortfalls(role AppRole, owner string, short []grantShortfall) {
+// sayShortfalls logs shortfallMessage at warn for each of short the first time a mint for the
+// request's owner meets it, whichever token the mint was for, and nothing on any mint after it:
+// the grant is the installation's and the record is about the installation, which the owner
+// names. Beside the message the record carries what it says as fields, so a reader filtering the
+// daemon's log finds it by them: the token that met it first, by its name (mintRequest.token)
+// and never its value, the owner, the permission, the access the set asks for and the access
+// the installation is granted, empty where it is granted none. It takes the request whole rather
+// than its name and owner, two strings a call could swap.
+func (m *Manager) sayShortfalls(request mintRequest, short []grantShortfall) {
+	name, owner := request.token(), request.owner
 	for _, shortfall := range short {
-		key := saidShortfall{role: role, owner: strings.ToLower(strings.TrimSpace(owner)), grantShortfall: shortfall}
+		key := saidShortfall{owner: strings.ToLower(strings.TrimSpace(owner)), grantShortfall: shortfall}
 		m.mu.Lock()
 		said := m.saidShortfalls[key]
 		m.saidShortfalls[key] = true
@@ -345,9 +359,9 @@ func (m *Manager) sayShortfalls(role AppRole, owner string, short []grantShortfa
 		if said {
 			continue
 		}
-		m.log.Warn(fmt.Sprintf(shortfallMessage, role, owner, shortfall.granting(),
+		m.log.Warn(fmt.Sprintf(shortfallMessage, owner, shortfall.granting(), name,
 			shortfall.permission, shortfall.asked, shortfall.minting(), shortfall.permission, shortfall.asked),
-			"app", string(role), "owner", owner, "permission", shortfall.permission,
+			"token", name, "owner", owner, "permission", shortfall.permission,
 			"asked", shortfall.asked, "granted", shortfall.granted)
 	}
 }

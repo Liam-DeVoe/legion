@@ -144,17 +144,21 @@ func (h *harness) controllerGitHubCredential(secret string) *httptest.ResponseRe
 // failingTokens is a token source whose every mint fails, for the credential routes' 502.
 type failingTokens struct{}
 
-func (failingTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
+func (failingTokens) Token(context.Context, appauth.TokenSet, string) (appauth.Lease, error) {
 	return appauth.Lease{}, errors.New("github is down")
 }
 
-func (failingTokens) ReadToken(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
+func (failingTokens) ReadToken(context.Context, string) (appauth.Lease, error) {
+	return appauth.Lease{}, errors.New("github is down")
+}
+
+func (failingTokens) VerdictToken(context.Context, string) (appauth.Lease, error) {
 	return appauth.Lease{}, errors.New("github is down")
 }
 
 // The installations read answers, so what fails is the mint, which the route answers
 // GITHUB_TOKEN_FAILED.
-func (failingTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (failingTokens) InstalledOwners(context.Context) ([]string, error) {
 	return []string{"acme", "sjawhar"}, nil
 }
 
@@ -162,7 +166,7 @@ func (failingTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string
 // GitHub owner to act as now means: the bundle holds no directory, whatever the mapping names.
 type uninstalledTokens struct{ handoffTokens }
 
-func (uninstalledTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (uninstalledTokens) InstalledOwners(context.Context) ([]string, error) {
 	return nil, nil
 }
 
@@ -174,11 +178,11 @@ type refusingTokens struct {
 	owner string
 }
 
-func (t refusingTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+func (t refusingTokens) ReadToken(ctx context.Context, owner string) (appauth.Lease, error) {
 	if strings.EqualFold(owner, t.owner) {
 		return appauth.Lease{}, fmt.Errorf("%w (owner %s)", appauth.ErrNarrowingRefused, owner)
 	}
-	return t.handoffTokens.ReadToken(ctx, role, owner)
+	return t.handoffTokens.ReadToken(ctx, owner)
 }
 
 // rateLimitedTokens refuses owner's read leases as GitHub's rate limit does: the narrowing
@@ -188,14 +192,14 @@ type rateLimitedTokens struct {
 	owner string
 }
 
-func (t rateLimitedTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+func (t rateLimitedTokens) ReadToken(ctx context.Context, owner string) (appauth.Lease, error) {
 	if strings.EqualFold(owner, t.owner) {
 		return appauth.Lease{}, &appauth.TransientError{
 			Err: fmt.Errorf("%w: GitHub App token exchange failed (422): you have exceeded a secondary rate limit (owner %s)",
 				appauth.ErrNarrowingRefused, owner),
 		}
 	}
-	return t.handoffTokens.ReadToken(ctx, role, owner)
+	return t.handoffTokens.ReadToken(ctx, owner)
 }
 
 // The route that mints a controller capability answers only the operator's bearer, and a refusal
@@ -461,8 +465,8 @@ func TestCredentialAndWorkflowRoutesRefuseAMissingFieldWithACode(t *testing.T) {
 		http.StatusBadRequest, "secret is required")
 }
 
-// legion controller start's refresh call answers the review App's read-only token for every owner
-// that App is installed on, each rendered as the two files gh reads, with the first owner, sorted,
+// legion controller start's refresh call answers the App's read-only token for every owner
+// the App is installed on, each rendered as the two files gh reads, with the first owner, sorted,
 // the default, or the owner the request names (the one the controller's GH_CONFIG_DIR already
 // names), and the owner accounts the App is installed on, for the current controller capability
 // alone: a wrong secret, or one a later legion controller start superseded, is refused the same
@@ -481,14 +485,14 @@ func TestControllerGitHubCredential(t *testing.T) {
 		var answer ControllerCredentialResponse
 		decodeInto(t, recorder, &answer)
 		want := map[string]ControllerOwnerCredential{
-			"acme":    {Hosts: ghconfig.Hosts("review-token-for-acme-read"), Config: ghconfig.Config},
-			"sjawhar": {Hosts: ghconfig.Hosts("review-token-for-sjawhar-read"), Config: ghconfig.Config},
+			"acme":    {Hosts: ghconfig.Hosts("read-token-for-acme"), Config: ghconfig.Config},
+			"sjawhar": {Hosts: ghconfig.Hosts("read-token-for-sjawhar"), Config: ghconfig.Config},
 		}
-		if !maps.Equal(answer.Owners, want) || answer.Default != tc.want || answer.App != "review" {
-			t.Fatalf("controller github credential asking %q = %+v, want the review App's read-only files of both owners, default %s", tc.asked, answer, tc.want)
+		if !maps.Equal(answer.Owners, want) || answer.Default != tc.want || answer.App != "controller" {
+			t.Fatalf("controller github credential asking %q = %+v, want the App's read-only files of both owners under the controller's name, default %s", tc.asked, answer, tc.want)
 		}
 		if want := []string{"acme", "sjawhar"}; !slices.Equal(answer.Installed, want) {
-			t.Fatalf("controller github credential asking %q answers installed %q, want %q, the accounts the review App is installed on", tc.asked, answer.Installed, want)
+			t.Fatalf("controller github credential asking %q answers installed %q, want %q, the accounts the App is installed on", tc.asked, answer.Installed, want)
 		}
 		if _, err := time.Parse(timeFormat, answer.ExpiresAt); err != nil {
 			t.Fatalf("expiresAt %q does not parse: %v", answer.ExpiresAt, err)
@@ -498,7 +502,7 @@ func TestControllerGitHubCredential(t *testing.T) {
 		http.StatusBadRequest, "INVALID_DEFAULT_OWNER")
 	notInstalled := h.request(http.MethodPost, "/legion/v1/controller/github-credential", ControllerCredentialRequest{Secret: secret, Default: "not-installed"}, nil)
 	if body := notInstalled.Body.String(); !strings.Contains(body, `\"not-installed\"`) || strings.Contains(body, "token-for") {
-		t.Errorf("a default the review App is not installed on answered %s, want a refusal naming it and no token", body)
+		t.Errorf("a default the App is not installed on answered %s, want a refusal naming it and no token", body)
 	}
 	refused(t, notInstalled, http.StatusBadRequest, "DEFAULT_OWNER_NOT_INSTALLED")
 
@@ -516,12 +520,12 @@ func TestControllerGitHubCredential(t *testing.T) {
 	}
 	var answer ControllerCredentialResponse
 	decodeInto(t, recorder, &answer)
-	if got, want := answer.Owners["mona-cat_octo"], (ControllerOwnerCredential{Hosts: ghconfig.Hosts("review-token-for-mona-cat_octo-read"), Config: ghconfig.Config}); answer.Default != "mona-cat_octo" || got != want {
+	if got, want := answer.Owners["mona-cat_octo"], (ControllerOwnerCredential{Hosts: ghconfig.Hosts("read-token-for-mona-cat_octo"), Config: ghconfig.Config}); answer.Default != "mona-cat_octo" || got != want {
 		t.Errorf("controller github credential asking Mona-Cat_Octo = default %q with mona-cat_octo's files %+v, want default mona-cat_octo holding %+v", answer.Default, got, want)
 	}
 }
 
-// installedTokens is refusingTokens over a review App installed on owners of its own, where
+// installedTokens is refusingTokens over an App installed on owners of its own, where
 // handoffTokens answers the two accounts the harnesses' project serves repositories under: the
 // installations are the account's choice and no mapping's.
 type installedTokens struct {
@@ -529,7 +533,7 @@ type installedTokens struct {
 	installed []string
 }
 
-func (t installedTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (t installedTokens) InstalledOwners(context.Context) ([]string, error) {
 	return t.installed, nil
 }
 
@@ -541,7 +545,7 @@ func (t installedTokens) InstalledOwners(context.Context, appauth.AppRole) ([]st
 // `installed` does not. And an installed owner whose reading lease GitHub refuses has no
 // directory at all: acme here, which `installed` holds and `owners` does not. The list is
 // sorted, and an array on the wire.
-func TestControllerGitHubCredentialAnswersTheOwnersTheReviewAppIsInstalledOn(t *testing.T) {
+func TestControllerGitHubCredentialAnswersTheOwnersTheAppIsInstalledOn(t *testing.T) {
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
@@ -560,13 +564,13 @@ func TestControllerGitHubCredentialAnswersTheOwnersTheReviewAppIsInstalledOn(t *
 	raw := slices.Clone(served.Body.Bytes())
 	var answer ControllerCredentialResponse
 	decodeInto(t, served, &answer)
-	moved := ControllerOwnerCredential{Hosts: ghconfig.Hosts("review-token-for-cybermonklabs-read"), Config: ghconfig.Config}
+	moved := ControllerOwnerCredential{Hosts: ghconfig.Hosts("read-token-for-cybermonklabs"), Config: ghconfig.Config}
 	if want := map[string]ControllerOwnerCredential{"cybermonklabs": moved, "sjawhar": moved}; !maps.Equal(answer.Owners, want) {
 		t.Fatalf("the answer's owners = %+v, want %+v: the alias directory sjawhar beside cybermonklabs, both holding cybermonklabs' lease, and no directory for acme, whose lease GitHub refused; this case proves nothing otherwise",
 			answer.Owners, want)
 	}
 	if want := []string{"acme", "cybermonklabs"}; !slices.Equal(answer.Installed, want) {
-		t.Errorf("the answer's installed = %q, want %q: the accounts the review App is installed on, sorted, whatever directories the bundle holds", answer.Installed, want)
+		t.Errorf("the answer's installed = %q, want %q: the accounts the App is installed on, sorted, whatever directories the bundle holds", answer.Installed, want)
 	}
 	// The wire itself, since a nil slice and an empty one decode alike into the Go field.
 	var body map[string]any
@@ -578,7 +582,7 @@ func TestControllerGitHubCredentialAnswersTheOwnersTheReviewAppIsInstalledOn(t *
 	}
 }
 
-// A review App installed on no account at all answers the credential route's
+// An App installed on no account at all answers the credential route's
 // GITHUB_OWNER_UNCONFIGURED, which legion controller start reads as a daemon with nothing to
 // act as: the bundle's directories are the App's installations, so an App installed nowhere is
 // a bundle with no directory to serve (appauth.ControllerCredential).
@@ -703,8 +707,8 @@ func TestControllerGitHubCredentialWhenTheDefaultOwnerIsRefused(t *testing.T) {
 	}
 	var answer ControllerCredentialResponse
 	decodeInto(t, served, &answer)
-	want := map[string]ControllerOwnerCredential{"sjawhar": {Hosts: ghconfig.Hosts("review-token-for-sjawhar-read"), Config: ghconfig.Config}}
-	if !maps.Equal(answer.Owners, want) || answer.Default != "sjawhar" || answer.App != "review" {
+	want := map[string]ControllerOwnerCredential{"sjawhar": {Hosts: ghconfig.Hosts("read-token-for-sjawhar"), Config: ghconfig.Config}}
+	if !maps.Equal(answer.Owners, want) || answer.Default != "sjawhar" || answer.App != "controller" {
 		t.Errorf("the controller naming no default = %+v, want sjawhar's files alone and sjawhar the default", answer)
 	}
 }

@@ -24,63 +24,73 @@ func refusedProjectRepos() []ghrepo.Repository {
 
 // refusingOwnerTokens answers every lease of owner with the refusal GitHub gives a request its
 // installation cannot answer (422, appauth.ErrNarrowingRefused) while refuse holds, and an
-// ordinary lease for every other owner and once refuse is cleared. app, when set, is the one App
-// role that refuses, the other minting as readily as ever: two Apps' installations answer for
-// themselves.
+// ordinary lease for every other owner and once refuse is cleared. lease, when set, is the one
+// lease that refuses — a token set's name, or "read" for the owner's read lease, which a
+// controller's bundle holds — every other minting as readily as ever: GitHub answers each set's
+// permissions for themselves, so it may refuse one set's narrowing where it grants another's.
 type refusingOwnerTokens struct {
 	refuse *atomic.Bool
 	owner  string
-	app    appauth.AppRole
+	lease  string
 }
 
-func (t refusingOwnerTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return t.lease(role, owner, "write")
+func (t refusingOwnerTokens) Token(_ context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
+	return t.mint(string(set), owner, "write")
 }
 
-func (t refusingOwnerTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return t.lease(role, owner, "read")
+func (t refusingOwnerTokens) ReadToken(_ context.Context, owner string) (appauth.Lease, error) {
+	return t.mint("read", owner, "read")
 }
 
-func (t refusingOwnerTokens) lease(role appauth.AppRole, owner, kind string) (appauth.Lease, error) {
-	if t.refuse.Load() && strings.EqualFold(owner, t.owner) && (t.app == "" || t.app == role) {
-		return appauth.Lease{}, fmt.Errorf("the %s App on %s: %w", role, owner, appauth.ErrNarrowingRefused)
+func (t refusingOwnerTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return t.Token(ctx, appauth.SetVerdict, owner)
+}
+
+func (t refusingOwnerTokens) mint(lease, owner, kind string) (appauth.Lease, error) {
+	if t.refuse != nil && t.refuse.Load() && strings.EqualFold(owner, t.owner) && (t.lease == "" || t.lease == lease) {
+		return appauth.Lease{}, fmt.Errorf("the %s lease on %s: %w", lease, owner, appauth.ErrNarrowingRefused)
 	}
-	return appauth.Lease{Token: "ghs_" + string(role) + "_" + strings.ToLower(owner) + "_" + kind, ExpiresAt: staticCredentialExpiry}, nil
+	return appauth.Lease{Token: "ghs_" + lease + "_" + strings.ToLower(owner) + "_" + kind, ExpiresAt: staticCredentialExpiry}, nil
 }
 
-// eachAppsTokens answers each App role's lease from that App's own tokens: the two Apps'
-// installations answer for themselves, so one may refuse an owner the other reaches. It holds
-// one entry per App role of appauth.Roles, a role it held none for minting nothing.
-type eachAppsTokens map[appauth.AppRole]refusingOwnerTokens
+// eachLeasesTokens answers each lease from the tokens it holds for that lease — a token set's
+// name, or "read" for the owner's read lease — so the installation may refuse one set's lease of
+// an owner while another's mints. A lease it holds no entry for mints as readily as ever.
+type eachLeasesTokens map[string]refusingOwnerTokens
 
-func (e eachAppsTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return e[role].Token(ctx, role, owner)
+func (e eachLeasesTokens) Token(ctx context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
+	return e[string(set)].Token(ctx, set, owner)
 }
 
-func (e eachAppsTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return e[role].ReadToken(ctx, role, owner)
+func (e eachLeasesTokens) ReadToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return e["read"].ReadToken(ctx, owner)
+}
+
+func (e eachLeasesTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return e.Token(ctx, appauth.SetVerdict, owner)
 }
 
 // withRefusedOwner gives the rig the daemon's three gh answers over tokens that refuse every
-// lease of owner while refuse holds, whichever App asks (withProjectTokens).
+// lease of owner while refuse holds, whichever set asks and the read lease too
+// (withProjectTokens).
 func withRefusedOwner(owner string, refuse *atomic.Bool) rigOption {
 	return withProjectTokens(refusingOwnerTokens{refuse: refuse, owner: owner})
 }
 
 // withProjectTokens gives the rig the daemon's own three gh answers (appauth.GitHubCredential,
 // appauth.ControllerCredential and appauth.GitHubDirs) over refusedProjectRepos and tokens, the
-// three sharing the two records their bundles write — the owners each App was read installed on
+// three sharing the two records their bundles write — the owners the App was read installed on
 // and what the mints found GitHub refuses — as internal/daemon's sandboxRuntime builds them for
-// a project. Each App is installed on every owner the project serves a repository of, so what
-// a bundle holds here is what the mints answer for.
+// a project. The App is installed on every owner the project serves a repository of, so what a
+// bundle holds here is what the mints answer for.
 func withProjectTokens(tokens appauth.Tokens) rigOption {
 	return withOptions(func(o *Options) {
 		installed, left := appauth.NewInstalled(), appauth.NewLeftOut()
 		apps := sourceOf(tokens, installedOnMapped{served: refusedProjectRepos})
 		o.GitHubCredential = appauth.GitHubCredential(apps, refusedProjectRepos, ghrepo.Renames{}, installed, left, o.Log)
 		o.ControllerCredential = appauth.ControllerCredential(apps, refusedProjectRepos, ghrepo.Renames{}, installed, left, o.Log)
-		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
-			return appauth.GitHubDirs(refusedProjectRepos, ghrepo.Renames{}, installed, left, roles, repo)
+		o.GitHubDirs = func(repo ghrepo.Repository, sets []appauth.TokenSet) []string {
+			return appauth.GitHubDirs(refusedProjectRepos, ghrepo.Renames{}, installed, left, sets, repo)
 		}
 	})
 }
@@ -144,16 +154,16 @@ func TestAnOwnerEveryLeaseIsRefusedForIsNoDriftForThePodWithoutIt(t *testing.T) 
 	}
 }
 
-// The six roles of an issue pod run as two GitHub Apps, and each App's installations answer for
-// themselves: one may refuse every lease of an owner the other mints. The pod then projects the
-// directories every role's bundle holds and starts, since a projection item naming a key a
-// role's Secret lacks would stop the pod from starting; a role whose bundle holds more keeps
-// those keys in its own Secret, unprojected, and the issue's next pod projects them once every
-// role's bundle holds them.
+// Each of the six roles of an issue pod holds its own token set's leases, and GitHub answers each
+// set's lease for itself: the installation may refuse one set's narrowing for an owner while
+// every other set mints there. The pod then projects the directories every role's bundle holds
+// and starts, since a projection item naming a key a role's Secret lacks would stop the pod from
+// starting; a role whose bundle holds more keeps those keys in its own Secret, unprojected, and
+// the issue's next pod projects them once every role's bundle holds them.
 func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 	var refuse atomic.Bool
 	refuse.Store(true)
-	tokens := refusingOwnerTokens{refuse: &refuse, owner: "acme", app: appauth.Review}
+	tokens := refusingOwnerTokens{refuse: &refuse, owner: "acme", lease: string(appauth.SetReviewer)}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.GitHubCredential = appauth.GitHubCredential(sourceOf(tokens, installedOnMapped{served: refusedProjectRepos}),
 			refusedProjectRepos, ghrepo.Renames{}, nil, nil, o.Log)
@@ -163,11 +173,11 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 	pod := g.pod(loc.Sandbox.Name)
 	for _, role := range claim.Roles {
 		if held := ghItems(t, pod, role); !slices.Equal(held, ghItemsFor("sjawhar")) {
-			t.Errorf("%s's gh volume projects %+v, want sjawhar's two files alone: the review App reaches no acme repository", role, held)
+			t.Errorf("%s's gh volume projects %+v, want sjawhar's two files alone: the reviewer's set was refused every acme lease", role, held)
 		}
 		secret := g.secret(roleSecretName(loc.Sandbox.Name, role))
 		_, holdsAcme := secret.Data[GitHubHostsKey("acme")]
-		if want := appauth.AppRoleFor(role) == appauth.Implement; holdsAcme != want {
+		if want := appauth.SetFor(role) != appauth.SetReviewer; holdsAcme != want {
 			t.Errorf("%s's Secret holds acme's gh files %v, want %v: each role's Secret holds its own bundle", role, holdsAcme, want)
 		}
 	}
@@ -182,10 +192,10 @@ func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 			if err != nil {
 				return bundle, err
 			}
-			// Each App's installation reaches what the other's does not, so the two bundles
-			// share nothing: the review App only acme's repositories, whose directory is then
-			// that role's own default, and the implement App only the issue owner's.
-			if appauth.AppRoleFor(role) == appauth.Review {
+			// Each set's mints answer for themselves, so the bundles share nothing: the
+			// reviewer's holds acme's directory alone, which is then that role's own default,
+			// and every other role's the issue owner's alone.
+			if appauth.SetFor(role) == appauth.SetReviewer {
 				return ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{"acme": bundle.Dirs["acme"]}}, nil
 			}
 			delete(bundle.Dirs, "acme")
@@ -199,22 +209,23 @@ func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 	}
 }
 
-// The record of what a mint found GitHub refuses is read for the Apps a pod runs and no others
-// (appauth.GitHubDirs over the pod's kind's roles, podAppRoles). The project controller's pod
-// runs the review App alone: an owner that App reaches is one its pod must hold a directory
-// for, however the implement App's installation answers, and a controller launched before that
-// owner was served holds no token for it until its pod is replaced. An issue pod is the other
-// case: it projects what both Apps' bundles hold, so an owner either App is refused is in no
-// projection of it and its pod is no pod to replace. Were the record read for every App at
-// once, the implement App's refusal would hide the controller's drift for as long as it stood —
-// and in a project with no live issue pod nothing mints for that App to clear it (INFRA-513).
-func TestAnOwnerOnlyTheOtherAppIsRefusedForIsDriftForTheControllersPod(t *testing.T) {
-	var implement, review atomic.Bool
-	implement.Store(true)
-	review.Store(true)
-	g := newRig(t, nil, withProjectTokens(eachAppsTokens{
-		appauth.Implement: {refuse: &implement, owner: "acme"},
-		appauth.Review:    {refuse: &review, owner: "acme"},
+// The record of what a mint found GitHub refuses is read for the sets a pod runs and no others
+// (appauth.GitHubDirs over the sets of the pod's kind's roles, podTokenSets). The project
+// controller's pod holds the controller's read leases alone: an owner those reach is one its pod
+// must hold a directory for, however an issue role's set is answered there, and a controller
+// launched before that owner was served holds no token for it until its pod is replaced. An
+// issue pod is the other case: it projects what every one of its roles' bundles holds, so an
+// owner any of its sets is refused is in no projection of it and its pod is no pod to replace.
+// Were the record read for every set at once, the implementer's refusal would hide the
+// controller's drift for as long as it stood — and in a project with no live issue pod nothing
+// mints for that set to clear it.
+func TestAnOwnerOnlyAnIssueRolesSetIsRefusedForIsDriftForTheControllersPod(t *testing.T) {
+	var implementer, read atomic.Bool
+	implementer.Store(true)
+	read.Store(true)
+	g := newRig(t, nil, withProjectTokens(eachLeasesTokens{
+		string(appauth.SetImplementer): {refuse: &implementer, owner: "acme"},
+		"read":                         {refuse: &read, owner: "acme"},
 	}))
 	issue := g.spawn(workerSpec(t))
 	controller := g.spawn(controllerSpec(t))
@@ -224,21 +235,20 @@ func TestAnOwnerOnlyTheOtherAppIsRefusedForIsDriftForTheControllersPod(t *testin
 		role claim.Role
 	}{{"issue", issue, claim.RoleTester}, {"controller", controller, claim.RoleController}} {
 		if held := ghItems(t, g.pod(pod.loc.Sandbox.Name), pod.role); !slices.Equal(held, ghItemsFor("sjawhar")) {
-			t.Fatalf("the %s pod's gh volume projects %+v, want sjawhar's two files alone: neither App answered for acme", pod.what, held)
+			t.Fatalf("the %s pod's gh volume projects %+v, want sjawhar's two files alone: neither the implementer's set nor the read lease was answered for acme", pod.what, held)
 		}
 	}
 
-	// GitHub answers the review App for acme, the implement App's installation reaching none of
-	// it still: a controller's bundle built now holds acme's directory, where no issue pod's
-	// projection can.
-	review.Store(false)
+	// GitHub answers the read lease for acme, the implementer's set refused there still: a
+	// controller's bundle built now holds acme's directory, where no issue pod's projection can.
+	read.Store(false)
 	g.r.refreshGitHubCredentials(g.ctx)
 
 	named := ghVolumeDrift(g, controller, claim.RoleController)
 	if len(named) != 1 || !strings.Contains(named[0], "acme") {
-		t.Errorf("the controller's pod holds %q, want one reason naming acme: the review App, which is the controller's own, reaches it", named)
+		t.Errorf("the controller's pod holds %q, want one reason naming acme: the read lease, which is the controller's own, reaches it", named)
 	}
 	if named := ghDriftReasons(t, g, issue, claim.RoleTester); len(named) != 0 {
-		t.Errorf("the issue pod reads %q as drift, want none: the implement App reaches no acme repository, so no pod of both Apps projects acme", named)
+		t.Errorf("the issue pod reads %q as drift, want none: the implementer's set is refused acme, so no pod of every workflow role projects acme", named)
 	}
 }

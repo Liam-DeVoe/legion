@@ -63,7 +63,7 @@ func (g *repositoryGitHub) answer(status int) {
 	g.status = status
 }
 
-// A repository's default branch is read from GitHub as the implement App, for the repository's
+// A repository's default branch is read from GitHub with the read lease, for the repository's
 // owner, once per TTL: a second read within it asks GitHub nothing, and one after it reads again,
 // seeing a branch GitHub renamed meanwhile.
 func TestDefaultBranchesReadsGitHubOncePerTTL(t *testing.T) {
@@ -91,8 +91,8 @@ func TestDefaultBranchesReadsGitHubOncePerTTL(t *testing.T) {
 		t.Fatalf("a read after the TTL left GitHub asked %d times, want twice", reads)
 	}
 	for _, authorization := range github.authorized {
-		if authorization != "Bearer implement-app-token-for-acme" {
-			t.Fatalf("a read was authorized as %q, want the implement App's token for acme", authorization)
+		if authorization != "Bearer "+readToken("acme") {
+			t.Fatalf("a read was authorized as %q, want the read lease for acme", authorization)
 		}
 	}
 }

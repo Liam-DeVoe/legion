@@ -319,11 +319,11 @@ type Options struct {
 	AdoptTimeout time.Duration
 	Tokens       ProvisionTokens
 	// GitHubCredential is the daemon's function for a role's gh files
-	// (runtime.GitHubCredential): hosts.yml and config.yml rendered from the role's App token. It
-	// is called for every launcher role when the pod's role Secrets are written
+	// (runtime.GitHubCredential): hosts.yml and config.yml rendered from the token of the role's
+	// own set. It is called for every launcher role when the pod's role Secrets are written
 	// (writeLauncherSecrets), and again for each by the refresher (refreshGitHubCredentials), which
-	// rewrites the Secret when the render changed: every workflow role of an issue pod and the
-	// controller's, which acts as the review App. Required: configure refuses nil as it refuses a
+	// rewrites the Secret when the render changed: every workflow role of an issue pod, and the
+	// controller's from ControllerCredential instead. Required: configure refuses nil as it refuses a
 	// nil Tokens.
 	GitHubCredential runtime.GitHubCredential
 	// ControllerCredential is the daemon's function for the controller's own gh bundle
@@ -336,21 +336,21 @@ type Options struct {
 	// GitHubDirs are the directories the gh bundle of a pod created now for repo would hold
 	// (appauth.GitHubDirs), sorted: one per GitHub owner the daemon serves, lowercased and with
 	// every configured rename alias, and one more under the owner of repo for each other
-	// repository that owner serves, less every directory the mints of roles' own Apps found
-	// GitHub refuses a lease for, which no bundle of those Apps holds and so no pod of them
+	// repository that owner serves, less every directory the mints of the pod's roles' own sets
+	// found GitHub refuses a lease for, which no bundle of those sets holds and so no pod of them
 	// projects (appauth.LeftOut). A
 	// running pod's projection is fixed at the directories of its
 	// creation (manifest's volumes), so an owner directory this answers that the pod's volume
 	// does not name is a pod whose gh lacks it (movedGhDirs); the `<owner>/<repo>` directories
 	// are no address a pod is replaced for, and movedGhDirs compares the owner directories of
 	// this set alone. repo is the pod's own, read from its workspace fetch (fetchRepository), and
-	// the zero Repository for a pod that fetches none, the controller's; roles are the Apps that
-	// pod's own roles run as (podAppRoles), both of them for an issue pod and the review App
-	// alone for the project controller's, so what a mint of an App the pod does not run found
-	// leaves its answer untouched. It is read on every
+	// the zero Repository for a pod that fetches none, the controller's; sets are the sets of
+	// that pod's own roles (podTokenSets), every workflow role's for an issue pod and the
+	// controller's alone for the project controller's, so what a mint of a set the pod does not
+	// run found leaves its answer untouched. It is read on every
 	// drift evaluation, so it must be cheap and must mint nothing. Required: configure refuses
 	// nil as it refuses a nil GitHubCredential.
-	GitHubDirs func(repo ghrepo.Repository, roles []appauth.AppRole) []string
+	GitHubDirs func(repo ghrepo.Repository, sets []appauth.TokenSet) []string
 	// Conns is the worker stream listener: Suspend's and Release's shutdown frames, and
 	// AdoptWorkingCopy, go through it.
 	Conns runtime.Conns

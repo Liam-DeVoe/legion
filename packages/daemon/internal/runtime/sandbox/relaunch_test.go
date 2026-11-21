@@ -125,17 +125,17 @@ func TestSpawnCreatesTheIssueSandboxAndRoleLocator(t *testing.T) {
 	}
 }
 
-// The controller's one Secret holds the review App's gh bundle beside its launcher token: the
-// controller acts as the review App (appauth.AppRoleFor), so its launch mints a credential and its
-// pod projects it at a gh volume like a workflow role's.
-func TestTheControllersSecretHoldsTheReviewAppsGhFilesBesideTheLauncherToken(t *testing.T) {
+// The controller's one Secret holds the controller's gh bundle beside its launcher token: the
+// controller's leases are the App's read leases (appauth.ControllerCredential), and its launch
+// mints that credential and its pod projects it at a gh volume like a workflow role's.
+func TestTheControllersSecretHoldsItsGhFilesBesideTheLauncherToken(t *testing.T) {
 	g := newRig(t, nil)
 	g.spawn(controllerSpec(t))
 	name := SandboxName(controllerToken)
 	secret := g.secret(roleSecretName(name, claim.RoleController))
 	if secret == nil || len(secret.Data) != 7 || len(secret.Data[LauncherTokenFile]) == 0 || string(secret.Data[GitHubDefaultKey]) != "sjawhar" ||
 		len(secret.Data[GitHubHostsKey("sjawhar")]) == 0 || len(secret.Data[GitHubConfigKey("acme")]) == 0 {
-		t.Fatalf("the controller's Secret holds %v, want the launcher token, the default, the bundle's renames and the review App's gh files of each owner", secret)
+		t.Fatalf("the controller's Secret holds %v, want the launcher token, the default, the bundle's renames and the controller's gh files of each owner", secret)
 	}
 	found := false
 	for _, volume := range g.pod(name).Spec.Volumes {
@@ -144,7 +144,7 @@ func TestTheControllersSecretHoldsTheReviewAppsGhFilesBesideTheLauncherToken(t *
 		}
 	}
 	if !found {
-		t.Error("the controller's pod has no gh volume, want the review App's")
+		t.Error("the controller's pod has no gh volume, want its own")
 	}
 }
 

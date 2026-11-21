@@ -180,8 +180,8 @@ func functionName(fn *ast.FuncDecl) string {
 // readsRoleFor is whether node reads phase.RoleFor or internal/workflow's forwarder of it: a
 // selector naming either through its package, in a call or passed as a value, or a call of the
 // bare name inside the package that declares it. A bare RoleFor that is no call is a field key
-// (api.Options.RoleFor) and not a read, and appauth.AppRoleFor is another function and is not one
-// of these.
+// (api.Options.RoleFor) and not a read, and appauth.SetFor, which maps a role to its token set,
+// is another function and is not one of these.
 func readsRoleFor(node ast.Node) bool {
 	switch read := node.(type) {
 	case *ast.CallExpr:

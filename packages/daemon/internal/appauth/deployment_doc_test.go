@@ -19,9 +19,14 @@ import (
 // commands name (docs/deployment.md, "The `legion-implementer` and `legion-reviewer` Apps").
 var deploymentDoc = filepath.Join("..", "..", "..", "..", "docs", "deployment.md")
 
-// docRoleProfile is the profile each role's token_command names for its write token; the read
-// lease's profile is the same name with `_READ` after it.
-var docRoleProfile = map[AppRole]string{Implement: "LEGION_IMPLEMENT_APP", Review: "LEGION_REVIEW_APP"}
+// docRoleProfile is the profile each token_command of the doc's github_apps block names for its
+// write token, by the block's key; the read lease's profile is the same name with `_READ` after
+// it.
+var docRoleProfile = map[string]string{"implement": "LEGION_IMPLEMENT_APP", "review": "LEGION_REVIEW_APP"}
+
+// docProfileSet is the set each block's write profile holds: the implementer's for the implement
+// App's, and the reviewer's for the review App's.
+var docProfileSet = map[string]TokenSet{"implement": SetImplementer, "review": SetReviewer}
 
 // fencedBlock is the body of the first fence of lang in the deployment doc whose body opens with
 // opening.
@@ -47,23 +52,24 @@ func fencedBlock(t *testing.T, lang, opening string) string {
 	}
 }
 
-// deploymentDocTokenCommands is the token_command of each role in the doc's github_apps block.
-func deploymentDocTokenCommands(t *testing.T) map[AppRole]string {
+// deploymentDocTokenCommands is the token_command of each block of the doc's github_apps block, by
+// the block's key.
+func deploymentDocTokenCommands(t *testing.T) map[string]string {
 	t.Helper()
 	var block struct {
-		GitHubApps map[AppRole]struct {
+		GitHubApps map[string]struct {
 			TokenCommand string `yaml:"token_command"`
 		} `yaml:"github_apps"`
 	}
 	if err := yaml.Unmarshal([]byte(fencedBlock(t, "yaml", "github_apps:")), &block); err != nil {
 		t.Fatalf("the github_apps block of %s: %v", deploymentDoc, err)
 	}
-	commands := map[AppRole]string{}
-	for role, app := range block.GitHubApps {
-		commands[role] = app.TokenCommand
+	commands := map[string]string{}
+	for name, app := range block.GitHubApps {
+		commands[name] = app.TokenCommand
 	}
-	if !slices.Equal(slices.Sorted(maps.Keys(commands)), []AppRole{Implement, Review}) {
-		t.Fatalf("the github_apps block of %s names the roles %v, want implement and review", deploymentDoc, slices.Sorted(maps.Keys(commands)))
+	if !slices.Equal(slices.Sorted(maps.Keys(commands)), []string{"implement", "review"}) {
+		t.Fatalf("the github_apps block of %s names the Apps %v, want implement and review", deploymentDoc, slices.Sorted(maps.Keys(commands)))
 	}
 	return commands
 }
@@ -140,7 +146,7 @@ exec "$@"
 func TestTheDeploymentDocTokenCommandNamesTheRoleProfile(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	calls := stubAgentSecrets(t, []string{"acme", "example-user"}, now.Add(time.Hour))
-	flags := map[AppRole]string{Implement: "--reason=legion-daemon-github-app-token", Review: "--ttl 12h --reason=legion-daemon-github-app-token"}
+	flags := map[string]string{"implement": "--reason=legion-daemon-github-app-token", "review": "--ttl 12h --reason=legion-daemon-github-app-token"}
 	for role, command := range deploymentDocTokenCommands(t) {
 		for _, ask := range []struct{ owner, readOnly string }{{"", ""}, {"acme", ""}, {"", "1"}, {"acme", "1"}} {
 			profile := docRoleProfile[role]
@@ -166,7 +172,7 @@ func TestTheDeploymentDocTokenCommandNamesTheRoleProfile(t *testing.T) {
 			if seen, _ := os.ReadFile(calls); strings.TrimSpace(string(seen)) != want {
 				t.Errorf("the %s token_command for owner %q read-only %q ran agent-secrets %q, want %q", role, ask.owner, ask.readOnly, strings.TrimSpace(string(seen)), want)
 			}
-			release, err := parseRelease(out, tokenCommandField(role), now)
+			release, err := parseRelease(out, tokenCommandField, now)
 			if err != nil {
 				t.Fatalf("the %s token_command for owner %q read-only %q: %v", role, ask.owner, ask.readOnly, err)
 			}
@@ -188,16 +194,17 @@ func TestTheDeploymentDocTokenCommandNamesTheRoleProfile(t *testing.T) {
 
 // The profiles docs/deployment.md declares for the token commands hold what this package asks for
 // with a key of its own, so a lease reads and writes the same in token mode as in key mode: each
-// role's profile is writePermissions of that role and its read profile, of the same source, is
-// readPermissions. Each is `"value": "installations"`, the release parseRelease reads, and has no
-// proxy block, since the daemon hands its tokens to the panes' gh bundles.
+// block's write profile is writePermissions of its set (docProfileSet) and its read profile, of
+// the same source, is readPermissions. Each is `"value": "installations"`, the release
+// parseRelease reads, and has no proxy block, since the daemon hands its tokens to the panes' gh
+// bundles.
 func TestTheDeploymentDocProfilesHoldTheDaemonsPermissionSets(t *testing.T) {
 	profiles := deploymentDocProfiles(t)
-	for role, name := range docRoleProfile {
+	for block, name := range docRoleProfile {
 		for _, want := range []struct {
 			name, source string
 			permissions  map[string]string
-		}{{name, "", writePermissions[role]}, {name + "_READ", name, readPermissions}} {
+		}{{name, "", writePermissions[docProfileSet[block]]}, {name + "_READ", name, readPermissions}} {
 			profile, ok := profiles[want.name]
 			switch {
 			case !ok:

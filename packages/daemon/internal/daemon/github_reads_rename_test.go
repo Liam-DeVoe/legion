@@ -140,7 +140,7 @@ func (g *readRenameGitHub) assertAddressed(t *testing.T, repo, branch string) {
 		}
 	}
 	for _, bearer := range g.calls {
-		if want := "Bearer implement-app-token-for-" + owner; bearer != want {
+		if want := "Bearer read-app-token-for-" + owner; bearer != want {
 			t.Errorf("a read carried %q, want %q: the token is minted for the owner whose installation holds the repository", bearer, want)
 		}
 	}

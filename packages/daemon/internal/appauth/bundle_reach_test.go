@@ -37,7 +37,7 @@ func TestTheBundleReachesEveryOwnerTheAppIsInstalledOn(t *testing.T) {
 	for _, token := range tokens {
 		owner, ok := leaseOwner(token)
 		if !ok {
-			t.Fatalf("the lease %q names no owner: the fakes render every lease as <app>-token-for-<owner> or <app>-read-for-<owner>", token)
+			t.Fatalf("the lease %q names no owner: the fakes render every lease as <set>-token-for-<owner> or read-for-<owner>", token)
 		}
 		minted[owner] = true
 	}
@@ -47,7 +47,7 @@ func TestTheBundleReachesEveryOwnerTheAppIsInstalledOn(t *testing.T) {
 				owner, want, slices.Sorted(slices.Values(dirNames(tokens))), slices.Sorted(slices.Values(dirNames(minted))))
 		}
 	}
-	if want := "implement-token-for-sjawhar"; tokens["sjawhar"] != want {
+	if want := "implementer-token-for-sjawhar"; tokens["sjawhar"] != want {
 		t.Errorf("the sjawhar directory holds %q, want %q: the pair moved one repository, not the account",
 			tokens["sjawhar"], want)
 	}
@@ -55,7 +55,7 @@ func TestTheBundleReachesEveryOwnerTheAppIsInstalledOn(t *testing.T) {
 
 // leaseOwner is the owner a fake lease token is minted on.
 func leaseOwner(token string) (string, bool) {
-	for _, mark := range []string{"-token-for-", "-read-for-"} {
+	for _, mark := range []string{"-token-for-", "read-for-"} {
 		_, owner, found := strings.Cut(token, mark)
 		if !found || owner == "" {
 			continue

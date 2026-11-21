@@ -948,7 +948,7 @@ func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 	return ""
 }
 
-// The provisioning token is the implement App's installation token, and every container of an
+// The provisioning token is the App's read token for the owner, and every container of an
 // issue pod mounts the issue's volume under one uid: `provision`, the process that works on the
 // volume, never holds it. Held mid-clone, it has written no one-shot credential to its TMPDIR, and
 // no file on the volume holds the token — nor after it was killed there.

@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -52,7 +51,7 @@ func handedOver(key, resolved string, seq int64) (dispatch.Issue, intake.Dispatc
 }
 
 // An issue whose repository no mapping names is recorded on it, with GitHub's own spelling of the
-// repository and its default branch, and admitted, once GitHub answers that both role Apps are
+// repository and its default branch, and admitted, once GitHub answers that the App is
 // installed on it: the mapping decides the project's default repository and what the daemon
 // prepares before an issue names one, never which repository an issue works (R4). Nothing is said
 // on the issue, and the reads are the preparation's own: no read of the mapping is asked for.
@@ -69,7 +68,7 @@ func TestAnIssueOnARepositoryNoMappingNamesIsRecordedWithGitHubsSpellingAndAdmit
 		t.Fatalf("prepare LEGION-901 on %s = %v, want it prepared on what GitHub answers", unmappedRepo, err)
 	}
 	if prepared.RepositoryRefusal != "" {
-		t.Fatalf("the prepared event refuses %q, want it recorded: both Apps are installed", prepared.RepositoryRefusal)
+		t.Fatalf("the prepared event refuses %q, want it recorded: the App is installed", prepared.RepositoryRefusal)
 	}
 	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-901", prepared, engine, admission); err != nil {
 		t.Fatal(err)
@@ -84,10 +83,8 @@ func TestAnIssueOnARepositoryNoMappingNamesIsRecordedWithGitHubsSpellingAndAdmit
 	if notes := repositoryNotes(t, w, "LEGION-901"); len(notes) != 0 {
 		t.Fatalf("notes on LEGION-901 = %q, want none: it was admitted", notes)
 	}
-	for _, role := range []string{"implement " + unmappedRepo, "review " + unmappedRepo} {
-		if reads := installs.reads(role); reads != 1 {
-			t.Fatalf("the preparation made %d reads of %q, want one", reads, role)
-		}
+	if reads := installs.reads(unmappedRepo); reads != 1 {
+		t.Fatalf("the preparation made %d reads of %s's installation, want one", reads, unmappedRepo)
 	}
 	if asked := w.mappingRequested.Load(); asked != requested {
 		t.Fatalf("the preparation asked for %d reads of the mapping, want none: the mapping has nothing to say about %s", asked-requested, unmappedRepo)
@@ -133,7 +130,7 @@ func TestTwoIssuesOnOneRecordedRepositoryMakeOneSetOfReads(t *testing.T) {
 			t.Fatalf("%s = %+v, want it recorded on %s", key, got, unmappedNamed)
 		}
 	}
-	if reads := installs.reads("implement " + unmappedRepo); reads != 1 {
+	if reads := installs.reads(unmappedRepo); reads != 1 {
 		t.Fatalf("the two issues made %d installation reads of %s, want one set of reads", reads, unmappedRepo)
 	}
 	if reads := named.Load(); reads != 1 {
@@ -149,7 +146,7 @@ func TestAnIssueWaitsWhileGitHubHasNotAnsweredForItsRepositoryAndIsAdmittedWhenI
 	ctx := context.Background()
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement "+unmappedRepo)
+	installs.setFailing(errors.New("GitHub answered 502"), unmappedRepo)
 	w, client, installs, _ := unmappedRig(t, installs)
 	engine, admission := rigHandlers(w)
 	issue, fact := handedOver("LEGION-921", unmappedRepo, 1)
@@ -177,7 +174,7 @@ func TestAnIssueWaitsWhileGitHubHasNotAnsweredForItsRepositoryAndIsAdmittedWhenI
 		t.Fatalf("the daemon waits on %q, want %s alone", waiting, unmappedRepo)
 	}
 
-	installs.setFailing(nil, "implement "+unmappedRepo)
+	installs.setFailing(nil, unmappedRepo)
 	testwait.Eventually(t, "LEGION-921 admitted on "+unmappedNamed+" with no one moving it", func() bool {
 		got := recordedIssue(t, w, "LEGION-921")
 		return got != nil && got.Repo == unmappedNamed
@@ -196,14 +193,14 @@ func TestAnIssueWaitsWhileGitHubHasNotAnsweredForItsRepositoryAndIsAdmittedWhenI
 // recovery, so the issue stood unadmitted until the next boot.
 func TestAnIssueLeftUnreadIsAdmittedWhenAnotherIssuesPreparationGetsGitHubsAnswer(t *testing.T) {
 	failing := &installations{}
-	failing.setFailing(errors.New("GitHub answered 502"), "implement "+unmappedRepo)
+	failing.setFailing(errors.New("GitHub answered 502"), unmappedRepo)
 	// The refresher's own read is never due in this test, so a recovery runs only where a read
 	// is asked for. The refresher starts a wait once a run is over, so the wait it starts after
 	// the recovery's own read of GitHub, the second read, says that recovery is over.
 	var over atomic.Bool
 	w, client, installs, _ := unmappedRig(t, failing, func(w *workflowRuntime) {
 		w.recheckAfter = func(time.Duration) <-chan time.Time {
-			if failing.reads("implement "+unmappedRepo) >= 2 {
+			if failing.reads(unmappedRepo) >= 2 {
 				over.Store(true)
 			}
 			return nil
@@ -216,7 +213,7 @@ func TestAnIssueLeftUnreadIsAdmittedWhenAnotherIssuesPreparationGetsGitHubsAnswe
 		t.Fatalf("%s recorded as %+v while GitHub does not answer for %s", left, got, unmappedRepo)
 	}
 
-	installs.setFailing(nil, "implement "+unmappedRepo)
+	installs.setFailing(nil, unmappedRepo)
 	deliver(t, w, client, issue(answered, unmappedRepo, "todo", true, "", 1))
 	if got := recordedIssue(t, w, answered); got == nil || got.Repo != unmappedNamed {
 		t.Fatalf("%s = %+v, want it recorded on %s once GitHub answers", answered, got, unmappedNamed)
@@ -246,7 +243,7 @@ func TestAnIssueLeftUnreadIsAdmittedWhenAnotherIssuesPreparationGetsGitHubsAnswe
 func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement "+unmappedRepo)
+	installs.setFailing(errors.New("GitHub answered 502"), unmappedRepo)
 	w, client, installs, _ := unmappedRig(t, installs)
 	const tree, root, parent, child = "LEGION-963", "LEGION-964", "LEGION-965", "LEGION-966"
 	liveRoot(t, w, client, tree)
@@ -268,7 +265,7 @@ func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *tes
 		t.Fatalf("%s recorded as %+v while GitHub does not answer for %s", root, got, unmappedRepo)
 	}
 
-	installs.setFailing(nil, "implement "+unmappedRepo)
+	installs.setFailing(nil, unmappedRepo)
 	testwait.Eventually(t, root+" admitted, and nothing left unread or to recover", func() bool {
 		return recordedIssue(t, w, root) != nil && len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
 	})
@@ -296,7 +293,7 @@ func TestARecoveryGitHubFailsAgainTellsNoArchitectAndKeepsItsReleaseWaits(t *tes
 func TestARepositoryLeftUnreadIsLetGoOnceNoTodoIssueIsLeftOnIt(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement "+unmappedRepo)
+	installs.setFailing(errors.New("GitHub answered 502"), unmappedRepo)
 	w, client, installs, _ := unmappedRig(t, installs)
 	const key = "LEGION-967"
 	deliver(t, w, client, issue(key, unmappedRepo, "todo", true, "", 1))
@@ -310,19 +307,19 @@ func TestARepositoryLeftUnreadIsLetGoOnceNoTodoIssueIsLeftOnIt(t *testing.T) {
 	if !within(10*time.Second, func() bool { return len(w.unreadReasons()) == 0 }) {
 		t.Fatalf("the daemon still waits on %q with no todo issue left on %s, want the repository let go", w.unreadReasons(), unmappedRepo)
 	}
-	listings, reads := client.listingCount(), installs.reads("implement "+unmappedRepo)
+	listings, reads := client.listingCount(), installs.reads(unmappedRepo)
 	time.Sleep(10 * installReadRetry.Max)
 	if got := client.listingCount(); got != listings {
 		t.Fatalf("Dispatch listed %d times more once %s was let go, want none", got-listings, unmappedRepo)
 	}
-	if got := installs.reads("implement " + unmappedRepo); got != reads {
+	if got := installs.reads(unmappedRepo); got != reads {
 		t.Fatalf("%s read %d times more once it was let go, want none", unmappedRepo, got-reads)
 	}
 	if got := recordedIssue(t, w, key); got != nil {
 		t.Fatalf("%s recorded as %+v, want it left in backlog", key, got)
 	}
 
-	installs.setFailing(nil, "implement "+unmappedRepo)
+	installs.setFailing(nil, unmappedRepo)
 	deliver(t, w, client, issue(key, unmappedRepo, "todo", true, "", 3))
 	if got := recordedIssue(t, w, key); got == nil || got.Repo != unmappedNamed {
 		t.Fatalf("%s = %+v, want it admitted on %s at its move back to todo", key, got, unmappedNamed)
@@ -341,7 +338,7 @@ func TestARepositoryLeftUnreadIsLetGoOnceNoTodoIssueIsLeftOnIt(t *testing.T) {
 func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement "+unmappedRepo)
+	installs.setFailing(errors.New("GitHub answered 502"), unmappedRepo)
 	w, client, installs, _ := unmappedRig(t, installs)
 	const tree, root, parent, stalled, recorded = "LEGION-973", "LEGION-974", "LEGION-975", "LEGION-976", "LEGION-977"
 	liveRoot(t, w, client, tree)
@@ -397,7 +394,7 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 // recovery's own notice does: release_children files a todo child under its parent's unread
 // repository when the parent is what waits, and the child is recorded only under a recorded
 // parent. It names a child on a repository the mapping now leaves out with that refusal, which
-// is what stops it: for a missing App, with the step refuseChild's own notice gives, and for a
+// is what stops it: for the missing App, with the step refuseChild's own notice gives, and for a
 // read GitHub did not answer, with the mapping's own recovery, which records it. Before, every
 // let-go notice said no todo issue named the repository, false where one did, and told a child
 // that was todo all along to be released again once it is todo, which did nothing while its
@@ -413,7 +410,7 @@ func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testin
 		// shown is what Dispatch shows of the child, and of its parent where the wait names one
 		// other than the tree's recorded root (parent). mapped is how Dispatch's mapping, once
 		// read, answers for the repository: "" names it not at all, "missing" leaves it out for
-		// a role App not installed on it, and "unread" leaves it out for a read GitHub did not
+		// the App not installed on it, and "unread" leaves it out for a read GitHub did not
 		// answer.
 		shown          []dispatch.Issue
 		parent, mapped string
@@ -430,13 +427,13 @@ func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testin
 			shown:   []dispatch.Issue{issue(parent, unmappedRepo, "backlog", false, tree, 1), issue(child, "acme/widgets", "todo", false, parent, 1)},
 			opening: noTodo, line: child + " (todo in Dispatch now, and its parent " + parent + " is not recorded: release " + parent + " first, then " + child + ")",
 			never: "release it again once it is todo"},
-		{name: "a todo child on a repository the mapping now leaves out for a missing App", why: letGoAnsweredElsewhere, parent: tree, mapped: "missing",
+		{name: "a todo child on a repository the mapping now leaves out for the missing App", why: letGoAnsweredElsewhere, parent: tree, mapped: "missing",
 			shown:   []dispatch.Issue{issue(child, unmappedRepo, "todo", false, tree, 1)},
-			opening: elsewhere, line: child + " (todo in Dispatch now, and the daemon records no issue on " + unmappedRepo + ": the review App is not installed on " + unmappedRepo + "; install the App on it, or set a repository both Legion Apps are installed on, then release " + child + " again)",
+			opening: elsewhere, line: child + " (todo in Dispatch now, and the daemon records no issue on " + unmappedRepo + ": the App is not installed on " + unmappedRepo + "; install the App on it, or set a repository the App is installed on, then release " + child + " again)",
 			never: "release it again once it is todo"},
 		{name: "a todo child on a repository the mapping leaves out for a read GitHub did not answer", why: letGoAnsweredElsewhere, parent: tree, mapped: "unread",
 			shown:   []dispatch.Issue{issue(child, unmappedRepo, "todo", false, tree, 1)},
-			opening: elsewhere, line: child + " (todo in Dispatch now; Dispatch's mapping leaves " + unmappedRepo + " out for now: the implement App's installation on " + unmappedRepo + " could not be read",
+			opening: elsewhere, line: child + " (todo in Dispatch now; Dispatch's mapping leaves " + unmappedRepo + " out for now: the App's installation on " + unmappedRepo + " could not be read",
 			never: "release it again once it is todo"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -448,9 +445,9 @@ func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testin
 				client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true}, dispatch.RepoProject{Repo: "zeta/tools", Project: "LEGION"},
 					dispatch.RepoProject{Repo: unmappedRepo, Project: "LEGION"})
 				if tc.mapped == "missing" {
-					installs.setMissing(true, "review "+unmappedRepo)
+					installs.setMissing(true, unmappedRepo)
 				} else {
-					installs.setFailing(errors.New("GitHub answered 502"), "implement "+unmappedRepo)
+					installs.setFailing(errors.New("GitHub answered 502"), unmappedRepo)
 				}
 				if err := w.refreshMapping(ctx); err != nil {
 					t.Fatalf("read the mapping that names %s: %v", unmappedRepo, err)
@@ -476,14 +473,14 @@ func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testin
 	}
 }
 
-// An issue whose repository a role App is not installed on is refused with that App named, and
+// An issue whose repository the App is not installed on is refused with the App named, and
 // nothing of the refusal is kept: the next preparation of the same issue reads GitHub again and
 // admits it the moment GitHub answers installed — with no clock moved, no restart and no mapping
 // change. GitHub answering for the repository neither as installed nor as present is one answer,
 // so the note says both, since the name may be a person's typo.
-func TestARepositoryARoleAppIsNotInstalledOnIsRefusedAndAdmittedAtTheNextPreparation(t *testing.T) {
+func TestARepositoryTheAppIsNotInstalledOnIsRefusedAndAdmittedAtTheNextPreparation(t *testing.T) {
 	ctx := context.Background()
-	w, client, installs, _ := unmappedRig(t, &installations{missing: map[string]bool{"review " + unmappedRepo: true}})
+	w, client, installs, _ := unmappedRig(t, &installations{missing: map[string]bool{unmappedRepo: true}})
 	engine, admission := rigHandlers(w)
 	issue, fact := handedOver("LEGION-931", unmappedRepo, 1)
 	client.issue = issue
@@ -497,10 +494,10 @@ func TestARepositoryARoleAppIsNotInstalledOnIsRefusedAndAdmittedAtTheNextPrepara
 		t.Fatal(err)
 	}
 	if got := recordedIssue(t, w, "LEGION-931"); got != nil {
-		t.Fatalf("LEGION-931 recorded as %+v, want it refused: the review App is not installed on %s", got, unmappedRepo)
+		t.Fatalf("LEGION-931 recorded as %+v, want it refused: the App is not installed on %s", got, unmappedRepo)
 	}
 	notes := repositoryNotes(t, w, "LEGION-931")
-	if len(notes) != 1 || !strings.Contains(notes[0], "the review App is not installed on "+unmappedRepo) ||
+	if len(notes) != 1 || !strings.Contains(notes[0], "the App is not installed on "+unmappedRepo) ||
 		!strings.Contains(notes[0], "neither as installed nor as present") {
 		t.Fatalf("notes on LEGION-931 = %q, want one naming the App and what GitHub answered", notes)
 	}
@@ -510,7 +507,7 @@ func TestARepositoryARoleAppIsNotInstalledOnIsRefusedAndAdmittedAtTheNextPrepara
 
 	// The operator installs the App. Nothing moves the issue, nothing changes the mapping and
 	// nothing restarts: the next delivery of the same event reads GitHub again.
-	installs.setMissing(false, "review "+unmappedRepo)
+	installs.setMissing(false, unmappedRepo)
 	prepared, err = prepareAsDelivered(t, w, fact)
 	if err != nil {
 		t.Fatalf("prepare LEGION-931 once the App is installed = %v, want it prepared", err)
@@ -632,7 +629,7 @@ func TestTheStateListsNoRepositoryOfAnIssueLegionNeverRecords(t *testing.T) {
 	if got := recordedIssue(t, w, key); got != nil {
 		t.Fatalf("%s recorded as %+v, want a child under an unrecorded parent left alone", key, got)
 	}
-	if reads := installs.reads("implement " + unmappedRepo); reads != 1 {
+	if reads := installs.reads(unmappedRepo); reads != 1 {
 		t.Fatalf("the preparation made %d reads of %s's installation, want one: it reads GitHub as any issue admission would record does", reads, unmappedRepo)
 	}
 	if got := w.repositories.lookup(unmappedRepo); got.source != fromRecorded || got.read.Name.String() != unmappedNamed {
@@ -647,7 +644,7 @@ func TestTheStateListsNoRepositoryOfAnIssueLegionNeverRecords(t *testing.T) {
 // mapping names asks GitHub nothing, at any of its events: admission never records it, so its
 // apply never resolves the repository, and a read made for it is a read made for nothing. Nothing
 // is left unread for it either, since no recovery would ever record it, and no read of the
-// mapping is asked for. Its preparation read both Apps' installations and the repository's name
+// mapping is asked for. Its preparation read the App's installation and the repository's name
 // at every event of the issue before, since no refusal is kept, each read up to
 // installReadAttempt long.
 func TestAPersonsOwnTodoIssueOnARepositoryNoMappingNamesAsksGitHubNothing(t *testing.T) {
@@ -673,7 +670,7 @@ func TestAPersonsOwnTodoIssueOnARepositoryNoMappingNamesAsksGitHubNothing(t *tes
 	const key = "LEGION-985"
 	deliver(t, w, client, issue(key, unmappedRepo, "todo", false, "", 1))
 	deliver(t, w, client, issue(key, unmappedRepo, "todo", false, "", 2))
-	if reads := installs.reads("implement "+unmappedRepo) + installs.reads("review "+unmappedRepo); reads != 0 {
+	if reads := installs.reads(unmappedRepo); reads != 0 {
 		t.Fatalf("two events of a person's own todo issue on %s made %d installation reads, want none: nothing records the issue", unmappedRepo, reads)
 	}
 	if reads := named.Load(); reads != 0 {
@@ -704,11 +701,11 @@ type bootCountedInstallations struct {
 	atBoot atomic.Int64
 }
 
-func (i *bootCountedInstallations) InstalledOn(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (bool, error) {
+func (i *bootCountedInstallations) InstalledOn(ctx context.Context, repo ghrepo.Repository) (bool, error) {
 	if ctx.Value(bootReconcile{}) != nil {
 		i.atBoot.Add(1)
 	}
-	return i.installations.InstalledOn(ctx, role, repo)
+	return i.installations.InstalledOn(ctx, repo)
 }
 
 // The boot's listing asks GitHub nothing for a repository no mapping names. It runs inside the
@@ -741,10 +738,10 @@ func TestTheBootsListingAsksGitHubNothingForARepositoryNoMappingNamesAndItsRecov
 	testwait.Eventually(t, "nothing left unread and nothing left to recover", func() bool {
 		return len(w.unreadReasons()) == 0 && len(w.recoveringReasons()) == 0
 	})
-	if reads := installs.reads("implement " + unmappedRepo); reads != 1 {
-		t.Fatalf("%s's implement App was read %d times, want once, by the recovery", unmappedRepo, reads)
+	if reads := installs.reads(unmappedRepo); reads != 1 {
+		t.Fatalf("%s's installation was read %d times, want once, by the recovery", unmappedRepo, reads)
 	}
-	if reads := installs.reads("implement "+loose) + installs.reads("review "+loose); reads != 0 {
+	if reads := installs.reads(loose); reads != 0 {
 		t.Fatalf("%s, which only a person's own todo issue names, was read %d times, want none", loose, reads)
 	}
 	if got := recordedIssue(t, w, persons); got != nil {

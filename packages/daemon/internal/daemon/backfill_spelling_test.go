@@ -289,11 +289,30 @@ type servedOwnerTokens struct {
 	owner string
 }
 
-func (t servedOwnerTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	if !strings.EqualFold(owner, t.owner) {
-		return appauth.Lease{}, fmt.Errorf("no installation of the %s App on %s covers the repository", role, owner)
+func (t servedOwnerTokens) Token(ctx context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
+	if err := t.refused(owner); err != nil {
+		return appauth.Lease{}, err
 	}
-	return t.roleTokens.Token(ctx, role, owner)
+	return t.roleTokens.Token(ctx, set, owner)
+}
+
+func (t servedOwnerTokens) ReadToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	if err := t.refused(owner); err != nil {
+		return appauth.Lease{}, err
+	}
+	return t.roleTokens.ReadToken(ctx, owner)
+}
+
+func (t servedOwnerTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return t.Token(ctx, appauth.SetVerdict, owner)
+}
+
+// refused is the refusal of a mint on owner, nil for the one owner t mints for.
+func (t servedOwnerTokens) refused(owner string) error {
+	if !strings.EqualFold(owner, t.owner) {
+		return fmt.Errorf("no installation of the App on %s covers the repository", owner)
+	}
+	return nil
 }
 
 // A transfer the deployment configures as a pair (`repository_renames`) refuses no boot: GitHub

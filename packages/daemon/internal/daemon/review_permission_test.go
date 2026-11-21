@@ -156,7 +156,7 @@ func TestA401ForTheReviewAppsTokenIsRetriedWithAFreshOne(t *testing.T) {
 		wantWait time.Duration
 		forgot   string
 	}{
-		{"a token older than the window is minted again", -time.Hour, tokenRefusedWait, "review acme"},
+		{"a token older than the window is minted again", -time.Hour, tokenRefusedWait, "reviewer acme"},
 		{"a token moments old is tried again as it is", -time.Second, tokenAcceptWindow - time.Second, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -204,14 +204,14 @@ type forgettingTokens struct {
 	forgot string
 }
 
-func (t *forgettingTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	lease, err := t.outboxTokens.Token(ctx, role, owner)
+func (t *forgettingTokens) Token(ctx context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
+	lease, err := t.outboxTokens.Token(ctx, set, owner)
 	lease.Minted = t.minted
 	return lease, err
 }
 
-func (t *forgettingTokens) Forget(role appauth.AppRole, owner string) {
-	t.forgot = string(role) + " " + owner
+func (t *forgettingTokens) Forget(set appauth.TokenSet, owner string) {
+	t.forgot = string(set) + " " + owner
 }
 
 // Any account can review a public repository's pull request, so an account GitHub gives no write
@@ -370,25 +370,29 @@ func TestAReviewOnAnOwnerTheReviewAppIsNotInstalledOnDecidesNothing(t *testing.T
 	}
 }
 
-// notInstalledTokens is a review App not installed on any owner: every mint is refused as
-// appauth refuses one (appauth.ErrNotInstalled), counted.
+// notInstalledTokens is an App not installed on any owner: every mint is refused as appauth
+// refuses one (appauth.ErrNotInstalled), counted.
 type notInstalledTokens struct{ calls int }
 
-func (t *notInstalledTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+func (t *notInstalledTokens) Token(_ context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
 	t.calls++
-	return appauth.Lease{}, fmt.Errorf("%w: %s not installed on %s", appauth.ErrNotInstalled, role, owner)
+	return appauth.Lease{}, fmt.Errorf("%w: the %s token: the App is not installed on %s", appauth.ErrNotInstalled, set, owner)
 }
 
-func (t *notInstalledTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+func (t *notInstalledTokens) ReadToken(_ context.Context, owner string) (appauth.Lease, error) {
 	t.calls++
-	return appauth.Lease{}, fmt.Errorf("%w: %s not installed on %s", appauth.ErrNotInstalled, role, owner)
+	return appauth.Lease{}, fmt.Errorf("%w: the read token: the App is not installed on %s", appauth.ErrNotInstalled, owner)
+}
+
+func (t *notInstalledTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return t.Token(ctx, appauth.SetVerdict, owner)
 }
 
 // transientOnceTokens answers its first mint with appauth.TransientError and every one after with
 // a lease, so a test can tell a retried mint from one the hold should have skipped.
 type transientOnceTokens struct{ calls int }
 
-func (t *transientOnceTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
+func (t *transientOnceTokens) Token(context.Context, appauth.TokenSet, string) (appauth.Lease, error) {
 	t.calls++
 	if t.calls == 1 {
 		return appauth.Lease{}, &appauth.TransientError{Err: errors.New("mint refused: GitHub's rate limit")}
@@ -396,10 +400,14 @@ func (t *transientOnceTokens) Token(context.Context, appauth.AppRole, string) (a
 	return appauth.Lease{Token: "token", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (t *transientOnceTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
-	lease, err := t.Token(ctx, role, "")
+func (t *transientOnceTokens) ReadToken(ctx context.Context, _ string) (appauth.Lease, error) {
+	lease, err := t.Token(ctx, "", "")
 	lease.Token += "-read"
 	return lease, err
+}
+
+func (t *transientOnceTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return t.Token(ctx, appauth.SetVerdict, owner)
 }
 
 // reviewPermissionPool is a store recording acme/widgets#42 for LEGION-208, and no other pull
@@ -565,7 +573,7 @@ func TestAReviewPublishedBeforeATransferIsReadOnTheRepositoryGitHubHoldsItUnderN
 			}{
 				{name: "the pair configured", renames: transferredLegion, asked: []string{caller.asked}},
 				{name: "no pair configured", renames: ghrepo.Renames{},
-					refused: "mint the review App token for sjawhar/legion: no installation of the review App on sjawhar covers the repository"},
+					refused: "mint the review App token for sjawhar/legion: no installation of the App on sjawhar covers the repository"},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					var asked []string

@@ -38,23 +38,27 @@ import (
 // test names another.
 const headSHA = "c0de0000000000000000000000000000000000ff"
 
-// handoffTokens leases each App a token of its own for each owner, so a test can tell which App's
-// token, minted for which owner, reached GitHub.
+// handoffTokens leases each token set a token of its own for each owner, and each owner a read
+// token of its own, so a test can tell which set's token, or the read token, minted for which
+// owner, reached GitHub.
 type handoffTokens struct{}
 
-func (handoffTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return appauth.Lease{Token: string(role) + "-token-for-" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
+func (handoffTokens) Token(_ context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: string(set) + "-token-for-" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (t handoffTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	lease := appauth.Lease{Token: string(role) + "-token-for-" + owner + "-read", ExpiresAt: time.Now().Add(time.Hour)}
-	return lease, nil
+func (handoffTokens) ReadToken(_ context.Context, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: "read-token-for-" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-// InstalledOwners is the owner accounts each App is installed on, which the controller's gh
+func (t handoffTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return t.Token(ctx, appauth.SetVerdict, owner)
+}
+
+// InstalledOwners is the owner accounts the App is installed on, which the controller's gh
 // bundle reads from GitHub at every build (appauth.OwnerInstallations): the two accounts these
 // harnesses' project serves repositories under.
-func (handoffTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (handoffTokens) InstalledOwners(context.Context) ([]string, error) {
 	return []string{"acme", "sjawhar"}, nil
 }
 
@@ -403,8 +407,8 @@ func TestHandoffCompleteRecordsTheImplementersRecordAndTheOpenPullRequestGitHubS
 	}
 	github.mu.Lock()
 	defer github.mu.Unlock()
-	if !slices.Equal(github.served, []string{"pulls"}) || !slices.Equal(github.bearers, []string{"Bearer implement-token-for-acme"}) {
-		t.Fatalf("GitHub served %v with bearers %v, want one list of the open pull requests as the implement App for acme", github.served, github.bearers)
+	if !slices.Equal(github.served, []string{"pulls"}) || !slices.Equal(github.bearers, []string{"Bearer read-token-for-acme"}) {
+		t.Fatalf("GitHub served %v with bearers %v, want one list of the open pull requests under acme's read token", github.served, github.bearers)
 	}
 }
 

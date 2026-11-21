@@ -180,7 +180,7 @@ func TestPanePairs(t *testing.T) {
 		}
 	}
 
-	// A controller pane gets the review App's gh bundle like any pane.
+	// A controller pane gets its own gh bundle like any pane.
 	controller := runtime.SpawnSpec{
 		Claim: claim.ControllerToken("omp"), Project: "omp", Role: claim.RoleController, Generation: 1, BootToken: "boot-secret",
 		Prompt: runtime.PromptParts{RolePromptPaths: []string{"/roles/controller-root.md"}},

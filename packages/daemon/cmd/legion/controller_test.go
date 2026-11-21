@@ -956,10 +956,10 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 }
 
 // The operator-launched controller's addressing gains the reach its GitHub App gives it after
-// its design gate steps, as a sentence of its own: the owner accounts the daemon read the review
-// App installed on as it built the gh bundle it has just answered (controllerReach). They are
+// its design gate steps, as a sentence of its own: the owner accounts the daemon read the App
+// installed on as it built the gh bundle it has just answered (controllerReach). They are
 // not the owners of the repositories the project is mapped (GET /legion/v1/state): here the
-// mapping is acme/widgets alone and the review App is installed on example-org too, so the
+// mapping is acme/widgets alone and the App is installed on example-org too, so the
 // controller's gh holds both directories and its prompt names both. A prompt built from the
 // mapping told the controller it reached acme alone. It names no repository, since the App
 // installation and not the mapping decides where the project may work (INFRA-2543).
@@ -985,7 +985,7 @@ func TestControllerStartsAddressingGainsTheReachItsAppGives(t *testing.T) {
 	}
 }
 
-// The sentence names an owner only where both of its halves are true of it: the review App is
+// The sentence names an owner only where both of its halves are true of it: the App is
 // installed on the account, and the controller's gh holds a token of it. Neither of the two
 // lists the daemon answers is that set by itself, so the controller is told their intersection
 // (controllerReach), and this holds the two ways they differ.
@@ -1101,7 +1101,7 @@ func TestControllerStartRefusesAnUnusableRepositoryMapping(t *testing.T) {
 // real, fully-booted state) launches on both paths, rather than refusing and burning a launch
 // budget the App install cannot recover from on its own. The controller is told the owners its
 // App is installed on and its gh holds a token of, which the mapping does not decide: here the
-// review App is installed on example-org and not on acme, so the daemon refuses acme/widgets
+// App is installed on example-org and not on acme, so the daemon refuses acme/widgets
 // and the controller's gh still reaches example-org. A prompt built from the mapping said the
 // App was installed on no owner while the gh directory held that token. The refused
 // repositories are named in the state and never in the addressing, which names no repository at
@@ -1112,7 +1112,7 @@ func TestControllerStartLaunchesWithEveryRepositoryRefused(t *testing.T) {
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{
 		steps:        config.DesignGateOff.Steps(),
 		tokens:       tokens,
-		rawStateBody: `{"repositories":{"mapped":[],"refused":[{"repo":"acme/widgets","reason":"the review App is not installed on acme/widgets"}]}}`,
+		rawStateBody: `{"repositories":{"mapped":[],"refused":[{"repo":"acme/widgets","reason":"the App is not installed on acme/widgets"}]}}`,
 	})
 	c := newControllerStart(t, d, controllerOptions{})
 	if code, _, errb := c.run(); code != 0 {
@@ -1761,8 +1761,8 @@ func TestControllerStartUsage(t *testing.T) {
 // controllerCredentialTokens is a Tokens fake for the controller's GitHub credential route: each
 // owner's token is read and set under a lock, so a test can turn one owner's between the refresh
 // loop's ticks, or have every mint fail, for the 502 case. An owner with no token of its own gets
-// the fake's base token. installed is the owner accounts the review App is installed on, which
-// no mapping decides, and refused the ones among them whose leases GitHub refuses.
+// the fake's base token. installed is the owner accounts the App is installed on, which no
+// mapping decides, and refused the ones among them whose leases GitHub refuses.
 type controllerCredentialTokens struct {
 	mu        sync.Mutex
 	token     string
@@ -1772,14 +1772,14 @@ type controllerCredentialTokens struct {
 	err       error
 }
 
-// newControllerCredentialTokens is the fake minting token for every owner, with the review App
+// newControllerCredentialTokens is the fake minting token for every owner, with the App
 // installed on acme and sjawhar, the two accounts newControllerDaemonWithTokens' project serves
 // repositories under.
 func newControllerCredentialTokens(token string) *controllerCredentialTokens {
 	return &controllerCredentialTokens{token: token, owners: map[string]string{}, installed: []string{"acme", "sjawhar"}}
 }
 
-// installOn replaces the owner accounts the review App is installed on.
+// installOn replaces the owner accounts the App is installed on.
 func (c *controllerCredentialTokens) installOn(owners ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1808,20 +1808,24 @@ func (c *controllerCredentialTokens) failWith(err error) {
 	c.err = err
 }
 
-func (c *controllerCredentialTokens) Token(_ context.Context, _ appauth.AppRole, owner string) (appauth.Lease, error) {
+func (c *controllerCredentialTokens) Token(_ context.Context, _ appauth.TokenSet, owner string) (appauth.Lease, error) {
 	return c.lease(owner)
 }
 
-func (c *controllerCredentialTokens) ReadToken(_ context.Context, _ appauth.AppRole, owner string) (appauth.Lease, error) {
+func (c *controllerCredentialTokens) ReadToken(_ context.Context, owner string) (appauth.Lease, error) {
 	lease, err := c.lease(owner)
 	lease.Token += "-read"
 	return lease, err
 }
 
-// InstalledOwners is the owner accounts the review App is installed on (installOn), which the
+func (c *controllerCredentialTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return c.Token(ctx, appauth.SetVerdict, owner)
+}
+
+// InstalledOwners is the owner accounts the App is installed on (installOn), which the
 // controller's bundle reads from GitHub at every build (appauth.OwnerInstallations) and holds a
 // directory for each of.
-func (c *controllerCredentialTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (c *controllerCredentialTokens) InstalledOwners(context.Context) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return slices.Clone(c.installed), nil
@@ -1870,7 +1874,7 @@ func credentialRequests(t *testing.T, d *controllerDaemon) []api.ControllerCrede
 	return bodies
 }
 
-// The controller's gh directory holds the review App's read-only token for every owner of the
+// The controller's gh directory holds the App's read-only token for every owner of the
 // project, as the daemon's credential route rendered them, one directory per owner, written before
 // Oh My Pi starts, whose GH_CONFIG_DIR names the first owner's directory and LEGION_GH_OWNERS_DIR
 // the bundle's root, with one request made before the loop, naming no default yet.
@@ -1913,8 +1917,8 @@ func TestControllerStartWritesTheControllersGitHubCredentialUnderGh(t *testing.T
 	if requests := credentialRequests(t, d); len(requests) != 1 || requests[0] != (api.ControllerCredentialRequest{Secret: string(secret)}) {
 		t.Fatalf("github-credential requests = %+v, want one carrying the secret and no default", requests)
 	}
-	if !strings.Contains(errb, "[legion] the controller's gh acts as the review App for owners acme, sjawhar (read-only) from "+ghDir) {
-		t.Errorf("stderr = %q; want it to name the review App, both owners and the gh directory", errb)
+	if !strings.Contains(errb, "[legion] the controller's gh acts as the App for owners acme, sjawhar (read-only) from "+ghDir) {
+		t.Errorf("stderr = %q; want it to name the controller's bundle, both owners and the gh directory", errb)
 	}
 	if _, err := os.Stat(filepath.Join(c.defaultDir, "github-credential.log")); err != nil {
 		t.Errorf("github-credential.log does not exist: %v", err)
@@ -2090,7 +2094,7 @@ func TestControllerStartWithNoGitHubAppRemovesAStaleHostsFile(t *testing.T) {
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	ghDir := filepath.Join(c.defaultDir, "gh")
-	stale := ghconfig.Render("ghs_stale_from_an_earlier_run", "review", time.Now().Add(time.Hour))
+	stale := ghconfig.Render("ghs_stale_from_an_earlier_run", "controller", time.Now().Add(time.Hour))
 	if _, err := ghconfig.WriteBundle(ghDir, ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{"acme": stale}}); err != nil {
 		t.Fatalf("seed the stale gh bundle: %v", err)
 	}
@@ -2115,7 +2119,7 @@ func TestControllerStartWithNoGitHubAppRemovesAStaleHostsFile(t *testing.T) {
 // The real gh the controller's `legion gh` runs is the operator's LEGION_GH_PATH when set, and
 // otherwise the first gh on the operator's PATH that is not this state directory's own wrapper,
 // which must be a compiled program: a script there is a gh wrapper (a machine's own shim), which
-// would choose its own token in place of the review App's. A start that finds none or a script,
+// would choose its own token in place of the App's. A start that finds none or a script,
 // and a LEGION_GH_PATH that is relative, absent, or no executable file, is refused naming it
 // before the daemon is asked for anything: a mint would replace the running controller's
 // capability with one whose gh cannot run.

@@ -923,11 +923,11 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // default — and its gh directory an empty one (volumes).
 //
 // The pod projects the directories every role's bundle holds, and no more (ghDirsShared): a
-// projection item naming a key the role's Secret lacks stops the pod from starting, and the six
-// roles of an issue pod run as two Apps whose installations answer for themselves, so one App's
-// installation not reaching `acme/x` leaves acme out of that App's bundles alone (appauth's
-// mintBundle). A role whose bundle holds a directory outside that set simply does not project
-// it; its Secret keeps the key, unused (writeLauncherSecrets), and the launch says once which
+// projection item naming a key the role's Secret lacks stops the pod from starting, and each of
+// the six roles of an issue pod holds its own set's leases, whose mints answer for themselves, so
+// the installation refusing one set's lease of `acme` leaves acme out of that set's bundle alone
+// (appauth's mintBundle). A role whose bundle holds a directory outside that set simply does not
+// project it; its Secret keeps the key, unused (writeLauncherSecrets), and the launch says once which
 // role lacked which directory. The launch fails where the set the roles share does not hold the
 // bundles' default, an empty set included — GH_CONFIG_DIR would then name a directory the pod
 // does not carry — and where a role's own default is not the pod's, which would leave that
@@ -941,15 +941,15 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // a controller's bundle is made from here, by this launch and by the refresh of the pod it makes
 // (refreshGitHubCredential). The launch asks for no owner, which takes the first DIRECTORY of the
 // bundle, sorted (appauth's bundleDefault), and records it as the pod's default. That is usually
-// an owner the review App is installed on that the mint answered for, but a configured rename
+// an owner the App is installed on that the mint answered for, but a configured rename
 // also puts the pair's `from` owner in the bundle as an alias directory (bundleDirs), and such a
 // name can sort first and be taken; a controller works no repository, so its every directory is
 // read-only.
 //
-// The launch's roles run as two Apps and work the one repository, and a bundle is that pair and
-// nothing else, so the six roles of an issue pod are two bundles built once each (appauth.Bundles):
-// the launch opens with two live reads of the Apps' installations rather than six serial round
-// trips to GitHub before its first role starts.
+// The launch's roles hold six sets and work the one repository, and a bundle is the set and the
+// repository and nothing else, so the six roles of an issue pod are six bundles built over one
+// read of the App's installations (appauth.Bundles): the launch opens with that one live read
+// rather than six serial reads before its first role starts.
 func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]ghconfig.Bundle, error) {
 	l.gitHubDirs, l.gitHubDefault = nil, ""
 	bundles := make(map[claim.Role]ghconfig.Bundle, len(l.roles))

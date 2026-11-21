@@ -165,7 +165,7 @@ func TestTokenModeMintsTheOwnersEntryAndRefreshes(t *testing.T) {
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
 
-	lease, err := tokens.Token(context.Background(), Implement, "SJAWHAR")
+	lease, err := tokens.Token(context.Background(), SetImplementer, "SJAWHAR")
 	if err != nil {
 		t.Fatalf("Token: %v", err)
 	}
@@ -173,14 +173,14 @@ func TestTokenModeMintsTheOwnersEntryAndRefreshes(t *testing.T) {
 		lease.Identity.Name != "legion-implementer[bot]" || lease.Identity.Email != "271566630+legion-implementer[bot]@users.noreply.github.com" {
 		t.Fatalf("lease = %+v", lease)
 	}
-	if _, err := tokens.Token(context.Background(), Implement, "sjawhar"); err != nil {
+	if _, err := tokens.Token(context.Background(), SetImplementer, "sjawhar"); err != nil {
 		t.Fatalf("cached Token: %v", err)
 	}
 	if got := broker.runs(t); len(got) != 1 || got[0] != "SJAWHAR|" {
 		t.Fatalf("command runs = %q, want one for SJAWHAR, write", got)
 	}
 
-	read, err := tokens.ReadToken(context.Background(), Implement, "acme")
+	read, err := tokens.ReadToken(context.Background(), "acme")
 	if err != nil || read.Token != "ghs_acme_read" {
 		t.Fatalf("ReadToken = %+v, %v; want the read-only release's token", read, err)
 	}
@@ -189,7 +189,7 @@ func TestTokenModeMintsTheOwnersEntryAndRefreshes(t *testing.T) {
 	}
 
 	now = now.Add(40*time.Minute + time.Second)
-	if _, err := tokens.Token(context.Background(), Implement, "sjawhar"); err != nil {
+	if _, err := tokens.Token(context.Background(), SetImplementer, "sjawhar"); err != nil {
 		t.Fatalf("refreshed Token: %v", err)
 	}
 	if got := broker.runs(t); len(got) != 3 {
@@ -224,14 +224,14 @@ func TestTokenModeReadsAProfileReleaseForEachAccount(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	calls := stubAgentSecrets(t, []string{"acme", "example-user"}, now.Add(time.Hour))
 	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
-	tokens := New(config.GitHubApp{AppID: "12345", TokenCommand: deploymentDocTokenCommands(t)[Implement]},
+	tokens := New(config.GitHubApp{AppID: "12345", TokenCommand: deploymentDocTokenCommands(t)["implement"]},
 		Options{BaseURL: github.serve(t).URL, Now: func() time.Time { return now }, Stderr: &bytes.Buffer{}})
 	defer tokens.Close()
 
-	if owners, err := tokens.InstalledOwners(context.Background(), Implement); err != nil || !slices.Equal(owners, []string{"acme", "example-user"}) {
+	if owners, err := tokens.InstalledOwners(context.Background()); err != nil || !slices.Equal(owners, []string{"acme", "example-user"}) {
 		t.Fatalf("InstalledOwners = %q, %v; want every account of the profile's release", owners, err)
 	}
-	if login, err := tokens.AppLogin(context.Background(), Implement); err != nil || login != "legion-implementer[bot]" {
+	if login, err := tokens.AppLogin(context.Background()); err != nil || login != "legion-implementer[bot]" {
 		t.Fatalf("AppLogin = %q, %v; want legion-implementer[bot] from the release of every account", login, err)
 	}
 	for _, want := range []struct {
@@ -243,16 +243,16 @@ func TestTokenModeReadsAProfileReleaseForEachAccount(t *testing.T) {
 		{true, "acme", "ghs_acme_legion_implement_app_read"},
 		{true, "example-user", "ghs_example-user_legion_implement_app_read"},
 	} {
-		mint := tokens.Token
+		mint := func() (Lease, error) { return tokens.Token(context.Background(), SetImplementer, want.owner) }
 		if want.read {
-			mint = tokens.ReadToken
+			mint = func() (Lease, error) { return tokens.ReadToken(context.Background(), want.owner) }
 		}
-		lease, err := mint(context.Background(), Implement, want.owner)
+		lease, err := mint()
 		if err != nil || lease.Token != want.token || !lease.ExpiresAt.Equal(now.Add(time.Hour)) {
 			t.Errorf("the lease of %s (read %v) = %+v, %v; want the profile's token %s", want.owner, want.read, lease, err, want.token)
 		}
 	}
-	if _, err := tokens.Token(context.Background(), Implement, "stranger"); !errors.Is(err, ErrNotInstalled) {
+	if _, err := tokens.Token(context.Background(), SetImplementer, "stranger"); !errors.Is(err, ErrNotInstalled) {
 		t.Errorf("Token for an account outside the profile = %v, want ErrNotInstalled", err)
 	}
 	data, err := os.ReadFile(calls)
@@ -282,14 +282,14 @@ func TestTokenModeRefusesAnotherAppsTokenOnRefresh(t *testing.T) {
 	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
-	if _, err := tokens.Token(context.Background(), Implement, "sjawhar"); err != nil {
+	if _, err := tokens.Token(context.Background(), SetImplementer, "sjawhar"); err != nil {
 		t.Fatalf("Token: %v", err)
 	}
 	github.mu.Lock()
 	github.slug, github.appID = "someone-else", "99999"
 	github.mu.Unlock()
 	now = now.Add(41 * time.Minute)
-	if _, err := tokens.Token(context.Background(), Implement, "sjawhar"); err == nil || !strings.Contains(err.Error(), "not of the configured app_id 12345") {
+	if _, err := tokens.Token(context.Background(), SetImplementer, "sjawhar"); err == nil || !strings.Contains(err.Error(), "not of the configured app_id 12345") {
 		t.Fatalf("refresh to another App's token = %v, want the app_id refusal", err)
 	}
 }
@@ -306,7 +306,7 @@ func TestTokenModeAnOwnerWithoutAnInstallationIsNotInstalled(t *testing.T) {
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
 
-	if _, err := tokens.Token(context.Background(), Implement, "stranger"); !errors.Is(err, ErrNotInstalled) {
+	if _, err := tokens.Token(context.Background(), SetImplementer, "stranger"); !errors.Is(err, ErrNotInstalled) {
 		t.Fatalf("Token for an owner with no installation = %v, want ErrNotInstalled", err)
 	}
 	if !strings.Contains(stderr.String(), "no installation on stranger") {
@@ -314,11 +314,11 @@ func TestTokenModeAnOwnerWithoutAnInstallationIsNotInstalled(t *testing.T) {
 	}
 
 	t.Setenv("FAKE_BROKER_FAIL", "1")
-	_, err := tokens.Token(context.Background(), Implement, "sjawhar")
+	_, err := tokens.Token(context.Background(), SetImplementer, "sjawhar")
 	if err == nil || errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), "github_apps.implement.token_command failed (exit 3): broker: refused") {
 		t.Fatalf("Token with a failing command = %v, want the command's failure with its stderr", err)
 	}
-	_, err = tokens.Token(context.Background(), Review, "sjawhar")
+	_, err = tokens.Token(context.Background(), SetReviewer, "sjawhar")
 	if err == nil || !strings.Contains(err.Error(), "github_apps.implement.token_command failed (exit 3): broker: refused") {
 		t.Fatalf("Token for the review role with a failing command = %v, want the failure naming the one App's key", err)
 	}
@@ -335,7 +335,7 @@ func TestTokenModeACommandASignalEndedFailsNamingTheSignal(t *testing.T) {
 	tokens := tokenModeManager(github.serve(t), broker, &now, &bytes.Buffer{})
 	t.Setenv("FAKE_BROKER_KILLED", "1")
 
-	_, err := tokens.Token(context.Background(), Implement, "sjawhar")
+	_, err := tokens.Token(context.Background(), SetImplementer, "sjawhar")
 
 	var transient *TransientError
 	if err == nil || errors.As(err, &transient) || !strings.Contains(err.Error(), "github_apps.implement.token_command failed (signal: killed): broker: dying") {
@@ -372,7 +372,7 @@ func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 	var stderr bytes.Buffer
 	leaky := New(config.GitHubApp{AppID: "1", TokenCommand: `echo "denied for ghs_abcdefghijklmnopqrstuvwxyz0123" >&2; exit 3`},
 		Options{Now: func() time.Time { return now }, Stderr: &stderr})
-	_, err := leaky.runTokenCommand(context.Background(), leaky.githubApp, mintRequest{role: Implement, owner: "acme"})
+	_, err := leaky.runTokenCommand(context.Background(), leaky.githubApp, mintRequest{set: SetImplementer, owner: "acme"})
 	if err == nil || strings.Contains(err.Error(), "ghs_abc") || !strings.Contains(err.Error(), "[redacted]") {
 		t.Fatalf("error = %v, want the stderr with its token redacted", err)
 	}
@@ -388,7 +388,7 @@ func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 	huge := New(config.GitHubApp{AppID: "1", TokenCommand: "yes ghs_secret_value_padding"}, Options{Now: func() time.Time { return now }})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err = huge.runTokenCommand(ctx, huge.githubApp, mintRequest{role: Implement, owner: "acme"})
+	_, err = huge.runTokenCommand(ctx, huge.githubApp, mintRequest{set: SetImplementer, owner: "acme"})
 	if err == nil || !strings.Contains(err.Error(), "printed more than") || ctx.Err() != nil {
 		t.Fatalf("a command printing without end = %v (ctx %v), want the over-limit refusal before the deadline", err, ctx.Err())
 	}
@@ -440,7 +440,7 @@ func TestTokenModeReadTokenForAMissingOwnerReleasesNothingWider(t *testing.T) {
 	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
-	if _, err := tokens.ReadToken(context.Background(), Implement, "stranger"); !errors.Is(err, ErrNotInstalled) {
+	if _, err := tokens.ReadToken(context.Background(), "stranger"); !errors.Is(err, ErrNotInstalled) {
 		t.Fatalf("ReadToken for an owner with no installation = %v, want ErrNotInstalled", err)
 	}
 	if got := broker.runs(t); len(got) != 1 || got[0] != "stranger|1" {
@@ -459,10 +459,10 @@ func TestTokenModeARepositoryOutsideTheInstallationsListIsNotInstalled(t *testin
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
 
-	if got, err := tokens.InstalledOn(context.Background(), Implement, ghrepo.MustParse("acme/widgets")); err != nil || !got {
+	if got, err := tokens.InstalledOn(context.Background(), ghrepo.MustParse("acme/widgets")); err != nil || !got {
 		t.Fatalf("InstalledOn(acme/widgets) = %v, %v; want installed", got, err)
 	}
-	got, err := tokens.InstalledOn(context.Background(), Implement, ghrepo.MustParse("acme/gadgets"))
+	got, err := tokens.InstalledOn(context.Background(), ghrepo.MustParse("acme/gadgets"))
 	if err != nil || got {
 		t.Fatalf("InstalledOn(acme/gadgets) = %v, %v; want not installed and no error", got, err)
 	}
@@ -489,7 +489,7 @@ func TestTheInstallationReadAsksPastARememberedNarrowingRefusal(t *testing.T) {
 
 	// A bundle's own mint for the owner whose narrowing the broker cannot serve: the Manager
 	// remembers that scope's refusal.
-	if _, err := tokens.ReadToken(context.Background(), Implement, "acme"); !errors.Is(err, ErrNarrowingRefused) {
+	if _, err := tokens.ReadToken(context.Background(), "acme"); !errors.Is(err, ErrNarrowingRefused) {
 		t.Fatalf("the read lease the broker refuses the narrowing of = %v, want ErrNarrowingRefused", err)
 	}
 
@@ -498,7 +498,7 @@ func TestTheInstallationReadAsksPastARememberedNarrowingRefusal(t *testing.T) {
 	t.Setenv("FAKE_BROKER_NARROW", "")
 	now = now.Add(time.Minute)
 
-	if got, err := tokens.InstalledOn(context.Background(), Implement, ghrepo.MustParse("acme/widgets")); err != nil || !got {
+	if got, err := tokens.InstalledOn(context.Background(), ghrepo.MustParse("acme/widgets")); err != nil || !got {
 		t.Fatalf("InstalledOn(acme/widgets) once the broker serves the narrowing = %v, %v; want installed: the read asks the command, never the Manager's memory of the refusal", got, err)
 	}
 	want := []string{"acme|1", "acme|1"}
@@ -521,7 +521,7 @@ func TestTheInstallationReadOfARefusedNarrowingIsAnErrorAndNotNotInstalled(t *te
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
 
-	installed, err := tokens.InstalledOn(context.Background(), Implement, ghrepo.MustParse("acme/widgets"))
+	installed, err := tokens.InstalledOn(context.Background(), ghrepo.MustParse("acme/widgets"))
 	switch {
 	case installed:
 		t.Fatalf("InstalledOn under a refused narrowing = %v, want not installed", installed)
@@ -543,7 +543,7 @@ func TestTheInstallationReadOfARefusedNarrowingIsAnErrorAndNotNotInstalled(t *te
 func TestTokenModeAPendingApprovalIsTransient(t *testing.T) {
 	tokens := New(config.GitHubApp{AppID: "1", TokenCommand: "echo 'still waiting for approval' >&2; exit 75"}, Options{})
 	var transient *TransientError
-	if _, err := tokens.Token(context.Background(), Implement, "acme"); !errors.As(err, &transient) || errors.Is(err, ErrNotInstalled) {
+	if _, err := tokens.Token(context.Background(), SetImplementer, "acme"); !errors.As(err, &transient) || errors.Is(err, ErrNotInstalled) {
 		t.Fatalf("Token on exit 75 = %v, want a transient error", err)
 	}
 }
@@ -568,18 +568,18 @@ esac`, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApp{AppID: "67890", TokenCommand: command},
 		Options{BaseURL: github.serve(t).URL, Now: func() time.Time { return now }, Stderr: &bytes.Buffer{}})
 	defer tokens.Close()
-	if lease, err := tokens.Token(context.Background(), Review, "alpha"); err != nil || lease.Token != "ghs_alpha" {
+	if lease, err := tokens.Token(context.Background(), SetReviewer, "alpha"); err != nil || lease.Token != "ghs_alpha" {
 		t.Fatalf("Token(alpha) = %+v, %v; want the first owner's release", lease, err)
 	}
 	var transient *TransientError
-	_, err := tokens.Token(context.Background(), Review, "beta")
+	_, err := tokens.Token(context.Background(), SetReviewer, "beta")
 	if !errors.As(err, &transient) || errors.Is(err, ErrNotInstalled) || !strings.Contains(err.Error(), "REQUEST_PENDING") {
 		t.Fatalf("Token(beta) while another target's request waits = %v, want a transient error carrying REQUEST_PENDING", err)
 	}
-	if _, err := tokens.Token(context.Background(), Review, "gamma"); err == nil || errors.As(err, &transient) {
+	if _, err := tokens.Token(context.Background(), SetReviewer, "gamma"); err == nil || errors.As(err, &transient) {
 		t.Fatalf("Token(gamma) refused UNKNOWN_SECRET = %v, want the configuration's answer, not a transient error", err)
 	}
-	if _, err := tokens.Token(context.Background(), Review, "delta"); err == nil || errors.As(err, &transient) {
+	if _, err := tokens.Token(context.Background(), SetReviewer, "delta"); err == nil || errors.As(err, &transient) {
 		t.Fatalf("Token(delta), REQUEST_PENDING's text from a command that exited 3 = %v, want the configuration's answer, not a transient error", err)
 	}
 }
@@ -596,13 +596,13 @@ func TestTokenModeACallerDeadlineNeitherKillsNorRepeatsTheCommand(t *testing.T) 
 	short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	var transient *TransientError
-	if _, err := tokens.runTokenCommand(short, tokens.githubApp, mintRequest{role: Implement, owner: "acme"}); !errors.Is(err, ErrCommandPending) || !errors.As(err, &transient) {
+	if _, err := tokens.runTokenCommand(short, tokens.githubApp, mintRequest{set: SetImplementer, owner: "acme"}); !errors.Is(err, ErrCommandPending) || !errors.As(err, &transient) {
 		t.Fatalf("a caller past its deadline = %v, want a transient ErrCommandPending", err)
 	}
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := tokens.runTokenCommand(context.Background(), tokens.githubApp, mintRequest{role: Implement, owner: "acme"})
+	got, err := tokens.runTokenCommand(context.Background(), tokens.githubApp, mintRequest{set: SetImplementer, owner: "acme"})
 	if err != nil || got["acme"].token != "ghs_x" {
 		t.Fatalf("the next caller = %v, %v; want the running command's release", got, err)
 	}
@@ -621,13 +621,13 @@ func TestTokenModeACallerAfterTheRunFinishedGetsItsResult(t *testing.T) {
 	tokens := New(config.GitHubApp{AppID: "1", TokenCommand: command}, Options{Now: func() time.Time { return now }})
 	short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	if _, err := tokens.runTokenCommand(short, tokens.githubApp, mintRequest{role: Implement, owner: "acme"}); !errors.Is(err, ErrCommandPending) {
+	if _, err := tokens.runTokenCommand(short, tokens.githubApp, mintRequest{set: SetImplementer, owner: "acme"}); !errors.Is(err, ErrCommandPending) {
 		t.Fatalf("a caller past its deadline = %v, want ErrCommandPending", err)
 	}
 	time.Sleep(800 * time.Millisecond)
 	later, cancelLater := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancelLater()
-	got, err := tokens.runTokenCommand(later, tokens.githubApp, mintRequest{role: Implement, owner: "acme"})
+	got, err := tokens.runTokenCommand(later, tokens.githubApp, mintRequest{set: SetImplementer, owner: "acme"})
 	if err != nil || got["acme"].token != "ghs_x" {
 		t.Fatalf("the caller after the run finished = %v, %v; want the finished run's release", got, err)
 	}
@@ -645,7 +645,7 @@ func TestTokenModeInstalledOnRemintsAfterA401(t *testing.T) {
 	server := github.serve(t)
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(server, broker, &now, &stderr)
-	if got, err := tokens.InstalledOn(context.Background(), Implement, ghrepo.MustParse("acme/widgets")); err != nil || !got {
+	if got, err := tokens.InstalledOn(context.Background(), ghrepo.MustParse("acme/widgets")); err != nil || !got {
 		t.Fatalf("InstalledOn = %v, %v; want installed", got, err)
 	}
 	github.mu.Lock()
@@ -653,7 +653,7 @@ func TestTokenModeInstalledOnRemintsAfterA401(t *testing.T) {
 	github.mu.Unlock()
 	t.Setenv("FAKE_BROKER_FAIL", "")
 	broker.uninstall(t)
-	got, err := tokens.InstalledOn(context.Background(), Implement, ghrepo.MustParse("acme/widgets"))
+	got, err := tokens.InstalledOn(context.Background(), ghrepo.MustParse("acme/widgets"))
 	if err != nil || got {
 		t.Fatalf("InstalledOn after an uninstall = %v, %v; want not installed", got, err)
 	}
@@ -669,7 +669,7 @@ func TestTokenModeAppLoginReadsTheViewerAndChecksTheAppID(t *testing.T) {
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
 
-	login, err := tokens.AppLogin(context.Background(), Review)
+	login, err := tokens.AppLogin(context.Background())
 	if err != nil || login != "legion-implementer[bot]" {
 		t.Fatalf("AppLogin = %q, %v; want legion-implementer[bot]", login, err)
 	}
@@ -679,7 +679,7 @@ func TestTokenModeAppLoginReadsTheViewerAndChecksTheAppID(t *testing.T) {
 
 	another := &fakeTokenGitHub{slug: "legion-reviewer", appID: "67890"}
 	other := tokenModeManager(another.serve(t), broker, &now, &stderr)
-	_, err = other.AppLogin(context.Background(), Implement)
+	_, err = other.AppLogin(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "released a token of App 67890 (legion-reviewer), not of the configured app_id 12345") {
 		t.Fatalf("AppLogin of a token of another App = %v, want the app_id refusal", err)
 	}
@@ -689,7 +689,7 @@ func TestTokenModeAppLoginReadsTheViewerAndChecksTheAppID(t *testing.T) {
 	github.mu.Unlock()
 	fresh := tokenModeManager(github.serve(t), broker, &now, &stderr)
 	var transient *TransientError
-	if _, err := fresh.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+	if _, err := fresh.AppLogin(context.Background()); !errors.As(err, &transient) {
 		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
 	}
 }
@@ -709,7 +709,7 @@ func TestTokenModeInstalledOnReadsTheInstallationsRepositories(t *testing.T) {
 		repo string
 		want bool
 	}{{"acme/widgets", true}, {"acme/gadgets", false}, {"stranger/widgets", false}} {
-		got, err := tokens.InstalledOn(context.Background(), Implement, ghrepo.MustParse(tc.repo))
+		got, err := tokens.InstalledOn(context.Background(), ghrepo.MustParse(tc.repo))
 		if err != nil || got != tc.want {
 			t.Errorf("InstalledOn(%s) = %v, %v; want %v", tc.repo, got, err, tc.want)
 		}
@@ -717,7 +717,7 @@ func TestTokenModeInstalledOnReadsTheInstallationsRepositories(t *testing.T) {
 
 	t.Setenv("FAKE_BROKER_FAIL", "1")
 	fresh := tokenModeManager(github.serve(t), broker, &now, &stderr)
-	if _, err := fresh.InstalledOn(context.Background(), Implement, ghrepo.MustParse("acme/widgets")); err == nil || !strings.Contains(err.Error(), "acme/widgets") {
+	if _, err := fresh.InstalledOn(context.Background(), ghrepo.MustParse("acme/widgets")); err == nil || !strings.Contains(err.Error(), "acme/widgets") {
 		t.Fatalf("InstalledOn with a failing command = %v, want an error naming the repository", err)
 	}
 }
@@ -737,7 +737,7 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	t.Setenv(TokenCommandReadOnly, inherited)
 	command := fmt.Sprintf(`env >%q; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`, seen, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApp{AppID: "1", TokenCommand: command}, Options{Now: func() time.Time { return now }})
-	if _, err := tokens.runTokenCommand(context.Background(), tokens.githubApp, mintRequest{role: Implement, owner: "acme"}); err != nil {
+	if _, err := tokens.runTokenCommand(context.Background(), tokens.githubApp, mintRequest{set: SetImplementer, owner: "acme"}); err != nil {
 		t.Fatal(err)
 	}
 	env, _ := os.ReadFile(seen)
@@ -755,7 +755,7 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	var transient *TransientError
-	if _, err := slow.runTokenCommand(ctx, slow.githubApp, mintRequest{role: Implement, owner: "acme"}); !errors.As(err, &transient) {
+	if _, err := slow.runTokenCommand(ctx, slow.githubApp, mintRequest{set: SetImplementer, owner: "acme"}); !errors.As(err, &transient) {
 		t.Fatalf("a command past its deadline = %v, want a transient error", err)
 	}
 }
@@ -784,13 +784,13 @@ func TestTokenModeACommandSeesNoLegionGitHubVariableButTheTwoItIsTold(t *testing
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
 	t.Cleanup(tokens.Close)
 
-	if _, err := tokens.Token(context.Background(), Implement, "acme"); err != nil {
+	if _, err := tokens.Token(context.Background(), SetImplementer, "acme"); err != nil {
 		t.Fatalf("Token: %v", err)
 	}
-	if _, err := tokens.ReadToken(context.Background(), Implement, "acme"); err != nil {
+	if _, err := tokens.ReadToken(context.Background(), "acme"); err != nil {
 		t.Fatalf("ReadToken: %v", err)
 	}
-	if _, err := tokens.AppLogin(context.Background(), Implement); err != nil {
+	if _, err := tokens.AppLogin(context.Background()); err != nil {
 		t.Fatalf("AppLogin: %v", err)
 	}
 
@@ -845,13 +845,13 @@ func TestTokenModeAWaiterOutlivesTheInitiatorsDeadline(t *testing.T) {
 	defer cancel()
 	initiator := make(chan error, 1)
 	go func() {
-		_, err := tokens.Token(short, Implement, "acme")
+		_, err := tokens.Token(short, SetImplementer, "acme")
 		initiator <- err
 	}()
 	time.Sleep(100 * time.Millisecond)
 	waiter := make(chan Lease, 1)
 	go func() {
-		lease, err := tokens.Token(context.Background(), Implement, "acme")
+		lease, err := tokens.Token(context.Background(), SetImplementer, "acme")
 		if err != nil {
 			t.Errorf("the waiter = %v, want the lease", err)
 		}
@@ -880,7 +880,7 @@ func TestTokenModeCloseEndsARunningCommand(t *testing.T) {
 	tokens := New(config.GitHubApp{AppID: "1", TokenCommand: fmt.Sprintf(`echo $$ >%q; sleep 600`, pidFile)}, Options{})
 	short, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	if _, err := tokens.Token(short, Implement, "acme"); !errors.Is(err, ErrCommandPending) {
+	if _, err := tokens.Token(short, SetImplementer, "acme"); !errors.Is(err, ErrCommandPending) {
 		t.Fatalf("Token = %v, want ErrCommandPending", err)
 	}
 	closed := make(chan struct{})
@@ -890,7 +890,7 @@ func TestTokenModeCloseEndsARunningCommand(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Close did not end the running command")
 	}
-	if _, err := tokens.Token(context.Background(), Implement, "acme"); err == nil || !strings.Contains(err.Error(), "closed") {
+	if _, err := tokens.Token(context.Background(), SetImplementer, "acme"); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("Token after Close = %v, want a refusal", err)
 	}
 }
@@ -906,10 +906,10 @@ func TestTokenModeTellsTheCommandTheOwnerAndTheReadOnlyFlag(t *testing.T) {
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
 
-	if _, err := tokens.Token(context.Background(), Implement, "acme"); err != nil {
+	if _, err := tokens.Token(context.Background(), SetImplementer, "acme"); err != nil {
 		t.Fatalf("Token: %v", err)
 	}
-	if _, err := tokens.ReadToken(context.Background(), Implement, "acme"); err != nil {
+	if _, err := tokens.ReadToken(context.Background(), "acme"); err != nil {
 		t.Fatalf("ReadToken: %v", err)
 	}
 	want := []string{"acme|", "acme|1"}
@@ -932,7 +932,7 @@ func TestTokenModeTheReadAndWriteScopesOfOneOwnerDoNotShareOneRun(t *testing.T) 
 	defer tokens.Close()
 	for _, read := range []bool{true, false, true} {
 		short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		_, err := tokens.runTokenCommand(short, tokens.githubApp, mintRequest{role: Implement, owner: "acme", read: read})
+		_, err := tokens.runTokenCommand(short, tokens.githubApp, mintRequest{set: SetImplementer, owner: "acme", read: read})
 		cancel()
 		if !errors.Is(err, ErrCommandPending) {
 			t.Fatalf("the run for read=%v = %v, want ErrCommandPending while it goes on", read, err)
@@ -957,11 +957,11 @@ func TestTokenModeAReadOnlyReleaseDoesNotStandInForAWriteRequest(t *testing.T) {
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
 
-	read, err := tokens.ReadToken(context.Background(), Implement, "acme")
+	read, err := tokens.ReadToken(context.Background(), "acme")
 	if err != nil || read.Token != "ghs_acme_read" {
 		t.Fatalf("ReadToken = %+v, %v; want the read-only release's token", read, err)
 	}
-	write, err := tokens.Token(context.Background(), Implement, "acme")
+	write, err := tokens.Token(context.Background(), SetImplementer, "acme")
 	if err != nil || write.Token != "ghs_acme_write" {
 		t.Fatalf("Token after a read-only release = %+v, %v; want the write release's token", write, err)
 	}

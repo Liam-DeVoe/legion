@@ -1514,12 +1514,14 @@ export const LegionControllerSecretResponse = z.object({
 });
 
 /** `api.ControllerCredentialResponse`, the answer of `POST /legion/v1/controller/github-credential`:
- * the review App's read-only token for every GitHub owner that App is installed on, and for each
+ * the App's read-only token for every GitHub owner the App is installed on, and for each
  * owner a configured rename moved a repository away from, each rendered as the two
  * files gh reads (`ghconfig.Rendered`) and keyed by lowercased owner, the owner whose directory
- * `GH_CONFIG_DIR` names, the soonest of the tokens' expiries, `renames`, the configured pairs the
+ * `GH_CONFIG_DIR` names, `app`, the label the bundle's tokens carry (appauth's `dirEntry` renders
+ * the token set of the role the bundle is for, and a controller's is `controller`), the soonest
+ * of the tokens' expiries, `renames`, the configured pairs the
  * bundle routes a moved repository by, each `<owner>/<name>` as GitHub spells it, which a project
- * configuring none answers without, and `installed`, the owner accounts the review App is
+ * configuring none answers without, and `installed`, the owner accounts the App is
  * installed on, lowercased and sorted, read with the bundle (contract 152).
  * `legion controller start` writes the files under `<state_dir>/gh/<owner>`, refreshes them every
  * minute, and tells its controller which owners its App is installed on from `installed`: `owners`
@@ -1534,7 +1536,15 @@ export const LegionControllerCredentialResponse = z.object({
     })
   ),
   default: nonEmptyString,
-  app: z.enum(["implement", "review"]),
+  app: z.enum([
+    "implementer",
+    "merger",
+    "architect",
+    "planner",
+    "tester",
+    "reviewer",
+    "controller",
+  ]),
   expiresAt: timestamp,
   renames: z.array(z.object({ from: nonEmptyString, to: nonEmptyString })).optional(),
   installed: z.array(nonEmptyString),

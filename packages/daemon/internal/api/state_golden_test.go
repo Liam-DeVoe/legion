@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -928,8 +929,8 @@ func populatedState(t *testing.T) State {
 				}},
 			},
 			Refused: []RefusedRepositoryView{
-				{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets", Apps: &AppInstallationsView{Implement: true}},
-				{Repo: "zeta/archive", Reason: "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"},
+				{Repo: "acme/gadgets", Reason: "the App is not installed on acme/gadgets", Apps: &AppInstallationsView{}},
+				{Repo: "zeta/archive", Reason: "the App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"},
 			},
 			// Dispatch's GitHub App is not installed on zeta/tools, which is served all the same.
 			WithoutWebhookApp: []WebhookAppGapView{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"}},
@@ -1493,19 +1494,20 @@ func TestControllerSecretResponseGolden(t *testing.T) {
 	})
 }
 
-// What `legion controller start` fetches for the review App's read-only tokens, one per owner,
-// each rendered as the two files `gh` reads, with the owner accounts that App is installed on.
+// What `legion controller start` fetches for the App's read-only tokens, one per owner, each
+// rendered as the two files `gh` reads and labelled with the controller's set, as appauth's
+// ControllerCredential renders them, with the owner accounts the App is installed on.
 func TestControllerCredentialResponseGolden(t *testing.T) {
 	expiresAt := time.Date(2026, 9, 22, 10, 15, 2, 0, time.UTC)
-	acme := ghconfig.Render("ghs_placeholder_acme_token", "review", expiresAt)
-	sjawhar := ghconfig.Render("ghs_placeholder_sjawhar_token", "review", expiresAt)
+	acme := ghconfig.Render("ghs_placeholder_acme_token", string(appauth.SetController), expiresAt)
+	sjawhar := ghconfig.Render("ghs_placeholder_sjawhar_token", string(appauth.SetController), expiresAt)
 	golden(t, "controller-github-credential.json", ControllerCredentialResponse{
 		Owners: map[string]ControllerOwnerCredential{
 			"acme":    {Hosts: acme.Hosts, Config: acme.Config},
 			"sjawhar": {Hosts: sjawhar.Hosts, Config: sjawhar.Config},
 		},
 		Default:   "acme",
-		App:       "review",
+		App:       acme.App,
 		ExpiresAt: expiresAt.UTC().Format(timeFormat),
 		Installed: []string{"acme", "sjawhar"},
 	})

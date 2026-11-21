@@ -40,10 +40,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// installations answers each App's installation on each repository, by "<role> <owner/name>";
-// a repository it does not name is installed for both Apps, fail answers an error for every read
-// and failing an error for the reads it names. delay is how long each read takes, as a GitHub
-// that answers slowly; reads wait it out side by side.
+// installations answers the App's installation on each repository, by "<owner/name>"; a
+// repository it does not name is installed, fail answers an error for every read and failing an
+// error for the reads it names. delay is how long each read takes, as a GitHub that answers
+// slowly; reads wait it out side by side.
 type installations struct {
 	mu      sync.Mutex
 	missing map[string]bool
@@ -53,7 +53,7 @@ type installations struct {
 	delay   time.Duration
 }
 
-func (i *installations) InstalledOn(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (bool, error) {
+func (i *installations) InstalledOn(ctx context.Context, repo ghrepo.Repository) (bool, error) {
 	if i.delay > 0 {
 		select {
 		case <-time.After(i.delay):
@@ -63,7 +63,7 @@ func (i *installations) InstalledOn(ctx context.Context, role appauth.AppRole, r
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	key := string(role) + " " + repo.String()
+	key := repo.String()
 	i.asked = append(i.asked, key)
 	if i.fail != nil {
 		return false, i.fail
@@ -86,7 +86,7 @@ func (i *installations) setFailing(err error, keys ...string) {
 	}
 }
 
-// reads is how many installation reads were asked of key ("<role> <owner/name>").
+// reads is how many installation reads were asked of key ("<owner/name>").
 func (i *installations) reads(key string) int {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -112,7 +112,7 @@ func (i *installations) setMissing(missing bool, keys ...string) {
 	}
 }
 
-// asks is every installation read asked of i, as "<role> <owner/name>", sorted and with its
+// asks is every installation read asked of i, as "<owner/name>", sorted and with its
 // repeats: what a case that pins the reads a mapping load makes compares, since the reads run at
 // once and arrive in no order of their own.
 func (i *installations) asks() []string {
@@ -199,14 +199,14 @@ func (d *mappingDispatch) set(mappings ...dispatch.RepoProject) {
 	d.mappings = mappings
 }
 
-// The mapping's own repositories, which are not all the project serves, are served only once both
-// Apps are installed on it: a repository missing an App is left out with the App named, the
+// The mapping's own repositories, which are not all the project serves, are served only once the
+// App is installed on it: a repository the App is missing on is left out with the App named, the
 // owners are the served repositories', lowercased and sorted, and a served repository is held as
 // GitHub names it, at its default branch.
-func TestTheMappingServesOnlyRepositoriesBothAppsAreInstalledOn(t *testing.T) {
+func TestTheMappingServesOnlyRepositoriesTheAppIsInstalledOn(t *testing.T) {
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@release/v7.1", "zeta/tools": "zeta/tools@main"})
 	repos := newRepositories("LEGION", ghrepo.Renames{})
-	installs := &installations{missing: map[string]bool{"review acme/gadgets": true}}
+	installs := &installations{missing: map[string]bool{"acme/gadgets": true}}
 	client := &mappingDispatch{mappings: []dispatch.RepoProject{
 		{Repo: "acme/widgets", Project: "LEGION", Default: true},
 		{Repo: "acme/gadgets", Project: "LEGION"},
@@ -230,7 +230,7 @@ func TestTheMappingServesOnlyRepositoriesBothAppsAreInstalledOn(t *testing.T) {
 	if got := repos.Accepted(); len(got) != 2 || got[0] != ghrepo.MustParse("Acme/Widgets") || got[1] != ghrepo.MustParse("zeta/tools") {
 		t.Fatalf("Accepted = %v, want Acme/Widgets and zeta/tools", got)
 	}
-	if got, want := repos.Refused(), []refusedRepository{{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets", apps: appAnswers{answered: true, implement: true}}}; !reflect.DeepEqual(got, want) {
+	if got, want := repos.Refused(), []refusedRepository{{Repo: "acme/gadgets", Reason: "the App is not installed on acme/gadgets", apps: appAnswers{answered: true}}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("Refused = %#v, want %#v", got, want)
 	}
 	if mapped := repos.Mapped(); len(mapped) != 2 || !mapped[0].Default || mapped[1].Default {
@@ -243,7 +243,7 @@ func TestTheMappingServesOnlyRepositoriesBothAppsAreInstalledOn(t *testing.T) {
 	}{
 		{"acme/widgets", workflow.Resolution{Repo: "Acme/Widgets", DefaultBranch: "release/v7.1", GitHubRepo: "Acme/Widgets"}},
 		{"Acme/Widgets", workflow.Resolution{Repo: "Acme/Widgets", DefaultBranch: "release/v7.1", GitHubRepo: "Acme/Widgets"}},
-		{"acme/gadgets", workflow.Resolution{Refusal: "the review App is not installed on acme/gadgets", LeftOut: true}},
+		{"acme/gadgets", workflow.Resolution{Refusal: "the App is not installed on acme/gadgets", LeftOut: true}},
 		{"other/thing", workflow.Resolution{Refusal: "GitHub has not been read for other/thing yet", Unread: true}},
 	} {
 		got, err := (&workflowRuntime{repositories: repos, defaultBranches: branches}).ResolveRepository(tc.resolved)
@@ -253,28 +253,28 @@ func TestTheMappingServesOnlyRepositoriesBothAppsAreInstalledOn(t *testing.T) {
 	}
 }
 
-// A repository both Apps lack names both. An installation read that fails, transient or not, is no
-// answer: it leaves only its own repository out for now, naming the App, the repository and the
-// failure, and marked as a failed read so it is read again, and the rest of the mapping is checked
-// as it stands. Each refusal keeps what GitHub answered of both Apps for legion state wherever it
-// answered both reads, and nothing where a read failed, since that read answered nothing of its
-// App: legion state carried the constant "both installed" on served entries alone before, and a
-// reader parsed the reason to learn which App was missing.
-func TestTheMappingNamesEveryMissingAppAndLeavesOutOnlyARepositoryWhoseReadFailed(t *testing.T) {
+// A repository the App lacks names it. An installation read that fails, transient or not, is no
+// answer: it leaves only its own repository out for now, naming the repository and the failure,
+// and marked as a failed read so it is read again, and the rest of the mapping is checked as it
+// stands. Each refusal keeps what GitHub answered of the App for legion state wherever it
+// answered the read, and nothing where the read failed, since that read answered nothing of the
+// App: legion state carried the constant "installed" on served entries alone before, and a reader
+// parsed the reason to learn whether the App was missing.
+func TestTheMappingNamesAMissingAppAndLeavesOutOnlyARepositoryWhoseReadFailed(t *testing.T) {
 	client := &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: "acme/gadgets", Project: "LEGION"}}}
-	installs := &installations{missing: map[string]bool{"implement acme/gadgets": true, "review acme/gadgets": true}}
+	installs := &installations{missing: map[string]bool{"acme/gadgets": true}}
 	accepted, refused, _, err := readMapping(context.Background(), client, "LEGION", installs, ghrepo.Renames{})
-	if err != nil || len(accepted) != 0 || len(refused) != 1 || refused[0].Reason != "the implement and review Apps are not installed on acme/gadgets" || refused[0].readErr != nil {
-		t.Fatalf("readMapping = %#v, %#v, %v; want acme/gadgets left out naming both Apps", accepted, refused, err)
+	if err != nil || len(accepted) != 0 || len(refused) != 1 || refused[0].Reason != "the App is not installed on acme/gadgets" || refused[0].readErr != nil {
+		t.Fatalf("readMapping = %#v, %#v, %v; want acme/gadgets left out naming the App", accepted, refused, err)
 	}
 	if got, want := refused[0].apps, (appAnswers{answered: true}); got != want {
-		t.Fatalf("acme/gadgets' Apps = %+v, want %+v: GitHub answered both, neither installed", got, want)
+		t.Fatalf("acme/gadgets' App = %+v, want %+v: GitHub answered the read, not installed", got, want)
 	}
 
 	for _, failure := range []error{&appauth.TransientError{Err: errors.New("GitHub answered 502")}, errors.New("GitHub answered 403")} {
 		client := &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: "acme/widgets", Project: "LEGION", Default: true}, {Repo: "acme/gadgets", Project: "LEGION"}}}
 		installs := &installations{}
-		installs.setFailing(failure, "review acme/gadgets")
+		installs.setFailing(failure, "acme/gadgets")
 		accepted, refused, _, err := readMapping(context.Background(), client, "LEGION", installs, ghrepo.Renames{})
 		if err != nil {
 			t.Fatalf("readMapping with %v on acme/gadgets = %v, want acme/gadgets left out and the rest checked", failure, err)
@@ -282,34 +282,21 @@ func TestTheMappingNamesEveryMissingAppAndLeavesOutOnlyARepositoryWhoseReadFaile
 		if len(accepted) != 1 || accepted[0].Repo != ghrepo.MustParse("acme/widgets") {
 			t.Fatalf("accepted = %#v, want acme/widgets", accepted)
 		}
-		want := "the review App's installation on acme/gadgets could not be read: " + failure.Error() + "; Legion reads it again"
+		want := "the App's installation on acme/gadgets could not be read: " + failure.Error() + "; Legion reads it again"
 		if len(refused) != 1 || refused[0].Repo != "acme/gadgets" || refused[0].Reason != want || !errors.Is(refused[0].readErr, failure) {
 			t.Fatalf("refused = %#v, want acme/gadgets refused for now with %q", refused, want)
 		}
 		if refused[0].apps.answered {
-			t.Fatalf("acme/gadgets' Apps = %+v with its review App read failing (%v), want no answer kept", refused[0].apps, failure)
+			t.Fatalf("acme/gadgets' App = %+v with its read failing (%v), want no answer kept", refused[0].apps, failure)
 		}
-	}
-
-	// An App GitHub answered is missing leaves the repository out, but a read that failed to
-	// answer beside it makes that refusal a refusal for now: Legion reads the entry again until
-	// GitHub has answered every read, since a transient failure must never settle an entry for
-	// good.
-	installs = &installations{missing: map[string]bool{"review acme/gadgets": true}}
-	failure := errors.New("GitHub answered 502")
-	installs.setFailing(failure, "implement acme/gadgets")
-	_, refused, _, err = readMapping(context.Background(), client, "LEGION", installs, ghrepo.Renames{})
-	want := "the review App is not installed on acme/gadgets; the implement App's installation on acme/gadgets could not be read: GitHub answered 502; Legion reads it again"
-	if err != nil || len(refused) != 1 || refused[0].Reason != want || !errors.Is(refused[0].readErr, failure) || refused[0].apps.answered {
-		t.Fatalf("readMapping = %#v, %v; want acme/gadgets refused for now with %q and no answer of the Apps kept", refused, err, want)
 	}
 }
 
-// legion state carries, on each refused repository, what GitHub answered of both role Apps on it
-// (api.RefusedRepositoryView.Apps): the App missing named as a field where GitHub answered both
-// reads, both installed on one left out for its default-branch read alone, and no answer at all
-// where a read failed or Dispatch's name is no <owner>/<name>. A served repository carries both
-// Apps as installed, as before.
+// legion state carries, on each refused repository, what GitHub answered of the App on it
+// (api.RefusedRepositoryView.Apps), in both of the view's fields: not installed where GitHub
+// answered the read, installed on one left out for its default-branch read alone, and no answer
+// at all where the read failed or Dispatch's name is no <owner>/<name>. A served repository
+// carries the App as installed, as before.
 func TestTheStateNamesEachRefusedRepositorysAppsWhereGitHubAnswered(t *testing.T) {
 	client := &mappingDispatch{mappings: []dispatch.RepoProject{
 		{Repo: "acme/widgets", Project: "LEGION", Default: true},
@@ -317,8 +304,8 @@ func TestTheStateNamesEachRefusedRepositorysAppsWhereGitHubAnswered(t *testing.T
 		{Repo: "acme/tools", Project: "LEGION"},
 		{Repo: "not a repository", Project: "LEGION"},
 	}}
-	installs := &installations{missing: map[string]bool{"implement acme/gadgets": true}}
-	installs.setFailing(errors.New("GitHub answered 502"), "review acme/tools")
+	installs := &installations{missing: map[string]bool{"acme/gadgets": true}}
+	installs.setFailing(errors.New("GitHub answered 502"), "acme/tools")
 	accepted, refused, _, err := readMapping(context.Background(), client, "LEGION", installs, ghrepo.Renames{})
 	if err != nil {
 		t.Fatalf("readMapping: %v", err)
@@ -329,14 +316,14 @@ func TestTheStateNamesEachRefusedRepositorysAppsWhereGitHubAnswered(t *testing.T
 
 	view := repos.view(nil)
 	if len(view.Mapped) != 1 || view.Mapped[0].Apps != (api.AppInstallationsView{Implement: true, Review: true}) {
-		t.Fatalf("served = %+v, want acme/widgets with both Apps installed", view.Mapped)
+		t.Fatalf("served = %+v, want acme/widgets with the App installed", view.Mapped)
 	}
 	apps := map[string]*api.AppInstallationsView{}
 	for _, entry := range view.Refused {
 		apps[entry.Repo] = entry.Apps
 	}
 	for repo, want := range map[string]*api.AppInstallationsView{
-		"acme/gadgets":     {Review: true},
+		"acme/gadgets":     {},
 		"zeta/limited":     {Implement: true, Review: true},
 		"acme/tools":       nil,
 		"not a repository": nil,
@@ -353,7 +340,7 @@ func TestTheStateNamesEachRefusedRepositorysAppsWhereGitHubAnswered(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"repo":"acme/gadgets","reason":"the implement App is not installed on acme/gadgets","apps":{"implement":false,"review":true}}`; !strings.Contains(string(encoded), want) {
+	if want := `{"repo":"acme/gadgets","reason":"the App is not installed on acme/gadgets","apps":{"implement":false,"review":false}}`; !strings.Contains(string(encoded), want) {
 		t.Errorf("refused on the wire = %s, want it to hold %s", encoded, want)
 	}
 	if strings.Count(string(encoded), `"apps"`) != 2 {
@@ -388,7 +375,7 @@ func TestEachInstallationReadIsBoundedOnItsOwn(t *testing.T) {
 }
 
 // The boot refuses only a project with no repository mapped. A mapping whose every repository
-// lacks an App boots serving none, each left out and reported; a mapping with one served
+// lacks the App boots serving none, each left out and reported; a mapping with one served
 // repository and one left out boots serving the one.
 func TestTheBootRefusesOnlyAnEmptyMapping(t *testing.T) {
 	for _, tc := range []struct {
@@ -400,10 +387,10 @@ func TestTheBootRefusesOnlyAnEmptyMapping(t *testing.T) {
 	}{
 		{name: "no repository mapped", mappings: []dispatch.RepoProject{{Repo: "other/thing", Project: "OTHER"}},
 			want: "project LEGION has no repository mapped in Dispatch (Settings → Repositories → Projects)"},
-		{name: "no repository with both Apps", mappings: []dispatch.RepoProject{{Repo: "acme/gadgets", Project: "LEGION"}},
-			missing: map[string]bool{"review acme/gadgets": true}, leftOut: 1},
+		{name: "no repository with the App", mappings: []dispatch.RepoProject{{Repo: "acme/gadgets", Project: "LEGION"}},
+			missing: map[string]bool{"acme/gadgets": true}, leftOut: 1},
 		{name: "one served, one left out", mappings: []dispatch.RepoProject{{Repo: "acme/widgets", Project: "LEGION"}, {Repo: "acme/gadgets", Project: "LEGION"}},
-			missing: map[string]bool{"review acme/gadgets": true}, served: 1, leftOut: 1},
+			missing: map[string]bool{"acme/gadgets": true}, served: 1, leftOut: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := &workflowRuntime{dispatch: &mappingDispatch{mappings: tc.mappings}, dispatchProject: "LEGION", installs: &installations{missing: tc.missing},
@@ -473,13 +460,13 @@ func TestTheBootWaitsForTheMappingWhileDispatchRefusesEveryDial(t *testing.T) {
 }
 
 // A boot whose installation read fails for one repository, transient or not, serves the
-// repositories GitHub answered for and leaves that one out for now, naming the App, the repository
-// and the failure, where it refused the whole boot and its supervisor restarted it straight back
-// into GitHub's same failure. The state shows the refusal.
+// repositories GitHub answered for and leaves that one out for now, naming the repository and the
+// failure, where it refused the whole boot and its supervisor restarted it straight back into
+// GitHub's same failure. The state shows the refusal.
 func TestABootServesTheRepositoriesWhoseInstallationReadsAnswer(t *testing.T) {
-	for _, failure := range []error{&appauth.TransientError{Err: errors.New("GitHub answered 502")}, errors.New("read whether the implement App is installed on acme/gadgets failed (403)")} {
+	for _, failure := range []error{&appauth.TransientError{Err: errors.New("GitHub answered 502")}, errors.New("read whether the App is installed on acme/gadgets failed (403)")} {
 		installs := &installations{}
-		installs.setFailing(failure, "implement acme/gadgets")
+		installs.setFailing(failure, "acme/gadgets")
 		var logged bytes.Buffer
 		w := &workflowRuntime{dispatch: &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: "acme/widgets", Project: "LEGION", Default: true}, {Repo: "acme/gadgets", Project: "LEGION"}}},
 			dispatchProject: "LEGION", installs: installs, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: slog.New(slog.NewTextHandler(&logged, nil))}
@@ -490,7 +477,7 @@ func TestABootServesTheRepositoriesWhoseInstallationReadsAnswer(t *testing.T) {
 			t.Fatalf("Accepted = %v, want acme/widgets", got)
 		}
 		view := w.repositories.view(nil)
-		want := "the implement App's installation on acme/gadgets could not be read: " + failure.Error() + "; Legion reads it again"
+		want := "the App's installation on acme/gadgets could not be read: " + failure.Error() + "; Legion reads it again"
 		if len(view.Refused) != 1 || view.Refused[0] != (api.RefusedRepositoryView{Repo: "acme/gadgets", Reason: want}) {
 			t.Fatalf("state's refused = %#v, want acme/gadgets with %q", view.Refused, want)
 		}
@@ -504,7 +491,7 @@ func TestABootServesTheRepositoriesWhoseInstallationReadsAnswer(t *testing.T) {
 // one ERROR line naming the first failure: its API and recovery stay up, and the read again heals it.
 func TestABootWhoseEveryInstallationReadFailsServesNoneAndLogsOneError(t *testing.T) {
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 403: Resource not accessible by integration"), "implement acme/widgets", "review acme/widgets", "implement acme/gadgets", "review acme/gadgets")
+	installs.setFailing(errors.New("GitHub answered 403: Resource not accessible by integration"), "acme/widgets", "acme/gadgets")
 	var logged bytes.Buffer
 	w := &workflowRuntime{dispatch: &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: "acme/widgets", Project: "LEGION", Default: true}, {Repo: "acme/gadgets", Project: "LEGION"}}},
 		dispatchProject: "LEGION", installs: installs, repositories: newRepositories("LEGION", ghrepo.Renames{}), log: slog.New(slog.NewTextHandler(&logged, nil))}
@@ -524,8 +511,8 @@ func TestABootWhoseEveryInstallationReadFailsServesNoneAndLogsOneError(t *testin
 		}
 	}
 	if len(errorLines) != 1 || !strings.Contains(errorLines[0], "every mapped repository's GitHub App installation read failed") ||
-		!strings.Contains(errorLines[0], "check the implement App's installation on acme/widgets: GitHub answered 403: Resource not accessible by integration") {
-		t.Fatalf("ERROR lines = %q, want one naming the first failure (acme/widgets' implement read)", errorLines)
+		!strings.Contains(errorLines[0], "check the App's installation on acme/widgets: GitHub answered 403: Resource not accessible by integration") {
+		t.Fatalf("ERROR lines = %q, want one naming the first failure (acme/widgets' read)", errorLines)
 	}
 }
 
@@ -658,12 +645,12 @@ func (d *webhookDispatch) checks(repo string) int {
 }
 
 // A served repository Dispatch's GitHub App is not installed on is one GitHub sends Legion no
-// event of: the daemon serves it all the same and the state names it with why. A repository a
-// role App is missing on is named only as refused. Once the App is installed, the next read of the
+// event of: the daemon serves it all the same and the state names it with why. A repository the
+// App is missing on is named only as refused. Once the App is installed, the next read of the
 // mapping names nothing.
 func TestARepositoryWithoutTheWebhookAppIsServedAndNamed(t *testing.T) {
 	standIn := newWebhookDispatch(t, true, map[string]bool{"acme/widgets": false, "zeta/tools": false})
-	w, _, _, _ := mappingRigWith(t, &installations{missing: map[string]bool{"review zeta/tools": true}}, standIn.serve)
+	w, _, _, _ := mappingRigWith(t, &installations{missing: map[string]bool{"zeta/tools": true}}, standIn.serve)
 	if !served(w, "acme/widgets") || served(w, "zeta/tools") {
 		t.Fatalf("served acme/widgets %v, zeta/tools %v; want acme/widgets alone", served(w, "acme/widgets"), served(w, "zeta/tools"))
 	}
@@ -796,7 +783,7 @@ func TestARepositoryOnlyALiveRecordNamesIsNamedWithoutTheWebhookAppAfterARestart
 	if listed := servedNames(w); !slices.Contains(listed, unmappedNamed) {
 		t.Fatalf("the state serves %v, want %s among them: a live record names it, and a missing Dispatch App refuses nothing", listed, unmappedNamed)
 	}
-	if reads := installs.reads("implement " + unmappedRepo); reads != 0 {
+	if reads := installs.reads(unmappedRepo); reads != 0 {
 		t.Fatalf("the restarted daemon made %d installation reads of %s, want none: the gap stands on the records, not on a preparation", reads, unmappedRepo)
 	}
 }
@@ -907,16 +894,16 @@ func TestTheMappingsViewCarriesTheRepositoryCaches(t *testing.T) {
 }
 
 // The state's repositories are every repository the daemon serves: the ones Dispatch's mapping
-// names and the ones the project's own live records name, each carrying both role Apps as
-// installed, which is what each of the two doors admits a repository on (INFRA-2543 R6). A
+// names and the ones the project's own live records name, each carrying the App as installed,
+// which is what each of the two doors admits a repository on. A
 // repository only a record names is no repository the daemon serves no longer, so its cache is
 // its own entry's and not one of the caches listed apart, and the project's default is the
 // mapping's alone. A read a preparation kept for a repository no record names puts nothing in
 // the state: the preparation of a person's own todo issue keeps one, and no tree works there. A
 // repository the mapping gains after an issue was recorded on it is served once, as the
 // mapping's entry, since that is the entry a default can stand on, and one the mapping leaves
-// out stands under the refusals alone, with why, never beside them as one both Apps are
-// installed on.
+// out stands under the refusals alone, with why, never beside them as one the App is installed
+// on.
 func TestTheStatesRepositoriesHoldTheOnesOnlyARecordNames(t *testing.T) {
 	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true}}, nil)
@@ -953,11 +940,11 @@ func TestTheStatesRepositoriesHoldTheOnesOnlyARecordNames(t *testing.T) {
 		t.Fatalf("owners = %v, want the owners of the repositories the mapping names", view.Owners)
 	}
 
-	missing := "the review App is not installed on zeta/tools"
+	missing := "the App is not installed on zeta/tools"
 	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true}}, []refusedRepository{{Repo: "zeta/tools", Reason: missing}})
 	view = repos.view(nil)
 	if len(view.Mapped) != 1 || view.Mapped[0].Repo != "Acme/Widgets" || !reflect.DeepEqual(view.Refused, []api.RefusedRepositoryView{{Repo: "zeta/tools", Reason: missing}}) {
-		t.Fatalf("view = %+v, want acme/widgets served and zeta/tools, which a live record names, left out for its review App alone", view)
+		t.Fatalf("view = %+v, want acme/widgets served and zeta/tools, which a live record names, left out for the App alone", view)
 	}
 }
 
@@ -1015,7 +1002,7 @@ func TestEveryReaderOfARepositoryTakesTheSetThatAnsweredFromOneLookup(t *testing
 	// App once GitHub has named it (prepareUnmapped), so the runtime has a Dispatch to ask.
 	w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets-legacy", "acme/widgets"))),
 		dispatch: &mappingDispatch{}, installs: installs, log: quietLogger(), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
-	unanswered := "the implement App's installation on acme/gadgets could not be read: GitHub answered 502; Legion reads it again"
+	unanswered := "the App's installation on acme/gadgets could not be read: GitHub answered 502; Legion reads it again"
 	w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true}},
 		[]refusedRepository{{Repo: "acme/gadgets", Reason: unanswered, readErr: errors.New("GitHub answered 502")}})
 	if _, err := w.defaultBranches.Named(ctx, ghrepo.MustParse("Acme/Widgets")); err != nil {
@@ -1040,7 +1027,7 @@ func TestEveryReaderOfARepositoryTakesTheSetThatAnsweredFromOneLookup(t *testing
 		{name: "a repository only a preparation read", resolved: "zeta/tools", source: fromRecorded,
 			resolution: workflow.Resolution{Repo: "Zeta/Tools", DefaultBranch: "main", GitHubRepo: "Zeta/Tools"}},
 		{name: "a repository neither set names", resolved: "other/thing", source: fromNeither,
-			resolution: workflow.Resolution{Refusal: "GitHub has not been read for other/thing yet", Unread: true}, reads: len(appauth.Roles)},
+			resolution: workflow.Resolution{Refusal: "GitHub has not been read for other/thing yet", Unread: true}, reads: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := w.repositories.lookup(tc.resolved).source; got != tc.source {
@@ -1125,7 +1112,7 @@ func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
 			// The pass takes its set, the repository's mark among it, before anything below.
 			marks := map[string]uint64{repo: w.unreadMarks[repo]}
 			if tc.failed {
-				w.leaveUnread(ghrepo.MustParse(repo), "the implement App's installation on stranger/tools could not be read: GitHub answered 502")
+				w.leaveUnread(ghrepo.MustParse(repo), "the App's installation on stranger/tools could not be read: GitHub answered 502")
 			}
 			if tc.answeredNow {
 				w.readAnswered(ghrepo.MustParse(repo))
@@ -1204,7 +1191,7 @@ func TestAReleaseWaitIsHeldOnlyWhileItsRepositoryIsUnread(t *testing.T) {
 func TestAReleaseWaitInFlightAcrossAPublicationIsRefusedRatherThanStranded(t *testing.T) {
 	const repo, tree, filed, inFlight = "zeta/tools", "LEGION-1", "LEGION-2", "LEGION-3"
 	w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
-	w.repositories.set(nil, []refusedRepository{{Repo: repo, Reason: "the implement App's installation on zeta/tools could not be read: GitHub answered 502; Legion reads it again", readErr: errors.New("GitHub answered 502")}})
+	w.repositories.set(nil, []refusedRepository{{Repo: repo, Reason: "the App's installation on zeta/tools could not be read: GitHub answered 502; Legion reads it again", readErr: errors.New("GitHub answered 502")}})
 	if !w.awaitRecovery(repo, tree, filed, tree) {
 		t.Fatalf("the wait for %s was refused while zeta/tools is left out for a read GitHub did not answer", filed)
 	}
@@ -1247,8 +1234,8 @@ func TestAnUnrecordedIssueWorksTheProjectsDefaultRepository(t *testing.T) {
 	if repo, branch, err := w.issueRepository(ctx, "LEGION-9"); err != nil || repo.String() != "Acme/Widgets" || branch != "release/v7.1" {
 		t.Fatalf("an unrecorded issue works %s@%s, %v; want the default Acme/Widgets@release/v7.1", repo, branch, err)
 	}
-	w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("zeta/tools")}}, []refusedRepository{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets"}})
-	want := "LEGION-9 is not recorded, so it works the project's default repository, and project LEGION serves none: set the project's default repository in Dispatch (Settings → Repositories → Projects) to one both GitHub Apps are installed on"
+	w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("zeta/tools")}}, []refusedRepository{{Repo: "acme/widgets", Reason: "the App is not installed on acme/widgets"}})
+	want := "LEGION-9 is not recorded, so it works the project's default repository, and project LEGION serves none: set the project's default repository in Dispatch (Settings → Repositories → Projects) to one the App is installed on"
 	if repo, _, err := w.issueRepository(ctx, "LEGION-9"); err == nil || err.Error() != want {
 		t.Fatalf("an unrecorded issue with no default served works %s, %v; want %q", repo, err, want)
 	}

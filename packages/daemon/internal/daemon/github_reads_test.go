@@ -20,13 +20,32 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
+// outboxBearer is the bearer outboxTokens hands the daemon's call to path: the reviewer's write
+// lease for the read of a review author's permission (reviewAppClient), and the read lease for
+// every other read of a repository (readClient).
+func outboxBearer(path string) string {
+	if strings.Contains(path, "/collaborators/") {
+		return "Bearer outbox-token"
+	}
+	return "Bearer outbox-token-read"
+}
+
+// outboxAuthorized reports whether r carries the bearer outboxTokens hands it (outboxBearer), and
+// answers 401, as GitHub answers a token it does not take, where it does not.
+func outboxAuthorized(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get("Authorization") == outboxBearer(r.URL.Path) {
+		return true
+	}
+	http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+	return false
+}
+
 // pullStandIn is GitHub's REST API for acme/widgets as the per-issue read sees it: pull request 86
 // answered with pull, and no review on it.
 func pullStandIn(t *testing.T, pull string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer outbox-token" {
-			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+		if !outboxAuthorized(w, r) {
 			return
 		}
 		switch r.URL.Path {

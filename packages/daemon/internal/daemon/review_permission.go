@@ -140,7 +140,7 @@ func (w *workflowRuntime) tokenRefused(repository ghrepo.Repository, lease appau
 		return &intake.RetryLater{After: tokenAcceptWindow - age,
 			Err: fmt.Errorf("GitHub has not yet accepted the review App's token minted %s ago, tried again once it is %s old: %w", age.Round(time.Millisecond), tokenAcceptWindow, err)}
 	}
-	w.forget.Forget(appauth.Review, repository.Owner())
+	w.forget.Forget(appauth.SetReviewer, repository.Owner())
 	return &intake.RetryLater{After: tokenRefusedWait,
 		Err: fmt.Errorf("GitHub refused the review App's token, which is minted again: %w", err)}
 }
@@ -175,7 +175,7 @@ const tokenRefusedWait = 5 * time.Second
 // other reason is returned as is.
 func (w *workflowRuntime) reviewAppClient(ctx context.Context, repository ghrepo.Repository) (githubrest.Client, appauth.Lease, ghrepo.Repository, error) {
 	serving := w.repositories.serving(repository)
-	lease, err := w.tokens.Token(ctx, appauth.Review, serving.Owner())
+	lease, err := w.tokens.Token(ctx, appauth.SetReviewer, serving.Owner())
 	if err != nil {
 		var transient *appauth.TransientError
 		if errors.As(err, &transient) {
@@ -195,7 +195,7 @@ func (w *workflowRuntime) readPermission(ctx context.Context, repository ghrepo.
 	client, lease, repository, err := w.reviewAppClient(ctx, repository)
 	if errors.Is(err, appauth.ErrNotInstalled) {
 		w.log.Error("workflow: the review App is not installed on the owner GitHub holds the review's repository under, so the review decides nothing; install the review App there for its reviews to decide a round",
-			"app", appauth.Review, "installation_owner", repository.Owner(), "repo", repository.String(), "login", login, "error", err)
+			"set", appauth.SetReviewer, "installation_owner", repository.Owner(), "repo", repository.String(), "login", login, "error", err)
 		return false, nil
 	}
 	if err != nil {
@@ -223,7 +223,7 @@ func (w *workflowRuntime) readPermission(ctx context.Context, repository ghrepo.
 			return false, nil
 		case refused.Status == http.StatusForbidden:
 			w.log.Error("workflow: GitHub refuses the review App's installation a review author's repository permission, so the review decides nothing; while the installation may not read the repository's collaborators, no review but the review App's decides a round",
-				"app", appauth.Review, "bot", lease.Identity.Name, "installation_owner", repository.Owner(), "repo", repository.String(), "login", login, "status", refused.Status, "body", refused.Body)
+				"set", appauth.SetReviewer, "bot", lease.Identity.Name, "installation_owner", repository.Owner(), "repo", repository.String(), "login", login, "status", refused.Status, "body", refused.Body)
 			return false, nil
 		case refused.Status == http.StatusUnauthorized:
 			return false, w.tokenRefused(repository, lease, fmt.Errorf("read %s's permission on %s: %w", login, repository.String(), err))

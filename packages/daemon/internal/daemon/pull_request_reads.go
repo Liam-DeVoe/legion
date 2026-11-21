@@ -110,7 +110,7 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // in hand (intake.PullRequestMergeability.ReadAt).
 //
 // A read GitHub answered `mergeable: false` (record.MergeabilityConflicting) also reads the base's
-// rules for its required status checks (readBaseRules), with github, the implement App's client
+// rules for its required status checks (readBaseRules), with github, the read lease's client
 // of the repository the read of the pull request built (readPullRequest), and the fact carries
 // them (intake.PullRequestMergeability.Rules): a conflict the workflow confirms is decided on them
 // (dispatch://INFRA-4374 R0, workflow's mergeability). Any other answer reads no rules, and its
@@ -333,9 +333,9 @@ func (w *workflowRuntime) openPullRequestOn(ctx context.Context, repo, branch st
 		return githubPullRequest{}, false, err
 	}
 	repository := w.repositories.serving(recorded)
-	github, err := implementClient(ctx, w.tokens, w.githubAPI, repository)
+	github, err := readClient(ctx, w.tokens, w.githubAPI, repository)
 	if err != nil {
-		return githubPullRequest{}, false, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
+		return githubPullRequest{}, false, fmt.Errorf("mint the read token for %s: %w", repository.Owner(), err)
 	}
 	var pulls []githubPullRequest
 	query := url.Values{"head": {repository.Owner() + ":" + branch}, "state": {"open"}}

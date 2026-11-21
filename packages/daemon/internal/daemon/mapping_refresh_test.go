@@ -59,8 +59,8 @@ func (s *faultyStore) PutIssue(ctx context.Context, tx pgx.Tx, issue record.Issu
 }
 
 // mappingRig is a workflow runtime over a fresh database and NATS whose project maps acme/widgets
-// (its default) and zeta/tools, each App installed on each but those missing names ("<role>
-// <owner/name>"), with GitHub intake hearing what the boot's mapping serves.
+// (its default) and zeta/tools, the App installed on each but those missing names
+// ("<owner/name>"), with GitHub intake hearing what the boot's mapping serves.
 func mappingRig(t *testing.T, missing map[string]bool) (*workflowRuntime, *mappingDispatch, *installations, jetstream.Stream) {
 	t.Helper()
 	return mappingRigWith(t, &installations{missing: missing})
@@ -184,9 +184,9 @@ func TestAFailedRefreshServesNothingUntilARetrySubscribesIt(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			w, client, installs, stream := mappingRig(t, map[string]bool{"review zeta/tools": true})
+			w, client, installs, stream := mappingRig(t, map[string]bool{"zeta/tools": true})
 			client.issue = dispatch.Issue{Key: "LEGION-301", Status: "todo", HandedOver: true, ResolvedRepo: "zeta/tools", LastSeq: 1}
-			installs.missing["review zeta/tools"] = false
+			installs.missing["zeta/tools"] = false
 			w.records = &faultyStore{Store: w.records, failIssues: tc.fail}
 			fact := intake.DispatchIssue{Key: "LEGION-301", Seq: 1, Status: "todo", Title: "new", Rank: "A", HandedOver: true, ResolvedRepo: "zeta/tools"}
 			if tc.fail {
@@ -422,7 +422,7 @@ type gatedInstallations struct {
 	release chan struct{}
 }
 
-func (g *gatedInstallations) InstalledOn(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (bool, error) {
+func (g *gatedInstallations) InstalledOn(ctx context.Context, repo ghrepo.Repository) (bool, error) {
 	if g.armed.Load() {
 		g.once.Do(func() { close(g.entered) })
 		select {
@@ -431,7 +431,7 @@ func (g *gatedInstallations) InstalledOn(ctx context.Context, role appauth.AppRo
 			return false, ctx.Err()
 		}
 	}
-	return g.installations.InstalledOn(ctx, role, repo)
+	return g.installations.InstalledOn(ctx, repo)
 }
 
 // A recording on a repository GitHub intake already hears waits on no read of the mapping. A read
@@ -643,13 +643,13 @@ func TestGitHubIntakeHearsEachRepositoryAsGitHubSpellsIt(t *testing.T) {
 	}
 }
 
-// A project whose every mapped repository lacks an App boots serving none: GitHub intake hears no
+// A project whose every mapped repository lacks the App boots serving none: GitHub intake hears no
 // repository's events, and an issue handed to Legion on one is not admitted, the daemon saying why
 // on it. Once the App is installed, the issue's next hand-over is held for a read of the mapping,
 // which serves the repository and records the issue on it, which GitHub intake then hears.
 func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testing.T) {
 	ctx := context.Background()
-	w, client, installs, stream := mappingRig(t, map[string]bool{"review acme/widgets": true, "review zeta/tools": true})
+	w, client, installs, stream := mappingRig(t, map[string]bool{"acme/widgets": true, "zeta/tools": true})
 	client.issue = dispatch.Issue{Key: "LEGION-301", Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 2}
 	if served := w.repositories.Accepted(); len(served) != 0 {
 		t.Fatalf("served %v, want none", served)
@@ -687,11 +687,11 @@ func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testin
 		notes = append(notes, note)
 	}
 	rows.Close()
-	if len(notes) != 1 || !strings.Contains(notes[0], "the review App is not installed on acme/widgets") {
-		t.Fatalf("notes on LEGION-301 = %q, want one naming the review App acme/widgets lacks", notes)
+	if len(notes) != 1 || !strings.Contains(notes[0], "the App is not installed on acme/widgets") {
+		t.Fatalf("notes on LEGION-301 = %q, want one naming the App acme/widgets lacks", notes)
 	}
 
-	installs.missing["review acme/widgets"] = false
+	installs.missing["acme/widgets"] = false
 	handOver(2)
 	if got := recordedIssue(t, w, "LEGION-301"); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("LEGION-301 = %+v once the App is installed, want it recorded on acme/widgets", got)
@@ -778,14 +778,14 @@ func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *test
 			repo := "acme/widgets"
 			if tc.heldFirst {
 				repo = "zeta/tools"
-				// zeta/tools is mapped with a role App the daemon's last read found missing, so
+				// zeta/tools is mapped with the App the daemon's last read found missing, so
 				// an admission on it is held for a read of the mapping; the App is installed
 				// before that read is made.
-				installs.setMissing(true, "review zeta/tools")
+				installs.setMissing(true, "zeta/tools")
 				if err := w.refreshMapping(ctx); err != nil {
 					t.Fatal(err)
 				}
-				installs.setMissing(false, "review zeta/tools")
+				installs.setMissing(false, "zeta/tools")
 			}
 			github := &failingGitHub{named: map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"}}
 			w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.start(t), 0, time.Now)
@@ -926,9 +926,9 @@ func TestAViewPreparedBeforeTheIssueWasRecordedNeverAppliesToItsRecord(t *testin
 // redelivery, prepared as Dispatch now shows the issue, records nothing and leaves no hold.
 func TestAHeldEventKeepsItsDeliveredSequenceAndAWithdrawalEndsItsHold(t *testing.T) {
 	ctx := context.Background()
-	// zeta/tools is mapped with a role App the daemon's boot found missing, so an admission on it
+	// zeta/tools is mapped with the App the daemon's boot found missing, so an admission on it
 	// is held for a read of the mapping.
-	w, client, _, _ := mappingRig(t, map[string]bool{"review zeta/tools": true})
+	w, client, _, _ := mappingRig(t, map[string]bool{"zeta/tools": true})
 	// Every read of the mapping fails from here, so the hold's read never covers it.
 	client.mu.Lock()
 	client.err = errors.New("Dispatch is restarting")
@@ -1027,15 +1027,15 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 	ctx := context.Background()
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("read whether the implement App is installed on zeta/tools failed (403)"), "implement zeta/tools")
+	installs.setFailing(errors.New("read whether the App is installed on zeta/tools failed (403)"), "zeta/tools")
 	w, client, installs, stream := mappingRigWith(t, installs)
 	if !served(w, "acme/widgets") {
 		t.Fatal("acme/widgets is not served, want it served beside the repository whose read failed")
 	}
-	if held := w.repositories.lookup("zeta/tools"); !held.leftOut || !held.unread || !strings.Contains(held.refusal, "the implement App's installation on zeta/tools could not be read") {
+	if held := w.repositories.lookup("zeta/tools"); !held.leftOut || !held.unread || !strings.Contains(held.refusal, "the App's installation on zeta/tools could not be read") {
 		t.Fatalf("zeta/tools refusal = %q (left out %v), want it left out for its failed read", held.refusal, held.leftOut)
 	}
-	testwait.Eventually(t, "zeta/tools' installation read again", func() bool { return installs.reads("implement zeta/tools") >= 3 })
+	testwait.Eventually(t, "zeta/tools' installation read again", func() bool { return installs.reads("zeta/tools") >= 3 })
 	if served(w, "zeta/tools") {
 		t.Fatal("zeta/tools served while its read still fails")
 	}
@@ -1060,8 +1060,8 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 		t.Fatalf("notes on LEGION-301 = %q while it is held, want none", notes)
 	}
 
-	installs.setFailing(errors.New("GitHub answered 502"), "review acme/widgets")
-	installs.setFailing(nil, "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "acme/widgets")
+	installs.setFailing(nil, "zeta/tools")
 	testwait.Eventually(t, "zeta/tools served while acme/widgets' read fails", func() bool { return served(w, "zeta/tools") })
 	if !served(w, "acme/widgets") {
 		t.Fatalf("acme/widgets left out once its read failed, want it served on its last answer; refused %v", w.repositories.Refused())
@@ -1080,51 +1080,51 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 		t.Fatalf("notes on LEGION-301 = %q, want none: it was left, then recovered", notes)
 	}
 
-	installs.setFailing(nil, "review acme/widgets")
+	installs.setFailing(nil, "acme/widgets")
 	testwait.Eventually(t, "acme/widgets read again", func() bool { return len(w.repositories.awaitingRead()) == 0 })
-	reads := installs.reads("review acme/widgets")
+	reads := installs.reads("acme/widgets")
 	time.Sleep(10 * installReadRetry.Max)
-	if got := installs.reads("review acme/widgets"); got != reads {
+	if got := installs.reads("acme/widgets"); got != reads {
 		t.Fatalf("acme/widgets read %d times more once GitHub answered, want the reads again to stop", got-reads)
 	}
 }
 
-// A mapped repository an App is not installed on (GitHub's 404) is left out with the App named,
+// A mapped repository the App is not installed on (GitHub's 404) is left out with the App named,
 // and the daemon reads it again of its own only while another repository's failed read is read
 // again: once that one is served, nothing is read again until a mapping change or an issue asks.
 // The refusal is nothing the issue is held to, though: the next preparation of an admission on it
-// asks for a read of the mapping, which reads the installation again, so an App installed since
+// asks for a read of the mapping, which reads the installation again, so the App installed since
 // admits the issue with no restart and no change in Dispatch's mapping (R4).
 func TestANotInstalledRepositoryIsReadAgainAtTheNextPreparation(t *testing.T) {
 	ctx := context.Background()
 	quickInstallReads(t)
-	installs := &installations{missing: map[string]bool{"review acme/widgets": true}}
-	installs.setFailing(&appauth.TransientError{Err: errors.New("GitHub answered 502")}, "review zeta/tools")
+	installs := &installations{missing: map[string]bool{"acme/widgets": true}}
+	installs.setFailing(&appauth.TransientError{Err: errors.New("GitHub answered 502")}, "zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
 	engine, admission := rigHandlers(w)
 	if refused := readFailures(w.repositories.Refused()); len(refused) != 1 || refused[0].Repo != "zeta/tools" {
 		t.Fatalf("refused for a failed read = %#v, want zeta/tools alone", refused)
 	}
-	installs.setFailing(nil, "review zeta/tools")
+	installs.setFailing(nil, "zeta/tools")
 	testwait.Eventually(t, "zeta/tools served", func() bool { return served(w, "zeta/tools") })
-	if held := w.repositories.lookup("acme/widgets"); !held.leftOut || held.unread || held.refusal != "the review App is not installed on acme/widgets" {
+	if held := w.repositories.lookup("acme/widgets"); !held.leftOut || held.unread || held.refusal != "the App is not installed on acme/widgets" {
 		t.Fatalf("acme/widgets refusal = %q (left out %v), want the App it lacks", held.refusal, held.leftOut)
 	}
-	reads := installs.reads("review acme/widgets")
+	reads := installs.reads("acme/widgets")
 	time.Sleep(10 * installReadRetry.Max)
-	if got := installs.reads("review acme/widgets"); got != reads {
+	if got := installs.reads("acme/widgets"); got != reads {
 		t.Fatalf("acme/widgets read %d times more with only its 404 left, want no read again of the daemon's own", got-reads)
 	}
 
 	issue, fact := handedOver("LEGION-311", "acme/widgets", 1)
 	client.issue = issue
-	installs.setMissing(false, "review acme/widgets")
+	installs.setMissing(false, "acme/widgets")
 	prepared, err := prepareAsDelivered(t, w, fact)
 	if err != nil {
 		t.Fatalf("prepare LEGION-311 once the App is installed = %v, want its preparation to read the installation again", err)
 	}
-	if got := installs.reads("review acme/widgets"); got <= reads {
-		t.Fatalf("the preparation made %d reads of the review App's installation, want it read again", got-reads)
+	if got := installs.reads("acme/widgets"); got <= reads {
+		t.Fatalf("the preparation made %d reads of the App's installation, want it read again", got-reads)
 	}
 	if _, err := intake.ApplyFact(ctx, w.pool, "test", "todo-311", prepared, engine, admission); err != nil {
 		t.Fatal(err)
@@ -1137,19 +1137,19 @@ func TestANotInstalledRepositoryIsReadAgainAtTheNextPreparation(t *testing.T) {
 // A labelled todo root the boot's listing shows on a repository whose installation read failed is
 // not refused: no note is said on it, and once a read again serves the repository the daemon
 // recovers it from Dispatch's listing and admits it on it with no person's move. A root on a
-// repository GitHub says lacks an App is refused at boot with its note, as before.
+// repository GitHub says lacks the App is refused at boot with its note, as before.
 func TestABootListingsRootOnARepositoryWhoseReadFailedIsAdmittedOnceItIsServed(t *testing.T) {
 	ctx := context.Background()
 	quickInstallReads(t)
-	installs := &installations{missing: map[string]bool{"review acme/widgets": true}}
-	installs.setFailing(errors.New("read whether the implement App is installed on zeta/tools failed (403)"), "implement zeta/tools")
+	installs := &installations{missing: map[string]bool{"acme/widgets": true}}
+	installs.setFailing(errors.New("read whether the App is installed on zeta/tools failed (403)"), "zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
 	rigHandlers(w)
 	w.bootID = "listing-boot"
 	client.mu.Lock()
 	client.listed = []dispatch.IssueSummary{
 		{Key: "LEGION-401", ResolvedRepo: "zeta/tools", Title: "on the unread repository", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 1},
-		{Key: "LEGION-402", ResolvedRepo: "acme/widgets", Title: "on the repository missing an App", Status: "todo", Rank: "B", HandedOver: true, LastSeq: 1},
+		{Key: "LEGION-402", ResolvedRepo: "acme/widgets", Title: "on the repository missing the App", Status: "todo", Rank: "B", HandedOver: true, LastSeq: 1},
 	}
 	client.mu.Unlock()
 	client.issue = dispatch.Issue{Key: "LEGION-401", ResolvedRepo: "zeta/tools", Title: "on the unread repository", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 1}
@@ -1162,11 +1162,11 @@ func TestABootListingsRootOnARepositoryWhoseReadFailedIsAdmittedOnceItIsServed(t
 	if notes := repositoryNotes(t, w, "LEGION-401"); len(notes) != 0 {
 		t.Fatalf("notes on LEGION-401 = %q while it is held, want none", notes)
 	}
-	if notes := repositoryNotes(t, w, "LEGION-402"); len(notes) != 1 || !strings.Contains(notes[0], "the review App is not installed on acme/widgets") {
+	if notes := repositoryNotes(t, w, "LEGION-402"); len(notes) != 1 || !strings.Contains(notes[0], "the App is not installed on acme/widgets") {
 		t.Fatalf("notes on LEGION-402 = %q, want its refusal naming the App acme/widgets lacks", notes)
 	}
 
-	installs.setFailing(nil, "implement zeta/tools")
+	installs.setFailing(nil, "zeta/tools")
 	testwait.Eventually(t, "LEGION-401 admitted on zeta/tools", func() bool {
 		got := recordedIssue(t, w, "LEGION-401")
 		return got != nil && got.Repo == "zeta/tools"
@@ -1199,7 +1199,7 @@ func TestAnUnreadEventIsAcknowledgedSoTheBootAdmitsRootsOnServedRepositories(t *
 	ctx := context.Background()
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("read whether the implement App is installed on zeta/tools failed (403)"), "implement zeta/tools")
+	installs.setFailing(errors.New("read whether the App is installed on zeta/tools failed (403)"), "zeta/tools")
 	w, client, installs, _, js := mappingRigJS(t, installs)
 	engine, admission := rigHandlers(w)
 	w.bootID, w.holdPollInterval = "held-event-boot", 10*time.Millisecond
@@ -1241,7 +1241,7 @@ func TestAnUnreadEventIsAcknowledgedSoTheBootAdmitsRootsOnServedRepositories(t *
 		t.Fatalf("notes on %s = %q while it is held, want none", failing.Key, notes)
 	}
 
-	installs.setFailing(nil, "implement zeta/tools")
+	installs.setFailing(nil, "zeta/tools")
 	testwait.Eventually(t, failing.Key+" admitted on zeta/tools", func() bool {
 		got := recordedIssue(t, w, failing.Key)
 		return got != nil && got.Repo == "zeta/tools"
@@ -1255,7 +1255,7 @@ func TestAnUnreadEventIsAcknowledgedSoTheBootAdmitsRootsOnServedRepositories(t *
 func TestAServedRepositoryKeptOnItsLastAnswerHoldsNoOtherRepositoryBack(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	github := &failingGitHub{named: map[string]string{"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main"}, only: "/acme/widgets"}
 	url := github.start(t)
 	w, _, installs, _ := mappingRigWith(t, installs, func(w *workflowRuntime) {
@@ -1266,10 +1266,10 @@ func TestAServedRepositoryKeptOnItsLastAnswerHoldsNoOtherRepositoryBack(t *testi
 		t.Fatalf("served %v at boot, want acme/widgets alone", w.repositories.Accepted())
 	}
 	github.fail.Store(true)
-	installs.setFailing(errors.New("GitHub answered 502"), "review acme/widgets")
-	installs.setFailing(nil, "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "acme/widgets")
+	installs.setFailing(nil, "zeta/tools")
 	if !within(10*time.Second, func() bool { return served(w, "zeta/tools") }) {
-		t.Fatalf("zeta/tools not served after %d reads while acme/widgets' reads fail, want it served", installs.reads("implement zeta/tools"))
+		t.Fatalf("zeta/tools not served after %d reads while acme/widgets' reads fail, want it served", installs.reads("zeta/tools"))
 	}
 	if !served(w, "acme/widgets") {
 		t.Fatalf("acme/widgets left out, want it kept on its last answer; refused %v", w.repositories.Refused())
@@ -1292,7 +1292,7 @@ func TestARecoveryRecordsChildrenParentsFirst(t *testing.T) {
 	ctx := context.Background()
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
 	engine, admission := rigHandlers(w)
 	w.bootID = "parents-first-boot"
@@ -1327,7 +1327,7 @@ func TestARecoveryRecordsChildrenParentsFirst(t *testing.T) {
 		}
 	}
 
-	installs.setFailing(nil, "implement zeta/tools")
+	installs.setFailing(nil, "zeta/tools")
 	if !within(10*time.Second, func() bool {
 		got := recordedIssue(t, w, child.Key)
 		return got != nil && got.Tree == root.Key
@@ -1349,14 +1349,14 @@ func TestASlowButAnsweringGitHubIsServedOnARefresh(t *testing.T) {
 	appMintAttempt, installReadAttempt = 500*time.Millisecond, 2*time.Second
 	t.Cleanup(func() { appMintAttempt, installReadAttempt = attempt, read })
 	installs := &installations{delay: 600 * time.Millisecond}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	w, _, installs, _ := mappingRigWith(t, installs)
 	if served(w, "zeta/tools") {
 		t.Fatal("zeta/tools served at boot while its read fails")
 	}
-	installs.setFailing(nil, "implement zeta/tools")
+	installs.setFailing(nil, "zeta/tools")
 	if !within(10*time.Second, func() bool { return served(w, "zeta/tools") }) {
-		t.Fatalf("zeta/tools not served after %d slow reads, want it served once GitHub answers", installs.reads("implement zeta/tools"))
+		t.Fatalf("zeta/tools not served after %d slow reads, want it served once GitHub answers", installs.reads("zeta/tools"))
 	}
 }
 
@@ -1436,11 +1436,11 @@ func rowCount(t *testing.T, w *workflowRuntime, query string) int {
 	return n
 }
 
-// serveAndRecover lets GitHub answer zeta/tools' implement App read again and waits until the
+// serveAndRecover lets GitHub answer zeta/tools' installation read again and waits until the
 // daemon serves zeta/tools and has nothing left to recover.
 func serveAndRecover(t *testing.T, w *workflowRuntime, installs *installations) {
 	t.Helper()
-	installs.setFailing(nil, "implement zeta/tools")
+	installs.setFailing(nil, "zeta/tools")
 	testwait.Eventually(t, "zeta/tools served and recovered", func() bool {
 		return served(w, "zeta/tools") && len(w.recoveringReasons()) == 0
 	})
@@ -1458,7 +1458,7 @@ func TestARepositoryUnreadAtBootIsRecoveredOnceServed(t *testing.T) {
 	ctx := context.Background()
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
 	rigHandlers(w)
 	w.bootID = "recovery-boot"
@@ -1498,13 +1498,13 @@ func TestARepositoryUnreadAtBootIsRecoveredOnceServed(t *testing.T) {
 			t.Fatalf("%s, a person's issue, recorded as %+v, want it left as it is", key, got)
 		}
 	}
-	listings, reads := client.listingCount(), installs.reads("implement zeta/tools")
+	listings, reads := client.listingCount(), installs.reads("zeta/tools")
 	facts := rowCount(t, w, "select count(*) from processed_events")
 	time.Sleep(10 * installReadRetry.Max)
 	if got := client.listingCount(); got != listings {
 		t.Fatalf("Dispatch listed %d times more once recovered, want none", got-listings)
 	}
-	if got := installs.reads("implement zeta/tools"); got != reads {
+	if got := installs.reads("zeta/tools"); got != reads {
 		t.Fatalf("zeta/tools read %d times more once recovered, want none", got-reads)
 	}
 	if got := rowCount(t, w, "select count(*) from processed_events"); got != facts {
@@ -1518,11 +1518,11 @@ func TestARepositoryUnreadAtBootIsRecoveredOnceServed(t *testing.T) {
 // Events applied while a repository's read fails say nothing and keep nothing, and the recovery
 // once it is served ends each issue where its events would have, had it been served: a root handed
 // over during the outage is admitted; one moved back to backlog during it is not, and its later
-// move to todo admits it once; one whose event was prepared while GitHub said an App was missing
+// move to todo admits it once; one whose event was prepared while GitHub said the App was missing
 // and applied after the read failed is admitted too.
 func TestEventsDuringAnOutageEndWhereTheyWouldHaveServed(t *testing.T) {
 	quickInstallReads(t)
-	installs := &installations{missing: map[string]bool{"review zeta/tools": true}}
+	installs := &installations{missing: map[string]bool{"zeta/tools": true}}
 	w, client, installs, _ := mappingRigWith(t, installs)
 	rigHandlers(w)
 	const handed, withdrawn, prepared404 = "LEGION-1100", "LEGION-1101", "LEGION-1102"
@@ -1533,9 +1533,9 @@ func TestEventsDuringAnOutageEndWhereTheyWouldHaveServed(t *testing.T) {
 		t.Fatal(err)
 	}
 	installs.mu.Lock()
-	delete(installs.missing, "review zeta/tools")
+	delete(installs.missing, "zeta/tools")
 	installs.mu.Unlock()
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	read := w.requestMappingRead()
 	testwait.Eventually(t, "the read that finds zeta/tools unread", func() bool { return w.mappingApplied.Load() >= read })
 	if !w.repositories.lookup("zeta/tools").unread {
@@ -1580,7 +1580,7 @@ func TestEventsDuringAnOutageEndWhereTheyWouldHaveServed(t *testing.T) {
 func TestAChildOnAServedRepositoryUnderAnUnreadParentIsRecovered(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
 	rigHandlers(w)
 	const root, parent, child = "LEGION-1200", "LEGION-1201", "LEGION-1202"
@@ -1605,7 +1605,7 @@ func TestAChildOnAServedRepositoryUnderAnUnreadParentIsRecovered(t *testing.T) {
 func TestARecoveryWhoseListingFailsIsTriedAgain(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
 	rigHandlers(w)
 	const key = "LEGION-1300"
@@ -1630,7 +1630,7 @@ func TestARecoveryWhileTheConsumerIsBehindAdmitsOnceItCatchesUp(t *testing.T) {
 	ctx := context.Background()
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	w, client, installs, _, js := mappingRigJS(t, installs)
 	engine, admission := rigHandlers(w)
 	w.bootID, w.holdPollInterval = "behind-boot", 10*time.Millisecond
@@ -1668,7 +1668,7 @@ func TestARecoveryWhileTheConsumerIsBehindAdmitsOnceItCatchesUp(t *testing.T) {
 		held := w.repositories.lookup("zeta/tools")
 		return held.refusal != "" && !held.leftOut
 	})
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true}, dispatch.RepoProject{Repo: "zeta/tools", Project: "LEGION"})
 	readMappingNow("zeta/tools mapped again and unread", func() bool { return w.repositories.lookup("zeta/tools").unread })
 	client.show(issue(second, "zeta/tools", "todo", true, "", 1))
@@ -1687,7 +1687,7 @@ func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 	fired := make(chan time.Time)
 	close(fired)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	w, _, installs, _ := mappingRigWith(t, installs, func(w *workflowRuntime) {
 		w.recheckAfter = func(d time.Duration) <-chan time.Time {
 			mu.Lock()
@@ -1712,12 +1712,12 @@ func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 		t.Fatalf("waits = %v, want %v", got, want)
 	}
 
-	installs.setFailing(nil, "implement zeta/tools")
+	installs.setFailing(nil, "zeta/tools")
 	w.requestMappingRead()
 	testwait.Eventually(t, "zeta/tools served and recovered", func() bool { return served(w, "zeta/tools") && len(w.recoveringReasons()) == 0 })
 	time.Sleep(100 * time.Millisecond)
 	idle := len(recorded())
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	w.requestMappingRead()
 	testwait.Eventually(t, "a wait after zeta/tools' read fails again", func() bool { return len(recorded()) > idle })
 	if got := recorded()[idle]; got != 30*time.Second {
@@ -1753,7 +1753,7 @@ func treeNotices(t *testing.T, w *workflowRuntime, tree string) []string {
 func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
 	const key = "LEGION-1500"
 	deliver(t, w, client, issue(key, "zeta/tools", "todo", true, "", 1))
@@ -1778,7 +1778,7 @@ func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *
 func TestARecoveryTellsTheArchitectOfTheChildrenItDidNotRecord(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
 	const tree, p, c, e = "LEGION-1600", "LEGION-1601", "LEGION-1602", "LEGION-1603"
 	liveRoot(t, w, client, tree)
@@ -1811,7 +1811,7 @@ func TestARecoveryTellsTheArchitectOfTheChildrenItDidNotRecord(t *testing.T) {
 func TestARecoveryTellsNothingOnceAChildUnderALaggingTodoParentIsRecorded(t *testing.T) {
 	quickInstallReads(t)
 	installs := &installations{}
-	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	w, client, installs, _ := mappingRigWith(t, installs)
 	const tree, parent, child = "LEGION-1700", "LEGION-1701", "LEGION-1702"
 	liveRoot(t, w, client, tree)
@@ -1902,7 +1902,7 @@ func TestALetGoHeldPastItsBoundTellsItsReleaseWaits(t *testing.T) {
 	if h.w.unread == nil {
 		h.w.unread = map[string]string{}
 	}
-	h.w.unread[stranger] = "the implement App's installation on stranger/tools could not be read: GitHub answered 502; Legion reads it again"
+	h.w.unread[stranger] = "the App's installation on stranger/tools could not be read: GitHub answered 502; Legion reads it again"
 	if h.w.releaseWaits == nil {
 		h.w.releaseWaits = map[string]map[string]releaseWait{}
 	}
@@ -1989,7 +1989,7 @@ func newHeldRecovery(t *testing.T, backoff, bound time.Duration, reader ...posit
 	recoveryHoldBound = bound
 	t.Cleanup(func() { recoveryHoldBound = was })
 	h := &heldRecovery{installs: &installations{}}
-	h.installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
+	h.installs.setFailing(errors.New("GitHub answered 502"), "zeta/tools")
 	h.w, h.client, h.installs, _, h.js = mappingRigJS(t, h.installs)
 	_, h.admission = rigHandlers(h.w)
 	h.w.records = noticeFailingStore{Store: h.w.records, fail: &h.failNotice}
@@ -2035,7 +2035,7 @@ func (h *heldRecovery) pause() {
 
 // serve lets GitHub answer zeta/tools and asks for a read of the mapping at once.
 func (h *heldRecovery) serve() {
-	h.installs.setFailing(nil, "implement zeta/tools")
+	h.installs.setFailing(nil, "zeta/tools")
 	h.w.requestMappingRead()
 }
 
@@ -2102,9 +2102,9 @@ func failPastTheBound(t *testing.T, fault, clear func(h *heldRecovery)) {
 	testwait.Eventually(t, "the recovery's listing held", func() bool { return served(h.w, "zeta/tools") && h.admission.Held() })
 	fault(h)
 	time.Sleep(2 * recoveryHoldBound)
-	listings, reads := h.client.listingCount(), h.installs.reads("implement zeta/tools")
+	listings, reads := h.client.listingCount(), h.installs.reads("zeta/tools")
 	time.Sleep(2 * time.Second)
-	if got, read := h.client.listingCount()-listings, h.installs.reads("implement zeta/tools")-reads; got >= 5 || read >= 5 {
+	if got, read := h.client.listingCount()-listings, h.installs.reads("zeta/tools")-reads; got >= 5 || read >= 5 {
 		t.Fatalf("in 2 s past the bound: %d Dispatch listings and %d installation reads of zeta/tools, want fewer than 5 each at a 1 s backoff", got, read)
 	}
 	if n := h.notices(t) - before; n != 0 {

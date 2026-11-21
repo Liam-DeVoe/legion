@@ -12,59 +12,60 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// appOwnersSource is the GitHub App token source of plan.appOwners' test: each App installed on
-// the owners installed names for it, and every lease of an owner refused names for it refused as
+// appOwnersSource is the GitHub App token source of plan.appOwners' test: the App installed on
+// the owners installed names, and every lease of an owner refused names for a set refused as
 // GitHub refuses a narrowing (appauth.ErrNarrowingRefused). That is one of the four answers a
 // bundle leaves an owner's directory out over, the one it says as "permissions refused"
-// (appauth's leaveOutReason).
+// (appauth's leaveOutReason). The read lease names no set, and is never refused.
 type appOwnersSource struct {
-	installed, refused map[appauth.AppRole][]string
+	installed []string
+	refused   map[appauth.TokenSet][]string
 }
 
-func (s appOwnersSource) lease(role appauth.AppRole, owner string) (appauth.Lease, error) {
-	if slices.Contains(s.refused[role], owner) {
+func (s appOwnersSource) Token(_ context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
+	if slices.Contains(s.refused[set], owner) {
 		return appauth.Lease{}, fmt.Errorf("%w (owner %s)", appauth.ErrNarrowingRefused, owner)
 	}
-	return appauth.Lease{Token: "ghs_" + string(role) + "_" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
+	return appauth.Lease{Token: "ghs_" + string(set) + "_" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (s appOwnersSource) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return s.lease(role, owner)
+func (s appOwnersSource) ReadToken(_ context.Context, owner string) (appauth.Lease, error) {
+	return appauth.Lease{Token: "ghs_read_" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (s appOwnersSource) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return s.lease(role, owner)
+func (s appOwnersSource) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return s.Token(ctx, appauth.SetVerdict, owner)
 }
 
-func (s appOwnersSource) InstalledOwners(_ context.Context, role appauth.AppRole) ([]string, error) {
-	return s.installed[role], nil
+func (s appOwnersSource) InstalledOwners(context.Context) ([]string, error) {
+	return s.installed, nil
 }
 
-// bothApps is a source whose two Apps are installed on the same owners and refuse nothing.
-func bothApps(owners ...string) appOwnersSource {
-	return appOwnersSource{installed: map[appauth.AppRole][]string{appauth.Implement: owners, appauth.Review: owners}}
+// installedOn is a source whose App is installed on owners and refuses nothing.
+func installedOn(owners ...string) appOwnersSource {
+	return appOwnersSource{installed: owners}
 }
 
 // roleOwners is what plan.appOwners answers three roles under one runtime: the implementer and
-// the reviewer, which run as the two Apps and share an issue pod under Kubernetes, and the
-// project controller, which runs as the review App in a pod or pane of its own.
+// the reviewer, which hold two sets and share an issue pod under Kubernetes, and the project
+// controller, which holds the controller's set in a pod or pane of its own.
 type roleOwners struct{ implementer, reviewer, controller []string }
 
-// A launch's addressing says of each owner it names that the role's GitHub App is installed on
-// it and that the role's token reaches every repository of it (RepositoriesClause). So what the
-// daemon answers a launch (plan.appOwners) is the installed owners the role's container holds a
+// A launch's addressing says of each owner it names that the GitHub App is installed on it and
+// that the role's token reaches every repository of it (RepositoriesClause). So what the daemon
+// answers a launch (plan.appOwners) is the installed owners the role's container holds a
 // directory for, and not every installed owner.
 //
 // An owner whose lease GitHub refuses is still in the installations the bundle read, and the
 // bundle holds no directory for it. The alias directory a resolving rename puts in the bundle is
 // the other way round, a directory for an account the App is not installed on. Neither is
 // named. The runtimes differ in what a container holds: a tmux pane holds its own role's bundle,
-// while a Kubernetes issue pod projects only the directories both its Apps' bundles hold, so an
-// owner the other App is not installed on, or one the other App's mint left out, is in no
-// container of that pod, whichever App the role runs as. The project controller's pod holds the
-// review App alone and answers alike under both runtimes. Until a bundle of each App the
-// container's directories come from has been read, there is no read to report, and the answer
-// is the owners of the repositories the project is mapped.
+// while a Kubernetes issue pod projects only the directories every one of its roles' bundles
+// holds, so an owner another role's set's mint left out is in no container of that pod, whichever
+// set the role holds. The project controller's pod holds the controller's set alone and answers
+// alike under both runtimes. Until any bundle has been built there is no read to report, and the
+// answer is the owners of the repositories the project is mapped; once one has, its read of the
+// App's installations is every role's.
 func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *testing.T) {
 	moved := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
 	for _, tc := range []struct {
@@ -80,62 +81,60 @@ func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *te
 	}{
 		{
 			name:   "every installed owner's lease is minted",
-			mapped: []string{"acme/widgets"}, source: bothApps("acme", "globex"),
+			mapped: []string{"acme/widgets"}, source: installedOn("acme", "globex"),
 			built: []claim.Role{claim.RoleImplementer, claim.RoleReviewer}, repo: "acme/widgets",
 			tmux: roleOwners{[]string{"acme", "globex"}, []string{"acme", "globex"}, []string{"acme", "globex"}},
 			pod:  roleOwners{[]string{"acme", "globex"}, []string{"acme", "globex"}, []string{"acme", "globex"}},
 		},
 		{
-			name:   "an installed owner whose lease the role's own App is refused is left out",
+			name:   "an installed owner whose lease the role's own set is refused is left out",
 			mapped: []string{"acme/widgets"},
 			source: appOwnersSource{
-				installed: bothApps("acme", "globex").installed,
-				refused:   map[appauth.AppRole][]string{appauth.Implement: {"globex"}},
+				installed: []string{"acme", "globex"},
+				refused:   map[appauth.TokenSet][]string{appauth.SetImplementer: {"globex"}},
 			},
 			built: []claim.Role{claim.RoleImplementer, claim.RoleReviewer}, repo: "acme/widgets",
 			tmux: roleOwners{[]string{"acme"}, []string{"acme", "globex"}, []string{"acme", "globex"}},
-			// The issue pod holds no globex directory at all, so the reviewer, whose own App
-			// mints globex, is not told it either; the controller's pod is the review App's own.
+			// The issue pod holds no globex directory at all, so the reviewer, whose own set
+			// mints globex, is not told it either; the controller's pod holds its own set alone.
 			pod: roleOwners{[]string{"acme"}, []string{"acme"}, []string{"acme", "globex"}},
 		},
 		{
-			name:   "the pod's other App is not installed on an owner",
-			mapped: []string{"acme/widgets"},
-			source: appOwnersSource{installed: map[appauth.AppRole][]string{
-				appauth.Implement: {"acme", "globex"}, appauth.Review: {"acme"},
-			}},
+			name:   "the App is not installed on an owner the project maps",
+			mapped: []string{"acme/widgets", "globex/gadgets"}, source: installedOn("acme"),
 			built: []claim.Role{claim.RoleImplementer, claim.RoleReviewer}, repo: "acme/widgets",
-			tmux: roleOwners{[]string{"acme", "globex"}, []string{"acme"}, []string{"acme"}},
+			tmux: roleOwners{[]string{"acme"}, []string{"acme"}, []string{"acme"}},
 			pod:  roleOwners{[]string{"acme"}, []string{"acme"}, []string{"acme"}},
 		},
 		{
-			name:   "the pod's other App's mint leaves an owner out",
+			name:   "another set of the pod's mint leaves an owner out",
 			mapped: []string{"acme/widgets"},
 			source: appOwnersSource{
-				installed: bothApps("acme", "globex").installed,
-				refused:   map[appauth.AppRole][]string{appauth.Review: {"globex"}},
+				installed: []string{"acme", "globex"},
+				refused:   map[appauth.TokenSet][]string{appauth.SetReviewer: {"globex"}},
 			},
 			built: []claim.Role{claim.RoleImplementer, claim.RoleReviewer}, repo: "acme/widgets",
-			tmux: roleOwners{[]string{"acme", "globex"}, []string{"acme"}, []string{"acme"}},
-			pod:  roleOwners{[]string{"acme"}, []string{"acme"}, []string{"acme"}},
+			tmux: roleOwners{[]string{"acme", "globex"}, []string{"acme"}, []string{"acme", "globex"}},
+			// The controller's pod holds the controller's set alone, whose mint left nothing out.
+			pod: roleOwners{[]string{"acme"}, []string{"acme"}, []string{"acme", "globex"}},
 		},
 		{
 			name:    "the alias directory of a resolving rename is no installed owner",
-			renames: moved, mapped: []string{"cybermonklabs/legion"}, source: bothApps("cybermonklabs"),
+			renames: moved, mapped: []string{"cybermonklabs/legion"}, source: installedOn("cybermonklabs"),
 			built: []claim.Role{claim.RoleImplementer, claim.RoleReviewer}, repo: "sjawhar/legion",
 			tmux: roleOwners{[]string{"cybermonklabs"}, []string{"cybermonklabs"}, []string{"cybermonklabs"}},
 			pod:  roleOwners{[]string{"cybermonklabs"}, []string{"cybermonklabs"}, []string{"cybermonklabs"}},
 		},
 		{
-			name:   "the pod's other App has not been read yet",
-			mapped: []string{"acme/widgets"}, source: bothApps("acme", "globex"),
+			name:   "one role's bundle reads the App's installations for every role",
+			mapped: []string{"acme/widgets"}, source: installedOn("acme", "globex"),
 			built: []claim.Role{claim.RoleImplementer}, repo: "acme/widgets",
-			tmux: roleOwners{[]string{"acme", "globex"}, []string{"acme"}, []string{"acme"}},
-			pod:  roleOwners{[]string{"acme"}, []string{"acme"}, []string{"acme"}},
+			tmux: roleOwners{[]string{"acme", "globex"}, []string{"acme", "globex"}, []string{"acme", "globex"}},
+			pod:  roleOwners{[]string{"acme", "globex"}, []string{"acme", "globex"}, []string{"acme", "globex"}},
 		},
 		{
-			name:   "no bundle of either App built yet",
-			mapped: []string{"acme/widgets", "zeta/tools"}, source: bothApps("globex"),
+			name:   "no bundle built yet",
+			mapped: []string{"acme/widgets", "zeta/tools"}, source: installedOn("globex"),
 			tmux: roleOwners{[]string{"acme", "zeta"}, []string{"acme", "zeta"}, []string{"acme", "zeta"}},
 			pod:  roleOwners{[]string{"acme", "zeta"}, []string{"acme", "zeta"}, []string{"acme", "zeta"}},
 		},

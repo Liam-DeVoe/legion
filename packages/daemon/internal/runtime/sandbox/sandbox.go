@@ -116,7 +116,7 @@ type Runtime struct {
 	tokens                  ProvisionTokens
 	gitHubCredential        runtime.GitHubCredential
 	controllerCredential    runtime.ControllerCredential
-	gitHubDirs              func(repo ghrepo.Repository, roles []appauth.AppRole) []string
+	gitHubDirs              func(repo ghrepo.Repository, sets []appauth.TokenSet) []string
 	store                   Store
 	conns                   runtime.Conns
 	launchers               *launchers

@@ -16,26 +16,25 @@ import (
 
 type tokenSource struct{}
 
-// Token leases the role's App: the implement App is legion-implementer[bot], the review App
-// legion-reviewer[bot].
-func (tokenSource) Token(_ context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
-	name := "legion-implementer[bot]"
-	if role == appauth.Review {
-		name = "legion-reviewer[bot]"
-	}
-	return appauth.Lease{Token: "installation-token", ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: name}}, nil
+// Token leases the App's one bot, legion[bot], whichever set it is minted with.
+func (tokenSource) Token(context.Context, appauth.TokenSet, string) (appauth.Lease, error) {
+	return appauth.Lease{Token: "installation-token", ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: "legion[bot]"}}, nil
 }
 
 // ReadToken is Token's lease with "-read" appended to the token text.
-func (s tokenSource) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
-	lease, err := s.Token(ctx, role, "")
+func (s tokenSource) ReadToken(ctx context.Context, _ string) (appauth.Lease, error) {
+	lease, err := s.Token(ctx, appauth.SetImplementer, "")
 	lease.Token += "-read"
 	return lease, err
 }
 
-// InstalledOwners is the owner accounts each App is installed on, which a gh bundle reads from
+func (s tokenSource) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return s.Token(ctx, appauth.SetVerdict, owner)
+}
+
+// InstalledOwners is the owner accounts the App is installed on, which a gh bundle reads from
 // GitHub at every build (appauth.OwnerInstallations): the two these harnesses serve.
-func (tokenSource) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (tokenSource) InstalledOwners(context.Context) ([]string, error) {
 	return []string{"acme", "sjawhar"}, nil
 }
 

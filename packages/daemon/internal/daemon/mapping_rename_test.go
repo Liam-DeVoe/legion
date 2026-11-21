@@ -26,7 +26,7 @@ var renamedWidgets = ghrepo.MustRename("acme/widgets", "cybermonklabs/widgets")
 // mapping read answers all the same, the project serves exactly what Dispatch maps, and the owners
 // the mapping names are the served repositories' alone — the pair never widens the served set,
 // which is Dispatch's mapping and nothing else. What a role's gh bundle holds a directory for is
-// another question, which the mapping does not answer: it is every owner account the role's App is
+// another question, which the mapping does not answer: it is every owner account the App is
 // installed on (appauth.InstalledOwners, INFRA-2543 R2). What it does change is what
 // GitHub intake hears: the consumer's filter subjects carry both names, so an event arrives
 // whichever name GitHub sends it under on the day the repository moves, and an issue Dispatch
@@ -152,7 +152,7 @@ func TestHeardRepositoriesKeepGitHubsSpellingOverThePairs(t *testing.T) {
 // The served set each case is built from is the set the mapping load leaves, written as the
 // accepted list that load hands `set`, so the test reads the rule over the mapping the daemon
 // really holds rather than over a fixture of its own: M4's two entries are the two names one
-// mapping gives, which `set` merges into the one repository both Apps answered for, and M5's two
+// mapping gives, which `set` merges into the one repository the App answered for, and M5's two
 // entries are two repositories, which it keeps apart. State B is one more repository of the
 // owner the pair moved the repository away from, which is the one thing production changed on
 // 2026-11-06: it must change no answer here.
@@ -183,7 +183,7 @@ func TestTheMappingResolvesARecordedRepositoryOverTheSixMappingStates(t *testing
 	for _, tc := range []struct {
 		name string
 		// accepted is the list the mapping load hands set, one entry per repository the mapping
-		// names, each under the name both GitHub Apps answered for it (checkMapping).
+		// names, each under the name the GitHub App answered for it (checkMapping).
 		accepted []mappedRepository
 		// served is the set that leaves, by name: the issue's served-set column.
 		served []string
@@ -199,7 +199,7 @@ func TestTheMappingResolvesARecordedRepositoryOverTheSixMappingStates(t *testing
 		{
 			// The mapping names sjawhar/legion, which GitHub answers 404 and cybermonklabs/legion
 			// 200: the state right after the transfer, so the mapping load serves it under the
-			// name both Apps answered for.
+			// name the App answered for.
 			name:     "M2: the mapping names the repository the pair moved from, which GitHub has transferred",
 			accepted: accepted(recordedNew), served: []string{recordedNew},
 			old: recordedNew, new: recordedNew,
@@ -279,14 +279,34 @@ type mintingTokens struct {
 	minted []string
 }
 
-func (t *mintingTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+func (t *mintingTokens) Token(ctx context.Context, set appauth.TokenSet, owner string) (appauth.Lease, error) {
+	if err := t.mint(owner); err != nil {
+		return appauth.Lease{}, err
+	}
+	return t.roleTokens.Token(ctx, set, owner)
+}
+
+func (t *mintingTokens) ReadToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	if err := t.mint(owner); err != nil {
+		return appauth.Lease{}, err
+	}
+	return t.roleTokens.ReadToken(ctx, owner)
+}
+
+func (t *mintingTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return t.Token(ctx, appauth.SetVerdict, owner)
+}
+
+// mint keeps owner as one a token was asked for, and refuses it unless its installation covers
+// the repository.
+func (t *mintingTokens) mint(owner string) error {
 	t.mu.Lock()
 	t.minted = append(t.minted, strings.ToLower(owner))
 	t.mu.Unlock()
 	if !slices.ContainsFunc(t.installed, func(held string) bool { return strings.EqualFold(held, owner) }) {
-		return appauth.Lease{}, fmt.Errorf("no installation of the %s App on %s covers the repository", role, owner)
+		return fmt.Errorf("no installation of the App on %s covers the repository", owner)
 	}
-	return t.roleTokens.Token(ctx, role, owner)
+	return nil
 }
 
 // owners is every owner a token was minted for, lowercased, sorted and once each.
@@ -310,9 +330,21 @@ func servedDefaults(repos *repositories) []string {
 	return carried
 }
 
+// sameRefusals is whether got are want, each one's read failure compared by errors.Is: a refusal
+// for now carries its read's failure wrapped, which no literal equals.
+func sameRefusals(got, want []refusedRepository) bool {
+	return slices.EqualFunc(got, want, func(g, w refusedRepository) bool {
+		if (g.readErr == nil) != (w.readErr == nil) || (w.readErr != nil && !errors.Is(g.readErr, w.readErr)) {
+			return false
+		}
+		g.readErr, w.readErr = nil, nil
+		return g == w
+	})
+}
+
 // The mapping load serves a mapped repository under the name GitHub has it, in each state a
 // configured pair leaves a mapping in. Every case drives the boot's own path — loadMapping, which
-// reads Dispatch's mapping and both Apps' installations (checkMapping) and hands the result to
+// reads Dispatch's mapping and the App's installations (checkMapping) and hands the result to
 // set, then nameMapping, which reads GitHub's spelling of each served repository — and pins what
 // the project serves, which served entry is its default, what it refuses, the owners the mapping
 // holds, the owner each read of GitHub's spelling was minted for, the installation reads GitHub
@@ -322,11 +354,11 @@ func servedDefaults(repos *repositories) []string {
 //
 //   - M1, the mapping names the repository the pair moved to: the mapping as it reads once
 //     somebody changed it after the transfer.
-//   - M2, it names the repository the pair moved from and GitHub answers that neither App is
+//   - M2, it names the repository the pair moved from and GitHub answers that the App is not
 //     installed there: the state right after the transfer, and the failure this change is about.
-//     The load that read the mapped name alone left the entry out as "the implement and review
-//     Apps are not installed on sjawhar/legion", because after a transfer no installation of the
-//     owner the repository left covers it.
+//     The load that read the mapped name alone left the entry out as "the App is not installed
+//     on sjawhar/legion", because after a transfer no installation of the owner the repository
+//     left covers it.
 //   - M3, the same mapping with GitHub still answering for the mapped name: the state before the
 //     transfer, with the pair configured early. The mapped name answered, so no second
 //     installation read is made at all and the project serves the repository GitHub still holds.
@@ -336,17 +368,13 @@ func servedDefaults(repos *repositories) []string {
 //   - M5, the mapping names both and GitHub answers for both: somebody made a repository at the
 //     old location, which deletes GitHub's redirect, so the two names are two repositories.
 //
-// The sixth case is M2 with the implement App installed on the mapped name while the review App
-// answers that it is not: a transfer takes a repository out of every installation of the owner
-// it left, so a mapped name that holds one App and not the other is the operator's own gap
-// instead. The pair's other name is read for neither App there, and the entry is left out naming
-// the App that is missing, rather than a project being moved onto the repository a pair names
-// on the strength of one missing installation.
+// The sixth case is M2 with Dispatch's webhook App installed on the mapped name, so no gap is
+// recorded against the repository it is served under.
 //
-// The seventh is that sixth case beside M4's second entry: the pair's two names are both mapped,
-// the entry naming the old one is left out for good, and the entry naming the one GitHub has is
-// served with Dispatch's webhook App not installed on it. The served repository's gap is
-// reported, since what the daemon serves decides it and not what the pair's other name did.
+// The seventh is M4 with the entry naming the old name left out, its installation read failing,
+// while the entry naming the one GitHub has is served with Dispatch's webhook App not installed
+// on it. The served repository's gap is reported, since what the daemon serves decides it and not
+// what the pair's other name did.
 func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *testing.T) {
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	// transferred is GitHub after the transfer, which answers the old address with the redirect
@@ -355,24 +383,24 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 	transferred := map[string]string{old: "301 " + moved, moved: moved + "@main"}
 	untransferred := map[string]string{old: old + "@main"}
 	separate := map[string]string{old: old + "@main", moved: moved + "@main"}
-	// reads is both Apps' installation reads of each of repos, sorted as the fake records them,
-	// a name given twice being a name read twice.
+	// reads is the App's installation reads of each of repos, sorted as the fake records them, a
+	// name given twice being a name read twice.
 	reads := func(repos ...string) []string {
-		asked := make([]string, 0, 2*len(repos))
-		for _, repo := range repos {
-			asked = append(asked, "implement "+repo, "review "+repo)
-		}
+		asked := slices.Clone(repos)
 		slices.Sort(asked)
 		return asked
 	}
+	readFailure := errors.New("GitHub answered 502")
 	const gapReason = "Dispatch's GitHub App is not installed on " + old + ": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
 	const movedGapReason = "Dispatch's GitHub App is not installed on " + moved + ": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
 	for _, tc := range []struct {
 		name string
-		// mappings is Dispatch's repository mapping, and missing each installation read GitHub
-		// answers not installed, by "<role> <owner/name>".
+		// mappings is Dispatch's repository mapping, missing each repository GitHub answers the
+		// App not installed on, and failing each one whose installation read fails with
+		// readFailure, by "<owner/name>".
 		mappings []dispatch.RepoProject
 		missing  map[string]bool
+		failing  []string
 		// github is what a repository read of each name answers, and installed the owners whose
 		// installation a token can be minted on.
 		github    map[string]string
@@ -411,7 +439,7 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 		{
 			name:           "M2: the mapping names the repository the pair moved from, which GitHub has transferred",
 			mappings:       []dispatch.RepoProject{{Repo: old, Project: "LEGION", Default: true}},
-			missing:        map[string]bool{"implement " + old: true, "review " + old: true},
+			missing:        map[string]bool{old: true},
 			github:         transferred,
 			installed:      []string{"cybermonklabs"},
 			webhookMissing: map[string]bool{old: true},
@@ -437,7 +465,7 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 		{
 			name:      "M4: the mapping names both, the repository it moved to its default",
 			mappings:  []dispatch.RepoProject{{Repo: old, Project: "LEGION"}, {Repo: moved, Project: "LEGION", Default: true}},
-			missing:   map[string]bool{"implement " + old: true, "review " + old: true},
+			missing:   map[string]bool{old: true},
 			github:    transferred,
 			installed: []string{"cybermonklabs"},
 			asks:      reads(old, moved, moved),
@@ -449,7 +477,7 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 		{
 			name:      "M4 with the default entry listed first, which the merge keeps all the same",
 			mappings:  []dispatch.RepoProject{{Repo: moved, Project: "LEGION", Default: true}, {Repo: old, Project: "LEGION"}},
-			missing:   map[string]bool{"implement " + old: true, "review " + old: true},
+			missing:   map[string]bool{old: true},
 			github:    transferred,
 			installed: []string{"cybermonklabs"},
 			asks:      reads(old, moved, moved),
@@ -470,30 +498,29 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 			minted:    []string{"cybermonklabs", "sjawhar"},
 		},
 		{
-			// The mapped name holds the implement App and not the review App, which is the
-			// operator's own gap: no read of the pair's other name is made for either App, and
-			// the entry is left out naming the review App alone. Nothing is served, so the
-			// project has no default and no owner, and no read of GitHub's spelling is minted.
-			name:      "M2 with the review App alone answering that it is not installed on the mapped name",
+			// M2 as it stands where Dispatch's webhook App is installed on the mapped name: the
+			// entry is served under the name the App answers for, and no gap is recorded.
+			name:      "M2 with Dispatch's webhook App installed on the mapped name",
 			mappings:  []dispatch.RepoProject{{Repo: old, Project: "LEGION", Default: true}},
-			missing:   map[string]bool{"review " + old: true},
+			missing:   map[string]bool{old: true},
 			github:    transferred,
 			installed: []string{"cybermonklabs"},
-			asks:      reads(old),
-			unread:    moved,
-			refuses:   []refusedRepository{{Repo: old, Reason: "the review App is not installed on " + old, apps: appAnswers{answered: true, implement: true}, mappedDefault: true}},
+			asks:      reads(old, moved),
+			served:    []string{moved},
+			serves:    moved,
+			owners:    []string{"cybermonklabs"},
+			minted:    []string{"cybermonklabs"},
 		},
 		{
-			// The entry naming the old name holds the implement App and not the review App, so
-			// it is left out for good and asks for no partner read, while the entry naming the
-			// name GitHub has is served and Dispatch answers that its webhook App is not
-			// installed. The refusal names the served repository's pair, so matching a gap
-			// against the refusals by the rename equivalence alone dropped the served
-			// repository's own gap and legion state said nothing about the webhook App on a
-			// repository the daemon serves.
+			// The entry naming the old name is left out for now, its installation read failing,
+			// so it asks for no partner read, while the entry naming the name GitHub has is
+			// served and Dispatch answers that its webhook App is not installed. The refusal
+			// names the served repository's pair, so matching a gap against the refusals by the
+			// rename equivalence alone dropped the served repository's own gap and legion state
+			// said nothing about the webhook App on a repository the daemon serves.
 			name:           "M4 with the entry naming the old name left out while the served entry carries a webhook App gap",
 			mappings:       []dispatch.RepoProject{{Repo: old, Project: "LEGION"}, {Repo: moved, Project: "LEGION", Default: true}},
-			missing:        map[string]bool{"review " + old: true},
+			failing:        []string{old},
 			github:         transferred,
 			installed:      []string{"cybermonklabs"},
 			webhookMissing: map[string]bool{moved: true},
@@ -501,14 +528,16 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 			served:         []string{moved},
 			serves:         moved,
 			owners:         []string{"cybermonklabs"},
-			refuses:        []refusedRepository{{Repo: old, Reason: "the review App is not installed on " + old, apps: appAnswers{answered: true, implement: true}}},
-			minted:         []string{"cybermonklabs"},
-			gaps:           []webhookAppGap{{Repo: moved, Reason: movedGapReason}},
+			refuses: []refusedRepository{{Repo: old, Reason: "the App's installation on " + old + " could not be read: " + readFailure.Error() + "; Legion reads it again",
+				readErr: readFailure}},
+			minted: []string{"cybermonklabs"},
+			gaps:   []webhookAppGap{{Repo: moved, Reason: movedGapReason}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			github := newNamedGitHub(t, tc.github)
 			installs := &installations{missing: tc.missing}
+			installs.setFailing(readFailure, tc.failing...)
 			tokens := &mintingTokens{installed: tc.installed}
 			client := &mappingDispatch{mappings: tc.mappings, webhookMissing: tc.webhookMissing}
 			repos := newRepositories("LEGION", transferredLegion)
@@ -530,8 +559,8 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 			if got := servedDefaults(repos); !slices.Equal(got, wantDefault) {
 				t.Errorf("the served entries carrying the project's default are %v, want %v", got, wantDefault)
 			}
-			if got := repos.Refused(); !slices.Equal(got, tc.refuses) {
-				t.Errorf("the load refuses %#v, want %#v: an entry is served under the name both Apps answer for, and left out naming the App that is missing", got, tc.refuses)
+			if got := repos.Refused(); !sameRefusals(got, tc.refuses) {
+				t.Errorf("the load refuses %#v, want %#v: an entry is served under the name the App answers for, and left out naming each name it is not", got, tc.refuses)
 			}
 			if got := repos.Owners(); !slices.Equal(got, tc.owners) {
 				t.Errorf("the owner set is %v, want %v: the owner of each served name", got, tc.owners)
@@ -542,8 +571,8 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 			if got := installs.asks(); !slices.Equal(got, tc.asks) {
 				t.Errorf("GitHub was asked for the installation reads %v, want %v", got, tc.asks)
 			}
-			if second := installs.reads("implement "+tc.unread) + installs.reads("review "+tc.unread); tc.unread != "" && second != 0 {
-				t.Errorf("the load read %s's installations %d times, want none: the mapped name answered, so no second installation read is made", tc.unread, second)
+			if second := installs.reads(tc.unread); tc.unread != "" && second != 0 {
+				t.Errorf("the load read %s's installation %d times, want none: the mapped name answered, so no second installation read is made", tc.unread, second)
 			}
 			if got := repos.WithoutWebhookApp(); !slices.Equal(got, tc.gaps) {
 				t.Errorf("the webhook App gaps are %#v, want %#v: a gap is recorded against the name its entry is served under", got, tc.gaps)
@@ -561,18 +590,18 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 }
 
 // A refusal over a configured pair is for now whenever any read of either name failed to answer,
-// and for good only once every read of both names answered and at least one said not installed.
-// The rule before the partner read, where an App answering not installed settled the entry
-// whatever else failed, cannot survive it: after a transfer the mapped name's "not installed" is
-// the honest answer, so a transient failure on the name the repository moved to would leave the
-// entry out for good behind that reason, and no read again would ever revisit it.
+// and for good only once every read of both names answered not installed. The rule before the
+// partner read, where an answer of not installed settled the entry whatever else failed, cannot
+// survive it: after a transfer the mapped name's "not installed" is the honest answer, so a
+// transient failure on the name the repository moved to would leave the entry out for good
+// behind that reason, and no read again would ever revisit it.
 func TestARefusalOverATransferredPairIsForNowWhileAReadDidNotAnswer(t *testing.T) {
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	failure := errors.New("GitHub answered 502")
 	for _, tc := range []struct {
 		name string
-		// missing are the reads GitHub answers not installed, failing the reads it does not
-		// answer at all, each by "<role> <owner/name>".
+		// missing are the repositories GitHub answers the App not installed on, failing the reads
+		// it does not answer at all, each by "<owner/name>".
 		missing map[string]bool
 		failing []string
 		// reason is the refusal the entry carries, and forNow whether Legion reads it again.
@@ -581,16 +610,16 @@ func TestARefusalOverATransferredPairIsForNowWhileAReadDidNotAnswer(t *testing.T
 	}{
 		{
 			name:    "the mapped name answers not installed and the partner's read fails",
-			missing: map[string]bool{"implement " + old: true, "review " + old: true},
-			failing: []string{"implement " + moved},
-			reason: "the implement and review Apps are not installed on " + old +
-				"; the implement App's installation on " + moved + " could not be read: " + failure.Error() + "; Legion reads it again",
+			missing: map[string]bool{old: true},
+			failing: []string{moved},
+			reason: "the App is not installed on " + old +
+				"; the App's installation on " + moved + " could not be read: " + failure.Error() + "; Legion reads it again",
 			forNow: true,
 		},
 		{
 			name:    "both names answer not installed",
-			missing: map[string]bool{"implement " + old: true, "review " + old: true, "implement " + moved: true, "review " + moved: true},
-			reason:  "the implement and review Apps are not installed on " + old + "; the implement and review Apps are not installed on " + moved,
+			missing: map[string]bool{old: true, moved: true},
+			reason:  "the App is not installed on " + old + "; the App is not installed on " + moved,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -603,7 +632,7 @@ func TestARefusalOverATransferredPairIsForNowWhileAReadDidNotAnswer(t *testing.T
 				t.Fatalf("loadMapping = %v, want a boot serving none with the entry left out", err)
 			}
 			if got := repositoryNames(repos.Accepted()); len(got) != 0 {
-				t.Fatalf("the project serves %v, want none: neither name answered for both Apps", got)
+				t.Fatalf("the project serves %v, want none: neither name answered for the App", got)
 			}
 			refused := repos.Refused()
 			if len(refused) != 1 || refused[0].Repo != old || refused[0].Reason != tc.reason {
@@ -619,7 +648,7 @@ func TestARefusalOverATransferredPairIsForNowWhileAReadDidNotAnswer(t *testing.T
 			case tc.forNow && !slices.Equal(waiting, []string{tc.reason}):
 				t.Fatalf("awaiting a read again = %q, want the entry, which Legion reads again until GitHub answers every read of both names", waiting)
 			case !tc.forNow && len(waiting) != 0:
-				t.Fatalf("awaiting a read again = %q, want none: every read of both names answered and an App is not installed", waiting)
+				t.Fatalf("awaiting a read again = %q, want none: every read of both names answered and the App is not installed", waiting)
 			}
 		})
 	}
@@ -637,7 +666,7 @@ func TestAKeptEntryOfATransferredPairKeepsTheProjectsDefault(t *testing.T) {
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	client := &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: old, Project: "LEGION"}, {Repo: moved, Project: "LEGION", Default: true}}}
 	github := newNamedGitHub(t, map[string]string{old: "301 " + moved, moved: moved + "@main"})
-	installs := &installations{missing: map[string]bool{"implement " + old: true, "review " + old: true}}
+	installs := &installations{missing: map[string]bool{old: true}}
 	w, _, _, _ := mappingRigWith(t, installs, func(w *workflowRuntime) {
 		w.dispatch = client
 		w.repositories = newRepositories("LEGION", transferredLegion)
@@ -646,13 +675,11 @@ func TestAKeptEntryOfATransferredPairKeepsTheProjectsDefault(t *testing.T) {
 	if got, carried := repositoryNames(w.repositories.Accepted()), servedDefaults(w.repositories); !slices.Equal(got, []string{moved}) || !slices.Equal(carried, []string{moved}) {
 		t.Fatalf("the boot serves %v with %v carrying the project's default, want %s alone, carrying it", got, carried, moved)
 	}
-	// The refresh answers for one entry and not the other: GitHub says the review App is
-	// installed on the name the repository moved away from and does not answer the implement
-	// App's read of it at all, so that entry asks for no read of the pair's other name and is
-	// left out for now, which is the kept branch.
-	installs.setMissing(false, "review "+old)
+	// The refresh answers for one entry and not the other: GitHub does not answer the App's read
+	// of the name the repository moved away from at all, so that entry asks for no read of the
+	// pair's other name and is left out for now, which is the kept branch.
 	failure := &appauth.TransientError{Err: errors.New("GitHub answered 502")}
-	installs.setFailing(failure, "implement "+old)
+	installs.setFailing(failure, old)
 	if err := w.refreshMapping(ctx); err != nil {
 		t.Fatalf("refreshMapping: %v", err)
 	}
@@ -688,7 +715,7 @@ func TestAKeptEntrysWebhookAppGapNamesTheRepositoryItIsServedUnder(t *testing.T)
 	want := []webhookAppGap{{Repo: moved, Reason: "Dispatch's GitHub App is not installed on " + old + ": GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"}}
 	client := &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: old, Project: "LEGION", Default: true}}, webhookMissing: map[string]bool{old: true}}
 	github := newNamedGitHub(t, map[string]string{old: "301 " + moved, moved: moved + "@main"})
-	installs := &installations{missing: map[string]bool{"implement " + old: true, "review " + old: true}}
+	installs := &installations{missing: map[string]bool{old: true}}
 	w, _, _, _ := mappingRigWith(t, installs, func(w *workflowRuntime) {
 		w.dispatch = client
 		w.repositories = newRepositories("LEGION", transferredLegion)
@@ -697,8 +724,7 @@ func TestAKeptEntrysWebhookAppGapNamesTheRepositoryItIsServedUnder(t *testing.T)
 	if got := w.repositories.WithoutWebhookApp(); !slices.Equal(got, want) {
 		t.Fatalf("the boot's webhook App gaps are %#v, want %#v", got, want)
 	}
-	installs.setMissing(false, "review "+old)
-	installs.setFailing(errors.New("GitHub answered 502"), "implement "+old)
+	installs.setFailing(errors.New("GitHub answered 502"), old)
 	if err := w.refreshMapping(ctx); err != nil {
 		t.Fatalf("refreshMapping: %v", err)
 	}

@@ -88,9 +88,10 @@ type Options struct {
 	// pane's GH_CONFIG_DIR, and the refresher started by Observe (refreshGitHubCredentials) calls it
 	// again for every tracked tree pane's own repository and rewrites each directory's hosts.yml when
 	// its render changed. The controller's pane is no caller of it at all: its launch and its refresh
-	// both ask ControllerCredential, since it works no repository; it acts as the review App either
-	// way (appauth.AppRoleFor). Nil is a daemon with no GitHub Apps (Stage 2's, which configures no
-	// workflow): its panes are told no gh variable, hold no gh files, and the refresher does nothing.
+	// both ask ControllerCredential, since it works no repository; its leases are the read lease
+	// either way (appauth.ControllerCredential). Nil is a daemon with no GitHub Apps (Stage 2's,
+	// which configures no workflow): its panes are told no gh variable, hold no gh files, and the
+	// refresher does nothing.
 	GitHubCredential runtime.GitHubCredential
 	// ControllerCredential is the daemon's function for the controller's own gh bundle
 	// (appauth.ControllerCredential). The refresher asks it for the owner the pane's launch

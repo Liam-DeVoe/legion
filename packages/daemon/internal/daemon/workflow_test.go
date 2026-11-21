@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -43,32 +42,36 @@ func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
 	}
 }
 
-// loginTokens answers each App role's lease, and its login, with the bot login named for it.
-type loginTokens map[appauth.AppRole]string
+// loginTokens answers every set's lease, and the App's login, with its one bot login.
+type loginTokens struct{ login string }
 
-func (t loginTokens) Token(_ context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
-	return appauth.Lease{Token: "token", ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: t[role]}}, nil
+func (t loginTokens) Token(context.Context, appauth.TokenSet, string) (appauth.Lease, error) {
+	return appauth.Lease{Token: "token", ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: t.login}}, nil
 }
 
-func (t loginTokens) AppLogin(_ context.Context, role appauth.AppRole) (string, error) {
-	return t[role], nil
+func (t loginTokens) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return t.Token(ctx, appauth.SetVerdict, owner)
 }
 
-func (loginTokens) InstalledOn(context.Context, appauth.AppRole, ghrepo.Repository) (bool, error) {
+func (t loginTokens) AppLogin(context.Context) (string, error) {
+	return t.login, nil
+}
+
+func (loginTokens) InstalledOn(context.Context, ghrepo.Repository) (bool, error) {
 	return true, nil
 }
 
 // InstalledOwners answers no owner list: opening the workflow builds no gh bundle, and a test
 // that builds one names its owners itself.
-func (loginTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (loginTokens) InstalledOwners(context.Context) ([]string, error) {
 	return nil, errors.New("loginTokens lists no owner accounts, which a gh bundle holds one directory per owner of")
 }
 
 // Forget drops nothing: every lease is minted afresh.
-func (loginTokens) Forget(appauth.AppRole, string) {}
+func (loginTokens) Forget(appauth.TokenSet, string) {}
 
-func (t loginTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
-	lease, err := t.Token(ctx, role, "")
+func (t loginTokens) ReadToken(ctx context.Context, _ string) (appauth.Lease, error) {
+	lease, err := t.Token(ctx, "", "")
 	lease.Token += "-read"
 	return lease, err
 }
@@ -93,16 +96,16 @@ func TestOpenWorkflowRefusesAnAppThatNamesNoLogin(t *testing.T) {
 	}
 }
 
-// countedLogins is the one App's bot login, recording the role each read asked under and failing a
-// read for each error it still holds, in order.
+// countedLogins is the one App's bot login, counting each read and failing a read for each error
+// it still holds, in order.
 type countedLogins struct {
 	login string
 	errs  []error
-	roles []appauth.AppRole
+	reads int
 }
 
-func (c *countedLogins) AppLogin(_ context.Context, role appauth.AppRole) (string, error) {
-	c.roles = append(c.roles, role)
+func (c *countedLogins) AppLogin(context.Context) (string, error) {
+	c.reads++
 	if len(c.errs) > 0 {
 		err := c.errs[0]
 		c.errs = c.errs[1:]
@@ -119,22 +122,21 @@ func TestOneAppLoginAtBoot(t *testing.T) {
 	quickAppMints(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	const want = "legion-implementer[bot]"
-	reviewOnce := []appauth.AppRole{appauth.Review}
 
 	app := &countedLogins{login: want}
 	login, err := appLoginAtBoot(context.Background(), app, log)
-	if err != nil || login != want || !slices.Equal(app.roles, reviewOnce) {
-		t.Fatalf("appLoginAtBoot = %q, %v after reads under %v; want the App's login %s, read once", login, err, app.roles, want)
+	if err != nil || login != want || app.reads != 1 {
+		t.Fatalf("appLoginAtBoot = %q, %v after %d reads; want the App's login %s, read once", login, err, app.reads, want)
 	}
 
 	trouble := &countedLogins{login: want, errs: []error{&appauth.TransientError{Err: errors.New("GitHub answered 502")}}}
-	if login, err := appLoginAtBoot(context.Background(), trouble, log); err != nil || login != want || len(trouble.roles) != 2 {
-		t.Fatalf("appLoginAtBoot after GitHub's trouble = %q, %v after %d reads; want the login read again", login, err, len(trouble.roles))
+	if login, err := appLoginAtBoot(context.Background(), trouble, log); err != nil || login != want || trouble.reads != 2 {
+		t.Fatalf("appLoginAtBoot after GitHub's trouble = %q, %v after %d reads; want the login read again", login, err, trouble.reads)
 	}
 
 	refused := &countedLogins{login: want, errs: []error{errors.New("GitHub answered 401")}}
-	if _, err := appLoginAtBoot(context.Background(), refused, log); err == nil || !strings.Contains(err.Error(), "401") || len(refused.roles) != 1 {
-		t.Fatalf("appLoginAtBoot of a refused read = %v after %d reads; want the refusal at once", err, len(refused.roles))
+	if _, err := appLoginAtBoot(context.Background(), refused, log); err == nil || !strings.Contains(err.Error(), "401") || refused.reads != 1 {
+		t.Fatalf("appLoginAtBoot of a refused read = %v after %d reads; want the refusal at once", err, refused.reads)
 	}
 
 	if _, err := appLoginAtBoot(context.Background(), &countedLogins{}, log); err == nil || !strings.Contains(err.Error(), "the GitHub App names no bot login") {

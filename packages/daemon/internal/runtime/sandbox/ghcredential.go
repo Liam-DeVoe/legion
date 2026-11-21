@@ -66,7 +66,7 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // binds the launcher (credentialFromSecret), the default, the annotations, and the keys of a
 // directory the render no longer holds, which the pod's projection may still name, stay as they
 // are, so no key a running pod projects is ever deleted. Every live issue pod's provisioning
-// Secret is brought to the implement App's current lease for the pod's own repository too
+// Secret is brought to the App's current read lease for the pod's own repository too
 // (refreshProvisioningToken), whatever its
 // workspace-fetch has already done: the kubelet runs a pod's init containers afresh whenever it
 // rebuilds the pod's sandbox, at any point in the pod's life (a relaunch that replaces the pod
@@ -74,9 +74,10 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // a pod left on its boot token, aged past the hour GitHub gives an installation token, could not
 // fetch its repository again. The lease is minted once per repository a tick, however many of
 // that repository's pods the walk holds, and a repository whose mint fails is logged once and
-// left to the next tick, where its pods are tried again. The gh bundles are built once per App
-// role and repository of the tick in the same way (appauth.Bundles), so a tick over an issue pod
-// reads its two Apps' installations and not its six roles'.
+// left to the next tick, where its pods are tried again. The gh bundles are built once per set
+// and repository of the tick in the same way (appauth.Bundles), over one read of the App's
+// installations for the whole tick, so a tick over an issue pod reads those installations once
+// and not once for each of its six roles.
 func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	// mints memoizes this tick's provisioning leases by lower-cased repository — nothing here
 	// knows of a configured repository rename, which the daemon's adapter maps, so Acme/legion
@@ -135,7 +136,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	}
 }
 
-// refreshProvisioningToken writes token — the implement App's current lease for repo, the
+// refreshProvisioningToken writes token — the App's current read lease for repo, the
 // repository the fetch of pod names (fetchRepository), which the walk minted once for that
 // repository this tick — into the provisioning Secret of pod, owned by the Sandbox with uid.
 // The fetch reads the token's file anew before every transfer from GitHub (workspace.Fetch),

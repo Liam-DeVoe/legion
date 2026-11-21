@@ -180,7 +180,7 @@ func TestCacheIdentityIsTheAnnotationAndTheNameIsNeverParsed(t *testing.T) {
 }
 
 // A repository's cache is made as an issue pod is: its Sandbox created Suspended, with a headless
-// Service, then its Secret written owned by the created Sandbox's uid, holding the implement App's
+// Service, then its Secret written owned by the created Sandbox's uid, holding the App's
 // token for the repository and a random bearer token of the cache's own, then one patch
 // sets its pod template and Running. The pod runs the cache process alone, ready once /readyz
 // answers, with both tokens read-only and the volume at CacheRoot, placed as every Legion pod is,

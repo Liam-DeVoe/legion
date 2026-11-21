@@ -454,12 +454,12 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 // again, for ever (INFRA-513). A mint that answers for it again clears the record, and the pod
 // is then replaced once, which is right.
 //
-// That record is read for the Apps this pod runs and no others: the roles of the kind the role
-// belongs to (podKindFor), mapped through appauth.AppRoleFor. An issue pod projects what both
-// Apps' bundles hold, so a directory either App is refused is in no projection of it; the
-// project controller's pod holds the review App's bundle alone, and an owner the implement
-// App's installation does not reach is one its own `gh` reaches all the same, so a controller
-// pod without that owner's directory has drifted and is replaced by its next launch.
+// That record is read for the sets this pod runs and no others: the sets of the roles of the kind
+// the role belongs to (podKindFor), mapped through appauth.SetFor. An issue pod projects what
+// every one of its roles' bundles holds, so a directory any of their sets is refused is in no
+// projection of it; the project controller's pod holds the controller's bundle alone, and an
+// owner an issue role's mint was refused is one its own `gh` reaches all the same, so a
+// controller pod without that owner's directory has drifted and is replaced by its next launch.
 //
 // Owner directories alone are compared, on both sides (ghOwnerDirs). A bundle this daemon
 // builds holds none but owner directories: a lease reaches every repository its installation
@@ -522,7 +522,7 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 			handed: "the same directories beside the configured renames the wrappers route by"}, true
 	}
 	repo, _ := fetchRepository(pod)
-	served := ghOwnerDirs(r.gitHubDirs(repo, podAppRoles(podKindFor(role))))
+	served := ghOwnerDirs(r.gitHubDirs(repo, podTokenSets(podKindFor(role))))
 	lacking := slices.ContainsFunc(served, func(dir string) bool {
 		_, found := slices.BinarySearch(owned, dir)
 		return !found
@@ -568,27 +568,26 @@ func ghProjectionOf(pod *corev1.Pod, role claim.Role) (ghProjection, bool) {
 	return projected, true
 }
 
-// podAppRoles are the GitHub Apps a pod of kind holds a bundle of, each named once
-// (appauth.AppRoleFor): both of them for an issue pod, whose six roles run as one or the other,
-// and the review App alone for the project controller's. It is what the record of the
-// directories a mint found GitHub refuses is read for (movedGhDirs, appauth.LeftOut).
-func podAppRoles(kind podKind) []appauth.AppRole {
-	apps := make([]appauth.AppRole, 0, len(appauth.Roles))
-	for _, role := range kind.roles() {
-		if app := appauth.AppRoleFor(role); !slices.Contains(apps, app) {
-			apps = append(apps, app)
-		}
+// podTokenSets are the sets a pod of kind holds a bundle of, one per role (appauth.SetFor): every
+// workflow role's for an issue pod, and the controller's alone for the project controller's. It
+// is what the record of the directories a mint found GitHub refuses is read for (movedGhDirs,
+// appauth.LeftOut).
+func podTokenSets(kind podKind) []appauth.TokenSet {
+	roles := kind.roles()
+	sets := make([]appauth.TokenSet, 0, len(roles))
+	for _, role := range roles {
+		sets = append(sets, appauth.SetFor(role))
 	}
-	return apps
+	return sets
 }
 
-// PodAppRoles is podAppRoles of the pod role runs in (podKindFor): both Apps for a workflow role,
-// whose issue pod projects the directories every role's bundle holds and no more (gitHubBundles,
-// volumes), and the review App alone for the project controller. A role's container holds only
-// the directories of that projection, so a caller that says which owners a role's token reaches
-// in a pod of this runtime reads them for these Apps together (internal/daemon's plan.appOwners),
-// as the drift check does (movedGhDirs).
-func PodAppRoles(role claim.Role) []appauth.AppRole { return podAppRoles(podKindFor(role)) }
+// PodTokenSets is podTokenSets of the pod role runs in (podKindFor): every workflow role's set
+// for a workflow role, whose issue pod projects the directories every role's bundle holds and no
+// more (gitHubBundles, volumes), and the controller's alone for the project controller. A role's
+// container holds only the directories of that projection, so a caller that says which owners a
+// role's token reaches in a pod of this runtime reads them for these sets together
+// (internal/daemon's plan.appOwners), as the drift check does (movedGhDirs).
+func PodTokenSets(role claim.Role) []appauth.TokenSet { return podTokenSets(podKindFor(role)) }
 
 // ghOwnerDirs is the owner directories of a gh directory set, in the order they come: the names
 // holding no slash, where a repository's directory a pod launched before INFRA-2543 projects is

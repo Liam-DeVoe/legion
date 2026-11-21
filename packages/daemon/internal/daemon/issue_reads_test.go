@@ -258,7 +258,7 @@ func TestTheReadStampIsWhenGitHubAnsweredNotWhenTheHeadFollowEnded(t *testing.T)
 	const followTakes = 300 * time.Millisecond
 	var mu sync.Mutex
 	var answered, followed time.Time
-	api := githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
+	api := githubtest.Serve(t, githubtest.Spec{Token: "outbox-token-read", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch strings.ToLower(r.URL.Path) {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(pull))

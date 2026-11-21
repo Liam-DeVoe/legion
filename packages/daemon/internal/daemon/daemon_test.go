@@ -1155,12 +1155,12 @@ func (s *shim) prompt() shimwire.Prompt {
 	return prompt
 }
 
-// A project whose every mapped repository lacks an App boots, serving none: it mints for no owner,
-// still knows the review App's login, and its state names each left-out repository with the App it
-// lacks, for an operator to install.
+// A project the App is installed on no mapped repository of boots, serving none: it mints for no
+// owner, still knows the App's login, and its state names each left-out repository with the App
+// not installed on it, for an operator to install.
 func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
-	tokens := &workflowTokenRecorder{missing: map[string]bool{"review acme/widgets": true}}
+	tokens := &workflowTokenRecorder{missing: map[string]bool{"acme/widgets": true}}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -1200,24 +1200,24 @@ func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	want := api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets",
-		Apps: &api.AppInstallationsView{Implement: true}}}}
+	want := api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the App is not installed on acme/widgets",
+		Apps: &api.AppInstallationsView{}}}}
 	if len(state.Repositories.Owners) != 0 || len(state.Repositories.Mapped) != 0 || !reflect.DeepEqual(state.Repositories.Refused, want.Refused) {
-		t.Fatalf("state's repositories = %+v, want none served and acme/widgets left out for its review App", state.Repositories)
+		t.Fatalf("state's repositories = %+v, want none served and acme/widgets left out, the App not installed on it", state.Repositories)
 	}
-	if roles := tokens.Roles(); len(roles) != 0 {
-		t.Fatalf("the boot minted %v with no owner to mint for", roles)
+	if minted := tokens.Minted(); len(minted) != 0 {
+		t.Fatalf("the boot minted %v with no owner to mint for", minted)
 	}
 }
 
 // A project whose every mapped repository's installation read fails boots all the same, serving
-// none: its API answers, its state names each repository left out with the App, the repository and
+// none: its API answers, its state names each repository left out with the repository and
 // GitHub's failure, and one ERROR line says so, where the boot used to exit into its supervisor's
 // restart and the same failure.
 func TestWorkflowBootWhoseEveryInstallationReadFailsAnswersItsState(t *testing.T) {
 	cfg := workflowConfig(t, workflowNATS(t))
-	failure := errors.New("read whether the implement App is installed on acme/widgets failed (403)")
-	tokens := &workflowTokenRecorder{failing: map[string]error{"implement acme/widgets": failure}}
+	failure := errors.New("read whether the App is installed on acme/widgets failed (403)")
+	tokens := &workflowTokenRecorder{failing: map[string]error{"acme/widgets": failure}}
 	var logged syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -1258,7 +1258,7 @@ func TestWorkflowBootWhoseEveryInstallationReadFailsAnswersItsState(t *testing.T
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	want := []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the implement App's installation on acme/widgets could not be read: " + failure.Error() + "; Legion reads it again"}}
+	want := []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the App's installation on acme/widgets could not be read: " + failure.Error() + "; Legion reads it again"}}
 	if len(state.Repositories.Mapped) != 0 || !reflect.DeepEqual(state.Repositories.Refused, want) {
 		t.Fatalf("state's repositories = %+v, want none served and acme/widgets left out for its failed read", state.Repositories)
 	}
@@ -1324,10 +1324,10 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// The boot mints the implement then the review App's token, then reads each served repository
-	// as the implement App.
-	if got := tokens.Roles(); len(got) != 3 || got[0] != appauth.Implement || got[1] != appauth.Review || got[2] != appauth.Implement {
-		t.Fatalf("App token roles = %v, want implement then review, then implement for the repository read", got)
+	// The boot mints the implementer's then the reviewer's token, then reads each served
+	// repository with the read lease.
+	if got, want := tokens.Minted(), []string{"implementer", "reviewer", "read"}; !slices.Equal(got, want) {
+		t.Fatalf("App leases = %v, want %v: the implementer's then the reviewer's set, then the read lease for the repository read", got, want)
 	}
 	want := []string{"prompts", "store", "config", "dispatch", "appauth", "repositories", "launcher", "intake", "admission", "outbox", "api"}
 	var got []string
@@ -1674,49 +1674,65 @@ func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	return js
 }
 
-// workflowAppToken is the GitHub App token of each lease a workflowTokenRecorder's Token mints
-// (ReadToken's lease carries it with "-read" after it).
+// workflowAppToken is the GitHub App token of every lease a workflowTokenRecorder mints, the read
+// lease's included: the stand-ins a booted daemon reads GitHub from take it as the daemon's own
+// (fromTheDaemon), and the daemon's reads and writes both reach them.
 const workflowAppToken = "workflow-test-token"
 
+// workflowAppLogin is the bot login of the one App a workflowTokenRecorder stands for: every lease
+// it mints carries it, and AppLogin answers it, as a real token manager's do. It is
+// reviewAppLogin, the login the live tests' reviews are authored by.
+const workflowAppLogin = reviewAppLogin
+
 type workflowTokenRecorder struct {
-	mu    sync.Mutex
-	roles []appauth.AppRole
-	// missing names the installations not made, "<role> <owner/name>"; every other is. failing
-	// names the installation reads that fail, with their error.
+	mu sync.Mutex
+	// minted is each lease asked for, in order: the set's name of a write lease, "read" for the
+	// read lease.
+	minted []string
+	// missing names the repositories the App is not installed on, "<owner/name>"; it is installed
+	// on every other. failing names the installation reads that fail, with their error.
 	missing map[string]bool
 	failing map[string]error
 }
 
-func (r *workflowTokenRecorder) Token(_ context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.roles = append(r.roles, role)
-	// Each App has its own bot login, as a real token manager's leases do.
-	return appauth.Lease{Token: workflowAppToken, ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: "legion-" + string(role) + "[bot]"}}, nil
+func (r *workflowTokenRecorder) Token(_ context.Context, set appauth.TokenSet, _ string) (appauth.Lease, error) {
+	return r.lease(string(set)), nil
 }
 
-// AppLogin answers each App's own bot login, as its lease names it.
-func (r *workflowTokenRecorder) AppLogin(_ context.Context, role appauth.AppRole) (string, error) {
-	return "legion-" + string(role) + "[bot]", nil
+// lease records the lease named and answers it.
+func (r *workflowTokenRecorder) lease(name string) appauth.Lease {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.minted = append(r.minted, name)
+	return appauth.Lease{Token: workflowAppToken, ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: workflowAppLogin}}
+}
+
+func (r *workflowTokenRecorder) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	return r.Token(ctx, appauth.SetVerdict, owner)
+}
+
+// AppLogin answers the App's bot login, as its leases name it.
+func (r *workflowTokenRecorder) AppLogin(context.Context) (string, error) {
+	return workflowAppLogin, nil
 }
 
 // Forget drops nothing: every lease is minted afresh.
-func (r *workflowTokenRecorder) Forget(appauth.AppRole, string) {}
+func (r *workflowTokenRecorder) Forget(appauth.TokenSet, string) {}
 
-// InstalledOn answers each App installed on every repository but those missing names, and fails
+// InstalledOn answers the App installed on every repository but those missing names, and fails
 // the reads failing names.
-func (r *workflowTokenRecorder) InstalledOn(_ context.Context, role appauth.AppRole, repo ghrepo.Repository) (bool, error) {
-	key := string(role) + " " + repo.String()
+func (r *workflowTokenRecorder) InstalledOn(_ context.Context, repo ghrepo.Repository) (bool, error) {
+	key := repo.String()
 	if err := r.failing[key]; err != nil {
 		return false, err
 	}
 	return !r.missing[key], nil
 }
 
-// InstalledOwners answers no owner list: the recorder knows which repositories each App is
+// InstalledOwners answers no owner list: the recorder knows which repositories the App is
 // installed on (InstalledOn) and not the accounts, and no rig builds a gh bundle over it, since
 // each replaces the runtime that would. A rig that builds one names its owners itself.
-func (r *workflowTokenRecorder) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+func (r *workflowTokenRecorder) InstalledOwners(context.Context) ([]string, error) {
 	return nil, errors.New("the workflow token recorder lists no owner accounts, which a gh bundle holds one directory per owner of")
 }
 
@@ -1781,16 +1797,15 @@ func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, projec
 	return true
 }
 
-func (r *workflowTokenRecorder) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
-	lease, err := r.Token(ctx, role, "")
-	lease.Token += "-read"
-	return lease, err
+func (r *workflowTokenRecorder) ReadToken(context.Context, string) (appauth.Lease, error) {
+	return r.lease("read"), nil
 }
 
-func (r *workflowTokenRecorder) Roles() []appauth.AppRole {
+// Minted is each lease asked of r, in order (workflowTokenRecorder.minted).
+func (r *workflowTokenRecorder) Minted() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]appauth.AppRole(nil), r.roles...)
+	return slices.Clone(r.minted)
 }
 
 func workflowNATS(t *testing.T) string {
