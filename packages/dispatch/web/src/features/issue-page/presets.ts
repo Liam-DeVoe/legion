@@ -18,7 +18,7 @@ import {
   type NodeType,
   type Preset,
 } from "./page-words";
-import { treeIdOfNode } from "./tree-read/tree-nodes";
+import { readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeFilter } from "./tree-read/tree-read";
 
 /**
@@ -503,10 +503,11 @@ function viewLines(
     const id = node.block_id ?? node.id;
     const held = lines.get(row);
     if (held?.some((line) => line.id === id) === true) return;
+    const tree = readingOf(node);
     const line: PresetLine = {
       id,
       text: node.text,
-      ...(node.text_tree === undefined ? {} : { tree: node.text_tree }),
+      ...(tree === undefined ? {} : { tree }),
       type,
     };
     if (held === undefined) lines.set(row, [line]);
