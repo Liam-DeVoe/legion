@@ -439,9 +439,11 @@ list of them (`ErrorWireSchema.reason` in `src/transport.ts`). The same list hol
 sent faster than the listener lets one session send: the message was not stored. A listener in
 edge mode refuses a whole registration that names a topic of no project of the session's token,
 403 `topic_not_in_project` or `repository_not_in_project`, naming each refused topic as the
-registration carried it (`EnvoyApiError.refused`): `registerWithRelay` has the host drop exactly
-those (`drop`), logs one line naming them, and registers the rest at once, while its 503
-`repositories_unknown` and 403 `token_not_admitted` drop nothing.
+registration carried it (`EnvoyApiError.refused`): `registerWithRelay`
+(`@legion/envoy-client/relay-registration`) has the host drop exactly those and tell the session
+which, once, with the reason (`drop`, worded by `refusedTopicsNoticeText`), logs one line naming
+them, and registers the rest at once, whichever path registered; its 503 `repositories_unknown`
+and 403 `token_not_admitted` drop nothing.
 
 ## envoy.json
 

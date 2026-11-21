@@ -116,7 +116,11 @@ import {
   followNatsCredential,
   keepNatsCredential,
 } from "@legion/envoy-client/nats-credential";
-import { NoRelaySubjectError, registerWithRelay } from "@legion/envoy-client/relay-registration";
+import {
+  NoRelaySubjectError,
+  refusedTopicsNoticeText,
+  registerWithRelay,
+} from "@legion/envoy-client/relay-registration";
 import {
   readSessionAnswers,
   sessionAnswersFailureLine,
@@ -3520,8 +3524,10 @@ export default function envoyExtension(hostApi: PiApi): void {
       },
       // An edge listener refused these topics for the projects of the session's token: they stop
       // being followed, here and in the ledger, so no later registration carries them and a
-      // restore does not follow them again. A session the host has since left keeps its own.
-      drop: (topics) => {
+      // restore does not follow them again, and the session is told which, once, in the places
+      // it is told an outage, whichever path registered. A session the host has since left keeps
+      // its own.
+      drop: (topics, reason) => {
         if (sessionID !== registeringFor) return;
         for (const topic of topics) followed.delete(topic);
         ledgerFollowedChanged().catch((error: unknown) => {
@@ -3532,6 +3538,11 @@ export default function envoyExtension(hostApi: PiApi): void {
             }
           );
         });
+        activeSessionContext?.ui.notify(
+          `envoy: the listener refused ${topics.join(", ")} for this session's projects (${reason}); the session no longer follows them`,
+          "warning"
+        );
+        unwritten.sendNotice(refusedTopicsNoticeText(topics, reason));
       },
       log: (line) => logger.warn(`envoy: ${line}`),
     });

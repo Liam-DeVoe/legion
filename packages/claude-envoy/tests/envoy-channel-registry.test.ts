@@ -10,6 +10,7 @@ import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src
 import {
   directSubject,
   FakeNats,
+  FakeNotifier,
   noInterest,
   recordingClient,
   sessionOptions,
@@ -768,6 +769,67 @@ test("a topic the edge refuses for the session's projects is dropped, and the he
       "notifications.dispatch.issue.DSP-7",
       "notifications.dispatch.issue.DSP-7.>",
     ])
+  } finally {
+    await session.shutdown()
+  }
+})
+
+// The edge can start refusing a topic it accepted before, as when the broker's answer for the
+// token's projects stops naming a repository: the heartbeat's registration is refused, the topic
+// is dropped, and the session is told once, naming the topic and the edge's reason, rather than
+// going on believing it follows it.
+test("a topic the edge refuses at a heartbeat is told to the session once, naming it and the reason", async () => {
+  const refusedRoot = "notifications.github.acme.priv"
+  let refusing = false
+  const subscribes: Array<readonly string[]> = []
+  const client = recordingClient([], {
+    subscribe: async (input) => {
+      subscribes.push(input.topics)
+      const refused = input.topics.filter((topic) => topic.startsWith(refusedRoot))
+      if (refusing && refused.length > 0) {
+        throw new EnvoyApiError({
+          method: "POST",
+          url: "http://listener.example/v1/interests/subscribe",
+          status: 403,
+          responseBody: JSON.stringify({
+            error: "the edge serves the GitHub events of its projects' repositories alone",
+            reason: "repository_not_in_project",
+            refused,
+          }),
+        })
+      }
+      return noInterest()
+    },
+  })
+  const notifier = new FakeNotifier()
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), scratchState(), {
+      connection: new FakeNats(),
+      heartbeatMs: 25,
+      client,
+      notifier,
+    }),
+  )
+  const told = () =>
+    notifier.notifications
+      .filter((written) => written.eventId === undefined)
+      .map((written) => written.content)
+      .filter((content) => content.includes(refusedRoot))
+
+  try {
+    await session.follow([`${refusedRoot}.>`, "notifications.dispatch.issue.DSP-7.>"])
+    expect(told()).toEqual([])
+    refusing = true
+    const refusedAt = subscribes.length
+    await waitFor(
+      async () => subscribes.length >= refusedAt + 4,
+      "three heartbeats after the refusal",
+    )
+
+    expect(told()).toHaveLength(1)
+    expect(told()[0]).toContain(`${refusedRoot}, ${refusedRoot}.>`)
+    expect(told()[0]).toContain("repository_not_in_project")
+    expect(session.topics()).not.toContain(`${refusedRoot}.>`)
   } finally {
     await session.shutdown()
   }

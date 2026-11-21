@@ -47,7 +47,7 @@ import {
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
 import { ListenerRelay } from "@legion/envoy-client/listener-relay"
 import { machineID } from "@legion/envoy-client/machine"
-import { registerWithRelay } from "@legion/envoy-client/relay-registration"
+import { refusedTopicsNoticeText, registerWithRelay } from "@legion/envoy-client/relay-registration"
 import {
   type SessionConfigFile,
   sessionConfigFile,
@@ -1459,14 +1459,21 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       },
       // An edge listener refused these topics for the projects of the session's token: they stop
       // being followed, here and in the ledger, so no later registration carries them and a
-      // restart does not follow them again. A session this process has since left keeps its own.
-      drop: (topics) => {
+      // restart does not follow them again, and the session is told which, once, where it is told
+      // an outage, whichever path registered. A session this process has since left keeps its own.
+      drop: (topics, reason) => {
         if (identity.id !== sessionID) return
         for (const topic of topics) userTopics.delete(topic)
         followedTopics.unfollow(topics)
         ledger.followedChanged().catch((error: unknown) => {
           process.stderr.write(
             `envoy-channel: the topics the listener refused stay in the delivery state until it is written next — ${messageFor(error)}\n`,
+          )
+        })
+        if (shuttingDown) return
+        delivery.notice(refusedTopicsNoticeText(topics, reason)).catch((noticeError: unknown) => {
+          process.stderr.write(
+            `envoy-channel: the session could not be told which topics the listener refused — ${messageFor(noticeError)}\n`,
           )
         })
       },

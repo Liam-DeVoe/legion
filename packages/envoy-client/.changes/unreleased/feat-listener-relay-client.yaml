@@ -26,7 +26,8 @@ body: |-
   once per outage (`inboundUnavailable`). A registration an edge listener refuses for a topic of
   no project of the session's token (403 `topic_not_in_project` or `repository_not_in_project`,
   naming the topics in `refused`, `EnvoyApiError.refused`) has the host drop exactly those topics
-  (`registerWithRelay`'s `drop`), logs one line naming them, and registers the rest at once.
+  and tell the session which, once, with the reason (`registerWithRelay`'s `drop`,
+  `refusedTopicsNoticeText`), logs one line naming them, and registers the rest at once.
   `registerWithRelay`, `RelayRegistration`, `RegisteringRelay` and `NoRelaySubjectError` move from
   `@legion/envoy-client/consumer-delivery` to `@legion/envoy-client/relay-registration`.
   `test/relay-socket-stand-in` (`@legion/envoy-client/test/relay-socket-stand-in`) serves the

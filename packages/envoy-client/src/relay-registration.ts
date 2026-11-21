@@ -3,9 +3,11 @@
 // One registration of a session that holds a relay, as every host makes it: the topics the
 // listener will store for the session, the relay's delivery request, the outage told once
 // (`inboundUnavailable`, `./consumer-delivery`), and, where an edge listener refuses topics of no
-// project of the session's token, exactly those topics dropped and the rest registered again.
+// project of the session's token, exactly those topics dropped, the session told which, and the
+// rest registered again.
 
 import type { ConsumerDelivery, InboundUnavailable } from "./consumer-delivery";
+import { envoyNoticeText } from "./delivery-ledger";
 import { registrationTopics } from "./stream-topics";
 import { type DeliveryRequest, EnvoyApiError, expandSubscriptionTopics } from "./transport";
 
@@ -42,12 +44,29 @@ export interface RelayRegistration<Result> {
   readonly answered: (result: Result) => void;
   /**
    * Stops following these topics, which an edge listener refused for the projects of this
-   * session's token (`projectRefusedTopics`): the host takes them out of what it follows, so no
-   * later registration of its carries them. `registerWithRelay` sends the rest at once.
+   * session's token (`projectRefusedTopics`) for `reason`, and tells the session which, once, where
+   * it tells it an outage (`refusedTopicsNoticeText`): the host takes them out of what it follows,
+   * so no later registration of its carries them, and the session does not go on believing it
+   * follows them. `registerWithRelay` sends the rest at once, whichever path registered.
    */
-  readonly drop: (topics: readonly string[]) => void;
+  readonly drop: (topics: readonly string[], reason: string) => void;
   /** Where the one line naming the topics `drop` was given goes. */
   readonly log: (line: string) => void;
+}
+
+/**
+ * What a session is told of the topics an edge listener refused for the projects of its token
+ * (`reason`, `topic_not_in_project` or `repository_not_in_project`), worded once for every host:
+ * it no longer follows them, and every other topic it follows stays.
+ */
+export function refusedTopicsNoticeText(topics: readonly string[], reason: string): string {
+  return envoyNoticeText({
+    notice: "Envoy topics refused",
+    topics: topics.join(", "),
+    reason,
+    detail:
+      "The listener delivers to this session only the topics of its token's projects, so it refused these, and this session no longer follows them. Every other topic it follows stays followed and goes on being delivered.",
+  });
 }
 
 /** The reasons an edge listener refuses a registration for a topic of no project of the session's
@@ -98,8 +117,9 @@ export class NoRelaySubjectError extends Error {}
  * An edge listener refuses a whole registration that names one topic of no project of the
  * session's token (`PROJECT_TOPIC_REFUSALS`), and the host sends its topics again at every
  * heartbeat: kept, that one topic would refuse every registration until the entry lapsed and the
- * session received nothing. So the topics the refusal names are dropped (`drop`), said once
- * (`log`), and the rest registered again at once; each round drops at least one topic, so it
+ * session received nothing. So the topics the refusal names are dropped, the session told which
+ * (`drop`, with the refusal's reason), the plugin's log told once (`log`), and the rest
+ * registered again at once; each round drops at least one topic, so it
  * ends. Any other refusal, and a project refusal naming nothing but the session's own agent
  * subject, fails the registration as before.
  */
@@ -134,7 +154,7 @@ export async function registerWithRelay<Result>({
         outage.refused(error);
         throw error;
       }
-      drop(refused.topics);
+      drop(refused.topics, refused.reason);
       log(
         `the listener refused ${refused.topics.join(", ")} for this session's projects (${refused.reason}); the session no longer follows them and registers the rest`
       );
