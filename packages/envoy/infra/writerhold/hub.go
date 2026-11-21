@@ -70,6 +70,17 @@ func (h HubFlags) Records(ctx context.Context, signing bool) (*holdrecord.Client
 // client URLs, with the operator's and the probe's credentials.
 func (h HubFlags) Operator(ctx context.Context) (*Operator, error) { return openOperator(ctx, h) }
 
+// SigningKey reads the private half of the operator's hold signing key from h.KeySecret's served
+// version in Secret Manager, as Records does when signing. A command that signs a record of its
+// own outside the hold's routes (t-7's consumer-names backup) reads it here.
+func (h HubFlags) SigningKey(ctx context.Context) (ed25519.PrivateKey, error) {
+	store, err := openKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return signingKey(ctx, store, h.KeySecret)
+}
+
 // signingKey reads the private half from store's served version of secret.
 func signingKey(ctx context.Context, store KeyStore, secret string) (ed25519.PrivateKey, error) {
 	_, value, err := store.Current(ctx, secret)

@@ -84,7 +84,10 @@ func TestHoldAbort(t *testing.T) {
 	require.True(t, d.Complete, "abort's done entry did not complete the record")
 
 	// A restore lands on claim 0: abort is refused at its disk check, with a stop entry, and a
-	// prove of the restored claim is then admitted and done; abort after it is refused ErrExcluded.
+	// prove of the restored claim is then admitted and done. After the done prove, abort is admitted
+	// on its own stop (#4679's AbortAfterOwnStop), and its disk check compares each claim with the
+	// disk the done prove recorded, not step 1's (V67-1), so it releases over the proven disk. The
+	// control is the check against step 1's disks, which refused claim 0 here.
 	id = h.hubRestoreHold()
 	h.disks.Remake(0)
 	code, _, stderr = h.run(actionAbort, "--hold", id, "--reason", "abort over a restore")
@@ -101,8 +104,19 @@ func TestHoldAbort(t *testing.T) {
 	require.Zero(t, code, "the prove after the refused abort")
 	require.Equal(t, "done", latestState(h.journal(id), holdrecord.CommandProve))
 	code, _, stderr = h.run(actionAbort, "--hold", id, "--reason", "abort after a done prove")
+	require.Zero(t, code, "abort after a done prove, on its own stop, over the proven disk: %s", stderr)
+	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
+	require.True(t, h.journal(id).Complete, "abort's done entry did not complete the record")
+
+	// R26-E: after a done prove, an abort with no stop entry is refused ErrExcluded.
+	id = h.hubRestoreHold()
+	h.disks.Remake(1)
+	code, _, _ = h.run(actionProve, "--hold", id, "--restored", holdtest.Claim(1)+"=pvc-"+holdtest.Pod(1))
+	require.Zero(t, code, "the prove of a restored claim")
+	code, _, stderr = h.run(actionAbort, "--hold", id, "--reason", "abort after a done prove, with no stop")
 	require.Equal(t, 1, code)
 	require.Contains(t, stderr, holdrecord.ErrExcluded.Error())
+	require.Equal(t, natsgrant.OperatorPhaseHeld, h.row().Phase)
 	require.NoError(t, abortHeldForTest(ctx, h, id))
 
 	// The control of the stop entry: an abort intent with no stop leaves every command ErrBusy.
@@ -139,4 +153,38 @@ func TestHoldAbort(t *testing.T) {
 	require.Equal(t, 1, code, "the control")
 	require.Contains(t, stderr, holdrecord.ErrAlreadyDone.Error())
 	require.Equal(t, natsgrant.OperatorPhaseHeld, h.row().Phase)
+}
+
+// A proven disk that is gone (v67 round 4, rule 1): after a restore onto claim 0, an abort's stop
+// and a done prove of the restored disk, that disk is made again under its name, so the name now
+// has another numeric id than the prove recorded. The abort, admitted on its own stop, reads the
+// proven disk by its name, finds it gone, and is refused naming it, with a stop, and the row stays
+// held. The operator restores onto another disk (here the made-again one) and proves it; the abort
+// after that prove, admitted on its own stop, reads the newest done prove and releases. The control
+// is the check against step 1's disks, which refused claim 0 without naming the proven disk gone,
+// so the operator was told to restore onto a disk the hub no longer has.
+func TestHoldAbortAfterTheProvenDiskIsGone(t *testing.T) {
+	h := newHeldStack(t)
+	h.seedProtectedStreams()
+	id := h.hubRestoreHold()
+	h.disks.Remake(0)
+	code, _, _ := h.run(actionAbort, "--hold", id, "--reason", "abort over a restore")
+	require.Equal(t, 1, code)
+	restored := holdtest.Claim(0) + "=pvc-" + holdtest.Pod(0)
+	code, _, _ = h.run(actionProve, "--hold", id, "--restored", restored)
+	require.Zero(t, code, "the prove of the restored disk")
+
+	h.disks.Remake(0)
+	code, _, stderr := h.run(actionAbort, "--hold", id, "--reason", "the proven disk is gone")
+	require.Equal(t, 1, code, "an abort whose proven disk is gone")
+	require.Contains(t, stderr, "the done prove's disk of "+holdtest.Claim(0)+" is gone")
+	require.Equal(t, natsgrant.OperatorPhaseHeld, h.row().Phase, "an abort released over a gone proven disk")
+	require.Equal(t, "stop", latestState(h.journal(id), holdrecord.CommandAbort), "the refusal wrote no stop naming the gone disk")
+
+	code, _, stderr = h.run(actionProve, "--hold", id, "--restored", restored)
+	require.Zero(t, code, "the prove of the disk restored onto after the gone-disk stop: %s", stderr)
+	code, _, stderr = h.run(actionAbort, "--hold", id, "--reason", "abort over the new epoch's disk")
+	require.Zero(t, code, "the abort after the new prove: %s", stderr)
+	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
+	require.True(t, h.journal(id).Complete)
 }

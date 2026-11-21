@@ -2,12 +2,15 @@ package writerhold
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"strconv"
 	"strings"
 
 	compute "google.golang.org/api/compute/v1"
+	"google.golang.org/api/googleapi"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,9 +58,12 @@ func parseVolumeHandle(handle string) (DiskRef, bool) {
 // has a new id, so the hold compares disks by id and never by name or handle (round 26, R26-D).
 type Disks interface {
 	// DiskID is the disk's id as compute.disks.get (a zonal disk) or compute.regionDisks.get (a
-	// regional one) answers it.
+	// regional one) answers it, and an error wrapping ErrDiskNotFound for the API's 404.
 	DiskID(ctx context.Context, disk DiskRef) (uint64, error)
 }
+
+// ErrDiskNotFound is a disk read the Compute Engine API answers 404: no disk has that name.
+var ErrDiskNotFound = errors.New("no disk of that name (404)")
 
 // ComputeDisks is Disks on the Compute Engine API, with the operator's Google identity's
 // compute.disks.get (t-11, part 2).
@@ -66,15 +72,18 @@ type ComputeDisks struct {
 }
 
 func (c ComputeDisks) DiskID(ctx context.Context, disk DiskRef) (uint64, error) {
+	var d *compute.Disk
+	var err error
 	if disk.Region != "" {
-		d, err := c.Service.RegionDisks.Get(disk.Project, disk.Region, disk.Name).Context(ctx).Do()
-		if err != nil {
-			return 0, err
-		}
-		return d.Id, nil
+		d, err = c.Service.RegionDisks.Get(disk.Project, disk.Region, disk.Name).Context(ctx).Do()
+	} else {
+		d, err = c.Service.Disks.Get(disk.Project, disk.Zone, disk.Name).Context(ctx).Do()
 	}
-	d, err := c.Service.Disks.Get(disk.Project, disk.Zone, disk.Name).Context(ctx).Do()
-	if err != nil {
+	var api *googleapi.Error
+	switch {
+	case errors.As(err, &api) && api.Code == http.StatusNotFound:
+		return 0, fmt.Errorf("disk %s: %w: %v", disk, ErrDiskNotFound, err)
+	case err != nil:
 		return 0, err
 	}
 	return d.Id, nil

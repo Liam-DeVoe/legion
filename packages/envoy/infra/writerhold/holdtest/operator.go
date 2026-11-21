@@ -3,6 +3,7 @@ package holdtest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,13 +39,16 @@ func NewDisks(n int) *Disks {
 	return d
 }
 
-// ID is disk name's id, or compute's 404 for a disk the hub has none of.
+// ErrNotFound is compute's 404 for a disk the hub has none of.
+var ErrNotFound = errors.New("404 notFound")
+
+// ID is disk name's id, or an error wrapping ErrNotFound for a disk the hub has none of.
 func (d *Disks) ID(name string) (uint64, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	id, ok := d.ids[name]
 	if !ok {
-		return 0, fmt.Errorf("compute.disks.get %s: 404 notFound", name)
+		return 0, fmt.Errorf("compute.disks.get %s: %w", name, ErrNotFound)
 	}
 	return id, nil
 }

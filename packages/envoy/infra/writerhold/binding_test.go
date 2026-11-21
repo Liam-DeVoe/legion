@@ -191,7 +191,7 @@ func TestHoldTheConfigurationBinding(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, uint64(7000000000000000004), id)
 		_, err = disks.DiskID(ctx, DiskRef{Project: "example-infra", Zone: "us-west1-a", Name: "absent"})
-		require.Error(t, err, "a disk compute.disks.get does not find")
+		require.ErrorIs(t, err, ErrDiskNotFound, "a disk compute.disks.get does not find")
 		mu.Lock()
 		defer mu.Unlock()
 		require.Equal(t, []string{

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -132,17 +133,19 @@ func prepare(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 	return nil
 }
 
-// abort is `hold abort`. From prepare it deletes the hold's cohort record, then moves the row to
-// released under its hold id; the thresholds a prepare raised stay. A held row is aborted through
-// the hold's table (holdrecord.Admit): in every workflow once a command has stopped and no intent
-// is pending, the way out of a command that cannot succeed, and refused while a command's intent
-// is pending or before any command has stopped ("no command has stopped"). Its intent carries each
-// stop's record of what its command left, which it prints, so the operator ends the hold knowing
-// the state. In hub-restore it also needs every claim still on its step-1 disk while no `hold
-// prove` is done: the disks read again, the row moved to released, the disks read once more (a
-// restore that lands between the last check and the move is a restore outside any hold, which it
-// names), then its done entry. A row already released under this hold id is the abort's whole
-// effect: a rerun after the move changes nothing.
+// abort is `hold abort`. From prepare, and only while the hold's journal holds no `hold set` done
+// entry (a row that reads prepare after it was put back by a database writer, which abort refuses),
+// it deletes the hold's cohort record, then moves the row to released under its hold id; the
+// thresholds a prepare raised stay. A held row is aborted through the hold's table
+// (holdrecord.Admit): in every workflow once a command has stopped and no intent is pending, the way
+// out of a command that cannot succeed, and refused while a command's intent is pending or before
+// any command has stopped ("no command has stopped"). Its intent carries each stop's record of what
+// its command left, which it prints, so the operator ends the hold knowing the state. In hub-restore
+// it also needs every claim on its expected disk (abortDisks: the newest done prove's, else step
+// 1's), and names a proven disk that is gone: the disks read again, the row moved to released, the
+// disks read once more (a restore that lands between the last check and the move is a restore
+// outside any hold, which it names), then its done entry. A row already released under this hold id
+// is the abort's whole effect: a rerun after the move changes nothing.
 func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o options, stdout io.Writer) error {
 	row, err := records.Row(ctx)
 	if err != nil {
@@ -155,7 +158,19 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 	case natsgrant.OperatorPhaseReleased:
 		fmt.Fprintf(stdout, "hold %s is already released (row gen %d)\n", o.holdID, row.Gen)
 		return nil
-	case natsgrant.OperatorPhasePrepare:
+	}
+	d, _, err := records.Journal(ctx, o.holdID)
+	if err != nil {
+		return err
+	}
+	if row.Phase == natsgrant.OperatorPhasePrepare {
+		// A row that reads prepare after hold set's done entry was rolled back by a database
+		// writer, not prepared: the journal, not the row, says how far the hold got.
+		for _, op := range d.Ops {
+			if op.Command == holdrecord.CommandSet && op.State == "done" {
+				return refusef(StepPreflight, "the hold row reads prepare at gen %d, and %s is done in hold %s's journal: the row was put back under the set hold, so abort takes no prepare path", row.Gen, holdrecord.CommandSet, o.holdID)
+			}
+		}
 		if err := records.DeleteCohort(ctx, o.holdID); err != nil {
 			return err
 		}
@@ -165,10 +180,6 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 		}
 		fmt.Fprintf(stdout, "aborted hold %s from prepare: row gen %d, released\n", o.holdID, moved.Gen)
 		return nil
-	}
-	d, _, err := records.Journal(ctx, o.holdID)
-	if err != nil {
-		return err
 	}
 	if _, err := records.Admit(ctx, o.holdID, holdrecord.Request{Command: holdrecord.CommandAbort}, nil); err != nil {
 		return err
@@ -186,7 +197,7 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 	}
 	hub := d.Workflow == holdrecord.WorkflowHubRestore
 	if hub {
-		if err := onStep1Disks(ctx, op, d); err != nil {
+		if err := abortDisks(ctx, op, d); err != nil {
 			return stop(err)
 		}
 	}
@@ -196,7 +207,7 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 	}
 	var changed error
 	if hub {
-		changed = onStep1Disks(ctx, op, d)
+		changed = abortDisks(ctx, op, d)
 	}
 	if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandAbort, nil); err != nil {
 		return err
@@ -249,24 +260,47 @@ func readDisks(ctx context.Context, op *Operator, step string) (map[string]strin
 	return read, byClaim, nil
 }
 
-// onStep1Disks refuses unless every target is on the disk id the journal's step-1 map records
-// for it. A target the map lacks, or one the map names that is not read, is UNKNOWN (R28-H).
-func onStep1Disks(ctx context.Context, op *Operator, d holdrecord.Done) error {
-	read, _, err := readDisks(ctx, op, StepPreflight)
-	if err != nil {
-		return err
-	}
-	want := map[string]string{}
-	step1, ok := holdrecord.Step1(d)
+// abortDisks is hub-restore's abort check: every target on its expected disk (holdrecord.Expected:
+// the newest done prove's for each target it proved, step 1's for every other). A proven target on
+// another disk is read by the proven disk's name (in its current disk's project and location, where
+// a restore puts it): when that name answers 404, or another numeric id than the prove recorded, the
+// proven disk is gone, and the refusal names it, so the stop it writes records the gone disk and the
+// operator restores the target onto another disk and proves it again; when the proven disk is still
+// there, the refusal says to restore the target back onto it. Any other answer is UNKNOWN.
+func abortDisks(ctx context.Context, op *Operator, d holdrecord.Done) error {
+	want, ok := holdrecord.Expected(d)
 	if !ok {
 		return unknownf(StepPreflight, nil, "the hold's journal holds no step-1 map")
 	}
-	for k, v := range step1 {
-		if t, found := strings.CutPrefix(k, "step1_disk_id."); found {
-			want[t] = v
+	read, bindings, err := readDisks(ctx, op, StepPreflight)
+	if err != nil {
+		return err
+	}
+	proof, proved := holdrecord.Proven(d)
+	var gone []string
+	for _, t := range sortedKeys(want) {
+		name, recorded := proof.Disks[t]
+		if !proved || !recorded || read[t] == want[t] {
+			continue
+		}
+		ref := bindings[t].Disk
+		ref.Name = name
+		id, err := op.Disks.DiskID(ctx, ref)
+		switch {
+		case errors.Is(err, ErrDiskNotFound):
+			gone = append(gone, fmt.Sprintf("the done prove's disk of %s is gone: %s answers 404", t, ref))
+		case err != nil:
+			return unknownf(StepPreflight, err, "read the done prove's disk %s of %s", ref, t)
+		case strconv.FormatUint(id, 10) != want[t]:
+			gone = append(gone, fmt.Sprintf("the done prove's disk of %s is gone: %s now has id %d, not the proven %s", t, ref, id, want[t]))
+		default:
+			return refusef(StepPreflight, "%s is on disk %s, not the done prove's %s (id %s), which is still there: restore %s back onto it", t, read[t], ref, want[t], t)
 		}
 	}
-	return sameDisks(StepPreflight, "its step-1 disk", want, read)
+	if len(gone) > 0 {
+		return refusef(StepPreflight, "%s; restore each onto another disk and prove it, then abort again", strings.Join(gone, "; "))
+	}
+	return sameDisks(StepPreflight, "the disk the newest done prove, or step 1, records", want, read)
 }
 
 // sameDisks refuses, in step, a target whose disk id read differs from want, and is UNKNOWN when

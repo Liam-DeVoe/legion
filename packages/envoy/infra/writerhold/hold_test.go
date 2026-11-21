@@ -40,10 +40,17 @@ type heldStack struct {
 	report string
 }
 
-// stackDisks is Disks over holdtest's disks, by the disk's name.
+// stackDisks is Disks over holdtest's disks, by the disk's name, answering ErrDiskNotFound for
+// holdtest's 404 as ComputeDisks does for the API's.
 type stackDisks struct{ *holdtest.Disks }
 
-func (d stackDisks) DiskID(_ context.Context, disk DiskRef) (uint64, error) { return d.ID(disk.Name) }
+func (d stackDisks) DiskID(_ context.Context, disk DiskRef) (uint64, error) {
+	id, err := d.ID(disk.Name)
+	if errors.Is(err, holdtest.ErrNotFound) {
+		return 0, fmt.Errorf("%w: %v", ErrDiskNotFound, err)
+	}
+	return id, err
+}
 
 // memoryKeys is the signing key's store, in memory: Put adds the first version only, as the Secret
 // Manager store does.
