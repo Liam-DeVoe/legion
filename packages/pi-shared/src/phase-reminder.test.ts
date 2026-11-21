@@ -113,7 +113,7 @@ function overDaemon(answer: typeof fetch) {
 
 // The check keeps its two branches apart: the daemon's answer names the work the reminder gives,
 // and everything else is a read that failed, which reminds no one and writes its warn line
-// (dispatch://INFRA-2746 R2). It asks the owed route alone and never reads the whole project.
+// (dispatch://INFRA-2746 R7). It asks the owed route alone and never reads the whole project.
 test("the owed check asks one route: the answer names the work, a transport failure is the read that failed", async () => {
   const answered = overDaemon((async (_input, _init) => Response.json(OWES)) as typeof fetch);
 

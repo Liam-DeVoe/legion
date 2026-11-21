@@ -14,9 +14,11 @@ body: |-
   One such claim still gets the backstop: a claim behind its entry that holds a task of the
   issue's run and phase the daemon has not delivered, of that entry, of an earlier one or of no
   entry, such as a task whose send failed before any turn, the task of an earlier entry a relaunch
-  kept or a ready worker's resume task, unless its completion is recorded, a merge forward holds
-  its role or its merged pull request is finishing its merge. Admission's owed-entry repair passes
-  over such a claim, and nothing else brings its pod back. While the daemon records that a started
+  kept or a resume task of no entry, unless its completion is recorded, a merge forward holds its
+  role or its merged pull request is finishing its merge. Admission's owed-entry repair passes
+  over such a claim, and nothing else brings its pod back. The daemon sends a resume task with no
+  entry to a ready worker that holds its issue's phase with nothing pending, to a silent phase
+  worker and to a suspended owner that the boot resumes. While the daemon records that a started
   issue gave its admission slot back to wait on another issue, the silence sweep writes no start
   row for its phase workers, tells the architect of a quiet worker once after 24 hours, and the
   idle backstop wakes its released pod no earlier than 24 hours after the release; the normal

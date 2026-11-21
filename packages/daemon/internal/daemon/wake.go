@@ -560,8 +560,10 @@ func getsBackstop(ctx context.Context, records record.Store, tx pgx.Tx, at phase
 // request is finishing its merge." A send can fail before any turn and then waits for the claim
 // to come back (supervise's delivery). A relaunch of a failed or retired worker keeps the task of
 // an earlier entry that it still holds, and does not deliver the new entry (keepsStartTask). A
-// task of no entry is the resume task of a ready worker that holds its issue's phase with nothing
-// pending (workflow's readyWorkerTask, which sends workflow.ResumePhaseTask). Admission's
+// task of no entry is a resume task (workflow.ResumePhaseTask) that the daemon sends with no
+// entry, to a ready worker that holds its issue's phase with nothing pending (workflow's
+// readyWorkerTask), to a silent phase worker (workflow's repairSilence) and to a
+// suspended owner that the boot resumes (workflow's startSuspendedOwner). Admission's
 // owed-entry repair passes over every claim that holds such a task (admit's owedOf, which reads
 // supervise.Delivery.StillWorked), so the backstop is then the one wake that brings the pod back
 // for that delivery. at is the phase the issue stands at, generation its run, and f what
