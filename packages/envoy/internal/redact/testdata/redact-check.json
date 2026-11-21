@@ -355,6 +355,30 @@
       {
         "holder": "github.com/sjawhar/legion/daemon/internal/daemon.checkContext",
         "test": "print-daemon.checkContext"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.requiredCheck",
+        "test": "print-daemon.requiredCheck"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.requiredStatusChecks",
+        "test": "print-daemon.requiredStatusChecks"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.githubBranchRule",
+        "test": "print-daemon.githubBranchRule"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.protectionChecks",
+        "test": "print-daemon.protectionChecks"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.branchProtection",
+        "test": "print-daemon.branchProtection"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.githubBranch",
+        "test": "print-daemon.githubBranch"
       }
     ],
     "reflection": [
@@ -5725,6 +5749,48 @@
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.checkContext",
       "production": "github.com/sjawhar/legion/daemon/internal/daemon.checkContext: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-daemon.requiredCheck",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.requiredCheck",
+      "production": "github.com/sjawhar/legion/daemon/internal/daemon.requiredCheck: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-daemon.requiredStatusChecks",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.requiredStatusChecks",
+      "production": "github.com/sjawhar/legion/daemon/internal/daemon.requiredStatusChecks: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-daemon.githubBranchRule",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.githubBranchRule",
+      "production": "github.com/sjawhar/legion/daemon/internal/daemon.githubBranchRule: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-daemon.protectionChecks",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.protectionChecks",
+      "production": "github.com/sjawhar/legion/daemon/internal/daemon.protectionChecks: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-daemon.branchProtection",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.branchProtection",
+      "production": "github.com/sjawhar/legion/daemon/internal/daemon.branchProtection: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-daemon.githubBranch",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.githubBranch",
+      "production": "github.com/sjawhar/legion/daemon/internal/daemon.githubBranch: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
       "id": "daemon-answer-words-merge-queue-merged",

@@ -35,27 +35,36 @@ type githubBranchRule struct {
 // requires, and whether it requires a pull request to be current with the branch before it
 // merges.
 type requiredStatusChecks struct {
-	RequiredStatusChecks []struct {
-		Context checkContext `json:"context"`
-	} `json:"required_status_checks"`
-	Strict bool `json:"strict_required_status_checks_policy"`
+	RequiredStatusChecks []requiredCheck `json:"required_status_checks"`
+	Strict               bool            `json:"strict_required_status_checks_policy"`
 }
 
-// githubBranch is what GET /branches/{branch} answers of the branch's classic protection: whether
-// it is enabled, and its required status checks, which name their contexts twice over (`contexts`
-// and each `checks[].context`) and carry no `strict`. The read that does carry it
-// (/branches/{branch}/protection) needs Administration read, which the implement App lacks.
+// requiredCheck is one required status check, by its context, as a ruleset's rule and a classic
+// protection's `checks` name it.
+type requiredCheck struct {
+	Context checkContext `json:"context"`
+}
+
+// githubBranch is what GET /branches/{branch} answers of the branch's classic protection
+// (branchProtection). The read that does carry its `strict` (/branches/{branch}/protection)
+// needs Administration read, which the implement App lacks.
 type githubBranch struct {
-	Protection struct {
-		Enabled              bool `json:"enabled"`
-		RequiredStatusChecks struct {
-			EnforcementLevel string         `json:"enforcement_level"`
-			Contexts         []checkContext `json:"contexts"`
-			Checks           []struct {
-				Context checkContext `json:"context"`
-			} `json:"checks"`
-		} `json:"required_status_checks"`
-	} `json:"protection"`
+	Protection branchProtection `json:"protection"`
+}
+
+// branchProtection is a branch's classic protection: whether it is enabled, and its required
+// status checks (protectionChecks).
+type branchProtection struct {
+	Enabled              bool             `json:"enabled"`
+	RequiredStatusChecks protectionChecks `json:"required_status_checks"`
+}
+
+// protectionChecks is a classic protection's required status checks, which name their contexts
+// twice over (`contexts` and each `checks[].context`) and carry no `strict`.
+type protectionChecks struct {
+	EnforcementLevel string          `json:"enforcement_level"`
+	Contexts         []checkContext  `json:"contexts"`
+	Checks           []requiredCheck `json:"checks"`
 }
 
 // checkContext is a status check context GitHub names, a JSON string read twice: Name as it came,
