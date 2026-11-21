@@ -511,7 +511,7 @@ func TestAnEdgeRefusalNamesOnlyTheRefusedTopics(t *testing.T) {
 }
 
 // The listener links no package of Dispatch's store and no PostgreSQL driver: the edge reads a
-// broker token's projects as the list the token carries (projectHeld) and asks nothing of
+// broker token's projects as the list the token carries and asks nothing of
 // internal/dispatch/access. A listing that names no package, the listener among them, has read
 // nothing and fails as UNKNOWN.
 func TestEdgeListenerLinksNoDispatchStore(t *testing.T) {

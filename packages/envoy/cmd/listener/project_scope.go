@@ -47,8 +47,8 @@ package main
 //   - The start: refused beside every other credential, beside Dispatch's principal, beside
 //     webhooks, and without the broker-token settings (validateEdgeMode).
 //
-// A project is one of the token's when the token's list names it (projectHeld): the admission
-// admits no token listing none, so a list here is never empty.
+// A project is one of the token's when the token's list names it: the admission admits no token
+// listing none, so a list here is never empty.
 
 import (
 	"context"
@@ -149,12 +149,6 @@ func heldProjects(r *http.Request) ([]string, bool) {
 	return caller.Projects, true
 }
 
-// projectHeld reports whether project is one of projects, the token's list: a list holds what it
-// names and nothing else, NoProject and a wildcard among the rest.
-func projectHeld(projects []string, project string) bool {
-	return slices.Contains(projects, project)
-}
-
 // edgeScope is what a request an edge listener admitted may read: the projects of its token
 // (heldProjects), and the repository reader that says which of their GitHub topics stand. It is
 // nil for a request no edge listener admitted, and each method answers a nil scope as every
@@ -180,7 +174,7 @@ func edgeScopeOf(r *http.Request, repositories *edgeRepositories) *edgeScope {
 // token's list was recorded on, one an earlier build wrote among them, is no project's. A nil
 // scope shows every session.
 func (s *edgeScope) shows(entry session.SessionEntry) bool {
-	return s == nil || slices.ContainsFunc(entry.Projects, func(project string) bool { return projectHeld(s.projects, project) })
+	return s == nil || slices.ContainsFunc(entry.Projects, func(project string) bool { return slices.Contains(s.projects, project) })
 }
 
 // hides reports whether the scope answers a session read as entry with err as one no listener has
@@ -216,7 +210,7 @@ func (s *edgeScope) showsAgent(agent legionagents.Agent) bool {
 		return true
 	}
 	project, ok := contracts.IssueProject(agent.Issue)
-	return ok && projectHeld(s.projects, project)
+	return ok && slices.Contains(s.projects, project)
 }
 
 // agents is agents with only the entries the scope shows (showsAgent), in their order.
@@ -259,7 +253,7 @@ func (s *edgeScope) namesHolder(sessions *session.SessionRegistry, holderID stri
 // role the session already holds, as edgeRoleRefusal is for one it claims or reads.
 func roleOfProjects(role string, projects []string) bool {
 	project, _ := contracts.ParseRoleClaimKey(role)
-	return projectHeld(projects, project)
+	return slices.Contains(projects, project)
 }
 
 // edgeReleasedRoleWarning is the warning a registration's answer names a role by, one the edge
@@ -348,7 +342,7 @@ type edgeTopicHold struct {
 
 // newEdgeTopicHold is the hold of r's registration of sessionID, nil for a request no edge
 // listener admitted. logger names the cause of a read that gave no whole answer, which the
-// client's 503 does not (repositoriesUnknown).
+// client's 503 does not (answerRepositoryOutage).
 func newEdgeTopicHold(r *http.Request, repositories *edgeRepositories, sessionID string, logger *logging.Logger) *edgeTopicHold {
 	projects, held := heldProjects(r)
 	if !held {
@@ -596,7 +590,7 @@ func ownAgentSubject(sessionID string, projects []string, topic string) bool {
 		return false
 	}
 	project, target, found := strings.Cut(rest, ".")
-	return found && target == sessionID && (project == "*" || projectHeld(projects, project))
+	return found && target == sessionID && (project == "*" || slices.Contains(projects, project))
 }
 
 // edgePublishRefusal is the edge's publish rule, or nil: a session at the edge publishes only a
@@ -613,7 +607,7 @@ func edgePublishRefusal(r *http.Request, topic string) *edgeRefusal {
 		return nil
 	}
 	if lane, isRole := strings.CutPrefix(topic, contracts.RoleTopicPrefix); isRole {
-		if claim, err := contracts.RoleClaimOf(lane); !claim.Legacy && err == nil && projectHeld(projects, claim.Project) {
+		if claim, err := contracts.RoleClaimOf(lane); !claim.Legacy && err == nil && slices.Contains(projects, claim.Project) {
 			return nil
 		}
 	}
@@ -650,7 +644,7 @@ func edgeRoleRefusal(r *http.Request, role string) *edgeRefusal {
 	if !held {
 		return nil
 	}
-	if claim, err := contracts.RoleClaimOf(role); err == nil && projectHeld(projects, claim.Project) {
+	if claim, err := contracts.RoleClaimOf(role); err == nil && slices.Contains(projects, claim.Project) {
 		return nil
 	}
 	return refuseEdge(http.StatusForbidden, edgeRoleNotInProject,
