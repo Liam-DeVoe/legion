@@ -539,21 +539,32 @@ func classify(node *yaml.Node) error {
 	if message, ok := migrationKeys[key]; ok {
 		return errors.New(message)
 	}
-	if !keyShape.MatchString(key) {
+	if !keyShape(key) {
 		return errors.New(unknownKeyAt(node, ""))
 	}
 	return fmt.Errorf("unknown key %s", key)
 }
 
-// keyShape is the configuration's key grammar: lower-case letters, digits and "_", from a letter,
-// 40 characters at most. An unknown key of that shape is named as written, so a typo keeps its
-// help (`unknown key dispach_url`); any other name, one holding an upper-case letter, a "-", a
-// ":", a "/", an "@" or a space, as a token (`sk-ant-…`, `ghp_…`) or a URL does, is no typo of a
-// key, and is named by its line alone (unknownKeyAt).
-var keyShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
+// keyGrammar is the configuration's key grammar: lower-case letters, digits and "_", from a
+// letter, 40 characters at most.
+var keyGrammar = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
+
+// keyHexRun is a run of 8 or more hexadecimal digits, which no key of the configuration holds and
+// a lower-case hex token that fits keyGrammar does (an API key of 32 hex digits, a legacy GitHub
+// token of 40).
+var keyHexRun = regexp.MustCompile(`[0-9a-f]{8,}`)
+
+// keyShape reports whether name has a key's shape: keyGrammar's, holding no keyHexRun. An unknown
+// key of that shape is named as written, so a typo keeps its help (`unknown key dispach_url`);
+// any other name, one holding an upper-case letter, a "-", a ":", a "/", an "@", a space or a run
+// of hex digits, as a token (`sk-ant-…`, `ghp_…`, a hex key) or a URL does, is named by its line
+// alone (unknownKeyAt). A typo holding a "-" or an upper-case letter is named by its line too.
+func keyShape(name string) bool {
+	return keyGrammar.MatchString(name) && !keyHexRun.MatchString(name)
+}
 
 // keyShapeWords is keyShape as a refusal says it.
-const keyShapeWords = "lower-case letters, digits and _, from a letter, 40 at most"
+const keyShapeWords = "lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits"
 
 // unknownKeyAt is the refusal of an unknown key whose name has no key's shape (keyShape), under the
 // mapping under names ("" at the file's root): its line, never its text. Such a name is no typo of
@@ -676,7 +687,7 @@ type unknownKeyError struct {
 }
 
 func (e unknownKeyError) Error() string {
-	if !keyShape.MatchString(e.node.Value) {
+	if !keyShape(e.node.Value) {
 		return unknownKeyAt(e.node, e.key)
 	}
 	return fmt.Sprintf("unknown key %s.%s", e.key, e.node.Value)

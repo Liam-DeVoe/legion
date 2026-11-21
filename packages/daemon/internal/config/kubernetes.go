@@ -2268,7 +2268,7 @@ func readResources(value *yaml.Node) (PodResources, bool, error) {
 			into = &resources.Controller
 		case claim.IsRole(claim.Role(name)):
 			return resources, false, fmt.Errorf("%s.%s is gone: an issue pod has one reservation, %s.issue", key, name, key)
-		case !keyShape.MatchString(name):
+		case !keyShape(name):
 			return resources, false, fmt.Errorf("%s: it must be issue or controller", unknownKeyAt(value.Content[i], key))
 		default:
 			return resources, false, fmt.Errorf("%s key %q must be issue or controller", key, name)

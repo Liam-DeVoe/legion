@@ -2379,18 +2379,19 @@ func TestLoadReadsCapabilityDecisions(t *testing.T) {
 	}
 }
 
-// An unknown key whose name has no key's shape (keyShape, the configuration's grammar) is named by
-// its line alone, wherever it stands, so a credential pasted where a key goes prints nowhere: at the
-// root, under a described mapping, under a project, under capabilities.decided, in a controller
-// configuration, and as an entry of the lists keyed by a role, a pod or an experiment. The keys are
-// made-up tokens in two shapes the earlier rule (letters, digits, "_" and "-") named whole: one
-// holding "-", longer than the 32 characters an experiment's name takes, and one holding
-// upper-case letters. A key of the grammar is still named as written.
+// An unknown key whose name has no key's shape (keyShape: the configuration's grammar, with no run
+// of 8 hex digits) is named by its line alone, wherever it stands, so a credential pasted where a
+// key goes prints nowhere: at the root, under a described mapping, under a project, under
+// capabilities.decided, in a controller configuration, as a project's key, and as an entry of the
+// lists keyed by a role, a pod or an experiment. The keys are made-up tokens in three shapes: one
+// holding "-", longer than the 32 characters an experiment's name takes, one holding upper-case
+// letters, and a lower-case hex token of 40 digits, which fits the grammar. A key of the grammar
+// is still named as written.
 func TestAnUnknownKeyOfNoKeyShapeIsNamedByItsLine(t *testing.T) {
 	load := func(path string) error { _, err := Load(path, noEnv); return err }
 	validate := func(path string) error { _, err := LoadForValidation(path, noEnv); return err }
 	controller := func(path string) error { _, err := LoadController(path, ""); return err }
-	for _, token := range []string{"madeup-dash-token-0123456789-abcdefgh", "ghp_MadeUpToken0123456789abcdef"} {
+	for _, token := range []string{"madeup-dash-token-0123456789-abcdefgh", "ghp_MadeUpToken0123456789abcdef", "deadbeefcafe0123456789abcdef0123456789ab"} {
 		for name, tc := range map[string]struct {
 			load        func(path string) error
 			body, under string
@@ -2405,6 +2406,7 @@ func TestAnUnknownKeyOfNoKeyShapeIsNamedByItsLine(t *testing.T) {
 			"worker_stall_backstop_hours":  {load, minimalFile + "worker_stall_backstop_hours: {" + token + ": 6}\n", " under worker_stall_backstop_hours, whose name"},
 			"runtime.kubernetes.resources": {validate, kubernetesFile + "    resources: {" + token + ": {cpu: 1}}\n", " under runtime.kubernetes.resources, whose name"},
 			"an experiment":                {load, strings.Replace(minimalFile, "DEMO: {}", "DEMO: { experiments: {"+token+": {variants: [{name: only}]}} }", 1), " under projects.DEMO.experiments, whose name"},
+			"a project's key":              {load, strings.Replace(minimalFile, "DEMO: {}", token+": {}", 1), " under projects, whose name"},
 		} {
 			t.Run(name+"/"+token[:3], func(t *testing.T) {
 				err := tc.load(writeConfigFile(t, tc.body))

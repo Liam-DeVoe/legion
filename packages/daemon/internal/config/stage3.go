@@ -168,6 +168,9 @@ func readProjects(value *yaml.Node, key string) (map[string]Project, []string, e
 		keyNode, entryNode := value.Content[index], value.Content[index+1]
 		name := keyNode.Value
 		if keyNode.Kind != yaml.ScalarNode || !projectKeyPattern.MatchString(name) {
+			if keyNode.Kind != yaml.ScalarNode || !keyShape(name) {
+				return nil, nil, fmt.Errorf("%s: a project's key must match ^[A-Z][A-Z0-9]*$", unknownKeyAt(keyNode, key))
+			}
 			return nil, nil, fmt.Errorf(`%s key %q must match ^[A-Z][A-Z0-9]*$`, key, name)
 		}
 		if _, exists := projects[name]; exists {
@@ -209,7 +212,7 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 		if unknown.node.Value == "repo" {
 			return Project{}, nil, fmt.Errorf(`Unknown key %q: the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project`, key+".repo")
 		}
-		if !keyShape.MatchString(unknown.node.Value) {
+		if !keyShape(unknown.node.Value) {
 			return Project{}, nil, unknown
 		}
 		// The shipped loader's own words (validateProjectEntry, config.ts).

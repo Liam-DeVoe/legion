@@ -1604,7 +1604,7 @@ func TestStopPrintsTheLoadersRefusalWithoutURLUserinfo(t *testing.T) {
 			var out, errb bytes.Buffer
 			code := run(context.Background(), []string{"legion", "stop", "--config", config}, &out, &errb)
 			if want := "legion stop: unknown key at line "; code != 1 || !strings.HasPrefix(errb.String(), want) ||
-				!strings.HasSuffix(errb.String(), ", whose name has no key's shape (lower-case letters, digits and _, from a letter, 40 at most)\n") {
+				!strings.HasSuffix(errb.String(), ", whose name has no key's shape (lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits)\n") {
 				t.Fatalf("legion stop = %d, stderr %q, want 1 and the unknown key named by its line", code, errb.String())
 			}
 			for i := 0; i+10 <= len(credential); i++ {
