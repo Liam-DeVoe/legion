@@ -58,10 +58,8 @@ import {
   buildInboxPath,
   buildPersonPath,
   buildProjectPath,
-  INBOX_COMPARISON_PATH,
   liveViewSessionOf,
   PERSON_PATH,
-  parseInboxSearch,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -195,9 +193,6 @@ const PipelinePage = lazy(() =>
 
 const AnswersPage = lazy(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
-);
-const ComparisonPage = lazy(() =>
-  import("./features/inbox/ComparisonPage").then((module) => ({ default: module.ComparisonPage }))
 );
 const PersonPage = lazy(() =>
   import("./features/people/PersonPage").then((module) => ({ default: module.PersonPage }))
@@ -1100,18 +1095,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               <Routes>
                 <Route element={<InboxPage />} path="/" />
                 <Route element={<AnswersPage />} path={ANSWERS_PATH} />
-                <Route element={<ComparisonPage />} path={INBOX_COMPARISON_PATH} />
-                {/* The Replies page is the Inbox's Reply rows now; an old link lands on them,
-                    keeping the address's opt-in to the one read where it carries one. */}
+                {/* The Replies page is the Inbox's Reply rows now; an old link lands on them. */}
                 <Route
                   element={
-                    <Navigate
-                      replace
-                      to={buildInboxPath({
-                        filters: { type: ["reply"] },
-                        one: parseInboxSearch(location.search).one,
-                      })}
-                    />
+                    <Navigate replace to={buildInboxPath({ filters: { type: ["reply"] } })} />
                   }
                   path="/replies"
                 />

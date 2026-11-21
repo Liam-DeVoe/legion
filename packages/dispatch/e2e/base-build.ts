@@ -1,7 +1,7 @@
 /** The build of the release before, booted beside a stack's own server, for the rows that read
- *  both builds at once (dispatch://INFRA-1152's c-gate-page and c-inbox-unchanged): the commit
- *  `BASELINE_SHA` names, built once per run, its dashboard where a row opens its pages, and this
- *  checkout's own build, which such a row runs commands of or boots beside it.
+ *  both builds at once (dispatch://INFRA-1152's c-inbox-unchanged): the commit `BASELINE_SHA`
+ *  names, built once per run, its dashboard where a row opens its pages, and this checkout's own
+ *  build, which such a row boots beside it.
  *
  *  The base is `BASELINE_BINARY` where the run gives one (a prebuilt `./cmd/dispatch` of that
  *  commit), and otherwise the commit's tree taken out of the repository with `git archive` - no
@@ -277,41 +277,9 @@ export async function bootBuild(
   }
 }
 
-/** What one run of this checkout's `envoy-dispatch` answered. */
-export interface CommandRun {
-  readonly code: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}
-
 /** This checkout's own `envoy-dispatch`: the binary `e2e/run-server.sh` built for the stack's
  *  server, or the one `DISPATCH_E2E_SERVER_BIN` names. */
 export function stackBinary(): string {
   const given = (process.env.DISPATCH_E2E_SERVER_BIN ?? "").trim();
   return given !== "" ? resolve(dispatchPackage, given) : join(envoyPackage, "dispatch-e2e");
-}
-
-/** Runs this checkout's own `envoy-dispatch` (`stackBinary`) with `args`, over the stack's
- *  database, and answers its exit code and its output. */
-export async function stackCommand(args: readonly string[]): Promise<CommandRun> {
-  const child = spawn(stackBinary(), args, {
-    env: {
-      DATABASE_URL: stackValue(process.env, "DATABASE_URL") ?? "",
-      HOME: tmpdir(),
-      PATH: process.env.PATH ?? "",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (chunk: Buffer) => {
-    stdout += chunk.toString();
-  });
-  child.stderr.on("data", (chunk: Buffer) => {
-    stderr += chunk.toString();
-  });
-  const exited = Promise.withResolvers<number>();
-  child.once("error", exited.reject);
-  child.once("close", (code) => exited.resolve(code ?? 1));
-  return { code: await exited.promise, stderr, stdout };
 }

@@ -4,31 +4,18 @@ import {
   answerAsk,
   createAgentMessage,
   createAsk,
-  createBroadcast,
   createComment,
   createIssue,
   createMessage,
   createProject,
-  dashboardOrigin,
   declineAsk,
   getMeInbox,
   markThreadRead,
   patchIssue,
   replyToMessageDelivery,
-  sessionCookie,
 } from "./api";
-import { type BaseServer, baseBuild, bootBuild, stackCommand } from "./base-build";
 import { inboxPane, selectRow } from "./inbox-pane";
-import {
-  agentRowId,
-  asSession,
-  replyRowId,
-  seedAgentThread,
-  seedAskThread,
-  seedCommentThread,
-  sessionActor,
-  THREAD_SESSION,
-} from "./inbox-threads";
+import { agentRowId, asSession, replyRowId, sessionActor, THREAD_SESSION } from "./inbox-threads";
 import { sql } from "./psql";
 import { sqlLiteral } from "./seed";
 import { expandedState } from "./settled";
@@ -42,22 +29,13 @@ import { asUser } from "./users";
  * project.
  */
 
-/** The person whose reads the comparison is planted a mismatch in, and who reads the comparison
- *  page. */
-const reader = "alice";
 /** Somebody else, who writes in the reader's threads and holds no row of their own. */
 const other = "bob";
-/** The person the first comparison does not reach. */
-const excluded = "carol";
 /** A person a reference can name. A reference names a person by their login as Dispatch stores
  *  one, an email lowercased (`dispatch://person/<login>`), and no bare login, so `alice` and
  *  `bob`, the harness's own logins, are nobody a mention reaches. Dev sign-in records any login
  *  it is given, so this one signs in as they do. */
 const named = "person-1@example.com";
-
-/** The links of the comment reply chain at the outbox walk's bound, the depth
- *  `internal/dispatch/inboxcompare`'s ChainLinks copies. */
-const chainLinks = 32;
 
 /** Holds that the one read ties `login` to the comment `commentId` by a mention: the comment's
  *  mention of them landed as a mentions tuple into their person. Every row that asserts something
@@ -80,202 +58,9 @@ async function expectMentioned(login: string, commentId: string): Promise<void> 
     .toContain("mentions inbound");
 }
 
-/** The corpus the comparison reads: what c-one-list seeds, and the shapes the gate requires
- *  beside it, every one through the API as a person and a session write it but the reply chain,
- *  which only the release before could write (POST comments climbs reply_to to the thread's
- *  head). The chain is written as that release wrote it, and the backfill then runs over it as a
- *  deployment's runs before anybody reads the new read. */
-async function seedCorpus(): Promise<{ issue: string }> {
-  await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title: "Release checklist" });
-  const closed = await createIssue({ project: "CORE", title: "Old rollout notes" });
-  // An open ask a session asks, which waits on the reader, the project's default assignee.
-  await createAsk(issue.key, { question: "Approve the release window?" }, asSession());
-  // A comment thread the reader started, with a session's reply under it.
-  await seedCommentThread(issue.key, "Is the checklist complete?", "Two items are still open.");
-  // An issue message thread the reader started, with somebody else's reply under it.
-  const root = await createMessage(issue.key, { body: "Who owns the rollback step?" });
-  await createMessage(issue.key, { body: "I own it.", in_reply_to: root.id }, { login: other });
-  // A direct message to a session, with that session's reply.
-  await seedAgentThread({ body: "Please check the staging gate.", replies: ["The gate is open."] });
-  // A broadcast's copy to that session, with the session's reply: an Agent row of the copy.
-  const broadcast = await createBroadcast({
-    body: "Confirm the release window.",
-    delivery: "btw",
-    session_ids: [THREAD_SESSION.session_id],
-  });
-  const copy = (broadcast.recipients ?? []).find(
-    (recipient) => recipient.session_id === THREAD_SESSION.session_id
-  );
-  if (copy === undefined) throw new Error("the broadcast made no copy for the thread session");
-  await replyToMessageDelivery(copy.message.id, { attempt: 1, body: "Confirmed." }, sessionActor());
-  // An issue message the reader addressed to that session, with the session's reply.
-  const addressed = await createMessage(issue.key, {
-    body: "Can you take the rollback drill?",
-    delivery: "btw",
-    target: `session:${THREAD_SESSION.session_id}`,
-  });
-  await replyToMessageDelivery(
-    addressed.id,
-    { attempt: 1, body: "I will take it." },
-    sessionActor()
-  );
-  // An ask the reader answered, with the session's reply in its thread.
-  await seedAskThread(issue.key, "Ship on Friday?", "Friday it is.");
-  // A comment by somebody else that names a person by the address the text grammar reads
-  // (`dispatch://person/<login>`), and one the reader wrote themselves. The address names an
-  // email-shaped login alone, so the person named is one who signs in under one (`named`), and the
-  // comparison reaches them as it reaches every person the database holds.
-  await sessionCookie(named);
-  const mention = await createComment(
-    issue.key,
-    { body: `dispatch://person/${named}, please read this.` },
-    { login: other }
-  );
-  await expectMentioned(named, mention.id);
-  await createComment(issue.key, { body: "A note to myself." });
-  // A thread on the closed issue the reader wrote in and has already read.
-  const read = await createComment(closed.key, { body: "Are the notes final?" });
-  await createComment(closed.key, { body: "They are.", reply_to: read.id }, { login: other });
-  await markThreadRead(read.id, new Date().toISOString());
-  await patchIssue(closed.key, { status: "done" });
-  // The excluded person signs in, so the database holds them among its people.
-  await sessionCookie(excluded);
-  await sql(`
-    do $$
-    declare
-      parent uuid;
-      link uuid;
-    begin
-      for depth in 0..${chainLinks} loop
-        insert into comments (issue_key, author, body, reply_to, created_at)
-        values (${sqlLiteral(issue.key)},
-                case when depth % 2 = 0 then jsonb_build_object('kind', 'user', 'id', ${sqlLiteral(reader)})
-                     else jsonb_build_object('kind', 'session', 'id', ${sqlLiteral(THREAD_SESSION.session_id)}) end,
-                'A link of the chain, ' || depth || ' deep.', parent,
-                now() - interval '1 hour' + depth * interval '1 second')
-        returning id into link;
-        parent := link;
-      end loop;
-    end $$`);
-  const backfill = await stackCommand(["backfill-graph-store"]);
-  expect(backfill.code, `backfill-graph-store:\n${backfill.stdout}${backfill.stderr}`).toBe(0);
-  return { issue: issue.key };
-}
-
-/** A thread of the reader's as the release before writes it, through no writer of this build:
- *  their root and somebody else's reply under it, which the old trigger records as a Reply row of
- *  theirs and to which this build's writer appends no tuple. It is planted after the backfill ran,
- *  as a write an older build makes during a roll, so the one read does not answer it: the
- *  comparison's mismatch. */
-async function plantMismatch(issue: string): Promise<{ root: string; reply: string }> {
-  const author = (login: string) =>
-    `jsonb_build_object('kind', 'user', 'id', ${sqlLiteral(login)})`;
-  // Each insert answers its id from a select, since psql prints an insert's own command tag
-  // beside what its returning clause answers.
-  const root = await sql(`
-    with written as (
-      insert into comments (issue_key, author, body, created_at)
-      values (${sqlLiteral(issue)}, ${author(reader)}, 'Written by the release before.', now())
-      returning id)
-    select id from written`);
-  const reply = await sql(`
-    with written as (
-      insert into comments (issue_key, author, body, reply_to, created_at)
-      values (${sqlLiteral(issue)}, ${author(other)}, 'Answered by the release before.',
-              ${sqlLiteral(root)}::uuid, now() + interval '1 second')
-      returning id)
-    select id from written`);
-  return { reply, root };
-}
-
-/** Takes the planted thread away again, with the Reply rows the old trigger wrote for it. */
-async function clearMismatch(planted: { root: string; reply: string }): Promise<void> {
-  await sql(
-    `delete from user_threads where thread_id = ${sqlLiteral(planted.root)}::uuid`,
-    `delete from comments where id in (${sqlLiteral(planted.reply)}::uuid, ${sqlLiteral(planted.root)}::uuid)`
-  );
-}
-
-/** The four things the page states, read from the page as a person reads them. */
-async function expectPageStates(
-  page: Page,
-  want: { differences: number; people: number; uncovered: number; met: boolean }
-): Promise<void> {
-  await page.goto("/inbox/comparison");
-  await expect(page.getByRole("heading", { level: 1, name: "Inbox comparison" })).toBeVisible();
-  const run = page.getByRole("definition");
-  await expect(run).not.toHaveCount(0);
-  await expect
-    .soft(page.getByTestId("comparison-differences"), "the difference count")
-    .toHaveText(String(want.differences));
-  await expect
-    .soft(page.getByTestId("comparison-people-checked"), "the people checked")
-    .toHaveText(String(want.people));
-  await expect
-    .soft(page.getByTestId("comparison-people-uncovered"), "the uncovered count")
-    .toHaveText(String(want.uncovered));
-  await expect
-    .soft(page.getByTestId("comparison-gate"), "the sentence that says whether the gate is met")
-    .toHaveText(want.met ? "The gate is met." : "The gate is not met.");
-}
-
-test("the comparison page states the gate in plain words", async ({ browser }, testInfo) => {
-  // The base build is compiled once per run, which the first row to need it pays for.
-  test.setTimeout(1_200_000);
-  const build = await baseBuild();
-  test.skip("skip" in build, "skip" in build ? build.skip : "");
-  if ("skip" in build) return;
-  const { issue } = await seedCorpus();
-  const planted = await plantMismatch(issue);
-  const people = Number(await sql("select count(*) from people"));
-
-  let base: BaseServer | undefined;
-  const alice = await asUser(browser, reader);
-  try {
-    base = await bootBuild(build.binary);
-    const compare = async (exclude: readonly string[]) => {
-      const run = await stackCommand([
-        "inbox-compare",
-        "--old-url",
-        base?.url ?? "",
-        "--new-url",
-        dashboardOrigin,
-        ...exclude.flatMap((login) => ["--exclude", login]),
-      ]);
-      await testInfo.attach(`inbox-compare ${exclude.length === 0 ? "clean" : "excluding"}`, {
-        body: `exit ${run.code}\n${run.stdout}${run.stderr}`,
-        contentType: "text/plain",
-      });
-      return run;
-    };
-    const page = await alice.newPage();
-
-    const mismatched = await compare([excluded]);
-    expect
-      .soft(mismatched.code, `the first comparison:\n${mismatched.stdout}${mismatched.stderr}`)
-      .toBe(1);
-    await expectPageStates(page, { differences: 1, met: false, people, uncovered: 1 });
-
-    await clearMismatch(planted);
-    const clean = await compare([]);
-    expect.soft(clean.code, `the second comparison:\n${clean.stdout}${clean.stderr}`).toBe(0);
-    await expectPageStates(page, { differences: 0, met: true, people, uncovered: 0 });
-  } finally {
-    await alice.close();
-    await base?.stop();
-  }
-});
-
-/** The Inbox page's opt-in to the one read, which these rows opened the page with while the
- *  default still named the reads it replaces. The default is the one read now (T17), so it is
- *  empty and the rows run as they are on the default. */
-const ONE_READ: Readonly<Record<string, string>> = {};
-
-/** `path` with `params`, and with the opt-in to the one read. */
+/** `path` with `params`. */
 function address(path: string, params: Readonly<Record<string, string>> = {}): string {
-  const search = new URLSearchParams({ ...params, ...ONE_READ }).toString();
+  const search = new URLSearchParams(params).toString();
   return search === "" ? path : `${path}?${search}`;
 }
 

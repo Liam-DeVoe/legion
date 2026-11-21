@@ -25,7 +25,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
-	"github.com/sjawhar/envoy/internal/dispatch/inboxcompare"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -563,7 +562,7 @@ func threeBadRequests(t *testing.T) {
 	}
 
 	owned := seedTwoProjects(t, handler, database)
-	seedTheInboxReads(t, handler, database, owned)
+	seedTheInboxReads(t, handler, owned)
 	probed := 0
 	for _, route := range rows {
 		target, addressable := crossProjectPath(route, owned)
@@ -1118,10 +1117,9 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 // conversation, which GET /api/v1/agents/{session_id}/conversation and .../messages both answer,
 // and what it was sent); alice's pin of that conversation and of the project's issue (her state
 // of each); an ask s1 opens on the issue and alice's reply in its thread (her answers); s1's reply
-// to alice's comment, a thread she wrote in that somebody else wrote in since, so unread, the
-// state the read of her threads answers by default; and a run of the inbox comparison, which no
-// route writes, stored by the comparison's own writer (inboxcompare.Store).
-func seedTheInboxReads(t *testing.T, handler http.Handler, database *store.Store, owned crossProject) {
+// to alice's comment, a thread she wrote in that somebody else wrote in since, so unread: the
+// state the read of her threads answers by default.
+func seedTheInboxReads(t *testing.T, handler http.Handler, owned crossProject) {
 	t.Helper()
 	sent := postAgentMessage(t, handler, "s1", map[string]any{
 		"body": "Is the probe's conversation here?", "delivery": "aside",
@@ -1143,9 +1141,6 @@ func seedTheInboxReads(t *testing.T, handler http.Handler, database *store.Store
 		"/api/v1/issues/"+owned.issue+"/comments", map[string]any{
 			"body": "Seen.", "reply_to": owned.comment, "actor": map[string]any{"kind": "session", "id": "s1"},
 		}))
-	if err := inboxcompare.Store(t.Context(), database.Pool, &inboxcompare.Run{PeopleChecked: 1}); err != nil {
-		t.Fatalf("seed a run of the inbox comparison: %v", err)
-	}
 }
 
 // firstBlockOf is the id of the first block GET /api/v1/artifacts/{id}/blocks lists.

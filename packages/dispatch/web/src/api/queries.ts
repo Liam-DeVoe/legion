@@ -313,15 +313,6 @@ export const meInboxOwnerQuery = (
     queryFn: () => api.getMeInbox({ ...owner, limit: 200, state: "unread" }),
   });
 
-/** The newest run of the Inbox comparison (`GET /api/v1/inbox/comparison`), which the comparison
- *  page draws. Its key sits outside `openAsksKey`: every optimistic write over the open asks
- *  patches each read under that prefix as a list of rows, and this answer is no list. */
-export const inboxComparisonQuery = () =>
-  queryOptions({
-    queryKey: ["inbox-comparison"],
-    queryFn: () => api.getInboxComparison(),
-  });
-
 /** One session's conversation for the reader (`GET /api/v1/agents/{session_id}/conversation`):
  *  the direct messages and issue messages that reach it, with their replies. The Agents page row,
  *  the live view and an Agent row's reading pane read this one key. */

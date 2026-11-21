@@ -1300,14 +1300,6 @@ export class DispatchApiClient {
     return this.read("/api/v1/asks/open", {}, query);
   }
 
-  /** `GET /api/v1/inbox/comparison`: the newest run of `envoy-dispatch inbox-compare` as
-   *  counts alone - its differences, the people it checked and those it did not reach, the corpus
-   *  shapes it found and whether it meets the gate - with `run` null before any run. Needs the
-   *  `person` scope. */
-  getInboxComparison() {
-    return this.read("/api/v1/inbox/comparison", {});
-  }
-
   /** `GET /api/v1/me/inbox`, the one read: every node tied to the signed-in person, once, with
    *  the relation kinds that tie it to them, newest first; where the node is a row the Inbox
    *  draws, the entry carries that row (`inboxEntryRow`). `state` narrows it to the page's own

@@ -1547,7 +1547,6 @@ export function Inbox({
             to={buildInboxPath({
               assignees: filter.assignees,
               item: filter.item,
-              one: filter.one,
               q: filter.q,
             })}
           >

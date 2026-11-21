@@ -236,8 +236,7 @@ export const realStackReasons: Record<string, string> = {
   "nested-directive.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other",
   "offline-edits.e2e.ts": "document transport, IndexedDB recovery and read-only admissions",
-  "one-inbox.e2e.ts":
-    "the one read answers from the tuples the server's writers append; the comparison page reads a run the comparison command makes against the base build booted beside the server",
+  "one-inbox.e2e.ts": "the one read answers from the tuples the server's writers append",
   "overlapping-marks.e2e.ts": "two readers' marks and the server's anchor refresh",
   "parse-count.e2e.ts":
     "every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and its first row seeds the texts the rest of the file counts over, which only a live server does",

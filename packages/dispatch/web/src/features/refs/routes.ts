@@ -159,11 +159,6 @@ export interface InboxRoute {
   /** The chosen values of each filter field, one comma list per field in the address. A field
    *  with nothing chosen is absent, never an empty array. */
   filters?: Partial<Record<InboxFilterField, readonly string[]>>;
-  /** `?one=1`, the address's opt-in to the one read from while the Inbox's default was still the
-   *  reads it replaced. The reader's own rows come from `GET /api/v1/me/inbox` with it or without
-   *  it, so it changes nothing the page draws; it is a field of the route so that every narrowing
-   *  the page writes back to the address keeps an old link's address as it was. */
-  one?: true;
 }
 export type IssueTab =
   | "spec"
@@ -1206,9 +1201,6 @@ export function parseInboxSearch(search: string): InboxRoute {
   if (params.get("show") === "dismissed") {
     route.show = "dismissed";
   }
-  if (params.get("one") === "1") {
-    route.one = true;
-  }
   const sort = params.get("sort");
   if (sort !== null && sort !== "newest" && (INBOX_SORTS as readonly string[]).includes(sort)) {
     route.sort = sort as InboxSort;
@@ -1276,9 +1268,6 @@ export function buildInboxPath(route: InboxRoute = {}): string {
     const chosen = route.filters?.[field];
     if (chosen !== undefined && chosen.length > 0) query.set(field, chosen.join(","));
   }
-  if (route.one === true) {
-    query.set("one", "1");
-  }
   const search = query.toString();
   return search === "" ? "/" : `/?${search}`;
 }
@@ -1311,10 +1300,6 @@ export function routeIsInbox(pathname: string): boolean {
 
 /** The signed-in person's answers and ask replies (`AnswersPage`), linked from the Inbox page. */
 export const ANSWERS_PATH = "/answers";
-
-/** The comparison's page (`ComparisonPage`): the gate of the one read over the three reads it
- *  replaces, which this branch deletes with the comparison before a release. */
-export const INBOX_COMPARISON_PATH = "/inbox/comparison";
 
 /** One person's page (`PersonPage`), linked from the signed-in login in the rail. */
 export const PERSON_PATH = "/people/:login";
