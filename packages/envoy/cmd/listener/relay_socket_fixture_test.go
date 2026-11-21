@@ -253,6 +253,13 @@ func (rig *relaySocketRig) openWith(t *testing.T, session, token string) *relayS
 	return client
 }
 
+// revoke has the broker hold token live no longer, as a revoke does, and moves the rig's clock past
+// the time its last live answer is reused for (ciphertoken.AffirmativeCacheTTL).
+func (rig *relaySocketRig) revoke(token string) {
+	rig.broker.Says(token, ciphertoken.Introspection{})
+	rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
+}
+
 // describeUpgrade is an upgrade's refusal as a failure names it: its status and its body.
 func describeUpgrade(response *http.Response) string {
 	if response == nil {
@@ -326,6 +333,17 @@ func (c *relaySocketClient) send(frame map[string]any) {
 	defer c.writeMu.Unlock()
 	if err := c.conn.WriteJSON(frame); err != nil {
 		c.t.Fatalf("send %v: %v", frame, err)
+	}
+}
+
+// sendRaw writes one WebSocket message of kind holding data as it is, which may be no frame the
+// wire reads.
+func (c *relaySocketClient) sendRaw(kind int, data []byte) {
+	c.t.Helper()
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if err := c.conn.WriteMessage(kind, data); err != nil {
+		c.t.Fatalf("send %s: %v", data, err)
 	}
 }
 

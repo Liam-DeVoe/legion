@@ -399,10 +399,7 @@ func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
 		within time.Duration
 	}{
 		{name: "a revoke", within: 2*relaySocketTestCheck + relaySocketCloseGrace + time.Second,
-			close: func(_ *testing.T, rig *relaySocketRig, token string) {
-				rig.broker.Says(token, ciphertoken.Introspection{})
-				rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
-			}},
+			close: func(_ *testing.T, rig *relaySocketRig, token string) { rig.revoke(token) }},
 		{name: "the listener's stop", within: relaySocketCloseGrace + time.Second,
 			close: func(t *testing.T, rig *relaySocketRig, _ string) {
 				started := time.Now()
@@ -652,12 +649,7 @@ func TestARelaySocketClosesOnABinaryFrame(t *testing.T) {
 	client.sub(1, bus.DeliverSubject(session))
 	client.ping()
 	<-client.pongs
-	client.writeMu.Lock()
-	err := client.conn.WriteMessage(websocket.BinaryMessage, []byte(`{"op":"unsub","sid":1}`))
-	client.writeMu.Unlock()
-	if err != nil {
-		t.Fatalf("send a binary frame: %v", err)
-	}
+	client.sendRaw(websocket.BinaryMessage, []byte(`{"op":"unsub","sid":1}`))
 	if code, text := client.closeCode(5 * time.Second); code != websocket.CloseUnsupportedData || text != relaySocketReasonTextOnly {
 		t.Fatalf("a binary frame closed the socket %d %q, want %d %q", code, text, websocket.CloseUnsupportedData, relaySocketReasonTextOnly)
 	}
@@ -707,29 +699,21 @@ func TestAnOpenSocketClosesAtItsTokensExpiry(t *testing.T) {
 func TestARelaySocketDropsItsConnectionWhenTheClientAnswersTheClose(t *testing.T) {
 	for _, row := range []struct {
 		name  string
-		close func(t *testing.T, rig *relaySocketRig, client *relaySocketClient, token string)
+		close func(rig *relaySocketRig, client *relaySocketClient, token string)
 		code  int
 		text  string
 	}{
 		{name: "a 4403 the check writes", code: relaySocketCloseRefused, text: relaySocketReasonRefused,
-			close: func(_ *testing.T, rig *relaySocketRig, _ *relaySocketClient, token string) {
-				rig.broker.Says(token, ciphertoken.Introspection{})
-				rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
-			}},
+			close: func(rig *relaySocketRig, _ *relaySocketClient, token string) { rig.revoke(token) }},
 		{name: "a 1003 the reader writes", code: websocket.CloseUnsupportedData, text: relaySocketReasonTextOnly,
-			close: func(t *testing.T, _ *relaySocketRig, client *relaySocketClient, _ string) {
-				client.writeMu.Lock()
-				err := client.conn.WriteMessage(websocket.BinaryMessage, []byte(`{"op":"unsub","sid":1}`))
-				client.writeMu.Unlock()
-				if err != nil {
-					t.Fatalf("send a binary frame: %v", err)
-				}
+			close: func(_ *relaySocketRig, client *relaySocketClient, _ string) {
+				client.sendRaw(websocket.BinaryMessage, []byte(`{"op":"unsub","sid":1}`))
 			}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newRelaySocketRig(t)
 			client, token := rig.open(t, "ses_edge_close_answered")
-			row.close(t, rig, client, token)
+			row.close(rig, client, token)
 			if code, text := client.closeCode(5 * time.Second); code != row.code || text != row.text {
 				t.Fatalf("the socket closed %d %q, want %d %q", code, text, row.code, row.text)
 			}
@@ -835,12 +819,7 @@ func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			client, _ := rig.open(t, session)
 			for _, frame := range append(row.before, row.frame) {
-				client.writeMu.Lock()
-				err := client.conn.WriteMessage(websocket.TextMessage, []byte(frame))
-				client.writeMu.Unlock()
-				if err != nil {
-					t.Fatalf("send %s: %v", frame, err)
-				}
+				client.sendRaw(websocket.TextMessage, []byte(frame))
 			}
 			if frame := client.next(5 * time.Second); frame.Op != "err" || frame.Code != relayErrBadFrame {
 				t.Fatalf("%s was answered %s, want err %s", row.frame, frame.raw, relayErrBadFrame)
