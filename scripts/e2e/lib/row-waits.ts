@@ -7,8 +7,8 @@ import { readFileSync } from "node:fs";
  * to deliver a zombie (2026-11-20, main d36289cb84, 8 busy loops on two CPUs), so a wait ends on the
  * event it waits for, never on a count of polls, and its one bound is the row's own. Bun ends a row
  * at its bound and names no wait, so each wait gives up rowWaitMarginMs before that bound, naming
- * what it waited for and what it saw instead. A row's shell takes the same bound for lib/rig.sh's
- * until_true (until_true_deadline, set to RowWaits.seconds from the shell's start).
+ * what it waited for and what it saw instead. A row's shell takes the same end for lib/rig.sh's
+ * until_true and its own polls (until_true_deadline, set from RowWaits.secondsLeft() as it starts).
  */
 export const rowWaitMarginMs = 20_000;
 
@@ -20,11 +20,12 @@ export const rowWaitMarginMs = 20_000;
 export const libRowBoundMs = 200_000;
 
 export interface RowWaits {
-  /** The bound of a row's shell's waits, in seconds from the shell's start (until_true_deadline). */
-  readonly seconds: number;
   /** The end of the running row's waits, in performance.now() time: the row's start, plus the
    * row's bound, less rowWaitMarginMs. */
   end(): number;
+  /** The whole seconds from now to end(), never less than 0: what a shell the row starts now sets
+   * until_true_deadline to, from its own $SECONDS, so every shell of a row shares the row's end. */
+  secondsLeft(): number;
 }
 
 /**
@@ -39,14 +40,15 @@ export function rowWaits(rowBoundMs: number): RowWaits {
   beforeEach(() => {
     start = performance.now();
   });
+  const end = () => {
+    if (start === undefined) {
+      throw new Error("rowWaits: no row has started, so its beforeEach has not run");
+    }
+    return start + rowBoundMs - rowWaitMarginMs;
+  };
   return {
-    seconds: (rowBoundMs - rowWaitMarginMs) / 1000,
-    end() {
-      if (start === undefined) {
-        throw new Error("rowWaits: no row has started, so its beforeEach has not run");
-      }
-      return start + rowBoundMs - rowWaitMarginMs;
-    },
+    end,
+    secondsLeft: () => Math.max(0, Math.floor((end() - performance.now()) / 1000)),
   };
 }
 

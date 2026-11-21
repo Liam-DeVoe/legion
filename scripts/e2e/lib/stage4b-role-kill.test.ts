@@ -87,9 +87,22 @@ wait`,
 
   test("a child naming worker-shim in a later argv word is not the shim", () => {
     // argv `bash -c <script> worker-shim`: worker-shim is argv[3], not argv[1]. The decoy waits in
-    // bash's builtin read on a FIFO it holds open itself, so it starts no process of its own.
+    // bash's builtin read on a FIFO it holds open itself, so it starts no process of its own. The
+    // kill waits until the decoy runs its own argv, not its parent's, which bash's fork carries until
+    // the exec: a decoy asked about before then would be a decoy in name only.
     const fifo = join(dir, "decoy.fifo");
-    const lines = `. ${JSON.stringify(lib)}\nmkfifo ${JSON.stringify(fifo)}\nbash -c 'exec 3<>"$1"; read -r -t 300 -u 3 _' worker-shim ${JSON.stringify(fifo)} & h=$!\nsleep 0.2\nsh -c "$role_kill_sh" role-kill $$; rc=$?\nkill -0 $h && echo "decoy alive"\nkill -KILL $h\nexit $rc`;
+    const lines = `. ${JSON.stringify(lib)}
+mkfifo ${JSON.stringify(fifo)}
+bash -c 'exec 3<>"$1"; read -r -t 300 -u 3 _' worker-shim ${JSON.stringify(fifo)} & h=$!
+end=$((SECONDS + ${waits.secondsLeft()}))
+until mapfile -d '' -t argv 2>/dev/null <"/proc/$h/cmdline" && [ "\${argv[3]-}" = worker-shim ]; do
+  [ "$SECONDS" -lt "$end" ] || { echo "the decoy $h did not run its own argv by the end of the row's waits" >&2; kill -KILL $h; exit 2; }
+  sleep 0.05
+done
+sh -c "$role_kill_sh" role-kill $$; rc=$?
+kill -0 $h && echo "decoy alive"
+kill -KILL $h
+exit $rc`;
     const kill = Bun.spawnSync(["bash", "-c", lines]);
     expect(kill.exitCode).toBe(1);
     expect(kill.stderr.toString()).toContain("runs no worker-shim");

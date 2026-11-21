@@ -205,13 +205,14 @@ walk stop_tree stop_tree 4242`,
 // A pid recorded with its start (record_start) is signalled only while the start reads the same: a
 // recorded start that is not the process's own stands in for a daemon that ended and whose pid
 // another process took since. stop_pid and signal_group send that process nothing. The shell sources
-// lib/rig.sh as a proof does, so the row reads the stop_pid a proof calls.
-const rigPrelude = `root=${JSON.stringify(root)} work=$(mktemp -d) timeout_hook=
+// lib/rig.sh as a proof does, so the row reads the stop_pid a proof calls, and its waits end with
+// the row's (rowWaits), read as the shell starts.
+const rigPrelude = () => `root=${JSON.stringify(root)} work=$(mktemp -d) timeout_hook=
 evidence=$work
 note() { :; }
 fail() { echo "fail: $*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/rig.sh"
-until_true_deadline=$((SECONDS + ${waits.seconds}))`;
+until_true_deadline=$((SECONDS + ${waits.secondsLeft()}))`;
 test("stop_pid and signal_group leave alone a process whose start is not the one recorded for its pid", async () => {
   const stranger = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
   killed.push(stranger.pid);
@@ -224,7 +225,7 @@ test("stop_pid and signal_group leave alone a process whose start is not the one
       "bash",
       "-c",
       `set -u
-${rigPrelude}
+${rigPrelude()}
 started_at[${stranger.pid}]=$((${start} + 1))
 stop_pid ${stranger.pid}; echo "stop_pid $?"
 signal_group ${stranger.pid} KILL; echo "signal_group $?"
@@ -236,7 +237,11 @@ read -r s </proc/${stranger.pid}/stat; s=\${s##*) }; echo "state \${s%% *}"`,
   expect(ran.stdout.toString()).toBe("stop_pid 0\nsignal_group 0\nstate S\n");
   // The control: given its own start, stop_pid ends it.
   const own = Bun.spawnSync(
-    ["bash", "-c", `${rigPrelude}\nstarted_at[${stranger.pid}]=${start}\nstop_pid ${stranger.pid}`],
+    [
+      "bash",
+      "-c",
+      `${rigPrelude()}\nstarted_at[${stranger.pid}]=${start}\nstop_pid ${stranger.pid}`,
+    ],
     { env: { PATH: process.env.PATH ?? "", TMPDIR: dir } }
   );
   expect(own.exitCode).toBe(0);
@@ -408,7 +413,7 @@ unspawn "$daemon_pid"`;
 // run runs BODY in a bash with lib/rig.sh sourced as a proof sources it (rigPrelude), its $work
 // holding the logs directory start_process writes to, and answers its status and both streams.
 function run(body: string) {
-  const ran = Bun.spawnSync(["bash", "-c", `${rigPrelude}\nmkdir -p "$work/logs"\n${body}`], {
+  const ran = Bun.spawnSync(["bash", "-c", `${rigPrelude()}\nmkdir -p "$work/logs"\n${body}`], {
     env: { PATH: process.env.PATH ?? "", TMPDIR: dir },
   });
   return { code: ran.exitCode, out: ran.stdout.toString(), err: ran.stderr.toString() };

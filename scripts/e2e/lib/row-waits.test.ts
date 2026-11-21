@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
   libRowBoundMs,
@@ -13,7 +13,17 @@ import {
 // starting or ending, is the kernel's: each row here gives them a short end of its own, so the
 // failure is read soon.
 const skip = skipWithout("sh", "sleep");
+// Each row's start lies between these two marks, which run just before and just after rowWaits'
+// own, in the order they were registered.
+let hooksBegan = 0;
+let hooksEnded = 0;
+beforeEach(() => {
+  hooksBegan = performance.now();
+});
 const waits = rowWaits(libRowBoundMs);
+beforeEach(() => {
+  hooksEnded = performance.now();
+});
 
 const started: number[] = [];
 afterEach(() => {
@@ -32,11 +42,15 @@ const failureOf = async (wait: Promise<void>) => {
   return "no failure";
 };
 
-test("rowWaits ends a row's waits its margin before the row's bound, from the row's start", () => {
-  const left = waits.end() - performance.now();
-  expect(left).toBeLessThanOrEqual(libRowBoundMs - rowWaitMarginMs);
-  expect(left).toBeGreaterThan(libRowBoundMs - rowWaitMarginMs - 5_000);
-  expect(waits.seconds).toBe((libRowBoundMs - rowWaitMarginMs) / 1000);
+test("rowWaits ends a row's waits its margin before the row's bound, from the row's start, and gives a shell the whole seconds left to that end", () => {
+  expect(waits.end()).toBeGreaterThanOrEqual(hooksBegan + libRowBoundMs - rowWaitMarginMs);
+  expect(waits.end()).toBeLessThanOrEqual(hooksEnded + libRowBoundMs - rowWaitMarginMs);
+  const before = waits.end() - performance.now();
+  const seconds = waits.secondsLeft();
+  const after = waits.end() - performance.now();
+  expect(Number.isInteger(seconds)).toBe(true);
+  expect(seconds * 1000).toBeLessThanOrEqual(before);
+  expect(seconds * 1000).toBeGreaterThan(after - 1000);
 });
 
 test("untilTrue resolves once its look answers true", async () => {

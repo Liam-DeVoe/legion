@@ -6398,7 +6398,7 @@ A `find` or a `grep` that a signal ends after part of its output makes `listenin
 A marked process whose name holds a newline and a `) ` is still named and ended.
 `stop_marked_processes` ends the marked processes, an escaped one too, and leaves a shell and a `tail -f` under the run's directory running, not stopped;
 with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;
-it signals no pid whose start time is not the one its walk read;
+it signals no pid whose start time is not the one its walk read, which the row reads from a record of every signal the sweep sends (`kill` shadowed), and a sweep given the pid's own start fills that record;
 and it ends a child a marked process started under `env -i`, which carries no mark, with or without a grace, also when the grace's SIGTERM ends the process that started it.
 Every process a row signals, and every harness shell, runs in a process group of its own ([`lib/own-group.ts`](#libown-groupts)).
 
@@ -6419,13 +6419,13 @@ It reads the ignored signals through the shell's own `trap -p` of each signal, a
 
 ## lib/row-waits.ts
 
-The waits a test row of this directory makes from TypeScript on what the kernel does: a process to run a program, to exec, to end.
+The waits a test row of this directory makes on what the kernel does: a process to run a program, to exec, to end.
 No fake clock drives the kernel, and a loaded host took more than 10 s to deliver a zombie (2026-11-20, 8 busy loops on two CPUs), so each wait ends on its event, never on a count of polls, and its one bound is the row's own.
 Bun ends a row at its bound and names no wait, so each wait gives up `rowWaitMarginMs` (20 s) before that bound, naming what it waited for and what it saw instead.
-`rowWaits(rowBoundMs)` makes `rowBoundMs` the bound of every row of the calling file (`setDefaultTimeout`), whatever the runner's command line, and marks each row's start (`beforeEach`): its `end()` is that start plus the bound less the margin, and its `seconds` the same bound for a row's shell, which sets [`until_true_deadline`](#librigsh) from it.
+`rowWaits(rowBoundMs)` makes `rowBoundMs` the bound of every row of the calling file (`setDefaultTimeout`), whatever the runner's command line, and marks each row's start (`beforeEach`): its `end()` is that start plus the bound less the margin, and its `secondsLeft()` the whole seconds from now to that end, which each shell a row starts sets [`until_true_deadline`](#librigsh) from, so every wait of the row, the shell's own polls included, shares one end.
 `libRowBoundMs` is 200 s, the bound `bun run test:e2e-lib` gives every row: about twice the slowest row of the directory measured with 8 busy loops on its two CPUs (98.5 s).
 `untilTrue(what, end, look)` polls `look` every 50 ms until it answers true, looks once more at `end` itself, as `until_true` does, and then fails naming `what` and `look`'s last answer; `untilGone(pid, what, end)` waits so for `pid` to end, a zombie counting as ended, and refuses at once a pid that names no process at all, which would read as gone.
-`lib/row-waits.test.ts` holds each of those; `lib/process-tree.test.ts`, `lib/run-processes.test.ts`, `lib/unread-proc.test.ts`, `lib/leftovers.test.ts`, `lib/own-group.test.ts`, `lib/parked-decision-teardown.test.ts`, `lib/stage4b-role-kill.test.ts`, `lib/multi-repo-second-owner.test.ts`, `lib/held-port.test.ts` and the skill-scenario rig's sweep rows wait through it
+`lib/row-waits.test.ts` holds each of those; `lib/process-tree.test.ts`, `lib/run-processes.test.ts`, `lib/unread-proc.test.ts`, `lib/leftovers.test.ts`, `lib/own-group.test.ts`, `lib/parked-decision-teardown.test.ts`, `lib/stage4b-role-kill.test.ts`, `lib/multi-repo-second-owner.test.ts`, `lib/held-port.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts` and the skill-scenario rig's sweep rows wait through it
 
 ## lib/arg-max-force.sh
 

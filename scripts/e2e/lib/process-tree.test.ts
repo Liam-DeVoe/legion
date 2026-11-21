@@ -55,7 +55,7 @@ work=$(mktemp -d "$DIR/work.XXXXXX") evidence=$work timeout_hook=
 note() { :; }
 fail() { echo "fail: $*" >&2; exit 1; }
 . ${JSON.stringify(rig)}
-until_true_deadline=$((SECONDS + ${waits.seconds}))
+until_true_deadline=$((SECONDS + ${waits.secondsLeft()}))
 scratch=$(mktemp -d "$DIR/run.XXXXXX")
 started=()
 # The shell's own "Killed" notice of each job the trap stops goes nowhere: it is no output of a row.
@@ -378,16 +378,21 @@ leader=\${fields[2]}
 # it, a CI step's or a pod's bash tool's. The child says so when it leads its group itself, which
 # would make the question vacuous.
 bash -c '. "$1"; g=$(proc_group $$); if [ "$g" = $$ ]; then echo "the child leads its own group"; elif signalable "$g" 2>/dev/null; then echo "signalable took the group leader $g"; else echo "its group'"'"'s leader: refused"; fi' - "$root/scripts/e2e/lib/process-tree.sh"
+# Every signal stop_tree sends goes through kill, here a function that records it and sends it,
+# so what the wrong parent's stop sent is read from the record, never from a state that a signal
+# still in flight has not changed yet. The right parent's stop then must fill the record, so an
+# empty one after the wrong parent's is a record that could see a signal.
+kill() { printf '%s\\n' "$*" >>"$scratch/kills"; builtin kill "$@"; }
 stop_tree "$g" 1
-sleep 1
-read -r stat </proc/"$g"/stat
-case \${stat##*) } in S* | R*) echo "a wrong parent: left running" ;; *) echo "a wrong parent: acted on, state \${stat##*) }" ;; esac
+echo "a wrong parent: sent [$(paste -sd, "$scratch/kills" 2>/dev/null || :)]"
 # The shell's own "Killed" notice of the tree it reaps goes nowhere: it is no output of the row.
 exec 3>&2 2>/dev/null
 stop_tree "$g"
 wait "$g" || :
 exec 2>&3 3>&-
+unset -f kill
 echo "stopped: $g" $kids
+if [ -s "$scratch/kills" ]; then echo "the record: holds the right parent's stop"; else echo "the record: empty after the right parent's stop"; fi
 [ "$(proc_parent $$) $(proc_group $$)" = "$PPID $leader" ] && echo "proc_parent and proc_group: this shell's" || echo "proc_parent and proc_group: $(proc_parent $$) $(proc_group $$)"
 echo "a pid that runs nothing: [$(proc_parent 999999999)$(proc_group 999999999)$(proc_children 999999999)$(proc_describe 999999999)]"
 calls=$(cat "$scratch/calls" 2>/dev/null || :)
@@ -400,7 +405,8 @@ echo "calls: [\${calls//$'\\n'/;}]"
       expect([lines[0], lines[1], lines[2], ...lines.slice(4)]).toEqual([
         "this shell: refused",
         "its group's leader: refused",
-        "a wrong parent: left running",
+        "a wrong parent: sent []",
+        "the record: holds the right parent's stop",
         "proc_parent and proc_group: this shell's",
         "a pid that runs nothing: []",
         "calls: []",

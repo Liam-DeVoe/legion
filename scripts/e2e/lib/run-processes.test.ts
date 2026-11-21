@@ -443,18 +443,24 @@ test.skipIf(skip)(
     await untilRunning(pid, "sleep", waits.end());
     // Every signal the sweep sends goes through `kill`, here a function that records it and sends
     // it, so what reached the pid is read from the record rather than from a state that a signal
-    // still in flight has not changed yet.
+    // still in flight has not changed yet. A sweep given the pid's own start must then fill the
+    // record, so an empty one before it is a record that could see a signal.
     const r = harness(
       work,
       `kill() { printf '%s\\n' "$*" >>"$work/kills"; builtin kill "$@"; }
 marked_processes() { printf '%s %s\\n' ${pid} 1; }
 stop_marked_processes "$work"; echo "status $?"
 sent=$(grep -cw -- ${pid} "$work/kills" 2>/dev/null || :)
-echo "sent to the pid: \${sent:-0}"`
+echo "sent to the pid: \${sent:-0}"
+read -r s </proc/${pid}/stat; s=\${s##*) }; echo "state \${s%% *}"
+marked_processes() { printf '%s %s\\n' ${pid} "$(proc_start ${pid})"; }
+stop_marked_processes "$work" >/dev/null 2>&1 || :
+grep -qw -- ${pid} "$work/kills" && echo "its own start: the record holds its stop" || echo "its own start: nothing in the record"`
     );
     expect(r.err).toBe("");
-    expect(r.out).toBe("status 0\nsent to the pid: 0\n");
-    expect(stateOf(pid)).toBe("S");
+    expect(r.out).toBe(
+      "status 0\nsent to the pid: 0\nstate S\nits own start: the record holds its stop\n"
+    );
   }
 );
 
