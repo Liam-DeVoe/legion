@@ -49,6 +49,7 @@ import {
   RECORD_ROUTES,
 } from "./completion-answers";
 import { type GhSelectors, type GhTable, selectorsOf, tableOf } from "./gh-selectors";
+import { PERSON_ROUTE_SOURCES } from "./person-routes";
 import { Refused } from "./run-records";
 import {
   DEFAULT_STEPS,
@@ -291,26 +292,29 @@ export function labelCheckout(runDir: string): string {
   return checkout;
 }
 
-/** The daemon sources a reader reads of a run's label (`labelRoutes`, `labelDaemon`), under the
- * checkout's root. */
-export const DAEMON_SOURCES = [
+/** The sources a reader reads of a run's label, under the checkout's root: the daemon's
+ * (`labelRoutes`, `labelDaemon`), and its Dispatch's table of the scopes each route needs and its
+ * agents' client (person-routes.ts's PERSON_ROUTE_SOURCES, `labelPersonRoutes`). */
+export const LABEL_SOURCES = [
   "packages/daemon/internal/api",
   "packages/daemon/internal/workflow/engine.go",
+  ...PERSON_ROUTE_SOURCES,
 ];
-/** The directory each built-from commit's daemon sources were rebuilt into in this process. */
+/** The directory each built-from commit's label sources were rebuilt into in this process. */
 const rebuilt = new Map<string, string>();
 
-/** The daemon sources of the label the run under `runDir` ran, rebuilt from what the run recorded
- * and never read off the checkout its built-from names, which the pod may since have moved or
- * lost: the `commit <sha>` line of its built-from (rig.sh's checkout_commit), read with `git
- * archive` out of the first of `repos` (git directories the caller names, `--repo`) that holds
- * that commit, into a directory of this process's own, removed when it exits. The commit id is
- * the digest git reads every file of it by, so the sources are the ones the run ran. Of
- * DAEMON_SOURCES only those the commit holds are rebuilt: a commit holding none is a label with
- * no daemon there, which `labelRoutes` and `labelDaemon` then say, as they say it of any checkout.
- * Returns that directory, a checkout holding those sources alone, and the commit. Throws a Refused
- * naming the run and the input for a built-from with no commit, a commit of a checkout with
- * changes no commit holds (`dirty`), no repository named, and none that holds the commit. */
+/** The sources of the label the run under `runDir` ran, rebuilt from what the run recorded and
+ * never read off the checkout its built-from names, which the pod may since have moved or lost:
+ * the `commit <sha>` line of its built-from (rig.sh's checkout_commit), read with `git archive`
+ * out of the first of `repos` (git directories the caller names, `--repo`) that holds that
+ * commit, into a directory of this process's own, removed when it exits. The commit id is the
+ * digest git reads every file of it by, so the sources are the ones the run ran. Of LABEL_SOURCES
+ * only those the commit holds are rebuilt: a commit holding no daemon is a label with no daemon
+ * there, which `labelRoutes` and `labelDaemon` then say, as they say it of any checkout, and one
+ * holding no Dispatch source is one `labelPersonRoutes` refuses so. Returns that directory, a
+ * checkout holding those sources alone, and the commit. Throws a Refused naming the run and the
+ * input for a built-from with no commit, a commit of a checkout with changes no commit holds
+ * (`dirty`), no repository named, and none that holds the commit. */
 export function recordedCheckout(
   runDir: string,
   repos: readonly string[]
@@ -352,7 +356,7 @@ export function recordedCheckout(
       throw new Error(`git ${args.join(" ")} of ${repo} failed: ${done.stderr.toString().trim()}`);
     return done.stdout;
   };
-  const held = git("ls-tree", "-r", "-z", "--name-only", commit, "--", ...DAEMON_SOURCES)
+  const held = git("ls-tree", "-r", "-z", "--name-only", commit, "--", ...LABEL_SOURCES)
     .toString()
     .split("\0")
     .filter((name) => name !== "");
@@ -363,7 +367,7 @@ export function recordedCheckout(
       stdin: git("archive", "--format=tar", commit, "--", ...held),
     });
     if (unpacked.exitCode !== 0)
-      throw new Error(`tar could not unpack commit ${commit}'s daemon sources: ${unpacked.stderr}`);
+      throw new Error(`tar could not unpack commit ${commit}'s label sources: ${unpacked.stderr}`);
   }
   rebuilt.set(commit, dir);
   return { dir, commit };

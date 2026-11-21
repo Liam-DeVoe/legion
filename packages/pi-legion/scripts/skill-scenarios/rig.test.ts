@@ -30,6 +30,7 @@ import { routeFor } from "./gh-call";
 import { routeOf, WORLD_ROUTES, worldRouteOf } from "./gh-routes";
 import { headUnmoved } from "./health";
 import { leakCheckEnv } from "./leak-check-env";
+import { PERSON_ROUTE_SOURCES } from "./person-routes";
 import {
   nameWords,
   runIdentity,
@@ -3207,6 +3208,15 @@ describe("health", () => {
     repoMade ??= path.join(freshDir("health"), "labels.git");
     return repoMade;
   };
+  /** The commit a run's built-from records for `checkout`, in labelRepo: the label sources that
+   * checkout holds (`sourcesCommit`), or, for RUN_CHECKOUT, which is no directory here, this
+   * checkout's Dispatch routes table and agents' client alone (person-routes.ts's
+   * PERSON_ROUTE_SOURCES): a run built here, whose agents' 403s rule 16 reads by them, and whose
+   * commit holds no daemon. */
+  const builtCommit = (checkout: string) =>
+    checkout === RUN_CHECKOUT
+      ? sourcesCommit(labelRepo(), CHECKOUT, PERSON_ROUTE_SOURCES)
+      : sourcesCommit(labelRepo(), checkout);
   /** A run directory named `name`, under a directory of its own, as a run whose every role
    * finished leaves it: a boot record booting each role its scenario boots (ANSWERS' `boots`),
    * in order, and each role's own output, ending with its `exit=` line, and transcript, the
@@ -3215,12 +3225,12 @@ describe("health", () => {
    * (from 0) opened at 17:5k, a minute apart and before any line a row's stand-in answers;
    * `finished` false leaves the last role's out.txt with no `exit=` line, as a run that never
    * ended leaves it; `checkout` is the checkout its built-from names, with the commit of the
-   * daemon sources that checkout holds (`sourcesCommit` in labelRepo; none for RUN_CHECKOUT,
-   * which is no directory here), or no commit line for `commit` false; `namespace` true gives it
-   * the world a run's namespace records (namespace.txt, world_paths' kinds): its credentials
-   * covered and its own directory shown, which is all a run that names no path needs, and false
-   * none, as a run from before the namespace holds; `provenance` its
-   * services-from, every service of its label's own from that checkout by default and none at
+   * label sources that checkout holds (`builtCommit`: this checkout's Dispatch sources alone for
+   * RUN_CHECKOUT, which is no directory here), or no commit line for `commit` false; `namespace`
+   * true gives it the world a run's namespace records (namespace.txt, world_paths' kinds): its
+   * credentials covered and its own directory shown, which is all a run that names no path needs,
+   * and false none, as a run from before the namespace holds; `provenance` its services-from,
+   * every service of its label's own from that checkout by default and none at
    * all for false; `dispatch` is the lines of its Dispatch server's log after the server's
    * listening line, and false for a run with no log. */
   function run(
@@ -3258,7 +3268,7 @@ describe("health", () => {
     }
     writeFileSync(
       path.join(dir, "built-from"),
-      `checkout ${checkout}\n${commit ? `commit ${sourcesCommit(labelRepo(), checkout)} parents=\n` : ""}`
+      `checkout ${checkout}\n${commit ? `commit ${builtCommit(checkout)} parents=\n` : ""}`
     );
     if (namespace)
       writeFileSync(
@@ -3407,7 +3417,7 @@ describe("health", () => {
     ]);
     const { code, stdout } = healthIn({ PATH: `${bin}:${childEnv.PATH}` }, dir);
     expect(code).toBe(1);
-    const commit = `<commit ${sourcesCommit(labelRepo(), RUN_CHECKOUT)}>`;
+    const commit = `<commit ${builtCommit(RUN_CHECKOUT)}>`;
     expect(verdict(stdout, dir)).toBe(
       `reviewer-text-findings-text-only-head-2  unhealthy: completion shapes unknown: an answer the stand-in logged turns on how the head label's daemon takes a completion, which cannot be read: ${commit}/packages/daemon/internal/workflow/engine.go is not there, so how the daemon of ${commit} takes a completion is unknown (daemon-completion.go reads it)`
     );
@@ -4671,6 +4681,71 @@ describe("health", () => {
       "threads-closed-code-defect-head-80  healthy",
       "reviewer-text-findings-defect-head-80  healthy",
     ]);
+  });
+
+  // Catches: rule 16 declaring every 403 of Dispatch's, or every answer of a person-scoped route,
+  // where it declares production's 403 to the shared token on the routes the run's label's
+  // Dispatch gives the person scope and its agents' client calls alone (person-routes.ts's
+  // `labelPersonRoutes`): a 403 to a result the implementer records, a route that needs no
+  // person scope; a 403 to GET /api/v1/users, a person-scoped route no command of the agents'
+  // client sends; and a 401 to /api/v1/inbox, a route of the class answered otherwise. Each is a
+  // world refusing what production lets through, or answering as production does not.
+  test("a Dispatch 403 to a route that needs no person scope or that the agents' client never calls, and another answer of a person-scoped route, are unhealthy", () => {
+    const recording = run("threads-closed-code-defect-head-81", [[]], {
+      dispatch: [
+        served(
+          "2026-11-13T17:50:30.000Z",
+          "POST",
+          "/api/v1/issues/{key}/results",
+          "/api/v1/issues/LWEVAL-1/results",
+          403
+        ),
+      ],
+    });
+    const picking = run("threads-closed-correct-head-81", [[], []], {
+      dispatch: [served("2026-11-13T17:51:10.000Z", "GET", "/api/v1/users", "/api/v1/users", 403)],
+    });
+    const unauthorized = run("threads-closed-correct-base-16", [[], []], {
+      dispatch: [served("2026-11-13T17:51:10.000Z", "GET", "/api/v1/inbox", "/api/v1/inbox", 401)],
+    });
+    const runs = [recording, picking, unauthorized];
+    const { code, stdout } = health(...runs);
+    expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
+      "threads-closed-code-defect-head-81  unhealthy: dispatch refusal: logs/dispatch.log:2, POST /api/v1/issues/LWEVAL-1/results of the implementer, answered 403, which threads-closed does not declare for that role",
+      "threads-closed-correct-head-81  unhealthy: dispatch refusal: logs/dispatch.log:2, GET /api/v1/users of the reviewer, answered 403, which threads-closed does not declare for that role",
+      "threads-closed-correct-base-16  unhealthy: dispatch refusal: logs/dispatch.log:2, GET /api/v1/inbox of the reviewer, answered 401, which threads-closed does not declare for that role",
+    ]);
+    expect(stdout).toContain("health: dispatch: 3 of 3 runs\n");
+    expect(code).toBe(1);
+  });
+
+  // Catches: a 403 judged by a Dispatch source of no shape the reading knows, as a label whose
+  // Dispatch gives no route the person scope (the 403 undeclared with no word of why) or by this
+  // checkout's source in its place (a label read by another's): the run's commit holds a routes
+  // table whose `routeScopes` is renamed, and the verdict names the file, the marker and the
+  // commit, never the directory health rebuilt the sources in.
+  test("a Dispatch 403 of a run whose label's Dispatch sources hold no person-scoped routes this reads is unhealthy, naming the file and the marker", () => {
+    const checkout = freshDir("renamed-scopes");
+    const opener = "var routeScopes = map[string]routeScopeSet{";
+    for (const file of PERSON_ROUTE_SOURCES) {
+      const text = readFileSync(path.join(CHECKOUT, file), "utf8");
+      mkdirSync(path.dirname(path.join(checkout, file)), { recursive: true });
+      writeFileSync(
+        path.join(checkout, file),
+        file.endsWith("routes_table.go")
+          ? text.replace(opener, "var routeScopesByRoute = map[string]routeScopeSet{")
+          : text
+      );
+    }
+    const reading = run("threads-closed-correct-base-17", [[], []], {
+      checkout,
+      dispatch: [served("2026-11-13T17:51:10.000Z", "GET", "/api/v1/inbox", "/api/v1/inbox", 403)],
+    });
+    const { code, stdout } = health(reading);
+    expect(verdict(stdout, reading)).toBe(
+      `threads-closed-correct-base-17  unhealthy: dispatch refusal unknown: logs/dispatch.log:2, GET /api/v1/inbox of the reviewer, answered 403, and which routes the base label's Dispatch gives the person scope that its agents' client calls cannot be read: the Dispatch sources of <commit ${builtCommit(checkout)}> are of no shape its person-scoped routes are read by: packages/envoy/internal/dispatch/api/routes_table.go holds no ${JSON.stringify(opener)}, the line that opens the table of the scopes each route needs`
+    );
+    expect(code).toBe(1);
   });
 
   // Catches: a run that reached another run's directory measured as its own: the 2026-11-14

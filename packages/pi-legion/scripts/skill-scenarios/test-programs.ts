@@ -25,7 +25,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { BunPlugin, SpawnOptions, SyncSubprocess } from "bun";
-import { DAEMON_MODULE, DAEMON_SOURCES, labelGhSelectors } from "./daemon-pane";
+import { DAEMON_MODULE, LABEL_SOURCES, labelGhSelectors } from "./daemon-pane";
 import { RUN_SELECTORS } from "./gh-selectors";
 
 /** `cmds` short enough for an error: a `bash -c` script is the rig's own functions, hundreds of
@@ -117,16 +117,20 @@ export function writeGhSelectors(runDir: string): void {
   writeFileSync(path.join(runDir, RUN_SELECTORS), ownSelectors);
 }
 
-/** Each commit `sourcesCommit` made, by its repository and checkout. */
+/** Each commit `sourcesCommit` made, by its repository, checkout and sources. */
 const commits = new Map<string, string>();
-/** A commit of the daemon sources `checkout` holds (daemon-pane.ts's DAEMON_SOURCES; none for a
- * checkout that is not there, an empty tree), made in the bare repository `repo` (made here when
- * it is not there), as rig.sh's checkout_commit records the commit a label was built from in its
- * built-from: what health and the scorer rebuild a run's label's daemon from, given `--repo`
- * (`recordedCheckout`), and never the checkout itself. Made once per repository and checkout;
- * nothing is written under `checkout`. */
-export function sourcesCommit(repo: string, checkout: string): string {
-  const key = `${repo}\0${checkout}`;
+/** A commit of the label sources `checkout` holds (daemon-pane.ts's LABEL_SOURCES, or those of
+ * `sources`; none for a checkout that is not there, an empty tree), made in the bare repository
+ * `repo` (made here when it is not there), as rig.sh's checkout_commit records the commit a label
+ * was built from in its built-from: what health and the scorer rebuild a run's label's sources
+ * from, given `--repo` (`recordedCheckout`), and never the checkout itself. Made once per
+ * repository, checkout and sources; nothing is written under `checkout`. */
+export function sourcesCommit(
+  repo: string,
+  checkout: string,
+  sources: readonly string[] = LABEL_SOURCES
+): string {
+  const key = [repo, checkout, ...sources].join("\0");
   const known = commits.get(key);
   if (known !== undefined) return known;
   const index = mkdtempSync(path.join(os.tmpdir(), "sources-index-"));
@@ -151,9 +155,9 @@ export function sourcesCommit(repo: string, checkout: string): string {
       const made = spawnChecked(["git", "init", "-q", "--bare", repo], { env });
       if (made.exitCode !== 0) throw new Error(`git init ${repo}: ${made.stderr.toString()}`);
     }
-    const held = DAEMON_SOURCES.filter((source) => existsSync(path.join(checkout, source)));
+    const held = sources.filter((source) => existsSync(path.join(checkout, source)));
     if (held.length > 0) git(`--work-tree=${checkout}`, "-C", checkout, "add", "--", ...held);
-    const commit = git("commit-tree", git("write-tree"), "-m", `the daemon sources of ${checkout}`);
+    const commit = git("commit-tree", git("write-tree"), "-m", `the label sources of ${checkout}`);
     commits.set(key, commit);
     return commit;
   } finally {

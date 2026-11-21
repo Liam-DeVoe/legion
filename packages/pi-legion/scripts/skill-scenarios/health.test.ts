@@ -1,5 +1,5 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { ANSWERS, labelOf, SKIPS, scenarioOf } from "./completion-answers";
@@ -16,6 +16,7 @@ import {
   unmodelledWrite,
   writtenBy,
 } from "./health";
+import { labelPersonRoutes } from "./person-routes";
 import {
   REMOVED_NAMES,
   systemPromptOf,
@@ -1328,6 +1329,100 @@ describe("health: rule 15, service provenance, the run's own Dispatch server", (
         baseRun("threads-closed-correct-base-3", `dispatch label ${BASE} sha256:${"1".repeat(64)}`)
       )
     ).toBeUndefined();
+  });
+});
+
+// Rule 16's 403 that every agent of every run may meet, read out of a label's own source: each
+// route Dispatch's routes table gives the person scope (routes_table.go's `routeScopes`) that the
+// agents' client sends (envoy-client's dispatch-http.ts), person-routes.ts's `labelPersonRoutes`.
+// Catches: a reading that holds a list in place of the class, so `dispatch inbox`'s three reads
+// or `dispatch review`'s post go undeclared, as the tester's row of 605f3c38 measured; one that
+// takes a route that needs no person scope, or a person-scoped one no command of the client sends;
+// and a source of another shape read as a Dispatch that refuses nothing, where the architect's
+// ruling of 2026-11-21 has a marker that stops matching refuse, naming the file and the marker.
+describe("health: rule 16, Dispatch's 403 to the person-scoped routes a label's agents call", () => {
+  const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
+  const SCOPES = "packages/envoy/internal/dispatch/api/routes_table.go";
+  const CLIENT = "packages/envoy-client/src/dispatch-http.ts";
+  const OPENER = "var routeScopes = map[string]routeScopeSet{";
+  const PERSON = "model.ScopePerson";
+  const copies = temporaryDirectories("health-person-routes");
+  /** A checkout holding this checkout's routes table and client, each given through its edit, a
+   * source of null left out. */
+  function copyOf(
+    scopes: ((text: string) => string) | null,
+    client: ((text: string) => string) | null
+  ): string {
+    const dir = copies();
+    for (const [file, edit] of [[SCOPES, scopes], [CLIENT, client]] as const) {
+      if (edit === null) continue;
+      mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      writeFileSync(path.join(dir, file), edit(readFileSync(path.join(CHECKOUT, file), "utf8")));
+    }
+    return dir;
+  }
+  const same = (text: string) => text;
+
+  test("this checkout's person-scoped routes its agents' client calls hold dispatch inbox's, review's and send-to-agent's, and only routes routeScopes gives the person scope", () => {
+    const routes = labelPersonRoutes(CHECKOUT);
+    expect(routes).toEqual(
+      expect.arrayContaining([
+        "GET /api/v1/inbox",
+        "GET /api/v1/me/replies",
+        "GET /api/v1/credential-requests",
+        "POST /api/v1/artifacts/{id}/versions/{number}/reviews",
+        "POST /api/v1/agents/{session_id}/messages",
+      ])
+    );
+    const table = readFileSync(path.join(CHECKOUT, SCOPES), "utf8");
+    const open = table.indexOf(OPENER);
+    const person = table
+      .slice(open, table.indexOf("\n}\n", open))
+      .split("\n")
+      .filter((row) => row.includes(PERSON));
+    // Each route read is a row of routeScopes whose set holds the person scope.
+    const scoped = person.map((row) => row.trim().split('":')[0]?.slice(1));
+    expect(routes.filter((route) => !scoped.includes(route))).toEqual([]);
+    // The client's own read of a handoff needs no person scope, and routeScopes gives the person
+    // scope to routes no command of the client sends, so the reading holds fewer than its rows.
+    expect(routes).not.toContain("GET /api/v1/issues/{key}/handoffs/{phase}/latest");
+    expect(routes.length).toBeLessThan(person.length);
+  });
+
+  test("a Dispatch source whose routeScopes or route paths are of no shape this reads is refused, naming the file and the marker", () => {
+    const why = (dir: string) =>
+      `the Dispatch sources of ${dir} are of no shape its person-scoped routes are read by: `;
+    const renamed = "var routeScopesByRoute = map[string]routeScopeSet{";
+    const untabled = copyOf((text) => text.replace(OPENER, renamed), same);
+    expect(() => labelPersonRoutes(untabled)).toThrow(
+      `${why(untabled)}${SCOPES} holds no ${JSON.stringify(OPENER)}, the line that opens the table of the scopes each route needs`
+    );
+    const table = readFileSync(path.join(CHECKOUT, SCOPES), "utf8");
+    const row = table.split("\n").indexOf(OPENER) + 2;
+    const inserted = `${OPENER}\n\tinboxRoute: {${PERSON}},`;
+    const unrowed = copyOf((text) => text.replace(OPENER, inserted), same);
+    expect(() => labelPersonRoutes(unrowed)).toThrow(
+      `${why(unrowed)}${SCOPES}:${row} is no row of routeScopes (\`"<METHOD> <pattern>": {<scope>, …},\`): inboxRoute: {${PERSON}},`
+    );
+    const personless = copyOf((text) => text.replaceAll(PERSON, "model.ScopeSelf"), same);
+    expect(() => labelPersonRoutes(personless)).toThrow(
+      `${why(personless)}${SCOPES}'s routeScopes gives no route model.ScopePerson, the person scope`
+    );
+    const tableless = copyOf(null, same);
+    expect(() => labelPersonRoutes(tableless)).toThrow(
+      `${why(tableless)}${SCOPES} is not there, which holds the scopes each route needs (routeScopes)`
+    );
+    const pathless = copyOf(same, (text) => text.replace(/"api",(\s*)"v1"/g, '"api",$1"v2"'));
+    expect(() => labelPersonRoutes(pathless)).toThrow(
+      `${why(pathless)}${CLIENT} spells no route path ["api", "v1", …], which is how it names each route it sends`
+    );
+    const sent = 'this.#json("GET", ["api", "v1", "inbox"]';
+    const client = readFileSync(path.join(CHECKOUT, CLIENT), "utf8");
+    const line = client.slice(0, client.indexOf(sent)).split("\n").length;
+    const unsent = copyOf(same, (text) => text.replace(sent, 'this.#get(["api", "v1", "inbox"]'));
+    expect(() => labelPersonRoutes(unsent)).toThrow(
+      `${why(unsent)}${CLIENT}:${line} spells the route path ["api", "v1", "inbox"], which no call this reads sends`
+    );
   });
 });
 

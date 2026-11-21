@@ -726,11 +726,15 @@ catch-all write route (`^gh api `) answered a success that changed nothing, whic
 thread comment and was no review submit; no request of an agent that the run's own Dispatch server
 answered with an error, 4xx or 5xx, by the server's own line of it in `<run>/logs/dispatch.log`,
 unless `health.ts`'s `DISPATCH_DECLARED` declares that answer for the scenario and the agent's role
-or it is `EVERY_AGENT_DECLARED`, the one answer every agent of every run may meet (the agent booted
+or it is Dispatch's 403 `OAUTH_SCOPE_REQUIRED` to a route the run's label's Dispatch gives the
+`person` scope (`routes_table.go`'s `routeScopes`) and its agents' client calls
+(`dispatch-http.ts`), which production gives every session of the shared agent token, declared
+for every agent and read out of the run's own commit by `person-routes.ts`'s `labelPersonRoutes`,
+so `dispatch send-to-agent`, `dispatch inbox` and `dispatch review` among them and any such route
+main adds; a 403 of a run whose label's routes cannot be read so is unhealthy (the agent booted
 last before the request began, by the opening line each daemon stand-in writes before its agent
 starts; `HANDOFF_NOT_FOUND` for the `review` handoff is declared for reviewer-text-findings'
-reviewer, and Dispatch's 403 `OAUTH_SCOPE_REQUIRED` to `dispatch send-to-agent`, which production
-gives every session of the shared agent token, for every agent; a run
+reviewer; a run
 with no such log is unhealthy); the run's GitHub stand-in answered as GitHub does, by its own log,
 `<run>/logs/github.log` (no request it refused or holds no route of, no status GitHub does not
 give, and a worker world's log kept); every push of the pull request's branch was stored as
@@ -889,7 +893,8 @@ A reader reads these, all in the run's directory:
 - its `namespace.txt`: the world its agents ran in, and the label's install the world showed.
 
 What a run did not record, a reader rebuilds from what it did record, by digest, or it refuses.
-The label's daemon sources are rebuilt from the `commit` line of `built-from`, with `git
+The label's daemon sources, and the Dispatch routes table and agents' client rule 16 reads, are
+rebuilt from the `commit` line of `built-from`, with `git
 archive`, out of a git directory the caller names with `--repo <git dir>` (give it more than
 once to name more). The commit id is git's digest of those files. A reader refuses the run when
 `built-from` records no commit, when the commit is `dirty`, when no `--repo` is named, or when

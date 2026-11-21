@@ -145,10 +145,15 @@
  *      from the wrong checkout explains every rule after it;
  *  16. Dispatch: no request of an agent of the run that the run's own Dispatch server answered
  *      with an error, 4xx or 5xx, by the server's own line of it (<run>/logs/dispatch.log), unless
- *      the scenario declares that answer for the agent's role (DISPATCH_DECLARED) or it is the
- *      answer every agent of every run may meet (EVERY_AGENT_DECLARED, `dispatchUndeclared`). A
- *      request is the agent's whose daemon stand-in opened last before the request began
- *      (`agentBoots`); a run with no such log is unhealthy. It is read right after rule 7;
+ *      the scenario declares that answer for the agent's role (DISPATCH_DECLARED) or it is the 403
+ *      every agent of every run may meet (`personDeclared`, `dispatchUndeclared`): Dispatch's to a
+ *      route the run's label's Dispatch gives the `person` scope, which the world's shared agent
+ *      token does not hold, and its agents' client calls, read out of the routes table and the
+ *      client of the commit the run's built-from records, rebuilt as rule 2 rebuilds it
+ *      (person-routes.ts's `labelPersonRoutes`). A run with a 403 whose label's routes cannot be
+ *      read so is unhealthy. A request is the agent's whose daemon stand-in opened last before the
+ *      request began (`agentBoots`); a run with no such log is unhealthy. It is read right after
+ *      rule 7;
  *  17. names: a word of the measurement an agent of the run says, in its own text or thinking,
  *      makes the run unhealthy only where an input held it before any agent of the run wrote it
  *      (`namesSaid`, the leak test the tester's reader uses): the run's prompt or system
@@ -306,6 +311,7 @@ import { graphqlOf, type Recorded, type ThreadRoute, threadCall, threadState } f
 import { FIELD_REFUSED, PULL_NOT_FOUND } from "./gh-view";
 import { callWrites } from "./gh-writes";
 import { githubRouteOf } from "./github-routes";
+import { labelPersonRoutes } from "./person-routes";
 import {
   entryKind,
   holds,
@@ -407,9 +413,9 @@ interface Run {
    * path under /dev/shm or a path its world covers is a tmpfs of the agent's launch alone
    * (`mounted`), and every process /proc shows is the run's own (`otherProcess`). */
   readonly namespaced: boolean;
-  /** The git directories the caller named (`--repo`), which the daemon sources of each run's
-   * label are rebuilt from by the commit its built-from records (daemon-pane.ts's
-   * `recordedCheckout`), never read off the pod's checkout. */
+  /** The git directories the caller named (`--repo`), which the sources of each run's label are
+   * rebuilt from by the commit its built-from records (daemon-pane.ts's `recordedCheckout`),
+   * never read off the pod's checkout. */
   readonly repos: readonly string[];
   /** Every tool call of every transcript of the run, with the transcript it is in and when. */
   readonly calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[];
@@ -1057,24 +1063,47 @@ type DispatchRequest = z.infer<typeof DispatchRequest>;
  * completion reports (packages/pi-shared/src/handoff-record.ts, `findHandoffReport`). */
 const noHandoff = (phase: string) => `GET /api/v1/issues/{key}/handoffs/${phase}/latest 404`;
 
-/** The error answer of Dispatch every agent of every run may meet, whatever its scenario and its
+/** The 403s `personDeclared` declares for a run's agents, each `<method> <pattern> 403`, or why
+ * they cannot be read. */
+type PersonDeclared = readonly string[] | { readonly unknown: string };
+
+/** The error answers of Dispatch every agent of every run may meet, whatever its scenario and its
  * role, beside those DISPATCH_DECLARED declares for one: OAUTH_SCOPE_REQUIRED, Dispatch's 403 to
- * `dispatch send-to-agent` from a session of the shared agent token. The command posts to the
- * session's conversation (packages/envoy-client/src/dispatch-http.ts, `agentMessage`), a route
- * that needs the `person` scope (packages/envoy/internal/dispatch/api/routes_table.go,
- * `routeScopes`), which that token does not hold; the server's line names that route, with the
- * recipient's id in the path. Each agent of a run may message another session, and runs under the
- * world's shared agent token, as a Legion pod's agents run under production's, and production
- * gives that session the same 403: the tester's own pod ran `dispatch send-to-agent` under the
- * shared token and was answered 403 OAUTH_SCOPE_REQUIRED (2026-11-20T19:53:57Z). INFRA-764's
- * round 27 at efea8554 met it: the reviewer of threads-closed-correct-base-1 messaged the
- * implementer that way. No other answer of that route is declared. */
-const EVERY_AGENT_DECLARED = "POST /api/v1/agents/{session_id}/messages 403";
+ * a route that needs the `person` scope, from a session of the shared agent token, which holds no
+ * scope. Each agent of a run runs under the world's shared agent token, as a Legion pod's agents
+ * run under production's, and production gives that session the same 403: the tester's own pod
+ * was answered so for `dispatch send-to-agent` (2026-11-20T19:53:57Z), which posts to
+ * /api/v1/agents/{session_id}/messages, and for `dispatch inbox` (2026-11-21T03:30:08Z), which
+ * reads /api/v1/inbox, /api/v1/me/replies and /api/v1/credential-requests; `dispatch review`
+ * posts to /api/v1/artifacts/{id}/versions/{number}/reviews, which needs it too. INFRA-764's round
+ * 27 at efea8554 met the first: the reviewer of threads-closed-correct-base-1 messaged the
+ * implementer that way. The routes are the class, never a list (the architect's ruling of
+ * 2026-11-21): every route the label's own Dispatch gives the person scope (routes_table.go's
+ * `routeScopes`) that its agents' client calls (envoy-client's dispatch-http.ts), read by
+ * person-routes.ts's `labelPersonRoutes` out of the sources the run's built-from's commit holds,
+ * rebuilt out of the caller's repositories (`recordedCheckout`, which refuses the run where it
+ * cannot), so a person-scoped route main adds is declared at the label that has it. Each is
+ * `<method> <pattern> 403`, as DISPATCH_DECLARED's are, and no other answer of those routes is
+ * declared. Where those sources are of no shape that reading knows, why, the rebuilt directory
+ * named by its commit. */
+function personDeclared(run: Run): PersonDeclared {
+  const { dir, commit } = recordedCheckout(run.dir, run.repos);
+  try {
+    return labelPersonRoutes(dir).map((route) => `${route} 403`);
+  } catch (error) {
+    return {
+      unknown: (error instanceof Error ? error.message : String(error)).replaceAll(
+        dir,
+        `<commit ${commit}>`
+      ),
+    };
+  }
+}
 
 /** The error answers of Dispatch each scenario provokes on purpose, or that a correct agent meets
  * in it, by the role that meets them, each `<method> <path> <status>` with `{<name>}` for a path
- * segment of any value; every other error answer of the run's Dispatch to an agent but
- * EVERY_AGENT_DECLARED is unhealthy (rule 16). The server's line keeps the status of an answer
+ * segment of any value; every other error answer of the run's Dispatch to an agent but a 403
+ * `personDeclared` declares is unhealthy (rule 16). The server's line keeps the status of an answer
  * and not the code its body carried, so a declaration names a path whose status says which answer
  * it was. Declared: HANDOFF_NOT_FOUND for the newest `review` handoff, for the reviewer of
  * reviewer-text-findings: its world records no review before the reviewer writes its own, and the
@@ -1092,7 +1121,7 @@ const DISPATCH_DECLARED: Readonly<Record<string, Readonly<Record<string, readonl
   "reviewer-text-findings": { reviewer: [noHandoff("review")] },
 };
 
-/** Whether `declared`, EVERY_AGENT_DECLARED or an entry of DISPATCH_DECLARED, is the answer the
+/** Whether `declared`, an entry of DISPATCH_DECLARED or of `personDeclared`, is the answer the
  * server gave `request`. */
 function declares(declared: string, request: DispatchRequest): boolean {
   const [method, pattern = "", status] = declared.split(" ");
@@ -1240,20 +1269,24 @@ function agentBoots(run: Run): { readonly at: number; readonly role: string | un
 }
 
 /** Rule 16: the first request of the run's Dispatch log (DISPATCH_LOG) that the server answered
- * with an error, 4xx or 5xx, which neither EVERY_AGENT_DECLARED nor DISPATCH_DECLARED for the
- * scenario and the role of the agent that made it declares: the agent booted last before the
- * request began, its line's time less its elapsed time (`agentBoots`). rig.sh runs the agents one
- * after another and seeds the world before the first and reads it back after the last with
- * seed.ts, which takes no answer that is not 2xx, so every error answer between two boots is that
- * agent's, its plugins' included. One before the first boot, or after a boot past the roles the
- * run's boot record boots, is no role's, and no declaration takes it. A run with no log is
- * unhealthy: every run health reads has a Dispatch of its own, started with that log, so whether
- * Dispatch refused an agent of the run is unknown. */
+ * with an error, 4xx or 5xx, which neither DISPATCH_DECLARED for the scenario and the role of the
+ * agent that made it nor, for a 403, the run's own label (`personDeclared`) declares: the agent
+ * booted last before the request began, its line's time less its elapsed time (`agentBoots`).
+ * rig.sh runs the agents one after another and seeds the world before the first and reads it back
+ * after the last with seed.ts, which takes no answer that is not 2xx, so every error answer
+ * between two boots is that agent's, its plugins' included. One before the first boot, or after a
+ * boot past the roles the run's boot record boots, is no role's, and no declaration takes it. The
+ * label's person-scoped routes are read at the first 403 of an agent's that DISPATCH_DECLARED
+ * does not declare, and a run where they cannot be read is unhealthy, since whether that 403 was
+ * production's own answer is unknown. A run with no log is unhealthy: every run health reads has
+ * a Dispatch of its own, started with that log, so whether Dispatch refused an agent of the run is
+ * unknown. */
 function dispatchUndeclared(run: Run): string | undefined {
   const file = path.join(run.dir, DISPATCH_LOG);
   if (!existsSync(file))
     return `no Dispatch record: the run has no <run>/${DISPATCH_LOG}, so whether its Dispatch refused a call of its agents is unknown`;
   const boots = agentBoots(run);
+  let person: PersonDeclared | undefined;
   for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
     const attributes = slogAttributes(line);
     if (attributes.get("msg") !== REQUEST_MESSAGE) continue;
@@ -1267,12 +1300,15 @@ function dispatchUndeclared(run: Run): string | undefined {
     const began = Date.parse(request.time) - request.elapsed_ms;
     const boot = boots.findLast((one) => one.at <= began);
     const role = boot?.role;
-    const declared =
-      role === undefined
-        ? []
-        : [EVERY_AGENT_DECLARED, ...(DISPATCH_DECLARED[run.scenario]?.[role] ?? [])];
+    const declared = role === undefined ? [] : (DISPATCH_DECLARED[run.scenario]?.[role] ?? []);
     if (declared.some((answer) => declares(answer, request))) continue;
     const call = `${DISPATCH_LOG}:${index + 1}, ${request.method} ${request.path}`;
+    if (role !== undefined && request.status === 403) {
+      person ??= personDeclared(run);
+      if ("unknown" in person)
+        return `dispatch refusal unknown: ${call} of the ${role}, answered 403, and which routes the ${run.label} label's Dispatch gives the person scope that its agents' client calls cannot be read: ${person.unknown}`;
+      if (person.some((answer) => declares(answer, request))) continue;
+    }
     if (boot?.role === undefined)
       return `dispatch refusal: ${call}, made ${boot === undefined ? "before the run's first agent was booted" : `after boot ${boots.indexOf(boot) + 1} of the run, past the roles its boot record boots`}, answered ${request.status}, which no role's declaration takes`;
     return `dispatch refusal: ${call} of the ${boot.role}, answered ${request.status}, which ${run.scenario} does not declare for that role`;
