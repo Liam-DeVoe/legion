@@ -384,7 +384,7 @@ resolving it once more, finds that it names the set.
 Else a `--change` or `--revisions` argument becomes as many words of that same option as keep each
 under 100,000 bytes, each with a part of the ids, since `jj git push` pushes the union of a
 repeated option; `--named` names one commit.
-Each argument whose words the step wrote gets one `legion jj:` line that says so.
+Each argument that gets the ids, in one word or several, gets one `legion jj:` line that says so.
 No word the step writes passes 100,000 bytes, but for a role's own argument that is that long
 already, so none passes Linux's 131,072-byte limit on one argument.
 Only where the push would then pass Linux's 2,097,152-byte limit on a command's arguments and
@@ -392,7 +392,8 @@ environment together, with each revision argument counted at the larger of its o
 ids of its whole set, does the step decide, before any rewrite other than the fill of an empty
 author that a dry run refused, to set no other author:
 it prints one `legion jj: could not set the author:` line that names the argument, the count and
-the limit, and the push runs as written, but for an argument with a commit that fill moved.
+the limit, and the push runs as written, but where that fill ran, after which each revision
+argument is held to its set as above.
 The step's own `jj metaedit` runs in as many parts as keep each command under that limit, each
 naming its commits by the ids the step followed them to after the part before it.
 Each of the step's reads of a list of commit or change ids runs once for each part of the list
@@ -405,9 +406,9 @@ commit id and the step's identity as committer, and it keeps its author.
 A commit with an empty author whose trailer names a role of the table gets that role's author
 too, and `jj git push` still refuses one with no such trailer.
 The step adds no refusal.
-Where it cannot read the dry run, it prints one line, and the push runs as written, but for a
-revision argument that still names a commit a metaedit of the step rewrote or rebased first, such
-as a commit whose empty author the step filled.
+Where it cannot read the dry run, it prints one line, and the push runs as written, but where a
+metaedit of the step ran first, such as the fill of an empty author, after which each revision
+argument is held to its set as above.
 A push that names a commit that no jj command has imported yet, such as one that a `git commit`
 made, has a dry run that the step cannot read: the step's commands import nothing from git, so the
 dry run cannot find the commit, and the push imports it and sends it as it is.
