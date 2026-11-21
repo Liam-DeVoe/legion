@@ -194,6 +194,11 @@ type bootConfig struct {
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
 	ArchitectureImportAtStart bool
+	// HealthzPublisherReads makes each read /healthz makes of whether this process publishes the
+	// outbox log what it read and the two moments of this process's clock it was read between
+	// (stampedPublisher); only DISPATCH_TEST_HEALTHZ_PUBLISHER_READS=1, under the test hooks, sets
+	// it, for an end-to-end test that judges those reads against the outbox's own lines.
+	HealthzPublisherReads bool
 	// OIDCIssuer and OIDCAudience configure verification of projected
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
@@ -1108,7 +1113,15 @@ func main() {
 			githubreads.CIReconcile:        reconciler != nil,
 		}}
 	}
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
+	// healthzPublisher is what /healthz reads of the outbox: the publisher itself, or, in a test
+	// process under DISPATCH_TEST_HEALTHZ_PUBLISHER_READS=1, the same publisher with each read
+	// logged on this process's clock (stampedPublisher). A nil outboxPublisher, with NATS
+	// disabled, answers false either way.
+	var healthzPublisher publisherState = outboxPublisher
+	if boot.HealthzPublisherReads {
+		healthzPublisher = stampedPublisher{outbox: outboxPublisher, clock: clock.Real(), log: slog.Default()}
+	}
+	handler := dispatchHandler(routesHandler, met, database, natsClient, healthzPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1394,6 +1407,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
+		{"DISPATCH_TEST_HEALTHZ_PUBLISHER_READS", &boot.HealthzPublisherReads},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1933,7 +1947,7 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
+func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher publisherState, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
@@ -2144,21 +2158,22 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 //
 // `outbox_publisher` says whether this process publishes the events outbox now: true while it
 // holds the outbox's publisher hold and the hold's deadline has not passed, false when it stands
-// by, lost the hold, or runs with NATS disabled (publisher nil). One process of a deployment
-// publishes at a time, so a healthy process may well report false, and it never decides `ok`.
+// by, lost the hold, or runs with NATS disabled (publisher nil, or an *outbox.Outbox that is nil).
+// One process of a deployment publishes at a time, so a healthy process may well report false,
+// and it never decides `ok`.
 //
 // `idempotency_keys` is true on every build that judges a write's Idempotency-Key (INFRA-258,
 // api/request_keys.go): the agents' client reads it before it retries a write under its key, since
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher publisherState, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	return healthzHandlerOn(clock.Real(), database, natsClient, publisher, fileStore, commit, announcer, issuers, reads)
 }
 
 // healthzHandlerOn is healthzHandler with the database probe's bound armed on c: clock.Real from
 // healthzHandler, and a test's clocktest.Fake, which ends a probe the database never answers only
 // where the test moves it.
-func healthzHandlerOn(c clock.Clock, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+func healthzHandlerOn(c clock.Clock, database *store.Store, natsClient *bus.Client, publisher publisherState, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2232,9 +2247,50 @@ func healthzHandlerOn(c clock.Clock, database *store.Store, natsClient *bus.Clie
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
-			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
+			OutboxPublisher: publisher != nil && publisher.Publishing(), IdempotencyKeys: true,
 		})
 	}
+}
+
+// publisherState is what /healthz asks of the outbox: whether this process publishes it now. It
+// is the process's *outbox.Outbox, whose Publishing answers false when it is nil (NATS disabled),
+// or stampedPublisher in a test process under DISPATCH_TEST_HEALTHZ_PUBLISHER_READS=1.
+type publisherState interface {
+	Publishing() bool
+}
+
+// publisherReadLine is the line stampedPublisher logs for each read. Rows wait on its words
+// (cmd/dispatch/multiprocess_test.go's publisherReadsOf), so a change to them is a change to
+// those rows too.
+const publisherReadLine = "dispatch: /healthz read the outbox publisher"
+
+// stampedPublisher is a test process's outbox publisher as /healthz reads it under
+// DISPATCH_TEST_HEALTHZ_PUBLISHER_READS=1: each read of Publishing logs, on log, what it answered
+// and two moments of clock, read_from taken before the read and read_by after it, so the instant
+// the answer describes is inside them. clock is the one the outbox's publisher hold is timed on
+// in this process - the real clock, since main gives the outbox no clock of its own - and log is
+// the process's logger, so the two moments are on the clock of the `started`, `stopped` and
+// `stopped_by` the outbox's took, lost and released lines carry, in the same output, and are
+// written as those are, as RFC3339Nano strings.
+//
+// A row judges each read by those moments alone, against those lines' moments: never by where
+// the line falls in the output, since this line is written after the read and the outbox's own
+// lines are written after the stores they report, so either can come out on the other side of
+// the instant it is about. It is the read's own record because the answer /healthz serves is the
+// value this read returned. Unset, the handler reads the publisher itself and logs nothing.
+type stampedPublisher struct {
+	outbox *outbox.Outbox
+	clock  clock.Clock
+	log    *slog.Logger
+}
+
+func (p stampedPublisher) Publishing() bool {
+	from := p.clock.Now()
+	publishing := p.outbox.Publishing()
+	by := p.clock.Now()
+	p.log.Info(publisherReadLine, "publishing", publishing,
+		"read_from", from.Format(time.RFC3339Nano), "read_by", by.Format(time.RFC3339Nano))
+	return publishing
 }
 
 // testHookDuration reads the test-only duration setting name into target, leaving target as it

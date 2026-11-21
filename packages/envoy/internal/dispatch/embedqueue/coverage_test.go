@@ -316,7 +316,7 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 	// after a wake or a row's due time once the database's clock has passed it (moveToArmed),
 	// which holds the coverage loop's ten-minute recheck off: the items are made current by the
 	// pass Run makes at boot, the scans its rows wake, and nothing that comes later.
-	fake := clocktest.Held()
+	fake := clocktest.New(databaseNow(t, database))
 	waits := &scanWaits{clock: fake}
 	go func() {
 		defer close(done)
@@ -1086,7 +1086,7 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 	seedIssue(t, database, "ROLL", "ROLL-2", "Embedded before the roll")
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(foreignIdentity)})
 	mustExec(t, database.Pool, `update embeddings set embedding = null, model = null, embedded_hash = null, next_attempt_at = now() where id = 'ROLL-1'`)
-	fake := clocktest.Held()
+	fake := clocktest.New(databaseNow(t, database))
 	waits := &scanWaits{clock: fake}
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: fake, scanWaiting: waits.report})
 	// The boot pass has dropped ROLL-2's vector, and the queue has embedded ROLL-1 here.
@@ -1112,7 +1112,7 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 func TestTheIdentityRecheckDropsAVectorCommittedAfterAPassThatFoundNone(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "CLEAN", "CLEAN-1", "Embedded here at boot")
-	fake := clocktest.Held()
+	fake := clocktest.New(databaseNow(t, database))
 	waits := &scanWaits{clock: fake}
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: fake, scanWaiting: waits.report})
 	// The boot drain embeds the issue here, so the boot pass's look for rows of another identity
@@ -1144,7 +1144,7 @@ func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 	// embed wakes. ANSR-1's retry is due at its next_attempt_at, a moment of the database's clock:
 	// the row moves the queue's clock to the timer the scan loop armed for it once the database's
 	// clock has passed it (moveToArmed), as the real clock would reach it.
-	fake := clocktest.Held()
+	fake := clocktest.New(databaseNow(t, database))
 	waits := &scanWaits{clock: fake}
 	runQueue(t, Deps{Store: database, Embedder: embedder, Clock: fake, scanWaiting: waits.report})
 	// Two canaries fail: the boot pass's, and the one confirming ANSR-1's own failed embed.
@@ -1512,7 +1512,7 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	// The row moves the queue's clock only to the timers the scan loop reports it armed (the gap
 	// it holds the pass's wake to), which holds the coverage loop's ten-minute recheck off, so the
 	// items current at the end are the pass's and no later one's.
-	fake := clocktest.Held()
+	fake := clocktest.New(databaseNow(t, database))
 	waits := &scanWaits{clock: fake}
 	go func() {
 		defer close(done)

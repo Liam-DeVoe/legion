@@ -8,8 +8,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -416,9 +419,86 @@ const (
 )
 
 // One pass over a seeded corpus of corpusMix's shape takes every text, in batches, and leaves the
-// table one tree for each.
+// table one tree for each, with one round of candidate scans a batch (fillSeededCorpus).
 func TestTheFillStoresOneTreeForEveryTextOfASeededCorpus(t *testing.T) {
 	fillSeededCorpus(t)
+}
+
+// candidateScans counts the statements of a fill pass, on the pool it traces (storetest.Traced),
+// that scan the rows holding stored texts: each read of one kind's head (headOfKind) and each read
+// of a batch's range (wholeBatch, restOfBatch). They are the one cost of the pass that grows with
+// the corpus rather than with the batch, which is what the timing row's projection adds up, so a
+// pass that pays them more than once a batch is a pass that does not get through the corpus.
+type candidateScans struct {
+	heads, ranges atomic.Int64
+}
+
+// headStatements is every statement of headOfKind, for candidateScans to know them by.
+var headStatements = func() map[string]bool {
+	statements := map[string]bool{}
+	for _, statement := range headOfKind {
+		statements[statement] = true
+	}
+	return statements
+}()
+
+func (c *candidateScans) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	switch {
+	case data.SQL == wholeBatch || data.SQL == restOfBatch:
+		c.ranges.Add(1)
+	case headStatements[data.SQL]:
+		c.heads.Add(1)
+	}
+	return ctx
+}
+
+func (c *candidateScans) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// requireOneRoundOfScansABatch fails the test unless the pass that took batches batches made, on
+// the pool scans traced, one round of every kind's head and one read of its range in each batch,
+// and nothing more of either: two candidate scans a batch, which is what the pass's cost over the
+// whole corpus is projected from.
+func requireOneRoundOfScansABatch(t *testing.T, scans *candidateScans, batches int, what string) {
+	t.Helper()
+	heads, ranges := scans.heads.Load(), scans.ranges.Load()
+	t.Logf("%s: %d batches, %d reads of a kind's head and %d of a batch's range", what, batches, heads, ranges)
+	if want := int64(batches * len(headOfKind)); heads != want {
+		t.Errorf("%s took %d batches and read the %d kinds' heads %d times, want %d: one round a batch, which is what chooses the batch's cut",
+			what, batches, len(headOfKind), heads, want)
+	}
+	if want := int64(batches); ranges != want {
+		t.Errorf("%s took %d batches and read a batch's range %d times, want %d: one a batch, which is what takes the batch",
+			what, batches, ranges, want)
+	}
+}
+
+// The fill's candidate scans grow with its batches alone: over a corpus twice the size, at the same
+// batch size, each batch still makes one round of every kind's head and one read of its range, and
+// the batches grow with the texts, so the scans the pass pays grow linearly with the corpus. A scan
+// a batch makes for each text it takes would be a scan per text, a pass over the rows that hold
+// stored texts for every one of them, and the counts here fail it at either size.
+func TestTheFillsCandidateScansGrowWithItsBatchesAlone(t *testing.T) {
+	ctx := context.Background()
+	withFillBatch(t, 4)
+	for _, seeded := range []int{8, 16} {
+		t.Run(fmt.Sprintf("%d texts", seeded), func(t *testing.T) {
+			database, fill := openFill(t)
+			seedBroadcasts(t, database, seeded)
+			scans := &candidateScans{}
+			done, err := fillVersion(ctx, storetest.Traced(t, fill, scans, nil), pmdoc.DisplayTreeVersionNow())
+			if err != nil {
+				t.Fatalf("fill %d texts: %v", seeded, err)
+			}
+			if !done.finished || done.texts != seeded {
+				t.Fatalf("the pass took %d texts in %d batches and finished=%v, want %d and true", done.texts, done.batches, done.finished, seeded)
+			}
+			if most := seeded/fillBatch + 1; done.batches > most {
+				t.Errorf("the pass took the %d texts in %d batches, want at most %d: each batch but the last takes %d",
+					seeded, done.batches, most, fillBatch)
+			}
+			requireOneRoundOfScansABatch(t, scans, done.batches, fmt.Sprintf("the pass over %d texts", seeded))
+		})
+	}
 }
 
 // The pass gets through the whole corpus well inside a day at two workers. What is measured is a
@@ -432,8 +512,10 @@ func TestTheFillStoresOneTreeForEveryTextOfASeededCorpus(t *testing.T) {
 // Seeding a corpus of 5.8 GB to measure the same rate would take an hour of a CI run and a disk
 // to put it on; the rate per byte and per text is what the bound needs, and that is measured
 // here. The rate is the machine's as much as the pass's, so the row runs only in the timing lane
-// (benchtime.Timing), on a quiet machine; TestTheFillStoresOneTreeForEveryTextOfASeededCorpus
-// holds what the pass does in every run.
+// (benchtime.Timing), on a quiet machine. In every run,
+// TestTheFillStoresOneTreeForEveryTextOfASeededCorpus holds what the pass does, and it and
+// TestTheFillsCandidateScansGrowWithItsBatchesAlone count the candidate scans this projection
+// adds up: one round a batch, at two corpus sizes.
 func TestTheFillGetsThroughTheCorpusWellWithinADayAtTwoWorkers(t *testing.T) {
 	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
 	fill := fillSeededCorpus(t)
@@ -469,8 +551,10 @@ func fillSeededCorpus(t *testing.T) seededFill {
 	database, fill := openFill(t)
 	texts, bytes := seedCorpus(t, database)
 
+	scans := &candidateScans{}
+	counted := storetest.Traced(t, fill, scans, nil)
 	started := time.Now()
-	done, err := fillVersion(ctx, fill, pmdoc.DisplayTreeVersionNow())
+	done, err := fillVersion(ctx, counted, pmdoc.DisplayTreeVersionNow())
 	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("fill the seeded corpus: %v", err)
@@ -487,6 +571,9 @@ func fillSeededCorpus(t *testing.T) seededFill {
 		t.Fatalf("the pass took the %d texts in %d batches, want at most %d: each batch but the last takes %d",
 			texts, done.batches, most, fillBatch)
 	}
+	// And each batch pays those two scans once: the count of the work the timing row's rate is
+	// read from, held in every run.
+	requireOneRoundOfScansABatch(t, scans, done.batches, "the pass over the seeded corpus")
 
 	scanned := time.Now()
 	if _, err := headMoments(ctx, fill, time.Now()); err != nil {

@@ -214,6 +214,8 @@ var settings = []setting{
 		Description: "Set to `1` so a test process runs the delivery reconcile's first pass as it starts, rather than at a random moment within its first 5 minutes, for an end-to-end test that must see a pass inside its window. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", Required: "no",
 		Description: "Set to `1` so a test process runs the architecture import's first pass as it starts, rather than at a random moment within its first 5 minutes, for an end-to-end test that must see a pass inside its window. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_HEALTHZ_PUBLISHER_READS", Required: "no",
+		Description: "Set to `1` so each read `/healthz` makes of whether the process publishes the events outbox logs `dispatch: /healthz read the outbox publisher` with the answer and two moments of the process's clock it was read between (`read_from`, `read_by`), for an end-to-end test that judges `outbox_publisher` against the outbox's own lines. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_CI_RECONCILE_INTERVAL", Default: "`5m`", Required: "no",
 		Description: "How often a test process's CI reconcile pass runs, in place of the five minutes a deployment runs it at; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_REDELIVERY_INTERVAL", Default: "`2m`", Required: "no",

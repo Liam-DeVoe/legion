@@ -1566,12 +1566,12 @@ func (w *scanWaits) all() []scanWait {
 // on fake and reached, nil for always, says its moment may be reached: the loop's gaps and due
 // times run on the queue's clock (Deps.Clock), whose timers fire only where the test moves it. A
 // due time that is a row's next_attempt_at is a moment of the database's clock, which a row
-// reaches by waiting for that clock to pass it (databasePassed). The loop arms its timer for the
-// wait it reports less its reading of the clock, which the fake adds to its own reading as it
-// arms it: on a held fake, whose present follows the wall clock, the two readings differ, so the
-// timer is the pending one within armDrift of the moment reported. The move is to that timer, or
-// to the fake's present where that is later: a held fake's present can pass a timer it has not
-// fired, and a move to its present fires it.
+// reaches by waiting for that clock to pass it (databasePassed). fake is one that stands still
+// until the test moves it (clocktest.New): the loop arms its timer for the wait it reports less
+// its reading of the clock, which the fake adds to its own reading as it arms it, and on a fake
+// nothing moves between the two readings those are one moment, so the timer is the pending one at
+// exactly the moment reported. The look and the move are one step of the fake's (SetWhen), so no
+// timer the loop arms in between is fired by a move that never saw it.
 func (w *scanWaits) moveToArmed(fake *clocktest.Fake, reached func(time.Time) bool) {
 	waits := w.all()
 	if len(waits) == 0 {
@@ -1581,26 +1581,10 @@ func (w *scanWaits) moveToArmed(fake *clocktest.Fake, reached func(time.Time) bo
 	if !latest.armed || (reached != nil && !reached(latest.at)) {
 		return
 	}
-	armed := fake.Armed()
-	pending := slices.IndexFunc(armed, func(at time.Time) bool {
-		return at.Sub(latest.at).Abs() <= armDrift
+	fake.SetWhen(func(_ time.Time, armed []time.Time) (time.Time, bool) {
+		return latest.at, slices.ContainsFunc(armed, latest.at.Equal)
 	})
-	if pending < 0 {
-		return
-	}
-	target := armed[pending]
-	if now := fake.Now(); now.After(target) {
-		target = now
-	}
-	fake.Set(target)
 }
-
-// armDrift is how far a timer the scan loop arms on a held fake can stand from the moment the
-// loop reported: the time between the loop's reading of the clock and the fake's, microseconds,
-// or longer when a loaded machine stops the loop's goroutine between the two; and well below the
-// seconds between the loop's timer and any other the queue arms on the fake (retryInterval,
-// identityRecheckInterval).
-const armDrift = time.Second
 
 // databasePassed reports whether the database's clock has passed at.
 func databasePassed(t *testing.T, database *store.Store) func(time.Time) bool {
@@ -1660,7 +1644,7 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	insertCommentWithWindow(t, database.Pool, "IDLE-1", "A comment its indexer windowed")
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	fake := clocktest.Held()
+	fake := clocktest.New(databaseNow(t, database))
 	start := fake.Now()
 	waits := &scanWaits{counter: counter}
 	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity), Clock: fake, scanWaiting: waits.report})
@@ -1691,7 +1675,7 @@ func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	hub.OnConnected(sync.OnceFunc(func() { close(connected) }))
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	fake := clocktest.Held()
+	fake := clocktest.New(databaseNow(t, database))
 	start := fake.Now()
 	waits := &scanWaits{counter: counter}
 	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity), Wake: wake, Clock: fake, scanWaiting: waits.report})

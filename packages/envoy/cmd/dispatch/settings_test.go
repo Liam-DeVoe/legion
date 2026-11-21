@@ -30,6 +30,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -1993,6 +1994,37 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=true: ArchitectureImportAtStart true, want only 1 to set it")
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_HEALTHZ_PUBLISHER_READS": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.HealthzPublisherReads {
+				t.Error("DISPATCH_TEST_HEALTHZ_PUBLISHER_READS unset: HealthzPublisherReads true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HEALTHZ_PUBLISHER_READS": "1"}); !boot.HealthzPublisherReads {
+				t.Error("DISPATCH_TEST_HEALTHZ_PUBLISHER_READS=1: HealthzPublisherReads false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HEALTHZ_PUBLISHER_READS": "true"}); boot.HealthzPublisherReads {
+				t.Error("DISPATCH_TEST_HEALTHZ_PUBLISHER_READS=true: HealthzPublisherReads true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HEALTHZ_PUBLISHER_READS": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+			// Its reader: /healthz answers what the stamped read returned, and the read's line names
+			// that answer and the two moments of the clock it was read between. A process with NATS
+			// disabled has no outbox, so its read answers false.
+			var written bytes.Buffer
+			at := time.Date(2026, time.November, 21, 9, 0, 0, 123456789, time.UTC)
+			publisher := stampedPublisher{clock: clocktest.New(at), log: slog.New(slog.NewTextHandler(&written, nil))}
+			response := httptest.NewRecorder()
+			healthzHandlerOn(clocktest.New(at), nil, nil, publisher, nil, "", nil, issuers{}, nil).
+				ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			var health struct {
+				OutboxPublisher *bool `json:"outbox_publisher"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil || health.OutboxPublisher == nil || *health.OutboxPublisher {
+				t.Errorf("/healthz on a stamped publisher of no outbox answered %s (%v), want outbox_publisher false", response.Body.String(), err)
+			}
+			stamp := at.Format(time.RFC3339Nano)
+			if want := fmt.Sprintf("msg=%q publishing=false read_from=%s read_by=%s", publisherReadLine, stamp, stamp); !strings.Contains(written.String(), want) {
+				t.Errorf("the stamped read logged %q, want a line holding %q", written.String(), want)
+			}
 		},
 		"DISPATCH_TEST_CI_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CIReconcileInterval != 0 {
