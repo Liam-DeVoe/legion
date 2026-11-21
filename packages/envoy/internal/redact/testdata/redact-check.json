@@ -365,8 +365,8 @@
         "test": "print-cipher.APIError"
       },
       {
-        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.checkContext",
-        "test": "print-daemon.checkContext"
+        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.githubText",
+        "test": "print-daemon.githubText"
       },
       {
         "holder": "github.com/sjawhar/legion/daemon/internal/daemon.requiredCheck",
@@ -391,6 +391,14 @@
       {
         "holder": "github.com/sjawhar/legion/daemon/internal/daemon.githubBranch",
         "test": "print-daemon.githubBranch"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.pullRequestBase",
+        "test": "print-daemon.pullRequestBase"
+      },
+      {
+        "holder": "github.com/sjawhar/legion/daemon/internal/daemon.githubPullRequest",
+        "test": "print-daemon.githubPullRequest"
       }
     ],
     "reflection": [
@@ -2440,8 +2448,8 @@
       "capture": "redact.answer-embedded/value",
       "mutation": {
         "file": "packages/envoy/internal/redact/answer.go",
-        "preimage": "f.IsExported() || f.Anonymous",
-        "replacement": "f.IsExported()"
+        "preimage": "return f.IsExported() || f.Anonymous }",
+        "replacement": "return f.IsExported() }"
       }
     },
     {
@@ -2454,8 +2462,8 @@
       "capture": "redact.answer-interface",
       "mutation": {
         "file": "packages/envoy/internal/redact/answer.go",
-        "preimage": "\tcase reflect.Interface:\n\t\treturn true\n",
-        "replacement": ""
+        "preimage": "\tcase reflect.Interface:\n\t\treturn true\n\tcase reflect.Pointer,",
+        "replacement": "\tcase reflect.Pointer,"
       }
     },
     {
@@ -5914,21 +5922,49 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestTheBaseRulesLineNamesGitHubsContextsAsTheRuleReadsThem",
-      "production": "daemon workflowRuntime.readBaseRules: the required contexts GitHub names are logged as the rule reads them (checkContext.Said), and kept as they came for R0",
+      "production": "daemon workflowRuntime.readBaseRules: the required contexts GitHub names are logged as the rule reads them (githubText.Said), and kept as they came for R0",
       "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).readBaseRules",
       "capture": "daemon.answer-words/base-rules",
       "mutation": {
         "file": "packages/daemon/internal/daemon/base_rules.go",
         "preimage": "\"required\", said, \"strict\"",
-        "replacement": "\"required\", rules.Required, \"strict\""
+        "replacement": "\"required\", rules.Required, \"said\", len(said), \"strict\""
       }
     },
     {
-      "id": "print-daemon.checkContext",
+      "id": "daemon-answer-words-base-answered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheBaseRulesReadNamesGitHubsBaseAsTheRuleReadsIt/answered",
+      "production": "daemon workflowRuntime.readBaseRules and unreadRules: GitHub's base branch is logged, and named in the Unread of a read GitHub refused, as the rule reads it (shownBase, githubText.Said), and read as it came",
+      "function": "github.com/sjawhar/legion/daemon/internal/daemon.shownBase",
+      "capture": "daemon.answer-words/base-answered",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/base_rules.go",
+        "preimage": "return base.Said.String()",
+        "replacement": "return base.Name"
+      }
+    },
+    {
+      "id": "daemon-answer-words-base-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestTheBaseRulesReadNamesGitHubsBaseAsTheRuleReadsIt/unanswered",
+      "production": "daemon unreadRules: a rules read that got no answer is named by its route, GitHub's base as the rule reads it, and its cause, never by net/http's error, whose URL holds the base as it came",
+      "function": "github.com/sjawhar/legion/daemon/internal/daemon.unreadRules",
+      "capture": "daemon.answer-words/base-unanswered",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/base_rules.go",
+        "preimage": "return record.BaseRules{Unread: fmt.Sprintf(\"%s got no answer: %v\", read, unanswered.Err)}",
+        "replacement": "return record.BaseRules{Unread: err.Error()}"
+      }
+    },
+    {
+      "id": "print-daemon.githubText",
       "requirement": "r2-held",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.checkContext",
-      "production": "github.com/sjawhar/legion/daemon/internal/daemon.checkContext: every printer at every placement (oauth2calltest.PrintTest)"
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.githubText",
+      "production": "github.com/sjawhar/legion/daemon/internal/daemon.githubText: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
       "id": "print-daemon.requiredCheck",
@@ -5971,6 +6007,20 @@
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.githubBranch",
       "production": "github.com/sjawhar/legion/daemon/internal/daemon.githubBranch: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-daemon.pullRequestBase",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.pullRequestBase",
+      "production": "github.com/sjawhar/legion/daemon/internal/daemon.pullRequestBase: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-daemon.githubPullRequest",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/daemon.githubPullRequest",
+      "production": "github.com/sjawhar/legion/daemon/internal/daemon.githubPullRequest: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
       "id": "daemon-answer-words-merge-queue-merged",
@@ -8462,6 +8512,16 @@
       "site": "daemon readBaseRules: the required status check contexts GitHub names, logged as they came",
       "source": "the class search of round 5's deep review",
       "guard": "daemon-answer-words-base-rules"
+    },
+    {
+      "site": "daemon readBaseRules: GitHub's base branch, logged as it came and named in Unread through GitHub's answer's path",
+      "source": "the class search of round 5's deep review",
+      "guard": "daemon-answer-words-base-answered"
+    },
+    {
+      "site": "daemon readBaseRules: GitHub's base branch, named in Unread through net/http's error for a read that got no answer",
+      "source": "the class search of round 5's deep review",
+      "guard": "daemon-answer-words-base-unanswered"
     },
     {
       "site": "agent-secrets --github-token: the accounts of a release of other than one installation, printed as the broker wrote them",
