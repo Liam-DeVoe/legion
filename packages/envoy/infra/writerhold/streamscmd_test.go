@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -88,28 +89,79 @@ func (h *heldStack) streamReplicas(stream string) int {
 	return s.CachedInfo().Config.Replicas
 }
 
-// setReplicas updates stream to replicas copies as the operator under a hold of no steps.
+// setReplicas updates stream to replicas copies as the operator under a hold of no steps: once
+// every protected stream's group has a leader, through updateReplicas, which sends the update again
+// until it is answered and then reads the stream back at that count.
 func (h *heldStack) setReplicas(stream string, replicas int) {
 	h.t.Helper()
 	ctx := context.Background()
+	h.awaitStreamLeaders()
 	id := h.s.Prepare(h.t, holdrecord.WorkflowStreamsUpdate)
 	h.s.HoldWithoutTheSteps(h.t, id)
 	nc, err := h.s.ConnectOperator(ctx)
 	require.NoError(h.t, err)
 	js, err := jetstream.New(nc)
 	require.NoError(h.t, err)
-	s, err := js.Stream(ctx, stream)
-	require.NoError(h.t, err)
-	config := s.CachedInfo().Config
-	config.Replicas = replicas
-	_, err = js.UpdateStream(ctx, config)
-	require.NoError(h.t, err, "set %s to %d copies", stream, replicas)
+	within, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	require.NoError(h.t, updateReplicas(within, js, stream, replicas, replicasUpdateTry), "set %s to %d copies", stream, replicas)
 	nc.Close()
 	_, err = h.s.Records.Admit(ctx, id, holdrecord.Request{Command: CommandStreamsUpdate}, nil)
 	require.NoError(h.t, err)
 	require.NoError(h.t, h.s.Records.AppendDone(ctx, id, CommandStreamsUpdate, nil))
 	h.s.Release(h.t, id)
 	h.awaitStreamLeaders()
+}
+
+// replicasUpdateTry bounds one read or update of a stream in updateReplicas: a clustered stream's
+// update is answered by its group's leader alone (nats-server's processClusterUpdateStream), so a
+// request sent while the group elects is never answered and is sent again.
+const replicasUpdateTry = 10 * time.Second
+
+// updateReplicas sets stream's copies to replicas on js, each read and each update bounded to try
+// and sent again until answered, within ctx, then reads the stream until its configuration holds
+// replicas copies. An update the server applied whose answer was lost is applied again, which
+// answers the same.
+func updateReplicas(ctx context.Context, js jetstream.JetStream, stream string, replicas int, try time.Duration) error {
+	once := func(call func(context.Context) error) error {
+		for {
+			attempt, cancel := context.WithTimeout(ctx, try)
+			err := call(attempt)
+			cancel()
+			if err == nil {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return errors.Join(err, ctx.Err())
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}
+	var config jetstream.StreamConfig
+	if err := once(func(ctx context.Context) error {
+		s, err := js.Stream(ctx, stream)
+		if err == nil {
+			config = s.CachedInfo().Config
+		}
+		return err
+	}); err != nil {
+		return fmt.Errorf("read %s: %w", stream, err)
+	}
+	config.Replicas = replicas
+	if err := once(func(ctx context.Context) error { _, err := js.UpdateStream(ctx, config); return err }); err != nil {
+		return fmt.Errorf("update %s: %w", stream, err)
+	}
+	return once(func(ctx context.Context) error {
+		s, err := js.Stream(ctx, stream)
+		if err != nil {
+			return err
+		}
+		if got := s.CachedInfo().Config.Replicas; got != replicas {
+			return fmt.Errorf("%s holds %d copies, not %d", stream, got, replicas)
+		}
+		return nil
+	})
 }
 
 // requireStreamAbsent reads stream as the operator and requires the server's `stream not found`.
