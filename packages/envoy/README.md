@@ -139,6 +139,7 @@ the repository root show how CI runs each.
 `internal/dispatch/pmdoc` tests compare with the browser editor through bun scripts in
 `pmdoc/gen`: they need `bun` and a `bun install` at the repository root. Without `bun` they
 skip, except where `CI` is set, where they fail.
+
 ## The edge listener
 
 `ENVOY_EDGE_PROJECTS` makes a listener the edge listener, the one an outside person's agents reach Envoy through.

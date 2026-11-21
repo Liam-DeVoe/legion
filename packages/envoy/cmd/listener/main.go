@@ -94,10 +94,6 @@ type listenerDeps struct {
 	// listener (sender_limit.go). nil is no limit, which is what every test that builds
 	// listenerDeps itself runs with.
 	senderLimit *senderLimit
-	// dispatchPrincipal is ENVOY_DISPATCH_PRINCIPAL, Dispatch's own verified principal
-	// (resolveListenerDispatchPrincipal): the one caller whose send may carry a role mark
-	// (sendHandler). Empty names nobody, and every send carrying one is refused.
-	dispatchPrincipal string
 	// relaySockets is an edge listener's relay sockets (relay_socket.go), nil on every other
 	// listener, which answers the socket's path 404 (relaySocketRoute).
 	relaySockets *relaySockets
@@ -105,6 +101,10 @@ type listenerDeps struct {
 	// resolve to (the broker's GET /v1/project-repositories, edge_repositories.go), nil on every
 	// listener but an edge one.
 	repositories *edgeRepositories
+	// dispatchPrincipal is ENVOY_DISPATCH_PRINCIPAL, Dispatch's own verified principal
+	// (resolveListenerDispatchPrincipal): the one caller whose send may carry a role mark
+	// (sendHandler). Empty names nobody, and every send carrying one is refused.
+	dispatchPrincipal string
 }
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
@@ -1610,9 +1610,8 @@ func main() {
 		os.Exit(1)
 	}
 	// An edge listener serves its sessions' relay sockets on a NATS connection of the sockets'
-	// own, with the main client's options (edgeGrant.connectOptions) but for its name, whose slow
-	// consumers stay off the main connection's last error (confirmPublished reads it); every other
-	// listener serves none.
+	// own, as the main client's but for its name, whose slow consumers stay off the main
+	// connection's last error (confirmPublished reads it); every other listener serves none.
 	var sockets *relaySockets
 	if edge != nil {
 		socketsClient, err := bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection())...)
@@ -1677,9 +1676,9 @@ func main() {
 
 		sendsToUnresponsive: sendsToUnresponsive,
 		senderLimit:         senderMessageLimit,
-		dispatchPrincipal:   dispatchPrincipal,
 		relaySockets:        sockets,
 		repositories:        repositories,
+		dispatchPrincipal:   dispatchPrincipal,
 	}
 	openV1Routes(v1Gate, ready, &v1Deps, cfg.MachineID, logger, listeningAt)
 

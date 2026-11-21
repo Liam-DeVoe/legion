@@ -158,9 +158,9 @@ type rigConfig struct {
 	lease          time.Duration
 	maxConns       int
 	minters        map[string]requests.Minter
-	personPods     []personPod
 	accessLifetime time.Duration
 	projectAccess  projectaccess.Access
+	personPods     []personPod
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -182,6 +182,19 @@ func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
 }
 
+// WithAccessLifetime makes every access token the broker issues live d, a machine login's and an
+// exchanged one's alike, as BROKER_ACCESS_TOKEN_SECONDS sets it; fifteen minutes by default.
+func WithAccessLifetime(d time.Duration) Option {
+	return func(c *rigConfig) { c.accessLifetime = d }
+}
+
+// WithProjectAccess holds every token exchange to what access answers about the projects its
+// token names, as BROKER_PROJECT_ACCESS_URL wires the broker to Dispatch; by default the broker
+// checks no project, and so refuses every trade that names one.
+func WithProjectAccess(access projectaccess.Access) Option {
+	return func(c *rigConfig) { c.projectAccess = access }
+}
+
 // personPod is one WithPersonPod: an account that BROKER_POD_OPERATORS maps to person, and the
 // service the account logs in as.
 type personPod struct {
@@ -196,19 +209,6 @@ type personPod struct {
 // names, so give an account other than WorkerAccount and a service other than legion-daemon.
 func WithPersonPod(account, service, person string) Option {
 	return func(c *rigConfig) { c.personPods = append(c.personPods, personPod{account, service, person}) }
-}
-
-// WithAccessLifetime makes every access token the broker issues live d, a machine login's and an
-// exchanged one's alike, as BROKER_ACCESS_TOKEN_SECONDS sets it; fifteen minutes by default.
-func WithAccessLifetime(d time.Duration) Option {
-	return func(c *rigConfig) { c.accessLifetime = d }
-}
-
-// WithProjectAccess holds every token exchange to what access answers about the projects its
-// token names, as BROKER_PROJECT_ACCESS_URL wires the broker to Dispatch; by default the broker
-// checks no project, and so refuses every trade that names one.
-func WithProjectAccess(access projectaccess.Access) Option {
-	return func(c *rigConfig) { c.projectAccess = access }
 }
 
 // NewRig holds two secrets the person ada@example.com owns: TEST_SECRET, human-tier, which a
