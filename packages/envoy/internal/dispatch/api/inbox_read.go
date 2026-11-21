@@ -514,8 +514,12 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // erase (`envoy-dispatch erase`, R1 and R5 of this change), which deletes a node's
 // tuples and its node row, and takes this same order to do it: the lock of every owner it writes
 // under, then the node row, then the rest of the rows it locks before it reads (its projection
-// rows), and after them the keyword fill's cursor row, which holds the fill back until the erase
-// ends (grapherase's lockInStoreOrder, textversions.HoldFillBack). A writer owning no
+// rows) (grapherase's lockInStoreOrder). Before its first owner lock it takes two rows no writer
+// holding an owner lock takes, each of which a background pass holds for a whole transaction of
+// its own: the term statistics totals row of each project of its owners
+// (api.TakeErasedTermTotalsTx), and the keyword fill's cursor row, which holds the fill back until
+// the erase ends (textversions.HoldFillBack), so it waits for such a pass holding no owner lock,
+// which no writer of the node's issue or document then waits on. A writer owning no
 // issue and no document - an operator's own write, a session-addressed event - takes no owner
 // lock at all, and invariant 1 says nothing about it. graphstore's
 // TestEveryStoreWriteTakesOneLockOrder reads this list and fails if these five are not in it.

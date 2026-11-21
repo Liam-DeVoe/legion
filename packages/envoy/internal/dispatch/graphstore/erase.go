@@ -35,7 +35,9 @@ const EitherSideOfNode = `((from_kind = $1 and from_id = $2) or (to_kind = $1 an
 // then names the new tuple's row as a blocker or lists it, and runs the erase anew.
 //
 // The caller holds the node's row already, taken `for update` after every owner row it writes
-// under and before anything else (grapherase's lockInStoreOrder), so these deletes take no row
+// under and before any other store row (grapherase's lockInStoreOrder, which before its owner
+// rows takes only the term statistics totals rows and the keyword fill's cursor row, rows no
+// writer of the store holding an owner row takes), so these deletes take no row
 // lock the store's lock order does not already place. A tuple is appended once and never written
 // again, so no other writer's write meets a delete of one.
 func EraseNode(ctx context.Context, tx pgx.Tx, kind, id string, seqs []int64) error {

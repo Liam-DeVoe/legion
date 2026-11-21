@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -128,11 +130,11 @@ from search_term_totals where project_key = $1 for update`
 // A row whose owner is gone names no project. No pass can tell whose counts held that item, so
 // searchTermQueueSweep drops the row, and the counts it was to correct stay as they are: a
 // project that holds a snapshot is counted by step passes alone (searchTermTotalsMode), and
-// nothing in this build but the erase (ForgetErasedTermsTx) clears a snapshot, so no full build
-// comes to repair them. Clearing the project's snapshot is what asks for one - `update
-// search_term_totals set snapshot = null where project_key = $1`, after which the next pass counts
-// every item of that project again. No production code path deletes an issue or an artifact, so
-// no row reaches this sweep today.
+// nothing in this build but the erase (TakeErasedTermTotalsTx, ForgetErasedTermsTx) clears a
+// snapshot, so no full build comes to repair them. Clearing the project's snapshot is what asks
+// for one - `update search_term_totals set snapshot = null where project_key = $1`, after which the
+// next pass counts every item of that project again. No production code path deletes an issue or
+// an artifact, so no row reaches this sweep today.
 const searchTermQueueProjectSQL = `coalesce(
            (select i.project_key from issues i where i.key = q.issue_key),
            (select a.project_key from artifacts a where a.id = q.artifact_id and (q.kind <> 'document' or a.kind = 'doc')))`
@@ -317,7 +319,7 @@ type searchTermStatsDB interface {
 // where a pass of this build wrote the totals row last, and counts every item of the project
 // again where one did not: a project with no totals row (one created since the last pass), one no
 // pass of this build has counted, one whose refreshed_at another writer moved, and one whose
-// snapshot an erase cleared (ForgetErasedTermsTx).
+// snapshot an erase cleared (TakeErasedTermTotalsTx, ForgetErasedTermsTx).
 func refreshSearchTermStats(ctx context.Context, db searchTermStatsDB, project string) (searchTermRefresh, error) {
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -351,10 +353,10 @@ func refreshSearchTermStats(ctx context.Context, db searchTermStatsDB, project s
 
 // RefreshSearchTermStats is refreshSearchTermStats, one project of a refresh pass in a
 // transaction of its own on db, for the erase (grapherase.Erase): it runs it after its commit and
-// outside its locks for each project ForgetErasedTermsTx answered. That function cleared each
-// one's snapshot, so the pass counts the project in full from its items as the erase left them,
-// unless a pass of the project counted it so since the commit, in which case this one applies
-// what was queued after that pass.
+// outside its locks for each project ForgetErasedTermsTx answered. The erase cleared each one's
+// snapshot (TakeErasedTermTotalsTx, ForgetErasedTermsTx), so the pass counts the project in full
+// from its items as the erase left them, unless a pass of the project counted it so since the
+// commit, in which case this one applies what was queued after that pass.
 func RefreshSearchTermStats(ctx context.Context, db searchTermStatsDB, project string) error {
 	_, err := refreshSearchTermStats(ctx, db, project)
 	return err
@@ -397,12 +399,22 @@ var searchTermErasedProjects = `select distinct project from (
 
 // searchTermTotalsForget makes the project's totals row exist and clears its snapshot, which has
 // the next pass of the project count it in full (searchTermTotalsMode), and takes the row's lock.
-// A pass of the project already running holds that lock, so the erase waits for it here, and its
-// statements after this one read what that pass committed; a pass that begins later waits for
-// the erase's commit. The insert waits as well for a first pass whose own claim of the row has not
-// committed yet.
+// A pass of the project already running holds that lock for its whole transaction, so the erase
+// waits for it here, and its statements after this one read what that pass committed; a pass that
+// begins later waits for the erase's commit. The insert waits as well for a first pass whose own
+// claim of the row has not committed yet. The erase runs it before its owner locks for the
+// projects it takes then (TakeErasedTermTotalsTx), where that wait holds no writer, and under them
+// for any other project, bounded (ForgetErasedTermsTx).
 const searchTermTotalsForget = `insert into search_term_totals (project_key, items, refreshed_at) values ($1, 0, now())
 on conflict (project_key) do update set snapshot = null`
+
+// erasedTermTotalsWait bounds how long ForgetErasedTermsTx waits, under the erase's owner locks,
+// for the totals row of a project the erase did not take before them (TakeErasedTermTotalsTx). A
+// refresh pass holds that row for its whole transaction, which production's logs of 14 days
+// (2,015 passes) show reaching 18.5 s for one project, and every writer of the erased node's issue
+// or document waits on the erase for as long as the erase waits there. 100 ms takes a row no pass
+// holds, and refuses the erase rather than hold those writers for a pass.
+const erasedTermTotalsWait = 100 * time.Millisecond
 
 // searchTermStatsForget deletes from the project's statistics every lexeme an erase took out of an
 // item: each lexeme of an old vector a queue row of an erased item carries
@@ -448,7 +460,8 @@ var searchTermQueueErasedDrop = `delete from search_term_queue q where ` +
 // ForgetErasedTermsTx takes out of the term statistics, inside tx, the lexemes the erase
 // (`envoy-dispatch erase`, grapherase.Erase) took out of the items it deleted and rewrote, and
 // answers the projects it took them from, in key order, with how many queue rows it deleted.
-// documents are the documents the erase deleted versions of.
+// documents are the documents the erase deleted versions of, and taken the projects whose totals
+// row the erase took before its owner locks (TakeErasedTermTotalsTx).
 //
 // It runs under the erase's owner locks, for a need of the erase's commit: search_term_stats
 // holds lexemes, and a lexeme of the erased text that stood in it once the erase committed would
@@ -461,8 +474,11 @@ var searchTermQueueErasedDrop = `delete from search_term_queue q where ` +
 // statement here is bounded by the erase's own rows instead:
 //
 //   - the projects are those the queue rows of the erased items name (searchTermErasedProjects);
-//   - each project's totals row is claimed, locked and its snapshot cleared, in key order
-//     (searchTermTotalsForget), so the project's next pass counts it in full;
+//   - each project's totals row is locked and its snapshot cleared, in key order
+//     (searchTermTotalsForget), so the project's next pass counts it in full: the erase took and
+//     cleared the rows of the projects of taken before its owner locks, so none of those waits
+//     here, and it takes any other here, waiting erasedTermTotalsWait at most
+//     (forgetUntakenTermTotals);
 //   - from each project's statistics go the lexemes the erased items no longer hold
 //     (searchTermStatsForget);
 //   - and every queue row of the erased items goes (searchTermQueueErasedDrop): any of them can
@@ -478,7 +494,15 @@ var searchTermQueueErasedDrop = `delete from search_term_queue q where ` +
 // the commit that fails leaves them so until the project's next refresh pass, which the cleared
 // snapshot makes a full one. No lexeme the erase removed comes back either way: every count after
 // the commit reads the items as the erase left them.
-func ForgetErasedTermsTx(ctx context.Context, tx pgx.Tx, documents []string) ([]string, int64, error) {
+//
+// No project here is expected outside taken: every item the erase changes stands under an owner
+// it holds, and taken holds the projects of those owners and of their documents (grapherase's
+// ownerProjects). One would be an item whose project is not its owner's, such as a queue row of an
+// erased item written under another owner. A refresh pass of that project running would hold its
+// totals row, and so the erase and every writer of the node's issue or document, for as long as
+// the pass takes; past erasedTermTotalsWait, 100 ms, the erase is refused instead, with an error
+// that names the project, and its transaction rolls back having removed nothing.
+func ForgetErasedTermsTx(ctx context.Context, tx pgx.Tx, documents, taken []string) ([]string, int64, error) {
 	rows, err := tx.Query(ctx, searchTermErasedProjects, documents)
 	if err != nil {
 		return nil, 0, err
@@ -488,8 +512,10 @@ func ForgetErasedTermsTx(ctx context.Context, tx pgx.Tx, documents []string) ([]
 		return nil, 0, err
 	}
 	for _, project := range projects {
-		if _, err := tx.Exec(ctx, searchTermTotalsForget, project); err != nil {
-			return nil, 0, err
+		if !slices.Contains(taken, project) {
+			if err := forgetUntakenTermTotals(ctx, tx, project); err != nil {
+				return nil, 0, err
+			}
 		}
 		if _, err := tx.Exec(ctx, searchTermStatsForget, project, documents); err != nil {
 			return nil, 0, err
@@ -500,6 +526,58 @@ func ForgetErasedTermsTx(ctx context.Context, tx pgx.Tx, documents []string) ([]
 		return nil, 0, err
 	}
 	return projects, tag.RowsAffected(), nil
+}
+
+// TakeErasedTermTotalsTx takes, inside tx, the totals row of each of projects in the order given,
+// which is key order, and clears its snapshot (searchTermTotalsForget), as ForgetErasedTermsTx
+// does for each project it names. The erase (grapherase's lockInStoreOrder) calls it with the
+// projects of the owners it writes under before it takes any owner lock, and passes the same
+// projects to ForgetErasedTermsTx, which then waits on none of those rows. A refresh pass of one of
+// those projects holds the row for its whole transaction, so the erase waits for it here, holding
+// no owner lock and so no writer of the node's issue or document, rather than under its owner
+// locks, where every one of those writers would wait as long.
+//
+// Taking a totals row before an owner lock closes no cycle, because no writer that holds an owner
+// lock takes a totals row: their other takers are refreshSearchTermStats's passes - the leased
+// pass, the related-item check's ensureSearchTermStats and the erase's own count after its commit
+// - which take no owner lock and wait on nothing an owner's writer holds. A project taken here
+// whose items the erase then changes none of keeps its cleared snapshot, which costs it a full
+// count at its next pass.
+func TakeErasedTermTotalsTx(ctx context.Context, tx pgx.Tx, projects []string) error {
+	for _, project := range projects {
+		if _, err := tx.Exec(ctx, searchTermTotalsForget, project); err != nil {
+			return fmt.Errorf("take the term statistics totals of project %s: %w", project, err)
+		}
+	}
+	return nil
+}
+
+// forgetUntakenTermTotals runs searchTermTotalsForget for a project the erase did not take before
+// its owner locks, waiting erasedTermTotalsWait at most for the row, as docs' lockSettlementCursor
+// bounds its wait: lock_timeout is set to the bound with set_config's local flag for that one
+// statement, and set back to what it was once the row is taken. A row still held when the bound
+// runs out fails the statement (lock_not_available, 55P03), which aborts tx; the erase then rolls
+// back, and the error says so.
+func forgetUntakenTermTotals(ctx context.Context, tx pgx.Tx, project string) error {
+	var previous string
+	wait := &pgx.Batch{}
+	wait.Queue(`select current_setting('lock_timeout')`).QueryRow(func(row pgx.Row) error {
+		return row.Scan(&previous)
+	})
+	wait.Queue(`select set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", erasedTermTotalsWait.Milliseconds()))
+	wait.Queue(searchTermTotalsForget, project)
+	err := tx.SendBatch(ctx, wait).Close()
+	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+		return fmt.Errorf("the erase changed items of project %s, whose term statistics a running refresh pass held past %s; "+
+			"nothing was removed, and the erase can be run again: %w", project, erasedTermTotalsWait, err)
+	}
+	if err != nil {
+		return fmt.Errorf("take the term statistics totals of project %s: %w", project, err)
+	}
+	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, previous); err != nil {
+		return fmt.Errorf("restore lock_timeout after the term statistics totals of project %s: %w", project, err)
+	}
+	return nil
 }
 
 // RefreshEverySearchTermStats is one pass of RunSearchTermStatsRefresh: every project, each in its

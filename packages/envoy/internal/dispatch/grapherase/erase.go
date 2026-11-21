@@ -189,10 +189,11 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 // keyword versions have gone (restateKeywordVersions), the embedding rows of what it leaves
 // (restateEmbeddings), and the live state of every document whose history it replaces - takes
 // out of the term statistics of every project whose items moved the lexemes the run removed
-// (api.ForgetErasedTermsTx, which reads no item but the ones the run changed: counting those
-// projects again is recountTermStats's, after the commit), and deletes the display trees of the
-// texts that went. Last go the tuples the listing named and the node (graphstore.EraseNode),
-// which refuses the run where a tuple landed since, and the record of what the run did goes in.
+// (api.ForgetErasedTermsTx, which reads no item but the ones the run changed, and waits on no
+// totals row the run took before its owner locks: counting those projects again is
+// recountTermStats's, after the commit), and deletes the display trees of the texts that went.
+// Last go the tuples the listing named and the node (graphstore.EraseNode), which refuses the run
+// where a tuple landed since, and the record of what the run did goes in.
 // Every row it writes is one the read under its locks listed (erasedRead).
 func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	sums, err := e.treeSums(ctx, tx, read)
@@ -276,7 +277,7 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	if err := e.replaceLiveTexts(ctx, tx); err != nil {
 		return err
 	}
-	recounted, queued, err := api.ForgetErasedTermsTx(ctx, tx, read.artifacts)
+	recounted, queued, err := api.ForgetErasedTermsTx(ctx, tx, read.artifacts, read.termTotals)
 	if err != nil {
 		return fmt.Errorf("take the erased words out of the term statistics: %w", err)
 	}
