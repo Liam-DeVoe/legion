@@ -36,9 +36,7 @@
   },
   "capabilities": [],
   "repositories": {
-    "owners": [],
-    "mapped": [],
-    "refused": [],
+    "live": [],
     "withoutWebhookApp": [],
     "caches": []
   },

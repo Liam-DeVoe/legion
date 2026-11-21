@@ -207,7 +207,7 @@ const legionPacedWake = {
  * enum below is strict: a cause this list does not name refuses the whole state body at every
  * plugin that reads it.
  *
- * `never_reconnected` is the eighth word, which contract 203 added: the shim of a claim a daemon
+ * `never_reconnected` is the eighth word, which contract 207 added: the shim of a claim a daemon
  * start restored never said hello again, and the relaunches that followed ran out. The `held`
  * and `worker-died` notices carry it raw, as the claim holds it, whatever plugin reads them
  * (the workflow's `noticeFailure`); only the state body narrows it (below). Beside
@@ -226,9 +226,9 @@ export const LEGION_FAILURE_CAUSES = [
 
 /** The one word the site that failed a claim chose (`supervise.FailureCause`). A claim view
  * carries it twice over: in `failure.cause`, why the claim failed, and in `pendingCause`, what
- * failed the process whose relaunch is in flight. A caller below contract 203, the contract its
+ * failed the process whose relaunch is in flight. A caller below contract 207, the contract its
  * plugin states, else the lowest its pod's claims record, is served `never_registered` in both
- * where the daemon holds `never_reconnected`, the word contract 203 added (the daemon's value
+ * where the daemon holds `never_reconnected`, the word contract 207 added (the daemon's value
  * strip `withoutNeverReconnected` in `internal/api/shaping.go`), since its enum names no such word
  * and would refuse the whole body for it. */
 const legionFailureCause = z.enum(LEGION_FAILURE_CAUSES);
@@ -1119,7 +1119,8 @@ const legionSettings = z.looseObject({
  * Sandbox, its `state` (`failing` with the kubelet's `reason`, `refused` with its Service's),
  * whether its pod is Ready behind its own Service and its address then, from its last health read
  * the default branch's `head`, `lastFetchAt` and the `bytes` it serves or the read's
- * `healthError`, and, for a repository the mapping no longer names, `retainedUntil` (contract 32). */
+ * `healthError`, and, for a repository no live record names any more, `retainedUntil` (contract
+ * 32). */
 const legionCacheView = z.object({
   repo: nonEmptyString.optional(),
   sandbox: nonEmptyString.optional(),
@@ -1142,57 +1143,54 @@ const legionAppInstallations = z.object({
   review: z.boolean().optional(),
 });
 
-/** `api.RepositoriesView` — every repository the daemon works in, as it serves them (contract 152):
- * the owner accounts of the repositories Dispatch maps to the project, each repository it serves (as GitHub names it,
- * `default` the project's default in Dispatch, `apps` each role App's installation on it, `cache`
- * its repository cache under the Kubernetes runtime), each repository it leaves out with
- * `reason`, a role App not installed on it or an installation it could not read, and `apps`,
- * what GitHub answered of each App on it, each served repository Dispatch's GitHub App is not
- * known to be installed on (`withoutWebhookApp`, with
- * `reason`: not installed, the check failed, or Dispatch does not answer the check; served all
- * the same, contract 43), and the `caches` of repositories the daemon no longer serves.
+/** `api.LiveRepositoryView` — one repository a live record names (contract 202): `repo`, the name
+ * the records keep it under; `servedAs`, the other name of its configured pair
+ * (`repository_renames`) where the rename rule serves it under that one; and, from what GitHub last
+ * answered for the name it is served under, `apps`, each role App's installation on it once GitHub
+ * answered both reads; `readError`, why GitHub's last read did not name it (a refusal such as a
+ * 404, or a read that did not answer); and `cache`, its repository cache under the Kubernetes
+ * runtime. The daemon writes `repo` on every entry and each other key only once it holds
+ * something. What Dispatch answered of its webhook App is in the block's `withoutWebhookApp`
+ * alone. No plugin code reads an entry (`LEGION_ANSWER_READS`), so every key is optional. */
+const legionLiveRepository = z.object({
+  repo: nonEmptyString.optional(),
+  servedAs: nonEmptyString.optional(),
+  apps: legionAppInstallations.optional(),
+  readError: nonEmptyString.optional(),
+  cache: legionCacheView.optional(),
+});
+
+/** `api.WebhookAppGapView` — an entry of `withoutWebhookApp` (contract 43, kept in contract 152's
+ * shape by 202): a live repository Dispatch's GitHub App is not known to be installed on, under
+ * the name the records keep it under, with why (not installed, the check failed, or Dispatch does
+ * not answer the check). The daemon works it all the same. No plugin code reads it
+ * (`LEGION_ANSWER_READS`), so both keys are optional. */
+const legionWebhookAppGap = z.object({
+  repo: nonEmptyString.optional(),
+  reason: nonEmptyString.optional(),
+});
+
+/** `api.RepositoriesView` — the repositories the daemon works in (contract 202): `live`, one entry
+ * for each repository the project's live records name, read in the state's own snapshot and sorted
+ * by its lowercased `<owner>/<name>`; `withoutWebhookApp`, each of those that Dispatch's GitHub App
+ * is not known to be installed on, in `live`'s order; and `caches`, the repository caches of
+ * repositories no live record names, each kept until its `retainedUntil` (contract 32). The daemon
+ * writes all three on every body, never null, and no plugin code reads any of them
+ * (`LEGION_ANSWER_READS`), so each is optional here. A repository is served once GitHub answered
+ * that both role Apps are installed on it, whatever names it.
  *
- * The mapping decides the project's default repository and the repositories the daemon prepares
- * before an issue names one, and no longer decides where the project may work: the App
- * installation does, so `mapped` holds the repositories the project's own records name beside
- * the mapped ones and no repository is refused for want of a mapping. Every list sorted and never
- * null (contracts 31, 32).
- *
- * A served entry's `apps` is both Apps installed, since the daemon serves no repository either
- * App is missing from, so the entries where the two differ are the refused ones. A refused
- * entry carries `apps` wherever GitHub answered both Apps' reads of its `repo` (both true for one
- * left out for its default-branch read alone), and none where a read of it failed or `repo` is
- * no `<owner>/<name>`, which its `reason` then names.
- *
- * `apps` is optional on both and is written by every daemon of contract 152 and above wherever it
- * holds the answer. It is read as absent rather than refused so that a plugin of this contract
- * reading a daemon of an earlier one — the window a roll of the daemon and the worker image opens,
- * since the two ship apart — loses that one answer and keeps the rest of the state, where a
- * required key would refuse the whole body. */
+ * `withoutWebhookApp` is the block's one report of Dispatch's webhook App, and no `live` entry
+ * carries a copy of it. It keeps contract 152's shape for every caller: the operator's `legion
+ * state` states no contract and asks from no pod, so the daemon serves it this block, and a
+ * `legion state` of 152 reads its webhook App lines from that list. A plugin of an earlier
+ * contract reads the block with that contract's own schema, which also requires `owners`, `mapped`
+ * and `refused`, so the route serves a caller below 202 that older block, written from the same
+ * entries: the contract its plugin states, else the highest its pod's claims record (`api.stateFor`,
+ * `withoutRepositoriesLive`). That body is never served to a plugin of this contract, so this
+ * schema reads only this block. */
 const legionRepositories = z.object({
-  owners: z.array(nonEmptyString).optional(),
-  mapped: z
-    .array(
-      z.object({
-        repo: nonEmptyString.optional(),
-        default: z.boolean().optional(),
-        apps: legionAppInstallations.optional(),
-        cache: legionCacheView.optional(),
-      })
-    )
-    .optional(),
-  refused: z
-    .array(
-      z.object({
-        repo: nonEmptyString.optional(),
-        reason: nonEmptyString.optional(),
-        apps: legionAppInstallations.optional(),
-      })
-    )
-    .optional(),
-  withoutWebhookApp: z
-    .array(z.object({ repo: nonEmptyString.optional(), reason: nonEmptyString.optional() }))
-    .optional(),
+  live: z.array(legionLiveRepository).optional(),
+  withoutWebhookApp: z.array(legionWebhookAppGap).optional(),
   caches: z.array(legionCacheView).optional(),
 });
 
@@ -1300,10 +1298,12 @@ const legionPaused = z.object({
  * `capabilities` is the deployment's report, never null (contract 16); `strandedClaims` is every
  * claim nothing will wake, by issue and then role, never null (contract 23); `heldOutboxRows` is
  * every due lifecycle outbox row held behind its issue's running one, by when it came due and then
- * id, never null (contract 28); `repositories` is the project's repository mapping as the daemon
- * serves it (contract 31); `settings` is the daemon's resolved legion.yaml with no credential,
- * credential source or credential file path, required, and loose like `payload` above, so a
- * legion.yaml key added later is no contract change (contract 35); being `z.looseObject` it keeps
+ * id, never null (contract 28); `repositories` is the repositories the project's live records
+ * name, the ones of them Dispatch's webhook App is not known to be installed on, and the caches of
+ * the rest (contracts 31, 43, 202); `settings` is the daemon's resolved
+ * legion.yaml with no credential, credential source or credential file path, required, and loose
+ * like `payload` above, so a legion.yaml key added later is no contract change (contract 35);
+ * being `z.looseObject` it keeps
  * the keys it does not name, where the shapes around it drop theirs; `consumers` is the lag
  * of the daemon's durable consumers, never null, empty for a daemon with no workflow (contract 43);
  * `wakesWaiting` is every wake the daemon's pacing is holding until its turn, in claim order, never
@@ -1324,7 +1324,7 @@ const legionPaused = z.object({
  * is served the count. The two strips compose on one body: a caller below 53 is below 73 too
  * and is served neither key. `unseenTaskValues` is every claim whose task value nobody reported
  * seeing for a whole first bound, in claim order, never null, empty while every owed value was
- * seen (contract 203, `supervise.TaskTakeContract`); it is optional for the same reason as the two
+ * seen (contract 207, `supervise.TaskTakeContract`); it is optional for the same reason as the two
  * above, since the route strips it for a caller below that contract, read the same way
  * (`api.stateFor`, `withoutUnseenTaskValues`). `contract` is the mark of the narrowing, the two
  * contract numbers the daemon's own log line names (contract 75), optional for the same reason
@@ -1413,7 +1413,7 @@ export type LegionHealth = z.output<typeof LegionHealthResponse>;
  * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
  * `task` and `finished` are what `POST /legion/v1/claims/task` answers (`LegionTaskResponse`),
  * read once the registration is recorded, so the worker holds its claim's value before its ready
- * (contract 203). A caller below 203 is served the answer without either key
+ * (contract 207). A caller below 207 is served the answer without either key
  * (`withoutTaskReading` in `internal/api/shaping.go`). */
 export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
@@ -1477,7 +1477,7 @@ const legionProviderError = z.strictObject({
  * provider said about a refusal, and a clean turn carries none. `task` is the number of the take
  * whose turn this was, absent for a turn of no task: the report that names the claim's taken task
  * finishes it, unless it carries `providerError`, which keeps the task under its number and starts
- * the wait before its value is written again (contract 203). `held` is the number of the accepted
+ * the wait before its value is written again (contract 207). `held` is the number of the accepted
  * take whose text the producer still held unrun when this turn ended — it was answered that take
  * during the turn — absent for none: this turn was not that take's, which puts the take back to
  * await its own turn even where the daemon has lost its count of the process's turns (a daemon
@@ -1560,16 +1560,16 @@ function eitherCaller<Fields extends z.ZodRawShape>(fields: Fields) {
 const taskValueFields = { generation: z.number().int().positive(), ...legionTaskValue.shape };
 
 /** `claim.TaskRequest`, the body of `POST /legion/v1/claims/task`: a worker reading its claim's
- * value, at a new epoch of its relay or when it gains its role again (contract 203). */
+ * value, at a new epoch of its relay or when it gains its role again (contract 207). */
 export const LegionTaskRequest = eitherCaller({ generation: z.number().int().positive() });
 
 export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
 
 /** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
  * bucket holds it now, null where it holds none, and the number of the last task the claim
- * finished, 0 for none (contract 203). `holds` (contract 206, `claim.HeldTake`) is the takes of
+ * finished, 0 for none (contract 207). `holds` (contract 209, `claim.HeldTake`) is the takes of
  * the issue's other claims held behind the caller's turn, each the held claim's `role` and its
- * task's number; absent where none is held, and served only to a caller at contract 206 or a
+ * task's number; absent where none is held, and served only to a caller at contract 209 or a
  * later one. */
 export const LegionTaskResponse = z.object({
   ...taskReadingFields,
@@ -1579,7 +1579,7 @@ export const LegionTaskResponse = z.object({
 export type LegionTask = z.output<typeof LegionTaskResponse>;
 
 /** `claim.TaskSeenRequest`, the body of `POST /legion/v1/claims/task-seen`, answered 204: the
- * worker reporting the value it was handed, whether or not its host is idle (contract 203). */
+ * worker reporting the value it was handed, whether or not its host is idle (contract 207). */
 export const LegionTaskSeenRequest = eitherCaller(taskValueFields);
 
 export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
@@ -1589,7 +1589,7 @@ export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
  * failure that carries no HTTP status, no answer in 5 minutes included, and a 502, 503 or 504
  * that names no `code` — is sent again unchanged (`@legion/pi-shared/daemon-client`), and a
  * take of a number already accepted and not finished is answered the same text again, before its
- * turn starts or after (contract 203). */
+ * turn starts or after (contract 207). */
 export const LegionTakeRequest = eitherCaller(taskValueFields);
 
 export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
@@ -1601,9 +1601,9 @@ export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
  * (`not-owed`, `in-turn`, `not-ready`, `issue-in-turn`, `suspension`, `update-round`,
  * `launch-waits`, `stale-plugin`, `root-hears`, `provider-error`, `session-not-held`,
  * `adoption`, `project-paused`), since a hold a later daemon adds must not refuse the answer
- * (contract 203). A worker acts on one by name: a take refused `in-turn` during the turn going now
- * counts as pending until that turn ends, since the daemon writes the value again then (contract
- * 206). */
+ * (contract 207). A worker acts on one by name: a take refused `in-turn` during a run counts as
+ * pending past that run's end, since the daemon writes the value again once it hears that end,
+ * for at most `IN_TURN_REWRITE_BOUND_MS` of `@legion/pi-shared/task-take` (contract 209). */
 export const LegionTakeResponse = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("accepted"), text: nonEmptyString }),
   z.object({ outcome: z.literal("refused"), hold: nonEmptyString }),
@@ -2410,7 +2410,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "secret",
     "promptAgents",
     // The take holds the claim's value and its finished number from the registration
-    // (contract 203), as it holds what a read of `claims/task` answers.
+    // (contract 207), as it holds what a read of `claims/task` answers.
     "task",
     "task.number",
     "task.epoch",
@@ -2419,8 +2419,8 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   ],
   // `task-take.ts` holds the value a read answers and the number of the task the claim last
   // finished, and runs the text of an accepted take or logs the hold a refused one met
-  // (contract 203). `holds-read.ts` keeps the takes held behind the caller's turn, and each host
-  // notes each one by its role and its task's number (contract 206).
+  // (contract 207). `holds-read.ts` keeps the takes held behind the caller's turn, and each host
+  // notes each one by its role and its task's number (contract 209).
   LegionTaskResponse: [
     "task",
     "task.number",

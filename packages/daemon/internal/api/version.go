@@ -2928,7 +2928,60 @@ package api
 // request declares. Read the base's own number and every open pull request again at every forward
 // merge rather than from this line.)
 //
-// 203: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
+// 202: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
+// block of `GET /legion/v1/state` becomes the repositories the project's live records name, read
+// in the state's own snapshot. The block is `{live, caches, withoutWebhookApp}`. `live` holds one
+// entry for each repository a live record names, under the name the records keep, sorted by its
+// lowercased `<owner>/<name>`: `repo`; `servedAs`, the other name of its configured pair where the
+// rename rule serves it under that one; `apps`, each role App's installation on the name it is
+// served under, once GitHub answered both reads; `readError`, why GitHub's last read did not name
+// it; and `cache`, its repository cache under the Kubernetes runtime; each but `repo` absent until
+// it holds something. `caches` is unchanged: the caches of repositories no live record names.
+// `withoutWebhookApp` is kept in 152's shape for every caller, `{repo, reason}` for each live
+// repository Dispatch's webhook App is not known to be installed on, under the name the records
+// keep, in `live`'s order and never null, and it is the block's one report of the webhook App: no
+// `live` entry carries a copy of it. The operator's `legion state` states no contract and asks from
+// no pod, so it is served the new block, and a `legion state` of 152 reads its webhook App lines
+// from this list, so without it that binary would print that no repository lacks the webhook App
+// whatever the live records hold. `owners`, `mapped` and `refused` are gone, and with them each
+// entry's `default`, which the daemon no longer knows. A plugin of 152 reads the block with a
+// schema that requires those three keys and would refuse the whole state without them, so a
+// caller below 202 is served the block in 152's shape, written from the same entries (shaping.go's
+// repositoriesLiveContract and withoutRepositoriesLive, its row of stateNarrowings): `owners` and
+// `mapped` are the entries both role Apps are installed on, under the name each is served under,
+// every `default` false; `refused` is each other entry with its `readError`, the App not installed
+// on it, or "GitHub has not answered for it yet"; and `withoutWebhookApp` is the same list as on
+// the new block. A caller below 152 is also below 202, and is served that block with no `apps` on
+// either list, as 193 serves it (withoutRepositoryApps, whose flag the older block reads). The
+// caller is placed as 193 places every caller of the state: by the contract its
+// `Legion-Plugin-Contract` header states, else by the claims of its pod, else at this contract. So
+// a plugin from 193 to 198, which states its contract, is served 193's keys and the block in 152's
+// shape; one from 199 to 201 is served 199's keys, since neither 200 nor 201 has an entry, and the
+// same block, 199's keys being 193's on this route since 199 moved no shape of an answer; a pod
+// whose claims record 178 to 192 and that states nothing is served the pause and that block; and a
+// caller that states nothing from no pod — the operator's `legion state`, `legion controller
+// start` — is served the new block. A tmux pane's plugin states its own contract, which the boot
+// gate and `legion probe-image` keep at this one.
+// The records of `contract-shapes.json` take the step as they take every band: 202's records hold
+// the new block's key paths, and every record below 202 keeps the older block's. One enumerated
+// field arrives with the block, the cache's `state` at `repositories.live.*.cache.state`, whose
+// five words answers.go records at this contract (liveCacheStates), so every record of the state
+// below 202 holds that key path's domain empty, as domainsOf writes it, and no other domain moves.
+// `packages/contracts/src/legion-api.ts` mirrors the new block, and the fixture
+// `state-narrowed-repositories.json` is the body served a caller that states 201, the contract
+// before this one, which is served at 199, the recorded contract below it: 199's keys, which are
+// 193's, the pause and the block in 152's shape.
+// (This change takes 202, the lowest number above main's 199 that no open pull request declared
+// at the census of `const DaemonAPIVersion` at refs/pull/<n>/head over the 301 open pull requests
+// of cybermonklabs/legion, taken from 2026-11-20T23:09:18Z to 23:19:17Z, which named above
+// main's 199: 200 (#4065 and #4580) and 201 (#4553 and #4611). This entry stood at 167, 169, 173,
+// 182, 189, 190, 191, 195, 196 and 200 before, each the number it took at an earlier census and no
+// head's for good. Read main's own number and every open pull request's again at the next forward
+// merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 207: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
 // The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
 // `legion_tasks` bucket, which the listener relays to the session holding that role, and the
 // worker asks to take the number once its host is idle: `POST /legion/v1/claims/take`
@@ -2969,22 +3022,22 @@ package api
 // carry `worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`, keys of legion.yaml
 // that no reader types, which move no contract of their own (answers.go's typedSettings).
 // This daemon serves each of these down through the shaping 193 brought, to a caller whose header
-// states a contract below 203 or, stating none, whose pod's claims record one. The state is served
+// states a contract below 207 or, stating none, whose pod's claims record one. The state is served
 // without `unseenTaskValues` (the last row of shaping.go's stateNarrowings, withoutUnseenTaskValues,
 // which follows the pod's highest contract as every band does). `never_reconnected` is declared at
-// 203 in answers.go's failureCauses, beside the seven words recorded at 75, and the value strip
+// 207 in answers.go's failureCauses, beside the seven words recorded at 75, and the value strip
 // withoutNeverReconnected (a row of shaping.go's valueStrips, which follows the pod's lowest
 // contract) serves it as `never_registered` in `failure.cause` and `pendingCause`, since a plugin
-// from 75 up to 203 reads both through a strict enum and refuses the whole body for a word it does
+// from 75 up to 207 reads both through a strict enum and refuses the whole body for a word it does
 // not name; the word is rewritten rather than its key dropped, because a key gone would say the
 // claim's failure has no cause or that nothing failed its relaunching process, and
 // `never_registered` is the nearest cause such a reader knows. The registration's answer is served
 // without `task` and `finished` (shaping.go's withoutTaskReading, the registration's row of
 // shapeAnswer, which placedByPod places by the caller's pod). The task read's and the take's
-// answers are rows of answers.go's Answers from 203 (`task` and `take`), and `claims/task-seen`
+// answers are rows of answers.go's Answers from 207 (`task` and `take`), and `claims/task-seen`
 // answers the 204 every claim report answers (`no-content`); the take answer's `outcome` is the
 // discriminator of a union of literals and so no enumerated field. The three task routes' bodies
-// and the turn outcome's `task`, `providerError` and `held` are in the request records from 203
+// and the turn outcome's `task`, `providerError` and `held` are in the request records from 207
 // (`packages/contracts/fixtures/daemon-api/request-shapes.json`). This change carried its own two
 // rows of the state's narrowing table before 193 moved that table into shaping.go, and keeps none
 // of its own now: the band and the value strip above are those two rows in 193's tables, so the
@@ -3058,15 +3111,21 @@ package api
 // requests, so 196 was the lowest number above 189 that none declared. It took 203 at the forward
 // merge of 2026-11-21 that brought main in at 81cf5a79383edba5ba0e68dcdff4618bd0922a39, which
 // carried 193, cybermonklabs/legion#3659's INFRA-2694, and 199, cybermonklabs/legion#4495's
-// INFRA-4605, the two entries right above and the number the base now carries: a reading of
+// INFRA-4605, two entries above and the number the base then carried: a reading of
 // `const DaemonAPIVersion` at refs/pull/<n>/head for every one of the 315 open pull requests at
 // that merge found 199 to 202 taken, so 203 was the lowest number above 199 that none declared.
+// It took 207 at the forward merge of 2026-11-21 that brought main in at
+// 1cdf5b9ceba6b5c5e2c73fa748234d8b73be6596, which carried 202, cybermonklabs/legion#4493's
+// INFRA-4401, the entry right above and the number the base now carries: a reading of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for every one of the 343 open pull requests at
+// that merge found 203 (declared by seven of them) and 204 to 206 taken, so 207 was the lowest
+// number above 202 that none declared.
 // Read the base's own number and every open pull request again at the next merge rather than from
 // this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 206: INFRA-4130 -- holds on POST /legion/v1/claims/task, the takes of other claims of the issue
+// 209: INFRA-4130 -- holds on POST /legion/v1/claims/task, the takes of other claims of the issue
 // held behind the caller's turn. The answer of `claims/task` takes an optional `holds`
 // (`claim.TaskResponse.Holds`, contracts' `LegionTaskResponse`), `[{role, task}]`: each a take
 // of another claim of the caller's issue that was refused `issue-in-turn` while the caller is
@@ -3075,18 +3134,23 @@ package api
 // the turn ends and the held take is accepted. The key is absent where none is held, and the
 // registration's answer never carries it, since a registering process is in no turn. This daemon
 // serves it down through the shaping 193 brought: a caller whose header states a contract below
-// 206 is answered without it (shapeAnswer's AnswerTask row, taskHoldsContract). The record of a
+// 209 is answered without it (shapeAnswer's AnswerTask row, taskHoldsContract). The record of a
 // held take is the daemon's memory alone (supervise's ClaimView.HeldTask), so it adds no store
 // migration, and no shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
-// `supervise.TaskTakeContract` stays 203.
-// (This entry took 179 against the branch's base, which declared 174. It takes 206 at the forward
+// `supervise.TaskTakeContract` stays 207.
+// (This entry took 179 against the branch's base, which declared 174. It took 206 at the forward
 // merge of 2026-11-21 that brought cybermonklabs/legion#3993's branch in at
-// d61d7da5e458078e99d93b6890ebd87bb7e1d62f, which declares 203: a reading of
+// d61d7da5e458078e99d93b6890ebd87bb7e1d62f, which declared 203: a reading of
 // `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request from
 // 2026-11-21T02:54:37Z to 02:58:57Z found 203 (#2230, #3993, #4065, #4175, #4553, #4592 and
 // #4661), 204 (#3831 and #4030) and 205 (#4573) declared by open pull requests, so 206 was the
-// lowest number above 203 that none declared. Read the base's own number and every open pull
-// request again at the next merge rather than from this line, as
+// lowest number above 203 that none declared. It takes 209 at the forward merge of 2026-11-21
+// that brought #3993's branch in at 7ade1c0c32a4798795dc5ba22e30e5a6009a6e07, which declares 207,
+// the entry right above: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every
+// one of the 357 open pull requests from 2026-11-21T05:46:01Z to 05:57:04Z found 207 (#3993,
+// #4030, #4392, #4432, #4590 and #4592) and 208 (#4611) declared by open pull requests, so 209
+// was the lowest number above 207 that none declared. Read the base's own number and every open
+// pull request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 206
+const DaemonAPIVersion = 209

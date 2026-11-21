@@ -32,13 +32,13 @@ import (
 // it onto the current plugin.
 
 // taskHoldsContract is the daemon contract that added `holds` to the answer of the task route
-// (version.go's 206): the takes of the caller's issue's other claims held behind the caller's turn
+// (version.go's 209): the takes of the caller's issue's other claims held behind the caller's turn
 // (Supervisor.HeldBehind, claim.HeldTake). The route writes the key for every caller, and the
 // shaping serves it down (shapeAnswer's AnswerTask row): a caller whose header states a contract
 // below this one is answered without it. It is pinned, not read from DaemonAPIVersion, so a later
 // contract bump takes the key from no plugin that reads it; a merge that renumbers this change
 // moves it with its version.go entry and SupportedContracts.
-const taskHoldsContract = 206
+const taskHoldsContract = 209
 
 // task is the worker reading its claim's value: the value the bucket holds now, null for none,
 // and the number of the last task the claim finished (supervise's Machine.CurrentTask), with the
