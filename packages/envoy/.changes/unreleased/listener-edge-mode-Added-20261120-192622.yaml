@@ -17,9 +17,11 @@ body: |-
   GitHub event reaches the session only while an answer no older than 60 seconds names the
   repository its own payload names; one that does not is acknowledged undelivered and counted in
   `envoy_edge_github_withheld_total{reason}`, the session's interest in a repository that left
-  the answer is removed, and while no answer is fresh the next frame carries `Envoy-Gap: true`. A
-  session at the edge publishes only a role subject of its project, claims and reads only that
-  project's roles, sends only to sessions whose token listed it, and reads only its sessions,
+  the answer is removed, and while no answer is fresh the next frame carries `Envoy-Gap: true`
+  with `Envoy-Gap-Reason: repository_withheld`, which a client tells from the stream's retention
+  gap, whose mark carries no reason. A session at the edge publishes only a role subject of its
+  project, claims and reads only that project's roles, sends only to sessions whose token listed
+  it, and reads only its sessions,
   roles, topics and Legion agents; a role read names a holder of no project of its token without
   the holder's directory, machine, host, title and capabilities. Every other listener serves as
   before.
