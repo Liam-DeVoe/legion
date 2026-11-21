@@ -516,9 +516,10 @@ func pendingID(p *Delivery) string {
 // wait with the claim's timers (letGo), which is what makes the ladder's task replaceable, so the
 // claim reaching here then holds no delivery at all. So does a task over a delivery whose take's
 // turn has run on a claim in no turn: runParkedLaunchNow retires that delivery as the last case
-// below does, before the launch, which would otherwise take it back as a cut turn. Over a claim
-// that is working, such a delivery is retired below and the launch keeps its turn
-// (runParkedLaunchNow says why).
+// below does, before the launch, which would otherwise take it back as a cut turn. Each of these
+// is made only once that launch's lifecycle recheck has passed: a refused recheck changes nothing,
+// and the operator's task is refused before it reaches here. Over a claim that is working, such a
+// delivery is retired below and the launch keeps its turn (runParkedLaunchNow says why).
 //
 // The task is as the store keeps it: a deliver's request comes through Handle, which gives every
 // event's text through the store's rule, and the daemon's own delivery of a relaunch's record

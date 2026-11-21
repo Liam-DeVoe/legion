@@ -1872,7 +1872,8 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // claim a paced wake parked with no process, drops that wake before the lookup and is then
 // decided against the state the gate found (dropWakeFor); an operator's task the claim can take,
 // over a launch parked above a process the claim still records, runs that launch first, so the
-// row that queues the task is the row of the claim that launch leaves (runParkedLaunchNow).
+// row that queues the task is the row of the claim that launch leaves, and a launch its lifecycle
+// recheck refuses runs nothing and changes nothing, and the task is refused (runParkedLaunchNow).
 //
 // Handle returns when the decision is made, which includes the runtime call it makes: a stop
 // waits out its grace, a resume waits out the previous incarnation. A caller feeding many claims

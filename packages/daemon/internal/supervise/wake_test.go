@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
@@ -2001,6 +2003,137 @@ func TestAnOperatorsDeliveryOverATaskWhoseTurnRanRunsTheParkedLaunchNow(t *testi
 	}
 	if sent := h.wantPrompts(2); sent[0].Number != ran.Number || sent[1].Number != ran.Number+1 {
 		t.Fatalf("the takes are %+v, want task %d once and then the operator's, task %d", sent, ran.Number, ran.Number+1)
+	}
+}
+
+// The three parks above, each met by an operator's task whose launch the lifecycle recheck
+// refuses: a task whose take's turn ran, an untaken task the record no longer owes, and the task
+// a provider error took back, which the operator's task takes the place of where the launch runs.
+// The recheck is made before any of that (runParkedLaunchNow), so a refusal leaves the claim as
+// the task found it: the pending task in memory and in the store, its value, the timers armed and
+// the wake with its turn, and no launch started. The task is answered refused, carrying the
+// recheck's reason, so the operator asks again, and that retry, once the recheck passes, is
+// decided as the first delivery would have been: the pending task gives way, the launch runs, and
+// the operator's task is queued for the process it starts.
+//
+// The negative control is the code before the change, where the drop, the retirement and the
+// replacement ran before the recheck, the wake was taken off the machine, and the refusal ended
+// the decision before the row that queues the task: the claim then holds no pending task and no
+// wake, which this test reads at the pending task.
+func TestAnOperatorsDeliveryOverAParkedLaunchTheLifecycleRefusesChangesNothing(t *testing.T) {
+	const task = "look at the production check"
+	for _, tc := range []struct {
+		name string
+		// park is the claim holding the pending task, with a launch parked over its process.
+		park func(t *testing.T) *harness
+		// gives is the line the retry writes as the pending task gives way.
+		gives string
+	}{
+		{
+			name: "a task whose take's turn ran",
+			park: func(t *testing.T) *harness {
+				h := pacedHarness(t, wakeRate, currentPlugin)
+				h.manualTakes()
+				h.reach(StateReady)
+				h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+				h.mustTake()
+				h.must(StreamTurnStart{Claim: h.token})
+				h.mustQuiet(StreamTurnEnd{Claim: h.token})
+				h.reportActivity()
+				if ran := h.pending(); h.state() != StateIdle || !ran.turnStarted() {
+					t.Fatalf("the claim is %s holding %+v, want idle over a take whose turn ran: this case proves nothing", h.state(), ran)
+				}
+				h.observe(runtime.StaleAddress)
+				return h
+			},
+			gives: "supervise: the pending task's turn has run, so the operator's task takes its place",
+		},
+		{
+			name: "an untaken task the record no longer owes",
+			park: func(t *testing.T) *harness {
+				holds := true
+				h := pacedHarness(t, wakeRate, func(d *Deps) {
+					d.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return holds, nil }
+				})
+				h.manualTakes()
+				h.reach(StateReady)
+				h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, ID: "outbox:7", Row: 7})
+				h.observe(runtime.StaleAddress)
+				holds = false
+				return h
+			},
+			gives: "the issue has left the phase this task was queued for; it is dropped rather than taken",
+		},
+		{
+			name: "the task a provider error took back",
+			park: func(t *testing.T) *harness {
+				h := pacedHarness(t, wakeRate)
+				h.reach(StateWorking)
+				h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
+				h.reportActivity()
+				if owed := h.pending(); !h.m.replaceable(&owed) {
+					t.Fatalf("the task the provider error took back is %+v, want one a newer task replaces: this case proves nothing", owed)
+				}
+				h.observe(runtime.StaleAddress)
+				return h
+			},
+			gives: "supervise: the operator's task replaces the one a provider error took back",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := tc.park(t)
+			replaced := h.locator()
+			waiting := h.wantWaitingWake(WakeLaunch)
+			store := &refusableCheckLaunchStore{memStore: h.store, refuse: true}
+			h.m.deps.Store = store
+			// The task arrives part of the way into the wait, as a person's does.
+			h.advance(wakePart)
+			armed := func() map[TimerKind]time.Time {
+				h.m.mu.Lock()
+				defer h.m.mu.Unlock()
+				due := make(map[TimerKind]time.Time, len(h.m.timers))
+				for kind, timer := range h.m.timers {
+					due[kind] = timer.due
+				}
+				return due
+			}
+			held, state, timers := h.pending(), h.state(), armed()
+			value, written := h.values.value(h.token)
+
+			err := h.handle(RequestDeliver{Claim: h.token, Task: task})
+
+			if p := h.claim().Pending; p == nil || !reflect.DeepEqual(*p, held) {
+				t.Fatalf("the pending task is %+v, want the one the claim held, %+v: a launch the recheck refuses changes nothing", p, held)
+			}
+			if stored, ok := h.store.delivery(h.token); !ok || !reflect.DeepEqual(stored, held) {
+				t.Fatalf("the store holds %+v (%t), want the pending task the claim held, %+v", stored, ok, held)
+			}
+			if got, ok := h.values.value(h.token); ok != written || got != value {
+				t.Fatalf("the value is %+v (%t), want %+v (%t), as the task left it", got, ok, value, written)
+			}
+			h.wantWakeDueAt(waiting)
+			if got := armed(); !reflect.DeepEqual(got, timers) {
+				t.Fatalf("the timers armed are %v, want %v: the wake's turn and the task's timers as they were", got, timers)
+			}
+			h.wantState(state)
+			h.wantStarts(h.token, 1)
+			var refusal *RefusedError
+			if !errors.As(err, &refusal) || refusal.Request != "deliver" || !errors.Is(err, treelifecycle.ErrCleanupReserved) {
+				t.Fatalf("the operator's task = %v, want the deliver refused with the recheck's reason, for the operator to ask again", err)
+			}
+
+			// The operator asks again once the recheck passes.
+			store.refuse = false
+			h.must(RequestDeliver{Claim: h.token, Task: task})
+
+			h.wantParkedLaunchRan(replaced)
+			if lines := h.logs.lines(tc.gives); len(lines) != 1 {
+				t.Fatalf("logged %v, want task %d giving way once, at the retry", lines, held.Number)
+			}
+			if p := h.pending(); p.Task != task || p.Number != held.Number+1 || p.taken() {
+				t.Fatalf("the task is %+v, want the operator's %q pending untaken as task %d", p, task, held.Number+1)
+			}
+		})
 	}
 }
 
