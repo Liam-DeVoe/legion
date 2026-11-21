@@ -1,11 +1,13 @@
 package consumernames
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -39,7 +41,7 @@ func apiRequest(ctx context.Context, nc *nats.Conn, subject string, body any) (j
 	}
 	reply, err := nc.RequestWithContext(ctx, subject, data)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", subject, err)
+		return nil, apiRefusal(nc, subject, fmt.Errorf("%s: %w", subject, err))
 	}
 	var answer struct {
 		Error *jetstream.APIError `json:"error"`
@@ -51,6 +53,31 @@ func apiRequest(ctx context.Context, nc *nats.Conn, subject string, body any) (j
 		return nil, fmt.Errorf("%s: %w", subject, answer.Error)
 	}
 	return reply.Data, nil
+}
+
+// apiRefusal is err, a request to subject on nc that failed, with the server's refusal wrapped in
+// when nc recorded one of that publish or of the subscription its answer comes back on. The
+// server answers a publish its connection may not make with `-ERR 'Permissions Violation for
+// Publish to "<subject>"'` and drops it, and a subscription it may not make with `Permissions
+// Violation for Subscription to "<subject>"` (nats-server client.go, each subject written with
+// %q), so the request ends unanswered, and nats.go reports the refusal only as the connection's
+// last error (nats.Conn.LastError, wrapping nats.ErrPermissionViolation). The answers' subscription
+// is under the connection's inbox prefix (nats.CustomInboxPrefix). A refused request is never read
+// as a timeout: its error names the refused subject in the server's own words.
+func apiRefusal(nc *nats.Conn, subject string, err error) error {
+	if err == nil || nc == nil {
+		return err
+	}
+	last := nc.LastError()
+	if !errors.Is(last, nats.ErrPermissionViolation) {
+		return err
+	}
+	inbox := cmp.Or(nc.Opts.InboxPrefix, nats.InboxPrefix)
+	if !strings.Contains(last.Error(), fmt.Sprintf("Publish to %q", subject)) &&
+		!strings.Contains(last.Error(), `Subscription to "`+strings.TrimSuffix(inbox, ".")+".") {
+		return err
+	}
+	return fmt.Errorf("%w; the server refused it: %w", err, last)
 }
 
 // consumerNames lists every consumer of stream, through CONSUMER.NAMES pages that each overlap
