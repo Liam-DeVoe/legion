@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  Dispatch's document socket, once a schema re-check revokes it, carries nothing more of the room but the rest of the message already going out and the `4412` close: the revoke closes the socket's connection to every other frame before it returns. Before, ygo kept writing room updates to the revoked socket until the goroutine that sends the close ran, so a page could get an edit made after its revoke.
