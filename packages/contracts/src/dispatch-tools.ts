@@ -222,26 +222,32 @@ export function pathKeepsBytesOf(name: string): boolean {
 
 const artifactOwner = documentOwnerValidation(false);
 
-/** The refusal of the part of dispatch_artifact's rule `value` breaks, or undefined when it keeps
- *  the rule. A call without path writes a document, whose text is always Markdown, so it goes
- *  only under a name that says Markdown or says nothing: a .jsonl stored that way reads back with
- *  its lines joined. The name alone makes an empty document and is held to the same rule, since
- *  what the writer types into it afterwards is Markdown too. */
+/** The refusal of the parts of dispatch_artifact's rule `value` breaks, or undefined when it keeps
+ *  the rule. It names every part the call broke, the owner and the source before the name, joined
+ *  in one refusal, so its caller fixes them all and calls once. A call without path writes a
+ *  document, whose text is always Markdown, so it goes only under a name that says Markdown or
+ *  says nothing: a .jsonl stored that way reads back with its lines joined. The name alone makes
+ *  an empty document and is held to the same rule, since what the writer types into it
+ *  afterwards is Markdown too. */
 function artifactProblem(value: unknown): string | undefined {
   const input = value as {
     readonly name?: unknown;
     readonly path?: unknown;
     readonly content?: unknown;
   };
-  const ownerOrSourceProblem = brokenParts([
+  const extension =
+    typeof input.path === "string" || typeof input.name !== "string"
+      ? undefined
+      : NAME_EXTENSION.exec(input.name.trim())?.[1];
+  const nameProblem =
+    extension === undefined || MARKDOWN_EXTENSION.test(extension)
+      ? undefined
+      : `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name ending in .md or .markdown or with no extension.`;
+  return brokenParts([
     [artifactOwner.check(value), artifactOwner.message],
     [typeof input.path !== "string" || typeof input.content !== "string", ARTIFACT_SOURCE_RULE],
+    [nameProblem === undefined, nameProblem ?? ""],
   ]);
-  if (ownerOrSourceProblem !== undefined) return ownerOrSourceProblem;
-  if (typeof input.path === "string" || typeof input.name !== "string") return undefined;
-  const extension = NAME_EXTENSION.exec(input.name.trim())?.[1];
-  if (extension === undefined || MARKDOWN_EXTENSION.test(extension)) return undefined;
-  return `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name ending in .md or .markdown or with no extension.`;
 }
 
 const documentEditOwner = documentOwnerValidation(true);
@@ -413,11 +419,31 @@ function issueStatusOptionsProblem(input: Readonly<Record<string, unknown>>): st
   ]);
 }
 
-/** The refusal of the part of dispatch_issue_update's rule `value` breaks, or undefined when it
+/** The refusal of the reason's part of dispatch_issue_update's rule `input` breaks, or undefined
+ *  when it keeps it: reason is the close's note, so status done requires it and every other call
+ *  goes without it. */
+function issueReasonProblem(input: {
+  readonly status?: unknown;
+  readonly reason?: unknown;
+}): string | undefined {
+  if (input.status === "done") {
+    return typeof input.reason !== "string" || input.reason.trim() === ""
+      ? `${ISSUE_UPDATE_DONE_RULE}.`
+      : undefined;
+  }
+  if (input.reason === undefined) return undefined;
+  const status =
+    typeof input.status === "string" ? `status ${input.status}` : "an update without status done";
+  return `${ISSUE_UPDATE_REASON_RULE}: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
+}
+
+/** The refusal of the parts of dispatch_issue_update's rule `value` breaks, or undefined when it
  *  keeps the rule: reason is the close's note, so it goes with status done and with nothing else,
  *  an option of the status change goes with status alone, and the update names at least one field
- *  to change. `check` and `refusal` both read this one function, so the refusal never names a
- *  part the call kept. */
+ *  to change. It names every part of the reason's and the options' rules the call broke, joined in
+ *  one refusal, so its caller fixes them all and calls once. The field part is read only when the
+ *  call keeps those two: a call refused for its reason is never told it names no field. `check`
+ *  and `refusal` both read this one function, so the refusal never names a part the call kept. */
 function issueUpdateProblem(value: unknown): string | undefined {
   const input = value as {
     readonly status?: unknown;
@@ -436,17 +462,13 @@ function issueUpdateProblem(value: unknown): string | undefined {
     readonly before?: unknown;
     readonly after?: unknown;
   };
-  if (input.status === "done") {
-    if (typeof input.reason !== "string" || input.reason.trim() === "") {
-      return `${ISSUE_UPDATE_DONE_RULE}.`;
-    }
-  } else if (input.reason !== undefined) {
-    const status =
-      typeof input.status === "string" ? `status ${input.status}` : "an update without status done";
-    return `${ISSUE_UPDATE_REASON_RULE}: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
-  }
+  const reasonProblem = issueReasonProblem(input);
   const optionsProblem = issueStatusOptionsProblem(value as Readonly<Record<string, unknown>>);
-  if (optionsProblem !== undefined) return optionsProblem;
+  const broken = brokenParts([
+    [reasonProblem === undefined, reasonProblem ?? ""],
+    [optionsProblem === undefined, optionsProblem ?? ""],
+  ]);
+  if (broken !== undefined) return broken;
   const changesAField =
     typeof input.status === "string" ||
     typeof input.title === "string" ||
