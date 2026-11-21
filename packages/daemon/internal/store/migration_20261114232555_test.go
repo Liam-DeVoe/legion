@@ -19,8 +19,9 @@ const awaitingChildrenVersion = 20261114232555
 // refuses a held start without the phase and the phase without a held start. It adds
 // phases.entry_from beside the phase entry as well, null on every row the upgrade finds, since no
 // row before it says which phase the move that raised its entry left, and never empty, and
-// phases.entry_retry_task, the task of the entry's last retry, empty on every row the upgrade
-// finds, since no retry before it wrote one, and never null.
+// phases.entry_given_task and entry_given_entry, the task a role was last given for an entry as it
+// was composed and that entry, empty and 0 on every row the upgrade finds, since no release before
+// it wrote them, and never null.
 func TestTheAwaitingChildrenPhaseAndItsHeldStart(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -62,18 +63,22 @@ func TestTheAwaitingChildrenPhaseAndItsHeldStart(t *testing.T) {
 		t.Fatalf("an empty entry_from = %v, want a constraint to refuse it: an entry no move raised reads null", err)
 	}
 
-	// The phases row the upgrade found carries no retry's task, read as '', and the column refuses a null.
-	var retried string
-	if err := store.Pool().QueryRow(ctx, `select entry_retry_task from phases where issue = 'LEGION-208' and role = 'implementer'`).
-		Scan(&retried); err != nil {
-		t.Fatalf("read the implementer's retry task after the migration: %v", err)
+	// The phases row the upgrade found carries no given task and no entry it was given for, read as
+	// '' and 0, and each column refuses a null.
+	var given string
+	var givenEntry int64
+	if err := store.Pool().QueryRow(ctx, `select entry_given_task, entry_given_entry from phases where issue = 'LEGION-208' and role = 'implementer'`).
+		Scan(&given, &givenEntry); err != nil {
+		t.Fatalf("read the implementer's given task after the migration: %v", err)
 	}
-	if retried != "" {
-		t.Fatalf("the phases row the upgrade found reads entry_retry_task %q, want '': no retry before the column wrote one", retried)
+	if given != "" || givenEntry != 0 {
+		t.Fatalf("the phases row the upgrade found reads entry_given_task %q for entry %d, want '' for 0: no release before the columns wrote them", given, givenEntry)
 	}
-	if _, err := store.Pool().Exec(ctx, `update phases set entry_retry_task = null where issue = 'LEGION-208' and role = 'implementer'`); err == nil ||
-		!strings.Contains(err.Error(), "null") {
-		t.Fatalf("a null entry_retry_task = %v, want the column to refuse it: a row no retry wrote reads ''", err)
+	for _, column := range []string{"entry_given_task", "entry_given_entry"} {
+		if _, err := store.Pool().Exec(ctx, `update phases set `+column+` = null where issue = 'LEGION-208' and role = 'implementer'`); err == nil ||
+			!strings.Contains(err.Error(), "null") {
+			t.Fatalf("a null %s = %v, want the column to refuse it: a row no release wrote it on reads its default", column, err)
+		}
 	}
 
 	// The new value is accepted with a full held start, the children it waits on among it, and the

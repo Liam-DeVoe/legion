@@ -729,7 +729,7 @@ type PhaseRow struct {
 	// rather than of the one outbox row that carried it: a claim behind the entry is sent this
 	// task again, however that row ended. Empty on a row no entry has been raised on, and on one
 	// ClearGeneration reset, whose re-admitted tree's promotion writes the task again. A retry of
-	// the entry leaves it as it stands and writes its own task beside it (EntryRetryTask).
+	// the entry leaves it as it stands and writes its own task beside it (EntryGivenTask).
 	EntryTask string
 	// EntryVerbatim says the sweep's send of a root architect's entry again sends EntryTask as
 	// written (workflow's SendArchitectStart). Only the resume of a root a person answered sets
@@ -785,18 +785,27 @@ type PhaseRow struct {
 	// stands, and a retry restarts the held phase on it. The role's next entry, raised by a move
 	// from a phase before retro, ends that.
 	EntryFrom phase.Phase
-	// EntryRetryTask is the task of the last retry of this entry: the architect's retry of a held
-	// phase, a todo on a held root and the operator's restart each hand the role the entry its row
-	// already names, with a task of their own that names the retry's reason, and write that task
-	// here (workflow's restart), while EntryTask stays the work the entry was raised with, which
-	// a claim behind its entry is sent again. It is "" until a retry, and is cleared when an entry
-	// is raised (workflow's enter) and at a generation's clear (ClearGeneration), so a row that
-	// carries one carries the retry of the entry it stands on. Its one reader is the admission
-	// pass's stop of a parent in the middle of its phase, which holds it before EntryTask
-	// (workflow's entryWork, StopForChildren): it is the task the worker was given for that entry,
-	// still after the turn that took it has ended and the claim's pending delivery is gone
-	// (dispatch://INFRA-3320 R9).
-	EntryRetryTask string
+	// EntryGivenTask is the last task the role was given for the entry EntryGivenEntry names, as
+	// it was composed, before the daemon decorated its send with the base-merge sentence a testing
+	// task of a parent ends with and the reviewer's two sentences of its review round, which
+	// EntryTask carries (workflow's enter and namingTheReviewRound). The raise of an entry writes
+	// the work it raises the entry with (workflow's enter), and a retry of the entry writes its
+	// own task, which names the retry's reason (workflow's restart): the architect's retry of a
+	// held phase, a todo on a held root and the operator's restart each hand the role the entry
+	// its row already names, and leave EntryTask as the entry was raised with it.
+	//
+	// Its one reader is the admission pass's stop of a parent whose start is written and not
+	// delivered or whose worker is in the middle of its phase (workflow's entryWork,
+	// StopForChildren): the hold keeps it, after the turn that took it has ended too, and the
+	// return decorates it once (dispatch://INFRA-3320 R9 and R12). It is read only where
+	// EntryGivenEntry is Entry and the row holds that entry's task, so what the hold keeps is a
+	// fact of the record and never a reading of the task's text.
+	EntryGivenTask string
+	// EntryGivenEntry is the entry EntryGivenTask was given for, written with it. It is 0, beside
+	// an empty task, on every row a daemon upgraded in place found and on every row a generation's
+	// clear reset (ClearGeneration). An earlier release names neither column, so an entry it
+	// raises leaves this at an entry before, which the read passes over.
+	EntryGivenEntry int64
 }
 
 // Completed says whether the role completed its current phase: its completion reported a commit

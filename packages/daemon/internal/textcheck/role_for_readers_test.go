@@ -50,12 +50,11 @@ type roleForReader struct {
 // start a hold kept, which is never admitted's. Where one reads accepting's architect it starts no
 // phase worker: the return of a parent whose pull request merged during the wait starts what a
 // move into accepting starts, a child's failed architect again and the accepting step's run
-// (ReturnFromChildren, through startEntered and startStandingStep in internal/workflow's
-// effects.go), and the stop holds accepting with no role told (StopForChildren), since the
-// architect's notice tells it. The release of a hold reads the held phase's role twice
-// (retryPhase), for the entry that phase stands on and for the restart, and a held phase is never
-// admitted. The owner walk reads no role: where it starts is its caller's to say
-// (record.NoticeStartsAtParent, for a notice).
+// (ReturnFromChildren, through start and startStandingStep in internal/workflow's effects.go), and
+// the stop holds accepting with no role told (StopForChildren), since the architect's notice tells
+// it. The release of a hold reads the held phase's role twice (retryPhase), for the entry that
+// phase stands on and for the restart, and a held phase is never admitted. The owner walk reads no
+// role: where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.

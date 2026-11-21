@@ -1913,8 +1913,9 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // holding the retried phase with the task the retry would have given its worker (heldTask) and the
 // retry's reason (awaitChildren), and starts nobody. The round of a reviewing release is not read
 // then: the held reviewing goes back as testing, whatever that round came to. A retry of testing
-// tells the tester of a parent to test the head merged with its base's tip (task,
-// withBaseMergeRun), as every testing task of a parent does.
+// tells the tester of a parent to test the head merged with its base's tip, as every testing task
+// of a parent does: the restart's start ends the task the retry composes with that sentence
+// (restart, withBaseMergeRunFor).
 // The release restarts the held phase on the entry it was raised on (restart raises none), so a
 // phase whose role stands on an entry a role's move back raised out of retro or merging is
 // restarted whatever its children are, as the admission pass leaves it (acceptedEntry,
@@ -1977,11 +1978,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	parent, err := e.testingParent(ctx, tx, issue)
-	if err != nil {
-		return "", err
-	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason, parent), freshSession)
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -2201,7 +2198,7 @@ func (e *Engine) isParent(ctx context.Context, tx pgx.Tx, issue record.Issue) (b
 	return e.store.HasDispatchChildren(ctx, tx, e.cfg.Project, issue.Key)
 }
 
-// testingParent is the parent flag of a task of the phase issue stands in (task,
+// testingParent is the parent flag of a task of the phase issue stands in (withBaseMergeRunFor,
 // ResumePhaseTask): whether issue is a parent (isParent) where that phase is testing, the one
 // phase whose task reads the flag, and false with no read of the copy for any other, so a start
 // of another phase, the admission pass's send of each owed entry among them, reads nothing more.
@@ -2339,14 +2336,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	from := issue.Phase
 	issue.Phase, issue.Hold = row.To, nil
-	// The task the start below hands the worker. A testing task of a parent asks for the round on
-	// the head merged with its base's tip (withBaseMergeRun), whether or not the parent waited, so
-	// the mirror is read for a move into testing alone (testingParent).
-	parent, err := e.testingParent(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
-	work := task(issue, handoff, pr, reason, parent)
+	// The task the start below hands the worker, as it is composed: the start decorates it, a
+	// testing task of a parent with the round on the head merged with its base's tip whether or
+	// not the parent waited, and a reviewer's with its round's sentences (start, enter).
+	work := task(issue, handoff, pr, reason)
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
 	// run earns record.Issue.TakenBack: it has stood in a phase. The mark is a fact about that run,
 	// not about the issue's history. It lasts as long as the run's record does — through the phase's
@@ -2414,13 +2407,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// A merge GitHub has already made is one of two moves that start a step no phase worker's
 	// start begins: no merger runs it, so it starts here under the agent its step names
 	// (startStandingStep), and its close ends it. Every other move starts what a move into its
-	// phase starts (startEntered): the phase's worker, and for accepting, whose role is the
-	// architect, a child's failed architect started again and the accepting step.
+	// phase starts (start): the phase's worker, and for accepting, whose role is the architect, a
+	// child's failed architect started again and the accepting step.
 	if mergedAlready {
 		if err := e.startStandingStep(ctx, tx, issue); err != nil {
 			return err
 		}
-	} else if err := e.startEntered(ctx, tx, issue, starting, work, from); err != nil {
+	} else if err := e.start(ctx, tx, issue, starting, work, from); err != nil {
 		return err
 	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {

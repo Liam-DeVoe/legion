@@ -35,19 +35,29 @@
 -- release raises keeps the phase of the entry before it; the rollback section of
 -- docs/kubernetes.md named below clears the column for that reason.
 --
--- phases.entry_retry_task is the task of the last retry of a role's entry
--- (record.PhaseRow.EntryRetryTask): the architect's retry of a held phase, a todo on a held root
--- and the operator's restart each hand the role the entry its row already names, with a task of
--- their own that names the retry's reason, and this release's retry (workflow's restart) writes
--- that task here, not in phases.entry_task, which stays the work the entry was raised with. The
--- column is '' until a retry, and is cleared at every raise of the role's entry (workflow's
--- enter) and at a generation's clear, beside entry_task. Its one reader is the admission pass's
--- stop of a parent in the middle of its phase, which holds this task before the entry's own work
--- (workflow's entryWork, StopForChildren), so the held start keeps the retry's words after the
--- turn that took it has ended and the claim's pending delivery is gone. An earlier release names
--- the column in no statement: its upserts leave it as it is, so an entry that release raises
--- keeps the retry task of the entry before it; the rollback section of
--- docs/kubernetes.md named below clears the column for that reason.
+-- phases.entry_given_task and phases.entry_given_entry are the last task a role was given for an
+-- entry, as it was composed, and that entry (record.PhaseRow.EntryGivenTask, EntryGivenEntry):
+-- the work a raise of the entry was composed with (workflow's enter), or the task of a retry of
+-- the entry, which names the retry's reason (workflow's restart: the architect's retry of a held
+-- phase, a todo on a held root and the operator's restart). phases.entry_task stays the text the
+-- role was sent when the entry was raised, which carries the daemon's decorations of a send: the
+-- base-merge sentence that ends a testing task of a parent and the reviewer's two sentences of its
+-- review round. A generation's clear resets both columns beside entry_task. Their one reader is
+-- the admission pass's stop of a parent whose start is written and not delivered or whose worker
+-- is in the middle of its phase (workflow's entryWork, StopForChildren): it holds the given task
+-- where entry_given_entry is the row's entry and the row holds that entry's task, and the return
+-- decorates what it holds once.
+--
+-- The migration leaves every row it finds at '' and 0 and fills nothing in: the stop reads such a
+-- row, and every row whose given entry is not its entry, as one whose entry the release before
+-- raised. That release stored entry_task as it was composed for every role but the reviewer,
+-- since it adds no base-merge sentence, so the hold is entry_task: the work the entry was raised
+-- with, and not the task and reason of a retry that release made, which it recorded nowhere. It
+-- stored the reviewer's entry_task with the round's two sentences, so the reviewer's hold is its
+-- resume task (workflow's ResumePhaseTask), which carries neither, and the return names the round
+-- once. An earlier release names the two columns in no statement: its inserts leave them '' and
+-- 0, and its upserts leave them as they are, so an entry it raises leaves entry_given_entry at an
+-- entry before, which the stop passes over, and no rollback statement clears them.
 --
 -- A daemon of an earlier release cannot run on this schema while a parent is in awaiting_children:
 -- it does not know the phase, and a write of such a row that leaves the phase without clearing the
@@ -83,4 +93,5 @@ alter table issues add constraint issues_children_wait_shape check (
 alter table issues add column children_waited_at timestamptz;
 
 alter table phases add column entry_from text check (entry_from <> '');
-alter table phases add column entry_retry_task text not null default '';
+alter table phases add column entry_given_task text not null default '';
+alter table phases add column entry_given_entry bigint not null default 0;

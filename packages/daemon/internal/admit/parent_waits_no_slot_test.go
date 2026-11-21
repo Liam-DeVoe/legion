@@ -1318,6 +1318,78 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		assertStepWrites(t, pool, parent, start("step", 5, 1, 1), end("passed", "step", 5, 1, 1), start("retro", 0, 1, 1))
 	})
 
+	// A reviewer the admission pass stops in the middle of reviewing, whose pull request then
+	// merges during the wait, goes back to reviewing on the task it was given, and that task is
+	// named its round once, by the raise of the return's own entry (dispatch://INFRA-3320 R12,
+	// workflow's namingTheReviewRound): the return's task names one commit and one entry, the
+	// return's. The hold keeps the task as it was composed, with none of the round's sentences.
+	// Two entries are read: one this release raised, at the tester's pass, whose phases row keeps
+	// the task the reviewer was given as it was composed, and one the release before raised, whose
+	// stored task carries the round's sentences and which is held as the reviewer's resume work.
+	t.Run("a reviewer stopped in the middle of reviewing whose pull request merged during the wait comes back naming one commit and one entry", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			// stop records the parent with its reviewer in the middle of reviewing, its pull
+			// request #42 open, and answers the task the hold is to keep.
+			stop func(*testing.T, *pgxpool.Pool, *Admission) string
+		}{
+			{name: "on an entry this release raised", stop: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) string {
+				spSeedParent(t, pool, spParent, phase.Testing, true, nil)
+				pwPullRequest(t, pool, spParent, record.PullRequestOpen)
+				pwApplied(t, pool, admission, "api", "tested", intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester,
+					Claim: "tester", Summary: "every check passed", Verdict: "pass", Commit: "head-42", HandoffRecord: "test-1", HandoffVersion: 1})
+				reviewing := pnWorkerStart(t, pool, spParent, claim.RoleReviewer)
+				named := fmt.Sprintf(" Last reviewed commit: none. Review entry: %d.", reviewing.Entry)
+				if !strings.HasSuffix(reviewing.Task, named) {
+					t.Fatalf("the reviewer's start after the tester's pass = %+v, want its task ending with its round's sentences %q", reviewing, named)
+				}
+				putWorkerClaim(t, pool, spParent, spParent, claim.RoleReviewer, 1, supervise.StateWorking, "")
+				pwDeliver(t, pool, pwRoleToken(t, spParent, claim.RoleReviewer), reviewing)
+				return strings.TrimSuffix(reviewing.Task, named)
+			}},
+			{name: "on an entry the release before raised", stop: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) string {
+				token := pwMidPhase(t, pool, spParent, phase.Reviewing, supervise.StateWorking, "")
+				spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleReviewer, Claim: token, Entry: 3,
+					EntryTask: pwTask(spParent, phase.Reviewing) + " Last reviewed commit: none. Review entry: 3.", EntryRaisedAt: fixedNow.Add(-time.Hour)})
+				return workflow.ResumePhaseTask(issue(t, pool, spParent), false)
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				pool := migratedPool(t)
+				admission := pnAdmission(t, pool, 2)
+				composed := tc.stop(t, pool, admission)
+				seedMirrorChild(t, pool, spChild, "todo", spParent)
+
+				spPass(t, pool, admission)
+
+				wait := pwHeld(t, pool, spParent, phase.Reviewing, "the admission pass stopped the reviewer's reviewing phase", spChild+" (todo)")
+				pwApplied(t, pool, admission, "github", "merged", intake.PullRequestMerged{Repo: "acme/widgets", Number: 42, MergeSHA: "merge-42"})
+				stopped := spPhaseRow(t, pool, spParent, claim.RoleReviewer)
+				if back := pnChildDone(t, pool, admission); back.Phase != phase.Reviewing || back.ChildrenWait != nil {
+					t.Fatalf("the parent after its child is done = phase %s, held start %+v; want reviewing, the start it held", back.Phase, back.ChildrenWait)
+				}
+
+				work := pnWorkerStart(t, pool, spParent, claim.RoleReviewer).Task
+				for _, label := range []string{"Last reviewed commit:", "Review entry:"} {
+					if got := strings.Count(work, label); got != 1 {
+						t.Fatalf("the reviewer's task after the return = %q, which says %q %d times; want once", work, label, got)
+					}
+				}
+				row := spPhaseRow(t, pool, spParent, claim.RoleReviewer)
+				if entry := fmt.Sprintf(" Review entry: %d.", row.Entry); row.Entry != stopped.Entry+1 || !strings.HasSuffix(work, entry) {
+					t.Fatalf("the reviewer's task after the return = %q on its row's entry %d; want it to end with the return's entry %d, above the stopped %d: %q",
+						work, row.Entry, stopped.Entry+1, stopped.Entry, entry)
+				}
+				if named := pnMergedChildren(spParent, pnMerged(spChild, 51)); !strings.HasPrefix(work, wait.Task) || !strings.Contains(work, named) {
+					t.Fatalf("the reviewer's task after the return = %q, want the held task %q followed by %q", work, wait.Task, named)
+				}
+				if wait.Task != composed {
+					t.Fatalf("the held task = %q, want the task the reviewer was given as it was composed, %q, with none of its round's sentences", wait.Task, composed)
+				}
+			})
+		}
+	})
+
 	// The linger's hand-over of a closed tree's child in awaiting_children carries its run and the
 	// start it holds; the handed-over root is promoted as any is, and comes back as above.
 	t.Run("a linger's hand-over carries a waiting child whole, which is promoted holding no slot and comes back as above", func(t *testing.T) {

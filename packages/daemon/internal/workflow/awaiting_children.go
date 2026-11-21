@@ -44,12 +44,14 @@ type childrenHold struct {
 	// (record.OpenChildHolds).
 	Start phase.Phase
 	// Task is the task that start gives its worker, which the return carries
-	// (record.ChildrenWait.Task): the task a transition built, a retry's, the task a start
-	// written and not yet delivered carries, or the task the stopped phase's worker was given for
-	// the entry the phase stands on, its last retry's or else the work the entry was raised with
-	// (entryWork), each kept with no base-merge sentence (heldTask, withoutBaseMergeRun). The
+	// (record.ChildrenWait.Task): the task a transition built, a retry's, or the task the role's
+	// phases row keeps as the one its worker was given for the entry the phase stands on, a start
+	// of which is written and not delivered or in whose middle its worker stands (entryWork). Each
+	// is kept as it was composed, with none of the daemon's decorations of a send, the base-merge
+	// sentence and the reviewer's round sentences (heldTask, record.PhaseRow.EntryGivenTask). The
 	// return starts it where the start goes back as it was held, and builds a testing task of its
-	// own where a held testing, reviewing or accepting comes back as testing (ReturnFromChildren).
+	// own where a held testing, reviewing or accepting comes back as testing (ReturnFromChildren);
+	// the start decorates either once (start).
 	Task string
 	// Cause is what the start was for: the reason the notice the move replaces carried — a worker's
 	// own move back with its words — or else the completion, review, retry or stop that raised it
@@ -210,15 +212,15 @@ func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 }
 
 // heldTask is the task a start of to gives issue's worker, held while the parent waits on its
-// children: built as transition builds one (task), but with no base-merge sentence, which the
-// return adds once at the end of every testing task it starts, after the words that name the
-// return and the children that merged (ReturnFromChildren, withBaseMergeRun). So the testing task
-// the return builds for a held testing that the implementer's completion raised opens with the
-// held task, since both are built over the implementer's handoff. The transition's guard
-// (holdForChildren) and the release of a hold (retryPhase) both hold it.
+// children: built as transition builds one (task), as it was composed, with none of the
+// decorations the start would have added, which the return's start adds once to the task it
+// gives, after the words that name the return and the children that merged (ReturnFromChildren,
+// start). So the testing task the return builds for a held testing that the implementer's
+// completion raised opens with the held task, since both are built over the implementer's handoff.
+// The transition's guard (holdForChildren) and the release of a hold (retryPhase) both hold it.
 func heldTask(issue record.Issue, to phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
 	issue.Phase = to
-	return task(issue, handoff, pr, reason, false)
+	return task(issue, handoff, pr, reason)
 }
 
 // heldCause is what a start the transition's guard held was for (childrenHold.Cause): the reason
@@ -284,20 +286,24 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 //   - a parent in accepting, where no worker runs: it holds accepting, with the task that start
 //     is given (task, over the reviewer's handoff);
 //   - a parent whose start is written and not yet delivered — a start of the phase it stands in,
-//     owed its worker at its own generation: it holds that start with the task its queued row
-//     carries (queuedTask), and no role is told, since none has been given that phase;
-//   - a parent whose worker is in the middle of its phase: it holds that phase with the task its
-//     worker was given for the entry the phase stands on, as the role's phases row records it
-//     (entryWork) — after the architect's retry or the operator's restart, the retry's own
-//     (record.PhaseRow.EntryRetryTask), and otherwise the work the entry was raised with, as
-//     SendOwedEntry sends it — whether or not the turn that took that task has ended, and that
-//     worker is told on its own topic that its phase ended (childrenHold.Ended,
-//     record.PhaseEnded), which wakes a pod the idle rule released.
+//     owed its worker at its own generation: it holds that start with the task the role's phases
+//     row keeps as the one its worker was given for the entry the phase stands on (entryWork),
+//     which each start of that entry the daemon writes is composed from — the transition's raise
+//     of the entry and a retry of it each write it there first, the send of the entry to a claim
+//     behind it sends the text that raise stored, and a resume task sent at no entry names none of
+//     the entry's work — and no role is told, since none has been given that phase;
+//   - a parent whose worker is in the middle of its phase: it holds that phase with the task that
+//     same row keeps (entryWork) — after the architect's retry or the operator's restart, the
+//     retry's own, and otherwise the work the entry was raised with — whether or not the turn
+//     that took that task has ended, and that worker is told on its own topic that its phase
+//     ended (childrenHold.Ended, record.PhaseEnded), which wakes a pod the idle rule released.
 //
-// Each of those tasks but the resume task entryWork builds for a row that records no task was
-// built for a worker, so a testing task of a parent ends with the base-merge sentence, which the
-// hold keeps none of (withoutBaseMergeRun): the return adds it once to the testing task it starts
-// (returnTask).
+// Each of those tasks is held as it was composed, before the daemon decorated its send with the
+// base-merge sentence of a testing task of a parent and the reviewer's round sentences: the row
+// keeps the task that way (record.PhaseRow.EntryGivenTask), a fact of the record rather than a
+// reading of the task's text, and the return's start decorates the task it gives once (start). A
+// row whose entry a release before this one raised keeps no such task, and entryWork says what is
+// held for it.
 //
 // Every start the parent owes is finished in the same transaction (Store.FinishOutbox), so none
 // delivers later: the wait keeps its start on the record (record.ChildrenWait), and the return
@@ -341,17 +347,15 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		return false, err
 	}
 	hold := childrenHold{Start: issue.Phase, Open: open}
-	switch due, owes := undeliveredStart(issue, owed); {
+	switch {
 	case issue.Phase == phase.Accepting:
 		review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 		if err != nil {
 			return false, err
 		}
-		hold.Task, hold.Cause = task(issue, review, pr, "", false), "its reviewed head waited in accepting for the architect's sign-off"
-	case owes:
-		if hold.Task, err = e.queuedTask(ctx, tx, issue, due, entry); err != nil {
-			return false, err
-		}
+		hold.Task, hold.Cause = task(issue, review, pr, ""), "its reviewed head waited in accepting for the architect's sign-off"
+	case undeliveredStart(issue, owed):
+		hold.Task = entryWork(issue, entry)
 		hold.Cause = fmt.Sprintf("its start of %s was written and had not reached the %s", issue.Phase, role)
 	default:
 		hold.Task = entryWork(issue, entry)
@@ -361,7 +365,6 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 			return false, err
 		}
 	}
-	hold.Task = withoutBaseMergeRun(hold.Task)
 	for _, start := range owed {
 		if err := e.store.FinishOutbox(ctx, tx, start.ID, start.LeaseToken); err != nil {
 			return false, fmt.Errorf("finish the start of %s's %s before its wait on its children: %w", issue.Key, start.Role, err)
@@ -370,16 +373,16 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 	return true, e.awaitChildren(ctx, tx, issue, hold)
 }
 
-// undeliveredStart is the start of the phase issue stands in that it owes that phase's worker at
-// its own generation, among owed: the start written and not yet delivered that StopForChildren
-// holds.
-func undeliveredStart(issue record.Issue, owed []record.OwedStart) (record.OwedStart, bool) {
+// undeliveredStart says whether owed holds a start of the phase issue stands in that it owes that
+// phase's worker at its own generation: the start written and not yet delivered that
+// StopForChildren holds.
+func undeliveredStart(issue record.Issue, owed []record.OwedStart) bool {
 	for _, start := range owed {
 		if start.Phase == issue.Phase && start.Generation == issue.Generation && start.Role == RoleFor(issue.Phase) {
-			return start, true
+			return true
 		}
 	}
-	return record.OwedStart{}, false
+	return false
 }
 
 // acceptedEntry says whether row's entry was raised by a move out of retro or merging, the phases
@@ -389,28 +392,6 @@ func undeliveredStart(issue record.Issue, owed []record.OwedStart) (record.OwedS
 // that same entry (retryPhase).
 func acceptedEntry(row record.PhaseRow) bool {
 	return record.AcceptedPhase(row.EntryFrom)
-}
-
-// queuedTask is the task the start row due carries for issue, read from its role's queued
-// supervise rows (Store.RoleRun): the very task that start would have delivered, which for the
-// retry of a held phase is the retry's own and not its entry's. A row no longer queued — its lane
-// finished it after the pass read it — leaves the task entry records, the role's phases row the
-// caller read (entryWork), which for such a retry is the retry's too.
-func (e *Engine) queuedTask(ctx context.Context, tx pgx.Tx, issue record.Issue, due record.OwedStart, entry record.PhaseRow) (string, error) {
-	token, err := stepClaim(issue, issue.Key, due.Role)
-	if err != nil {
-		return "", err
-	}
-	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, due.Role, due.Generation)
-	if err != nil {
-		return "", err
-	}
-	for _, queued := range run.Queued {
-		if queued.ID == due.ID && queued.Request.Task != "" {
-			return queued.Request.Task, nil
-		}
-	}
-	return entryWork(issue, entry), nil
 }
 
 // ReturnFromChildren takes issue back from awaiting_children once no open Dispatch child stands
@@ -424,13 +405,16 @@ func (e *Engine) queuedTask(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 //     carries the Handoff line of the implementer's last handoff and names the held start and its
 //     reason (returnTask).
 //   - Each task it starts names every child of the wait (record.ChildrenWait.Children) that
-//     merged during it, with its pull request (mergedChildren), and a testing task of a parent
-//     ends with the base-merge sentence once (withBaseMergeRun). No task asks for a forward
-//     merge: the tester's merge with the base finds a conflict that is still there, and the
-//     implementer merges forward once GitHub reads the pull request CONFLICTING (R10).
+//     merged during it, with its pull request (mergedChildren). The task is composed here, and
+//     its start decorates it once, as every start into a phase does (start, enter): a testing
+//     task of a parent ends with the base-merge sentence (withBaseMergeRun), and a reviewer's
+//     with the sentences of its round, which name the entry the return raises
+//     (namingTheReviewRound); the held task carries neither (childrenHold.Task). No task asks for
+//     a forward merge: the tester's merge with the base finds a conflict that is still there, and
+//     the implementer merges forward once GitHub reads the pull request CONFLICTING (R10).
 //   - A parent whose pull request merged during the wait goes back to the very start it held, on
 //     the task it held, and keeps today's path for a merged pull request from there: the return
-//     starts what a move into that phase starts (startEntered). A held accepting goes back to
+//     starts what a move into that phase starts (start). A held accepting goes back to
 //     accepting, where no worker starts: a child's own architect whose claim failed is started
 //     again (reviveArchitect), as at every phase start of a child, and the accepting step starts
 //     under the architect that owns the issue, so the sign_off ends its run. Its architect learns
@@ -497,7 +481,7 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
 		return err
 	}
-	if err := e.startEntered(ctx, tx, back, role, work, phase.AwaitingChildren); err != nil {
+	if err := e.start(ctx, tx, back, role, work, phase.AwaitingChildren); err != nil {
 		return err
 	}
 	if starts {
@@ -509,22 +493,17 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 }
 
 // returnTask is the task the return out of awaiting_children hands the role it starts, back being
-// the issue in the phase the return takes it to (ReturnFromChildren). asTesting is a held testing,
-// reviewing or accepting that comes back as testing on an open pull request: its task is built as
-// a transition builds one (task) over the implementer's phases row, so it carries the Handoff line
-// of the implementer's last handoff, which the tester reads, with a reason that names the held
-// start and its reason. Every other start goes back on the task it held, which carries the reason
-// its transition wrote. Either task names the children of held that merged during the wait
-// (mergedChildren), and a testing task of a parent ends with the base-merge sentence once
-// (withBaseMergeRun): no held task carries it (childrenHold.Task, withoutBaseMergeRun).
+// the issue in the phase the return takes it to (ReturnFromChildren), as it is composed: the start
+// decorates it once (start). asTesting is a held testing, reviewing or accepting that comes back as
+// testing on an open pull request: its task is built as a transition builds one (task) over the
+// implementer's phases row, so it carries the Handoff line of the implementer's last handoff,
+// which the tester reads, with a reason that names the held start and its reason. Every other
+// start goes back on the task it held, which carries the reason its transition wrote. Either task
+// names the children of held that merged during the wait (mergedChildren).
 func (e *Engine) returnTask(ctx context.Context, tx pgx.Tx, held record.ChildrenWait, back record.Issue, pr *record.PullRequest,
 	asTesting bool,
 ) (string, error) {
 	merged, err := e.mergedChildren(ctx, tx, back.Key, held.Children)
-	if err != nil {
-		return "", err
-	}
-	parent, err := e.testingParent(ctx, tx, back)
 	if err != nil {
 		return "", err
 	}
@@ -533,7 +512,7 @@ func (e *Engine) returnTask(ctx context.Context, tx pgx.Tx, held record.Children
 		if merged != "" {
 			work += " " + merged + "."
 		}
-		return withBaseMergeRun(work, back.Phase, parent), nil
+		return work, nil
 	}
 	implementer, err := e.phaseRow(ctx, tx, back.Key, claim.RoleImplementer)
 	if err != nil {
@@ -548,7 +527,7 @@ func (e *Engine) returnTask(ctx context.Context, tx pgx.Tx, held record.Children
 	if merged != "" {
 		reason += ". " + merged
 	}
-	return task(back, implementer, pr, reason, parent), nil
+	return task(back, implementer, pr, reason), nil
 }
 
 // mergedChildren names each of children, the children a wait of parent was on

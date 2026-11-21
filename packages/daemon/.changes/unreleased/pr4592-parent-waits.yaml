@@ -11,11 +11,18 @@ body: |-
   message, the kind #4464 stopped writing for a conflict, which migration
   `20261119185013_outbox_kinds_with_the_basis_seeds` keeps in the outbox's kind check. That
   worker's pending task for the phase is retired (the supervise op `retire_task`). The start held
-  for a worker stopped in the middle of its phase is the task that worker was given for the entry
-  the phase stands on: after a retry, the retry's task, whether or not the worker's turn has
-  ended, which a retry now records on the role's phases row (`phases.entry_retry_task`), and
-  otherwise the work that entry was raised with, never the bare resume task a catch-up or a boot
-  gives. Where the move drops a merge forward of the parent's pull request that has not landed, a
+  for a worker stopped in the middle of its phase, or for a start not yet delivered, is the task
+  that worker was given for the entry the phase stands on: after a retry, the retry's task,
+  whether or not the worker's turn has ended, and otherwise the work that entry was raised with,
+  never the bare resume task a catch-up or a boot gives. The hold keeps that task as it was
+  composed, before the daemon added the base-merge sentence of a tester of a parent or the
+  reviewer's two sentences of its review round, which the return adds once to the task it gives
+  back: the raise of an entry and each retry of it record the task they give on the role's phases
+  row with the entry it is for (`phases.entry_given_task` and `phases.entry_given_entry`), and the
+  hold reads it only for the entry the row stands on. On an entry the release before raised, the
+  hold is that entry's own work, and a reviewer's is its resume task, since that release stored
+  the reviewer's task with its round's sentences. Where the move drops a merge forward of the
+  parent's pull request that has not landed, a
   stopped worker other than the implementer is told to write and push nothing more, since the
   implementer may be merging
   in the workspace they share, and the implementer is told of the dropped merge forward, with
@@ -37,7 +44,8 @@ body: |-
   head merged with the tip of the pull request's base branch once it carries the children's
   merges, in a checkout of its own, and to record each result with that base commit. Migration
   `20261114232555_awaiting_children` adds the phase, the held start with `children_wait_children`,
-  `children_waited_at`, `phases.entry_from` and `phases.entry_retry_task`. A caller below daemon
+  `children_waited_at`, `phases.entry_from`, `phases.entry_given_task` and
+  `phases.entry_given_entry`. A caller below daemon
   API contract 212 is served such a parent's `phase` as `admitted` and its held word as
   `children_first`. The first admission
   pass after the deploy moves every started parent of a running tree (in `planning` through
@@ -46,6 +54,7 @@ body: |-
   the backlog or triage and never released among them, and where such a parent's worker is in the
   middle of its phase it retires that worker's task and sends that worker a `phase_ended` message
   in the middle of its turn. `docs/kubernetes.md` gives a read that lists those parents before the
-  deploy, and says how to roll the release back.
+  deploy, as the first step of the section "Rolling back the release that holds a parent's start
+  while a child of it is open", and says there how to roll the release back.
 custom:
     Issue: pr4592
