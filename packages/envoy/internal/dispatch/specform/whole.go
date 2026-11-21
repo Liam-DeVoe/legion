@@ -232,9 +232,10 @@ func (w *wholeText) load() {
 // text, an address or a sentence of a title, changes none of its words. A place of the text that
 // is no sentence of the line, which this reading cannot write, refuses the way out, and so does a
 // way out that writes a backtick in a sentence after a backtick that nothing closes (opened),
-// which would take the sentences between into code font, and one that makes ste-lint read a
-// sentence as more lines than it did (ste.Lines), which would end a piece and a list item where
-// this reading does not: none passes unread.
+// which would take the sentences between into code font: neither passes unread. No way out that
+// a rule writes holds a line break that ste-lint reads (ste.Lines): its words are a word of
+// ste-lint, an address or a sentence without the white space at its ends, in a text that ste-lint
+// reads as one line or that this reading reads whole (lines).
 func (w *wholeText) passes(finding wayKey, way wayOut, places []unitKey) (passed, read bool) {
 	key := wholeWay{finding, way}
 	if passed, ok := w.passed[key]; ok {
@@ -253,7 +254,6 @@ func (w *wholeText) passes(finding wayKey, way wayOut, places []unitKey) (passed
 			passed = passed && !(ticks && w.opened[index])
 			if _, ok := changed[index]; !ok {
 				text := strings.ReplaceAll(w.spans[index], way.from, way.to)
-				passed = passed && (w.lines || ste.Lines(text) == ste.Lines(w.spans[index]))
 				changed[index] = writtenSentence{text, ste.SpreadOf(text)}
 			}
 		}

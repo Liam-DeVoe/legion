@@ -236,8 +236,15 @@ func (j *wayJudge) offered(unit unitKey, rule Rule, from string, ways [maxWays]w
 	// "Web.Config"), which is a finding of its own, or in an address that a colon makes a remote
 	// path there ("deploy@build.example.com:."), which is none. So the judge reads the way out in
 	// those sentences too (also), where it must give no new finding, and the finding's own rule
-	// need not give fewer. It reads at most maxJudgedInSentence of them, so that the work of a
-	// way out stays in proportion to the sentences of its finding.
+	// need not give fewer. Each such reading reads a whole sentence, and one name can end every
+	// sentence of a text, so with no bound one finding's way out would read the whole text and a
+	// text of many such findings would cost the square of its length. The judge reads at most
+	// maxJudgedInSentence such sentences for a finding, so a way out reads at most that many beyond
+	// its own places, and a judgment at most that many for each finding, whose count the bound of
+	// a sentence's findings already holds in proportion to the text: the work stays linear, as the
+	// work table measures for the places themselves. Any fixed bound keeps it linear; this one is
+	// the bound of a sentence's findings, so the readings of the sentences where only the words
+	// stand are at most as many as those of the sentences that hold the finding can be.
 	var also []unitKey
 	if given.ways != ([maxWays]wayOut{}) {
 		if also = j.alsoAt(from, places); len(also) > maxJudgedInSentence {

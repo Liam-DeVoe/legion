@@ -149,6 +149,12 @@ func sharedNote() *Footnote { return &Footnote{Label: "1", Body: "It reads Web.C
 // (Held.Shown), where the stop and the space end a sentence; the rules of the form read one.
 const codedStatement = "After the night build of the main branch the job runs `make test. all` and mails ada@example.com the log and the list of tests that failed."
 
+// unclosedTick is a claim of two sentences whose first holds a backtick that nothing closes, of 24
+// and 12 words: ste-lint pairs that backtick with the first one that the code font of
+// "Web.Config" writes, so the words between are code font and the rest is one sentence of 33 words.
+const unclosedTick = "The job copies each report of the night build to the host of the build and keeps a copy for a week, as `x. " +
+	"Then it reads Web.Config and logs the size of each file at boot."
+
 // Each way out that a finding gives is a form that every rule takes. For each finding of each row
 // below, the test applies each of its ways out, as the change of the text that the finding's ways
 // out are written from (wayOut), at each place of the finding's words (withWayOut), and judges the
@@ -282,6 +288,10 @@ func TestEachWayOutOfARefusalPasses(t *testing.T) {
 		// The first instruction ends at a comma, so a condition after that comma governs the
 		// instruction after it, and the split, which would cut it off, is no way out.
 		own(procedureOf("Read the log, when the run ends, send the report.")),
+		// A backtick that nothing closes before the sentence: the code font of the name would close
+		// it, and take the stop between into code font, so the rules would read one sentence of 33
+		// words; only the space is left.
+		own(claimOf(unclosedTick)),
 	} {
 		c := planted()
 		texts := row.read(t)
@@ -425,6 +435,7 @@ func TestAWayOutStaysWhereTheOtherFindingsStayAsTheyWere(t *testing.T) {
 		{own(claimOf(`He said "Send it to ada@example.com." Then the job copies the log to ada@example.com each night after the build ends.`)),
 			map[Rule]int{rulePerson: 2}},
 		{own(procedureOf("Read the log, when the run ends, send the report.")), map[Rule]int{ruleInstructions: 1}},
+		{own(claimOf(unclosedTick)), map[Rule]int{ruleStopNoSpace: 1}},
 	} {
 		got := map[Rule]int{}
 		for _, each := range judgedAll(planted(), test.row.read(t)) {
