@@ -23,10 +23,10 @@ type Copy[V any] struct {
 	revisions map[string]uint64
 	marks     marks
 	readEpoch uint64
-	// taken holds, for each key a write site took after a read of the stream had begun and before
-	// that read's BeginRead, the watcher's stream-read count at the take (Watcher.StreamReads);
-	// begun is the latest Read.StreamRead a BeginRead has seen. A take with no read in that gap
-	// records nothing, so taken holds only the keys of the gaps not yet begun.
+	// taken holds, for each key a write site applied after a read of the stream had begun and
+	// before that read's BeginRead, the watcher's stream-read count at the take
+	// (Watcher.StreamReads); begun is the latest Read.StreamRead a BeginRead has seen. A take with no
+	// read in that gap, and one the fence dropped, records nothing (stamp).
 	taken map[string]uint64
 	begun uint64
 }
@@ -96,7 +96,7 @@ func (c *Copy[V]) Remove(key string) {
 // as the one the fence belongs to, and, for a recreated bucket whose revisions number from 1
 // again, no fence. Every entry stays.
 //
-// The read's marks start with every key a write site took (Put, Apply, Evict) once the read's
+// The read's marks start with every key a write site applied (Put, Apply, Evict) once the read's
 // stream read had begun (Read.StreamRead), at a revision past the last sequence that stream read
 // found (Read.LastSeq): a write-through, read-through or delete whose record the bucket stored
 // after that read of the stream, and which reached the copy before this call. One the watcher's
@@ -105,14 +105,17 @@ func (c *Copy[V]) Remove(key string) {
 // row the bucket holds, until that update arrived, or until the next read when the connection
 // ended first.
 //
-// The marks go by when the copy took a key, not by its revision alone: a key taken before the
-// stream read at a revision past its last sequence is one the bucket's sequence space no longer
-// reaches - a JetStream restore keeps the stream's creation time, so the watch sees no recreated
-// bucket - and the read removes it if it does not find it, as it removes any key it does not
-// find. Three gaps are still removed until their record arrives: a recreated bucket's first read,
-// which clears the fence first; a record the replaced watcher delivered in the gap (Delivered
-// takes no stream-read count); and, of two watches that overlap, a take between their two stream
-// reads when the earlier one installs last.
+// The marks go by when the copy applied a key, not by its revision alone, and a take the fence
+// dropped counts for nothing, since the revision the fence holds is not that take's. A key the
+// copy took before the stream read at a revision past its last sequence is one the bucket's
+// sequence space no longer reaches - a JetStream restore keeps the stream's creation time, so the
+// watch sees no recreated bucket - and the read removes it, and its fence, if it does not find it,
+// as it removes any key it does not find; the restored bucket's own record then reaches the copy
+// when the watcher delivers it. Three gaps are still removed until their record arrives: a
+// recreated bucket's first read, which clears the fence first; a record the replaced watcher
+// delivered in the gap (Delivered takes no stream-read count); and, of two watches that overlap,
+// every take after the earlier watch's stream read that its snapshot lacks, when the earlier one
+// installs last, since the later one's BeginRead has already dropped those takes' counts.
 func (c *Copy[V]) BeginRead(read Read) {
 	c.marks.begin()
 	c.readEpoch = read.Epoch
@@ -156,6 +159,7 @@ func (c *Copy[V]) Put(w *Watcher, epoch uint64, key string, value V, revision ui
 		return Fenced
 	}
 	c.store(key, value, revision)
+	c.stamp(w, key)
 	return Applied
 }
 
@@ -167,7 +171,11 @@ func (c *Copy[V]) Apply(w *Watcher, epoch uint64, entry Entry) (Outcome, error) 
 	if !c.current(w, epoch, entry.Key) {
 		return Dropped, nil
 	}
-	return c.apply(entry)
+	outcome, err := c.apply(entry)
+	if outcome == Applied {
+		c.stamp(w, entry.Key)
+	}
+	return outcome, err
 }
 
 // Evict removes key at revision for a delete made through a handle of epoch whose own record the
@@ -180,6 +188,7 @@ func (c *Copy[V]) Evict(w *Watcher, epoch uint64, key string, revision uint64) O
 		return Fenced
 	}
 	c.evict(key, revision)
+	c.stamp(w, key)
 	return Applied
 }
 
@@ -194,20 +203,25 @@ func (c *Copy[V]) FenceFor(epoch uint64, key string) uint64 {
 }
 
 // current reports whether a result through a handle of epoch may reach the copy, and marks key
-// for the read under way when it may. A take after a stream read that no read has begun on yet
-// is recorded for that read (BeginRead).
+// for the read under way when it may.
 func (c *Copy[V]) current(w *Watcher, epoch uint64, key string) bool {
 	if w.Epoch() != epoch {
 		return false
 	}
 	c.marks.mark(key)
+	return true
+}
+
+// stamp records key, which a write site has just applied, for the read whose stream read has begun
+// and which has not begun yet (BeginRead), with the watcher's stream-read count. A take with no such
+// read records nothing.
+func (c *Copy[V]) stamp(w *Watcher, key string) {
 	if at := w.StreamReads(); at > c.begun {
 		if c.taken == nil {
 			c.taken = map[string]uint64{}
 		}
 		c.taken[key] = at
 	}
-	return true
 }
 
 // fenced reports whether the fence drops a result for key at revision: the copy already took a

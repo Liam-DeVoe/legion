@@ -93,8 +93,9 @@ type Read struct {
 	// request. 0 is a stream that had stored nothing.
 	LastSeq uint64
 	// StreamRead numbers that read of the stream among every one this watcher's watches began
-	// (Watcher.StreamReads), counting from 1: a key the copy took through a write site once that
-	// read had begun, at a revision past LastSeq, is the read's evidence of it (Copy.BeginRead).
+	// (Watcher.StreamReads), counting from 1: a key a write site applied once that read had begun,
+	// at a revision past LastSeq, is the read's evidence of it (Copy.BeginRead); a take the fence
+	// dropped is no evidence.
 	StreamRead uint64
 }
 
