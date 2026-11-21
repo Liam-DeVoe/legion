@@ -57,7 +57,7 @@ func TestVerifyDoesNotCallAnEndedRequestAForgery(t *testing.T) {
 	// on the key-set read is what fails. It fails for certain: the context has
 	// ended before Verify, so *Keys gives up its wait at once, and the error
 	// carries that context's end. The read itself runs detached from the caller
-	// and reaches the issuer all the same (TestReviewReadOutlivesTheCallerThatStartedIt);
+	// and reaches the issuer all the same (TestKeyReadOutlivesTheCallerThatStartedIt);
 	// the delay keeps it the slow side, so the wait cannot instead see it finish.
 	issuer.DelayKeys(2 * time.Second)
 

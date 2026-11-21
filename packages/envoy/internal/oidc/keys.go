@@ -95,6 +95,9 @@ type Keys struct {
 	HTTPClient *http.Client
 
 	jwksURI string
+	// now is the clock every decision and every read's end is taken from: time.Now, which a test
+	// replaces to move past RetrySpacing or Lifetime without waiting.
+	now func() time.Time
 
 	// mu guards everything below, and every Key decides what to do under it alone (plan), so no
 	// decision rests on a look another caller's read has moved on from.
@@ -153,6 +156,7 @@ func NewKeysAt(jwksURI string) *Keys {
 		FetchTimeout: DefaultKeysFetchTimeout,
 		HTTPClient:   &http.Client{},
 		jwksURI:      jwksURI,
+		now:          time.Now,
 	}
 }
 
@@ -193,19 +197,19 @@ func (k *Keys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, erro
 func (k *Keys) plan(ctx context.Context, kid, alg string) (*keysFetch, crypto.PublicKey, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	now := time.Now()
+	now := k.now()
 	if k.fetched.IsZero() {
 		if k.inFlight() {
 			return k.last, nil, nil
 		}
-		return k.start(ctx, now), nil, nil
+		return k.start(ctx), nil, nil
 	}
 	stale := now.Sub(k.fetched) >= k.Lifetime
 	key, err := selectKey(k.keys, kid, alg)
 	switch {
 	case err == nil:
 		if stale && !k.inFlight() && !k.failedWithin(now) {
-			k.start(ctx, now)
+			k.start(ctx)
 		}
 		return nil, key, nil
 	case !stale && !errors.Is(err, ErrNoKey):
@@ -224,7 +228,7 @@ func (k *Keys) plan(ctx context.Context, kid, alg string) (*keysFetch, crypto.Pu
 	case k.last.err == nil && !stale && !windowOpen:
 		return nil, nil, err
 	}
-	return k.start(ctx, now), nil, nil
+	return k.start(ctx), nil, nil
 }
 
 // inFlight reports whether the last read is still running. The caller holds mu.
@@ -242,13 +246,13 @@ func (k *Keys) failedWithin(now time.Time) bool {
 // its cancellation, under FetchTimeout alone, so no caller that leaves ends it for the others,
 // and its outcome is kept when it ends: the set, or the failure, beside the last good set. The
 // caller holds mu.
-func (k *Keys) start(ctx context.Context, now time.Time) *keysFetch {
+func (k *Keys) start(ctx context.Context) *keysFetch {
 	read := &keysFetch{done: make(chan struct{})}
 	k.last = read
 	go func() {
 		keys, err := k.read(context.WithoutCancel(ctx))
 		k.mu.Lock()
-		read.finished, read.ended, read.keys, read.err = true, time.Now(), keys, err
+		read.finished, read.ended, read.keys, read.err = true, k.now(), keys, err
 		if err == nil {
 			k.keys, k.fetched = keys, read.ended
 		}

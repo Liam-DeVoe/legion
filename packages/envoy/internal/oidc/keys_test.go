@@ -45,6 +45,30 @@ func signs(t *testing.T, raw string, key crypto.PublicKey) bool {
 	return err == nil
 }
 
+// onTestClock puts keys on a clock the test moves by hand, so the test passes RetrySpacing,
+// Lifetime or MinRefresh by advancing it, never by sleeping.
+func onTestClock(keys *Keys) *testClock {
+	clock := newTestClock()
+	keys.now = clock.Now
+	return clock
+}
+
+// awaitLastRead waits for keys' last key-set read to end, whatever its outcome.
+func awaitLastRead(t *testing.T, keys *Keys) {
+	t.Helper()
+	keys.mu.Lock()
+	read := keys.last
+	keys.mu.Unlock()
+	if read == nil {
+		t.Fatal("no key-set read was started")
+	}
+	select {
+	case <-read.done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the key-set read did not end within 30 s")
+	}
+}
+
 func TestKeyAnswersThePublishedKey(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, signing := keysFor(t, issuer, "exchange-key")
@@ -86,12 +110,9 @@ func TestKeyReadsTheSetOnceForAnUnknownKeyIDInTheWindow(t *testing.T) {
 }
 
 func TestKeyFindsAKeyPublishedAfterTheWindowHasPassed(t *testing.T) {
-	const window = 200 * time.Millisecond
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
-	keys.MinRefresh = window
-	// Generated before the window opens: generating an RSA key takes long enough to pass a short
-	// window on its own, and this test is about the window, not about how slow that is.
+	clock := onTestClock(keys)
 	rotated := oidctest.NewKey(t, "rotated-in")
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
 		t.Fatalf("Key(the published key): %v", err)
@@ -108,7 +129,7 @@ func TestKeyFindsAKeyPublishedAfterTheWindowHasPassed(t *testing.T) {
 		t.Fatalf("key set read %d times inside the window, want 2", fetches)
 	}
 
-	time.Sleep(window)
+	clock.advance(keys.MinRefresh)
 	key, err := keys.Key(context.Background(), "rotated-in", testAlgorithm)
 	if err != nil {
 		t.Fatalf("Key(the new key) once the window has passed: %v", err)
@@ -116,6 +137,30 @@ func TestKeyFindsAKeyPublishedAfterTheWindowHasPassed(t *testing.T) {
 	token := issuer.Mint(t, rotated, issuer.Claims("system:serviceaccount:example-ns:example-worker", "broker"))
 	if !signs(t, token, key) {
 		t.Error("Key answered a key the newly published key's token does not verify against")
+	}
+}
+
+// A read outlives the caller that started it: the caller's context ends during its wait, the
+// issuer answers after that, and the next caller is served from the set that read filled, with
+// one key-set request in all. On a real server the request's context ends when its handler
+// returns, so a read tied to it would never fill the cache from an issuer slower than FetchWait.
+func TestKeyReadOutlivesTheCallerThatStartedIt(t *testing.T) {
+	issuer := oidctest.New(t)
+	keys, _ := keysFor(t, issuer, "exchange-key")
+	keys.FetchWait = 100 * time.Millisecond
+	issuer.DelayKeys(400 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	_, err := keys.Key(ctx, "exchange-key", testAlgorithm)
+	cancel()
+	if !errors.Is(err, ErrKeySet) {
+		t.Fatalf("Key on a context that ends during its wait = %v, want ErrKeySet", err)
+	}
+	awaitLastRead(t, keys)
+	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+		t.Fatalf("Key once the first caller's read has landed = %v, want the key from that read", err)
+	}
+	if fetches := issuer.JWKSFetches(); fetches != 1 {
+		t.Errorf("key set read %d times, want 1: the first caller's read outlives it", fetches)
 	}
 }
 
@@ -158,28 +203,24 @@ func TestKeysFromNewKeysWaitASlowReadOut(t *testing.T) {
 }
 
 // A set past its Lifetime that holds the key answers at once, from the cache, and the issuer is
-// read again behind the answer: an issuer that hangs costs a token the cache can judge nothing.
+// read again behind the answer: an issuer that hangs costs a token the cache can judge nothing. A
+// Key that waited on that read instead would get its failure once FetchTimeout ends it, not the
+// key.
 func TestKeyAnswersAStaleSetAtOnceAndReadsItAgainBehind(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
+	clock := onTestClock(keys)
 	keys.FetchTimeout = 500 * time.Millisecond
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
 		t.Fatalf("Key(the published key): %v", err)
 	}
-	keys.Lifetime = 0
+	clock.advance(keys.Lifetime)
 	issuer.DelayKeys(time.Minute)
 
-	start := time.Now()
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
-		t.Fatalf("Key(a key the stale set holds) while the issuer hangs: %v", err)
+		t.Fatalf("Key(a key the stale set holds) while the issuer hangs = %v, want the key from the cache", err)
 	}
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
-		t.Errorf("Key(a key the stale set holds) took %s while the issuer hangs, want an answer at once", elapsed)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for issuer.JWKSFetches() < 2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	awaitLastRead(t, keys)
 	if fetches := issuer.JWKSFetches(); fetches != 2 {
 		t.Errorf("key set read %d times, want 2: the stale set is read again behind its answer", fetches)
 	}
@@ -193,7 +234,8 @@ func TestKeyAnswersAStaleSetAtOnceAndReadsItAgainBehind(t *testing.T) {
 func TestKeyWaitsAtMostFetchWaitOnAnIssuerThatHangs(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
-	keys.FetchWait, keys.FetchTimeout = 200*time.Millisecond, time.Second
+	onTestClock(keys)
+	keys.FetchWait, keys.FetchTimeout = 200*time.Millisecond, 2*time.Second
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
 		t.Fatalf("Key(the published key): %v", err)
 	}
@@ -205,12 +247,13 @@ func TestKeyWaitsAtMostFetchWaitOnAnIssuerThatHangs(t *testing.T) {
 		if !errors.Is(err, ErrKeySet) || errors.Is(err, ErrNoKey) {
 			t.Errorf("call %d, a key id the set does not hold while the issuer hangs = %v, want ErrKeySet alone", call, err)
 		}
-		if elapsed > keys.FetchWait+100*time.Millisecond {
-			t.Errorf("call %d waited %s, want at most FetchWait, %s", call, elapsed, keys.FetchWait)
+		if elapsed >= keys.FetchTimeout {
+			t.Errorf("call %d waited %s, want FetchWait (%s), well inside the read's FetchTimeout (%s)", call, elapsed, keys.FetchWait, keys.FetchTimeout)
 		}
 		if call == 2 {
-			// Past FetchTimeout the read has failed, and its failure answers the third call.
-			time.Sleep(keys.FetchTimeout)
+			// The read ends at FetchTimeout, and its failure answers the third call: the test's
+			// clock has not moved, so RetrySpacing has not passed since it failed.
+			awaitLastRead(t, keys)
 		}
 	}
 	if fetches := issuer.JWKSFetches(); fetches != 2 {
@@ -220,23 +263,33 @@ func TestKeyWaitsAtMostFetchWaitOnAnIssuerThatHangs(t *testing.T) {
 
 // A stale set that holds the key answers every Key while the issuer fails fast, and is read
 // again behind those answers no more than once per RetrySpacing, not once per Key: an outage
-// multiplies no reads (review K3).
+// multiplies no reads.
 func TestKeyReadsAStaleSetAgainOncePerRetrySpacingWhileReadsFail(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
+	clock := onTestClock(keys)
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
 		t.Fatalf("Key(the published key): %v", err)
 	}
-	keys.Lifetime = 0
+	clock.advance(keys.Lifetime)
 	issuer.FailKeys(http.StatusInternalServerError)
-	for call := 1; call <= 20; call++ {
-		if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
-			t.Fatalf("call %d, a key the stale set holds while reads fail = %v, want the key", call, err)
+	answer := func(calls int) {
+		t.Helper()
+		for call := 1; call <= calls; call++ {
+			if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
+				t.Fatalf("call %d, a key the stale set holds while reads fail = %v, want the key", call, err)
+			}
+			awaitLastRead(t, keys)
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
+	answer(20)
 	if fetches := issuer.JWKSFetches(); fetches != 2 {
 		t.Errorf("key set read %d times for 20 answers from a stale set, want 2: the first read and one failed refresh, the next held back for RetrySpacing (%s)", fetches, keys.RetrySpacing)
+	}
+	clock.advance(keys.RetrySpacing)
+	answer(20)
+	if fetches := issuer.JWKSFetches(); fetches != 3 {
+		t.Errorf("key set read %d times once RetrySpacing has passed, want 3: one more failed refresh, and the next held back again", fetches)
 	}
 }
 
@@ -247,6 +300,7 @@ func TestKeyReadsAStaleSetAgainOncePerRetrySpacingWhileReadsFail(t *testing.T) {
 func TestKeyAnswersARotationDuringAnOutageUnavailableUntilAReadSucceeds(t *testing.T) {
 	issuer := oidctest.New(t)
 	keys, _ := keysFor(t, issuer, "exchange-key")
+	clock := onTestClock(keys)
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
 		t.Fatalf("Key(the published key): %v", err)
 	}
@@ -257,12 +311,13 @@ func TestKeyAnswersARotationDuringAnOutageUnavailableUntilAReadSucceeds(t *testi
 		if _, err := keys.Key(context.Background(), "rotated-in", testAlgorithm); !errors.Is(err, ErrKeySet) || errors.Is(err, ErrNoKey) {
 			t.Fatalf("call %d with the key set answering 500 = %v, want ErrKeySet alone", call, err)
 		}
+		awaitLastRead(t, keys)
 	}
 	if fetches := issuer.JWKSFetches(); fetches != 2 {
 		t.Errorf("key set read %d times, want 2: a failed read holds the next one back", fetches)
 	}
 	issuer.FailKeys(0)
-	time.Sleep(keys.RetrySpacing + 200*time.Millisecond)
+	clock.advance(keys.RetrySpacing)
 	key, err := keys.Key(context.Background(), "rotated-in", testAlgorithm)
 	if err != nil {
 		t.Fatalf("Key(the rotated key) once the key set reads again, past RetrySpacing and inside MinRefresh (%s): %v", keys.MinRefresh, err)
@@ -278,7 +333,7 @@ func TestKeyAnswersARotationDuringAnOutageUnavailableUntilAReadSucceeds(t *testi
 // Callers racing on a key id the set does not hold while the key set cannot be read are each
 // answered that the issuer is unavailable, never ErrNoKey, which the verifier calls a forgery and
 // the listener answers 401: the miss is decided under one lock, so no caller acts on a look taken
-// before another caller started the read that is now in flight (review B6). The race is narrow,
+// before another caller started the read that is now in flight. The race is narrow,
 // so the test runs it in many rounds, each on a fresh cache that has read the set once.
 func TestKeyAnswersRacingCallersDuringARotationOutageUnavailable(t *testing.T) {
 	const rounds, callers = 25, 64
@@ -358,7 +413,7 @@ func TestKeyReadsTheSetOnceForConcurrentCallers(t *testing.T) {
 // what bounds the issuer's load during a cold outage is that the reads never overlap: every caller
 // that arrives while a read is in flight waits on that read rather than starting its own. Against
 // an issuer that fails slowly and one that hangs, many concurrent cold callers cost one key-set
-// request, and each is answered that the set could not be read (review K3).
+// request, and each is answered that the set could not be read.
 func TestKeyJoinsTheColdReadInFlightWhileTheIssuerFails(t *testing.T) {
 	for _, outage := range []struct {
 		name  string
