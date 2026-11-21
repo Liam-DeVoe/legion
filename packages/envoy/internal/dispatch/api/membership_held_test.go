@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,7 +65,7 @@ func (f *standingFake) answers(standing identity.Standing, err error) {
 func (f *standingFake) askedSoFar() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]string(nil), f.asked...)
+	return slices.Clone(f.asked)
 }
 
 // refusingRefresher is Google refusing every refresh (invalid_grant), counting the refreshes.
@@ -545,8 +546,8 @@ func serveWithBodyHeld(t *testing.T, handler http.Handler, request *http.Request
 		defer close(answered)
 		handler.ServeHTTP(recorder, request)
 	}()
-	var release sync.Once
-	defer release.Do(func() { close(body.release) })
+	release := sync.OnceFunc(func() { close(body.release) })
+	defer release()
 	select {
 	case <-body.reading:
 	case <-answered:
@@ -555,7 +556,7 @@ func serveWithBodyHeld(t *testing.T, handler http.Handler, request *http.Request
 		t.Fatalf("%s %s did not begin reading its body within 30 s", request.Method, request.URL.Path)
 	}
 	whileHeld()
-	release.Do(func() { close(body.release) })
+	release()
 	<-answered
 	return recorder
 }
