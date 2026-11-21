@@ -160,12 +160,14 @@ func (s *Store) write(ctx context.Context, identity State, b *batch) error {
 
 // sealRecord makes st, a record its write changed, ready to write to key: it advances the
 // generation where an existing record's snapshot moved and no mutation advanced it (hash and
-// generation are the record's as read), encodes it, and answers boundsRefusal's error when the
+// generation are the record's as read), settles it again where the write brought it back to the
+// snapshot it last published (resettle), encodes it, and answers boundsRefusal's error when the
 // record or its settlement would pass its bound.
 func sealRecord(key string, st *State, existing bool, hash string, generation uint64) ([]byte, error) {
 	if existing && st.Hash() != hash && st.Generation == generation {
 		bumpGeneration(st)
 	}
+	resettle(st)
 	buf, err := encodeRecord(st)
 	if err != nil {
 		return nil, err

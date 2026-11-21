@@ -225,6 +225,13 @@ type State struct {
 	EmittedCount   uint64            `json:"emitted_count"`
 	SettledEmitted bool              `json:"settled_emitted"`
 	Claim          *SettlementClaim  `json:"claim,omitempty"`
+	// SettledSnapshot is the snapshot (Hash) of the last settlement published for this record
+	// (MarkSettled). A write that brings the record back to that snapshot, with no claim in
+	// flight, leaves the head settled (resettle): consumers hold that snapshot already, so a
+	// suite that held the head only until its event showed GitHub does not count it publishes
+	// nothing. A record with none, which a listener of a release before the field wrote, settles
+	// again as it always did; such a listener drops the field at its next write of the record.
+	SettledSnapshot string `json:"settled_snapshot,omitempty"`
 	// Overflowed says the listener never settles this head again, because the head is past what it
 	// can publish: a check run or check suite was refused because it would take the record past
 	// maxRecordBytes or the record's settlement past maxSettlementBytes even with no commit status
@@ -1209,6 +1216,9 @@ func (s *Store) ReleaseClaim(key string, generation uint64) (bool, error) {
 // MarkSettled records a successfully published claim without changing its
 // generation. A re-arm that happened after publication keeps its newer snapshot
 // unsettled, but it must not erase the fact that the obsolete snapshot emitted.
+// The claim's snapshot is the one published, so it is the record's settled
+// snapshot from now on (State.SettledSnapshot), and a record already back at it
+// is settled (resettle).
 func (s *Store) MarkSettled(key string, generation uint64) (bool, error) {
 	_, marked, err := s.casState(key, func(state *State) (bool, error) {
 		if state.Claim == nil || state.Claim.Generation != generation {
@@ -1218,10 +1228,22 @@ func (s *Store) MarkSettled(key string, generation uint64) (bool, error) {
 		if state.Generation == generation && state.Claim.Hash == state.Hash() {
 			state.SettledEmitted = true
 		}
+		state.SettledSnapshot = state.Claim.Hash
 		state.Claim = nil
+		resettle(state)
 		return true, nil
 	})
 	return marked, err
+}
+
+// resettle settles st again, with no publication, where st is back at the snapshot of its last
+// published settlement (State.SettledSnapshot) and no claim is in flight: every consumer holds
+// that snapshot already. A record that holds no settled snapshot is left as it is.
+func resettle(st *State) {
+	if st.SettledEmitted || st.Claim != nil || st.SettledSnapshot == "" || st.Hash() != st.SettledSnapshot {
+		return
+	}
+	st.SettledEmitted = true
 }
 
 // markOverflowed marks key's record overflowed, so it never settles: NATS refused its settlement,

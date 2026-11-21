@@ -354,6 +354,93 @@ func TestARunningWorkflowDispatchRunDoesNotHoldThePullRequestsHead(t *testing.T)
 	}
 }
 
+// A settled head whose dispatched run's check_suite webhook arrives before that run's workflow_run
+// webhook is not settled again. The suite holds the head while its event is not known; once the
+// event says GitHub does not count the run, the suite leaves, the head's snapshot is the one it
+// last settled (State.SettledSnapshot), and nothing is published. Two controls take the same order:
+// a re-run of the pull_request run's ci-ok after it moves the snapshot, and the head settles again;
+// a record settled by an earlier release, which holds no settled snapshot, settles again as it
+// always did.
+func TestADispatchedSuiteSeenBeforeItsEventDoesNotSettleTheHeadAgain(t *testing.T) {
+	const rerun = pullRunCheck + 5000
+	for _, tc := range []struct {
+		name        string
+		rerun       bool
+		olderRecord bool
+		want        int
+	}{
+		{"the suite turns out uncounted", false, false, 1},
+		{"a re-run then moves the snapshot", true, false, 2},
+		{"a record an earlier release settled", false, true, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, cleanup := connectNATS(t)
+			defer cleanup()
+			store := openStore(t, conn)
+			handler := webhook.GitHubHandler(countedSecret, "@legion", "", unpublished{t}, store)
+			number := strconv.Itoa(countedNumber)
+			pub := &recPub{}
+			settle := func() {
+				t.Helper()
+				setLastEventAt(t, store, countedOwner, countedRepo, number, countedSHA, 0)
+				runSummaryTick(store, pub, time.Second, logging.New("test"))
+			}
+			countedPost(t, handler, "workflow_run", workflowRunBody(countedNumber, pullRunSuite, "pull_request"))
+			countedPost(t, handler, "check_run", checkRunBody(countedNumber, pullRunCheck, pullRunSuite, countedCheckRun, "completed", "failure", "2026-11-21T04:30:00Z"))
+			countedPost(t, handler, "check_suite", checkSuiteBody(countedNumber, pullRunSuite, "completed", "failure", "2026-11-21T04:30:01Z"))
+			waitCacheChecks(t, store, countedOwner, countedRepo, number, countedSHA, 1)
+			settle()
+			if got := pub.count(); got != 1 {
+				t.Fatalf("settlements = %d before the dispatched run, want 1", got)
+			}
+			settled := getState(t, store, countedOwner, countedRepo, number, countedSHA)
+			if tc.olderRecord {
+				dropSettledSnapshot(t, store, Key(countedOwner, countedRepo, number, countedSHA))
+			}
+
+			countedPost(t, handler, "check_suite", checkSuiteBody(countedNumber, dispatchSuite, "in_progress", "", "2026-11-21T04:31:00Z"))
+			countedPost(t, handler, "workflow_run", workflowRunBody(countedNumber, dispatchSuite, "workflow_dispatch"))
+			if tc.rerun {
+				countedPost(t, handler, "check_run", checkRunBody(countedNumber, rerun, pullRunSuite, countedCheckRun, "completed", "success", "2026-11-21T04:50:00Z"))
+			}
+			settle()
+			after := getState(t, store, countedOwner, countedRepo, number, countedSHA)
+			if got := pub.count(); got != tc.want {
+				t.Fatalf("settlements = %d, want %d: generation %d then %d, snapshot %s then %s",
+					got, tc.want, settled.Generation, after.Generation, settled.Hash(), after.Hash())
+			}
+			if !after.SettledEmitted {
+				t.Errorf("the head is not settled after the dispatched run's event: %+v", after)
+			}
+			if _, held := after.Suites[strconv.FormatInt(dispatchSuite, 10)]; held {
+				t.Errorf("the record still holds the dispatched run's suite: %+v", after.Suites)
+			}
+		})
+	}
+}
+
+// dropSettledSnapshot rewrites key's record without its settled snapshot, as a listener of a
+// release before the field writes it.
+func dropSettledSnapshot(t *testing.T, store *Store, key string) {
+	t.Helper()
+	entry, err := store.watcher.KV().Get(key)
+	if err != nil {
+		t.Fatalf("get the record: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(entry.Value(), &fields); err != nil {
+		t.Fatalf("decode the record: %v", err)
+	}
+	delete(fields, "settled_snapshot")
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("encode the record: %v", err)
+	}
+	if _, err := store.watcher.KV().Update(key, raw, entry.Revision()); err != nil {
+		t.Fatalf("write the record without its settled snapshot: %v", err)
+	}
+}
+
 // The store counts a GitHub Actions run only when an event GitHub documents as evaluated for a pull
 // request, merge_group or dynamic started it, and leaves every other event out. A ci-ok success of
 // higher id, from a suite of another run of the branch, replaces the pull_request run's failure
