@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -351,7 +352,12 @@ func storeUnreadableVersion(t *testing.T, database *store.Store, artifactID stri
 // request and the person's approval of that version are refused with the finding unreadable,
 // which names the version and the way out, and the read route says that the approval is refused.
 func TestABrowserEditCanStoreAVersionThatDispatchCannotRead(t *testing.T) {
-	handler, database, deps := newTestServer(t, testServerOptions{specRoots: "ACME-1", documentSocket: true})
+	// The last peer's departure stores version 2 before the server lets its connection go
+	// (settleLastPeer), but only while the settlement timer is still armed. The default delay of
+	// 20 ms can pass between the edit and the departure on a loaded machine: the timer then settles
+	// on a goroutine of its own, closeAndWait returns before version 2 is stored, and the read below
+	// finds no row. With a delay of an hour, the departure's settlement is the only one.
+	handler, database, deps := newTestServer(t, testServerOptions{specRoots: "ACME-1", documentSocket: true, settle: time.Hour})
 	tree := seedSpecFormTree(t, handler, database, deps)
 	issue := createFormIssue(t, tree.handler, tree.root, "A spec that a browser edits", "# Spec\n\n"+
 		formRequirement("clean", "Dispatch shows each record.")+"\n- Lead.\n\n  :::callout{#c1 kind=\"note\" title=\"T\"}\n  Gone.\n  :::\n")
@@ -366,9 +372,7 @@ func TestABrowserEditCanStoreAVersionThatDispatchCannotRead(t *testing.T) {
 		})
 		return nil
 	})
-	// The last peer's settlement is done when the server lets its connection go, and it stores what
-	// the room holds then: the room must hold the edit before the peer leaves (barrier), or a close
-	// that the server reads first settles version 1's text and stores no version 2.
+	// The peer leaves once the room holds the edit, as in the package's other browser edit tests.
 	peer.barrier(t)
 	peer.closeAndWait(t)
 	if _, err := pmdoc.ParseRendering(versionText(t, database, issue.PrimaryArtifactID, 2)); err == nil {
