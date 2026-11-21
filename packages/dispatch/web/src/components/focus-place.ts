@@ -16,13 +16,18 @@ import { ROW_SELECTOR } from "./row-marker";
  * place - a form opened there, an edit mode - and never on another item shown in that place, as
  * the Inbox's reading column names the question it shows (`SHOWN_ITEM_ATTRIBUTE`); else on the
  * same control in the row that moved up into that place, else on that row's first control, else
- * on the control now at its place or the nearest one before it that takes no typed text
- * (`takesText`), else on the region's own stop. A loss they did not cause leaves the focus on the
- * body, as the page did before it had a rescue, and scrolls nothing, save the exceptions
- * `leaveUncaused` names. A loss of a control the reader had scrolled out of their sight scrolls
- * nothing and focuses no control (`outOfSight`): the focus stays on the body, except in a dialog
- * or a panel, which takes it itself, for a loss the reader caused, and in an open modal dialog,
- * whose own stop takes it, for one they did not (`leaveUnseen`).
+ * on the control now at its place or the nearest one before it, else on the region's own stop. A
+ * component's hand-off walks back the same way inside its own container, and then tries the
+ * fallback the component names, else the region's own stop. Each walk back passes over every
+ * control that takes typed text (`takesText`) and every control the reader cannot see now
+ * (`inSightNow`). It lands a control with `land`, which scrolls a control partly in sight to its
+ * nearest edge and one wholly in sight not at all. A region's own stop takes the focus with no
+ * scroll (`focusOwnStop`). A loss the reader did not cause leaves the focus on the body, as the
+ * page did before it had a rescue, and scrolls nothing, save the exceptions `leaveUncaused`
+ * names. A loss of a control the reader had scrolled out of their sight scrolls nothing and
+ * focuses no control (`outOfSight`): the focus stays on the body, except in a dialog or a panel,
+ * which takes it itself, for a loss the reader caused, and in an open modal dialog, whose own stop
+ * takes it, for one they did not (`leaveUnseen`).
  */
 
 /** The form controls: the focus reaches one only while it is not `disabled` (`FOCUSABLE`), and a
@@ -112,6 +117,18 @@ interface Place {
  * to what `fallback` names for that container (a table row's fallback is the row itself, and a
  * row that has left the page names none).
  *
+ * The hand-off keeps the rescue's sight rule as well. It passes over each of those controls, the
+ * fallback included, that the reader cannot see now (`inSightNow`), and lands the first one in
+ * sight that takes the focus with `land`. A control partly in sight is scrolled to its nearest
+ * edge, the least distance that shows it whole. A control wholly in sight scrolls nothing. The
+ * browser's own scroll of a focused control would pull the page back to one out of sight: the
+ * Delivery page's **clear brush window**, with its Window select scrolled out above the window,
+ * scrolled the page 46 to 147 px back to that select. Where no control in sight takes the focus,
+ * the focus goes with no scroll to the own stop (`focusOwnStop`) of the region the container is
+ * in (`handOffRegionOf`): the dialog or panel holding it, else the shell's main content. Where
+ * that region is not in the page and drawn, nothing moves. Nothing moves either where neither the
+ * walk nor `fallback` names any control, and the page's rescue answers that loss.
+ *
  * The component puts the handler this returns on its root as `onFocus`, which every focus inside
  * it bubbles to, from a portal too, since React bubbles through its own tree. `containerOf` names
  * the container a focused element is counted in, or null for one outside every container, whose
@@ -150,10 +167,19 @@ export function useFocusPlace(
     place.current = null;
     if (held.element.isConnected || !focusOnDocument() || outOfSight(held.element)) return;
     if (!causedByReader(held.element)) return;
-    const placed = held.container.isConnected
-      ? walkBack(focusableIn(held.container), held.index)[0]
-      : undefined;
-    (placed ?? fallback(held.container))?.focus();
+    const walked = held.container.isConnected
+      ? walkBack(focusableIn(held.container), held.index)
+      : [];
+    const last = fallback(held.container);
+    const candidates = last === null ? walked : [...walked, last];
+    if (candidates.length === 0) return;
+    // One read of each box's style for the whole hand-off (`clippingBoxes`).
+    const clips = new Map<Element, boolean>();
+    for (const candidate of candidates) {
+      if (inSightNow(candidate, clips) && land(candidate)) return;
+    }
+    const region = handOffRegionOf(held.container);
+    if (region !== null) focusOwnStop(region);
   });
   return (event) => {
     const element = event.target;
@@ -256,6 +282,16 @@ function drawnIn(region: Element, main: HTMLElement | null): HTMLElement[] {
  *  one taken away. */
 function present(region: Element): boolean {
   return region.isConnected && rendered(region);
+}
+
+/** The region whose own stop takes the focus where a component's hand-off finds no control in
+ *  sight to land on (`useFocusPlace`): the dialog or panel holding `container` (`DIALOG`), as
+ *  `regionOf` reads it, else the shell's main content - the `main` element around `container`,
+ *  else the page's - while that region is in the page and drawn (`present`), else null. */
+function handOffRegionOf(container: Element): HTMLElement | null {
+  const region =
+    container.closest(DIALOG) ?? container.closest("main") ?? document.querySelector("main");
+  return region instanceof HTMLElement && present(region) ? region : null;
 }
 
 /** Whether `element` stands as a control the reader can use: not disabled, and drawn. A focus
@@ -1087,7 +1123,8 @@ function focusNoScroll(target: HTMLElement): boolean {
 
 /** Focuses `region` at its own stop without a scroll. A region with no Tab stop of its own is
  *  given `tabindex="-1"` for it. The page's rescue ends there for a loss the reader caused
- *  (`handOn`, `leaveUnseen`), and so does the selection bar's hand-off in a list
+ *  (`handOn`, `leaveUnseen`), a component's hand-off ends there where no control in sight takes
+ *  the focus (`useFocusPlace`), and so does the selection bar's hand-off in a list
  *  (`focusListStop`). */
 export function focusOwnStop(region: HTMLElement): void {
   if (!region.hasAttribute("tabindex")) region.tabIndex = -1;
@@ -1100,18 +1137,20 @@ export function focusOwnStop(region: HTMLElement): void {
  *  be typed into it: Delete group on the delivery editor's only group would walk back to the "New
  *  group name" box. The walk passes over it to the nearest control before it that takes no text.
  *  Where only such fields stand there, it offers nothing; a region still present, other than the
- *  document, takes the focus at its own stop (`handOn`), and a component's hand-off goes to its
- *  `fallback` (`useFocusPlace`). The page's rescue also passes over every control the reader
- *  cannot see (`inSightNow`), which a component's hand-off, whose walk stays inside its own
- *  container, need not. */
+ *  document, takes the focus at its own stop (`handOn`), and a component's hand-off tries its
+ *  `fallback` (`useFocusPlace`). Both the page's rescue and a component's hand-off also pass over
+ *  every control the walk offers that the reader cannot see now (`inSightNow`), as they reach it:
+ *  a landing scrolls its control into view (`land`), and the nearest control before the lost
+ *  place can lie far from where the reader is. */
 function walkBack(controls: readonly HTMLElement[], index: number): HTMLElement[] {
   return placesFrom(controls, index).filter((control) => !takesText(control));
 }
 
 /** Whether the reader can see any part of `element` now: its box meets the viewport and every box
  *  around it that clips it (`clippingBoxes`, which reads each box's style once in `clips`). The
- *  page's rescue reads it of each control its walk back reaches, as it reaches it, and the
- *  selection bar's hand-off reads it of each row mark it tries (`SelectionBar`'s `markShown`). */
+ *  page's rescue and a component's hand-off (`useFocusPlace`) read it of each control their walk
+ *  back reaches, as they reach it, the hand-off of its fallback too, and the selection bar's
+ *  hand-off reads it of each row mark it tries (`SelectionBar`'s `markShown`). */
 export function inSightNow(element: Element, clips: Map<Element, boolean>): boolean {
   return inSight(element, clippingBoxes(element, clips));
 }

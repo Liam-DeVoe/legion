@@ -1,12 +1,13 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { renderHook, waitFor } from "@testing-library/react";
+import { render, renderHook, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createElement, type ReactNode, useRef } from "react";
 
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { PANEL_ATTRIBUTE, useKeymap } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
-import { FRAME_WAIT_MS, SHOWN_ITEM_ATTRIBUTE, useFocusRescue } from "./focus-place";
+import { FRAME_WAIT_MS, SHOWN_ITEM_ATTRIBUTE, useFocusPlace, useFocusRescue } from "./focus-place";
 import { ROW_MARKER_ATTRIBUTE } from "./row-marker";
 
 // The page's focus rescue, read in happy-dom with the page built by hand. A focused element taken
@@ -14,6 +15,8 @@ import { ROW_MARKER_ATTRIBUTE } from "./row-marker";
 // (measured, INFRA-3135 round 7) nor in happy-dom: `lose` fires it as Chromium does before the
 // element goes, and a bare `remove()` is the Firefox case, which the rescue sees by watching the
 // page. A `blur()` fires its own.
+// A component's own hand-off (`useFocusPlace`) is read here too, in a line of buttons React draws
+// (`HandOffLine`).
 
 /** The main content the shell hands the rescue, as `app.tsx` hands it its `mainRef`. */
 const mainRef: { current: HTMLElement | null } = { current: null };
@@ -3122,4 +3125,278 @@ test("a change on a field whose value is typed text is no press, so the field's 
     }
   }
   expect(landed).toEqual(quiet);
+});
+
+/** A line of buttons, one per label, that hands its own focus off (`useFocusPlace`): each button
+ *  is counted in the line, and the line falls back to what `fallback` names. Drawn again with
+ *  fewer labels, it takes the others away, as a press that takes its own control away does. */
+function HandOffLine(props: {
+  fallback: () => HTMLElement | null;
+  labels: readonly string[];
+}): ReactNode {
+  const line = useRef<HTMLDivElement>(null);
+  const noteFocus = useFocusPlace(
+    (element) => (line.current?.contains(element) ? line.current : null),
+    props.fallback
+  );
+  return createElement(
+    "div",
+    { onFocus: noteFocus, ref: line },
+    props.labels.map((label) => createElement("button", { key: label, type: "button" }, label))
+  );
+}
+
+/** One move a hand-off asks of the page: a focus, or a scroll into view, of the element it names
+ *  (`nameOf`), with the options it asks with. */
+interface Move {
+  readonly move: "focus" | "scroll";
+  readonly of: string | null;
+  readonly options: unknown;
+}
+
+/** The name a case reads an element by: its `aria-label`, else its text. */
+function nameOf(element: Element): string | null {
+  return element.getAttribute("aria-label") ?? element.textContent;
+}
+
+/** A press in a `HandOffLine` that takes its own button away. */
+interface HandOffCase {
+  /** The control the line falls back to, else none. */
+  readonly fallback: HTMLElement | null;
+  /** The line's buttons, by label, in order. */
+  readonly labels: readonly string[];
+  /** How far down the window each button named here is laid out, in px (`placeAt`). A button not
+   *  named keeps happy-dom's own box, which reads as in sight. */
+  readonly laidOut: Readonly<Record<string, number>>;
+  /** The element the line is drawn at the end of. */
+  readonly parent: Element;
+  /** The button the press takes away. */
+  readonly pressed: string;
+}
+
+/** Draws `handed`'s line, lays its buttons out, focuses the pressed one, and takes it away, as
+ *  the press's own commit does. Answers where the focus landed - the page, or the element by its
+ *  name (`nameOf`) - and every move the hand-off asked of the page, in order. A focus is made as
+ *  asked; a scroll is only noted, as happy-dom scrolls nothing. No rescue is mounted, so the
+ *  loss reads as the reader's (`causedByReader`). */
+function handOff(handed: HandOffCase): { landed: string | null; moves: Move[] } {
+  const host = document.createElement("div");
+  handed.parent.append(host);
+  const fallback = () => handed.fallback;
+  const view = render(createElement(HandOffLine, { fallback, labels: handed.labels }), {
+    container: host,
+  });
+  try {
+    for (const button of host.querySelectorAll("button")) {
+      const top = handed.laidOut[button.textContent ?? ""];
+      if (top !== undefined) placeAt(button, top);
+    }
+    const pressed = [...host.querySelectorAll("button")].find(
+      (button) => button.textContent === handed.pressed
+    );
+    pressed?.focus();
+    const moves: Move[] = [];
+    const realFocus = HTMLElement.prototype.focus;
+    const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+      this: HTMLElement,
+      options?: FocusOptions
+    ) {
+      moves.push({ move: "focus", of: nameOf(this), options });
+      realFocus.call(this, options);
+    });
+    const scroll = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+      this: Element,
+      options?: boolean | ScrollIntoViewOptions
+    ) {
+      moves.push({ move: "scroll", of: nameOf(this), options });
+    });
+    try {
+      const left = handed.labels.filter((label) => label !== handed.pressed);
+      view.rerender(createElement(HandOffLine, { fallback, labels: left }));
+    } finally {
+      focus.mockRestore();
+      scroll.mockRestore();
+    }
+    const focused = document.activeElement;
+    const landed = focused === null || focused === document.body ? "the page" : nameOf(focused);
+    return { landed, moves };
+  } finally {
+    view.unmount();
+    host.remove();
+  }
+}
+
+/** A `<select>` named Window at the end of `parent`, laid out `top` px down the window: the
+ *  control a line falls back to, as the Delivery page's header falls back to its Window select. */
+function windowSelectIn(parent: Element, top: number): HTMLElement {
+  const select = controlOf("select");
+  select.setAttribute("aria-label", "Window");
+  parent.append(select);
+  placeAt(select, top);
+  return select;
+}
+
+/** Runs `body` with the page's main content in the document, named Main content, and takes it
+ *  away after. */
+function withMain<T>(body: (main: HTMLElement) => T): T {
+  const { main } = mainOf();
+  main.setAttribute("aria-label", "Main content");
+  try {
+    return body(main);
+  } finally {
+    main.remove();
+    mainRef.current = null;
+  }
+}
+
+/** The scroll `land` asks for: to the nearest edge, the least distance that shows the control
+ *  whole, which moves nothing for a control wholly in sight. */
+const NEAREST_EDGE = { block: "nearest", inline: "nearest" };
+
+// (cd) A component's own hand-off (`useFocusPlace`) passes over every control out of the reader's
+// sight, as the rescue's walk back does (cb): the control now at the lost one's place, under the
+// window's bottom edge, and the one before the lost place, above the window's top edge. The
+// nearest control in sight before them takes the focus. Where none of the line is in sight, the
+// line's fallback, in sight, takes it.
+test("a component's hand-off passes over its controls out of sight to the nearest in sight, else to its fallback", () => {
+  // Where each hand-off landed, and where it belongs.
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const oneShown of [true, false]) {
+    const named = oneShown ? "One in sight" : "none of the line in sight";
+    landed[named] = withMain(
+      (main) =>
+        handOff({
+          fallback: windowSelectIn(main, 100),
+          labels: ["One", "Two", "Three", "Four"],
+          laidOut: { Four: 2_000, One: oneShown ? 300 : -500, Two: -100 },
+          parent: main,
+          pressed: "Three",
+        }).landed
+    );
+    belongs[named] = oneShown ? "One" : "Window";
+  }
+  expect(landed).toEqual(belongs);
+});
+
+// (ce) Where nothing a component's hand-off can land on is in the reader's sight - the line's own
+// control before the lost one and the line's fallback, each scrolled out above the window, as the
+// Delivery page's Window select is for a reader scrolled below it - the focus goes, with no
+// scroll, to the own stop of the region the line is in: the dialog or panel holding it, else the
+// main content around it, else the page's main content for a line drawn outside it. With no main
+// content in the page, nothing moves, and the focus stays on the page.
+test("a component's hand-off with nothing in sight lands on its region's own stop, scrolling nothing", () => {
+  // Where each hand-off landed and what it asked of the page, and where it belongs.
+  const landed: Record<string, object> = {};
+  const belongs: Record<string, object> = {};
+  const ownStop = (name: string) => ({
+    landed: name,
+    moves: [{ move: "focus", of: name, options: { preventScroll: true } }],
+  });
+  /** The line's case, drawn at the end of `parent`, falling back to a select in `page`. */
+  const lineIn = (parent: Element, page: Element) =>
+    handOff({
+      fallback: windowSelectIn(page, -100),
+      labels: ["Before", "Clear"],
+      laidOut: { Before: -200 },
+      parent,
+      pressed: "Clear",
+    });
+  landed["in a panel"] = withMain((main) => {
+    const panel = document.createElement("div");
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "Filter");
+    document.body.append(panel);
+    try {
+      return lineIn(panel, main);
+    } finally {
+      panel.remove();
+    }
+  });
+  belongs["in a panel"] = ownStop("Filter");
+  landed["in the main content"] = withMain((main) => lineIn(main, main));
+  belongs["in the main content"] = ownStop("Main content");
+  landed["outside the main content"] = withMain((main) => {
+    const portal = document.createElement("div");
+    document.body.append(portal);
+    try {
+      return lineIn(portal, main);
+    } finally {
+      portal.remove();
+    }
+  });
+  belongs["outside the main content"] = ownStop("Main content");
+  const page = document.createElement("div");
+  document.body.append(page);
+  try {
+    landed["in a page with no main content"] = lineIn(page, page);
+  } finally {
+    page.remove();
+  }
+  belongs["in a page with no main content"] = { landed: "the page", moves: [] };
+  expect(landed).toEqual(belongs);
+});
+
+// (cf) A control any part of which is in the reader's sight is one a component's hand-off lands
+// on (`land`): focused, then scrolled to its nearest edge, the least distance that shows it whole.
+// The control before the lost one, cut by the window's top edge or by its bottom edge, takes the
+// focus and is scrolled by that edge alone.
+test("a component's hand-off lands on a control partly in sight and scrolls it to its nearest edge", () => {
+  // What each hand-off asked of the page, and what it belongs to ask.
+  const moved: Record<string, Move[]> = {};
+  const belongs: Record<string, Move[]> = {};
+  for (const [edge, top] of [
+    ["top", -20],
+    ["bottom", window.innerHeight - 20],
+  ] as const) {
+    const named = `cut by the window's ${edge} edge`;
+    moved[named] = withMain(
+      (main) =>
+        handOff({
+          fallback: windowSelectIn(main, 100),
+          labels: ["One", "Two"],
+          laidOut: { One: top },
+          parent: main,
+          pressed: "Two",
+        }).moves
+    );
+    belongs[named] = [
+      { move: "focus", of: "One", options: undefined },
+      { move: "scroll", of: "One", options: NEAREST_EDGE },
+    ];
+  }
+  expect(moved).toEqual(belongs);
+});
+
+// (cg) A control wholly in the reader's sight takes the focus where a component's hand-off has
+// always put it: the control before the lost one, else, where the line holds no other control, the
+// line's fallback, as the Delivery page's Window select takes it from clear brush window. Its
+// landing asks for no scroll but the one to its nearest edge, which moves a control wholly in
+// sight not at all.
+test("a component's hand-off lands on a control wholly in sight where it always did, by a scroll that moves nothing", () => {
+  // Where each hand-off landed and what it asked of the page, and where it belongs.
+  const landed: Record<string, object> = {};
+  const belongs: Record<string, object> = {};
+  for (const [named, labels, target] of [
+    ["the control before", ["One", "Two"], "One"],
+    ["the fallback", ["Clear"], "Window"],
+  ] as const) {
+    landed[named] = withMain((main) =>
+      handOff({
+        fallback: windowSelectIn(main, 100),
+        labels,
+        laidOut: { One: 300 },
+        parent: main,
+        pressed: labels[labels.length - 1] ?? "",
+      })
+    );
+    belongs[named] = {
+      landed: target,
+      moves: [
+        { move: "focus", of: target, options: undefined },
+        { move: "scroll", of: target, options: NEAREST_EDGE },
+      ],
+    };
+  }
+  expect(landed).toEqual(belongs);
 });

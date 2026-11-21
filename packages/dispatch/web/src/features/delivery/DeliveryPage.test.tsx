@@ -157,7 +157,9 @@ function measureList(): () => void {
   };
 }
 
-function renderPage(url = DELIVERY_URL) {
+/** Renders the page at `url`, in a box of its own at the end of the document, else in
+ *  `container`. */
+function renderPage(url = DELIVERY_URL, container?: HTMLElement) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   restoreLayout = measureList();
   render(
@@ -168,7 +170,8 @@ function renderPage(url = DELIVERY_URL) {
           <LocationProbe />
         </KeymapProvider>
       </QueryClientProvider>
-    </MemoryRouter>
+    </MemoryRouter>,
+    container === undefined ? {} : { container }
   );
   return queryClient;
 }
@@ -868,13 +871,15 @@ test("a preset picked on the Window select keeps that select, and the focus on i
   expect(select).toHaveFocus();
 });
 
-// Clear brush window goes with the brush it clears, and its focus goes to the Window select: the
-// line it sits in holds no other control.
+/** The page over `DELIVERY_URL`'s window with a brush window set in it, as a drag along the
+ *  chart's time axis sets one, so the header draws clear brush window. */
+const BRUSHED_URL = `${DELIVERY_URL}&ws=${encodeURIComponent("2024-06-01T06:00:00.000Z")}&we=${encodeURIComponent("2024-06-01T12:00:00.000Z")}`;
+
+// Clear brush window goes with the brush it clears, and its focus goes to the Window select, in
+// the reader's sight as happy-dom draws every box: the line it sits in holds no other control.
 test("clear brush window hands its focus to the Window select", async () => {
   const user = userEvent.setup();
-  renderPage(
-    `${DELIVERY_URL}&ws=${encodeURIComponent("2024-06-01T06:00:00.000Z")}&we=${encodeURIComponent("2024-06-01T12:00:00.000Z")}`
-  );
+  renderPage(BRUSHED_URL);
   const socket = await openSocket();
   const timeline = await subscription(socket, "timeline");
   serve(socket, snapshotFrame(timeline.sub, emptyTimeline));
@@ -884,6 +889,39 @@ test("clear brush window hands its focus to the Window select", async () => {
   await waitFor(() => expect(currentSearch().has("ws")).toBe(false));
   expect(screen.queryByRole("button", { name: "clear brush window" })).toBeNull();
   expect(screen.getByLabelText("Window")).toHaveFocus();
+});
+
+// With the page scrolled below the Window select, so that the select stands wholly above the
+// window, clear brush window's focus goes to no control out of the reader's sight: the select is
+// passed over, and the main content around the page takes the focus at its own stop, with no
+// scroll, so the reader stays where they scrolled to.
+test("clear brush window with the Window select scrolled out of sight hands its focus to the main content's own stop, scrolling nothing", async () => {
+  const user = userEvent.setup();
+  const main = document.createElement("main");
+  document.body.append(main);
+  renderPage(BRUSHED_URL, main);
+  const socket = await openSocket();
+  const timeline = await subscription(socket, "timeline");
+  serve(socket, snapshotFrame(timeline.sub, emptyTimeline));
+  const clear = await screen.findByRole("button", { name: "clear brush window" });
+  const select = screen.getByLabelText("Window");
+  // Wholly above the window's top edge, where the reader's scroll left it: happy-dom lays
+  // nothing out.
+  select.getBoundingClientRect = () => new DOMRect(0, -60, 120, 32);
+  clear.focus();
+  const focuses = spyOn(HTMLElement.prototype, "focus");
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(currentSearch().has("ws")).toBe(false));
+    expect(screen.queryByRole("button", { name: "clear brush window" })).toBeNull();
+    expect(main).toHaveFocus();
+    expect(focuses.mock.calls).toEqual([[{ preventScroll: true }]]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    focuses.mockRestore();
+    scrolls.mockRestore();
+  }
 });
 
 test("the freshness row says Live with the last change while the socket is open, and Reconnecting once it drops", async () => {

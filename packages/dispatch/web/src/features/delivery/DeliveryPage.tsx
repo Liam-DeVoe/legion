@@ -757,8 +757,11 @@ export function DeliveryPage(): ReactNode {
   }
   // The header's **clear brush window** goes with the brush it clears, and the focus it held goes
   // to the control now at its place in the line it sits in, which holds no other, else to the
-  // Window select (`useFocusPlace`). The Window select itself stays mounted across a change of
-  // the window (`WindowControl`), so a pick keeps the focus where it was.
+  // Window select while any part of it is in the reader's sight, scrolled the least distance that
+  // shows it whole, else to the main content's own stop with no scroll (`useFocusPlace`). So a
+  // reader scrolled below the select is not pulled back up to it. The Window select itself stays
+  // mounted across a change of the window (`WindowControl`), so a pick keeps the focus where it
+  // was.
   const windowSelect = useRef<HTMLSelectElement>(null);
   const generatedLine = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
