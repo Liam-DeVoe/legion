@@ -332,9 +332,9 @@ class World {
   refuse: ((args: readonly string[]) => string | undefined) | undefined = undefined;
   /** The seconds from now to each limit's reset that `gh api rate_limit` gives. */
   rateLimitResetIn = 45;
-  /** When set, each tree read of a repository waits for what this gives it before it is
-   *  answered. */
-  treeGate: ((repository: string) => Promise<void>) | undefined = undefined;
+  /** When set, each tree read of a repository waits for what this gives it before it is answered,
+   *  `key` the read's key in `trees`. */
+  treeGate: ((repository: string, key: string) => Promise<void>) | undefined = undefined;
   /** When set, each search waits for it before it is answered. */
   searchGate: Promise<void> | undefined = undefined;
   /** The tree reads and searches answered, in their order: `tree <repository>`, `search <q>`. */
@@ -391,6 +391,11 @@ class World {
 
   addFiles(files: readonly MadeFile[]) {
     for (const file of files) this.blobs.set(blobSha(file.text), file.text);
+  }
+
+  /** The tree reads in flight now. */
+  treeReadsInFlight(): number {
+    return [...this.treeReadsOf.values()].reduce((sum, count) => sum + count, 0);
   }
 
   readonly gh = async (args: readonly string[]): Promise<GhResult> => {
@@ -566,11 +571,8 @@ class World {
     if (tree !== null) {
       const repository = tree[1] ?? "";
       this.treeReadsOf.set(repository, (this.treeReadsOf.get(repository) ?? 0) + 1);
+      this.maxTreeReads = Math.max(this.maxTreeReads, this.treeReadsInFlight());
       const reads = [...this.treeReadsOf.values()];
-      this.maxTreeReads = Math.max(
-        this.maxTreeReads,
-        reads.reduce((sum, count) => sum + count, 0)
-      );
       this.maxTreeReadsOfOne = Math.max(this.maxTreeReadsOfOne, ...reads);
       this.maxTreeRepositories = Math.max(
         this.maxTreeRepositories,
@@ -578,10 +580,11 @@ class World {
       );
       const turns = this.treeTurnsOf.get(repository) ?? this.treeTurns;
       for (let turn = 0; turn < turns; turn++) await Promise.resolve();
-      if (this.treeGate !== undefined) await this.treeGate(repository);
+      const key = `${tree[1]} ${tree[2]}${tree[3] ? " recursive" : ""}`;
+      if (this.treeGate !== undefined) await this.treeGate(repository, key);
       this.noteAnswered(`tree ${repository}`);
       this.treeReadsOf.set(repository, (this.treeReadsOf.get(repository) ?? 1) - 1);
-      const found = this.trees.get(`${tree[1]} ${tree[2]}${tree[3] ? " recursive" : ""}`);
+      const found = this.trees.get(key);
       if (found === undefined) return fail("gh: Not Found (HTTP 404)");
       if (typeof found === "string") return fail(found);
       if (!args.includes("--jq")) return fail("stand-in gh: a tree read without --jq");
@@ -732,6 +735,8 @@ interface Run {
   readonly code: number;
   readonly errors: string[];
   readonly out: string;
+  /** What the run wrote to standard output: its summary line and the files written. */
+  readonly stdout: string;
   text(name: string): string;
   table(name: string): Record<string, string>[];
   queries(): Record<string, unknown>[];
@@ -752,11 +757,12 @@ async function run(
   writeFileSync(file, JSON.stringify({ ...CONFIG, ...config }));
   const out = path.join(dir, "out");
   const errors: string[] = [];
+  const outs: string[] = [];
   const code = await main(["--config", file, "--at", AT, "--out", out, ...args], {
     gh: w.gh,
     sleep: w.sleep,
     now: w.now,
-    out: () => {},
+    out: (text) => outs.push(text),
     err: (line) => errors.push(line),
     peakRssBytes,
   });
@@ -764,6 +770,7 @@ async function run(
   return {
     code,
     errors,
+    stdout: outs.join(""),
     out,
     text,
     table: (name) => parseTsv(text(name)),
@@ -1593,6 +1600,10 @@ describe("a fork read against its parent", () => {
     expect(loaderPaths(r)).toEqual(["docs/changed.md", "docs/new-name.md"]);
   });
 
+  /** The error of a read GitHub answers 502 on each try: a 502 is sent again 4 times, then the
+   *  read fails naming each of its 5 tries. */
+  const FIVE_502 = `5 tries: ${[1, 2, 3, 4, 5].map((n) => `try ${n}: gh: Server Error (HTTP 502)`).join("; ")}`;
+
   test.each<[string, (w: World) => void, string]>([
     [
       "the listing names no parent",
@@ -1614,12 +1625,12 @@ describe("a fork read against its parent", () => {
     [
       "its repository's read fails",
       (w) => w.repositoryInfo.set("acme/old-skills", "gh: Server Error (HTTP 502)"),
-      "whole tree: its parent could not be read (gh: Server Error (HTTP 502))",
+      `whole tree: its parent could not be read (${FIVE_502})`,
     ],
     [
       "the compare fails",
       (w) => w.compares.set(compareKey, "gh: Server Error (HTTP 502)"),
-      "whole tree: the compare with acme/skills failed (gh: Server Error (HTTP 502))",
+      `whole tree: the compare with acme/skills failed (${FIVE_502})`,
     ],
     [
       "the compare lists 300 files, a cut list",
@@ -2118,6 +2129,303 @@ describe("a truncated tree", () => {
     expect(blobs.slice(0, 3)).toEqual([blobs[0], blobs[0], blobs[0]]);
     expect(outputs(r)).toEqual(outputs(calm));
   }, 60_000);
+
+  describe("a read that fails for a transient reason", () => {
+    /** The truncated world walked over REST, one directory a call (GitHub refuses each GraphQL
+     *  batch), as the run that lost a repository to one TLS handshake timeout walked its tree. */
+    const restWorld = () => {
+      const w = truncatedWorld();
+      w.refuseTreeBatches = true;
+      return w;
+    };
+    /** The walk's REST read of the skills/ directory, one level. */
+    const SKILLS_READ = `repos/cybermonklabs/legion/git/trees/${legionDirs().get("skills")}`;
+    const SKILLS_URL = `https://api.github.com/${SKILLS_READ}`;
+    /** `w`, whose read of skills/ fails with each of `lines` in turn, then is answered. */
+    const failing = (w: World, lines: readonly string[]) => {
+      const left = [...lines];
+      w.refuse = (args) => (args[1] === SKILLS_READ ? left.shift() : undefined);
+      return w;
+    };
+    const skillsReads = (w: World) => w.calls.filter((call) => call[1] === SKILLS_READ).length;
+    const SAME = ["repositories.tsv", "skill-copies.tsv", "manifests.tsv"];
+
+    test("a tree read that fails on a TLS handshake timeout is sent again 5 s later, and its repository keeps its entries", async () => {
+      const calm = await run(restWorld(), LEGION_ONLY);
+      const timeout = `Get "${SKILLS_URL}": net/http: TLS handshake timeout`;
+      const w = failing(restWorld(), [timeout]);
+      const r = await run(w, LEGION_ONLY);
+      expect(r.code).toBe(0);
+      expect(r.table("repositories.tsv")[0]).toMatchObject({ error: "" });
+      for (const name of SAME) expect(r.text(name)).toBe(calm.text(name));
+      expect(w.sleeps).toEqual([5_000]);
+      expect(skillsReads(w)).toBe(2);
+      expect(r.errors).toContain(
+        `copies: a gh call failed (${timeout}); sending it again in 5 s, retry 1 of 4`
+      );
+      expect(r.text("skill-copies.md")).toContain(
+        "1 retry after a transient failure (TLS handshake timeout 1)."
+      );
+      expect(r.stdout).toContain(
+        "code search calls, 1 retry after a transient failure (TLS handshake timeout 1), peak memory"
+      );
+    }, 30_000);
+
+    test("a tree read GitHub answers 503 twice is sent again 5 s, then 15 s later, and its repository keeps its entries", async () => {
+      const calm = await run(restWorld(), LEGION_ONLY);
+      const unavailable = `HTTP 503: Service Unavailable (${SKILLS_URL})`;
+      const w = failing(restWorld(), [unavailable, unavailable]);
+      const r = await run(w, LEGION_ONLY);
+      expect(r.code).toBe(0);
+      expect(r.table("repositories.tsv")[0]).toMatchObject({ error: "" });
+      for (const name of SAME) expect(r.text(name)).toBe(calm.text(name));
+      expect(w.sleeps).toEqual([5_000, 15_000]);
+      expect(skillsReads(w)).toBe(3);
+      expect(r.text("skill-copies.md")).toContain(
+        "2 retries after a transient failure (HTTP 503 2)."
+      );
+    }, 30_000);
+
+    test("a tree read that fails five times fails its repository, naming each try's error", async () => {
+      const lines = [
+        `Get "${SKILLS_URL}": net/http: TLS handshake timeout`,
+        `Get "${SKILLS_URL}": read: connection reset by peer`,
+        `Get "${SKILLS_URL}": dial tcp: lookup api.github.com: i/o timeout`,
+        `Get "${SKILLS_URL}": unexpected EOF`,
+        `HTTP 504: Gateway Timeout (${SKILLS_URL})`,
+      ];
+      const w = failing(restWorld(), lines);
+      const r = await run(w, LEGION_ONLY);
+      expect(r.code).toBe(0);
+      const each = lines.map((line, index) => `try ${index + 1}: ${line}`).join("; ");
+      expect(r.table("repositories.tsv")[0]).toMatchObject({
+        error: `tree read failed: 5 tries: ${each}`,
+      });
+      expect(r.text("skill-copies.md")).toContain(
+        `- cybermonklabs/legion: tree read failed: 5 tries: ${each}`
+      );
+      expect(w.sleeps).toEqual([5_000, 15_000, 45_000, 135_000]);
+      expect(skillsReads(w)).toBe(5);
+      expect(r.text("skill-copies.md")).toContain(
+        "4 retries after a transient failure (TLS handshake timeout 1, connection reset 1, unexpected EOF 1, i/o timeout 1)."
+      );
+    }, 30_000);
+
+    test.each([
+      ["a 404", "gh: Not Found (HTTP 404)"],
+      ["a 401", "gh: Bad credentials (HTTP 401)"],
+      ["a 403 that is no rate limit", "gh: Resource not accessible by integration (HTTP 403)"],
+    ])(
+      "a tree read refused with %s fails at once, with no retry",
+      async (_, line) => {
+        const w = failing(restWorld(), [line]);
+        const r = await run(w, LEGION_ONLY);
+        expect(r.code).toBe(0);
+        expect(r.table("repositories.tsv")[0]).toMatchObject({
+          error: `tree read failed: ${line}`,
+        });
+        expect(w.sleeps).toEqual([]);
+        expect(skillsReads(w)).toBe(1);
+        expect(r.text("skill-copies.md")).toContain("0 retries after a transient failure.");
+      },
+      30_000
+    );
+
+    test("a GraphQL batch of more than one item GitHub answers 502 is split at once; a batch of one, or one whose TLS handshake timed out, is sent again", async () => {
+      const badGateway = "HTTP 502: Bad Gateway (https://api.github.com/graphql)";
+      const timeout = 'Post "https://api.github.com/graphql": net/http: TLS handshake timeout';
+      /** How many subtrees a GraphQL tree batch asks for. */
+      const subtrees = (args: readonly string[]) =>
+        (args.find((arg) => arg.startsWith("query=")) ?? "").match(/t\d+: object\(/g)?.length ?? 0;
+      const read = async (flaky: boolean) => {
+        const w = truncatedWorld();
+        // The walk's first batch, its root alone, gets a 502; the next, the root's 4 directories,
+        // a 502; a half of that, a TLS handshake timeout; the first batch of blobs, a 502.
+        const left = new Set(flaky ? ["root", "wide", "half", "blobs"] : []);
+        w.refuse = (args) => {
+          const kind = graphqlKind(args);
+          if (kind === "tree" && subtrees(args) === 1 && left.delete("root")) return badGateway;
+          if (kind === "tree" && subtrees(args) > 2 && left.delete("wide")) return badGateway;
+          if (kind === "tree" && subtrees(args) === 2 && left.delete("half")) return timeout;
+          if (kind === "blob" && left.delete("blobs")) return badGateway;
+          return undefined;
+        };
+        return { w, r: await run(w, LEGION_ONLY) };
+      };
+      const calm = await read(false);
+      const flaky = await read(true);
+      expect(flaky.r.code).toBe(0);
+      expect(flaky.r.table("repositories.tsv")[0]).toMatchObject({ error: "" });
+      for (const name of ["skill-copies.tsv", "manifests.tsv"]) {
+        expect(flaky.r.text(name)).toBe(calm.r.text(name));
+      }
+      /** How many times `w` sent the first call `which` picks. */
+      const sent = (w: World, which: (args: readonly string[]) => boolean) => {
+        const first = w.calls.find(which)?.join("\0");
+        return w.calls.filter((call) => call.join("\0") === first).length;
+      };
+      const tree = (count: (n: number) => boolean) => (args: readonly string[]) =>
+        graphqlKind(args) === "tree" && count(subtrees(args));
+      // The root alone and the half were sent again, 5 s after each failed; the batch of 4 was
+      // halved at once, and the batch of blobs read blob by blob at once, with no wait.
+      expect(
+        sent(
+          flaky.w,
+          tree((n) => n === 1)
+        )
+      ).toBe(2);
+      expect(
+        sent(
+          flaky.w,
+          tree((n) => n === 2)
+        )
+      ).toBe(2);
+      expect(
+        sent(
+          flaky.w,
+          tree((n) => n > 2)
+        )
+      ).toBe(1);
+      expect(sent(flaky.w, (args) => graphqlKind(args) === "blob")).toBe(1);
+      expect(flaky.w.sleeps).toEqual([5_000, 5_000]);
+      expect(
+        flaky.r.errors.filter((line) => line.startsWith("copies: a gh call failed ("))
+      ).toEqual([
+        `copies: a gh call failed (${badGateway}); sending it again in 5 s, retry 1 of 4`,
+        `copies: a gh call failed (${timeout}); sending it again in 5 s, retry 1 of 4`,
+      ]);
+      const readAlone = ` blobs of cybermonklabs/legion failed (${badGateway}); each is read alone`;
+      const [blobsAlone = ""] = flaky.r.errors.filter((line) => line.endsWith(readAlone));
+      const blobs = /^copies: a batch of (\d+)$/.exec(blobsAlone.slice(0, -readAlone.length));
+      expect(Number(blobs?.[1])).toBeGreaterThan(1);
+      expect(flaky.r.text("skill-copies.md")).toContain(
+        "2 retries after a transient failure (TLS handshake timeout 1, HTTP 502 1)."
+      );
+    }, 30_000);
+
+    test("a code search that fails on a refused connection is sent again, not failed", async () => {
+      const f6 = fixtureJson("F6-search-code.json");
+      const refused =
+        'Get "https://api.github.com/search/code": dial tcp: connect: connection refused';
+      const read = async (flaky: boolean) => {
+        const w = world();
+        w.search = (q) =>
+          q === '"legion-worker" repo:cybermonklabs/legion' ? { body: f6 } : { body: EMPTY_SEARCH };
+        let left = flaky ? 1 : 0;
+        w.refuse = (args) => (args.includes("search/code") && left-- > 0 ? refused : undefined);
+        return { w, r: await run(w, ["--only", "cybermonklabs/legion"]) };
+      };
+      const calm = await read(false);
+      const flaky = await read(true);
+      expect(flaky.r.code).toBe(0);
+      expect(
+        flaky.r.queries().filter((query) => query.type === "search" && query.status !== "ok")
+      ).toEqual([]);
+      expect(flaky.r.text("loaders.tsv")).toBe(calm.r.text("loaders.tsv"));
+      expect(
+        flaky.r.errors.filter((line) => line.startsWith("copies: a gh call failed ("))
+      ).toEqual([`copies: a gh call failed (${refused}); sending it again in 5 s, retry 1 of 4`]);
+      expect(flaky.r.text("skill-copies.md")).toContain(
+        "1 retry after a transient failure (connection refused 1)."
+      );
+    }, 30_000);
+
+    test("a call waiting to be sent again holds no read slot: another repository's read takes it", async () => {
+      // Five small repositories beside the walk: their tree reads and the walk's want more than
+      // the run's read slots.
+      const w = restWorld();
+      const small = [1, 2, 3, 4, 5].map((n) => `cybermonklabs/small-${n}`);
+      w.listings.set("cybermonklabs", [
+        ...(fixtureJson("F6-repo-list.json") as unknown[]),
+        ...small.map((nameWithOwner) => ({
+          nameWithOwner,
+          isFork: false,
+          isArchived: false,
+          defaultBranchRef: { name: "main" },
+          parent: null,
+        })),
+      ]);
+      for (const repository of small) {
+        const files = [{ path: "README.md", text: `# ${repository}, a made-up repository\n` }];
+        w.addFiles(files);
+        w.addRepository(repository, treeOf(repository, files));
+      }
+      const [flaky = ""] = small;
+      const flakyKey = `${flaky} ${sha1(`root ${flaky}`)} recursive`;
+      const answer = w.trees.get(flakyKey);
+      /** Microtask turns, no timer, until `done` holds or `most` turns pass: every gh call here is
+       *  answered in microtasks, so the reads let start reach their gates within them. */
+      const turns = async (done: () => boolean, most = 10_000) => {
+        for (let turn = 0; turn < most && !done(); turn++) await Promise.resolve();
+      };
+      const slotsFull = () => w.treeReadsInFlight() >= READ_CALLS;
+      /** The reads in flight while the flaky read waits, and the repositories whose tree reads
+       *  started since it failed. */
+      let during: { inFlight: number; started: string[] } | undefined;
+      // Every tree read but the flaky repository's and the walk's of its root (whole, then one
+      // level) waits for `open`, so the walk's next level and the small repositories hold every
+      // slot, one read left waiting.
+      const open = Promise.withResolvers<void>();
+      let failedAt = -1;
+      let letGo: Promise<void> | undefined;
+      w.treeGate = async (repository, read) => {
+        if (repository === flaky) {
+          if (failedAt >= 0) {
+            w.trees.set(flakyKey, answer);
+            return;
+          }
+          // Its first try ends once every read slot is held: its TLS handshake timed out.
+          await turns(slotsFull);
+          failedAt = w.calls.length;
+          w.trees.set(
+            flakyKey,
+            `Get "https://api.github.com/repos/${flaky}/git/trees/${sha1(`root ${flaky}`)}?recursive=1": net/http: TLS handshake timeout`
+          );
+          // A run that does not send it again never waits: its reads go once no wait came in
+          // 100,000 turns.
+          letGo = turns(() => during !== undefined, 100_000).then(() => open.resolve());
+          return;
+        }
+        if (!read.startsWith(`cybermonklabs/legion ${LEGION_ROOT}`)) await open.promise;
+      };
+      const result = await listCopies(
+        parseConfig(CONFIG),
+        { at: AT, only: ["cybermonklabs/legion", ...small], maxSearchCalls: 0 },
+        {
+          gh: w.gh,
+          // The wait: the read its slot let start reaches its gate, and the reads are counted.
+          sleep: async (ms) => {
+            await turns(slotsFull);
+            during = {
+              inFlight: w.treeReadsInFlight(),
+              started: w.calls
+                .slice(failedAt)
+                .flatMap(
+                  (call) => /^repos\/([^/]+\/[^/]+)\/git\/trees\//.exec(call[1] ?? "")?.[1] ?? []
+                ),
+            };
+            open.resolve();
+            await w.sleep(ms);
+          },
+          now: w.now,
+          out: () => {},
+          err: () => {},
+          peakRssBytes: () => 0,
+        }
+      );
+      await letGo;
+      // While it waited, the other reads held every slot, and one of them, of another repository,
+      // started in the wait.
+      expect(during?.inFlight).toBe(READ_CALLS);
+      expect(during?.started.length).toBeGreaterThan(0);
+      expect(during?.started).not.toContain(flaky);
+      expect(w.sleeps).toEqual([5_000]);
+      expect(result.repositories.map((repo) => [repo.repository, repo.error])).toEqual(
+        ["cybermonklabs/legion", ...small].map((repository) => [repository, ""])
+      );
+      expect(result.retries.get("TLS handshake timeout")).toBe(1);
+    }, 30_000);
+  });
 });
 
 describe("the read slots", () => {
