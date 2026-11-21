@@ -103,7 +103,15 @@ func TestASecondTaskQueuesItsBranchRow(t *testing.T) {
 				return nil
 			})
 
-			stored := planStandingOf(t, pool, engine, root.Key, root.Generation).plan
+			// The plan is read in a fact's transaction with no boot pass before it: the boot walks
+			// each issue, and this release's walk refuses the fixture's plan of two tasks, which no
+			// route writes yet (see the doc above).
+			var stored *record.StoredPlan
+			factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+				var err error
+				stored, err = engine.store.Plan(ctx, tx, root.Key, root.Generation)
+				return err
+			})
 			branches := map[string]string{}
 			for _, task := range stored.Tasks {
 				branches[task.Task] = task.Branch
