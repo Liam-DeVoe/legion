@@ -10,11 +10,15 @@
 //
 // The journal is the hold's `done` record (kind `done`, key `hold`): the hold's workflow, its
 // entries in order, and its completion. A command's admission and its `intent` entry are one
-// compare-and-swap write (Admit), so of two processes racing for one admission one is admitted
-// and the other refused, and Decide refuses ErrBusy while another command's intent is pending, so
-// at most one command is past its intent at any time. Every command is Stoppable: one whose own
-// check refuses after its intent writes a `stop` entry (AppendStop, AppendStopLeft), which ends the
-// intent and records what the command left. `hold release` follows only a complete record or one
+// compare-and-swap write (Admit), and Decide refuses ErrBusy while another command's intent is
+// pending, so of two processes racing to admit two commands one is admitted and the other refused.
+// A command's own pending intent admits its rerun, since a run cut by a crash leaves it, so two
+// processes admitting the same command are both admitted and both past its intent. The hold's
+// design assumes the operator runs one command of a hold at a time (A2), which the journal does
+// not enforce: under A2 at most one command is past its intent at any time. Every command is
+// Stoppable: one whose own check refuses after its intent writes a `stop` entry (AppendStop,
+// AppendStopLeft), which ends the intent and records what the command left. `hold release` follows
+// only a complete record or one
 // whose stops all left nothing changed (LeftUnchanged), and `hold abort` is every workflow's way
 // out once a command has stopped and no intent is pending, so a command that can never succeed
 // cannot hold the hold. In hub-restore a done `hold prove` excludes abort until a command stops
@@ -434,6 +438,11 @@ func (c *Client) Journal(ctx context.Context, holdID string) (Done, uint64, erro
 // keeps it. CommandAbort's entry also carries each stop entry's record of what its command left,
 // under `left.<the stop's index in the journal>` as `<command>: <left>`, so the operator ends the
 // hold knowing the state; those keys replace any of inputs'. It returns the record's workflow.
+//
+// Admit refuses another command while one's intent is pending (ErrBusy), but admits the same
+// command again, its rerun after a crash: a second process running the same command at once is
+// admitted too. The operator runs one command of a hold at a time (assumption A2); the journal
+// cannot tell a rerun from a second process.
 func (c *Client) Admit(ctx context.Context, holdID string, req Request, inputs map[string]string) (Workflow, error) {
 	for attempt := 1; ; attempt++ {
 		row, err := c.Row(ctx)

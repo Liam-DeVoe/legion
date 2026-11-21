@@ -118,7 +118,9 @@ const CommandProve = "hold prove"
 // completion is its clean census. It moves the row to `released` before its `done` entry, which
 // completes the record; its `intent` carries each stop's record of what its command left (Admit).
 // It is refused after completion. From `prepare` it deletes the cohort (DeleteCohort) and moves
-// the row, and writes no entry.
+// the row, and writes no entry. Like every command, its own pending intent admits it again, so two
+// processes running abort at once are both admitted: the operator runs one command of a hold at a
+// time (assumption A2).
 const CommandAbort = "hold abort"
 
 // LeftUnchanged is what a stop records (AppendStopLeft) when no run of its command in this hold

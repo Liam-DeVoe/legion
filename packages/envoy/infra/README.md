@@ -4061,7 +4061,10 @@ No phase names a `$SYS` subject or the retired hold bucket `KV_envoy_maintenance
 a subject nothing else uses, so the probe only shows whether the hub admits a connection.
 
 **Ending a hold after a failed command.** The hold's journal (`internal/holdrecord`) admits every
-command of a hold through the broker's records. A command whose own check refuses after its intent
+command of a hold through the broker's records, one command at a time: while one command's intent
+is pending every other is refused, but its own pending intent admits it again, its rerun after a
+crash, so the operator runs one command of a hold at a time (assumption A2), and the journal cannot
+tell a rerun from a second process. A command whose own check refuses after its intent
 writes a `stop` entry naming what it left, and `hold abort` ends the hold once a command has
 stopped and no other command's intent is pending; `hold release` follows only a complete record or
 one whose stops all left nothing changed. In `hub-restore`, a done `hold prove` excludes `hold

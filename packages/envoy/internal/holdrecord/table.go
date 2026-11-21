@@ -2,28 +2,20 @@ package holdrecord
 
 import "slices"
 
-// rules are the rule choices that changed between versions of the hold's design, so the model in
-// model_test.go runs the table of each version and of each rule set with one fix removed.
+// rules are the rule choices tableFor and Decide read: those that changed between versions of the
+// hold's design, so the model in model_test.go builds the table of each version and of each rule
+// set with one fix removed (its modelRules adds the choices only its transitions read).
 // currentRules are the design's, and the package's functions use them.
 type rules struct {
-	Name                         string
-	Step1Recorded                bool // hold set records the step-1 map, and abort, prove and release compare against it
-	ProveEpochs                  bool // --restored after a done prove, and an epoch per done prove for the census
-	PlainReprove                 bool // the earlier designs' prove that names no target
-	AbortMoveBeforeDone          bool // abort moves the row before its done entry
-	AfterCompleteStrict          bool // after completion a command is admitted only when the final command can follow it again
-	SelRecFinalRepeatable        bool // replay --final is Repeatable in selection-recovery
-	RestoreKeyInTable            bool // restore --key is in rollback's table, Repeatable
-	PendingBlocksComplete        bool // an earlier design's rule: a final done entry is refused while another admitted command's intent is pending
-	AtomicAdmit                  bool // admission and intent are one compare-and-swap write
-	Serialize                    bool // ErrBusy while another command's intent is pending
-	StopEntries                  bool // a Stoppable command's refusal writes a stop entry, which ends its pending intent
-	SetCommand                   bool // hold set is a journal command, its intent before its row move, Stoppable
-	Step1Whole                   bool // hold set refuses a target it cannot read, and a target the map lacks is UNKNOWN
-	ExpectedMap                  bool // DisksMoved compares Proven's ids for the named targets and Step1's for the rest
-	ConvertStoppable             bool // convert's stop for a name with no safe start ends its intent, so replay is admitted
-	PrepareMarksUnresolved       bool // restore --prepare marks a name with no start and goes on; restore --finish stops
-	CompletionSurvivesRowRestore bool // release does not compare hold_gen, so a row restored by RestoreRow can release
+	ProveEpochs           bool // --restored after a done prove, and an epoch per done prove for the census
+	PlainReprove          bool // the earlier designs' prove that names no target
+	AfterCompleteStrict   bool // after completion a command is admitted only when the final command can follow it again
+	SelRecFinalRepeatable bool // replay --final is Repeatable in selection-recovery
+	RestoreKeyInTable     bool // restore --key is in rollback's table, Repeatable
+	Serialize             bool // ErrBusy while another command's intent is pending
+	StopEntries           bool // a Stoppable command's refusal writes a stop entry, which ends its pending intent
+	SetCommand            bool // hold set is a journal command, its intent before its row move, Stoppable
+	ConvertStoppable      bool // convert's stop for a name with no safe start ends its intent, so replay is admitted
 	// WayOut: the buckets commands are Stoppable, a stop records what its command left, hold
 	// release follows a record whose other entries are stops that left nothing changed, and hold
 	// abort is every workflow's way out: outside hub-restore it is admitted once a command's latest
@@ -64,10 +56,8 @@ type rules struct {
 // currentRules are the hold's rules as its design stands: the frozen model's v62 (every fix, with
 // no account move) and the rules added since, WayOut, EveryCommandStoppable, EndIsFinal,
 // BackupCommand and HubAbortAfterStop.
-var currentRules = rules{Name: "v63", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true,
-	AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true, AtomicAdmit: true, Serialize: true,
-	StopEntries: true, SetCommand: true, Step1Whole: true, ExpectedMap: true, ConvertStoppable: true,
-	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, WayOut: true, EveryCommandStoppable: true,
+var currentRules = rules{ProveEpochs: true, AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true,
+	Serialize: true, StopEntries: true, SetCommand: true, ConvertStoppable: true, WayOut: true, EveryCommandStoppable: true,
 	EndIsFinal: true, BackupCommand: true, HubAbortAfterStop: true}
 
 var current = tableFor(currentRules)
@@ -174,12 +164,6 @@ func (t table) row(w Workflow, c string) (entry, bool) {
 		}
 	}
 	return entry{}, false
-}
-
-// Workflows returns the table's workflows, in the design's order.
-func (t table) Workflows() []Workflow {
-	return []Workflow{WorkflowCutover, WorkflowRollback, WorkflowSelectionRecovery, WorkflowBucketsCreate, WorkflowBucketsRecreate,
-		WorkflowBucketsRestore, WorkflowStreamsUpdate, WorkflowHubRestore, WorkflowStreamsCensus}
 }
 
 // Commands is the table's Commands.

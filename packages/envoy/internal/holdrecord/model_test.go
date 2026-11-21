@@ -58,21 +58,42 @@ import (
 	"testing"
 )
 
+// modelRules is a rule set as the model runs it: the rules the package's table and Decide read
+// (rules), and the choices only the model's transitions read, which the hold's commands make
+// outside this package.
+type modelRules struct {
+	rules
+	Name                         string
+	Step1Recorded                bool // hold set records the step-1 map, and abort, prove and release compare against it
+	AbortMoveBeforeDone          bool // abort moves the row before its done entry
+	PendingBlocksComplete        bool // an earlier design's rule: a final done entry is refused while another admitted command's intent is pending
+	AtomicAdmit                  bool // admission and intent are one compare-and-swap write
+	Step1Whole                   bool // hold set refuses a target it cannot read, and a target the map lacks is UNKNOWN
+	ExpectedMap                  bool // DisksMoved compares Proven's ids for the named targets and Step1's for the rest
+	PrepareMarksUnresolved       bool // restore --prepare marks a name with no start and goes on; restore --finish stops
+	CompletionSurvivesRowRestore bool // release does not compare hold_gen, so a row restored by RestoreRow can release
+}
+
+// currentModel is the current rules as the model runs them: the package's currentRules and every
+// choice of the model's own.
+var currentModel = modelRules{rules: currentRules, Name: "v63", Step1Recorded: true, AbortMoveBeforeDone: true,
+	AtomicAdmit: true, Step1Whole: true, ExpectedMap: true, PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true}
+
 // The earlier versions' rules. Their hub-restore runs with one operator process, as v53's model
 // did: the two-process race is shown by their generic workflows, and by the later controls in every
 // workflow. v59 is the rule set the plan's versions v55 to v59 carried.
 var (
-	v49 = rules{Name: "v49", PlainReprove: true}
-	v52 = rules{Name: "v52", PlainReprove: true, AbortMoveBeforeDone: true, AfterCompleteStrict: true}
-	v53 = rules{Name: "v53", Step1Recorded: true, ProveEpochs: true, PlainReprove: true, AbortMoveBeforeDone: true,
-		AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true, PendingBlocksComplete: true}
-	v59 = rules{Name: "v59", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true, AfterCompleteStrict: true,
-		SelRecFinalRepeatable: true, RestoreKeyInTable: true, AtomicAdmit: true, Serialize: true, StopEntries: true}
+	v49 = modelRules{rules: rules{PlainReprove: true}, Name: "v49"}
+	v52 = modelRules{rules: rules{PlainReprove: true, AfterCompleteStrict: true}, Name: "v52", AbortMoveBeforeDone: true}
+	v53 = modelRules{rules: rules{ProveEpochs: true, PlainReprove: true, AfterCompleteStrict: true, SelRecFinalRepeatable: true,
+		RestoreKeyInTable: true}, Name: "v53", Step1Recorded: true, AbortMoveBeforeDone: true, PendingBlocksComplete: true}
+	v59 = modelRules{rules: rules{ProveEpochs: true, AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true,
+		Serialize: true, StopEntries: true}, Name: "v59", Step1Recorded: true, AbortMoveBeforeDone: true, AtomicAdmit: true}
 	// v62 is the frozen bundle's rule set: the current rules without the rules added since. Its
 	// profile and every profile with one of its fixes removed run the bundle's own scenarios, so
 	// they reproduce the bundle's counts.
-	v62 = func() rules {
-		r := currentRules
+	v62 = func() modelRules {
+		r := currentModel
 		r.Name, r.WayOut, r.EveryCommandStoppable, r.EndIsFinal, r.BackupCommand, r.HubAbortAfterStop = "v62", false, false, false, false, false
 		return r
 	}()
@@ -113,7 +134,7 @@ const releasedOverAChange = "the row is released as unchanged over a change outs
 // each control's own. Fail models a command that fails for good after its intent, which the frozen
 // bundle did not model, so only the profiles of the rules added since set it.
 type modelProfile struct {
-	rules
+	modelRules
 	Want []string
 	Fail bool
 	// OwnRunOnly is the control of LeftUnchanged's every-run rule: a stop records what its own run
@@ -127,59 +148,59 @@ func modelProfiles() []modelProfile {
 	v53p := v53
 	v53p.Name, v53p.PendingBlocksComplete = "v53-PendingBlocksComplete", false
 	out := []modelProfile{
-		{rules: v49, Want: []string{classAbortDone}},
-		{rules: v49s, Want: []string{classR27E}},
-		{rules: v52, Want: []string{classR27CNoProve}},
-		{rules: v53, Want: []string{classTwoWrites}},
-		{rules: v53p, Want: []string{classPending}},
-		{rules: v59, Want: []string{classR28ASet, classR28B}},
-		{rules: v62},
+		{modelRules: v49, Want: []string{classAbortDone}},
+		{modelRules: v49s, Want: []string{classR27E}},
+		{modelRules: v52, Want: []string{classR27CNoProve}},
+		{modelRules: v53, Want: []string{classTwoWrites}},
+		{modelRules: v53p, Want: []string{classPending}},
+		{modelRules: v59, Want: []string{classR28ASet, classR28B}},
+		{modelRules: v62},
 	}
 	type ab struct {
 		name string
-		f    func(*rules)
+		f    func(*modelRules)
 		want []string
 	}
 	for _, a := range []ab{
-		{"Step1Recorded", func(r *rules) { r.Step1Recorded = false }, []string{classR27CReread}},
-		{"ProveEpochs", func(r *rules) { r.ProveEpochs = false }, []string{classR27E}},
-		{"AbortMoveBeforeDone", func(r *rules) { r.AbortMoveBeforeDone = false }, []string{classAbortDone}},
-		{"AfterCompleteStrict", func(r *rules) { r.AfterCompleteStrict = false }, []string{classR27A}},
-		{"SelRecFinalRepeatable", func(r *rules) { r.SelRecFinalRepeatable = false }, []string{classR27ASel}},
-		{"RestoreKeyInTable", func(r *rules) { r.RestoreKeyInTable = false }, []string{classR27F}},
-		{"AtomicAdmit", func(r *rules) { r.AtomicAdmit = false }, []string{classTwoWrites}},
-		{"Serialize", func(r *rules) { r.Serialize = false }, []string{classTwoRun}},
-		{"StopEntries", func(r *rules) { r.StopEntries = false }, []string{classStop}},
-		{"SetCommand", func(r *rules) { r.SetCommand = false }, []string{classR28ASet}},
-		{"Step1Whole", func(r *rules) { r.Step1Whole = false }, []string{classR28H}},
-		{"ExpectedMap", func(r *rules) { r.ExpectedMap = false }, []string{classR28B}},
-		{"ConvertStoppable", func(r *rules) { r.ConvertStoppable = false }, []string{classR28AConv}},
-		{"PrepareMarksUnresolved", func(r *rules) { r.PrepareMarksUnresolved = false }, []string{classR28APrep}},
-		{"CompletionSurvivesRowRestore", func(r *rules) { r.CompletionSurvivesRowRestore = false }, []string{classR28C}},
+		{"Step1Recorded", func(r *modelRules) { r.Step1Recorded = false }, []string{classR27CReread}},
+		{"ProveEpochs", func(r *modelRules) { r.ProveEpochs = false }, []string{classR27E}},
+		{"AbortMoveBeforeDone", func(r *modelRules) { r.AbortMoveBeforeDone = false }, []string{classAbortDone}},
+		{"AfterCompleteStrict", func(r *modelRules) { r.AfterCompleteStrict = false }, []string{classR27A}},
+		{"SelRecFinalRepeatable", func(r *modelRules) { r.SelRecFinalRepeatable = false }, []string{classR27ASel}},
+		{"RestoreKeyInTable", func(r *modelRules) { r.RestoreKeyInTable = false }, []string{classR27F}},
+		{"AtomicAdmit", func(r *modelRules) { r.AtomicAdmit = false }, []string{classTwoWrites}},
+		{"Serialize", func(r *modelRules) { r.Serialize = false }, []string{classTwoRun}},
+		{"StopEntries", func(r *modelRules) { r.StopEntries = false }, []string{classStop}},
+		{"SetCommand", func(r *modelRules) { r.SetCommand = false }, []string{classR28ASet}},
+		{"Step1Whole", func(r *modelRules) { r.Step1Whole = false }, []string{classR28H}},
+		{"ExpectedMap", func(r *modelRules) { r.ExpectedMap = false }, []string{classR28B}},
+		{"ConvertStoppable", func(r *modelRules) { r.ConvertStoppable = false }, []string{classR28AConv}},
+		{"PrepareMarksUnresolved", func(r *modelRules) { r.PrepareMarksUnresolved = false }, []string{classR28APrep}},
+		{"CompletionSurvivesRowRestore", func(r *modelRules) { r.CompletionSurvivesRowRestore = false }, []string{classR28C}},
 	} {
 		r := v62
 		r.Name = v62.Name + "-" + a.name
 		a.f(&r)
-		out = append(out, modelProfile{rules: r, Want: a.want})
+		out = append(out, modelProfile{modelRules: r, Want: a.want})
 	}
 	// The current rules, with a command that fails for good modeled, and their controls: the same
 	// rules without WayOut, without EveryCommandStoppable (the buckets commands alone Stoppable),
 	// and without HubAbortAfterStop (a done prove excludes abort for good), each of which strands
 	// the hold, and the same rules with each stop recording its own run alone (OwnRunOnly), under
 	// which hold release moves the row over an earlier run's change.
-	noWayOut := currentRules
-	noWayOut.Name, noWayOut.WayOut = currentRules.Name+"-WayOut", false
-	bucketsAlone := currentRules
-	bucketsAlone.Name, bucketsAlone.EveryCommandStoppable = currentRules.Name+"-EveryCommandStoppable", false
-	proveExcludes := currentRules
-	proveExcludes.Name, proveExcludes.HubAbortAfterStop = currentRules.Name+"-HubAbortAfterStop", false
-	ownRun := currentRules
-	ownRun.Name = currentRules.Name + "-OwnRunOnly"
-	return append(out, modelProfile{rules: currentRules, Fail: true},
-		modelProfile{rules: noWayOut, Want: []string{classWayOut}, Fail: true},
-		modelProfile{rules: bucketsAlone, Want: []string{classWayOut}, Fail: true},
-		modelProfile{rules: proveExcludes, Want: []string{classWayOut}, Fail: true},
-		modelProfile{rules: ownRun, Want: []string{classEveryRun}, Fail: true, OwnRunOnly: true})
+	noWayOut := currentModel
+	noWayOut.Name, noWayOut.WayOut = currentModel.Name+"-WayOut", false
+	bucketsAlone := currentModel
+	bucketsAlone.Name, bucketsAlone.EveryCommandStoppable = currentModel.Name+"-EveryCommandStoppable", false
+	proveExcludes := currentModel
+	proveExcludes.Name, proveExcludes.HubAbortAfterStop = currentModel.Name+"-HubAbortAfterStop", false
+	ownRun := currentModel
+	ownRun.Name = currentModel.Name + "-OwnRunOnly"
+	return append(out, modelProfile{modelRules: currentModel, Fail: true},
+		modelProfile{modelRules: noWayOut, Want: []string{classWayOut}, Fail: true},
+		modelProfile{modelRules: bucketsAlone, Want: []string{classWayOut}, Fail: true},
+		modelProfile{modelRules: proveExcludes, Want: []string{classWayOut}, Fail: true},
+		modelProfile{modelRules: ownRun, Want: []string{classEveryRun}, Fail: true, OwnRunOnly: true})
 }
 
 // modelTable is what the model's transitions ask of a rule set's table. For the current rules it
@@ -191,8 +212,8 @@ type modelTable struct {
 	stoppable func(w Workflow, command string) bool
 }
 
-func tableOf(r rules) modelTable {
-	if r == currentRules {
+func tableOf(r modelRules) modelTable {
+	if r == currentModel {
 		return modelTable{
 			decide: func(d Done, req modelRequest) error {
 				if req.Plain {
@@ -204,7 +225,7 @@ func tableOf(r rules) modelTable {
 			stoppable: Stoppable,
 		}
 	}
-	t := tableFor(r)
+	t := tableFor(r.rules)
 	return modelTable{decide: t.Decide, final: t.Final, stoppable: t.Stoppable}
 }
 
@@ -392,7 +413,7 @@ func operatorCmd(c string) string {
 	return c
 }
 
-func scenarios(r rules, fail, ownRunOnly bool) []modelScenario {
+func scenarios(r modelRules, fail, ownRunOnly bool) []modelScenario {
 	slots, hubSlots := 2, 2
 	if oneHubProcess[r.Name] {
 		hubSlots = 1
@@ -507,7 +528,7 @@ func expected(s modelState, tg int) int {
 
 // disksMoved is the command's reading against the expected map, or v59's against Proven's named
 // targets alone.
-func disksMoved(r rules, s modelState) bool {
+func disksMoved(r modelRules, s modelState) bool {
 	if !s.Proved {
 		return false
 	}
@@ -522,7 +543,7 @@ func disksMoved(r rules, s modelState) bool {
 	return false
 }
 
-func request(r rules, s modelState, o modelOp) modelRequest {
+func request(r modelRules, s modelState, o modelOp) modelRequest {
 	return modelRequest{Request: Request{Command: o.cmd, DisksMoved: o.cmd == CommandProve && disksMoved(r, s)},
 		Plain: o.cmd == CommandProve && o.set == 0}
 }
@@ -538,13 +559,13 @@ func a2(s modelState, c string) bool {
 }
 
 // admitted is Admit's decision on a held row, and A2.
-func admitted(r rules, t modelTable, sc modelScenario, s modelState, o modelOp) bool {
+func admitted(r modelRules, t modelTable, sc modelScenario, s modelState, o modelOp) bool {
 	return s.Row == 'H' && a2(s, o.cmd) && t.decide(toDone(sc, s), request(r, s, o)) == nil
 }
 
 // otherPendingAdmitted is v53's NEW-P check: another command's intent is pending, and the table
 // still admits it.
-func otherPendingAdmitted(r rules, t modelTable, sc modelScenario, s modelState, final string) bool {
+func otherPendingAdmitted(r modelRules, t modelTable, sc modelScenario, s modelState, final string) bool {
 	d := toDone(sc, s)
 	for _, c := range list(s.Intent) {
 		if c == final || c == CommandRelease {
@@ -616,7 +637,7 @@ func othersRunning(s modelState, k int) bool {
 
 func idle(s modelState, k int) modelState { s.Slots[k] = modelSlot{}; return s }
 
-func next(r rules, t modelTable, sc modelScenario, s modelState, bound int) []modelEdge {
+func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int) []modelEdge {
 	var out []modelEdge
 	for k := range sc.Slots {
 		sl := s.Slots[k]
@@ -703,7 +724,7 @@ func next(r rules, t modelTable, sc modelScenario, s modelState, bound int) []mo
 
 // admit starts a command on a held row: one compare-and-swap that writes its intent, or, without
 // AtomicAdmit, a read whose intent is written later.
-func admit(r rules, sc modelScenario, s modelState, k int, o modelOp) modelEdge {
+func admit(r modelRules, sc modelScenario, s modelState, k int, o modelOp) modelEdge {
 	ns := s
 	ns.Slots[k] = modelSlot{Cmd: o.cmd, Set: o.set, Gen: s.RowGen}
 	if sc.Hub {
@@ -776,7 +797,7 @@ func finish(t modelTable, sc modelScenario, s modelState, k int) modelState {
 // which keeps complete, else with its intent left. rerun marks a refusal whose stated way out is the
 // command's own rerun, which ErrBusy admits. Its stop records nothing of what the command left,
 // which counts as changed (refuseLeft records it).
-func refuse(r rules, t modelTable, sc modelScenario, s modelState, k int, why string, rerun bool) modelEdge {
+func refuse(r modelRules, t modelTable, sc modelScenario, s modelState, k int, why string, rerun bool) modelEdge {
 	return refuseLeft(r, t, sc, s, k, why, rerun, 'C')
 }
 
@@ -784,7 +805,7 @@ func refuse(r rules, t modelTable, sc modelScenario, s modelState, k int, why st
 // In the rule sets since the bundle (stopsRecorded) the record keeps the stop, and a stop of a
 // command other than hold set and hold release joins Left, which hold release's rule reads; the
 // bundle's rule sets never set either, so their states are as the bundle's.
-func refuseLeft(r rules, t modelTable, sc modelScenario, s modelState, k int, why string, rerun bool, left byte) modelEdge {
+func refuseLeft(r modelRules, t modelTable, sc modelScenario, s modelState, k int, why string, rerun bool, left byte) modelEdge {
 	c := s.Slots[k].Cmd
 	ns := idle(s, k)
 	if t.stoppable(sc.W, c) && inSet(s.Intent, c) {
@@ -815,7 +836,7 @@ func refuseLeft(r rules, t modelTable, sc modelScenario, s modelState, k int, wh
 // stopsRecorded reports whether the record keeps each command's latest stop, as the code writes
 // it: in every rule set with a rule added since the frozen bundle. The bundle's profiles leave the
 // stops out, as the bundle did, so their counts stay the bundle's.
-func stopsRecorded(r rules) bool {
+func stopsRecorded(r modelRules) bool {
 	return r.WayOut || r.EveryCommandStoppable || r.EndIsFinal || r.BackupCommand || r.HubAbortAfterStop
 }
 
@@ -852,7 +873,7 @@ func leftOf(sc modelScenario, s modelState, c string, own byte) byte {
 	return 'U'
 }
 
-func setStep(r rules, t modelTable, sc modelScenario, s modelState, k int) []modelEdge {
+func setStep(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []modelEdge {
 	sl := s.Slots[k]
 	ns := s
 	to := func(step int, label string) modelEdge {
@@ -925,7 +946,7 @@ func setStep(r rules, t modelTable, sc modelScenario, s modelState, k int) []mod
 	panic("holdmodel: no hold set step " + strconv.Itoa(sl.Step))
 }
 
-func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []modelEdge {
+func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []modelEdge {
 	sl := s.Slots[k]
 	c := sl.Cmd
 	ns := s
@@ -1317,7 +1338,7 @@ func setRuns(s modelState) bool {
 
 // classifyR28 names the classes of round 28, which the earlier rules carry by construction, and ""
 // for any other.
-func classifyR28(r rules, sc modelScenario, kind string, s modelState, trace []string) string {
+func classifyR28(r modelRules, sc modelScenario, kind string, s modelState, trace []string) string {
 	switch {
 	case kind == "a disk judged against a target the step-1 map lacks":
 		return classR28H
@@ -1346,7 +1367,7 @@ func classifyR28(r rules, sc modelScenario, kind string, s modelState, trace []s
 	return ""
 }
 
-func classify(r rules, sc modelScenario, kind string, s modelState, trace []string) string {
+func classify(r modelRules, sc modelScenario, kind string, s modelState, trace []string) string {
 	// A command failed for good after its intent, and no command the table admits ends the hold:
 	// the class WayOut and EveryCommandStoppable fix. Only the profiles that model the failure
 	// (Fail) reach it.
@@ -1526,8 +1547,8 @@ func disagreement(sc modelScenario, s modelState) string {
 	if s.Proved {
 		read := map[string]string{"A": strconv.Itoa(s.Cur[0].ID), "B": strconv.Itoa(s.Cur[1].ID)}
 		moved, err := Moved(d, read)
-		if err != nil || moved != disksMoved(currentRules, s) {
-			return fmt.Sprintf("Moved answers %v, %v, and the model %v", moved, err, disksMoved(currentRules, s))
+		if err != nil || moved != disksMoved(currentModel, s) {
+			return fmt.Sprintf("Moved answers %v, %v, and the model %v", moved, err, disksMoved(currentModel, s))
 		}
 	}
 	return ""
@@ -1551,7 +1572,7 @@ func startLabel(sc modelScenario, s modelState) string {
 // explore walks every state of one workflow under the rules and returns how many it reached, every
 // counterexample, and every state at which the package's readings and the model's differ (checked
 // for the current rules alone, whose readings the package's functions are).
-func explore(r rules, t modelTable, sc modelScenario, bound int) (int, []modelViolation, []string) {
+func explore(r modelRules, t modelTable, sc modelScenario, bound int) (int, []modelViolation, []string) {
 	type node struct {
 		s      modelState
 		parent int
@@ -1584,7 +1605,7 @@ func explore(r rules, t modelTable, sc modelScenario, bound int) (int, []modelVi
 	seenUnsafe := map[string]bool{}
 	for i := 0; i < len(nodes); i++ {
 		s := nodes[i].s
-		if r == currentRules {
+		if r == currentModel {
 			if why := disagreement(sc, s); why != "" && len(differ) < 5 {
 				differ = append(differ, why+", after "+strings.Join(trace(i), " -> "))
 			}
@@ -1660,7 +1681,7 @@ type modelRun struct {
 	differ        []string
 }
 
-func runModel(r rules, bound int, fail, ownRunOnly bool) modelRun {
+func runModel(r modelRules, bound int, fail, ownRunOnly bool) modelRun {
 	t := tableOf(r)
 	out := modelRun{byWorkflow: map[string]int{}, byClass: map[string]int{}, classIn: map[string]map[string]int{},
 		shortest: map[string]modelViolation{}}
@@ -1773,14 +1794,15 @@ var (
 // (classEveryRun). At every hub-restore state of the current rules the package's Step1, Proven,
 // Epoch, Expected and Moved read the record as the model does.
 func TestTheHoldJournalModel(t *testing.T) {
-	if currentRules.Name != "v63" || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal || v62.BackupCommand || v62.HubAbortAfterStop {
-		t.Fatalf("the current rules are %q, and v62 carries a rule added since; the counts below are v62's and v63's", currentRules.Name)
+	if currentModel.Name != "v63" || currentModel.rules != currentRules || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal ||
+		v62.BackupCommand || v62.HubAbortAfterStop {
+		t.Fatalf("the current rules are %q, the model's runs another table than the package's, or v62 carries a rule added since; the counts below are v62's and v63's", currentModel.Name)
 	}
 	for _, p := range modelProfiles() {
 		p := p
 		t.Run(p.Name, func(t *testing.T) {
 			t.Parallel()
-			got := runModel(p.rules, 2, p.Fail, p.OwnRunOnly)
+			got := runModel(p.modelRules, 2, p.Fail, p.OwnRunOnly)
 			want, ok := frozenBound2[p.Name]
 			if !ok {
 				want, ok = pinnedBound2[p.Name]
@@ -1808,7 +1830,7 @@ func TestTheHoldJournalModel(t *testing.T) {
 						p.Name, got.byClass[c], c, v.Workflow, v.Kind, strings.Join(v.Trace, " -> "))
 				}
 				byWorkflow := frozenV62Bound2
-				if p.rules == currentRules {
+				if p.modelRules == currentModel {
 					byWorkflow = pinnedCurrentBound2
 				}
 				for w, n := range byWorkflow {
@@ -1833,12 +1855,12 @@ func TestTheHoldJournalModel(t *testing.T) {
 				t.Logf("control %s found %d counterexamples of its class %s, in %v, the shortest (%s): %s", p.Name, n, c,
 					got.classIn[c], got.shortest[c].Workflow, strings.Join(got.shortest[c].Trace, " -> "))
 			}
-			if p.Name == currentRules.Name+"-HubAbortAfterStop" && got.classIn[classWayOut]["hub-restore"] == 0 {
+			if p.Name == currentModel.Name+"-HubAbortAfterStop" && got.classIn[classWayOut]["hub-restore"] == 0 {
 				// Without the rule a done prove excludes abort for good, so a census that fails for
 				// good after a prove strands hub-restore.
 				t.Errorf("control %s found no %s in hub-restore", p.Name, classWayOut)
 			}
-			if p.Name == currentRules.Name+"-EveryCommandStoppable" {
+			if p.Name == currentModel.Name+"-EveryCommandStoppable" {
 				// The fix is every command's stop, not the buckets commands' alone: without it the
 				// hold is stranded in workflows that run no buckets command.
 				for _, w := range []string{"cutover", "rollback", "selection-recovery", "streams-update", "streams-census"} {
@@ -1847,7 +1869,7 @@ func TestTheHoldJournalModel(t *testing.T) {
 					}
 				}
 			}
-			if p.Name == currentRules.Name+"-WayOut" {
+			if p.Name == currentModel.Name+"-WayOut" {
 				// Without WayOut no workflow but hub-restore has a way out of a stopped command: the
 				// record keeps each stop, as the code writes it, so hold release reads the stopped
 				// command as a change in every workflow, the buckets ones included.
@@ -1861,11 +1883,11 @@ func TestTheHoldJournalModel(t *testing.T) {
 		})
 	}
 	for _, b := range []struct {
-		r          rules
+		r          modelRules
 		fail       bool
 		total      int
 		byWorkflow map[string]int
-	}{{v62, false, 139812, frozenV62Bound3}, {currentRules, true, pinnedCurrentBound3Total, pinnedCurrentBound3}} {
+	}{{v62, false, 139812, frozenV62Bound3}, {currentModel, true, pinnedCurrentBound3Total, pinnedCurrentBound3}} {
 		b := b
 		t.Run(b.r.Name+" at bound 3", func(t *testing.T) {
 			t.Parallel()

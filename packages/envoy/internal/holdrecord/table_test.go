@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+// workflows is every workflow of the hold's table, in the design's order.
+func workflows() []Workflow {
+	return []Workflow{WorkflowCutover, WorkflowRollback, WorkflowSelectionRecovery, WorkflowBucketsCreate, WorkflowBucketsRecreate,
+		WorkflowBucketsRestore, WorkflowStreamsUpdate, WorkflowHubRestore, WorkflowStreamsCensus}
+}
+
+// Assumption A2, as Decide stands: a command's own pending intent admits it again (its rerun after a
+// crash), so a second process running the same command at once is admitted, while any other command
+// is refused ErrBusy. The journal does not hold the operator to one command at a time; Admit's and
+// CommandAbort's docs say so. Fails if Decide refuses a command its own intent: a rerun after a
+// crash would then be refused for good.
+func TestASecondProcessRunningTheSameCommandIsAdmitted(t *testing.T) {
+	running := Done{Workflow: WorkflowCutover, Ops: []Operation{{Command: CommandSet, State: stateIntent},
+		{Command: CommandSet, State: stateDone}, {Command: "replay", State: stateIntent}}}
+	if err := Decide(running, Request{Command: "replay"}); err != nil {
+		t.Errorf("replay with its own intent pending answered %v, want admitted", err)
+	}
+	if err := Decide(running, Request{Command: "create-bucket"}); !errors.Is(err, ErrBusy) {
+		t.Errorf("create-bucket with replay's intent pending answered %v, want ErrBusy", err)
+	}
+}
+
 // admittedOps is a record in which command c of w has every entry it needs before its admission:
 // hold set's intent and done, a done hold prove first for an epochal command, and each command it
 // requires done.
@@ -30,7 +52,7 @@ func admittedOps(w Workflow, c string) []Operation {
 // its intent is not Stoppable: the count of stranded commands is not 0.
 func TestEveryCommandHasAWayOut(t *testing.T) {
 	stranded, checked := 0, 0
-	for _, w := range current.Workflows() {
+	for _, w := range workflows() {
 		for _, c := range Commands(w) {
 			if c == CommandAbort {
 				continue
@@ -88,7 +110,7 @@ func TestNoCommandIsAdmittedAfterTheHoldEnded(t *testing.T) {
 		}
 	}
 	ended := 0
-	for _, w := range current.Workflows() {
+	for _, w := range workflows() {
 		for _, end := range []string{CommandRelease, CommandAbort} {
 			ops := append(append([]Operation{}, set...), op(end, stateIntent), op(end, stateDone))
 			d := Done{Workflow: w, Ops: ops, Complete: end == CommandAbort}
