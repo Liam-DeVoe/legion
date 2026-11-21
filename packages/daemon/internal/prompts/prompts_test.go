@@ -56,7 +56,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		{"tester", claim.RoleTester, false, []string{"core/common.md", "core/tester.md", "mechanics/headless.md", "tester.md"}, []string{"tester.md", "worker-common.md"}, []string{`op: "handoff_complete"`, `verdict: "pass"`, `verdict: "fail"`,
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
 		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
-			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on"}},
+			"Retro commits nothing, so nothing of retro's sits above the head your `approve` names", "`pullRequest.head` is the commit the pull request stands on"}},
 		// The merge the merger is told to run names the head GitHub must match, on a queue base and
 		// off it, and carries the message it writes itself; its completion is an ordinary phase
 		// completion, refused only on the grounds every phase worker's is (dispatch://INFRA-714, R2).
@@ -301,7 +301,7 @@ func TestTheComposedPromptsNameAnIssueWithNoBeforeMergeCheckAsAGap(t *testing.T)
 		answers []string
 	}{
 		{claim.RoleTester, false, []string{"is a gap you name, never a reason of its own to send the issue back"}},
-		{claim.RoleReviewer, false, []string{"is a gap you name in your review, never a review that asks for changes"}},
+		{claim.RoleReviewer, false, []string{"is a gap you name in your review, never a reason for `changes`"}},
 		{claim.RoleArchitect, false, []string{"your acceptance is the only gate on it", "name that gap in your acceptance comment and decide there"}},
 		{claim.RoleArchitect, true, []string{"your acceptance is the only gate on it", "name that gap in your acceptance comment and decide there"}},
 	} {
@@ -646,82 +646,66 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 	}
 }
 
-// A review the review App submits decides a round only when the head its Legion footer names is
-// the pull request's current head (`intake.PullRequestReview.LegionHead`, `workflow.refusesRound`),
-// so a reviewer whose prompt teaches the footer without the head submits a review every round
-// sets aside. The composed reviewer prompt therefore carries the footer's own shape with the
-// head in it, which head that is — the one whose diff and checks the review read, never the head
-// GitHub happens to show at the moment of submission, since a review of an unread head is the
-// fault the rule exists to stop — the read that tells the reviewer a push landed under it
-// (`--json headRefOid`), the reason GitHub's own `commit_id` cannot stand in for the footer, and
-// what a wrong head costs. The same footer names the entry of the reviewer's round, the number of
-// the newest ` Review entry: <n>.` sentence that is the last sentence of a task or a wake of its
-// session (a task's own text can quote the same words above it), since only
-// a review whose footer names the entry on the reviewer's row moves the commit a later round reads
-// from: the shape with the entry in both the template and the rule, the rule whole in the daemon
-// part (a message that names no entry changes none, and the field is left out only where nothing in
-// the session named one), and that a review with no entry, or another one, still decides the round.
-// The entry is a JSON string, `"entry":"<entry>"`, and the prompt says why: a placeholder left
-// unquoted makes the footer invalid JSON, which loses its session and its head too, so the review
-// is set aside, while a quoted value that is no number costs the entry alone. The prompt says which
-// sentence the entry is read from in exactly the two places pinned, the role part's and the daemon
-// part's, so no third wording of that rule stands beside them. The footer with no entry is gone.
-// This shows the text is loaded, never that a reviewer follows it.
-func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.T) {
+// The reviewer's verdict reaches the daemon with its completion of reviewing, whose `commit` the
+// `legion` tool takes from the `head` of the reviewer's newest `review` handoff, and the daemon
+// records the verdict as the round's decision at that commit (workflow's decisionOf), so a
+// reviewer whose prompt left the head out of that handoff, or let it name a head it did not read,
+// sends a verdict the daemon refuses (`VERDICT_COMMIT_REQUIRED`) or one of code it never read. The
+// composed reviewer prompt therefore says where the verdict's head comes from, which head that is
+// - the one whose diff and checks the reviewer read, never the head GitHub happens to show when it
+// completes - and the read that tells it a push landed under it (`--json headRefOid`); that its
+// completion carries `approve` or `changes` and what the daemon refuses
+// (`REVIEWER_VERDICT_REQUIRED`); and that the review it posts on GitHub is a `COMMENT`, with the
+// Legion footer every role's pull-request comment carries, its session and its phase. The daemon
+// reads no review footer any more, so the footer's head and entry, and the rules that read them,
+// are gone. This shows the text is loaded, never that a reviewer follows it.
+func TestTheComposedReviewerPromptSendsItsVerdictOnTheHeadItReviewed(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	text := foldWhitespace(composedText(t, composer, claim.RoleReviewer, false))
 	for _, phrase := range []string{
-		`"phase":"review","head":"<the head you reviewed>","entry":"<entry>"} -->`,
-		`\"phase\":\"review\",\"head\":\"<head-sha>\",\"entry\":\"<entry>\"} -->`,
-		"beside its session, its phase and its `\"entry\":\"<entry>\"`",
+		"`op: \"handoff_complete\"`, a `summary` and your `verdict`, `approve` or `changes`",
+		"(`REVIEWER_VERDICT_REQUIRED`)",
+		"(`VERDICT_COMMIT_REQUIRED`): the tool sends the `head` of your newest `review` handoff as the completion's `commit`",
 		"gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid",
 		"the head whose diff and checks you read",
-		"rather than renaming the footer to a head you have not read",
-		"GitHub rewrites `commit_id` to the pull request's current head",
-		"A review whose footer names another head, or no head, decides no round",
-		"The footer's `entry` is the entry of your round, the number of the newest `Review entry: <n>.` sentence that is the last sentence of a task or a wake of this session (the daemon part below gives the rule whole), written in quotes as a string of digits, `\"entry\":\"7\"`:",
-		"It is in quotes because a footer that is not valid JSON, such as one with an unquoted `<entry>` left in it, loses its session and its head too, and Legion then sets the review aside, while a quoted value that is no number costs the entry alone.",
-		"by it Legion tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from",
-		"A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
-		"The `<entry>` is the entry of your round, in digits, as the next paragraph says; a review with no entry, or with another one, decides the round as any other, but moves no commit.",
-		"The entry of your round is the number of the newest `Review entry: <n>.` sentence that is the last sentence of a task or a wake of this session. A message that names none, such as a notice, a reminder or an Envoy card, does not change it. Leave the `entry` field out of your footer only where nothing in this session named one.",
+		"rather than naming a head you have not read",
+		"`event` (`COMMENT`)",
+		`"phase":"review"} -->`,
+		`\"phase\":\"review\"} -->`,
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed reviewer prompt omits %q", phrase)
 		}
 	}
-	if rule := "the number of the newest `Review entry: <n>.` sentence"; strings.Count(text, rule) != 2 {
-		t.Errorf("the composed reviewer prompt says %q %d times, want twice: the role part's sentence and the daemon part's, each pinned above, "+
-			"which read the entry from the last sentence of a task", rule, strings.Count(text, rule))
-	}
 	for _, retired := range []string{
-		`"phase":"review","head":"<the head you reviewed>"} -->`,
-		`\"phase\":\"review\",\"head\":\"<head-sha>\"} -->`,
+		`"head":"<the head you reviewed>"`,
+		`\"head\":\"<head-sha>\"`,
+		`"entry":"<entry>"`,
+		"`APPROVE`", "`REQUEST_CHANGES`",
 	} {
 		if strings.Contains(text, retired) {
-			t.Errorf("the composed reviewer prompt still says %q, a footer with no entry", retired)
+			t.Errorf("the composed reviewer prompt still says %q, which the daemon no longer reads", retired)
 		}
 	}
 }
 
-// The task of a later review round names the commit the reviewer's own newest deciding review of
-// its round read (` Last reviewed commit: <sha>.`, which workflow's namingTheReviewRound writes from
+// The task of a later review round names the commit the reviewer's own newest verdict of its round
+// named (` Last reviewed commit: <sha>.`, which workflow's namingTheReviewRound writes from
 // record.PhaseRow.ReviewedHead), so the reviewer can read the difference from that commit rather
 // than the whole change again. The composed reviewer prompt therefore names the field, the
-// function that writes it into the task, and whose review sets it: the session the daemon recorded
-// on the claim it started the reviewer under, in the first round as in every later one, in a review
-// whose Legion footer names the entry on the reviewer's row (` Review entry: <n>.`, the task's last
-// sentence, record.PhaseRow.Entry, which the task of a wake ends with too) while that row holds the
-// entry's task. The core part names the commit in the daemon part's words, the head the Legion
-// footer of the reviewer's own newest deciding review named, since a deciding review whose footer
-// names no entry or another one moves no commit. It says to read the difference from that commit
-// and each thread, gives the thermonuclear pair that same diff, keeps every defect seen outside it
-// a finding, and names the three cases that read the whole change again. The pair's old sentence,
-// which ran it over the whole change in every round, is gone. This shows the text is loaded, never
-// that a reviewer follows it.
+// function that writes it into the task, and what sets it: the verdict the reviewer sends with its
+// completion of reviewing while its row holds the task of the entry that stands (` Review entry:
+// <n>.`, the task's last sentence, record.PhaseRow.Entry, which the task of a wake ends with too),
+// to which the daemon holds that completion (`HANDOFF_STALE_ENTRY`); a `COMMENT`, a person's
+// review and a verdict past review leave it where it stands. The core part names the commit in the
+// daemon part's words. It says to read the difference from that commit and each thread, gives the
+// thermonuclear pair that same diff, keeps every defect seen outside it a finding, and names the
+// three cases that read the whole change again. The pair's old sentence, which ran it over the
+// whole change in every round, is gone. This shows the text is loaded, never that a reviewer
+// follows it.
 func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -732,14 +716,13 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"Last reviewed commit: <sha>",
 		"no entry into a phase clears it",
 		"`namingTheReviewRound` in `packages/daemon/internal/workflow/review_round.go` writes it into the task",
-		"Your session is the one the daemon recorded on the claim it started you under, in your first round as in every later one;",
-		"it is recorded when your agent registers, and while that claim records no session, no review of the review App decides the round or sets the commit.",
 		"Your task names the entry of your round as its last sentence, `Review entry: <n>.`: the number of your entry into the round, which the daemon keeps on your phase row (`PhaseRow.Entry` in `packages/daemon/internal/record/record.go`) and raises at each new entry.",
 		"The task a wake gives you once your pod was released and brought back ends with it too, as each task of the round does.",
-		"When the task of a round names `Last reviewed commit: <commit>`, the head the Legion footer of your own newest deciding review named (the daemon part below says which review that is), read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
-		"an `APPROVE` or a `REQUEST_CHANGES` your session submitted as the review App whose footer names the entry your row holds, and which the daemon took as its round's decision while your row held that entry's task, which a new generation's clear empties until the daemon enters you again.",
-		"A `COMMENT`, a review the daemon set aside, a person's review and a review whose footer names no entry or another than your row's, such as one of a round before a new generation or a carried hand-over's promotion entered you again, leave it where it stands.",
-		"the head read by the newest of your own deciding reviews whose footer named the entry of its round; the daemon part below gives the whole rule and where the commit comes from.",
+		"Your completion is held to the entry your claim serves: one of an entry the daemon has raised since is taken only at the head the record holds and only where no move back raised the entry; any other is refused (`HANDOFF_STALE_ENTRY`)",
+		"When the task of a round names `Last reviewed commit: <commit>`, the head your own newest verdict of the round named (the daemon part below says which verdict that is), read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
+		"the head your newest verdict named, sent with your completion of reviewing while your row held that entry's task, which a new generation's clear empties until the daemon enters you again.",
+		"Your `COMMENT` reviews, a person's review and a verdict you send past review leave it where it stands.",
+		"the head your newest verdict of the round named; the daemon part below gives the whole rule and where the commit comes from.",
 		"read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
 		"over the diff that round reads, when that diff touches runtime code",
 		"The thermonuclear pair reads that same difference, and runs only when it touches runtime code.",
