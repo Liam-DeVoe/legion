@@ -509,6 +509,13 @@ func (rig *relaySocketRig) holds(session string) int {
 	return len(rig.sockets.open[session])
 }
 
+// callerRecords is how many callers the rig's replica keeps a record of (relaySockets.callers).
+func (rig *relaySocketRig) callerRecords() int {
+	rig.sockets.mu.Lock()
+	defer rig.sockets.mu.Unlock()
+	return len(rig.sockets.callers)
+}
+
 // relayFrameReceipt is a receipt subject of a relay frame of session, shaped as an edge relay
 // names one (relayReceiptOf): the receipt family, a machine id, a relay's nuid, the session and a
 // token of its own.

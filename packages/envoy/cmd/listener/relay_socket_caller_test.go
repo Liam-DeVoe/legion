@@ -2,9 +2,9 @@ package main
 
 // relay_socket_caller_test.go holds the relay socket's in-process rows of what one caller takes
 // from a replica and is handed: at most its cap of the replica's sockets (relaySocketMaxPerCaller)
-// and its share of the replica's byte budget (relaySocketCallerPendingBytes), and the frames of
-// its own session's receipts alone (relayReceiptOf). They run on the rig of
-// relay_socket_fixture_test.go.
+// and its share of the replica's byte budget (relaySocketCallerPendingBytes), each given back once
+// its sockets close, and the frames of its own session's receipts alone (relayReceiptOf). They run
+// on the rig of relay_socket_fixture_test.go.
 
 import (
 	"net/http"
@@ -95,6 +95,70 @@ func TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget(t *testing.T) {
 	flood(t, rig.owner.url, other, 1)
 	if frame := client.next(5 * time.Second); frame.Op != "msg" {
 		t.Fatalf("the other person's socket was sent %s, want its msg", frame.raw)
+	}
+}
+
+// A person who opened their relaySocketMaxPerCaller sockets on a replica and closed them all gets
+// every place back (release), and opens another there; the replica keeps no record of them.
+// Control: release giving back no place of the person's; the next socket is refused 429, and the
+// row fails naming it.
+func TestAPersonsClosedSocketsGiveTheirPlacesBack(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
+	sessionOf := func(i int) string { return "ses_edge_places_" + strconv.Itoa(i/relaySocketMaxPerSession) }
+	var clients []*relaySocketClient
+	for i := range relaySocketMaxPerCaller {
+		client, _ := rig.open(t, sessionOf(i))
+		clients = append(clients, client)
+	}
+	for _, client := range clients {
+		_ = client.conn.Close()
+	}
+	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+		for i := range relaySocketMaxPerCaller {
+			if rig.holds(sessionOf(i)) != 0 {
+				return false
+			}
+		}
+		return true
+	}) {
+		t.Fatal("the replica still holds the person's sockets 10 s after their clients closed")
+	}
+	if records := rig.callerRecords(); records != 0 {
+		t.Errorf("the replica keeps %d caller records after the person's %d sockets closed, want 0", records, relaySocketMaxPerCaller)
+	}
+	rig.open(t, "ses_edge_places_after")
+}
+
+// A frame the replica's budget refuses leaves nothing on its person's count: enqueue gives back
+// the person's reservation of a frame the replica's count refused, so with the person's other
+// socket idle and open, the person's count is 0 once the refused socket has closed and given back
+// what it held. The refused socket's pump is held from writing (its write lock), so the frames it
+// takes stay counted until the replica's 2 MiB budget refuses one. Control: enqueue keeping the
+// person's reservation of a refused frame; the person's count stays at that frame's bytes, and the
+// row fails naming it.
+func TestAFrameTheReplicaRefusesLeavesNothingOnItsPerson(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withReplicaBudget(2<<20))
+	const idle, session = "ses_edge_refund_idle", "ses_edge_refund_held"
+	kept, _ := rig.open(t, idle)
+	kept.subscribeOwn(idle)
+	person := rig.openSocket(t, idle).caller
+
+	held, _ := rig.open(t, session)
+	held.subscribeOwn(session)
+	socket := rig.openSocket(t, session)
+	socket.writeMu.Lock()
+	unlock := sync.OnceFunc(socket.writeMu.Unlock)
+	t.Cleanup(unlock)
+	flood(t, rig.owner.url, session, 6)
+	if !testwait.Holds(10*time.Second, 10*time.Millisecond, socket.ended.Load) {
+		t.Fatalf("the held socket did not close within 10 s; the replica holds %d bytes", rig.sockets.buffered.Load())
+	}
+	unlock()
+	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return rig.sockets.buffered.Load() == 0 }) {
+		t.Fatalf("the replica still counts %d bytes 10 s after the held socket closed", rig.sockets.buffered.Load())
+	}
+	if got := person.buffered.Load(); got != 0 {
+		t.Fatalf("the person's count is %d bytes with only an idle socket open, want 0: a frame the replica refused stayed on it", got)
 	}
 }
 
