@@ -2979,7 +2979,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 207: #4065 -- the project's controller gets the four claim operations the
+// 212: #4065 -- the project's controller gets the four claim operations the
 // operator already has, as controller routes beside `claims/fresh-session` and `claims/compact`,
 // each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and the same door
 // (claimDoor: a controller grant, or an architect grant for a claim of an issue it owns, or `403
@@ -3062,7 +3062,7 @@ package api
 // The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the issue's
 // architect alone, as `session-lost` does: the controller is told of neither (#4065), and no
 // shape moves.
-// Contract 207 is served down by 193's rule (#3659): every answer goes through one writer, which
+// Contract 212 is served down by 193's rule (#3659): every answer goes through one writer, which
 // shapes it to the contract its caller reads. The claim operations' answer and the pod update's
 // are two rows of answers.go's table, `claim-operation` on the four routes and `pod-update` on
 // `issues/pod-update`, each arrived whole with its routes at this contract
@@ -3149,6 +3149,8 @@ package api
 // of the 346 open pull requests, made between 2026-11-21T04:01:42Z and 04:04:55Z, found 203
 // declared by #2230, #3993, #4175, #4553, #4592, #4596 and #4661 as well as by this change's own
 // head, 204 by #3831 and #4030, 205 by #4573 and 206 by #4540, so this entry moved from 203 to
-// 207, the lowest number above main's 202 that no other open head declares. Read the base's own
-// number and every open head again at the next merge rather than from this line.)
-const DaemonAPIVersion = 207
+// 207, the lowest number above main's 202 that no other open head declares. The merge of main
+// `7009f289` moves it from 207 to 212: 207 to 211 are other open pull requests' (read at
+// refs/pull/<n>/head of all 395 open pull requests, 2026-11-21T11:08:11Z to 11:12:19Z). Read the
+// base's own number and every open head again at the next merge rather than from this line.)
+const DaemonAPIVersion = 212

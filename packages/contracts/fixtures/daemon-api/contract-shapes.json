@@ -28215,7 +28215,7 @@
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "claim-operation",
     "noBody": false,
     "keyPaths": [
@@ -28259,7 +28259,7 @@
     }
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "compact",
     "noBody": false,
     "keyPaths": [
@@ -28269,14 +28269,14 @@
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "empty-object",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "fresh-session",
     "noBody": false,
     "keyPaths": [
@@ -28285,7 +28285,7 @@
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "grant",
     "noBody": false,
     "keyPaths": [
@@ -28295,14 +28295,14 @@
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "handoff-complete",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "health",
     "noBody": false,
     "keyPaths": [
@@ -28312,7 +28312,7 @@
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "issue-record",
     "noBody": false,
     "keyPaths": [
@@ -28747,14 +28747,14 @@
     }
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "no-content",
     "noBody": true,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "pod-update",
     "noBody": false,
     "keyPaths": [
@@ -28765,7 +28765,7 @@
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "project-pause",
     "noBody": false,
     "keyPaths": [
@@ -28780,7 +28780,7 @@
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "project-resume",
     "noBody": false,
     "keyPaths": [
@@ -28800,7 +28800,7 @@
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "refusal",
     "noBody": false,
     "keyPaths": [
@@ -28829,7 +28829,7 @@
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "register",
     "noBody": false,
     "keyPaths": [
@@ -28854,7 +28854,7 @@
     }
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "register-controller",
     "noBody": false,
     "keyPaths": [
@@ -28866,7 +28866,7 @@
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "release-records",
     "noBody": false,
     "keyPaths": [
@@ -28904,7 +28904,7 @@
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "state",
     "noBody": false,
     "keyPaths": [
@@ -29565,7 +29565,7 @@
     }
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "turn-outcome",
     "noBody": false,
     "keyPaths": [
@@ -29575,7 +29575,7 @@
     "domains": {}
   },
   {
-    "contract": 207,
+    "contract": 212,
     "answer": "wave-release",
     "noBody": false,
     "keyPaths": [
