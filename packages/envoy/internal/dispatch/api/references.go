@@ -351,7 +351,7 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	documentKey, _, _ := strings.Cut(query.ID, "#")
-	document, found, _, err := documentAtAddress(ctx, pool, who, documentKey)
+	document, found, err := documentAtAddress(ctx, pool, who, documentKey)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -491,19 +491,17 @@ func (s *server) movedDocumentNode(ctx context.Context, who model.Actor, refKey 
 // documentAtAddress is the document stored at refKey, as a read of its blocks needs it: the node
 // refs.Node answers for the address, or, where the address is a retired document's, which refs
 // answers as the document's issue (refs.loadArtifactNodes), the document itself, read by its uuid,
-// since a retired document's blocks and versions stay readable. retired says which of the two it
-// answers.
-func documentAtAddress(ctx context.Context, q refs.Queryer, who model.Actor, refKey string) (document model.GraphNode, found, retired bool, err error) {
-	document, found, err = refs.Node(ctx, q, who, graphstore.KindArtifact, refKey, true)
+// since a retired document's blocks and versions stay readable.
+func documentAtAddress(ctx context.Context, q refs.Queryer, who model.Actor, refKey string) (model.GraphNode, bool, error) {
+	document, found, err := refs.Node(ctx, q, who, graphstore.KindArtifact, refKey, true)
 	if err != nil || !found || document.Kind == graphstore.KindArtifact {
-		return document, found, false, err
+		return document, found, err
 	}
 	var id string
 	if err := q.QueryRow(ctx, `select id::text from artifacts where ref_key = $1`, refKey).Scan(&id); err != nil {
-		return model.GraphNode{}, false, false, fmt.Errorf("read the retired document at %s: %w", refKey, err)
+		return model.GraphNode{}, false, fmt.Errorf("read the retired document at %s: %w", refKey, err)
 	}
-	document, found, err = refs.Node(ctx, q, who, graphstore.KindArtifact, id, false)
-	return document, found, found, err
+	return refs.Node(ctx, q, who, graphstore.KindArtifact, id, false)
 }
 
 // itemBlockReferenceNode is the block node ref, a part of an ask or a block of a comment or a
