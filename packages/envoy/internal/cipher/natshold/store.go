@@ -36,12 +36,14 @@ var (
 )
 
 // Conflict is a write a store refused for what the tables held: Err is which refusal, Current the
-// hold row as the write read it (nil when there is none), and RestoreGen, for a restore's
-// ErrGenMismatch, the gen a restore must carry now.
+// hold row as the write read it (nil when there is none), RestoreGen, for a restore's
+// ErrGenMismatch, the gen a restore must carry now, and HoldID, for ErrHoldMismatch, the hold id the
+// hold row or log names, which the write must name instead.
 type Conflict struct {
 	Err        error
 	Current    *Row
 	RestoreGen uint64
+	HoldID     string
 }
 
 func (c *Conflict) Error() string { return c.Err.Error() }
@@ -242,7 +244,11 @@ func (s Store) Move(ctx context.Context, expectedGen uint64, next Row, accept fu
 			}
 		}
 		if err := moveRefusal(current, next.Phase, next.HoldID, used); err != nil {
-			return &Conflict{Err: err, Current: &current}
+			conflict := &Conflict{Err: err, Current: &current}
+			if errors.Is(err, ErrHoldMismatch) {
+				conflict.HoldID = current.HoldID
+			}
+			return conflict
 		}
 		moved, err = scanRow(tx.QueryRow(ctx, `with moved as (
 				update `+s.table("nats_hold")+` set gen = gen + 1, phase = $2, hold_id = $3, reason = $4, updated_at = now(),
@@ -431,7 +437,7 @@ func (s Store) heldBy(ctx context.Context, tx pgx.Tx, holdID, phase string) (Row
 	case !found:
 		return Row{}, &Conflict{Err: ErrHoldMismatch}
 	case current.HoldID != holdID || (phase != "" && current.Phase != phase):
-		return Row{}, &Conflict{Err: ErrHoldMismatch, Current: &current}
+		return Row{}, &Conflict{Err: ErrHoldMismatch, Current: &current, HoldID: current.HoldID}
 	}
 	return current, nil
 }
@@ -571,7 +577,7 @@ func (s Store) DeleteCohort(ctx context.Context, holdID, key string, gen uint64,
 				return err
 			}
 		default:
-			return &Conflict{Err: ErrHoldMismatch, Current: &current}
+			return &Conflict{Err: ErrHoldMismatch, Current: &current, HoldID: current.HoldID}
 		}
 		deleted, err := tx.Exec(ctx, `with deleted as (
 				delete from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2 and key = $3 and gen = $4

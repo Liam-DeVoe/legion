@@ -115,10 +115,14 @@ type CutoverRow struct {
 // `row_exists`, `below_floor` or `clock_skew` (a row signed further than the five-minute allowance
 // from the broker's clock, or before the latest row the broker took: nothing was stored), or the
 // broker's own `DATABASE_UNAVAILABLE` or `INTERNAL`. Row is the verified current row a 409 carries.
+// HoldID is, on a `hold_mismatch`, the hold id the broker's row or log names, which the refused
+// call must name instead (a restore after a prepare entry names that entry's hold): no route lists
+// the log, so this field is where the operator learns it. It is not in Error's text.
 type RouteError struct {
 	Status int
 	Code   string
 	Row    *Row
+	HoldID string
 	// The request's method and route, which Error names.
 	method, path string
 }
@@ -951,6 +955,7 @@ func (c *Client) refusal(method, path string, status int, data []byte) error {
 		Error   string   `json:"error"`
 		Code    string   `json:"code"`
 		Current *rowWire `json:"current"`
+		HoldID  string   `json:"hold_id"`
 	}
 	var code string
 	switch {
@@ -964,6 +969,9 @@ func (c *Client) refusal(method, path string, status int, data []byte) error {
 		return fmt.Errorf("holdrecord: %s %s answered %d with an unrecognized body", method, path, status)
 	}
 	refusal := &RouteError{Status: status, Code: code, method: method, path: path}
+	if code == "hold_mismatch" {
+		refusal.HoldID = answer.HoldID
+	}
 	if answer.Current != nil {
 		row, err := c.verifyRow(*answer.Current)
 		if err != nil {

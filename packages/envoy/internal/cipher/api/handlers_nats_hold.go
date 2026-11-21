@@ -141,6 +141,10 @@ type holdRefusal struct {
 	// On POST /v1/nats-hold/restore's 409 gen_mismatch, the gen a restore must carry now, one above
 	// every gen nats_hold_log holds, which the operator signs afresh; absent otherwise.
 	RestoreGen *int64 `json:"restore_gen,omitempty"`
+	// On a 409 hold_mismatch, the hold id the hold row or log names, which the refused write must
+	// name instead (a restore after a prepare entry names that entry's hold); absent otherwise. The
+	// operator's client reads it as RouteError.HoldID, since no route lists the log.
+	HoldID string `json:"hold_id,omitempty"`
 }
 
 // writeHoldRefusal answers the hold routes' refusal of code with message, carrying the row and
@@ -157,6 +161,9 @@ func writeHoldRefusal(w http.ResponseWriter, status int, code, message string, c
 		if conflict.RestoreGen != 0 {
 			gen := int64(conflict.RestoreGen)
 			body.RestoreGen = &gen
+		}
+		if code == "hold_mismatch" {
+			body.HoldID = conflict.HoldID
 		}
 	}
 	writeJSON(w, status, body)
@@ -552,7 +559,7 @@ func (s *server) restoreAdmitted(latest *natshold.LogEntry, journals []natshold.
 	switch latest.Phase {
 	case string(natsgrant.OperatorPhasePrepare):
 		if next.HoldID != latest.HoldID {
-			return &natshold.Conflict{Err: fmt.Errorf("%w: the log's latest entry is prepare with hold id %q, and a released row after it names that hold, or the prepared hold's cohort and journal are left where no command reaches them", natshold.ErrHoldMismatch, latest.HoldID)}
+			return &natshold.Conflict{Err: fmt.Errorf("%w: the log's latest entry is prepare with hold id %q, and a released row after it names that hold, or the prepared hold's cohort and journal are left where no command reaches them", natshold.ErrHoldMismatch, latest.HoldID), HoldID: latest.HoldID}
 		}
 		return nil
 	case string(natsgrant.OperatorPhaseHeld):
@@ -867,6 +874,15 @@ func (f *recordFloors) deleted(k recordFloorKey, gen uint64) {
 	f.gens[k] = recordFloor{gen: max(f.gens[k].gen, gen), deleted: true}
 }
 
+// gone reports whether the floor has seen the record k present and the routes did not delete it,
+// so that its absence now is a database writer's, not a record that never was.
+func (f *recordFloors) gone(k recordFloorKey) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	floor, seen := f.gens[k]
+	return seen && !floor.deleted
+}
+
 // serve checks the records one read of holdID's kind answered against their floors, and answers
 // why the read reads as unknown, or "" and raises the floor of every record verified accepts to
 // its gen. A delete among deletions that deletedByRoutes verifies, at or above its record's floor,
@@ -910,14 +926,23 @@ func (f *recordFloors) serve(holdID, kind string, records []natshold.Record, del
 	return ""
 }
 
+// errJournalGone is a cohort delete on a released row whose hold has no done record, where this
+// broker's floor of that record saw it: a journal a database writer deleted, not one never written.
+var errJournalGone = errors.New("the hold's done record is gone, which this broker wrote or served")
+
+// holdJournalKey is the done record's one key (natshold's journalKey, internal/holdrecord's
+// journal).
+const holdJournalKey = "hold"
+
 // deleteNATSHoldCohort deletes the cohort record the query names (?hold_id=, ?kind=cohort, ?key=,
 // ?gen=, ?sig=), for hold abort from prepare, and for hold abort on a row lost in prepare and
 // restored released: once the operator's signature over the record's delete at that gen verifies
 // (signedrecord.RecordDelete), only while the row is prepare with that hold id, or released with
 // it while the table admits hold abort on the released row (holdrecord.Request.RowReleased): the
 // hold's done record verifies and shows prepare, or the hold has no done record, which the table
-// reads as the zero Done; and only the record at that gen, so neither the operator's token alone
-// nor an old signature deletes a record.
+// reads as the zero Done, and this broker's floor of that record never saw it (409 below_floor
+// otherwise: a journal a writer deleted); and only the record at that gen, so neither the
+// operator's token alone nor an old signature deletes a record.
 func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ string) {
 	query := r.URL.Query()
 	holdID, kind, key := query.Get("hold_id"), query.Get("kind"), query.Get("key")
@@ -932,14 +957,17 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 	}
 	released := func(journal *natshold.Record) error {
 		var d holdrecord.Done // no done record: the zero Done, a hold with no journal
+		if journal == nil && s.holdFloors.gone(recordFloorKey{holdID: holdID, kind: natshold.KindDone, key: holdJournalKey}) {
+			return fmt.Errorf("%w: hold %s", errJournalGone, holdID)
+		}
 		if journal != nil {
 			var ok bool
 			if d, ok = s.verifiedJournal(holdID, journal); !ok {
-				return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's done record does not verify", natshold.ErrHoldMismatch, holdID)}
+				return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's done record does not verify", natshold.ErrHoldMismatch, holdID), HoldID: holdID}
 			}
 		}
 		if err := holdrecord.Decide(d, holdrecord.Request{Command: holdrecord.CommandAbort, RowReleased: true}); err != nil {
-			return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's journal does not show prepare", natshold.ErrHoldMismatch, holdID)}
+			return &natshold.Conflict{Err: fmt.Errorf("%w: the row is released, and hold %s's journal does not show prepare", natshold.ErrHoldMismatch, holdID), HoldID: holdID}
 		}
 		return nil
 	}
@@ -947,6 +975,9 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:
+	case errors.Is(err, errJournalGone):
+		writeHoldRefusal(w, http.StatusConflict, "below_floor", "the cohort is not deleted: "+err.Error(), nil)
+		return
 	case !errors.As(err, &conflict):
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "delete the cohort", err)
 		return
