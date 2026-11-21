@@ -205,10 +205,17 @@ A JWT the verifier rejects is `401 OIDC_TOKEN_INVALID` naming the reason class; 
 `DISPATCH_OIDC_ACCOUNTS` names the service accounts the deployment admits, comma-separated subjects such as `system:serviceaccount:dispatch:envoy-broker`:
 a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, before any handler reads or writes a row, on every route that reads a credential and on both sockets.
 Unset, every account whose token the issuer signs for the audience is admitted, as before the setting existed, and the boot logs one WARN saying so, `dispatch: DISPATCH_OIDC_ACCOUNTS is unset, …`, with `issuer` and `audience`.
-`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and `GET /api/v1/access/private-projects`), the secrets broker's own account in production;
+`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and `GET /api/v1/access/private-projects`) and the repository answer (`GET /api/v1/access/projects/{key}/repositories`), the secrets broker's own account in production;
 a caller with no credential, or one whose credential does not verify, is refused there as every route refuses it (`401 NO_IDENTITY` for none);
 every other caller is `403 ACCESS_ACCOUNT_REQUIRED`.
 The boot refuses either list without `DISPATCH_OIDC_AUDIENCE`, an entry that is empty or is not `system:serviceaccount:<namespace>:<name>` (naming its position), and an access account that a set `DISPATCH_OIDC_ACCOUNTS` does not list.
+
+The repository answer is the list of the repositories a project's issues resolve to, which the secrets broker reads for the edge listener, so that the GitHub events the edge listener relays to an outside person's agents are those of exactly these repositories:
+`{"project": "<KEY>", "repositories": ["<owner>/<name>", …]}`, the repository each issue of the project resolves to, open or done (its own, else its nearest parent's, else the project's default), lower-cased, each once and sorted byte-wise, and `[]` when no issue of the project resolves to one (`refs.ProjectRepositories`).
+It is read live on each request from `refs.ProjectRepositoriesSQL`, the one rule of which repositories a project owns, which the GitHub proxy (`/api/github/rest/...`, under Routes) and Delivery read too, so the answer lists a repository exactly when that rule counts the project as its owner:
+issues are a repository's only owners, so a repository mapping gives the project nothing, and no recorded rename is read.
+An unknown key is `404 PROJECT_NOT_FOUND`, and an issue whose parent chain is deeper than 32 links, or loops, is `503 REPOSITORIES_UNRESOLVED` naming that issue, never a shorter list: its unread ancestors may name a repository the list would leave out.
+That refusal reaches only the secrets broker, so Dispatch also logs it at WARN, `dispatch: the repository answer is unresolved`, with `project` and `issue`, for the operator who must repair the chain.
 
 With `DISPATCH_AGENT_SECRETS_URL` set, an access token the secrets broker issued is a fifth credential, and the only one that proves a session of its own.
 It is presented under RFC 9449's DPoP scheme
@@ -4749,6 +4756,7 @@ Each item below names a path with its method and identity, then its purpose.
   A `PUT` that leaves the mapping its project's default is `403 REPOSITORY_NOT_AVAILABLE` when the caller cannot read the repository through the GitHub proxy.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
+  The repository rule (`refs.ProjectRepositoriesSQL`), which the GitHub proxy and the repository answer read, is the exception: it reads no rename.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
   `putRepoProject` in `internal/dispatch/api/repo_projects.go` gives the rules and the `settings.repo_project.updated` events.
 
