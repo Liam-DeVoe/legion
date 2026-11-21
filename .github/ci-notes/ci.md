@@ -240,8 +240,8 @@ nats-server versions the daemon refuses, for the same reason.
 ## daemon_go_tests: The daemon-go job: what its two Go steps read together
 
 The daemon-go job: what its two Go steps read together — the plain step, which
-tests every package of packages/daemon but the three concurrent ones, and the race
-step, which tests those three — so the filter covers the whole module's closure,
+tests every package of packages/daemon but the five concurrent ones, and the race
+step, which tests those five — so the filter covers the whole module's closure,
 and what the Stage 1 proof, ci-job-daemon-go.yaml's "Stage 1 live proof" step, builds and sources. The
 packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
 for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
@@ -986,8 +986,9 @@ envoy-go-docs-finalizers on it).
 ## private_names_port: The private-name port harness, in a job of its own: it
 
 The private-name port harness, in a job of its own: it builds the `legion` binary
-of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
-rules that binary carries to the frozen shell script's verdicts, case for case.
+of this head (.github/scripts/check-private-names-port.test.sh, its `go build` of
+./cmd/legion) and holds the rules that binary carries to the frozen shell
+script's verdicts, case for case.
 That build is why this list is as long as it is - legion_command is what the
 binary is made of, the rule file packages/daemon/internal/leakguard embeds among
 it - and why the step has a job: while it was the test job's, the whole closure
@@ -996,9 +997,9 @@ shell harnesses and the Bun suites of scripts/ with it (dispatch://INFRA-1413).
 
 ## private_names_port: test-lib.sh, which the harness sources for check/is/summary
 
-test-lib.sh, which the harness sources for check/is/summary (:63), and the
-frozen script it runs every case through beside the binary, symlinked into each
-fixture (:213,421,467,556). That script is the subject of
+test-lib.sh, which the harness sources for check/is/summary (its `source` line), and
+the frozen script it runs every case through beside the binary, symlinked into each
+fixture (its four `ln -s "$frozen_script"` lines). That script is the subject of
 the check_private_names_test filter, which gates another job's step: this job reads
 it as the engine it compares against.
 

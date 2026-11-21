@@ -73,9 +73,10 @@ jobs:
       - name: Typecheck dispatch dashboard
         run: bun run typecheck
         working-directory: packages/dispatch
-      # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, which
-      # must refuse to run and name bash, and skips that row where zsh is missing; the runner image
-      # has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh).
+      # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, and
+      # outside-edge-refusals-input.test.ts the edge-refusal check, each of which must refuse to run
+      # and name bash; each skips that row where zsh is missing, and the runner image has no zsh
+      # (dash, the other shell they run under, is Ubuntu's /bin/sh).
       # Both apt phases retry through .github/scripts/ci-retry.sh, in e2e.yaml's spelling; their
       # bounds, and why the index read carries `-o APT::Update::Error-Mode=any`: ci-budgets.md's
       # Retries note.
