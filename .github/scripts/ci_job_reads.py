@@ -3178,7 +3178,7 @@ GATES = [
          f"{PROJECT_ACCESS_BUS_TEST_FILE} copies it into each fake checkout and runs its --inputs and its refusal of an unknown control"),
         ("packages/dispatch/e2e/acceptance/access-lib.sh",
          f"{PROJECT_ACCESS_BUS_TEST_FILE} copies it into each fake checkout; project-access-bus.sh sources it"),
-        ("scripts/e2e/lib/two-builds.sh",
+        (TWO_BUILDS,
          f"{PROJECT_ACCESS_BUS_TEST_FILE} copies it into each fake checkout; project-access-bus.sh sources it"),
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/lib/two-builds.sh sources it; project-access-bus.test.sh copies it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it; project-access-bus.test.sh copies it"),
