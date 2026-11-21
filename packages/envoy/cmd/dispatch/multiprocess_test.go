@@ -57,6 +57,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
@@ -8665,14 +8666,34 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	}
 	kept := keywordRowsThrough(t, database, left)
 
+	booted := databaseClock(t, database)
 	second := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
 	secondHolder := keywordFillHolder(t, second, time.Minute)
-	// The server writes events of its own as it boots: the eval registry's seed of each project
-	// creates the project's evals-md document, an artifact.created that starts no keyword version.
-	// So the fill's cursor can end past the last comment, and what the wait asks is that every
-	// comment's rows are written, which the cursor at or past the last comment says.
+	// The server writes an event of its own as it boots: the eval registry's seed of a project
+	// creates the project's evals-md document, an artifact.created that starts no keyword version,
+	// so the fill's cursor ends past the last comment. The wait reads the newest event once the eval
+	// refresher's events cursor is stamped after the second boot: the second process's first pass,
+	// which seeds every project, has committed by then, and the first process is dead, its
+	// uncommitted transactions gone with it, so every event either boot writes is in the log. It
+	// then asks for the fill's cursor at the newest event exactly, which a fill that skipped past
+	// the end of the log would not satisfy.
+	waitUntil(t, firstRefresherPassWait, "the new process's first eval refresher pass, which seeds every project, to commit", func() bool {
+		return refresherPassedSince(t, database, booted)
+	})
+	var newest int64
+	if err := database.Pool.QueryRow(context.Background(), `select max(id) from events`).Scan(&newest); err != nil {
+		t.Fatalf("read the newest event: %v", err)
+	}
+	booting := eventsAfter(t, database, last)
+	for _, event := range booting {
+		if !event.seedOf(textversionstest.Project) {
+			t.Fatalf("the events after the last comment %d are %v; want each the artifact.created of %s's %s, the seed's",
+				last, booting, textversionstest.Project, evals.DocumentSlug)
+		}
+	}
+	t.Logf("the last comment is event %d and the newest event %d; the events after the last comment: %v", last, newest, booting)
 	waitUntil(t, 5*time.Minute, "the new process to write every event's rows", func() bool {
-		return textversionstest.Cursor(t, database) >= last
+		return textversionstest.Cursor(t, database) == newest
 	})
 
 	recorded := writes()
@@ -8691,6 +8712,8 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 		t.Errorf("the rows of the events through the cursor %d were %s when the first process was killed and are %s now: the new process wrote them again",
 			left, kept, got)
 	}
+	// Every comment has its one row, written once, and no other event has any: the seed's
+	// artifact.created, which the cursor passed, started none.
 	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(ids...))
 }
 
