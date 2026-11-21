@@ -951,13 +951,13 @@ func populatedState(t *testing.T) State {
 			Session: "legion-daemon:LEGION", TransitionLaunches: 2, LastTransitionLaunchAt: &lastTransitionLaunch,
 			LiveLaunchesWithDispatchToken: 3,
 		},
-		// A kubernetes deployment whose image passed the probe, with the broker gap decided and
-		// one role unreserved, and no session's report yet, so the fixture carries a decided row and
-		// an open row beside the present, unchecked and withheld ones, rendered by the report
-		// itself: a wording change there rewrites the fixture rather than leaving the pinned words
-		// stale.
+		// A kubernetes deployment whose image passed the probe, with the broker's login failed and
+		// that gap decided, and one role unreserved, and no session's report yet, so the fixture
+		// carries a decided row and an open row beside the present, unchecked and withheld ones,
+		// rendered by the report itself: a wording change there rewrites the fixture rather than
+		// leaving the pinned words stale.
 		Capabilities: CapabilityStatesOf(capabilities.Deployment{
-			Runtime: "kubernetes", Probed: true, ModelFallback: "on",
+			Runtime: "kubernetes", Probed: true, ModelFallback: "on", SecretsLogin: "failed",
 			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
 			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
 		}.Report()),

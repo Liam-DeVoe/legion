@@ -599,7 +599,7 @@ func slackChannelsFile(channels string, daemon, enrolled bool) string {
 // names no channel. Under runtime: kubernetes the broker is required before any channel is read:
 // a file with no agent_secrets block is refused for its exchange_audience.
 func TestSlackChannelsNeedTheDaemonsControllerEnrolledWithTheBroker(t *testing.T) {
-	const why = "needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)"
+	const why = "needs controller: daemon under runtime: kubernetes: Slack replies need the daemon-launched controller, whose enrollment with the secrets broker (runtime.kubernetes.agent_secrets) grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)"
 	const noBroker = "runtime.kubernetes.agent_secrets.exchange_audience is required when runtime is kubernetes:" +
 		" the Envoy listener takes no shared bearer, so each pod's sessions trade broker tokens of their own through the identity this audience projects" +
 		" and the daemon presents the listener its own"

@@ -1064,9 +1064,8 @@ func TestEveryDurationKeyReachesTheRuntimeOptionThatTakesIt(t *testing.T) {
 	}
 }
 
-// sandboxOptions carries runtime.kubernetes.agent_secrets straight into the runtime's Options,
-// nil when the configuration sets no block, and the worker image's agent-secrets binary is
-// always the tools path (Task 11 mounts it there whether or not the deployment enrolls).
+// sandboxOptions carries runtime.kubernetes.agent_secrets straight into the runtime's Options, and
+// the worker image's agent-secrets binary is always the tools path (Task 11 mounts it there).
 func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1") // the file's fixture (`:32-41`): testConfig under runtime: kubernetes
 	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
@@ -1082,11 +1081,6 @@ func TestSandboxOptionsCarryTheAgentSecretsBlock(t *testing.T) {
 	}
 	if opts.Tools.AgentSecrets != "/opt/legion/bin/agent-secrets" {
 		t.Fatalf("Tools.AgentSecrets = %q", opts.Tools.AgentSecrets)
-	}
-	cfg.Runtime.Kubernetes.AgentSecrets = nil
-	opts, _ = sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
-	if opts.AgentSecrets != nil {
-		t.Fatalf("AgentSecrets = %+v without the block", opts.AgentSecrets)
 	}
 }
 
@@ -1120,7 +1114,7 @@ func TestSandboxOptionsCarryTheProjectsSlackChannels(t *testing.T) {
 func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	cfg.Runtime.Kubernetes.AgentSecrets = &config.AgentSecretsConfig{
-		URL: "https://s", TokenFile: filepath.Join(t.TempDir(), "token"), Audience: "agent-secrets", TokenExpirySeconds: 3600,
+		URL: "https://s", TokenFile: filepath.Join(t.TempDir(), "token"), Audience: "agent-secrets", TokenExpirySeconds: 3600, ExchangeAudience: "legion-broker-exchange",
 	}
 	for _, secret := range launchSecrets(cfg, lookup(nil)) {
 		if strings.HasPrefix(secret.name, "AGENT_SECRETS") {
@@ -1135,22 +1129,15 @@ func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 		t.Fatalf("AgentSecrets = %+v, want only the URL, audience and token lifetime the pod's own client needs", opts.AgentSecrets)
 	}
 	enroller, registrar, client := newSecretsLogin(cfg, quietLogger())
-	if enroller == nil || client == nil {
-		t.Fatalf("enroller %v, client %v; want both", enroller, client)
-	}
-	if registrar != nil {
-		t.Fatalf("registrar %v with no exchange_audience, want none: no pod session is registered without the key", registrar)
+	if enroller == nil || registrar == nil || client == nil {
+		t.Fatalf("enroller %v, registrar %v, client %v; want all three", enroller, registrar, client)
 	}
 	if client.URL != "https://s" || client.TokenFile != cfg.Runtime.Kubernetes.AgentSecrets.TokenFile {
 		t.Fatalf("client = %+v, want only the configured URL and token file, never a key or a bearer", client)
 	}
-	cfg.Runtime.Kubernetes.AgentSecrets.ExchangeAudience = "legion-broker-exchange"
-	if _, registrar, client := newSecretsLogin(cfg, quietLogger()); registrar == nil || client == nil {
-		t.Fatalf("with exchange_audience: registrar %v, client %v; want both", registrar, client)
-	}
-	cfg.Runtime.Kubernetes.AgentSecrets = nil
+	cfg.Runtime = config.Runtime{Name: "tmux"}
 	if enroller, registrar, client := newSecretsLogin(cfg, quietLogger()); enroller != nil || registrar != nil || client != nil {
-		t.Fatalf("without the block: %v, %v, %v; want nil, nil, nil", enroller, registrar, client)
+		t.Fatalf("under runtime: tmux: %v, %v, %v; want nil, nil, nil", enroller, registrar, client)
 	}
 }
 

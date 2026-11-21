@@ -1228,19 +1228,20 @@ func checkProviderKeyFiles(file fileConfig) error {
 }
 
 // checkSlackChannels refuses a project's slack_channels unless the daemon launches the
-// controller (`controller: daemon`) enrolled with the secrets broker
-// (`runtime.kubernetes.agent_secrets`): the controller answers a mention with slack_post, whose
-// bot token, LEGION_SLACK_BOT_TOKEN, is a shared agent secret the broker grants a session with a
-// broker identity, which that enrollment gives the controller. Anywhere else the controller would
-// hear mentions it could never answer. Projects are checked in key order, so the refusal names the
-// same one every load.
+// controller (`controller: daemon`) under runtime: kubernetes, where every pod, the controller's
+// among them, is enrolled with the secrets broker (`runtime.kubernetes.agent_secrets`, which
+// checkKubernetesKeys requires before this runs): the controller answers a mention with
+// slack_post, whose bot token, LEGION_SLACK_BOT_TOKEN, is a shared agent secret the broker grants
+// a session with a broker identity, which that enrollment gives the controller. Anywhere else the
+// controller would hear mentions it could never answer. Projects are checked in key order, so the
+// refusal names the same one every load.
 func checkSlackChannels(cfg Config) error {
-	if cfg.ControllerLaunch == ControllerLaunchDaemon && cfg.Runtime.Kubernetes != nil && cfg.Runtime.Kubernetes.AgentSecrets != nil {
+	if cfg.ControllerLaunch == ControllerLaunchDaemon && cfg.Runtime.Kubernetes != nil {
 		return nil
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		if len(cfg.Projects[key].SlackChannels) > 0 {
-			return fmt.Errorf("projects.%s.slack_channels needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)", key)
+			return fmt.Errorf("projects.%s.slack_channels needs controller: daemon under runtime: kubernetes: Slack replies need the daemon-launched controller, whose enrollment with the secrets broker (runtime.kubernetes.agent_secrets) grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)", key)
 		}
 	}
 	return nil
