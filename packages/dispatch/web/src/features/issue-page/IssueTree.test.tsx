@@ -23,7 +23,12 @@ import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
-import { issueCoverageQuery, issueResultsQuery, referenceTargetsQuery } from "../../api/queries";
+import {
+  issueCoverageQuery,
+  issueResultsQuery,
+  ownerAsksQuery,
+  referenceTargetsQuery,
+} from "../../api/queries";
 import type {
   Artifact,
   Comment,
@@ -86,7 +91,6 @@ import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
 import { addressesAsShortForms } from "./tree-drafts";
 import { TAB_STOP_ROW } from "./tree-focus";
-import { issueAsksQuery } from "./useIssueTree";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
 import { overflowing } from "./words-scroll-fixtures";
 
@@ -10725,7 +10729,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
   const asksOut = Promise.withResolvers<never>();
   try {
     const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails(), [
-      issueAsksQuery(KEY).queryKey,
+      ownerAsksQuery({ issue: KEY }).queryKey,
     ]);
     const { container } = body.view;
     await failedLines(container, 2, "asks and one more names");
@@ -10747,7 +10751,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
     // gate; a comment citing the issue the one more read failed on arrives meanwhile.
     asks.mockReturnValueOnce(asksOut.promise as never);
     await act(async () => {
-      void body.client.invalidateQueries({ queryKey: issueAsksQuery(KEY).queryKey });
+      void body.client.invalidateQueries({ queryKey: ownerAsksQuery({ issue: KEY }).queryKey });
     });
     await waitFor(
       () => expect(asks.mock.calls.length, "the asks read did not run again").toBe(2),

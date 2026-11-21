@@ -32,6 +32,7 @@ import {
   presetToggle,
   presetToggles,
   presetToolbar,
+  viewportAt,
 } from "./issue-page";
 import { withIssuePage } from "./issue-page-option";
 import { holdMarginChunk } from "./shell";
@@ -94,20 +95,16 @@ const WIDTHS = [320, 390, 768, 1024, 1280, 1440] as const;
 /** R10's widths with 390 px first, the width the view row's negative control names. */
 const PHONE_FIRST = [390, ...WIDTHS.filter((width) => width !== 390)] as const;
 
-/** A viewport of `width`: the desktop height from 768 px up, a phone's below. */
-function viewportAt(width: number): { height: number; width: number } {
-  return { height: width >= 768 ? 900 : 844, width };
-}
-
 /**
  * Sets the viewport to `width` and waits out what the resize starts, so a row that reaches a
  * width by a resize reads what a load at that width draws. It copies `resizeTo` of
- * `issue-page-p.ts`, the header rows' own file, which no other part's rows read, since
- * `issue-page.ts` takes no later change. The wait runs to the fourth frame after the first frame
- * that draws the window at the new width (R), whose rendering fires the resize event and each
- * width query's change (`useMediaQuery`) before its frame callbacks. Before R+1 React has drawn
- * what those events asked for - the rail, the Contents pane, the view row's controls - and the
- * observers of the band's and the view row's heights (`identity-block.ts`,
+ * `issue-page-p.ts`, the header rows' own file, which no other part's rows read; only this
+ * file's rows read the copy, so it is kept here rather than in `issue-page.ts`, which keeps a
+ * helper the rows of more than one file read. The wait runs to the fourth frame after the first
+ * frame that draws the window at the new width (R), whose rendering fires the resize event and
+ * each width query's change (`useMediaQuery`) before its frame callbacks. Before R+1 React has
+ * drawn what those events asked for - the rail, the Contents pane, the view row's controls - and
+ * the observers of the band's and the view row's heights (`identity-block.ts`,
  * `slots/view-row.tsx`) have published what R's layout measured. The three frames after R+1 are
  * the header's: its labels, on an issue that has them, read the line on the frame after their
  * box changes width, and again two frames later where that reading changed the box's own width.

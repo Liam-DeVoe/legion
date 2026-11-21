@@ -32,6 +32,7 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
+import { useNewIssuePageFreshness } from "../refs/reference-target";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { useAnsweredAsks } from "./useAnsweredAsks";
 import { type CommentAction, useCommentActionQueue } from "./useCommentActionQueue";
@@ -353,7 +354,8 @@ export function useMarginItems(
       ),
     [asks.data, owner]
   );
-  const comments = useQuery({ ...commentsQuery, enabled: owner !== undefined });
+  const freshness = useNewIssuePageFreshness();
+  const comments = useQuery({ ...commentsQuery, enabled: owner !== undefined, ...freshness });
   const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
   const dismissed =
     owner?.kind === "issue" ? (userState.data?.[owner.key]?.dismissed ?? NO_PINS) : NO_PINS;
@@ -488,6 +490,7 @@ export function useMarginItems(
   const decisionsView = useQuery({
     ...issueDecisionsQuery(issueKey ?? ""),
     enabled: showsDecisions,
+    ...freshness,
   });
   const decisions = useMemo<DecisionMarginItem[]>(() => {
     if (!showsDecisions) return [];

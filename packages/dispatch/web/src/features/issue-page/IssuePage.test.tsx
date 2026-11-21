@@ -46,10 +46,13 @@ function aliceOnCore1(): QueryClient {
   return client;
 }
 
-/** The reads the new page makes as it draws its tree (`useIssueTree.ts`) and its header (the
- *  viewer's state, `useIssueDetail.ts`), each answered empty. The row is about when the hold
- *  ends, not about what the page holds, and a read nothing answered fails the file
- *  (`__tests__/setup.ts`). Each returns its spy, to restore. */
+/** The reads the new page makes as it draws its tree (`useIssueTree.ts`), its header (the
+ *  viewer's state, `useIssueDetail.ts`) and Details' properties, which it draws for the life of
+ *  the page (`slots/details.tsx`): the repositories mapped to projects, which the repository's
+ *  control reads at once for an issue that resolves to none, and the project's architecture
+ *  sources. Each is answered empty. The row is about when the hold ends, not about what the page
+ *  holds, and a read nothing answered fails the file (`__tests__/setup.ts`). Each returns its
+ *  spy, to restore. */
 function answerPageReadsEmpty() {
   return [
     spyOn(api, "getMyState").mockResolvedValue({}),
@@ -75,6 +78,8 @@ function answerPageReadsEmpty() {
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
+    spyOn(api, "listRepoProjects").mockResolvedValue([]),
+    spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
   ];
 }
 

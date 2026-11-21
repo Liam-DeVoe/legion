@@ -249,13 +249,15 @@ export const ownerCommentsQuery = (owner: ListOwner | undefined) =>
 /** Every ask of the owner in every state: the issue's, each with its newest reply and without
  *  its thread (`GET /api/v1/issues/{key}/asks?state=all`), or a project document's own
  *  (`GET /api/v1/artifacts/{id}/asks?state=all`). A document that belongs to an issue keeps its
- *  asks on the issue. The document's decision blocks (`features/doc/ProofDocument.tsx`) and the
- *  margin (`features/margin/useAnsweredAsks.ts`) draw them. The issue's list is unpaged, so only
- *  a reader that draws the threads asks for them: the Conversation does, under a key of its own
- *  beneath the issue's (`features/conversation/ConversationTab.tsx`), so a refresh of the
- *  issue's key reaches that read too. The owner takes `undefined` for the margin, whose own
- *  `enabled` holds the read until it has one. One factory for both owners, for the reason
- *  `ownerCommentsQuery` gives. */
+ *  asks on the issue. The document's decision blocks (`features/doc/ProofDocument.tsx`), the
+ *  margin (`features/margin/useAnsweredAsks.ts`), the issue page's outline
+ *  (`features/issue-page/useIssueTree.ts`, with its failed-read lines in `outline-reads.ts` and
+ *  its writer in `outline-writer.tsx`) and its pins (`features/issue-page/IssuePins.tsx`) draw
+ *  them. The issue's list is unpaged, so only a reader that draws the threads asks for them: the
+ *  Conversation does, under a key of its own beneath the issue's
+ *  (`features/conversation/ConversationTab.tsx`), so a refresh of the issue's key reaches that
+ *  read too. The owner takes `undefined` for the margin, whose own `enabled` holds the read until
+ *  it has one. One factory for both owners, for the reason `ownerCommentsQuery` gives. */
 export const ownerAsksQuery = (owner: ListOwner | undefined) =>
   queryOptions({
     queryKey:

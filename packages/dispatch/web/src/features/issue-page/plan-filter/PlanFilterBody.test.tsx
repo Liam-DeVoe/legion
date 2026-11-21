@@ -12,6 +12,7 @@ import {
   issueCoverageQuery,
   issueDecisionsQuery,
   issueResultsQuery,
+  ownerAsksQuery,
   whoAmIQuery,
 } from "../../../api/queries";
 import type { Artifact, ArtifactBlock, IssueDetails } from "../../../api/types";
@@ -42,7 +43,6 @@ import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId } from "../tree-drafts";
-import { issueAsksQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
 /**
@@ -737,7 +737,7 @@ function slotClient({
     document: null,
     open_questions: [],
   });
-  client.setQueryData(issueAsksQuery(KEY).queryKey, []);
+  client.setQueryData(ownerAsksQuery({ issue: KEY }).queryKey, []);
   for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
   if (planHeld) {
     client.setQueryData(artifactBlocksQuery(PLAN_ARTIFACT).queryKey, [
@@ -894,7 +894,7 @@ test("a refused read's line stays drawn while its Retry reads again, its Retry b
 // A refused read asked again while the browser is offline is held, not sent: TanStack Query
 // pauses its fetch until the network is back, and the read, which holds no answer, goes to
 // `pending` with its error cleared and its fetch `paused`, so it is neither in error nor running,
-// and keeps its count of failures. It still stands failed (`useIssueTree.ts`'s `standsFailed`),
+// and keeps its error count. It still stands failed (`refs/reference-target.ts`'s `standsFailed`),
 // so its line stays drawn with its Retry.
 test("a refused read's line stays drawn while its Retry waits for the network", async () => {
   setViewport(1440);

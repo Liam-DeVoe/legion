@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { ownerAsksQuery } from "../../api/queries";
+import { useNewIssuePageFreshness } from "../refs/reference-target";
 import type { MarginOwner } from "./useMarginItems";
 
 /**
@@ -9,6 +10,7 @@ import type { MarginOwner } from "./useMarginItems";
  * endpoint; issue-owned asks retain the single per-issue history query.
  */
 export function useAnsweredAsks(owner: MarginOwner | undefined, artifactID: string | undefined) {
+  const freshness = useNewIssuePageFreshness();
   const query = useQuery({
     ...ownerAsksQuery(
       owner === undefined
@@ -18,6 +20,7 @@ export function useAnsweredAsks(owner: MarginOwner | undefined, artifactID: stri
           : { issue: owner.key }
     ),
     enabled: owner !== undefined,
+    ...freshness,
   });
   const asks = useMemo(
     () =>
