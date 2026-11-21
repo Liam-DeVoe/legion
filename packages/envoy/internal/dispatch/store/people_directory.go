@@ -13,7 +13,41 @@ import (
 // each outcome of a check of a person's Workspace account stores, and the membership pass's claim
 // of the next row due a check. Each is one statement dated by the database's clock_timestamp(),
 // read once where it dates two columns, so they hold one time. A login with no people row is
-// changed by none of them, and none makes a row.
+// changed by none of them, and none makes a row. The four outcomes' statements are named below, so
+// the binding columns' census (binding_columns_test.go) runs each writer's own statement, with its
+// values written in, rather than a copy that can drift from it.
+
+// recordDirectoryActiveSQL is RecordDirectoryActive's statement: $1 the email, $2 the Directory
+// user id, $3 the check's read of the row (readAt).
+const recordDirectoryActiveSQL = `
+	update people set directory_user_id = coalesce(directory_user_id, $2),
+		directory_confirmed_at = checked.at, directory_checked_at = checked.at,
+		not_held_until = checked.at + interval '24 hours', held_since = null
+	from (select clock_timestamp() as at) as checked
+	where email = $1 and (held_since is null or held_since < $3)
+	returning not_held_until
+`
+
+// recordDirectoryHeldSQL is RecordDirectoryHeld's statement: $1 the email.
+const recordDirectoryHeldSQL = `
+	update people set directory_checked_at = checked.at, held_since = checked.at
+	from (select clock_timestamp() as at) as checked
+	where email = $1
+`
+
+// recordDirectoryFailedSQL is RecordDirectoryFailed's statement: $1 the email.
+const recordDirectoryFailedSQL = `update people set directory_checked_at = clock_timestamp() where email = $1`
+
+// recordDirectoryReboundSQL is RecordDirectoryRebound's statement: $1 the email, $2 the new
+// account's Directory user id, $3 the check's read of the row (readAt).
+const recordDirectoryReboundSQL = `
+	update people set directory_user_id = $2,
+		directory_confirmed_at = checked.at, directory_checked_at = checked.at,
+		not_held_until = checked.at + interval '24 hours', held_since = null
+	from (select clock_timestamp() as at) as checked
+	where email = $1 and (held_since is null or held_since < $3)
+	returning not_held_until
+`
 
 // RecordDirectoryActive records an Active outcome of email's Directory check: the person's own
 // account answered as not suspended. readAt is the database time of the check's own read of the
@@ -27,14 +61,7 @@ import (
 // release. It answers the deadline it fixed, and the zero time when it wrote nothing: for a login
 // with no row, or a row held since readAt.
 func (s *PgPeopleStore) RecordDirectoryActive(ctx context.Context, email, userID string, readAt time.Time) (notHeldUntil time.Time, err error) {
-	err = s.pool.QueryRow(ctx, `
-		update people set directory_user_id = coalesce(directory_user_id, $2),
-			directory_confirmed_at = checked.at, directory_checked_at = checked.at,
-			not_held_until = checked.at + interval '24 hours', held_since = null
-		from (select clock_timestamp() as at) as checked
-		where email = $1 and (held_since is null or held_since < $3)
-		returning not_held_until
-	`, email, userID, readAt).Scan(&notHeldUntil)
+	err = s.pool.QueryRow(ctx, recordDirectoryActiveSQL, email, userID, readAt).Scan(&notHeldUntil)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, nil
 	}
@@ -52,11 +79,7 @@ func (s *PgPeopleStore) RecordDirectoryActive(ctx context.Context, email, userID
 // made. Every reader of held_since compares it with signed_in_at or directory_confirmed_at, which a
 // later time keeps true. It leaves directory_confirmed_at and not_held_until as they are.
 func (s *PgPeopleStore) RecordDirectoryHeld(ctx context.Context, email string) error {
-	if _, err := s.pool.Exec(ctx, `
-		update people set directory_checked_at = checked.at, held_since = checked.at
-		from (select clock_timestamp() as at) as checked
-		where email = $1
-	`, email); err != nil {
+	if _, err := s.pool.Exec(ctx, recordDirectoryHeldSQL, email); err != nil {
 		return fmt.Errorf("record a Held Directory answer for %q: %w", email, err)
 	}
 	return nil
@@ -66,7 +89,7 @@ func (s *PgPeopleStore) RecordDirectoryHeld(ctx context.Context, email string) e
 // neither Active nor Held: it sets directory_checked_at to now and nothing else, so it changes no
 // confirmation, no deadline and no hold.
 func (s *PgPeopleStore) RecordDirectoryFailed(ctx context.Context, email string) error {
-	if _, err := s.pool.Exec(ctx, `update people set directory_checked_at = clock_timestamp() where email = $1`, email); err != nil {
+	if _, err := s.pool.Exec(ctx, recordDirectoryFailedSQL, email); err != nil {
 		return fmt.Errorf("record a failed Directory check for %q: %w", email, err)
 	}
 	return nil
@@ -83,14 +106,7 @@ func (s *PgPeopleStore) RecordDirectoryFailed(ctx context.Context, email string)
 // readAt, the database time of the check's own read of the row. It answers the deadline it fixed,
 // and the zero time when it wrote nothing: for a login with no row, or a row held since readAt.
 func (s *PgPeopleStore) RecordDirectoryRebound(ctx context.Context, email, userID string, readAt time.Time) (notHeldUntil time.Time, err error) {
-	err = s.pool.QueryRow(ctx, `
-		update people set directory_user_id = $2,
-			directory_confirmed_at = checked.at, directory_checked_at = checked.at,
-			not_held_until = checked.at + interval '24 hours', held_since = null
-		from (select clock_timestamp() as at) as checked
-		where email = $1 and (held_since is null or held_since < $3)
-		returning not_held_until
-	`, email, userID, readAt).Scan(&notHeldUntil)
+	err = s.pool.QueryRow(ctx, recordDirectoryReboundSQL, email, userID, readAt).Scan(&notHeldUntil)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, nil
 	}

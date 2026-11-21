@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -103,18 +104,36 @@ const (
 	bindingFloorGuard = `alter table session_generation_floors disable trigger session_generation_floors_guarded`
 )
 
+// writtenIn is statement, a writer's own parameterized statement, with each $n replaced by
+// values[n-1], an SQL literal, the highest first so $1 never rewrites the start of $10. A
+// statement naming a parameter values does not fill keeps its $n, which Postgres refuses, so a
+// writer that takes a new parameter fails its census row rather than passing with a guess.
+func writtenIn(statement string, values ...string) string {
+	for n := len(values); n >= 1; n-- {
+		statement = strings.ReplaceAll(statement, "$"+strconv.Itoa(n), values[n-1])
+	}
+	return statement
+}
+
 // bindingDirectoryRow is the address i@x.example recording account-a; bindingDirectoryActive,
-// bindingDirectoryHeld and bindingDirectoryFailed are the writes of an active, a Held and a Failed
-// Directory outcome for it (RecordDirectoryActive answered by the Directory user directory-a,
-// RecordDirectoryHeld, RecordDirectoryFailed), with their values written in.
+// bindingDirectoryHeld, bindingDirectoryFailed and bindingDirectoryRebound are the writes of an
+// active, a Held, a Failed and a rebound Directory outcome for it: the writers' own statements
+// (recordDirectoryActiveSQL answered by the Directory user directory-a, recordDirectoryHeldSQL,
+// recordDirectoryFailedSQL, recordDirectoryReboundSQL answered by directory-b), with their values
+// written in, so a writer's change is the census's too. bindingDirectoryReadAt is the check's read
+// of the row the Active write and the rebind rest on: later than any hold a row's setup records, so
+// each writes and releases the hold rather than passing by writing nothing.
 const (
 	bindingDirectoryRow    = `insert into people (email, sub) values ('i@x.example', 'account-a')`
-	bindingDirectoryActive = `update people set directory_user_id = coalesce(directory_user_id, 'directory-a'),
-		directory_confirmed_at = checked.at, directory_checked_at = checked.at, not_held_until = checked.at + interval '24 hours', held_since = null
-		from (select clock_timestamp() as at) as checked where email = 'i@x.example'`
-	bindingDirectoryHeld = `update people set directory_checked_at = checked.at, held_since = coalesce(held_since, checked.at)
-		from (select clock_timestamp() as at) as checked where email = 'i@x.example'`
-	bindingDirectoryFailed = `update people set directory_checked_at = clock_timestamp() where email = 'i@x.example'`
+	bindingDirectoryEmail  = `'i@x.example'`
+	bindingDirectoryReadAt = `'9999-12-31T00:00:00Z'::timestamptz`
+)
+
+var (
+	bindingDirectoryActive  = writtenIn(recordDirectoryActiveSQL, bindingDirectoryEmail, `'directory-a'`, bindingDirectoryReadAt)
+	bindingDirectoryHeld    = writtenIn(recordDirectoryHeldSQL, bindingDirectoryEmail)
+	bindingDirectoryFailed  = writtenIn(recordDirectoryFailedSQL, bindingDirectoryEmail)
+	bindingDirectoryRebound = writtenIn(recordDirectoryReboundSQL, bindingDirectoryEmail, `'directory-b'`, bindingDirectoryReadAt)
 )
 
 var bindingRefusals = []bindingRefusal{
@@ -409,9 +428,7 @@ var bindingTransitions = []bindingTransition{
 		bindingDirectoryActive},
 	{"people.directory_user_id", "stored at the first active answer, then replaced by a rebind of a recreated address (RecordDirectoryActive, RecordDirectoryRebound)",
 		[]string{bindingDirectoryRow, bindingDirectoryActive},
-		`update people set directory_user_id = 'directory-b', directory_confirmed_at = checked.at, directory_checked_at = checked.at,
-			not_held_until = checked.at + interval '24 hours', held_since = null
-			from (select clock_timestamp() as at) as checked where email = 'i@x.example'`},
+		bindingDirectoryRebound},
 	{"broker_revocations row", "recorded (the sign-in's insert, naming the holder people records)",
 		[]string{bindingRevocationHolder},
 		bindingRevocation},
