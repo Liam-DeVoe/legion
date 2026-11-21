@@ -210,25 +210,6 @@ func slackBodyType(r *http.Request) (mediaType, why string) {
 	return mediaType, ""
 }
 
-// fenceRule is one rule of slackCallExcluded, by the number its comment gives it. A test of this
-// package skips one (Options.fenceSkip) to show that a call the rule refuses would reach Slack
-// without it; which rule refuses which call is the test's to say.
-type fenceRule int
-
-// slackCallExcluded's rules, in the order its comment numbers them.
-const (
-	fenceMethod   fenceRule = iota + 1 // 1: a method fencedMethods names
-	fenceBody                          // 2: a non-empty body's one type, no encoding, its size
-	fenceJSON                          // 3: a JSON body that is one object, its channel keys strings
-	fenceParse                         // 4: a query or a form url.ParseQuery reads
-	fenceChannels                      // 5: no channel value names an excluded channel
-	fenceKeys                          // 6: every key plain: ASCII letters, digits and _
-	fenceIDs                           // 7: every channel value a conversation's id
-)
-
-// fenceSkip is the rules a test skips; nil, every production start's, skips none.
-type fenceSkip map[fenceRule]bool
-
 // fencedMethods are the Slack methods a name the public fence holds may call, by their decoded
 // path: the ones this repository sends with the Legion Slack bot token, and no other. Two read or
 // write one channel, which rule 5 checks by the channel they name: chat.postMessage, slack_post's
@@ -269,70 +250,59 @@ var fencedMethods = map[string]bool{
 //     NUL and reads channel[] as channel, so " channel", "channel\x00x" and "channel[]" would be
 //     channel there while rule 5 reads them as other keys;
 //  7. a value of channel, channel_id or channels, split on commas, is not a conversation's id
-//     (slackID: C, D or G, then at least 8 capital letters or digits): Slack resolves a channel
-//     named in its place, a private one included, where rule 5 reads only ids.
+//     (slackID: C, D or G, then at least 8 capital letters or digits). Rule 5 reads ids alone,
+//     and a private project's owner may list a public Slack channel, which chat.postMessage also
+//     takes by its name: a name would reach a listed channel that rule 5 does not see. Slack's
+//     reference resolves a name for a public channel only; a private one is reached by its id,
+//     which rule 5 reads.
 //
-// An empty body holds no key. The body answered is the bytes read, which the caller serves
-// upstream in place of r's own, so the call Slack receives is the call this read. skip is a
-// test's (Options.fenceSkip); nil checks every rule.
-func slackCallExcluded(r *http.Request, excluded []string, skip fenceSkip) (body []byte, why string) {
-	if !skip[fenceMethod] && !fencedMethods[r.URL.Path] {
+// Each rule is checked in one place below, and each refuses an input no other rule refuses, which
+// TestAPublicSlackGrantNeverNamesAPrivateChannel drives. An empty body holds no key. The body
+// answered is the bytes read, which the caller serves upstream in place of r's own, so the call
+// Slack receives is the call this read.
+func slackCallExcluded(r *http.Request, excluded []string) (body []byte, why string) {
+	if !fencedMethods[r.URL.Path] {
 		return nil, "the Slack method is not one this secret is spent on outside a private project (chat.postMessage, conversations.replies, auth.test)"
 	}
 	if r.URL.RawQuery != "" {
 		query, err := url.ParseQuery(r.URL.RawQuery)
-		switch {
-		case err == nil:
-			if why := argsExcluded(formArgs(query), excluded, skip); why != "" {
-				return nil, "the query " + why
-			}
-		case !skip[fenceParse]:
+		if err != nil {
 			return nil, "the query cannot be read"
 		}
+		if why := argsExcluded(formArgs(query), excluded); why != "" {
+			return nil, "the query " + why
+		}
 	}
-	reader := io.Reader(r.Body)
-	if !skip[fenceBody] {
-		reader = io.LimitReader(r.Body, maxSlackPostBody+1)
-	}
-	body, err := io.ReadAll(reader)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxSlackPostBody+1))
 	switch {
 	case err != nil:
 		return nil, "the body could not be read"
 	case len(body) == 0:
 		return body, ""
-	case skip[fenceBody]:
-		// Rule 2 skipped: the whole body, whatever its size and encoding, read as it came.
 	case len(body) > maxSlackPostBody:
 		return nil, "the body is larger than 1 MiB"
 	case len(r.Header.Values("Content-Encoding")) != 0:
 		return nil, "the body carries a Content-Encoding"
 	}
 	mediaType, why := slackBodyType(r)
-	switch {
-	case why != "" && !skip[fenceBody]:
+	if why != "" {
 		return nil, why
-	case why != "":
-		// Rule 2 skipped: a body of no type it reads is read as holding no key.
-		return body, ""
 	}
 	var args []slackArg
 	where := "the JSON body"
 	if mediaType == "application/json" {
-		args, why = jsonArgs(body, skip)
+		if args, why = jsonArgs(body); why != "" {
+			return nil, why
+		}
 	} else {
 		where = "the form body"
 		form, err := url.ParseQuery(string(body))
-		switch {
-		case err == nil:
-			args = formArgs(form)
-		case !skip[fenceParse]:
-			why = "the form body cannot be read"
+		if err != nil {
+			return nil, "the form body cannot be read"
 		}
+		args = formArgs(form)
 	}
-	if why != "" {
-		return nil, why
-	}
-	if why := argsExcluded(args, excluded, skip); why != "" {
+	if why := argsExcluded(args, excluded); why != "" {
 		return nil, where + " " + why
 	}
 	return body, ""
@@ -362,12 +332,9 @@ func formArgs(values url.Values) []slackArg {
 // which keeps one occurrence of a key given twice. It answers every key of the one object, each
 // occurrence on its own, with a channel key's string value; every other key's value is skipped
 // whole.
-func jsonArgs(body []byte, skip fenceSkip) ([]slackArg, string) {
+func jsonArgs(body []byte) ([]slackArg, string) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
-		if skip[fenceJSON] {
-			return nil, ""
-		}
 		return nil, "the JSON body is not one object"
 	}
 	var args []slackArg
@@ -384,18 +351,14 @@ func jsonArgs(body []byte, skip fenceSkip) ([]slackArg, string) {
 		}
 		arg := slackArg{key: key}
 		if channelKey(key) && json.Unmarshal(raw, &arg.value) != nil {
-			if !skip[fenceJSON] {
-				return nil, "the JSON body's " + key + " is not a string"
-			}
-			// Rule 3 skipped: a value that is no string is read as naming no channel.
-			continue
+			return nil, "the JSON body's " + key + " is not a string"
 		}
 		args = append(args, arg)
 	}
 	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
 		return nil, "the JSON body cannot be read"
 	}
-	if _, err := decoder.Token(); err != io.EOF && !skip[fenceJSON] {
+	if _, err := decoder.Token(); err != io.EOF {
 		return nil, "something follows the JSON body's object"
 	}
 	return args, ""
@@ -403,19 +366,19 @@ func jsonArgs(body []byte, skip fenceSkip) ([]slackArg, string) {
 
 // argsExcluded is rules 5, 6 and 7 over one place's keys: why they name one of excluded, or a
 // key or a channel Slack may read otherwise than the fence does, or "" when they name none.
-func argsExcluded(args []slackArg, excluded []string, skip fenceSkip) string {
+func argsExcluded(args []slackArg, excluded []string) string {
 	for _, arg := range args {
-		if !skip[fenceChannels] && channelKey(arg.key) && namesExcluded(arg.value, excluded) {
+		if channelKey(arg.key) && namesExcluded(arg.value, excluded) {
 			return "names a private project's channel under " + arg.key
 		}
 	}
 	for _, arg := range args {
-		if !skip[fenceKeys] && !plainKey(arg.key) {
+		if !plainKey(arg.key) {
 			return "carries a key with a character other than an ASCII letter, a digit or _, which Slack may read as another key"
 		}
 	}
 	for _, arg := range args {
-		if !skip[fenceIDs] && channelKey(arg.key) && slices.ContainsFunc(strings.Split(arg.value, ","), func(part string) bool { return !slackID.MatchString(part) }) {
+		if channelKey(arg.key) && slices.ContainsFunc(strings.Split(arg.value, ","), func(part string) bool { return !slackID.MatchString(part) }) {
 			return "names a channel under " + arg.key + " by something other than its id, which only Slack resolves"
 		}
 	}

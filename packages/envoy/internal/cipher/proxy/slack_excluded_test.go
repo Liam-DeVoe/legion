@@ -15,7 +15,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,83 +82,90 @@ func (a slackAnswer) refusedAs(t *testing.T, what string, p slackPost, code, wor
 }
 
 // fenceCase is one call a fenced grant must not carry: the call, the rules of slackCallExcluded
-// whose skipping lets it reach Slack (its control), and, where the call has one, the same call
-// naming a public channel, which the grant carries.
+// (by the numbers its comment gives them) that refuse it, and, where the call has one, the same
+// call naming a public channel, which the grant carries. A case that one rule alone refuses is
+// that rule's proof: with the rule taken out of the checker (an overlay of slack.go, which the
+// pull request records for each rule), that case, and no case another rule also refuses, reaches
+// the stand-in.
 type fenceCase struct {
 	name   string
 	call   slackPost
-	skip   fenceSkip
+	rules  []int
 	public *slackPost
 }
-
-// String names a rule by the number slackCallExcluded's comment gives it, for a control's failure.
-func (r fenceRule) String() string { return fmt.Sprintf("rule %d", int(r)) }
 
 // fenceCases are the calls naming PRIV's channel, calling a method the fence does not allow, or
 // that the fence cannot read as naming none.
 func fenceCases(t *testing.T) []fenceCase {
 	t.Helper()
 	public := func(p slackPost) *slackPost { return &p }
-	skip := func(rules ...fenceRule) fenceSkip {
-		s := fenceSkip{}
-		for _, rule := range rules {
-			s[rule] = true
-		}
-		return s
-	}
+	rules := func(numbers ...int) []int { return numbers }
 	get := func(path string) slackPost { return slackPost{method: http.MethodGet, path: path} }
 	jsonType := [][2]string{{"Content-Type", slackJSON}}
 	big := `{"channel":"` + pubChannel + `","text":"` + strings.Repeat("x", maxSlackPostBody) + `"}`
 	return []fenceCase{
-		{"conversations.history naming PRIV's channel in the query", historyOf(privChannel), skip(fenceMethod, fenceChannels), nil},
-		{"conversations.replies naming it in the query", readOf(privChannel), skip(fenceChannels), public(readOf(pubChannel))},
-		{"chat.postMessage naming it in JSON", jsonPost(postTo(privChannel)), skip(fenceChannels), public(jsonPost(postTo(pubChannel)))},
-		{"chat.postMessage naming it in a form", formPost("channel=" + privChannel + "&text=the+release+notes+are+out"), skip(fenceChannels),
-			public(formPost("channel=" + pubChannel + "&text=the+release+notes+are+out"))},
-		{"channels=" + pubChannel + "," + privChannel, readAs("channels=" + pubChannel + "," + privChannel + "&ts=" + slackThread), skip(fenceChannels),
-			public(readAs("channels=" + pubChannel + "&ts=" + slackThread))},
-		{"channel_id", readAs("channel_id=" + privChannel + "&ts=" + slackThread), skip(fenceChannels), public(readAs("channel_id=" + pubChannel + "&ts=" + slackThread))},
-		{"channel=" + pubChannel + "&channel=" + privChannel, readAs("channel=" + pubChannel + "&channel=" + privChannel + "&ts=" + slackThread), skip(fenceChannels), nil},
-		// Rule 7 refuses this spelling too, since it is no id as written, so its control skips both.
-		{"channel=%20c0priv00001%20", readAs("channel=%20c0priv00001%20&ts=" + slackThread), skip(fenceChannels, fenceIDs), nil},
-		{`{"channel":["` + privChannel + `"]}`, jsonPost(`{"channel":["` + privChannel + `"],"text":"x"}`), skip(fenceJSON), nil},
-		{`{"channel":123}`, jsonPost(`{"channel":123,"text":"x"}`), skip(fenceJSON), nil},
-		{"a non-empty text/plain body", slackPost{method: http.MethodPost, path: slackPostPath, header: [][2]string{{"Content-Type", "text/plain; charset=utf-8"}}, body: "channel=" + privChannel + "&text=x"}, skip(fenceBody), nil},
-		{"a body with no Content-Type", slackPost{method: http.MethodPost, path: slackPostPath, body: postTo(privChannel)}, skip(fenceBody), nil},
-		{"a second JSON value after the object", jsonPost(postTo(pubChannel) + `{"channel":"` + privChannel + `"}`), skip(fenceJSON), nil},
-		{"search.messages", get("/api/search.messages?query=release"), skip(fenceMethod), nil},
-		{"assistant.search.context", slackPost{method: http.MethodPost, path: "/api/assistant.search.context", header: jsonType, body: `{"query":"release"}`}, skip(fenceMethod), nil},
-		{"reactions.list", get("/api/reactions.list"), skip(fenceMethod), nil},
-		{"stars.list", get("/api/stars.list"), skip(fenceMethod), nil},
-		{"files.list naming no channel", get("/api/files.list"), skip(fenceMethod), nil},
-		{"files.info", get("/api/files.info?file=F0FILE00001"), skip(fenceMethod), nil},
-		{"conversations.list", get("/api/conversations.list"), skip(fenceMethod), nil},
-		{"a multipart body", multipartPost(t), skip(fenceBody), nil},
-		{"CHANNEL in another case", jsonPost(`{"CHANNEL":"` + privChannel + `","text":"x"}`), skip(fenceChannels), nil},
-		{"chann%65l in a form", formPost("chann%65l=" + privChannel + "&text=x"), skip(fenceChannels), nil},
-		{"a JSON channel spelled with an escape", jsonPost(`{"channel":"C0PRIV\u00300001","text":"x"}`), skip(fenceChannels), nil},
-		{"a query url.ParseQuery refuses", readAs("channel=" + pubChannel + "&ts=" + slackThread + "&cursor=%zz"), skip(fenceParse), nil},
-		// Read as a form, the gzip bytes hold a key of bytes that are no letter, so rule 6
-		// refuses it too, and the control skips both.
+		// Rule 1: a method the fence does not allow, whatever it names.
+		{"search.messages", get("/api/search.messages?query=release"), rules(1), nil},
+		{"assistant.search.context", slackPost{method: http.MethodPost, path: "/api/assistant.search.context", header: jsonType, body: `{"query":"release"}`}, rules(1), nil},
+		{"reactions.list", get("/api/reactions.list"), rules(1), nil},
+		{"stars.list", get("/api/stars.list"), rules(1), nil},
+		{"files.list naming no channel", get("/api/files.list"), rules(1), nil},
+		{"files.info", get("/api/files.info?file=F0FILE00001"), rules(1), nil},
+		{"conversations.list", get("/api/conversations.list"), rules(1), nil},
+		{"conversations.history naming PRIV's channel in the query", historyOf(privChannel), rules(1, 5), nil},
+		// Rule 2: a body the fence cannot read as Slack would.
+		{"a non-empty text/plain body", slackPost{method: http.MethodPost, path: slackPostPath, header: [][2]string{{"Content-Type", "text/plain; charset=utf-8"}}, body: "channel=" + privChannel + "&text=x"}, rules(2), nil},
+		{"a body with no Content-Type", slackPost{method: http.MethodPost, path: slackPostPath, body: postTo(privChannel)}, rules(2), nil},
+		{"a multipart body", multipartPost(t), rules(2), nil},
+		{"a body over 1 MiB", jsonPost(big), rules(2), nil},
+		// The fence reads the bytes as sent, which Slack would decode first, so any encoding is
+		// refused, a body whose bytes read as a harmless form included.
+		{"Content-Encoding on a form naming no channel", slackPost{method: http.MethodPost, path: slackPostPath,
+			header: [][2]string{{"Content-Type", slackForm}, {"Content-Encoding", "br"}}, body: "text=the+release+notes+are+out"}, rules(2), nil},
+		// Read as a form, the gzip bytes hold a key of bytes that are no letter, which rule 6
+		// refuses too.
 		{"Content-Encoding: gzip", slackPost{method: http.MethodPost, path: slackPostPath,
 			header: [][2]string{{"Content-Type", slackForm}, {"Content-Encoding", "gzip"}}, body: gzipped(t, "channel="+privChannel+"&text=x")},
-			skip(fenceBody, fenceKeys), nil},
-		{"a body over 1 MiB", jsonPost(big), skip(fenceBody), nil},
-		// A key Slack may read as channel although rule 5 reads another key: a receiver that
-		// parses keys as PHP does drops the leading space of %20channel and +channel, ends
+			rules(2, 6), nil},
+		// Rule 3: a JSON body that is not one object, or whose channel is not a string.
+		{"a JSON array", jsonPost(`[{"channel":"` + privChannel + `","text":"x"}]`), rules(3), nil},
+		{`{"channel":["` + privChannel + `"]}`, jsonPost(`{"channel":["` + privChannel + `"],"text":"x"}`), rules(3), nil},
+		{`{"channel":123}`, jsonPost(`{"channel":123,"text":"x"}`), rules(3), nil},
+		{"a second JSON value after the object", jsonPost(postTo(pubChannel) + `{"channel":"` + privChannel + `"}`), rules(3), nil},
+		// Rule 4: a query or a form url.ParseQuery refuses, whose part before the error names a
+		// public channel.
+		{"a query url.ParseQuery refuses", readAs("channel=" + pubChannel + "&ts=" + slackThread + "&cursor=%zz"), rules(4), nil},
+		{"a form url.ParseQuery refuses", formPost("channel=" + pubChannel + "&text=%zz"), rules(4), nil},
+		// Rule 5: PRIV's channel, by its id, in every place and spelling Slack reads it.
+		{"conversations.replies naming it in the query", readOf(privChannel), rules(5), public(readOf(pubChannel))},
+		{"chat.postMessage naming it in JSON", jsonPost(postTo(privChannel)), rules(5), public(jsonPost(postTo(pubChannel)))},
+		{"chat.postMessage naming it in a form", formPost("channel=" + privChannel + "&text=the+release+notes+are+out"), rules(5),
+			public(formPost("channel=" + pubChannel + "&text=the+release+notes+are+out"))},
+		{"channels=" + pubChannel + "," + privChannel, readAs("channels=" + pubChannel + "," + privChannel + "&ts=" + slackThread), rules(5),
+			public(readAs("channels=" + pubChannel + "&ts=" + slackThread))},
+		{"channel_id", readAs("channel_id=" + privChannel + "&ts=" + slackThread), rules(5), public(readAs("channel_id=" + pubChannel + "&ts=" + slackThread))},
+		{"channel=" + pubChannel + "&channel=" + privChannel, readAs("channel=" + pubChannel + "&channel=" + privChannel + "&ts=" + slackThread), rules(5), nil},
+		{"CHANNEL in another case", jsonPost(`{"CHANNEL":"` + privChannel + `","text":"x"}`), rules(5), nil},
+		{"chann%65l in a form", formPost("chann%65l=" + privChannel + "&text=x"), rules(5), nil},
+		{"a JSON channel spelled with an escape", jsonPost(`{"channel":"C0PRIV\u00300001","text":"x"}`), rules(5), nil},
+		// Rule 7 refuses this spelling too, since it is no id as written.
+		{"channel=%20c0priv00001%20", readAs("channel=%20c0priv00001%20&ts=" + slackThread), rules(5, 7), nil},
+		// Rule 6: a key Slack may read as channel although rule 5 reads another key: a receiver
+		// that parses keys as PHP does drops the leading space of %20channel and +channel, ends
 		// channel%00x at its NUL, and reads channel[] as channel. Each names PRIV's channel and is
-		// refused by rule 6 whatever channel it names, so none has a public call.
-		{"%20channel", readAs("%20channel=" + privChannel + "&ts=" + slackThread), skip(fenceKeys), nil},
-		{"+channel", readAs("+channel=" + privChannel + "&ts=" + slackThread), skip(fenceKeys), nil},
-		{"channel%00x", readAs("channel%00x=" + privChannel + "&ts=" + slackThread), skip(fenceKeys), nil},
-		{"channel[]", readAs("channel[]=" + privChannel + "&ts=" + slackThread), skip(fenceKeys), nil},
-		{"channel.", readAs("channel.=" + privChannel + "&ts=" + slackThread), skip(fenceKeys), nil},
-		{`a JSON key " channel"`, jsonPost(`{" channel":"` + privChannel + `","text":"x"}`), skip(fenceKeys), nil},
-		{"channel%5B0%5D in a form", formPost("channel%5B0%5D=" + privChannel + "&text=x"), skip(fenceKeys), nil},
-		// A channel named rather than given by its id, which Slack resolves to a private channel
-		// as readily as to a public one, while rule 5 reads ids alone.
-		{"chat.postMessage naming its channel #priv-team", jsonPost(postTo("#priv-team")), skip(fenceIDs), nil},
-		{"conversations.replies naming its channel priv-team", readOf("priv-team"), skip(fenceIDs), nil},
+		// refused whatever channel it names, so none has a public call.
+		{"%20channel", readAs("%20channel=" + privChannel + "&ts=" + slackThread), rules(6), nil},
+		{"+channel", readAs("+channel=" + privChannel + "&ts=" + slackThread), rules(6), nil},
+		{"channel%00x", readAs("channel%00x=" + privChannel + "&ts=" + slackThread), rules(6), nil},
+		{"channel[]", readAs("channel[]=" + privChannel + "&ts=" + slackThread), rules(6), nil},
+		{"channel.", readAs("channel.=" + privChannel + "&ts=" + slackThread), rules(6), nil},
+		{`a JSON key " channel"`, jsonPost(`{" channel":"` + privChannel + `","text":"x"}`), rules(6), nil},
+		{"channel%5B0%5D in a form", formPost("channel%5B0%5D=" + privChannel + "&text=x"), rules(6), nil},
+		// Rule 7: a channel given by its name, which chat.postMessage resolves for a public
+		// channel, a public channel a private project's owner listed among them, while rule 5
+		// reads ids alone.
+		{"chat.postMessage naming its channel #priv-team", jsonPost(postTo("#priv-team")), rules(7), nil},
+		{"conversations.replies naming its channel priv-team", readOf("priv-team"), rules(7), nil},
 	}
 }
 
@@ -175,13 +181,12 @@ func grantFenced(r *rig, placeholder, grantID string, secret requests.AirlockSec
 // the searches among them), every call that names PRIV's channel in any way Slack reads one, every
 // call carrying a key Slack may read as channel while the fence reads another (%20channel,
 // +channel, channel%00x, channel[], channel.), every call naming a channel other than by its id,
-// and every call it cannot read as naming none; each case has a control, a proxy that skips the
-// case's rule, which carries the call to the stand-in: for a method the fence does not allow, the
-// blocklist of channel arguments alone lets it through. The allowed calls naming a public channel,
-// and auth.test, reach the stand-in with the real token, and a grant with no Excluded carries
-// every one of them as before the fence. A name the broker could not read the fence of refuses
-// every call PRIVATE_CHANNELS_UNREAD, while Dispatch's list fails and while a private project's
-// entry carries no slack_channels, and serves again once a read answers.
+// and every call it cannot read as naming none. Each of slackCallExcluded's seven rules has a case
+// that it alone refuses (fenceCase). The allowed calls naming a public channel, and auth.test,
+// reach the stand-in with the real token, and a grant with no Excluded carries every one of them
+// as before the fence. A name the broker could not read the fence of refuses every call
+// PRIVATE_CHANNELS_UNREAD, while Dispatch's list fails and while a private project's entry carries
+// no slack_channels, and serves again once a read answers.
 func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 	r := newRig(t, Options{Rules: slackRules()})
 	value := map[string]string{requests.SlotValue: slackValue}
@@ -192,15 +197,8 @@ func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 
 	for _, c := range fenceCases(t) {
 		t.Run("refused/"+c.name, func(t *testing.T) {
-			sendSlack(t, r, client, fencedPlaceholder, c.call).refusedAs(t, c.name, c.call, codePrivateChannel, privateChannel)
-		})
-		t.Run("control/"+c.name, func(t *testing.T) {
-			control := newRig(t, Options{Rules: slackRules(), fenceSkip: c.skip})
-			grantFenced(control, fencedPlaceholder, "grant-slack-fenced", fenced)
-			answer := sendSlack(t, control, control.client(fencedPlaceholder), fencedPlaceholder, c.call)
-			if answer.status != http.StatusOK || len(answer.seen) != 1 {
-				t.Fatalf("control of %s: with %v skipped, %s answered %d %q and reached the stand-in %d time(s); want it carried, so that rule is what refuses it", c.name, c.skip, c.call, answer.status, answer.body, len(answer.seen))
-			}
+			what := fmt.Sprintf("%s (refused by rule %v)", c.name, c.rules)
+			sendSlack(t, r, client, fencedPlaceholder, c.call).refusedAs(t, what, c.call, codePrivateChannel, privateChannel)
 		})
 		if c.public != nil {
 			t.Run("public/"+c.name, func(t *testing.T) {
@@ -229,7 +227,6 @@ func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 	unreadCalls := []slackPost{historyOf(pubChannel), jsonPost(postTo(pubChannel)), {method: http.MethodGet, path: "/api/auth.test"}}
 	t.Run("unread while Dispatch's list fails", func(t *testing.T) {
 		w := newFenceWorld(t, map[string]projectaccesstest.Row{privKey: privateRow([]string{privChannel}, slackPerson)}, true)
-		w.declare(privKey)
 		w.dispatch.SetPrivateProjectsDown(true)
 		p := w.pod(t, "public")
 		for _, call := range unreadCalls {
@@ -244,7 +241,6 @@ func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 		omitted := privateRow([]string{privChannel}, slackPerson)
 		omitted.OmitSlackChannels = true
 		w := newFenceWorld(t, map[string]projectaccesstest.Row{privKey: omitted}, true)
-		w.declare(privKey)
 		p := w.pod(t, "public")
 		for _, call := range unreadCalls {
 			p.send(t, call).refusedAs(t, "while PRIV's entry carries no slack_channels", call, codePrivateChannelsUnread, privateChannelsUnread)
@@ -256,39 +252,52 @@ func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 	})
 }
 
-// TestAPublicSlackGrantIsTodaysWithNoPrivateProject: on a broker that asks Dispatch about projects
-// and knows of no private one, a session naming no project is served every call as before the
-// fence: Dispatch is asked nothing, at the release or at the reads that follow it, and a call the
-// fence would refuse if it read it - a search, a body of no type it reads, a compressed body, a
-// body over 1 MiB - is carried byte for byte, since with no channel excluded the proxy reads no
-// body at all. The value carries the release's ten-minute bound all the same.
+// TestAPublicSlackGrantIsTodaysWithNoPrivateProject: while no private project lists a channel, a
+// session naming no project is served every call as before the fence: a call the fence would
+// refuse if it read it - a search, a body of no type it reads, a compressed body, a body over 1 MiB
+// - is carried byte for byte, since with no channel excluded the proxy reads no body at all, and
+// the value carries the release's ten-minute bound all the same. On a broker with no
+// project-access client (R9's case) Dispatch is asked nothing; on one with it, Dispatch is asked
+// its list of private projects, at most once a release, and nothing else.
 func TestAPublicSlackGrantIsTodaysWithNoPrivateProject(t *testing.T) {
-	w := newFenceWorld(t, map[string]projectaccesstest.Row{privKey: {Visibility: "public", Owner: slackOwner, SlackChannels: []string{privChannel}}}, true)
-	p := w.pod(t, "public")
-	unread := []slackPost{
-		historyOf(privChannel),
-		{method: http.MethodGet, path: "/api/search.messages?query=release"},
-		{method: http.MethodPost, path: slackPostPath, header: [][2]string{{"Content-Type", "text/plain; charset=utf-8"}}, body: "channel=" + privChannel},
-		{method: http.MethodPost, path: slackPostPath, header: [][2]string{{"Content-Type", slackJSON}, {"Content-Encoding", "gzip"}}, body: gzipped(t, postTo(privChannel))},
-		jsonPost(`{"channel":"` + privChannel + `","text":"` + strings.Repeat("x", maxSlackPostBody) + `"}`),
-	}
-	for _, call := range unread {
-		p.send(t, call).served(t, "a call with no private project known", call, slackValue)
-	}
-	w.clock.advance(ownerChangeHeard - mintAgainBefore + time.Second)
-	p.send(t, historyOf(privChannel)).served(t, "a read after the proxy read the grant again", historyOf(privChannel), slackValue)
-	reads := p.grants.all()
-	if len(reads) != 2 {
-		t.Fatalf("the proxy read the grant %d time(s); want twice, once at the first call and once after its bound", len(reads))
-	}
-	for i, values := range reads {
-		got := values[slackName]
-		if got.Limited || got.Excluded != nil || got.ExcludedUnread || got.Expires.IsZero() {
-			t.Fatalf("read %d of %s = Limited %v Excluded %#v ExcludedUnread %v Expires %v; want unlimited and unfenced, bounded", i+1, slackName, got.Limited, got.Excluded, got.ExcludedUnread, got.Expires)
+	for _, access := range []bool{false, true} {
+		name := "a broker with no project-access client"
+		if access {
+			name = "a broker with project access and no private project"
 		}
-	}
-	if calls := w.dispatch.Calls(); calls != 0 {
-		t.Fatalf("Dispatch was asked %d time(s) with no private project known; want none", calls)
+		t.Run(name, func(t *testing.T) {
+			w := newFenceWorld(t, map[string]projectaccesstest.Row{privKey: {Visibility: "public", Owner: slackOwner, SlackChannels: []string{privChannel}}}, true)
+			p := w.newPod(t, "public", access)
+			unread := []slackPost{
+				historyOf(privChannel),
+				{method: http.MethodGet, path: "/api/search.messages?query=release"},
+				{method: http.MethodPost, path: slackPostPath, header: [][2]string{{"Content-Type", "text/plain; charset=utf-8"}}, body: "channel=" + privChannel},
+				{method: http.MethodPost, path: slackPostPath, header: [][2]string{{"Content-Type", slackJSON}, {"Content-Encoding", "gzip"}}, body: gzipped(t, postTo(privChannel))},
+				jsonPost(`{"channel":"` + privChannel + `","text":"` + strings.Repeat("x", maxSlackPostBody) + `"}`),
+			}
+			for _, call := range unread {
+				p.send(t, call).served(t, "a call with no private project", call, slackValue)
+			}
+			w.clock.advance(ownerChangeHeard - mintAgainBefore + time.Second)
+			p.send(t, historyOf(privChannel)).served(t, "a read after the proxy read the grant again", historyOf(privChannel), slackValue)
+			reads := p.grants.all()
+			if len(reads) != 2 {
+				t.Fatalf("the proxy read the grant %d time(s); want twice, once at the first call and once after its bound", len(reads))
+			}
+			for i, values := range reads {
+				got := values[slackName]
+				if got.Limited || got.Excluded != nil || got.ExcludedUnread || got.Expires.IsZero() {
+					t.Fatalf("read %d of %s = Limited %v Excluded %#v ExcludedUnread %v Expires %v; want unlimited and unfenced, bounded", i+1, slackName, got.Limited, got.Excluded, got.ExcludedUnread, got.Expires)
+				}
+			}
+			lists, calls := w.dispatch.PrivateProjectsCalls(), w.dispatch.Calls()
+			switch {
+			case !access && calls != 0:
+				t.Fatalf("Dispatch was asked %d time(s) by a broker with no project-access client; want none", calls)
+			case access && (calls != lists || lists < 1 || lists > len(reads)):
+				t.Fatalf("Dispatch was asked %d time(s), %d of them for the list of private projects, over %d releases; want the list alone, at most once a release", calls, lists, len(reads))
+			}
+		})
 	}
 }
 
@@ -296,14 +305,13 @@ func TestAPublicSlackGrantIsTodaysWithNoPrivateProject(t *testing.T) {
 // fence could know of a private channel reads it again. Row 1: the token held before it carries
 // its tag is read again at the next call after the retag, which moves the policy version, and is
 // then bounded and fenced. Row 2: the token released to a public session while no project is
-// private carries the release's ten-minute bound and cost Dispatch nothing; PRIV then turns
-// private and names a channel, and once the clocks pass that bound less the proxy's margin, plus
-// the project-access cache, a read of that channel is refused PRIVATE_CHANNEL with no call to
-// Slack.
+// private carries the release's ten-minute bound and cost Dispatch the list of private projects
+// alone; PRIV then turns private and names a channel, and once the clocks pass that bound less
+// the proxy's margin, plus the project-access cache, a read of that channel is refused
+// PRIVATE_CHANNEL with no call to Slack.
 func TestAValueReleasedBeforeTheFirstPrivateChannelLearnsIt(t *testing.T) {
 	t.Run("a value released before the retag", func(t *testing.T) {
 		w := newFenceWorld(t, map[string]projectaccesstest.Row{privKey: privateRow([]string{privChannel}, slackPerson)}, false)
-		w.declare(privKey)
 		p := w.pod(t, "public")
 		p.send(t, readOf(privChannel)).served(t, "a read before the token carries project-channels", readOf(privChannel), slackValue)
 		if first := p.grants.last()[slackName]; !first.Expires.IsZero() || first.Excluded != nil {
@@ -331,14 +339,13 @@ func TestAValueReleasedBeforeTheFirstPrivateChannelLearnsIt(t *testing.T) {
 		if first.Expires.Before(read.Add(ownerChangeHeard)) || first.Expires.After(w.clock.now().Add(ownerChangeHeard)) {
 			t.Errorf("%s for a public session expires %v; want the read time plus %v", slackName, first.Expires, ownerChangeHeard)
 		}
-		if calls := w.dispatch.Calls(); calls != 0 {
-			t.Errorf("the release with no private project asked Dispatch %d time(s); want none", calls)
+		if lists, calls := w.dispatch.PrivateProjectsCalls(), w.dispatch.Calls(); calls != lists || lists != 1 {
+			t.Errorf("the release with no private project asked Dispatch %d time(s), %d of them for the list of private projects; want the list alone, once", calls, lists)
 		}
 
 		private := privateRow([]string{privChannel}, slackPerson)
 		private.SlackChannelsChangedAt = w.clock.now()
 		w.dispatch.SetRow(privKey, private)
-		w.declare(privKey)
 		w.clock.advance(ownerChangeHeard - mintAgainBefore + projectaccess.CacheTTL + time.Second)
 		p.send(t, readOf(privChannel)).refusedAs(t, "a read of "+privChannel+" once PRIV is private and names it", readOf(privChannel), codePrivateChannel, privateChannel)
 	})
@@ -360,10 +367,8 @@ func TestAPrivateCredentialWaitsForTheSettleTime(t *testing.T) {
 		// which the run stamps.
 		start  func(t0 time.Time) map[string]projectaccesstest.Row
 		change func() (string, projectaccesstest.Row)
-		// project is the private session's project; declaredBefore is what the broker declares
-		// private before T.
-		project        string
-		declaredBefore []string
+		// project is the private session's project.
+		project string
 	}{
 		{
 			name: "PRIV's owner adds a channel",
@@ -373,7 +378,7 @@ func TestAPrivateCredentialWaitsForTheSettleTime(t *testing.T) {
 			change: func() (string, projectaccesstest.Row) {
 				return privKey, privateRow([]string{privChannel, addedChannel}, slackPerson)
 			},
-			project: privKey, declaredBefore: []string{privKey},
+			project: privKey,
 		},
 		{
 			name: "PUB turns private",
@@ -387,13 +392,13 @@ func TestAPrivateCredentialWaitsForTheSettleTime(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			overlap, _ := settleRun(t, row.start, row.change, row.project, row.declaredBefore, false)
+			overlap, _ := settleRun(t, row.start, row.change, row.project, false)
 			if overlap != "" {
 				t.Fatal(overlap)
 			}
 		})
 		t.Run(row.name+", control: Dispatch keeps the time of the earlier list", func(t *testing.T) {
-			overlap, at := settleRun(t, row.start, row.change, row.project, row.declaredBefore, true)
+			overlap, at := settleRun(t, row.start, row.change, row.project, true)
 			if overlap == "" || !strings.Contains(overlap, addedChannel) || at != time.Second {
 				t.Fatalf("with slack_channels_changed_at left at the earlier list the run found %q at T+%v; want Q posting to %s at T+1s while P reads it", overlap, at, addedChannel)
 			}
@@ -408,12 +413,11 @@ func TestAPrivateCredentialWaitsForTheSettleTime(t *testing.T) {
 // and answers the first step at which both reached Slack, naming the channel, with how long after
 // T it was; "" when none did, after which Q posts and P is refused.
 func settleRun(t *testing.T, start func(time.Time) map[string]projectaccesstest.Row, change func() (string, projectaccesstest.Row),
-	project string, declaredBefore []string, control bool) (string, time.Duration) {
+	project string, control bool) (string, time.Duration) {
 	t.Helper()
 	t0 := time.Now().Add(-time.Hour)
 	rows := start(t0)
 	w := newFenceWorld(t, rows, true)
-	w.declare(declaredBefore...)
 	p := w.pod(t, "public")
 	read := readOf(addedChannel)
 	p.send(t, read).served(t, "P's read of "+addedChannel+" just before T", read, slackValue)
@@ -426,7 +430,6 @@ func settleRun(t *testing.T, start func(time.Time) map[string]projectaccesstest.
 		changed.SlackChannelsChangedAt = rows[key].SlackChannelsChangedAt
 	}
 	w.dispatch.SetRow(key, changed)
-	w.declare(append(slices.Clone(declaredBefore), key)...)
 
 	w.clock.advance(time.Second)
 	q := w.pod(t, "private", project)
@@ -469,8 +472,7 @@ func advanceTo(c *proxyClock, at time.Time) {
 }
 
 // fenceWorld is the broker the fence's real-machine tests run: a store, the Slack token's policy,
-// a stand-in Dispatch and a clock, which every pod of a test shares as a broker's pods share them,
-// and the private projects the broker's settings declare (Machine.PrivateDeclared).
+// a stand-in Dispatch and a clock, which every pod of a test shares as a broker's pods share them.
 type fenceWorld struct {
 	st       *store.Store
 	local    *secrets.Local
@@ -478,7 +480,6 @@ type fenceWorld struct {
 	rules    proxyrules.Rules
 	dispatch *projectaccesstest.Server
 	clock    *proxyClock
-	declared atomic.Pointer[[]string]
 }
 
 // newFenceWorld builds it, with Dispatch answering rows and the token tagged project-channels=slack
@@ -495,7 +496,6 @@ func newFenceWorld(t *testing.T, rows map[string]projectaccesstest.Row, tagged b
 		t.Fatalf("policy.NewCurrent: %v", err)
 	}
 	w.policy = current
-	w.declare()
 	return w
 }
 
@@ -508,9 +508,6 @@ func slackToken(tagged bool) secrets.LocalSecret {
 	}
 	return token
 }
-
-// declare makes the broker's settings declare keys private from the next release on.
-func (w *fenceWorld) declare(keys ...string) { w.declared.Store(&keys) }
 
 // retag tags the token project-channels=slack in the store and has the broker read it again, as a
 // retag the console makes and the broker's reread of the name do.
@@ -531,10 +528,17 @@ type fencePod struct {
 	password string
 }
 
-// pod builds one, its session on a runtime of its own named name, naming projects.
+// pod builds one with a client of Dispatch's project access, its session on a runtime of its own
+// named name, naming projects.
 func (w *fenceWorld) pod(t *testing.T, name string, projects ...string) *fencePod {
 	t.Helper()
-	dispatch := &podDispatch{clock: w.clock, server: w.dispatch}
+	return w.newPod(t, name, true, projects...)
+}
+
+// newPod builds one, with a client of the stand-in Dispatch when access is true, and with none
+// otherwise, a broker with no BROKER_PROJECT_ACCESS_URL.
+func (w *fenceWorld) newPod(t *testing.T, name string, access bool, projects ...string) *fencePod {
+	t.Helper()
 	m := &requests.Machine{
 		Store: w.st, Policy: w.policy, Secrets: policytest.Store(w.local), PendingTTL: 12 * time.Hour,
 		Audience: slackAudience, Skew: time.Minute, Replay: replayOnce(w.st),
@@ -543,10 +547,11 @@ func (w *fenceWorld) pod(t *testing.T, name string, projects ...string) *fencePo
 		// Two strings the release carries through unread, as newSlackBroker's.
 		AirlockProxyURL:      "http://127.0.0.1:13381",
 		AirlockCACertificate: "-----BEGIN CERTIFICATE-----\nslack-test-airlock-ca\n-----END CERTIFICATE-----\n",
-		Projects:             dispatch,
-		PrivateList:          dispatch,
-		PrivateDeclared:      func() []string { return *w.declared.Load() },
 		Now:                  w.clock.now,
+	}
+	if access {
+		dispatch := &podDispatch{clock: w.clock, server: w.dispatch}
+		m.Projects, m.PrivateList = dispatch, dispatch
 	}
 	password := releaseSlack(t, m, w.st, "box-fence-"+name+"-"+t.Name(), "post the release notes", projects)
 	grants := &readsOf{Machine: m}
@@ -598,15 +603,13 @@ func (g *readsOf) last() map[string]requests.AirlockSecret {
 // rather than the wall's: a real projectaccess.Client, replaced by a new one, which holds no
 // answer, once the clock has moved projectaccess.CacheTTL past when the one it replaces was made.
 // That is the cache a running pod holds, whose answers the clock a test moves would otherwise keep
-// young for ever, so a row that moves the proxy's clock moves this one with it. What any of its
-// clients saw private it remembers, as one process does.
+// young for ever, so a row that moves the proxy's clock moves this one with it.
 type podDispatch struct {
 	clock  *proxyClock
 	server *projectaccesstest.Server
 	mu     sync.Mutex
 	client *projectaccess.Client
 	born   time.Time
-	saw    bool
 }
 
 func (d *podDispatch) current() *projectaccess.Client {
@@ -614,9 +617,6 @@ func (d *podDispatch) current() *projectaccess.Client {
 	defer d.mu.Unlock()
 	now := d.clock.now()
 	if d.client == nil || now.Sub(d.born) >= projectaccess.CacheTTL {
-		if d.client != nil && d.client.SawPrivate() {
-			d.saw = true
-		}
 		d.client, d.born = projectaccess.New(d.server.URL, d.server.Account, nil), now
 	}
 	return d.client
@@ -644,12 +644,4 @@ func (d *podDispatch) PrivateProjectsAsOf(ctx context.Context) ([]projectaccess.
 
 func (d *podDispatch) PrivateProjectsFresh(ctx context.Context) ([]projectaccess.PrivateProject, error) {
 	return d.current().PrivateProjectsFresh(ctx)
-}
-
-func (d *podDispatch) SawPrivate() bool {
-	client := d.current()
-	d.mu.Lock()
-	saw := d.saw
-	d.mu.Unlock()
-	return saw || client.SawPrivate()
 }

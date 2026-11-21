@@ -688,26 +688,29 @@ Dispatch's answer carries no list. A pod holding the secret reads the owners' li
 ten minutes.
 
 Every other credential that gets the secret behind the airlock is fenced from the private
-projects' channels. Once the broker knows a project is private, because `BROKER_PRIVATE_PROJECTS`
-declares it or Dispatch has answered it so, and a private project's owner lists a channel, the
-proxy carries only the Slack methods Legion itself calls with the token: `chat.postMessage` and
+projects' channels. While a private project's owner lists a channel, the proxy carries only the
+Slack methods Legion itself calls with the token: `chat.postMessage` and
 `conversations.replies`, each to a channel no private project lists, and `auth.test`. It refuses
 `PRIVATE_CHANNEL`, without calling Slack, every other method, since a method that names no channel
 can still answer a private channel's content (`reactions.list`, `stars.list`, `files.list`,
 `files.info`, the searches) or its name (`conversations.list`); any call naming a channel id a
 private project's owner listed, under `channel`, `channel_id` or `channels`, in the query, a JSON
 body or a form, in any case and with white space or commas around it; any call naming a channel
-by anything but its id, such as `#general`, since Slack resolves a name to a private channel as
-readily as to a public one; any call carrying a key with a character other than an ASCII letter,
-a digit or `_`, such as ` channel` or `channel[]`, which Slack may read as `channel`; and a call
-whose body it cannot read: one of another type than JSON or a form, compressed, or over 1 MiB.
-The broker reads that list with its own token, keeps it 30 seconds, and reads it again for a pod
-holding the secret within ten minutes; while it cannot read the list, or a private project's
-entry carries no channel list, every call on the secret is refused `PRIVATE_CHANNELS_UNREAD`, and
-the broker reads it again within a minute. While no project is private, the broker asks Dispatch
-nothing for it and the proxy reads no body: every call is carried as before. A broker whose
-`BROKER_PRIVATE_PROJECTS` names a project refuses to start without `BROKER_PROJECT_ACCESS_URL`,
-so a declared project's channels are fenced from the first call after every restart.
+by anything but its id, such as `#general`, since an owner may list a public Slack channel, which
+`chat.postMessage` also takes by its name, and the fence reads ids alone (Slack takes a name for a
+public channel only; a private channel is reached by its id); any call carrying a key with a
+character other than an ASCII letter, a digit or `_`, such as ` channel` or `channel[]`, which
+Slack may read as `channel`; and a call whose body it cannot read: one of another type than JSON
+or a form, compressed, or over 1 MiB. A broker with `BROKER_PROJECT_ACCESS_URL` reads that list
+with its own token at every release of the secret, keeping it 30 seconds, so a pod that has just
+started fences a project Dispatch holds private from its first release, whatever
+`BROKER_PRIVATE_PROJECTS` names; a pod holding the secret reads it again within ten minutes. While
+it cannot read the list, or a private project's entry carries no channel list, every call on the
+secret is refused `PRIVATE_CHANNELS_UNREAD`, and the broker reads it again within a minute. While
+no private project lists a channel, the proxy reads no body and every call is carried as before,
+at one read of the list a pod in each 30 seconds; a broker with no `BROKER_PROJECT_ACCESS_URL`
+asks Dispatch nothing and fences nothing. A broker whose `BROKER_PRIVATE_PROJECTS` names a project
+refuses to start without `BROKER_PROJECT_ACCESS_URL`.
 
 The fence holds only behind the airlock. So while a private project's owner lists a channel, the
 broker gives a `project-channels` secret with no airlock entry to no credential at all, denying it

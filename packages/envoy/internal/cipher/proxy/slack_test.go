@@ -1,6 +1,6 @@
 // packages/envoy/internal/cipher/proxy/slack_test.go
 //
-// #t-d-12's proxy half (dispatch://INFRA-3862): a private project's grant of the Legion Slack bot
+// The proxy half of a private project's Slack limit: a private project's grant of the Legion Slack bot
 // token spends it only on POST /api/chat.postMessage, carrying channel, thread_ts and text, to a
 // channel its project's owner named (slackPostAllowed). The first test drives every request shape
 // through the rig's fake grants, and the three ways a list comes back empty through the real

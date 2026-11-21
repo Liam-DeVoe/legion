@@ -476,7 +476,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			// whether it names none of those channels. What it read goes upstream byte for byte,
 			// so the call Slack reads is the one checked. A name with no Excluded channel reads
 			// no body and is served as before the fence.
-			body, why := slackCallExcluded(r, secret.Excluded, s.fenceSkip)
+			body, why := slackCallExcluded(r, secret.Excluded)
 			if why != "" {
 				s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codePrivateChannel, privateChannel+": "+why)
 				return
