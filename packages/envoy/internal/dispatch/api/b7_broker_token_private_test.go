@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
 // requireAnsweredAsMissing fails, naming what, unless hidden, an answer about the object hiddenID
@@ -38,7 +38,7 @@ func TestABrokerTokensListHoldsItOnceAProjectIsPrivate(t *testing.T) {
 	const named, person = "a-named-token-of-one-project", "a-person-token-whose-trade-named-one-project"
 	rig.broker.Says(named, liveNamedToken(caller.jkt))
 	answer := liveNamedToken(caller.jkt)
-	answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, []string{brokerTestProject}
+	answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, []string{brokerTestProject}
 	rig.broker.Says(person, answer)
 	own := seedProject(t, rig, brokerTestProject, "Broker")
 	other := seedProject(t, rig, "OTHER", "Other")

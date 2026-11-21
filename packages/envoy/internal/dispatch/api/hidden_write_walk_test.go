@@ -17,7 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -333,10 +333,10 @@ const callerAliceNamedToken privateCaller = "alice's broker token scoped to PUB"
 // project by an operator's entry, proving session, which requestIn presents for caller.
 func sayBrokered(seed privateSeed, caller privateCaller, session, project string) {
 	token := "broker-token-of-" + string(caller)
-	seed.broker.Says(token, brokertoken.Introspection{
+	seed.broker.Says(token, ciphertoken.Introspection{
 		Active: true, Session: session, Person: seedAlice,
-		ProjectScope: brokertoken.ProjectScopeNamed, Projects: []string{project}, Scope: "dispatch.write",
-		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: brokertoken.ExchangeClientID, Thumbprint: seed.agent.jkt,
+		ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{project}, Scope: "dispatch.write",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: ciphertoken.ExchangeClientID, Thumbprint: seed.agent.jkt,
 	})
 	seed.brokered[caller] = token
 }
