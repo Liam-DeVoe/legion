@@ -32,6 +32,9 @@ export interface Heard {
   readonly restored?: { count: number };
   readonly outage?: InboundUnavailable;
   readonly boundMs?: number;
+  /** While above 0, each time the relay asks for the upgrade's headers the trade fails, as a
+   *  broker that refuses it does, and the count goes down by one. */
+  readonly tradeFails?: { count: number };
 }
 
 /** The fixtures of one test file, its rows' cleanup registered (the file's header). */
@@ -83,6 +86,10 @@ export function relaySocketFixtures(prefix: string) {
           ...credential,
           headers: (...args) => {
             if (heard.asks !== undefined) heard.asks.count += 1;
+            if (heard.tradeFails !== undefined && heard.tradeFails.count > 0) {
+              heard.tradeFails.count -= 1;
+              return Promise.reject(new Error("the secrets broker refused the trade (fixture)"));
+            }
             return credential.headers(...args);
           },
         },

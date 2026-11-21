@@ -256,8 +256,8 @@ export interface ChannelInbound {
  * the session's broker credential (`connectListenerRelay`), answered once its first socket is
  * open. The socket opens again on its own after a close for the server's life, warning on `warn`
  * why an open failed; a token the broker refused is told on `warn` until the session holds the
- * socket and tells its own outage (`ListenerRelay.reportOutagesTo`). `signal` aborting (the
- * process is stopping) ends either wait at once.
+ * socket and tells its own outage (`ListenerRelay.reportOutagesTo`), which the session's first
+ * accepted registration ends. `signal` aborting (the process is stopping) ends either wait at once.
  */
 export async function dialChannelInbound(
   inbound: ChannelInboundSettings,
@@ -276,9 +276,12 @@ export async function dialChannelInbound(
       url: listenerUrl,
       session,
       credential: inbound.relayCredential,
+      // No registration reports to this one, and the socket ends no outage
+      // (`../../envoy-client/src/listener-relay.ts`): the start that follows the open is what ends
+      // a refused trade for the session.
       outage: inboundUnavailable(
         (why) => warn(`this session's relay socket has no token: ${why}`),
-        () => warn("this session's relay socket has its token again"),
+        () => undefined,
       ),
       log: (line) => warn(line),
     },

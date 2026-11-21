@@ -322,8 +322,9 @@ goes on with the 1013's waits, and any other status, an upgrade not answered wit
 listener that cannot be reached and a failed trade are tried again after 1 s doubling to a minute.
 Each cause doubles its own waits, and a socket open a minute starts them all afresh. Every other
 open presents the token in hand, with a fresh proof. A trade that failed is told to the session
-once per outage (`inboundUnavailable`), and the socket that opens next ends that outage, and no
-other: an outage a refused registration told ends only once a registration is accepted. A repeated
+once per outage (`inboundUnavailable`). The socket never ends an outage: the report is the
+host's, shared with its registrations, so only a registration the listener accepted ends it, and
+one follows every open. A repeated
 failure is logged once until its words change. Each reopen takes every live subscription again and
 reports `reconnect`, so the host registers a new epoch and the listener redelivers what it never
 acknowledged. `follow()` opens the socket again for the session the name reads now, which a host

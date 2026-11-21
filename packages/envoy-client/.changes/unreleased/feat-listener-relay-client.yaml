@@ -27,8 +27,8 @@ body: |-
   4403 does, one refused 503 after a 1013 goes on with the 1013's waits, and an upgrade not answered
   within 20 s is dropped and tried again. Only 4401, 4403 and an upgrade refused 401 or 403 trade
   for a fresh token; every open signs a fresh DPoP proof. A refused trade is told to the session
-  once per outage (`inboundUnavailable`), and the socket's next open ends that outage alone, never
-  one a refused registration told. A registration an edge listener refuses for a topic of
+  once per outage (`inboundUnavailable`), and only a registration the listener accepted ends it:
+  the socket's own open ends none. A registration an edge listener refuses for a topic of
   no project of the session's token (403 `topic_not_in_project` or `repository_not_in_project`,
   naming the topics in `refused`, `EnvoyApiError.refused`) has the host drop exactly those topics
   and tell the session which, once, with the reason (`registerWithRelay`'s `drop`,

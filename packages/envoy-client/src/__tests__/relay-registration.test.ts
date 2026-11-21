@@ -370,6 +370,84 @@ describe("a relay socket", () => {
     expect(told.slice(1)).toEqual(["restored"]);
   });
 
+  test("a refused registration and then a 4401 whose fresh trade fails once tell the session no restored until a registration is accepted", async () => {
+    // The socket's own trade fails inside an outage a refused registration told: the shared report
+    // was told already, so the failed trade tells nothing, and the socket that opens after it must
+    // not end an outage it cannot tell apart from the registration's.
+    const server = standIn();
+    const told: string[] = [];
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
+    const tradeFails = { count: 0 };
+    const relay = await opened(server, "ses_a", { outage, tradeFails });
+    let refuse = true;
+    await registerOnce(outage, () => refuse);
+    expect(told).toEqual([expect.stringContaining("repositories_unknown")]);
+
+    tradeFails.count = 1;
+    server.close(4401, "credential_expired");
+    await until(
+      () => opens(server).length === 2,
+      10_000,
+      () => `no reopen after the 4401 close; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    expect(tradeFails.count).toBe(0);
+    await relay.flush();
+    await registerOnce(outage, () => refuse);
+    if (told.includes("restored")) {
+      throw new Error(
+        `the session was told its inbound was restored while every registration was refused: ${JSON.stringify(told)}`
+      );
+    }
+
+    refuse = false;
+    await registerOnce(outage, () => refuse);
+    expect(told.slice(1)).toEqual(["restored"]);
+  });
+
+  test("a 4401 whose fresh trade fails once and then a refused registration tell the session no restored until a registration is accepted", async () => {
+    // The other order: the socket's failed trade tells the outage, and a registration refused
+    // after it tells nothing more. The socket that opens once the trade succeeds must not end it,
+    // since the registration's cause still stands.
+    const server = standIn();
+    const told: string[] = [];
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
+    const tradeFails = { count: 0 };
+    const relay = await opened(server, "ses_a", { outage, tradeFails });
+
+    tradeFails.count = 1;
+    server.close(4401, "credential_expired");
+    await until(
+      () => told.length > 0,
+      5_000,
+      () => `the failed trade was never told; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    expect(told).toEqual([expect.stringContaining("the secrets broker refused the trade")]);
+    let refuse = true;
+    await registerOnce(outage, () => refuse);
+    await until(
+      () => opens(server).length === 2,
+      10_000,
+      () => `no reopen after the failed trade; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    await relay.flush();
+    await registerOnce(outage, () => refuse);
+    if (told.includes("restored")) {
+      throw new Error(
+        `the session was told its inbound was restored while every registration was refused: ${JSON.stringify(told)}`
+      );
+    }
+
+    refuse = false;
+    await registerOnce(outage, () => refuse);
+    expect(told.slice(1)).toEqual(["restored"]);
+  });
+
   test("a topic the edge refuses for the session's projects is dropped, and the rest go on being delivered", async () => {
     // An edge listener refuses a registration naming a topic of no project of the token's
     // (`repository_not_in_project`, `topic_not_in_project`) and names each refused topic as the
