@@ -2185,3 +2185,28 @@ func TestLoadReadsCapabilityDecisions(t *testing.T) {
 		})
 	}
 }
+
+// A legion.yaml, a controller.yaml and a pod file that yaml.v3 cannot decode are refused naming the
+// file alone (yamlerr), never in yaml.v3's words: a value written after a "*", here a made-up
+// password, is an anchor yaml.v3's own error names.
+func TestAFileYAMLCannotDecodeIsRefusedQuotingNothingOfIt(t *testing.T) {
+	const credential = "madeUpYamlPassword0123"
+	for name, load := range map[string]func(path string) error{
+		"legion.yaml":     func(path string) error { _, err := Load(path, noEnv); return err },
+		"controller.yaml": func(path string) error { _, err := LoadController(path, ""); return err },
+		"a pod file":      func(path string) error { _, err := ReadPodFile(path); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfigFile(t, "postgres_dsn: *"+credential+"\n")
+			err := load(path)
+			if err == nil || !strings.HasSuffix(err.Error(), path+" cannot be read: it does not parse as YAML") {
+				t.Fatalf("the refusal is %v, want one ending %q", err, path+" cannot be read: it does not parse as YAML")
+			}
+			for i := 0; i+7 <= len(credential); i++ {
+				if strings.Contains(err.Error(), credential[i:i+7]) {
+					t.Fatalf("the refusal %q holds %q of the value", err, credential[i:i+7])
+				}
+			}
+		})
+	}
+}

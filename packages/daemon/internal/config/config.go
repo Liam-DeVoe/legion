@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
+	"github.com/sjawhar/legion/daemon/internal/yamlerr"
 )
 
 // Runtime is the `runtime` block: its name, under kubernetes the settled `runtime.kubernetes` block
@@ -460,9 +461,11 @@ func load(path string, env func(string) string, resolveAppKeys bool) (Config, er
 	if err != nil {
 		return Config{}, fmt.Errorf("read %s: %w", path, err)
 	}
+	// yamlerr: the file holds postgres_dsn, URL userinfo and the Apps' private keys, and yaml.v3's
+	// text quotes the document.
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
-		return Config{}, fmt.Errorf("parse %s: %w", path, err)
+		return Config{}, yamlerr.Refusal(path, err)
 	}
 
 	root, err := rootMapping(&document)

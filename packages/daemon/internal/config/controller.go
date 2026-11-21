@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/yamlerr"
 )
 
 // ControllerConfigExample is the example every refusal of the operator-side file points at.
@@ -71,9 +72,10 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 	if err != nil {
 		return ControllerConfig{}, fmt.Errorf("controller configuration %s could not be read: %w", path, err)
 	}
+	// yamlerr: the file's URLs can carry userinfo, and yaml.v3's text quotes the document.
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
-		return ControllerConfig{}, fmt.Errorf("Invalid controller configuration: %w", err)
+		return ControllerConfig{}, fmt.Errorf("Invalid controller configuration: %w", yamlerr.Refusal(path, err))
 	}
 	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
 		return ControllerConfig{}, errors.New("controller.yaml must be a mapping")

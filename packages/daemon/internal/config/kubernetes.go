@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/yamlerr"
 )
 
 // Kubernetes is the settled `runtime.kubernetes` block: where the Sandbox runtime runs its pods and
@@ -1321,9 +1322,11 @@ func ReadPodFile(path string) (PodConfig, error) {
 	if err != nil {
 		return PodConfig{}, fmt.Errorf("read %s: %w", path, err)
 	}
+	// yamlerr: the block's env values and volumes can hold a credential, and yaml.v3's text quotes
+	// the document.
 	var document yaml.Node
 	if err := yaml.Unmarshal(raw, &document); err != nil {
-		return PodConfig{}, fmt.Errorf("parse %s: %w", path, err)
+		return PodConfig{}, yamlerr.Refusal(path, err)
 	}
 	if len(document.Content) != 1 {
 		return PodConfig{}, fmt.Errorf("%s holds no %s mapping", path, podKey)
