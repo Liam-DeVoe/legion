@@ -265,8 +265,12 @@ func (t takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) erro
 // publishTakeover writes the takeover record of role taken from previous, on a subject of its own
 // (bus.TakeoverSubject with a fresh attempt id), with the claim's time on the listener's clock. A
 // previous holder whose id no session consumer can be named for (bus.SessionConsumerName) has no
-// subject of its own to copy from, so it gets none.
+// subject of its own to copy from, so it gets none. An edge listener writes none (cfg.edge): its
+// grant publishes no takeover lane and no kept role lane (natsgrant.Edge).
 func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, previous string) error {
+	if cfg.edge != nil {
+		return nil
+	}
 	if _, ok := bus.SessionConsumerName(previous); !ok {
 		return nil
 	}
@@ -286,8 +290,12 @@ func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 
 // runTakenRoleDrain is runKeptRoleDrain for a role the claim route has just granted: under the
 // role's guard and the handover's window, it runs the passes of the role's takeover records and
-// then hands its kept lane over (handOverTakenRole).
+// then hands its kept lane over (handOverTakenRole). An edge listener runs none (cfg.edge), as it
+// hands no kept lane over (drainKeptRole).
 func runTakenRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
+	if cfg.edge != nil {
+		return
+	}
 	if skip := cfg.takeoverFaults.faults().skipClaimHandover; skip != nil && skip(role) {
 		return
 	}
@@ -642,6 +650,11 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // with the delay its deliveries earn (relayNakDelayFor), neither sent nor acknowledged, so it is
 // copied or sent once they answer.
 func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg bus.SessionMessage) bool {
+	// An edge listener takes no frame (cfg.edge): its grant publishes no kept role lane
+	// (natsgrant.Edge), so the frame goes to the session as every frame does.
+	if m.cfg.edge != nil {
+		return false
+	}
 	role, mark, ok := decodeRoleMark(msg.Data)
 	if !ok {
 		return false
