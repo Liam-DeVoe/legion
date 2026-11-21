@@ -16,9 +16,9 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// SessionConsumerRecordsBucket is the bucket that records each listener session consumer's name
-// and shape, which the census reads, after its barrier on the bucket, for the session consumers
-// it keeps.
+// SessionConsumerRecordsBucket is the selection bucket: each session's record, naming the session
+// consumer it selects, and each listener durable's (consumernames.DurableKey), which the census
+// reads, after its barrier on the bucket, for the consumers they name.
 const SessionConsumerRecordsBucket = "envoy_session_consumers"
 
 // recordsStream is the records bucket's stream, which the census keeps: it is the hold's own, made
@@ -35,14 +35,26 @@ type ConsumerShape struct {
 	// Stream is the stream the consumer reads.
 	Stream string
 	// Name is the consumer's durable name. A consumer named Name, or Name~<nuid>, the form
-	// the writer hold's convert gives it, takes this shape. Empty for an ordered watcher (Ordered).
+	// the writer hold's convert gives it, takes this shape; with Exact, Name alone does. Empty for
+	// an ordered watcher (Ordered).
 	Name string
+	// Exact is a shape whose Name alone takes it, never Name~<nuid>: a name a selection record
+	// holds, and a listener's fixed durable, whose fresh names only their records declare, so a
+	// fresh listener durable no record names is removed.
+	Exact bool
 	// Ordered is a KV watcher's ordered consumer, which the server names: unnamed of its own, it
 	// acknowledges nothing, delivers to a reply inbox, filters within its bucket's subjects and is
 	// removed by the server once it is inactive.
 	Ordered bool
 	// FilterSubjects are the consumer's filter subjects, in any order.
 	FilterSubjects []string
+	// FilterCovers replaces FilterSubjects for a shape whose whole filter list the census cannot
+	// know: each subject here must lie within one of the consumer's filter subjects. A session
+	// consumer's filter is its agent subject's forms and the topics its interest row holds
+	// (cmd/listener sessionConsumerFilter), a bucket the operator's grant does not read, so its
+	// shape names its agent subject's forms alone (bus.SessionConsumerFilters, one of which holds
+	// a '*' for the project token).
+	FilterCovers []string
 	// Push is a consumer that delivers to a reply inbox the server made for it (nats.NewInbox,
 	// _INBOX.<nuid>); a consumer with no deliver subject is a pull consumer.
 	Push bool
@@ -60,11 +72,11 @@ type ConsumerSet struct {
 	Daemons            []ConsumerShape
 }
 
-// DeclaredConsumers are the consumer shapes the declared set names but the recorded session
-// consumers: each listener's durable (bus.ListenerDurable), a push consumer of every notification
-// subject the build carries, acknowledged one at a time; Dispatch's two durables
-// (delivery.ConsumerConfigs); set's daemons'; and on each declared bucket, its watchers' ordered
-// consumers.
+// DeclaredConsumers are the consumer shapes the declared set names but the recorded ones: each
+// listener's fixed durable (bus.ListenerDurable) by its exact name, a push consumer of every
+// notification subject the build carries, acknowledged one at a time, whose fresh names only the
+// selection records declare; Dispatch's two durables (delivery.ConsumerConfigs); set's daemons';
+// and on each declared bucket, its watchers' ordered consumers.
 func DeclaredConsumers(set ConsumerSet) []ConsumerShape {
 	var shapes []ConsumerShape
 	for _, stream := range streamset.Declared(streamset.Settings{}) {
@@ -75,7 +87,7 @@ func DeclaredConsumers(set ConsumerSet) []ConsumerShape {
 	shapes = append(shapes, ConsumerShape{Stream: recordsStream, Ordered: true})
 	for _, machineID := range set.ListenerMachineIDs {
 		shapes = append(shapes, ConsumerShape{
-			Stream: bus.Stream, Name: bus.ListenerDurable(machineID), FilterSubjects: bus.StreamSubjects(),
+			Stream: bus.Stream, Name: bus.ListenerDurable(machineID), Exact: true, FilterSubjects: bus.StreamSubjects(),
 			Push: true, AckPolicy: nats.AckExplicitPolicy,
 		})
 	}
@@ -106,9 +118,10 @@ type CensusInput struct {
 	// Consumers are the declared consumer shapes but the recorded session consumers
 	// (DeclaredConsumers).
 	Consumers []ConsumerShape
-	// RecordedSessionConsumers reads the session consumers KV_envoy_session_consumers records, after
-	// the barrier on it, skipping the bucket's system keys (a key holding a '.': its sentinel
-	// envoy.bucket and each hold's hold.barrier.<id>).
+	// RecordedSessionConsumers reads the consumers KV_envoy_session_consumers records, after the
+	// barrier on it: every name each session's record and each listener durable's record holds,
+	// each in its family's shape, skipping the bucket's other system keys (a key holding a '.':
+	// its sentinel envoy.bucket and each hold's hold.barrier.<id>).
 	RecordedSessionConsumers func(ctx context.Context) ([]ConsumerShape, error)
 }
 
@@ -287,7 +300,7 @@ func shapeMismatch(shapes []ConsumerShape, stream string, consumer *nats.Consume
 			}
 			continue
 		}
-		if !namedFor(shape.Name, consumer.Name) {
+		if !namedFor(shape, consumer.Name) {
 			continue
 		}
 		reason := configMismatch(shape, consumer.Config)
@@ -302,12 +315,16 @@ func shapeMismatch(shapes []ConsumerShape, stream string, consumer *nats.Consume
 	return "its name matches no declared consumer"
 }
 
-// namedFor reports whether name is the shape's own, or its convert form, <shape>~<nuid>.
-func namedFor(shape, name string) bool {
-	if name == shape {
+// namedFor reports whether name is the shape's own, or, unless the shape is Exact, its convert
+// form, <shape>~<nuid>.
+func namedFor(shape ConsumerShape, name string) bool {
+	if name == shape.Name {
 		return true
 	}
-	suffix, found := strings.CutPrefix(name, shape+"~")
+	if shape.Exact {
+		return false
+	}
+	suffix, found := strings.CutPrefix(name, shape.Name+"~")
 	return found && nuidLike(suffix)
 }
 
@@ -329,8 +346,14 @@ func nuidLike(s string) bool {
 func configMismatch(shape ConsumerShape, config nats.ConsumerConfig) string {
 	want, got := slices.Sorted(slices.Values(shape.FilterSubjects)), slices.Sorted(slices.Values(filterSubjects(config)))
 	switch {
+	case len(shape.FilterCovers) > 0:
+		if missing := uncovered(shape.FilterCovers, got); missing != "" {
+			return fmt.Sprintf("its filter subjects %v match no %s", got, missing)
+		}
 	case !slices.Equal(want, got):
 		return fmt.Sprintf("its filter subjects are %v, want %v", got, want)
+	}
+	switch {
 	case shape.Push != (config.DeliverSubject != ""):
 		return fmt.Sprintf("its deliver subject is %q", config.DeliverSubject)
 	case shape.Push && !replyInbox(config.DeliverSubject):
@@ -341,6 +364,34 @@ func configMismatch(shape ConsumerShape, config nats.ConsumerConfig) string {
 		return fmt.Sprintf("its ack policy is %s, want %s", config.AckPolicy, shape.AckPolicy)
 	}
 	return ""
+}
+
+// uncovered is the first of subjects that none of filters matches, and empty when each is matched.
+func uncovered(subjects, filters []string) string {
+	for _, subject := range subjects {
+		if !slices.ContainsFunc(filters, func(filter string) bool { return filterMatches(filter, subject) }) {
+			return subject
+		}
+	}
+	return ""
+}
+
+// filterMatches reports whether every subject subject matches is one filter matches: filter and
+// subject may each hold '*' (one token), and filter '>' (one or more last tokens). A '*' of filter
+// takes any one token, a '*' of subject included; a literal token of filter takes only itself.
+func filterMatches(filter, subject string) bool {
+	want, got := strings.Split(filter, "."), strings.Split(subject, ".")
+	for i, token := range want {
+		switch {
+		case token == ">":
+			return len(got) > i
+		case i >= len(got):
+			return false
+		case token != "*" && token != got[i]:
+			return false
+		}
+	}
+	return len(want) == len(got)
 }
 
 // replyInbox reports whether subject is a reply inbox nats.NewInbox makes: _INBOX.<nuid>.

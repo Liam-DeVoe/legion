@@ -18,11 +18,14 @@ import (
 )
 
 // census is a hub set for a census: the declared streams made, a listener's durable and its
-// convert form, a session consumer the records name, and the barrier stream standing.
+// convert form, which its selection record names, a session consumer the records name, and the
+// barrier stream standing.
 type census struct {
 	*hub
 	barrierAt, recordsAt atomic.Int64
 	calls                atomic.Int64
+	// recordedListener is the listener's convert form, <durable>~<nuid>, which the records name.
+	recordedListener string
 }
 
 // listenerShape is the durable a listener of machineID creates (cmd/listener, durable.go).
@@ -37,9 +40,9 @@ const sessionConsumer = "s-ses_a"
 
 func startCensus(t *testing.T, grant natsgrant.Permissions) *census {
 	t.Helper()
-	c := &census{hub: startHub(t, 1, grant)}
+	c := &census{hub: startHub(t, 1, grant), recordedListener: bus.ListenerDurable("hub") + "~" + nuid.Next()}
 	c.makeDeclared(t, streamset.Settings{})
-	for _, name := range []string{bus.ListenerDurable("hub"), bus.ListenerDurable("hub") + "~" + nuid.Next()} {
+	for _, name := range []string{bus.ListenerDurable("hub"), c.recordedListener} {
 		_, err := c.js.AddConsumer(bus.Stream, listenerConsumer(name))
 		require.NoError(t, err)
 	}
@@ -53,7 +56,8 @@ func startCensus(t *testing.T, grant natsgrant.Permissions) *census {
 }
 
 // input is the census's input on c: held, every family converted, the barrier and the records'
-// read each counted in the order they came, and the listener machine ids hub and x.
+// read each counted in the order they came, the listener machine ids hub and x, and the records
+// naming the session consumer and the listener's convert form.
 func (c *census) input() streams.CensusInput {
 	return streams.CensusInput{
 		Phase:    phase(natsgrant.OperatorPhaseHeld),
@@ -71,7 +75,10 @@ func (c *census) input() streams.CensusInput {
 		RecordedSessionConsumers: func(context.Context) ([]streams.ConsumerShape, error) {
 			c.recordsAt.Store(c.calls.Add(1))
 			return []streams.ConsumerShape{{
-				Stream: bus.Stream, Name: sessionConsumer, FilterSubjects: []string{"notifications.envoy.agent.ses_a"},
+				Stream: bus.Stream, Name: sessionConsumer, Exact: true, FilterSubjects: []string{"notifications.envoy.agent.ses_a"},
+				AckPolicy: natsgo.AckExplicitPolicy,
+			}, {
+				Stream: bus.Stream, Name: c.recordedListener, Exact: true, FilterSubjects: bus.StreamSubjects(), Push: true,
 				AckPolicy: natsgo.AckExplicitPolicy,
 			}}, nil
 		},
@@ -89,10 +96,11 @@ func (c *census) consumers(t *testing.T, stream string) []string {
 
 // The census, under exactly the held operator's grant, fails naming and removes a stream PLANT
 // that sources ENVOY_NOTIFICATIONS, a durable filtered to every private issue event that delivers to
-// _INBOX.plant, and a consumer named for listener x whose filter is a private project's, and puts a
-// declared bucket that republishes back to the build's configuration; a second run is clean. The
-// listener's own durable, its convert form <name>~<nuid>, the recorded session consumer and the
-// barrier stream survive, and the census read the records only after its barrier on their bucket.
+// _INBOX.plant, a consumer named for listener x whose filter is a private project's, and a convert
+// form <name>~<nuid> of the listener's durable that no record names, and puts a declared bucket
+// that republishes back to the build's configuration; a second run is clean. The listener's own
+// durable, the convert form its record names, the recorded session consumer and the barrier stream
+// survive, and the census read the records only after its barrier on their bucket.
 func TestStreamsCensusRemovesWhatIsNotDeclared(t *testing.T) {
 	c := startCensus(t, natsgrant.Operator(natsgrant.OperatorPhaseHeld))
 	_, err := c.js.AddStream(&natsgo.StreamConfig{Name: "PLANT", Sources: []*natsgo.StreamSource{{Name: bus.Stream}}, Storage: natsgo.MemoryStorage})
@@ -104,6 +112,9 @@ func TestStreamsCensusRemovesWhatIsNotDeclared(t *testing.T) {
 	planted := listenerConsumer(bus.ListenerDurable("x"))
 	planted.FilterSubjects = []string{"notifications.dispatch.issue.PRIV.>"}
 	_, err = c.js.AddConsumer(bus.Stream, planted)
+	require.NoError(t, err)
+	stray := bus.ListenerDurable("hub") + "~" + nuid.Next()
+	_, err = c.js.AddConsumer(bus.Stream, listenerConsumer(stray))
 	require.NoError(t, err)
 	interests := "KV_" + bus.InterestBucket
 	info, err := c.js.StreamInfo(interests)
@@ -123,6 +134,7 @@ func TestStreamsCensusRemovesWhatIsNotDeclared(t *testing.T) {
 	requireFailureNaming(t, report, "PLANT", "undeclared")
 	requireConsumerFailure(t, report, bus.Stream, "plant", "matches no declared consumer")
 	requireConsumerFailure(t, report, bus.Stream, bus.ListenerDurable("x"), "filter subjects")
+	requireConsumerFailure(t, report, bus.Stream, stray, "matches no declared consumer")
 	requireFailureNaming(t, report, interests, "republish")
 	require.Less(t, c.barrierAt.Load(), c.recordsAt.Load(), "the census read the records before its barrier")
 
@@ -133,13 +145,15 @@ func TestStreamsCensusRemovesWhatIsNotDeclared(t *testing.T) {
 	require.NotContains(t, left, bus.ListenerDurable("x"))
 	require.Contains(t, left, bus.ListenerDurable("hub"))
 	require.Contains(t, left, sessionConsumer)
+	require.Contains(t, left, c.recordedListener, "the convert form its record names did not survive")
+	require.NotContains(t, left, stray, "the convert form no record names survived")
 	converted := 0
 	for _, name := range left {
 		if strings.HasPrefix(name, bus.ListenerDurable("hub")+"~") {
 			converted++
 		}
 	}
-	require.Equal(t, 1, converted, "the convert form of the listener's durable did not survive: %v", left)
+	require.Equal(t, 1, converted, "the listener's durable has convert forms other than its recorded one: %v", left)
 	info, err = c.js.StreamInfo(interests)
 	require.NoError(t, err)
 	require.Nil(t, info.Config.RePublish, "the census left the bucket's republish")

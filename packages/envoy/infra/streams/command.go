@@ -44,8 +44,20 @@ settings: --replicas (ENVOY_NATS_REPLICAS, default 1), --stream-max-bytes (ENVOY
 
 // Command runs `envoy-infra streams <word>` with args, the words after streams, and returns its exit
 // code: the report's (Report.ExitCode), 1 for a refused phase or an unconverted census, and 2 for a
-// usage error.
+// usage error. It passes the census no reader of the recorded consumers, so a census it runs is
+// UNKNOWN (ErrRecordsUnread); envoy-infra's main runs CommandWith with consumer-names' reader.
 func Command(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	return CommandWith(ctx, args, stdout, stderr, nil)
+}
+
+// RecordsReader reads, on conn, the consumers the selection bucket's records name, each in its
+// family's shape (CensusInput.RecordedSessionConsumers). envoy-infra consumer-names builds it on
+// the records' own format; this package reads no record.
+type RecordsReader func(ctx context.Context, conn *nats.Conn) ([]ConsumerShape, error)
+
+// CommandWith is Command whose census reads the recorded consumers with recorded, on the
+// census's own connection; a nil recorded reads none, and the census is UNKNOWN.
+func CommandWith(ctx context.Context, args []string, stdout, stderr io.Writer, recorded RecordsReader) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "-help" {
 		fmt.Fprintln(stderr, commandUsage)
 		if len(args) == 0 {
@@ -164,7 +176,7 @@ func Command(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 				return holdrecord.Barrier(ctx, js, bucket, *holdID)
 			},
 			Consumers:                DeclaredConsumers(ConsumerSet{ListenerMachineIDs: machineIDs, Daemons: shapes}),
-			RecordedSessionConsumers: unreadRecords,
+			RecordedSessionConsumers: recordedOn(recorded, conn),
 		})
 	}
 	if err != nil {
@@ -174,14 +186,20 @@ func Command(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return printReport(stdout, report)
 }
 
-// ErrRecordsUnread is the census's read of the session consumers KV_envoy_session_consumers
-// records, which this build cannot make: the records are written by the writer hold's consumer-names step,
-// whose record format no package of this build reads yet. A census run from this command is
-// therefore UNKNOWN, as it must be rather than remove the session consumers it cannot tell from
-// planted ones; the writer hold's workflow calls Census with its own reader.
-var ErrRecordsUnread = errors.New("this build reads no session consumer records: the writer hold's consumer-names step owns their format")
+// ErrRecordsUnread is the census's read of the KV_envoy_session_consumers records with no reader:
+// the records' format is envoy-infra consumer-names', which this package does not read. A census
+// run with no reader (Command) is therefore UNKNOWN, as it must be rather than remove the
+// consumers it cannot tell from planted ones.
+var ErrRecordsUnread = errors.New("no reader of the session consumer records was given: envoy-infra consumer-names owns their format")
 
-func unreadRecords(context.Context) ([]ConsumerShape, error) { return nil, ErrRecordsUnread }
+// recordedOn is recorded bound to conn, as CensusInput.RecordedSessionConsumers, or a read that
+// answers ErrRecordsUnread when recorded is nil.
+func recordedOn(recorded RecordsReader, conn *nats.Conn) func(context.Context) ([]ConsumerShape, error) {
+	if recorded == nil {
+		return func(context.Context) ([]ConsumerShape, error) { return nil, ErrRecordsUnread }
+	}
+	return func(ctx context.Context) ([]ConsumerShape, error) { return recorded(ctx, conn) }
+}
 
 // readSettings reads the deployment's settings as each program reads them (bus.ParseNATSReplicas,
 // bus.ParseStreamMaxBytes, bus.ParseSessionMaxAge).

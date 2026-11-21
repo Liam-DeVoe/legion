@@ -1,0 +1,213 @@
+package consumernames
+
+import (
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/require"
+
+	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/natscred"
+	"github.com/sjawhar/envoy/natsgrant"
+)
+
+// statusWalkServer starts a lone server whose user service, with password token, holds grant, as
+// the auth service answers the operator, and an admin every credential-less connection is.
+func statusWalkServer(t *testing.T, token string, grant natsgrant.Permissions) string {
+	t.Helper()
+	quote := func(subjects []string) string {
+		quoted := make([]string, len(subjects))
+		for i, subject := range subjects {
+			quoted[i] = fmt.Sprintf("%q", subject)
+		}
+		return strings.Join(quoted, ", ")
+	}
+	config := fmt.Sprintf(`jetstream {}
+authorization {
+  users = [
+    { user: "admin", password: "admin" },
+    { user: %q, password: %q, permissions: { publish: { allow: [%s] }, subscribe: { allow: [%s] } } }
+  ]
+}
+no_auth_user: "admin"
+`, natscred.ServiceUser, token, quote(grant.Publish), quote(grant.Subscribe))
+	_, url := testnats.StartConfig(t, config, []string{"-js"}, true)
+	return url
+}
+
+// statusPublishKV publishes data on key of the selection bucket on nc, with the KV operation
+// header op when op is not empty (a delete or purge marker, as nats.go's kv.go writes one).
+func statusPublishKV(t *testing.T, nc *nats.Conn, key string, data []byte, op string) {
+	t.Helper()
+	msg := &nats.Msg{Subject: "$KV." + selection.SessionBucket + "." + key, Data: data, Header: nats.Header{}}
+	if op != "" {
+		msg.Header.Set(statusKVOperation, op)
+	}
+	reply, err := nc.RequestMsg(msg, requestTimeout)
+	require.NoError(t, err)
+	require.NotContains(t, string(reply.Data), `"error"`, "the write of %s", key)
+}
+
+// The walk of the selection bucket status makes runs under exactly natsgrant.Operator(released):
+// it reads every key by sequence, a key written twice once with its last value, a delete marker
+// as deleted, and the sentinel and a barrier key among them. Control: under that grant without
+// STREAM.MSG.GET of the bucket, the walk cannot end, and it is UNKNOWN rather than an empty
+// listing; and on a server with no bucket the walk answers a missing store.
+func TestTheStatusWalkReadsTheBucketUnderTheReleasedGrant(t *testing.T) {
+	released := natsgrant.Operator(natsgrant.OperatorPhaseReleased)
+	url := statusWalkServer(t, "walker", released)
+	admin := testnats.Connect(t, url)
+	t.Cleanup(admin.Close)
+	walker, err := nats.Connect(url, nats.UserInfo(natscred.ServiceUser, "walker"), nats.CustomInboxPrefix(natsgrant.OperatorInbox))
+	require.NoError(t, err)
+	t.Cleanup(walker.Close)
+
+	_, err = statusSelectionKeys(t.Context(), walker)
+	require.ErrorIs(t, err, selection.ErrNoStore, "a walk of no bucket")
+
+	_, err = selection.CreateSessionBucket(t.Context(), admin, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 4})
+	require.NoError(t, err)
+	statusPublishKV(t, admin, "ses_a", []byte(`{"current":"session~first"}`), "")
+	statusPublishKV(t, admin, "ses_gone", []byte(`{"current":"session~gone"}`), "")
+	statusPublishKV(t, admin, "ses_a", []byte(`{"current":"session~second"}`), "")
+	statusPublishKV(t, admin, "ses_gone", nil, "DEL")
+	statusPublishKV(t, admin, selection.DurableKey("listener-hub"), []byte(`{"current":"listener-hub~x"}`), "")
+	statusPublishKV(t, admin, "hold.barrier.h1", []byte("h1"), "")
+
+	keys, err := statusSelectionKeys(t.Context(), walker)
+	require.NoError(t, err)
+	byKey := map[string]statusKey{}
+	var names []string
+	for _, key := range keys {
+		byKey[key.Key] = key
+		names = append(names, key.Key)
+	}
+	require.Equal(t, []string{"durable.listener-hub", selection.SentinelKey, "hold.barrier.h1", "ses_a", "ses_gone"}, names)
+	require.True(t, slices.IsSortedFunc(keys, func(a, b statusKey) int { return strings.Compare(a.Key, b.Key) }))
+	require.JSONEq(t, `{"current":"session~second"}`, string(byKey["ses_a"].Value), "the walk kept an earlier write of ses_a")
+	require.True(t, byKey["ses_gone"].Deleted, "the delete marker")
+	require.Nil(t, byKey["ses_gone"].Value)
+
+	without := natsgrant.Permissions{Subscribe: released.Subscribe}
+	for _, subject := range released.Publish {
+		if subject != "$JS.API.STREAM.MSG.GET.KV_"+selection.SessionBucket {
+			without.Publish = append(without.Publish, subject)
+		}
+	}
+	require.Len(t, without.Publish, len(released.Publish)-1, "control: the grant names the bucket's message get")
+	urlWithout := statusWalkServer(t, "walker", without)
+	adminWithout := testnats.Connect(t, urlWithout)
+	t.Cleanup(adminWithout.Close)
+	_, err = selection.CreateSessionBucket(t.Context(), adminWithout, 1, selection.StoreState{Cutover: selection.CutoverDone})
+	require.NoError(t, err)
+	refused, err := nats.Connect(urlWithout, nats.UserInfo(natscred.ServiceUser, "walker"), nats.CustomInboxPrefix(natsgrant.OperatorInbox))
+	require.NoError(t, err)
+	t.Cleanup(refused.Close)
+	_, err = statusSelectionKeys(t.Context(), refused)
+	var unknown *Unknown
+	require.True(t, errors.As(err, &unknown), "the walk without the message get = %v, want UNKNOWN", err)
+}
+
+// status, with the row released after a hold, prints the hold's journal, the broker's cutover
+// rows, each family's store and records (a session's current and retired names, each marked on
+// the stream or absent; the listener durable's record; Dispatch's and a daemon's rows), skips the
+// bucket's barrier key, and lists every blocker: a current the stream does not hold, an open
+// operation, a deleted record, a fixed name on the stream, a store with no sentinel and a missing
+// store. A complete reading exits 0 and counts the blockers. Control: a daemon the broker's
+// cutover rows name whose store no flag names is UNKNOWN, exit 2; and status under a held row is
+// refused, naming the phase.
+func TestTheStatusListsEveryFamilysRecordsAndBlockers(t *testing.T) {
+	h := newStack(t)
+	ctx := t.Context()
+	id := h.heldHold(holdrecord.WorkflowStreamsCensus)
+	nc, js := h.operator()
+	h.notificationStream(js)
+	_, err := selection.CreateSessionBucket(ctx, nc, 1, selection.StoreState{Cutover: selection.CutoverDone, Boundary: 1})
+	require.NoError(t, err)
+	require.NoError(t, holdrecord.Barrier(ctx, js, selection.SessionBucket, id))
+	pull := func(name string) {
+		t.Helper()
+		_, err := writeConsumer(ctx, nc, notifications, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy,
+			FilterSubject: "notifications.agent." + strings.NewReplacer("~", "_").Replace(name)}, actionCreateConsumer)
+		require.NoError(t, err, "create %s", name)
+	}
+	kv := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+	write := func(store selection.Store, logical string, record selection.Record) {
+		t.Helper()
+		_, err := store.Write(ctx, logical, record, 0)
+		require.NoError(t, err, "write %s", logical)
+	}
+	for _, name := range []string{"session~A", "session~R", "session~C", "listener-hub~L", "delivery-events~D", "s-ses_fixed"} {
+		pull(name)
+	}
+	write(kv, "ses_a", selection.Record{Current: "session~A", Start: 3, Retired: []string{"session~R", "session~Q"}})
+	write(kv, "ses_b", selection.Record{Current: "session~B", Start: 4})
+	write(kv, "ses_c", selection.Record{Current: "session~C", Start: 5, Op: &selection.Op{Kind: selection.OpReplace, Candidate: "session~N", Old: "session~C", Owner: "o1"}})
+	write(kv, selection.DurableKey("listener-hub"), selection.Record{Current: "listener-hub~L", Start: 6})
+	write(kv, "ses_gone", selection.Record{Current: "session~G"})
+	statusPublishKV(t, nc, "ses_gone", nil, "DEL")
+
+	dispatch := selection.NewPGStore(h.database(familyDispatch, dispatchMigrations...))
+	write(dispatch, "delivery-events", selection.Record{Current: "delivery-events~D", Start: 7})
+	daemon := selection.NewPGStore(h.database(daemonFamily("PROJ"), daemonMigrations...))
+	_, err = daemon.WriteSentinel(ctx, selection.StoreState{Cutover: selection.CutoverDone}, 0)
+	require.NoError(t, err)
+	write(daemon, "legion-go-PROJ-wake", selection.Record{Current: "legion-go-PROJ-wake~W", Start: 8, Retired: []string{"legion-go-PROJ-wake~V"}})
+	h.database(daemonFamily("MISS"))
+	for _, family := range []string{familySession, familyDispatch, daemonFamily("PROJ")} {
+		_, err := h.records().PutCutover(ctx, family, selection.CutoverDone, id)
+		require.NoError(t, err)
+	}
+	_, err = h.records().Admit(ctx, id, holdrecord.Request{Command: "streams census"}, nil)
+	require.NoError(t, err)
+	require.NoError(t, h.records().AppendDone(ctx, id, "streams census", nil))
+
+	code, _, stderr := h.run(actionStatus, "--dispatch-database-file", "dispatch.url", "--daemon-database", "PROJ=proj.url")
+	require.Equal(t, 1, code, "control: status under a held row")
+	require.Contains(t, stderr, "status runs while the hold row is released, and it is held")
+	require.NoError(t, h.release(id))
+
+	code, _, stderr = h.run(actionStatus, "--dispatch-database-file", "dispatch.url", "--daemon-database", "MISS=miss.url")
+	require.Equal(t, 2, code, "control: a daemon the cutover rows name with no store flag")
+	require.Contains(t, stderr, "UNKNOWN")
+	require.Contains(t, stderr, "daemon/PROJ's store: no --daemon-database PROJ=<file> names it")
+
+	code, stdout, stderr := h.run(actionStatus, "--hold", id, "--dispatch-database-file", "dispatch.url",
+		"--daemon-database", "PROJ=proj.url", "--daemon-database", "MISS=miss.url")
+	require.Equal(t, 0, code, "%s", stderr)
+	for _, line := range []string{
+		"hold " + id + ": workflow streams-census",
+		"  4. streams census done\n",
+		"  6. hold release done\n",
+		"cutover session: done (hold " + id,
+		"cutover daemon/PROJ: done (hold " + id,
+		"store session (KV_" + selection.SessionBucket + "): cutover=done boundary=1",
+		"record session ses_a: current session~A (on the stream), start 3, retired [session~R (on the stream), session~Q (absent)]",
+		"record session durable.listener-hub: current listener-hub~L (on the stream), start 6",
+		"record session ses_gone: deleted",
+		"store dispatch (intake_consumers): no sentinel",
+		"record dispatch delivery-events: current delivery-events~D (on the stream), start 7",
+		"store daemon/PROJ (intake_consumers): cutover=done",
+		"record daemon/PROJ legion-go-PROJ-wake: current legion-go-PROJ-wake~W (absent), start 8, retired [legion-go-PROJ-wake~V (absent)]",
+		"store daemon/MISS: missing",
+		"BLOCKER session ses_b: its current session~B is not on " + notifications,
+		"BLOCKER session ses_c: an open replace (candidate session~N, old session~C, owner o1",
+		"BLOCKER session ses_gone: its record's last write is a delete marker",
+		"BLOCKER session: the fixed name s-ses_fixed is on " + notifications,
+		"BLOCKER dispatch: its store has no sentinel",
+		"BLOCKER daemon/PROJ legion-go-PROJ-wake: its current legion-go-PROJ-wake~W is not on " + notifications,
+		"BLOCKER daemon/MISS: its store is missing",
+		"blockers: 7",
+	} {
+		require.Contains(t, stdout, line)
+	}
+	require.NotContains(t, stdout, "hold.barrier", "status read the barrier key as a record")
+	require.NotContains(t, stdout, "BLOCKER session ses_a")
+}

@@ -3292,8 +3292,11 @@ envoy-infra streams census --nats-url <urls> --token-file <file> --broker-url <u
   and a consumer that matches no declared shape by its whole configuration, and puts a declared
   stream's source, mirror, republish or subject transform back to the build's configuration. A
   sealed stream, or one that allows per-message TTLs or message schedules, stops it. A listing it
-  cannot complete is `UNKNOWN`. This build reads no session consumer records, so a census run from
-  the command line is `UNKNOWN`; the writer hold's workflow runs it with its own reader.
+  cannot complete is `UNKNOWN`. After its barrier on `KV_envoy_session_consumers` it reads every
+  name the selection records hold (`consumernames.RecordedSessionConsumers`): each session's
+  consumers, kept when their filters hold the session's agent subject, and each listener's fresh
+  durable, kept by its exact name, so a `listener-<machine id>~<nuid>` no record names is removed.
+  A deleted record, or a walk of the bucket that does not end, is `UNKNOWN`.
 
 The operator's words read the hold row through the broker's `/v1/nats-hold` routes first, verified
 with `--hold-verify-keys` (entries as `BROKER_NATS_HOLD_SIGNING_KEYS` writes them), and refuse any
