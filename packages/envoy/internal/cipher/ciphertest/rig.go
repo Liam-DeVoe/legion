@@ -213,8 +213,9 @@ func WithMinters(minters map[string]requests.Minter) Option {
 }
 
 // WithProjectAccess wires the rig's broker to Dispatch at baseURL as cmd/cipherd wires one whose
-// BROKER_PROJECT_ACCESS_URL is set: the token exchange's Dispatch client, and the hold gate built
-// on that client and the rig's store, given to every field of the broker that takes it. now is the
+// BROKER_PROJECT_ACCESS_URL is set: one Dispatch client, which the token exchange, the enrollment,
+// the request machine and the policy loader's project checks read, and the hold gate built on that
+// client and the rig's store, given to every field of the broker that takes it. now is the
 // clock the client's 30-second cache of an answer (projectaccess.CacheTTL) and the gate's memories
 // are timed by, so a test can move it past an answer it would otherwise wait out; nil is the
 // wall clock, as main runs.
@@ -297,8 +298,12 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	local := secrets.NewLocal(fixtures...)
 	// The policy's metrics as main wires them: the store-read counter before the first load,
 	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
+	// The loader serves a secret tagged with a project only where the broker can ask Dispatch
+	// whether that project is private, as main's does (policy.Loader.ProjectChecks).
 	registry := metrics.New()
-	cur := policytest.MeteredCurrent(t, local, registry)
+	loader := policytest.Loader(local)
+	loader.ProjectChecks = config.projectAccess != nil
+	cur := policytest.Metered(t, loader, registry)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -339,6 +344,11 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
+	// The enrollment asks Dispatch whether a person may see each project their session names, on
+	// the one client main gives every consumer (enroll.Service.Projects); none without it.
+	if config.projectAccess != nil {
+		enr.Projects = config.projectAccess
+	}
 	// A session name is held here as the real broker holds one with no account paired
 	// (oauthstore.Store.SetSessionPairs never called, BROKER_SESSION_ACCOUNT_PAIRS unset), so it
 	// belongs to one principal: the binder is a store on the same pool the OAuth provider's own
@@ -365,6 +375,13 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		enr.VMServicesByAccount, reqMachine.VMServicesByAccount = vmServices, vmServices
 	}
 	entries := newExchangeSet(t, google, machineAccount)
+	// The request machine reads a credential's project from the same entries the exchange mints
+	// from, and asks Dispatch about projects on the one client, as main gives it both
+	// (requests.Machine.Exchange and Projects).
+	reqMachine.Exchange = entries
+	if config.projectAccess != nil {
+		reqMachine.Projects = config.projectAccess
+	}
 	providerOptions := []ProviderOption{func(c *providerConfig) { c.exchange = entries }}
 	// The hold gate, as main builds it where BROKER_PROJECT_ACCESS_URL is set: on the exchange's
 	// own Dispatch client, this rig's store and its registry, with the deadline rule where
