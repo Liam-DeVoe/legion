@@ -283,10 +283,10 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //
 //   - one read of the history, its parts side by side: every population pull request, and every
 //     deploy run on main of each repository rewritten with its jobs of the names either rule
-//     judges by and either settings' cards follow (delivery.ReadHistoryRows), the walk's first
-//     input day (deliveryInputStart, over every kept repository), each project's first days
-//     (firstDays), repo_projects and the running build's record of its walks (readWalks); then
-//     the projects of the issues the pull requests name;
+//     judges by and each card the change moves follows under either settings
+//     (delivery.ReadHistoryRows), the walk's first input day (deliveryInputStart, over every kept
+//     repository), each project's first days (firstDays), repo_projects and the running build's
+//     record of its walks (readWalks); then the projects of the issues the pull requests name;
 //   - containment once over each repository's history as the deploy repository (historyOf): the
 //     new production rule's verdict on each run (ProductionApplies, which judges a run by its own
 //     jobs alone, and by its jobs of the judged names as by every job), each pull request's first
@@ -346,14 +346,30 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		}
 	}
 	names, every := deployRepoNames(rewritten), deployRepoNames(kept)
-	// One read of the runs serves both rules and both settings' cards. ProductionApplies picks a
-	// run's production job among its jobs of the rule's own names alone (Production.Job) and judges
-	// that job alone (Production.Conclusion): the jobs of other names it is given reach only its
-	// unmatched runs, which no day row reads. DeployJobsDay counts each card by its jobs of the
-	// names it follows alone. So each rule's verdict on a run read with the jobs of all these
-	// names, and each card's part of a day, is the one a read of its own names gives.
+	// One read of the runs serves both rules and the cards the change moves, under both settings.
+	// ProductionApplies picks a run's production job among its jobs of the rule's own names alone
+	// (Production.Job) and judges that job alone (Production.Conclusion): the jobs of other names it
+	// is given reach only its unmatched runs, which no day row reads. DeployJobsDay counts each card
+	// by its jobs of the names it follows alone. So each rule's verdict on a run read with the jobs
+	// of all these names, and each moved card's part of a day (dayOf, movedDeliveryDays), is the one
+	// a read of its own names gives.
+	//
+	// A name that only cards the change leaves follow is not read, and the rewrite keeps what a read
+	// of it would build. Of the cards' rows it keeps the moved cards' alone (slugs), and it keeps no
+	// card's members: they are the day's push runs, every push run on main whatever its jobs. A
+	// card's jobs move only the values of its own rows, never which rows a day holds, since
+	// DeployJobsDay gives every card a part of each day with a push run; so each project's day holds
+	// the rows the walk's does, which the first days noteBuilt moves, the days written and their
+	// zero rows read. The production rule's names, unlike those, are read whatever slugs names (the
+	// two rules name one set where it did not move): its verdicts decide which projects a deploy
+	// counts for (attribution.deploy) and which lead times a day keeps (dropUnshipped), and so which
+	// rows each project's day holds.
+	movedCards := cardsOf(slugs)
+	followed := slices.DeleteFunc(slices.Concat(prevCards, cards), func(card measures.DeployJobCard) bool {
+		return !slices.Contains(movedCards, card.CardID)
+	})
 	judged := slices.Compact(slices.Sorted(slices.Values(slices.Concat(prevProduction.JudgedJobNames(), production.JudgedJobNames(),
-		measures.DeployCardJobNames(prevCards), measures.DeployCardJobNames(cards)))))
+		measures.DeployCardJobNames(followed)))))
 
 	var history delivery.HistoryRows
 	var input *time.Time
@@ -619,12 +635,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 // of the settings are what its rows were built from.
 func movedDeliveryDays(histories []repoHistory, was []containment, prs []delivery.DeliveryPullRequest, attribute attribution,
 	before, after []measures.DeployJobCard, slugs, projects []string, firsts map[string]map[evalKey]time.Time, start, today time.Time) []time.Time {
-	var cards []measures.DeployJobCardID
-	for _, slug := range slugs {
-		if card, ok := CardOf(slug); ok {
-			cards = append(cards, card)
-		}
-	}
+	cards := cardsOf(slugs)
 	moved := map[time.Time]bool{}
 	for k, h := range histories {
 		var span daySpan
@@ -702,6 +713,17 @@ func movedDeliveryDays(histories []repoHistory, was []containment, prs []deliver
 		}
 	}
 	return slices.SortedFunc(maps.Keys(moved), time.Time.Compare)
+}
+
+// cardsOf is the deploy card each eval of slugs that times one times (CardOf), in slugs' order.
+func cardsOf(slugs []string) []measures.DeployJobCardID {
+	var cards []measures.DeployJobCardID
+	for _, slug := range slugs {
+		if card, ok := CardOf(slug); ok {
+			cards = append(cards, card)
+		}
+	}
+	return cards
 }
 
 // containment is a production rule's verdict on one repository's history as the deploy

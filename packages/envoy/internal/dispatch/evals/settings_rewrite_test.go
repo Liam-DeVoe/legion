@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"math/rand/v2"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The checks of the refresher's answer to a change of the delivery settings (settings_rewrite.go):
@@ -514,6 +517,119 @@ func TestAProductionRuleChangeSendsOnlyTheMembersItMoves(t *testing.T) {
 	}
 	t.Logf("the apply step moved %d, deleted %d and left %d of %d members standing; the rewrite sent the moved and the deleted alone",
 		len(moved), len(gone), standing, len(before))
+}
+
+// historyJobReads is a tracer (storetest.Traced) that records each read of the history's jobs on
+// the pool it traces: delivery.ReadHistoryRows' read of a repository's jobs, the one statement of
+// delivery_run_jobs that names the deploy runs on main by a subquery, with the job names it asks
+// for and the rows it answers.
+type historyJobReads struct {
+	mu    sync.Mutex
+	reads []historyJobRead
+}
+
+// historyJobRead is one read historyJobReads records.
+type historyJobRead struct {
+	names []string
+	rows  int64
+}
+
+// historyJobReadAt marks the context of a recorded read with its index among the reads.
+type historyJobReadAt struct{}
+
+func (h *historyJobReads) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if !strings.Contains(data.SQL, "from delivery_run_jobs") || !strings.Contains(data.SQL, "head_branch = 'main'") || len(data.Args) < 2 {
+		return ctx
+	}
+	names, ok := data.Args[1].([]string)
+	if !ok {
+		return ctx
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.reads = append(h.reads, historyJobRead{names: slices.Clone(names)})
+	return context.WithValue(ctx, historyJobReadAt{}, len(h.reads)-1)
+}
+
+func (h *historyJobReads) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if index, ok := ctx.Value(historyJobReadAt{}).(int); ok {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.reads[index].rows = data.CommandTag.RowsAffected()
+	}
+}
+
+// take answers the reads recorded since the last take, each of them ended, and forgets them.
+func (h *historyJobReads) take() []historyJobRead {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	taken := h.reads
+	h.reads = nil
+	return taken
+}
+
+// TestASettingsChangeReadsTheJobsOfTheCardsItMovesAlone: over a settled history, the pass after
+// each change reads the history's jobs (historyJobReads, on the registry's pool) of the production
+// rule's names and of the cards the change moves (settingsMoves) alone. The apply step named moves
+// the production rule and its card, and the read asks for no name a staging card follows, so it
+// answers no staging card's job. The staging gate renamed moves the gate alone, and the read asks
+// for its old and new names and the production rule's, whose verdicts decide which projects each
+// deploy counts for and so which rows each project's day holds, and not the staging deploy's.
+// Each read is logged with the rows it answered beside those a read of both rules' names and of
+// every card's under both settings answers.
+func TestASettingsChangeReadsTheJobsOfTheCardsItMovesAlone(t *testing.T) {
+	r, deliveries := newSettingsRig(t, walkBatch)
+	reads := &historyJobReads{}
+	r.registry = New(storetest.TracedStore(t, r.database, reads), r.documents, r.registry.events)
+	original := deliveries.Settings
+	gate, deploy := *original.StagingE2EJobName, *original.StagingApplyJobName
+	const renamed = "staging-e2e / run-v2"
+	settings := original
+	for _, change := range []struct {
+		name   string
+		change func(*delivery.DeliverySettings)
+		// moves is the evals the change moves; asked the names the read asks for, and left those
+		// of the cards it leaves, which it does not.
+		moves, asked, left []string
+	}{
+		{"the apply step named", func(s *delivery.DeliverySettings) { s.ProductionApplyStepName = new(settingsApplyStep) },
+			slices.Concat(leadTimeSlugs, []string{SlugDeployFrequency, SlugDeployRunSuccess, SlugProductionDeploy}),
+			original.ProductionJobNames, []string{gate, deploy}},
+		{"the staging gate renamed", func(s *delivery.DeliverySettings) { s.StagingE2EJobName = new(renamed) },
+			[]string{SlugStagingE2E}, slices.Concat(original.ProductionJobNames, []string{gate, renamed}), []string{deploy}},
+	} {
+		prev := settings
+		change.change(&settings)
+		if slugs, _ := settingsMoves(prev, settings); !slices.Equal(slugs, slices.Sorted(slices.Values(change.moves))) {
+			t.Fatalf("%s moves %v, and the check needs %v", change.name, slugs, slices.Sorted(slices.Values(change.moves)))
+		}
+		r.putSettings(t, settings, alice)
+		r.pass(t)
+		taken := reads.take()
+		if len(taken) != 1 {
+			t.Fatalf("%s: the pass read the history's jobs %d times, want once, of %s, the one repository that holds deploy runs", change.name, len(taken), deliveries.DeployRepo)
+		}
+		read := taken[0]
+		for _, name := range change.asked {
+			if !slices.Contains(read.names, name) {
+				t.Errorf("%s: the read of the history's jobs asks for %q, and not %q", change.name, read.names, name)
+			}
+		}
+		for _, name := range change.left {
+			if slices.Contains(read.names, name) {
+				t.Errorf("%s: the read of the history's jobs asks for %q, among them %q, which only a card the change leaves follows (it answered %d rows)",
+					change.name, read.names, name, read.rows)
+			}
+		}
+		every := slices.Concat(prev.Production().JudgedJobNames(), settings.Production().JudgedJobNames(),
+			measures.DeployCardJobNames(measures.DeployCards(prev)), measures.DeployCardJobNames(measures.DeployCards(settings)))
+		all := r.count(t, `
+			select count(*) from delivery_run_jobs
+			where repo = $1 and name = any($2) and run_id in (select run_id from delivery_runs where repo = $1 and kind = 'deploy' and head_branch = 'main')
+		`, deliveries.DeployRepo, every)
+		t.Logf("%s: the read of the history's jobs asked for %q and answered %d rows; one of both rules' names and every card's answers %d",
+			change.name, read.names, read.rows, all)
+	}
 }
 
 // copyRuns writes, as runs of to, every run of from of kind with its jobs: the same ids, times,
