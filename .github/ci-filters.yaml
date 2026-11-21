@@ -1404,6 +1404,7 @@ dispatch_ui:
   - 'scripts/e2e/lib/loopback-dsn.py'
   - 'scripts/e2e/lib/loopback-dsn.sh'
   - 'scripts/e2e/lib/port-file.sh'
+  - 'scripts/e2e/lib/process-tree.sh'
   - 'scripts/e2e/lib/rig.sh'
   - 'scripts/e2e/lib/two-builds.sh'
   # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
