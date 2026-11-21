@@ -165,6 +165,7 @@ export function renderProofDocument({
   highlightTerm,
   isClosed = false,
   onAskAnswered,
+  onNoEditor,
   onUnavailable,
   queryClient = createQueryClient(),
   showDiff = false,
@@ -176,6 +177,7 @@ export function renderProofDocument({
   highlightTerm?: string;
   isClosed?: boolean;
   onAskAnswered?(askId: string): void;
+  onNoEditor?(): void;
   onUnavailable?(reason: string): void;
   queryClient?: QueryClient;
   showDiff?: boolean;
@@ -235,6 +237,7 @@ export function renderProofDocument({
               highlightTerm={next.highlightTerm ?? highlightTerm}
               isClosed={next.isClosed ?? isClosed}
               onAskAnswered={onAskAnswered}
+              onNoEditor={onNoEditor}
               onToolbarChange={onToolbarChange}
               onUnavailable={onUnavailable}
               owner={{ key: "CORE-1", kind: "issue" }}

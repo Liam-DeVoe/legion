@@ -494,6 +494,11 @@ export interface ProofEditorConstruction {
    *  which runs after the view's. A caller that must know the view is gone before it draws
    *  again awaits it; one that is only letting go need not. */
   destroy(): Promise<void>;
+  /** The editor's view, standing before the binding: a host that holds the editor's own edits
+   *  puts its plugin on it here, so that plugin stands from the first batch the binding builds,
+   *  and the binding keeps it through its adoption (`bind`). The handle's `view` is this same
+   *  view. */
+  readonly view: EditorView;
 }
 
 /**
@@ -878,6 +883,13 @@ async function theConstruction(
         // and Milkdown's `YSyncOpts`, written before y-prosemirror had it, does not name it;
         // CollabService passes the whole object through to the plugin (`#createPlugins`).
         adopt: (mapping) => {
+          // Milkdown's collab service draws the view's plugins from `prosePluginsCtx` as it
+          // connects, and a plugin a host put on the view itself - a row of an issue's outline
+          // holds every edit to its own block by one (`view` above) - is not in it: it went with
+          // the adoption, and the editor took edits that plugin refuses from then on.
+          const held = editor.ctx.get(prosePluginsCtx);
+          const hosts = view.state.plugins.filter((plugin) => !held.includes(plugin));
+          if (hosts.length > 0) editor.ctx.set(prosePluginsCtx, [...held, ...hosts]);
           collabService.mergeOptions({ ySyncOpts: { mapping } as unknown as YSyncOpts });
           collabService.connect();
         },
@@ -921,6 +933,7 @@ async function theConstruction(
     bind,
     destroy: () => handle.destroy(),
     setAccess: applyAccess,
+    view,
   };
 }
 

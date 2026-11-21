@@ -268,6 +268,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       },
       destroy: () => handle.destroy(),
       setAccess: (access: FakeEditor["access"]) => handle.setAccess(access),
+      view: handle.view,
     };
   };
 

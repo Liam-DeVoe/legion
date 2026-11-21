@@ -12,7 +12,7 @@
 // the build lasts.
 import { describe, expect, test } from "bun:test";
 import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
-import { TextSelection } from "@milkdown/kit/prose/state";
+import { Plugin, TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import type { Window as HappyWindow } from "happy-dom";
 import { prosemirrorToYXmlFragment } from "y-prosemirror";
@@ -498,6 +498,28 @@ describe("an editor constructed before its document arrives", () => {
         expect(blocksBuilt(root)).toBe(8);
       } finally {
         const { view } = handle;
+        handle.destroy();
+        while (!view.isDestroyed) await Promise.resolve();
+      }
+    });
+  });
+
+  // A host that holds the editor's own edits - a row of an issue's outline, in Dispatch - puts
+  // its plugin on the construction's view before the binding, so the plugin stands from the
+  // first batch. Milkdown's collab service draws the view's plugins from its own context as the
+  // binding connects, which dropped the host's: the editor took the edits it refuses from then.
+  test("keeps a plugin its host put on the view before the binding, through the adoption", async () => {
+    await withDomWindow(async (window) => {
+      const { construction, view } = await construct(window, paragraphs(BLOCKS));
+      expect(construction.view).toBe(view);
+      const host = new Plugin({ filterTransaction: () => true });
+      view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, host] }));
+
+      const handle = await construction.bind();
+      try {
+        expect(handle.view).toBe(view);
+        expect(handle.view.state.plugins).toContain(host);
+      } finally {
         handle.destroy();
         while (!view.isDestroyed) await Promise.resolve();
       }

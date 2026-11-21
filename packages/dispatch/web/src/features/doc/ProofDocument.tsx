@@ -222,6 +222,23 @@ export interface ProofDocumentProps {
   /** Called beside the document's own refresh once the server has recorded an answer written in
    *  one of its decision blocks, so a host that selected the question learns it was answered. */
   onAskAnswered?(askId: string): void;
+  /** Called with the editor as the document constructs it, before its binding builds a block
+   *  into it: a host that holds the editor's own edits - a row of an issue's outline holds every
+   *  edit of it to the row's own block (`issue-page/node-caret.ts`) - puts its hold on the view
+   *  here, so the hold stands from the first block the build draws, and the binding keeps it
+   *  (`@legion/proof-editor`'s `ProofEditorConstruction.view`). The handle `onEditorHandle` is
+   *  given later holds this same view; the build draws the document's blocks a batch a task
+   *  before that (`features/doc/editor.ts`'s `constructEditor`). A construction torn down
+   *  before it was bound is told as a handle is, with `onEditorHandle(undefined)`. */
+  onEditorConstructed?(editor: Pick<EditorConstruction, "view">): void;
+  /** Called with this document's live editor as the document makes it, in the task the
+   *  editor's binding answers in, which has built the whole document into it by then, and with
+   *  `undefined` as it tears that editor down, or a construction it handed over
+   *  (`onEditorConstructed`). */
+  onEditorHandle?(handle: EditorHandle | undefined): void;
+  /** Called where no editor is coming: it could not be made or built (`reportLoadFailure`), which
+   *  the document says in its place. A host waiting on `onEditorHandle` stops waiting here. */
+  onNoEditor?(): void;
   onToolbarChange?(toolbar: DocumentToolbar | undefined): void;
   /** Called in `pane` only, with the server's reason, when the document cannot be opened: a tree
    *  outside the Proof schema, a history that cannot load, or any other failed admission. The
@@ -298,6 +315,9 @@ interface EditorRun {
   /** Whether the sync has started binding that construction: from then on the editor it
    *  answers is torn down by the chain that asked for it, as it always was. */
   binding: boolean;
+  /** Whether the host was handed that construction (`onEditorConstructed`), so the teardown
+   *  tells it the editor is gone even where no binding answered a handle. */
+  handedConstruction: boolean;
   disposeEditorBindings: (() => void) | undefined;
   /** Sockets the server refused in a row, since this editor last synced or a repair
    *  re-admitted it. */
@@ -334,6 +354,14 @@ interface Admission {
   /** `margin-context.tsx` exports the hook and not the type of its value, so the type is read
    *  off the hook rather than written out a second time here. */
   readonly marginRef: RefObject<ReturnType<typeof useMargin>>;
+  /** The host's hold on the editor's own edits (`ProofDocumentProps.onEditorConstructed`), told
+   *  the editor as it is constructed, and read through a ref as the one below is. */
+  readonly onEditorConstructedRef: RefObject<
+    ((editor: Pick<EditorConstruction, "view">) => void) | undefined
+  >;
+  /** The host's hold on the editor (`ProofDocumentProps.onEditorHandle`), told the editor as it is
+   *  made, and read through a ref so a host that re-renders reopens nothing. */
+  readonly onEditorHandleRef: RefObject<((handle: EditorHandle | undefined) => void) | undefined>;
   readonly page: boolean;
   /** The element the editor is built into: this surface's own root. */
   readonly parent: HTMLElement;
@@ -549,6 +577,7 @@ function admitTheDocument(admission: Admission): void {
                 admission.setEditorDrawn(true);
               });
               admission.setEditorHandle(handle);
+              admission.onEditorHandleRef.current?.(handle);
               // Put them back now, and again once the page's diagrams have drawn and it has
               // settled, exactly as a block link's focus is (`focusInEditor`): a diagram
               // drawn above them, and a block painting at its own height in place of the one
@@ -697,6 +726,16 @@ function admitTheDocument(admission: Admission): void {
           documentRef: admission.documentRef,
           ydoc: connection.doc,
         })
+        .then((construction) => {
+          // The host's hold on the editor's own edits goes on before the binding draws a block,
+          // for this run's connection alone: a construction a refusal or an unmount has left
+          // behind belongs to nothing, and its teardown is the sync's (`teardown`).
+          if (run.mounted && run.document === connection) {
+            run.handedConstruction = true;
+            admission.onEditorConstructedRef.current?.(construction);
+          }
+          return construction;
+        })
         .catch((error: unknown) => {
           // A chunk that never arrived, or an editor that threw as it was built: the reader
           // is told now rather than at a sync that would bind nothing.
@@ -715,6 +754,9 @@ export function ProofDocument({
   isClosed,
   owner,
   onAskAnswered,
+  onEditorConstructed,
+  onEditorHandle,
+  onNoEditor,
   onToolbarChange,
   onUnavailable,
   onVersionChange,
@@ -752,6 +794,14 @@ export function ProofDocument({
   const activeMarkId = anchoredThread?.markId ?? undefined;
   const activeMarkIdRef = useRef(activeMarkId);
   activeMarkIdRef.current = activeMarkId;
+  // The host's holds on the editor, and its word that none is coming, read through refs like the
+  // mark above, so a host that re-renders reopens nothing.
+  const onEditorConstructedRef = useRef(onEditorConstructed);
+  onEditorConstructedRef.current = onEditorConstructed;
+  const onEditorHandleRef = useRef(onEditorHandle);
+  onEditorHandleRef.current = onEditorHandle;
+  const onNoEditorRef = useRef(onNoEditor);
+  onNoEditorRef.current = onNoEditor;
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pending, setPending] = useState<PendingState | undefined>(undefined);
   // Whoever waits for this browser's edits of this document to reach the server
@@ -1257,6 +1307,7 @@ export function ProofDocument({
       document: undefined,
       editor: undefined,
       failed: false,
+      handedConstruction: false,
       mounted: true,
       newerReads: 0,
       refusals: 0,
@@ -1286,6 +1337,8 @@ export function ProofDocument({
       setEditorBuilding(false);
       hold.release();
       setLoadError(error instanceof Error ? error.message : String(error));
+      // A host waiting for the editor - a row of an issue's outline - stops waiting for it.
+      onNoEditorRef.current?.();
     };
     const teardown = () => {
       run.disposeEditorBindings?.();
@@ -1314,6 +1367,10 @@ export function ProofDocument({
       setEditorDrawn(false);
       setEditorBuilding(false);
       setEditorHandle((current) => (current === run.editor ? undefined : current));
+      if (run.editor !== undefined || run.handedConstruction) {
+        onEditorHandleRef.current?.(undefined);
+      }
+      run.handedConstruction = false;
       run.disposeEditorBindings = undefined;
       run.editor = undefined;
       run.document = undefined;
@@ -1437,6 +1494,8 @@ export function ProofDocument({
       isClosedRef,
       loadTransport,
       marginRef,
+      onEditorConstructedRef,
+      onEditorHandleRef,
       page,
       parent,
       pendingWaiter,
@@ -1722,6 +1781,7 @@ export function ProofDocument({
                   <button
                     aria-label={`${count} references on block`}
                     className={`pointer-events-auto absolute right-0 min-h-11 min-w-11 rounded-full text-xs font-semibold ${countChip}`}
+                    data-block-references={block.id}
                     key={block.id}
                     onClick={() => {
                       marginRef.current.filterToBlock(block.id);

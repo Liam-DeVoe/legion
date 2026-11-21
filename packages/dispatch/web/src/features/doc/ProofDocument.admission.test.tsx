@@ -20,6 +20,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { ArtifactText } from "../../api/types";
 import { stoppedWriteNote } from "../writes/keyed-write";
+import type { ConstructEditor } from "./editor";
 import { deletePendingEdits, openPendingEdits } from "./pending-edits";
 import { compiledSchemaCreatable } from "./schema";
 
@@ -573,6 +574,40 @@ test("an editor that fails to load is reported instead of connecting forever, be
     act(() => status("connected"));
     expect(toolbar.current?.connection).toBe("failed");
     expect(within(view.container).getByRole("alert")).toHaveTextContent("editor chunk missing");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A host that acts on the editor's view - a row of an issue's outline - waits for the editor,
+// which the document hands over only once its binding has built the whole document into it: a
+// binding that throws leaves that host waiting for an editor that is not coming, so the document
+// tells it so (`onNoEditor`), as it tells the reader.
+test("an editor whose binding fails tells its host that no editor is coming", async () => {
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const rejection = Promise.reject(new Error("the build threw"));
+  rejection.catch(() => undefined); // avoid an unhandled-rejection warning before the binding reads it
+  const constructEditor: ConstructEditor = async (root, options) => ({
+    ...(await fake.runtime.constructEditor(root, options)),
+    bind: () => rejection,
+  });
+  let told = 0;
+  const { sync, view } = renderProofDocument({
+    fake: { ...fake, runtime: { ...fake.runtime, constructEditor } },
+    onNoEditor: () => {
+      told += 1;
+    },
+  });
+
+  try {
+    await waitFor(() => expect(fake.constructions).toHaveLength(1));
+    expect(told, "the host was told no editor is coming while one was being built").toBe(0);
+    await sync();
+    await flushLoadFailure(rejection);
+    expect(within(view.container).getByRole("alert").textContent).toBe(
+      "This document could not load: the build threw"
+    );
+    expect(told, "the host was not told once that no editor is coming").toBe(1);
   } finally {
     view.unmount();
   }
