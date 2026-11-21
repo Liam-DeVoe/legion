@@ -94,6 +94,9 @@ func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *test
 		key    = "T-1"
 	)
 	lane := newKeptLaneUnderClaim(t, harness, func(int, string, contracts.Envelope) error { return nil })
+	// The outbox keeps a free-form role's copy on the lane of its claim key under TT, the event's
+	// project, and the role's next holder there is the one a claim of it under TT names.
+	laneKey := contracts.RoleClaimKey("TT", role)
 	database := migratedDispatchDatabase(t)
 	broker := events.NewBroker()
 	outboxRoleIssue(t, database, key, role)
@@ -109,14 +112,14 @@ func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *test
 	waitFor(t, 30*time.Second, "Dispatch's outbox to publish the comment of an unheld role", func() bool {
 		return publishedEventAt(t, database, event.ID) != nil
 	})
-	kept := waitForKeptRoleMessage(t, harness.client, role, fmt.Sprintf("dispatch-%d", event.ID))
-	if kept.Topic != contracts.RoleTopicPrefix+role {
+	kept := waitForKeptRoleMessage(t, harness.client, laneKey, fmt.Sprintf("dispatch-%d", event.ID))
+	if kept.Topic != contracts.RoleSubject("TT", role) {
 		t.Fatalf("the kept copy's topic is %q, want the role topic Dispatch published it on", kept.Topic)
 	}
 
 	// The second mentioned session, not the first, is the one that claims the role.
 	lane.register(t, second)
-	lane.claim(t, second, role)
+	lane.claim(t, second, laneKey)
 	handed := lane.await(t, 1, 30*time.Second)
 
 	if handed[0].holder != second {

@@ -569,16 +569,22 @@ func newTestSession(t *testing.T, rig *sessionRig, id string, subjects ...string
 	return s
 }
 
-// connect opens a connection with the session's subscriptions and makes it the session's.
+// connect opens a connection with the session's subscriptions and makes it the session's. Each
+// subject is subscribed in every form a reader takes it in (contracts.TopicForms), as a session's
+// consumer filters on each form of its topics: the outbox sends an issue's events and a session's
+// copies on the subjects that name their project, which a subject named in the old form does not
+// match.
 func (s *testSession) connect() error {
 	conn, err := natsgo.Connect(s.natsURL, natsgo.Timeout(time.Second))
 	if err != nil {
 		return err
 	}
 	for _, subject := range s.subjects {
-		if _, err := conn.Subscribe(subject, s.receive); err != nil {
-			conn.Close()
-			return fmt.Errorf("subscribe to %s: %w", subject, err)
+		for _, form := range contracts.TopicForms(subject) {
+			if _, err := conn.Subscribe(form, s.receive); err != nil {
+				conn.Close()
+				return fmt.Errorf("subscribe to %s: %w", form, err)
+			}
 		}
 	}
 	if err := conn.Flush(); err != nil {
@@ -734,28 +740,32 @@ func TestTheOutboxPublishesEachEventOnceAcrossBothProcesses(t *testing.T) {
 	// This row counts only what it publishes itself: readStreamMessagesFrom starts past this head.
 	head := streamHead(t, js)
 
+	// The holder and the role's topic are subscribed in every form a reader takes them in
+	// (contracts.TopicForms): the outbox forwards on the holder's agent subject under the issue's
+	// project, and the check that nothing crosses the role's topic must see that topic in either.
+	subscribeForms := func(subject string, handle natsgo.MsgHandler) {
+		for _, form := range contracts.TopicForms(subject) {
+			sub, err := conn.Subscribe(form, handle)
+			if err != nil {
+				t.Fatalf("subscribe to %s: %v", form, err)
+			}
+			t.Cleanup(func() { _ = sub.Unsubscribe() })
+		}
+	}
 	forwards := make(chan contracts.Envelope, 256)
-	holderSub, err := conn.Subscribe(contracts.LegacyAgentSubject(outboxRoleHolder), func(msg *natsgo.Msg) {
+	subscribeForms(contracts.LegacyAgentSubject(outboxRoleHolder), func(msg *natsgo.Msg) {
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err == nil && strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
 			forwards <- item
 		}
 	})
-	if err != nil {
-		t.Fatalf("subscribe the role's holder: %v", err)
-	}
-	t.Cleanup(func() { _ = holderSub.Unsubscribe() })
 	lane := make(chan contracts.Envelope, 256)
-	laneSub, err := conn.Subscribe(contracts.RoleTopicPrefix+outboxRoleLane, func(msg *natsgo.Msg) {
+	subscribeForms(contracts.RoleTopicPrefix+outboxRoleLane, func(msg *natsgo.Msg) {
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err == nil {
 			lane <- item
 		}
 	})
-	if err != nil {
-		t.Fatalf("subscribe to the role's topic: %v", err)
-	}
-	t.Cleanup(func() { _ = laneSub.Unsubscribe() })
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
@@ -787,8 +797,8 @@ func TestTheOutboxPublishesEachEventOnceAcrossBothProcesses(t *testing.T) {
 	received := drainEnvelopes(t, forwards, 3*time.Second)
 	perEvent := map[string]int{}
 	for _, item := range received {
-		if item.Topic != contracts.RoleTopicPrefix+outboxRoleLane {
-			t.Errorf("the holder received a forward of event %s on topic %q, want the role's", item.SourceEventID, item.Topic)
+		if want := contracts.RoleSubject(project, outboxRoleLane); item.Topic != want {
+			t.Errorf("the holder received a forward of event %s on topic %q, want the role's under its issue's project, %q", item.SourceEventID, item.Topic, want)
 		}
 		perEvent[item.SourceEventID]++
 	}
@@ -2406,7 +2416,8 @@ func narrowAgentCapture(t *testing.T, js natsgo.JetStreamContext, holders ...str
 		return subject == contracts.AgentTopicPrefix+">"
 	})
 	for _, holder := range holders {
-		narrowed.Subjects = append(narrowed.Subjects, contracts.LegacyAgentSubject(holder))
+		// Both forms of the holder's subject: the outbox forwards under the event's project.
+		narrowed.Subjects = append(narrowed.Subjects, contracts.LegacyAgentSubject(holder), contracts.AgentTopicPrefix+"*."+holder)
 	}
 	update := func(config *natsgo.StreamConfig, what string) {
 		if _, err := js.UpdateStream(config); err != nil {
@@ -2437,7 +2448,9 @@ func storedCopiesOf(t *testing.T, js natsgo.JetStreamContext, head uint64, subje
 	t.Helper()
 	copies := 0
 	for _, message := range readStreamMessagesFrom(t, js, head) {
-		if message.subject == subject && message.item.EventID == event {
+		// The copy is stored on the subject in either form: the outbox's names its project.
+		twin, _ := contracts.LegacyTwin(message.subject)
+		if (message.subject == subject || twin == subject) && message.item.EventID == event {
 			copies++
 		}
 	}
@@ -7553,7 +7566,9 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 		subject := contracts.LegacyAgentSubject("never-known")
 		var held []string
 		for _, stored := range readStreamMessagesFrom(t, js, head) {
-			if stored.subject == subject {
+			// The queued copy is on the session's subject under the message's project, in
+			// whichever form that project gives (messageProject, queuedEnvelope).
+			if twin, _ := contracts.LegacyTwin(stored.subject); stored.subject == subject || twin == subject {
 				held = append(held, stored.item.EventID+" under "+stored.item.DedupeKey)
 			}
 		}

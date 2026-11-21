@@ -152,11 +152,11 @@ func TestAnOutboxStoppedMidBatchMarksTheAnsweredAndReleasesTheRest(t *testing.T)
 }
 
 // destinationFamily names the destination key a stream subject belongs to, as the outbox orders
-// sends on it: an issue's subjects are its topic family, and every other subject is its own.
+// sends on it: an issue's subjects are its topic family, in either form (contracts.IssueEventKey),
+// and every other subject is its own.
 func destinationFamily(subject string) string {
-	if rest, ok := strings.CutPrefix(subject, "notifications.dispatch.issue."); ok {
-		issue, _, _ := strings.Cut(rest, ".")
-		return "issue " + issue
+	if key, _, ok := contracts.IssueEventKey(subject); ok {
+		return "issue " + key
 	}
 	return subject
 }
@@ -419,7 +419,7 @@ func issueSubjectOrder(t *testing.T, url string) (map[string][]int, []int64) {
 		if err := json.Unmarshal([]byte(envelope.Payload), &event); err != nil {
 			t.Fatalf("decode the event on %s: %v", message.Subject, err)
 		}
-		if event.IssueKey == nil || !strings.HasPrefix(message.Subject, "notifications.dispatch.issue."+*event.IssueKey+".") {
+		if key, _, ok := contracts.IssueEventKey(message.Subject); event.IssueKey == nil || !ok || key != *event.IssueKey {
 			t.Fatalf("event %d of issue %v arrived on %s", event.ID, event.IssueKey, message.Subject)
 		}
 		seqs[*event.IssueKey] = append(seqs[*event.IssueKey], event.Seq)

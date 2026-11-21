@@ -83,11 +83,10 @@ func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
 		return err == nil
 	})
 	key, _ := process.createIssue(t)
-	issueTopic := "notifications.dispatch.issue." + key + "."
 	waitUntil(t, 30*time.Second, "the issue's event and the build's announcement on the stream", func() bool {
 		var issued, announced bool
 		for _, item := range readStreamFrom(t, js, 0) {
-			if strings.HasPrefix(item.Topic, issueTopic) {
+			if issue, _, ok := contracts.IssueEventKey(item.Topic); ok && issue == key {
 				issued = true
 			}
 			var payload startup.Payload

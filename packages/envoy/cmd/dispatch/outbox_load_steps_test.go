@@ -194,10 +194,12 @@ func (r *sessionRig) prepare(t *testing.T, writer *dispatchProcess, issues int) 
 		}
 		target.subs = append(target.subs, sub)
 	}
+	// The outbox sends each copy on its event's project's subject: the issue's topic family and
+	// the role holder's agent subject, each under project.
 	for _, key := range target.issues {
-		subscribe("notifications.dispatch.issue."+key+".>", loadTopic)
+		subscribe(contracts.DispatchIssueSubject(project, key, ">"), loadTopic)
 	}
-	subscribe(contracts.LegacyAgentSubject(holder), loadRole)
+	subscribe(contracts.AgentSubject(project, holder), loadRole)
 	t.Cleanup(target.unsubscribe)
 	if err := r.conn.Flush(); err != nil {
 		t.Fatalf("flush the test session's subscriptions: %v", err)

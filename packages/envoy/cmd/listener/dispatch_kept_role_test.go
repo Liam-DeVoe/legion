@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -92,7 +93,7 @@ func runOutbox(t *testing.T, harness listenerDeliveryHarness, database *dispatch
 // what one of the outbox's own publishes does (keptUnderAClaim).
 func runOutboxThrough(t *testing.T, harness listenerDeliveryHarness, database *dispatchstore.Store, broker *events.Broker, publisher outbox.Publisher) {
 	t.Helper()
-	holders := roles.NewBuckets(harness.client, roles.Windows{}, nil, roles.AllPublic)
+	holders := roles.NewBuckets(harness.client, roles.Windows{}, committedPrivacyOf(database), roles.AllPublic)
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {
@@ -110,6 +111,21 @@ func runOutboxThrough(t *testing.T, harness listenerDeliveryHarness, database *d
 			t.Error("Dispatch's outbox did not stop")
 		}
 	})
+}
+
+// committedPrivacyOf answers a project's privacy from database's projects rows, as cmd/dispatch's
+// reader of its own committed rows does: a project with no row is private. The outbox resolves a
+// role under its event's project, and a role of a public project with no claim of its own is
+// resolved under no project (roles.ResolveHolder), which reads this.
+func committedPrivacyOf(database *dispatchstore.Store) roles.ProjectPrivacy {
+	return func(ctx context.Context, project string) (bool, error) {
+		var private bool
+		err := database.Pool.QueryRow(ctx, `select visibility = 'private' from projects where key = $1`, project).Scan(&private)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return true, nil
+		}
+		return private, err
+	}
 }
 
 // publishedEventAt is when the outbox marked event published, and nil while it has not.
@@ -136,6 +152,9 @@ func TestAnEventDispatchRoutedToAnUnheldRoleReachesTheRolesNextHolder(t *testing
 		key    = "T-1"
 	)
 	lane := newKeptLaneUnderClaim(t, harness, func(int, string, contracts.Envelope) error { return nil })
+	// The outbox keeps a free-form role's copy on the lane of its claim key under the event's
+	// project, TT's, and the role's next holder there is the one a claim of it under TT names.
+	laneKey := contracts.RoleClaimKey("TT", role)
 	database := migratedDispatchDatabase(t)
 	broker := events.NewBroker()
 	event := outboxRoleEvent(t, database, broker, key, role)
@@ -144,13 +163,13 @@ func TestAnEventDispatchRoutedToAnUnheldRoleReachesTheRolesNextHolder(t *testing
 	waitFor(t, 30*time.Second, "Dispatch's outbox to publish the event of an unheld role", func() bool {
 		return publishedEventAt(t, database, event.ID) != nil
 	})
-	kept := waitForKeptRoleMessage(t, harness.client, role, fmt.Sprintf("dispatch-%d", event.ID))
-	if kept.Topic != contracts.RoleTopicPrefix+role {
+	kept := waitForKeptRoleMessage(t, harness.client, laneKey, fmt.Sprintf("dispatch-%d", event.ID))
+	if kept.Topic != contracts.RoleSubject("TT", role) {
 		t.Fatalf("the kept copy's topic is %q, want the role topic Dispatch published it on", kept.Topic)
 	}
 
 	lane.register(t, holder)
-	lane.claim(t, holder, role)
+	lane.claim(t, holder, laneKey)
 	handed := lane.await(t, 1, 30*time.Second)
 
 	if handed[0].holder != holder {
@@ -161,7 +180,7 @@ func TestAnEventDispatchRoutedToAnUnheldRoleReachesTheRolesNextHolder(t *testing
 	}
 	// The lane is walked again, for the same holder, so a copy handed over twice would show here:
 	// the cursor the first walk wrote is what keeps the handover to exactly one.
-	if err := drainKeptRole(context.Background(), *lane.deps.delivery, role, time.Now); err != nil {
+	if err := drainKeptRole(context.Background(), *lane.deps.delivery, laneKey, time.Now); err != nil {
 		t.Fatalf("walk role %s's kept lane again: %v", role, err)
 	}
 	if keys := lane.keys(); len(keys) != 1 {
@@ -252,6 +271,7 @@ func TestAKeptCopyOfAFailedMentionReachesThatSessionUnderTheMentionsKey(t *testi
 	)
 	roleTopic := contracts.RoleTopicPrefix + role
 	lane := newKeptLaneUnderClaim(t, harness, func(int, string, contracts.Envelope) error { return nil })
+	laneKey := contracts.RoleClaimKey("TT", role)
 	database := migratedDispatchDatabase(t)
 	broker := events.NewBroker()
 	outboxRoleIssue(t, database, key, role)
@@ -270,17 +290,17 @@ func TestAKeptCopyOfAFailedMentionReachesThatSessionUnderTheMentionsKey(t *testi
 	}
 	var kept contracts.Envelope
 	waitFor(t, 30*time.Second, "the fallback pass to keep the held copy for the role's next holder", func() bool {
-		item, ok := readKeptRoleMessage(t, harness.client, role)
+		item, ok := readKeptRoleMessage(t, harness.client, laneKey)
 		kept = item
 		return ok && item.DedupeKey == mentionKey
 	})
-	if kept.Topic != roleTopic || kept.EventID != fmt.Sprintf("dispatch-%d", event.ID) {
+	if kept.Topic != contracts.RoleSubject("TT", role) || kept.EventID != fmt.Sprintf("dispatch-%d", event.ID) {
 		t.Fatalf("the kept copy is event %q on topic %q, want the comment's event on the role topic Dispatch held it for",
 			kept.EventID, kept.Topic)
 	}
 
 	lane.register(t, holder)
-	lane.claim(t, holder, role)
+	lane.claim(t, holder, laneKey)
 	handed := lane.await(t, 1, 30*time.Second)
 
 	if handed[0].holder != holder {
@@ -336,17 +356,21 @@ func (w keptUnderAClaimWindow) PublishStoredAsync(subject string, item contracts
 func takenForwards(t *testing.T, harness listenerDeliveryHarness, sessionID string) <-chan contracts.Envelope {
 	t.Helper()
 	taken := make(chan contracts.Envelope, 16)
-	sub, err := harness.client.Conn.Subscribe(contracts.LegacyAgentSubject(sessionID), func(msg *natsgo.Msg) {
-		var item contracts.Envelope
-		if err := json.Unmarshal(msg.Data, &item); err != nil {
-			return
+	// Both forms of the session's subject: the outbox forwards under its event's project, the
+	// listener in the form its privacy mode writes (contracts.TopicForms).
+	for _, subject := range contracts.TopicForms(contracts.LegacyAgentSubject(sessionID)) {
+		sub, err := harness.client.Conn.Subscribe(subject, func(msg *natsgo.Msg) {
+			var item contracts.Envelope
+			if err := json.Unmarshal(msg.Data, &item); err != nil {
+				return
+			}
+			taken <- item
+		})
+		if err != nil {
+			t.Fatalf("subscribe to %s's agent subject %s: %v", sessionID, subject, err)
 		}
-		taken <- item
-	})
-	if err != nil {
-		t.Fatalf("subscribe to %s's agent subject: %v", sessionID, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
 	}
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
 	if err := harness.client.Conn.Flush(); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
@@ -400,6 +424,7 @@ func TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote(t *testing.T
 		key    = "T-1"
 	)
 	lane := newKeptLaneUnderClaim(t, harness, func(int, string, contracts.Envelope) error { return nil })
+	laneKey := contracts.RoleClaimKey("TT", role)
 	taken := takenForwards(t, harness, holder)
 	database := migratedDispatchDatabase(t)
 	broker := events.NewBroker()
@@ -421,14 +446,14 @@ func TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote(t *testing.T
 	waitFor(t, 30*time.Second, "Dispatch's outbox to publish the first event of an unheld role", func() bool {
 		return publishedEventAt(t, database, first.ID) != nil
 	})
-	firstKept := waitForKeptRoleMessage(t, harness.client, role, fmt.Sprintf("dispatch-%d", first.ID))
+	firstKept := waitForKeptRoleMessage(t, harness.client, laneKey, fmt.Sprintf("dispatch-%d", first.ID))
 	lane.register(t, holder)
-	lane.claim(t, holder, role)
+	lane.claim(t, holder, laneKey)
 	lane.await(t, 1, 30*time.Second)
 	var drained bus.StoredKeptRoleCursor
 	waitFor(t, 30*time.Second, "the listener's drain to write role "+role+"'s cursor", func() bool {
 		var err error
-		drained, err = harness.client.ReadKeptRoleCursor(ctx, role)
+		drained, err = harness.client.ReadKeptRoleCursor(ctx, laneKey)
 		if err != nil {
 			t.Fatalf("read role %s's drain cursor: %v", role, err)
 		}
@@ -439,7 +464,7 @@ func TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote(t *testing.T
 	// event rather than forwarding it, and the claim comes back under that keep. The claim this
 	// lane's route wrote names no process, so the release that frees it is the forced one
 	// DELETE /v1/interests/<session_id> makes (store.RoleReleaseAuthority.Force).
-	if _, err := harness.registry.Remove(ctx, holder, []string{contracts.RoleTopicPrefix + role}, store.RoleReleaseAuthority{Force: true}); err != nil {
+	if _, err := harness.registry.Remove(ctx, holder, []string{contracts.RoleSubject("TT", role)}, store.RoleReleaseAuthority{Force: true}); err != nil {
 		t.Fatalf("release %s's claim of %s: %v", holder, role, err)
 	}
 	second := outboxIssueEvent(t, database, broker, key, "9f2c6e18-40b7-4d35-8a91-5e07c3b8df42", "the issue's next event")
@@ -472,7 +497,7 @@ func TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote(t *testing.T
 	}
 	// The handover reads the cursor and leaves it alone: the drain stays its only writer, and
 	// both copies stay on the lane for a holder that claims later.
-	after, err := harness.client.ReadKeptRoleCursor(ctx, role)
+	after, err := harness.client.ReadKeptRoleCursor(ctx, laneKey)
 	if err != nil {
 		t.Fatalf("read role %s's drain cursor after the handover: %v", role, err)
 	}
@@ -484,8 +509,8 @@ func TestTheOutboxHandsACopyOverPastTheCursorTheListenersDrainWrote(t *testing.T
 	// each the envelope as its sender sent it and neither carrying the time of its keep, which
 	// the handover stamps on the forward alone. The order is what a session claiming the role
 	// after this one would be handed them in.
-	waitForKeptRoleMessage(t, harness.client, role, secondKey)
-	onTheLane := keptRoleCopies(t, harness.client, role)
+	waitForKeptRoleMessage(t, harness.client, laneKey, secondKey)
+	onTheLane := keptRoleCopies(t, harness.client, laneKey)
 	if len(onTheLane) != 2 ||
 		onTheLane[0].EventID != firstKept.EventID || onTheLane[0].DedupeKey != firstKept.DedupeKey || onTheLane[0].KeptAt != nil ||
 		onTheLane[1].EventID != secondKey || onTheLane[1].DedupeKey != secondKey || onTheLane[1].KeptAt != nil {

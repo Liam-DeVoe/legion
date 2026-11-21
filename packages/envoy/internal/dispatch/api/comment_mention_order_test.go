@@ -87,21 +87,25 @@ func (v *sessionView) PublishStoredAsync(_ string, item contracts.Envelope, _ st
 
 func (v *sessionView) Probe(time.Duration) error { return nil }
 
+// PublishAsync takes the outbox's publish of item, reading its topic in the form the outbox
+// records the destination (destinationOf): the outbox sends on the subject that names the event's
+// project, and the view's refusals and channels name the destination as the record does.
 func (v *sessionView) PublishAsync(item contracts.Envelope) <-chan error {
 	answer := make(chan error, 1)
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if v.refused != "" && strings.HasPrefix(item.Topic, v.refused) {
+	topic := destinationOf(item.Topic)
+	if v.refused != "" && strings.HasPrefix(topic, v.refused) {
 		answer <- errors.New("the stream does not capture " + item.Topic)
 		return answer
 	}
-	if (!v.ownOnly && strings.HasPrefix(item.Topic, v.topicFamily())) || item.Topic == contracts.LegacyAgentSubject("s1") {
+	if (!v.ownOnly && strings.HasPrefix(topic, v.topicFamily())) || topic == contracts.LegacyAgentSubject("s1") {
 		id, err := strconv.ParseInt(item.SourceEventID, 10, 64)
 		if err != nil {
 			answer <- err
 			return answer
 		}
-		v.copies = append(v.copies, sessionCopy{eventID: id, channel: item.Topic})
+		v.copies = append(v.copies, sessionCopy{eventID: id, channel: topic})
 	}
 	answer <- nil
 	return answer

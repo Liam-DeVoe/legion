@@ -67,8 +67,8 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 				IssueKey: new("T-1"), Type: "message.created", Actor: alice,
 				Payload: model.Message{ID: "6b1b1c5e-0d3a-4c38-9b7e-0a5f8a0c0303", IssueKey: new("T-1"), Body: "earlier"},
 			})
-			s1, s2 := contracts.LegacyAgentSubject("s1"), contracts.LegacyAgentSubject("s2")
-			publisher := &recordingPublisher{failTopic: s2}
+			s1, s2 := model.SessionDestinationKey("s1"), model.SessionDestinationKey("s2")
+			publisher := &recordingPublisher{failTopic: onBus("TT", s2)[0]}
 			deps := Deps{Store: database, Publisher: publisher, Broker: broker}
 			holder := holding(t, deps)
 			holder.scan(ctx, unfenced{})
@@ -287,8 +287,8 @@ func recordAfterARouteMove(t *testing.T, record string) routeMoveRecord {
 		IssueKey: new("T-1"), Type: "message.created", Actor: alice,
 		Payload: model.Message{ID: "6b1b1c5e-0d3a-4c38-9b7e-0a5f8a0c0404", IssueKey: new("T-1"), Body: "earlier"},
 	})
-	s1, s2 := contracts.LegacyAgentSubject("s1"), contracts.LegacyAgentSubject("s2")
-	deps := Deps{Store: database, Publisher: &recordingPublisher{failTopic: s2}, Broker: broker}
+	s1, s2 := model.SessionDestinationKey("s1"), model.SessionDestinationKey("s2")
+	deps := Deps{Store: database, Publisher: &recordingPublisher{failTopic: onBus("TT", s2)[0]}, Broker: broker}
 	holder := holding(t, deps)
 	holder.scan(ctx, unfenced{})
 	if owed, _, _, _ := eventRecord(t, database, earlier.ID); !slices.Equal(owed, []string{s2}) {

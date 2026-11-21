@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -115,8 +116,9 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	if got := strings.Count(logged, warning); got != 1 {
 		t.Errorf("%d WARN lines for the held send, want one", got)
 	}
+	// The publish error names the subject the outbox sent on, which names the issue's project.
 	for _, want := range []string{"owner=" + issue.Key, fmt.Sprintf("event_id=%d", first), "session=s1",
-		"publish_error=", "notifications.dispatch.issue." + issue.Key + ".comment.created"} {
+		"publish_error=", contracts.DispatchIssueSubject("TEST", issue.Key, "comment.created")} {
 		if !strings.Contains(warningLine(logged, warning), want) {
 			t.Errorf("the WARN line does not name %q: %s", want, warningLine(logged, warning))
 		}
