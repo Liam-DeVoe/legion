@@ -60,11 +60,13 @@ const createBucketWait = 30 * time.Second
 // createBucket is CreateSessionBucket of the bucket config describes. On a cluster the new stream
 // answers nobody for a moment after its create: until it has a leader, and its interest has
 // reached the member conn is on, that member answers a read that the stream does not exist
-// (ErrNoStore), or finds no responder for a read or a write (nats.ErrNoResponders). For a bucket
-// just created each means only "not yet", so the sentinel's leader read is tried again until the
-// stream answers it (no record, the key never written), and the sentinel's write until a responder
-// takes it. Past the bound the create fails naming the bucket; the bucket stays, with no sentinel,
-// which every call refuses (ErrNoSentinel) until a create-bucket run writes one.
+// (ErrNoStore), or finds no responder for a read or a write (nats.ErrNoResponders); and a meta
+// leader that has not yet applied the create answers a read "stream not found" for a moment even
+// after the stream answered one. For a bucket just created each means only "not yet", so the
+// sentinel's leader read is tried again until the stream answers it (no record, the key never
+// written), and the sentinel's write until a responder takes it. Past the bound the create fails
+// naming the bucket; the bucket stays, with no sentinel, which every call refuses (ErrNoSentinel)
+// until a create-bucket run writes one.
 func createBucket(ctx context.Context, conn *nats.Conn, config jetstream.KeyValueConfig, state StoreState) (*KVStore, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {

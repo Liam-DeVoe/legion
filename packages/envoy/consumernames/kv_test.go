@@ -646,7 +646,12 @@ func TestTheNativeOptionSavesTheStartTheServerReports(t *testing.T) {
 // three-server cluster, at one copy and at three, every create writes its sentinel. Each round
 // creates a bucket of its own (createBucket, the session bucket's create under another name)
 // through the next member, since one round wins the race most of the time; a bucket deleted and
-// created again under one name races the delete's own clean-up instead (10049).
+// created again under one name races the delete's own clean-up instead (10049). The round reads the
+// sentinel back as createBucket reads its stream (untilAnswered): a just-created stream that has
+// answered a read and taken the write can still be answered "stream not found" for a moment, by a
+// meta leader that has not yet applied the create (jetstream_api.go :3932-3944), as this test's
+// 3-copy rounds were under -race (one such answer, read on 2026-11-21, ended within 39 ms, while
+// the meta leader held no copy of the stream).
 func TestCreatingTheSessionBucketOnAClusterWritesItsSentinel(t *testing.T) {
 	for _, replicas := range []int{1, 3} {
 		t.Run(fmt.Sprintf("%d copies", replicas), func(t *testing.T) {
@@ -661,7 +666,12 @@ func TestCreatingTheSessionBucketOnAClusterWritesItsSentinel(t *testing.T) {
 					cancel()
 					t.Fatalf("round %d: the create on a three-server cluster at %d copies = %v", round, replicas, err)
 				}
-				state, err := store.State(ctx)
+				var state StoreState
+				_, _, err = untilAnswered(ctx, config.Bucket, func() ([]byte, uint64, error) {
+					var err error
+					state, err = store.State(ctx)
+					return nil, 0, err
+				})
 				cancel()
 				if err != nil || state.Cutover != CutoverDone || state.Boundary != 7 {
 					t.Fatalf("round %d: the sentinel read back as %+v, %v", round, state, err)
