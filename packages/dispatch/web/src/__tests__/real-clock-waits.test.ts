@@ -108,6 +108,19 @@ test("a wait of real time is found, a zero-delay one too, and its reason is read
   ]);
 });
 
+// docs/testing.md, "The clock of a unit test", says this scan fails an awaited timer whatever its
+// delay, and that is a claim about every spelling of one: the resolver a `new Promise` hands its
+// executor is as often `r` or `done` as `resolve`, and a timer may call it from an arrow. Each of
+// these waits 50 ms of real time.
+test("an awaited timer is found whatever its resolver is called and however the timer calls it", () => {
+  const spellings = [
+    "await new Promise((r) => setTimeout(r, 50));",
+    "await new Promise<void>((done) => {\n  setTimeout(done, 50);\n});",
+    "await new Promise((resolve) => setTimeout(() => resolve(), 50));",
+  ];
+  expect(spellings.map((text) => realWaits("spelling.test.ts", text).length)).toEqual([1, 1, 1]);
+});
+
 test("no unit test waits on the real clock without saying why", () => {
   expect(waits.filter((wait) => !wait.reasoned).map((wait) => wait.site)).toEqual([]);
 });
