@@ -19,7 +19,7 @@ import (
 // visible); in the second, Dispatch refuses the broker's token on OTHER and says PUB is visible
 // (a refusal, PUB visible). Neither state admits PUB's daemon; only a torn read, the refusal from
 // the first and PUB's answer from the second, admits it. The row runs until the refresher has made
-// 5,000 refreshes and the decisions number 200,000, however long that takes; a deadline of five
+// 5,000 refreshes and the decisions number 2,000,000, however long that takes; a deadline of five
 // minutes fails only a stuck run. The control reads the refusal and the answers under two locks:
 // PUB's daemon is admitted many times, and the test fails naming how many.
 func TestADecisionNeverMixesTwoRefreshes(t *testing.T) {
@@ -57,7 +57,7 @@ func TestADecisionNeverMixesTwoRefreshes(t *testing.T) {
 			refreshes.Add(1)
 		}
 	}()
-	const wantRefreshes, wantDecisions, stuck = 5000, 200000, 5 * time.Minute
+	const wantRefreshes, wantDecisions, stuck = 5000, 2000000, 5 * time.Minute
 	admitted, decisions := 0, 0
 	for start := time.Now(); refreshes.Load() < wantRefreshes || decisions < wantDecisions; decisions++ {
 		if _, err := scopeGrant(deps, services[0], natsgrant.Daemon()); err == nil {

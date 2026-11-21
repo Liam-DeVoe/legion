@@ -107,16 +107,18 @@ const accessFetchTimeout = 10 * time.Second
 // is used however old it is. A question no refresh has answered yet has no answer, and a held
 // connection that needs it is refused until one does. The one exception joins a whole refresh:
 // Dispatch refusing the broker's own account token (a 401 or 403, projectaccess.ErrBrokerRefused)
-// on any question of a refresh refuses every held connection until a later refresh is answered
-// with no such refusal, since the token exchange refuses every trade that asks Dispatch then; it
-// is logged at error once a refresh. Only Dispatch answering a question during a refresh shows
-// that it no longer refuses the broker's token, so a refresh keeps such a refusal when no question
-// of it was answered (Dispatch unreachable), and when its only answers are ones the Dispatch
-// client kept from before the refresh began (projectaccess.CacheTTL; cmd/cipherd shares that
-// client with the token exchange, so a person's trade can fill its cache) or not-founds, whose
-// age the client does not report. While Dispatch answers, an answer held is at most about a minute
-// old: the 30 s (projectaccess.CacheTTL) the Dispatch client may have kept it, the accessRefresh to
-// the next refresh, and the accessFetchTimeout its question may take.
+// on any question of a refresh refuses every held connection, since the token exchange refuses
+// every trade that asks Dispatch then; it is logged at error once a refresh. The refusal clears at
+// the first later refresh that gets no refusal of the broker's token and holds an answer whose
+// question was asked after the refusing refresh had all its answers (refusalSeen): Dispatch then
+// answered with the token after it refused it. An answer the Dispatch client kept from before the
+// refusal (projectaccess.CacheTTL; cmd/cipherd shares that client with the token exchange, so a
+// person's trade can fill its cache) does not clear it, nor does a not-found, whose age the client
+// does not report, nor a refresh that reached Dispatch for no question. An answer a person's trade
+// left in that cache after the refusal does clear it, so trades that keep the cache full delay no
+// clear. While Dispatch answers, an answer held is at most about a minute old: the 30 s
+// (projectaccess.CacheTTL) the Dispatch client may have kept it, the accessRefresh to the next
+// refresh, and the accessFetchTimeout its question may take.
 type heldAccess struct {
 	access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	asks   []heldKey
@@ -124,10 +126,12 @@ type heldAccess struct {
 
 	mu      sync.RWMutex
 	answers map[heldKey]heldAnswer
-	// brokerRefused is whether the last refresh that decided it found Dispatch refusing the
-	// broker's own account token. A refresh decides it when Dispatch refused the token on one of
-	// its questions, or answered one of them during the refresh (asked).
+	// brokerRefused is whether Dispatch refused the broker's own account token in a refresh and
+	// no later refresh has cleared it; refusalSeen is when the last refresh that got such a
+	// refusal had all its answers, after which an answer's question must have been asked to clear
+	// it.
 	brokerRefused bool
+	refusalSeen   time.Time
 }
 
 // heldKey is one question the service asks Dispatch: whether person may see project.
@@ -190,19 +194,20 @@ func (h *heldAccess) run(ctx context.Context) {
 
 // refresh asks Dispatch every held question, all at once, each bounded by accessFetchTimeout, and
 // holds each answer it gets in place of the one held about its question, whatever its other
-// questions did, a refusal of the broker's token among them. It decides whether Dispatch refuses
-// the broker's own account token when it got a refusal, or an answer Dispatch gave during this
-// refresh (asked). It holds all of that before it writes any log line, since a write can block
-// (report.go). It logs a refusal at error, naming the project whose question Dispatch refused,
-// since every held connection is then refused; else each failed question at warn, since the answer
-// held about it is kept. refresh is not safe to run beside itself; run calls it one at a time.
+// questions did, a refusal of the broker's token among them. A refusal of the broker's token sets
+// brokerRefused and refusalSeen; a refresh with none clears brokerRefused when one of its answers
+// was asked after refusalSeen (askedAfter). It holds all of that before it writes any log line,
+// since a write can block (report.go). It logs a refusal at error, naming the project whose
+// question Dispatch refused, since every held connection is then refused; else each failed
+// question at warn, since the answer held about it is kept. refresh is not safe to run beside
+// itself; run calls it one at a time.
 func (h *heldAccess) refresh(ctx context.Context) {
-	began := time.Now()
 	answers := make([]heldAnswer, len(h.asks))
-	// errs is each question's failure, nil for one answered; fresh is whether Dispatch gave that
-	// answer during this refresh (asked).
+	// errs is each question's failure, nil for one answered; askedAt is when Dispatch was asked the
+	// question an answer answers (projectaccess.Answer.AskedAt), zero for a not-found or a source
+	// that keeps no clock.
 	errs := make([]error, len(h.asks))
-	fresh := make([]bool, len(h.asks))
+	askedAt := make([]time.Time, len(h.asks))
 	var wait sync.WaitGroup
 	for i, ask := range h.asks {
 		wait.Go(func() {
@@ -215,25 +220,28 @@ func (h *heldAccess) refresh(ctx context.Context) {
 			case err != nil:
 				errs[i] = err
 			default:
-				answers[i], fresh[i] = heldAnswer{visible: answer.Visible}, asked(answer, began)
+				answers[i], askedAt[i] = heldAnswer{visible: answer.Visible}, answer.AskedAt
 			}
 		})
 	}
 	wait.Wait()
+	answersIn := time.Now()
 	refused := slices.IndexFunc(errs, func(err error) bool { return errors.Is(err, projectaccess.ErrBrokerRefused) })
-	answered := slices.Contains(fresh, true)
 	h.mu.Lock()
 	for i, ask := range h.asks {
 		if errs[i] == nil {
 			h.answers[ask] = answers[i]
 		}
 	}
-	if refused >= 0 || answered {
-		h.brokerRefused = refused >= 0
+	switch {
+	case refused >= 0:
+		h.brokerRefused, h.refusalSeen = true, answersIn
+	case h.brokerRefused && askedAfter(answers, errs, askedAt, h.refusalSeen):
+		h.brokerRefused = false
 	}
 	h.mu.Unlock()
 	if refused >= 0 {
-		h.log.Error("natscallout: Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so every daemon held to its exchange projects is refused until a later refresh is answered with no such refusal", "question", "project "+h.asks[refused].project, "error", errs[refused].Error())
+		h.log.Error("natscallout: Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so every daemon held to its exchange projects is refused until Dispatch answers a question asked after this refresh with no such refusal", "question", "project "+h.asks[refused].project, "error", errs[refused].Error())
 		return
 	}
 	if ctx.Err() != nil {
@@ -281,10 +289,16 @@ func (h *heldAccess) refusal(entry ServiceEntry, person string, projects []strin
 	return nil
 }
 
-// asked reports whether Dispatch gave answer during a refresh that began at began: its question
-// was asked at or after began, or it comes from a source that keeps no clock (a zero AskedAt,
-// which projectaccess.Visible also takes as fresh). An answer the Dispatch client kept from
-// before began is not, since it says nothing about whether Dispatch refuses the broker's token now.
-func asked(answer projectaccess.Answer, began time.Time) bool {
-	return answer.AskedAt.IsZero() || !answer.AskedAt.Before(began)
+// askedAfter reports whether one of a refresh's answers shows Dispatch answering the broker's token
+// after seen: an answer (not a not-found, whose age the client does not report) whose question was
+// asked after seen, or that comes from a source that keeps no clock (a zero AskedAt, which
+// projectaccess.Visible also takes as fresh). An answer the Dispatch client kept from before seen
+// is not one, since it says nothing about whether Dispatch refuses the broker's token now.
+func askedAfter(answers []heldAnswer, errs []error, askedAt []time.Time, seen time.Time) bool {
+	for i := range answers {
+		if errs[i] == nil && !answers[i].notFound && (askedAt[i].IsZero() || askedAt[i].After(seen)) {
+			return true
+		}
+	}
+	return false
 }
