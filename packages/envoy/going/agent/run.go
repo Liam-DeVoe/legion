@@ -420,7 +420,11 @@ func withLastCallNote(messages []agentloop.Message) []agentloop.Message {
 
 // runModel makes request's one model call on the run's context, under the watchdog, adds what it
 // spent to the run's budget, and adds the steps it saved to the run's history. It reports false
-// where the watchdog gave the run up: the run is lost, and nothing more of it is written.
+// where the watchdog gave the run up: the run is lost, and nothing more of it is written. A call
+// the content filter refused, or whose reply it stopped, spends the run's time and tokens and no
+// call of its level, since it answered nothing: it is made again as withhold says, which ends the
+// run once a call is refused with every result withheld, and a refusal of a run's last call would
+// otherwise end the run with no answer.
 func (w *worker) runModel(request agentloop.Request) (agentloop.Result, bool, error) {
 	stepCtx, cancel := context.WithCancel(w.ctx)
 	defer cancel()
@@ -437,7 +441,7 @@ func (w *worker) runModel(request agentloop.Request) (agentloop.Result, bool, er
 	w.used.WorkingMS += working.Milliseconds()
 	w.turn.Tokens += result.Usage.Output
 	w.used.Tokens += result.Usage.Output
-	if len(result.Steps) > 0 || result.Fault != "" {
+	if refused := result.Fault == agentloop.FaultContentFilter || errors.Is(err, errReplyFiltered); !refused && (len(result.Steps) > 0 || result.Fault != "") {
 		w.turn.Calls++
 		w.used.Calls++
 	}

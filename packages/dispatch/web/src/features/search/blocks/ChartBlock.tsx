@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { CHART_AXIS_COLORS } from "../../../theme/chart-colors";
 import { borderDefault } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
-import { type BlockOf, cellNumber, cellText } from "./block-cells";
+import { type BlockOf, cellNumber, columnText } from "./block-cells";
 import { blockCellClassName, blockHeadClassName } from "./TableBlock";
 
 // echarts is loaded here as the delivery timeline loads it (features/delivery/Timeline.tsx): by
@@ -33,7 +33,7 @@ export function ChartBlock({ block }: { readonly block: BlockOf<"chart"> }): Rea
     () =>
       block.rows.flatMap((row) => {
         const value = cellNumber(row[y]);
-        return value === undefined ? [] : [{ label: cellText(row[x]), value }];
+        return value === undefined ? [] : [{ label: columnText(x, row[x]), value }];
       }),
     [block.rows, x, y]
   );

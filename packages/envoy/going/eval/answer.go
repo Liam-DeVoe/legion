@@ -95,23 +95,43 @@ func MissingChartRows(rows []ChartRow, answer string, blocks []json.RawMessage) 
 }
 
 // inBlocks reports whether a drawn row holds the label as one of its values (sameLabel) and the
-// count as another.
+// count as another. A priority label, P0 to P3, is also held by the row's priority field as the
+// number the issue reads answer it as (priorityLabel), and the count is then one of its other
+// values.
 func inBlocks(drawn []map[string]any, row ChartRow) bool {
 	for _, values := range drawn {
-		label, count := false, false
-		for _, value := range values {
+		labelAt, count := "", false
+		for field, value := range values {
 			switch v := value.(type) {
 			case string:
-				label = label || sameLabel(v, row.Label)
+				if labelAt == "" && sameLabel(v, row.Label) {
+					labelAt = field
+				}
 			case float64:
-				count = count || v == float64(row.Count)
+				if labelAt == "" && field == "priority" && strings.EqualFold(priorityLabel(v), row.Label) && row.Label != "" {
+					labelAt = field
+				}
 			}
 		}
-		if label && count {
+		for field, value := range values {
+			if v, isNumber := value.(float64); isNumber && field != labelAt && v == float64(row.Count) {
+				count = true
+			}
+		}
+		if labelAt != "" && count {
 			return true
 		}
 	}
 	return false
+}
+
+// priorityLabel is a priority's label as the tasks and Dispatch write it, P0 to P3, "" for a number
+// that is no priority.
+func priorityLabel(number float64) string {
+	if number < 0 || number > 3 || number != float64(int(number)) {
+		return ""
+	}
+	return fmt.Sprintf("P%d", int(number))
 }
 
 // isoWeek is a chart label of a week, as the tasks write it: 2026-W45.

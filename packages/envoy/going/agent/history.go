@@ -11,13 +11,13 @@ import (
 )
 
 // historyLimit is the most the whole steps of a run's history may hold: a run whose last
-// agentwire's 8 whole steps pass it stops with ReasonHistoryTooLarge, as the server fails one at
-// its claim.
+// agentwire.WholeTurns model turns pass it stops with ReasonHistoryTooLarge, as the server fails
+// one at its claim.
 const historyLimit = 2 << 20
 
-// ReasonHistoryTooLarge is the stop reason of a run whose last 8 steps pass historyLimit, so no
-// model call can be given them.
-const ReasonHistoryTooLarge = "HISTORY_TOO_LARGE: the last 8 steps of this run pass 2 MiB, which no model call can be given"
+// ReasonHistoryTooLarge is the stop reason of a run whose last agentwire.WholeTurns model turns
+// pass historyLimit, so no model call can be given them.
+const ReasonHistoryTooLarge = "HISTORY_TOO_LARGE: the last 8 model turns of this run, each with its tool results, pass 2 MiB, which no model call can be given"
 
 // noteLimit is the most bytes of a step's note: the one line a run's history gives in place of
 // an older step's body.
@@ -123,13 +123,14 @@ func wholeBytes(history []agentwire.SavedStep) int {
 	return whole
 }
 
-// lastWhole is the last agentwire's 8 steps of history whole and each older one as its note,
-// as the server answers a claim: the history the next step starts from.
+// lastWhole is the steps of history's last agentwire.WholeTurns model turns whole, each with all
+// its tool results, and each older step as its note, as the server answers a claim: the history
+// the next step starts from.
 func lastWhole(history []agentwire.SavedStep) []agentwire.SavedStep {
-	const whole = 8
+	from := agentwire.WholeFrom(history)
 	out := make([]agentwire.SavedStep, len(history))
 	for i, step := range history {
-		if i < len(history)-whole {
+		if step.Step < from {
 			step.Body = nil
 		}
 		out[i] = step

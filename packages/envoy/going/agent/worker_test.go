@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -421,4 +422,109 @@ func TestARunLeavesNoGoroutineBehind(t *testing.T) {
 	}
 	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 	goleak.VerifyNone(t, running)
+}
+
+// TestAFilterRefusalSpendsNoCallOfTheBudget: a call the content filter refused answered nothing,
+// so it spends no call of the run's level: a run whose last call is refused once makes that call
+// again and answers, where it would otherwise stop on its call budget with no answer (status-12 of
+// the eval's run 3, whose sixth and last call was refused).
+func TestAFilterRefusalSpendsNoCallOfTheBudget(t *testing.T) {
+	var mu sync.Mutex
+	refused := 0
+	fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply {
+		mu.Lock()
+		defer mu.Unlock()
+		if refused == 0 {
+			refused++
+			return agenttest.Reply{Status: http.StatusBadRequest, Error: filterRefusal}
+		}
+		return agenttest.Reply{Text: "The triage session is live."}
+	})
+	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer { return agentwire.CallAnswer{} })
+	a := &agent{client: client, config: Config{Model: fake.Model()}, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
+	run := &agentwire.ClaimedRun{ID: "run-1", Words: "is the triage agent busy", Level: "fast", Mode: "ask", LeaseToken: "lease-1",
+		BudgetUsed: agentwire.Budget{Calls: Levels["fast"].Calls - 1}}
+	newWorker(t.Context(), a, run, func() {}).work()
+	end, replies := server.end(t)
+	if end.State != agentwire.StateDone || len(replies) != 1 || fake.Count() != 2 {
+		t.Fatalf("the run ended %s with %q after %d model calls and %d replies, want done after the refused call and its answer", end.State, end.Reason, fake.Count(), len(replies))
+	}
+	if end.Used.Calls != 1 {
+		t.Errorf("the turn spent %d calls, want 1: the refused call spends none", end.Used.Calls)
+	}
+}
+
+// turnSteps is one model turn of a saved history, numbered from first: a model step that calls
+// read once for each result, and a tool step answering each call with that result.
+func turnSteps(t *testing.T, first int, results ...string) []agentwire.SavedStep {
+	t.Helper()
+	reply := modelBody{Text: "Reading."}
+	for index := range results {
+		reply.Calls = append(reply.Calls, toolCall{ID: fmt.Sprintf("call-%d-%d", first, index), Tool: toolRead, Arguments: json.RawMessage(`{"issue":"DEMO-7"}`)})
+	}
+	body, err := json.Marshal(reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := []agentwire.SavedStep{{Step: first, Kind: agentwire.StepModel, Body: body, Note: "Reading."}}
+	for index, result := range results {
+		body, err := json.Marshal(toolBody{Call: reply.Calls[index], Result: result})
+		if err != nil {
+			t.Fatal(err)
+		}
+		steps = append(steps, agentwire.SavedStep{Step: first + 1 + index, Kind: agentwire.StepTool, Body: body, Note: "read a result"})
+	}
+	return steps
+}
+
+// TestATurnThatFansOutKeepsTheTurnBeforeItWhole: the history the next model call is given keeps
+// the run's last 8 model turns whole, each with all its tool results, so a turn that read eleven
+// issues' comments in one reply does not cut the roster the turn before it read to a note (status-11
+// of the eval's run 3 read the roster and the issue lists again and again, until its time ran out).
+func TestATurnThatFansOutKeepsTheTurnBeforeItWhole(t *testing.T) {
+	const roster = "session-planner-01 holds DEMO-7 and is live"
+	history := turnSteps(t, 1, roster)
+	comments := make([]string, 11)
+	for index := range comments {
+		comments[index] = fmt.Sprintf("the comments of issue %d", index+1)
+	}
+	history = append(history, turnSteps(t, 3, comments...)...)
+	messages, err := conversation(&agentwire.ClaimedRun{ID: "run-1", Words: "which agents are working now"}, lastWhole(history), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var given []string
+	for _, message := range messages {
+		for _, block := range message.Blocks {
+			if block.Kind == agentloop.ToolResultBlock {
+				given = append(given, block.Content[0].Text)
+			}
+		}
+	}
+	if len(given) != 12 || given[0] != roster {
+		t.Errorf("the model is given the tool results %q, want the roster whole and then the eleven comment reads", given)
+	}
+}
+
+// TestAWindowOfTurnsPastTheBoundStopsTheRun: the 2 MiB bound holds the window of whole turns: a
+// run whose last 8 model turns, each with its tool results, pass it stops with
+// ReasonHistoryTooLarge before any model call, though its last 8 steps alone would not pass it.
+func TestAWindowOfTurnsPastTheBoundStopsTheRun(t *testing.T) {
+	fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply { return agenttest.Reply{Text: "Answered."} })
+	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer { return agentwire.CallAnswer{} })
+	result := strings.Repeat("x", 140<<10)
+	var history []agentwire.SavedStep
+	for turn := range 8 {
+		history = append(history, turnSteps(t, 1+3*turn, result, result)...)
+	}
+	if steps := wholeBytes(history[len(history)-8:]); steps > historyLimit {
+		t.Fatalf("the last 8 steps hold %d bytes, want them under the bound, so only the turns pass it", steps)
+	}
+	a := &agent{client: client, config: Config{Model: fake.Model()}, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
+	run := &agentwire.ClaimedRun{ID: "run-1", Words: "read every issue", Level: "deep", Mode: "ask", LeaseToken: "lease-1", History: history}
+	newWorker(t.Context(), a, run, func() {}).work()
+	end, _ := server.end(t)
+	if end.State != agentwire.StateFailed || end.Reason != ReasonHistoryTooLarge || fake.Count() != 0 {
+		t.Errorf("the run ended %s with %q after %d model calls, want failed with %q before any", end.State, end.Reason, fake.Count(), ReasonHistoryTooLarge)
+	}
 }

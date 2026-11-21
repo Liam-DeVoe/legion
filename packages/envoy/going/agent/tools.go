@@ -110,7 +110,8 @@ var drawBlockTool = contracts.DispatchTool{
 		{Name: "chain", Kind: contracts.ToolFieldArray, Required: true, Description: "The steps run over the rows, in order. A field is a field of the rows, a.b for a field within one.", Item: &contracts.ToolField{
 			Kind: contracts.ToolFieldObject, Fields: []contracts.ToolField{
 				{Name: "op", Kind: contracts.ToolFieldEnum, Required: true, Values: going.Transforms,
-					Description: "filter keeps the rows that meet one condition; group makes one row of each value of field (per a period for a time), whose column is named as, else per, else field; " +
+					Description: "filter keeps the rows that meet one condition; group makes one row of each value of field (per a period for a time), whose column is named as, else per, else field: " +
+						"a row whose field is a list, such as labels, is in the group of each value it holds, and a row with no value is in the group none; a chain groups once, before its counts; " +
 						"count, sum, mean, min and max write how many rows each group holds, or that of field's numbers, in a column named as, else the step (before a group, of all rows); " +
 						"sort orders the rows by field."},
 				{Name: "field", Kind: contracts.ToolFieldString, Description: "The field the step reads; count takes none."},

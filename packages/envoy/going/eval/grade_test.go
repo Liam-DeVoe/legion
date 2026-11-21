@@ -172,6 +172,38 @@ func TestAChartShowsItsRowsByTheWeeksItDraws(t *testing.T) {
 	}
 }
 
+// TestAChartShowsItsPriorityRowsByTheNumberItDraws: chart-04's rows, written P1 to P3, are shown by
+// a drawn chart whose server chain groups by priority and so names each group by the number the
+// issue reads carry, as run 3 of the eval drew it; a priority's number is not its count, so a row
+// whose count is wrong still misses, and so does a number under another field.
+func TestAChartShowsItsPriorityRowsByTheNumberItDraws(t *testing.T) {
+	tasks, err := LoadTasks(Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chart := taskByID(t, tasks, "chart-04").Grade.Chart
+	drawn := func(field string, rows ...[2]int) []json.RawMessage {
+		drawnRows := make([]map[string]any, len(rows))
+		for i, row := range rows {
+			drawnRows[i] = map[string]any{field: row[0], "bugs": row[1]}
+		}
+		block, err := json.Marshal(map[string]any{"kind": "chart", "title": "Open bugs in DEMO by priority", "rows": drawnRows})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []json.RawMessage{block}
+	}
+	if missing := MissingChartRows(chart.Rows, "", drawn("priority", [2]int{1, 5}, [2]int{2, 2}, [2]int{3, 1})); len(missing) != 0 {
+		t.Errorf("the drawn chart of each priority's count misses %v; want none", missing)
+	}
+	if missing := MissingChartRows(chart.Rows, "", drawn("priority", [2]int{1, 5}, [2]int{2, 3}, [2]int{3, 1})); len(missing) != 1 || missing[0] != "P2=2" {
+		t.Errorf("the drawn chart with 3 bugs at P2 misses %v; want P2=2", missing)
+	}
+	if missing := MissingChartRows(chart.Rows, "", drawn("estimate", [2]int{1, 5}, [2]int{2, 2}, [2]int{3, 1})); len(missing) != 3 {
+		t.Errorf("the drawn chart by estimate misses %v; want every row, since no field of it is the priority", missing)
+	}
+}
+
 // TestAnAnswerLinksAnItemByItsDashboardPath: an answer links a project's document, an issue's
 // document and a spec by the dashboard's path to each, as the bar's answers write them, or by its
 // dispatch:// reference; a link to another issue's spec or to another document is no link of it.

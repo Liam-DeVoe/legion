@@ -273,3 +273,45 @@ func TestARunsMetricKeepsTheLabelsItsSpecWrites(t *testing.T) {
 		})
 	}
 }
+
+// TestASpecOfAnotherShapeIsToldDrawBlocksArguments: a block spec the model wrote in a shape of its
+// own - its results under data, or a chart's kind under chart, as two runs of the eval wrote them
+// (chart-08 of run 3) - is refused for the field draw_block does not take, not for the step and
+// call numbers under it, and the refusal names every argument draw_block takes, so the model can
+// write the spec again in one call. A number of the model's own under such a field is still
+// refused as a number.
+func TestASpecOfAnotherShapeIsToldDrawBlocksArguments(t *testing.T) {
+	for name, row := range map[string]struct{ spec, field string }{
+		"its results under data": {field: `unknown field "data"`,
+			spec: `{"data":[{"step":7,"call":1,"group":["priority"],"count":true},{"step":11,"call":1,"group":["priority"],"count":true}],"title":"Open issues by priority","x":"priority"}`},
+		"its kind under chart": {field: `unknown field "chart"`,
+			spec: `{"chart":"bar","title":"Open issues by priority","series":[{"name":"DEMO","source":"step 8, call 1","group_by":["priority"],"count":true}]}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := going.ParseRunBlock(json.RawMessage(row.spec))
+			if err == nil || !strings.Contains(err.Error(), row.field) || !strings.Contains(err.Error(), "draw_block takes kind (chart, table or metric), title, steps") {
+				t.Errorf("the spec was answered %v, want it refused for %s, naming draw_block's arguments", err, row.field)
+			}
+		})
+	}
+	_, err := going.ParseRunBlock(json.RawMessage(`{"kind":"chart","title":"Issues","data":[{"step":2,"call":1,"count":42}],"steps":[{"step":2,"call":1}],"chain":[{"op":"count"}],"x":"count","y":"count"}`))
+	if err == nil || !strings.Contains(err.Error(), "holds no number") {
+		t.Errorf("a spec with a count of its own under data was answered %v, want it refused for holding a number", err)
+	}
+}
+
+// TestAGroupAfterACountSaysToGroupFirst: a count before the chain's group reads every row as one
+// group, so the group after it is refused; the refusal says to put the group first, which is the
+// chain the model meant (chart-06 of the eval's run 3 wrote filter, count, group and, told only
+// that a chain groups once, gave up the grouping). The chain in that order draws one row a group.
+func TestAGroupAfterACountSaysToGroupFirst(t *testing.T) {
+	const rows = `[{"key":"A","labels":["bug","ui"]},{"key":"B","labels":["bug"]}]`
+	_, err := runChain(t, `[{"op":"count","as":"issues"},{"op":"group","field":"labels"}]`, rows)
+	if err == nil || !strings.Contains(err.Error(), "put the group before the count") {
+		t.Fatalf("a group after a count was answered %v, want it refused, saying to put the group before the count", err)
+	}
+	got, err := runChain(t, `[{"op":"group","field":"labels"},{"op":"count","as":"issues"}]`, rows)
+	if want := `[{"issues":2,"labels":"bug"},{"issues":1,"labels":"ui"}]`; err != nil || got != want {
+		t.Errorf("the chain grouped first answered %s, %v; want %s", got, err, want)
+	}
+}

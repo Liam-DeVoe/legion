@@ -475,12 +475,14 @@ func requireTheRunsReaders(t *testing.T) {
 	}
 }
 
-// requireTheHistoryBound: a run whose last 8 steps pass 2 MiB fails with that reason when the agent
-// claims it, and one whose last 8 steps fit is given to the agent.
+// requireTheHistoryBound: a run whose last 8 model turns, each with its tool results, pass 2 MiB
+// fails with that reason when the agent claims it, and one whose last 8 turns fit is given to the
+// agent. Each turn is a model step and the two tool results it called for, and the results hold
+// the bytes, so the bound is crossed by the turns: the last 8 steps alone hold under 1 MiB.
 func requireTheHistoryBound(t *testing.T) {
 	server := startAgentServer(t, nil)
 	server.waitForAgentRenewal(t)
-	record := func(stepBytes int) string {
+	record := func(resultBytes int) string {
 		t.Helper()
 		ctx := context.Background()
 		tx, err := server.database.Pool.Begin(ctx)
@@ -495,11 +497,18 @@ func requireTheHistoryBound(t *testing.T) {
 		`, id, readShape); err != nil {
 			t.Fatal(err)
 		}
-		body := `{"reply": "` + strings.Repeat("x", stepBytes) + `"}`
-		for step := 1; step <= 8; step++ {
-			if _, err := tx.Exec(ctx, `insert into going_run_steps (run_id, step, kind, body, note) values ($1::uuid, $2, 'model', $3::jsonb, 'a step')`,
-				id, step, body); err != nil {
-				t.Fatal(err)
+		result := `{"result": "` + strings.Repeat("x", resultBytes) + `"}`
+		for turn := range 8 {
+			first := 1 + 3*turn
+			for at, kind := range []string{"model", "tool", "tool"} {
+				body := `{"text": "a reply"}`
+				if kind == "tool" {
+					body = result
+				}
+				if _, err := tx.Exec(ctx, `insert into going_run_steps (run_id, step, kind, body, note) values ($1::uuid, $2, $3, $4::jsonb, 'a step')`,
+					id, first+at, kind, body); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 		if _, err := tx.Exec(ctx, `select pg_notify($1, 'ready')`, api.GoingRunsChannel); err != nil {
@@ -510,15 +519,15 @@ func requireTheHistoryBound(t *testing.T) {
 		}
 		return id
 	}
-	tooLarge, fits := record(300<<10), record(200<<10)
+	tooLarge, fits := record(150<<10), record(100<<10)
 	server.eventually(t, 30*time.Second, "both runs to end", func() bool {
 		return server.run(t, tooLarge).state == "failed" && server.run(t, fits).state == "failed"
 	})
 	if row := server.run(t, tooLarge); !strings.HasPrefix(row.reason, "HISTORY_TOO_LARGE") {
-		t.Errorf("the run whose last 8 steps hold 2.4 MiB stopped with %q, want HISTORY_TOO_LARGE", row.reason)
+		t.Errorf("the run whose last 8 turns hold 2.4 MiB stopped with %q, want HISTORY_TOO_LARGE", row.reason)
 	}
 	if row := server.run(t, fits); row.reason != agent.ReasonNoModel {
-		t.Errorf("the run whose last 8 steps hold 1.6 MiB stopped with %q, want the agent's own end of it, %q", row.reason, agent.ReasonNoModel)
+		t.Errorf("the run whose last 8 turns hold 1.6 MiB stopped with %q, want the agent's own end of it, %q", row.reason, agent.ReasonNoModel)
 	}
 }
 

@@ -65,9 +65,9 @@ const (
 )
 
 // The shape of a run at its limits: each model reply carries loadReplyText of prose and pads its
-// stream to loadPadding, under the 8 MiB a stream may carry. The last 8 steps of a run's history go
-// to the model whole, each a reply and a read's 32 KiB, so 8 replies of 160 KiB stay under the
-// 2 MiB a history may hold.
+// stream to loadPadding, under the 8 MiB a stream may carry. The last 8 model turns of a run's
+// history go to the model whole, each a reply and the 32 KiB of its one read, so 8 turns of a
+// 160 KiB reply stay under the 2 MiB a history may hold.
 const (
 	loadReplyText = 160 << 10
 	loadPadding   = 6 << 20

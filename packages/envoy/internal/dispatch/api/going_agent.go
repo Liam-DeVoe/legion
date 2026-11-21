@@ -71,11 +71,9 @@ const (
 	// goingQueuedPerPerson is how many of one person's runs wait in the queue; a new one past it
 	// is refused (admitGoingRun).
 	goingQueuedPerPerson = 20
-	// goingHistoryWhole is how many of a run's last steps a claim answers whole; each older one
-	// goes as its note.
-	goingHistoryWhole = 8
-	// goingHistoryLimit is the most the whole steps of a claim's history may hold. A run whose
-	// last goingHistoryWhole steps pass it fails with goingRunHistoryTooLarge.
+	// goingHistoryLimit is the most the whole steps of a claim's history may hold: the steps of
+	// the run's last agentwire.WholeTurns model turns, each with all its tool results; each older
+	// step goes as its note. A run whose whole steps pass it fails with goingRunHistoryTooLarge.
 	goingHistoryLimit = 2 << 20
 	// goingAgentFrameTime bounds the read of a request frame and the write of an answer frame.
 	goingAgentFrameTime = 10 * time.Second
@@ -83,9 +81,10 @@ const (
 	goingClaimBatch = 32
 )
 
-// goingRunHistoryTooLarge is the stop reason of a run whose last goingHistoryWhole steps pass
-// goingHistoryLimit, so no claim can answer them.
-const goingRunHistoryTooLarge = "HISTORY_TOO_LARGE: the last 8 steps of this run pass 2 MiB, which no model call can be given"
+// goingRunHistoryTooLarge is the stop reason of a run whose last agentwire.WholeTurns model turns
+// pass goingHistoryLimit, so no claim can answer them. It is the agent's own reason for the same
+// bound (agent.ReasonHistoryTooLarge).
+const goingRunHistoryTooLarge = "HISTORY_TOO_LARGE: the last 8 model turns of this run, each with its tool results, pass 2 MiB, which no model call can be given"
 
 // codeGoingRunQueueFull refuses a new run of a person who has goingQueuedPerPerson runs queued.
 const codeGoingRunQueueFull = "GOING_RUN_QUEUE_FULL"
@@ -681,7 +680,7 @@ func (a *AgentListener) claimOne(ctx context.Context, instance string, only []st
 
 // claimGoingRun leases run to instance in tx and reads it with its history and the turns of its
 // conversation before it (agentwire.EarlierTurns of them), or fails it with
-// goingRunHistoryTooLarge and answers nil where its last steps pass goingHistoryLimit.
+// goingRunHistoryTooLarge and answers nil where its last model turns pass goingHistoryLimit.
 func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agentwire.ClaimedRun, error) {
 	claimed := agentwire.ClaimedRun{ID: run}
 	var continues *string
@@ -704,12 +703,16 @@ func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agent
 	if err := json.Unmarshal(budget, &claimed.BudgetUsed); err != nil {
 		return nil, fmt.Errorf("read what run %s spent: %w", run, err)
 	}
+	// The history's last agentwire.WholeTurns model turns go whole: every step from the
+	// WholeTurns-th newest model step on, which is every step of a run that made fewer model
+	// calls (agentwire.WholeFrom).
 	rows, err := tx.Query(ctx, `
-		select step, kind, note, case when rank <= $2 then body end
-		from (select step, kind, note, body, row_number() over (order by step desc) as rank
-		      from going_run_steps where run_id = $1::uuid) s
+		select step, kind, note, case when step >= coalesce((
+		    select m.step from going_run_steps m where m.run_id = $1::uuid and m.kind = $2
+		    order by m.step desc offset $3 - 1 limit 1), 0) then body end
+		from going_run_steps where run_id = $1::uuid
 		order by step
-	`, run, goingHistoryWhole)
+	`, run, agentwire.StepModel, agentwire.WholeTurns)
 	if err != nil {
 		return nil, fmt.Errorf("read run %s's history: %w", run, err)
 	}

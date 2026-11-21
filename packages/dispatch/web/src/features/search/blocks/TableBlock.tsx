@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { borderDefault, textSecondaryOnSurface } from "../../../theme/classes";
-import { type BlockOf, cellText } from "./block-cells";
+import { type BlockOf, columnText } from "./block-cells";
 
 /** The cell classes every tabular block shares. */
 export const blockCellClassName = `border-b px-2 py-1 text-left align-top ${borderDefault}`;
@@ -32,7 +32,7 @@ export function TableBlock({ block }: { readonly block: BlockOf<"table"> }): Rea
             >
               {columns.map((column) => (
                 <td className={blockCellClassName} key={column}>
-                  {cellText(row[column])}
+                  {columnText(column, row[column])}
                 </td>
               ))}
             </tr>

@@ -174,8 +174,9 @@ const (
 	helloRequestLimit = 4 << 10
 	helloAnswerLimit  = 4 << 10
 	claimRequestLimit = 4 << 10
-	// A claim answers a run's history: its last 8 steps whole, at most 2 MiB, and a one-line note
-	// of each older step, beside the run's words and context.
+	// A claim answers a run's history: its last WholeTurns model turns whole, each with all its
+	// tool results, at most 2 MiB, and a one-line note of each older step, beside the run's words
+	// and context.
 	claimAnswerLimit  = 3 << 20
 	renewRequestLimit = 64 << 10
 	renewAnswerLimit  = 64 << 10
@@ -374,8 +375,8 @@ type ClaimedRun struct {
 	BudgetUsed  Budget    `json:"budget_used"`
 	LeaseToken  string    `json:"lease_token"`
 	LeaseEndsAt time.Time `json:"lease_ends_at"`
-	// History is the run's saved steps in order: the last 8 whole, each older one as its note
-	// alone, with no body.
+	// History is the run's saved steps in order: the steps of its last WholeTurns model turns
+	// whole (WholeFrom), each older one as its note alone, with no body.
 	History []SavedStep `json:"history"`
 	// Rows are the rows of the run's plan that the person approved, or Auto-review let through,
 	// and that no saved step of the run answers yet, in order: the agent runs each before the
@@ -409,6 +410,29 @@ type SavedStep struct {
 	Kind string          `json:"kind"`
 	Body json.RawMessage `json:"body,omitempty"`
 	Note string          `json:"note"`
+}
+
+// WholeTurns is how many of a run's last model turns its history gives whole, each with all its
+// tool results (WholeFrom); each older step goes as its note. A model turn is one model call, a
+// StepModel step, and every step after it until the next model call: its tool results, and a
+// person's answer or a plan's rows after them. A turn is counted, not a step, so a turn that fans
+// out to many tool calls does not push the turns before it out.
+const WholeTurns = 8
+
+// WholeFrom is the number of the first step of history, in the order of its numbers, that its
+// last WholeTurns model turns hold: the WholeTurns-th newest model step's, and 0, which holds
+// every step, where history holds fewer model steps than that.
+func WholeFrom(history []SavedStep) int {
+	models := 0
+	for at := len(history) - 1; at >= 0; at-- {
+		if history[at].Kind != StepModel {
+			continue
+		}
+		if models++; models == WholeTurns {
+			return history[at].Step
+		}
+	}
+	return 0
 }
 
 // Lease is one run the instance holds, under the token its claim made.

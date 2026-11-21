@@ -155,7 +155,9 @@ func (c Chain) Run(rows []map[string]any) ([]map[string]any, error) {
 	for _, row := range rows {
 		table = append(table, chainRow{columns: row})
 	}
-	grouped := false
+	// grouped is the step that grouped the rows, "" before any: a group, or an aggregate that
+	// came before any group and read every row as one group.
+	grouped := ""
 	for index, step := range c {
 		var err error
 		switch step.Op {
@@ -164,19 +166,22 @@ func (c Chain) Run(rows []map[string]any) ([]map[string]any, error) {
 			bound, _ := parseTime(cmp.Or(step.Since, step.Before))
 			table = slices.DeleteFunc(table, func(row chainRow) bool { return !step.keeps(row.columns, bound) })
 		case TransformGroup:
-			if grouped {
+			switch grouped {
+			case "":
+				table, err = step.group(table)
+				grouped = step.Op
+			case TransformGroup:
 				err = fmt.Errorf("a chain groups once, and its rows are grouped already")
-				break
+			default:
+				err = fmt.Errorf("the %s before it read every row as one group: put the group before the %s, so it writes one row of each group", grouped, grouped)
 			}
-			table, err = step.group(table)
-			grouped = true
 		case TransformCount, TransformSum, TransformMean, TransformMin, TransformMax:
-			if !grouped {
+			if grouped == "" {
 				members := make([]map[string]any, 0, len(table))
 				for _, row := range table {
 					members = append(members, row.columns)
 				}
-				table, grouped = []chainRow{{columns: map[string]any{}, members: members}}, true
+				table, grouped = []chainRow{{columns: map[string]any{}, members: members}}, step.Op
 			}
 			for at := range table {
 				if table[at].columns[cmp.Or(step.As, step.Op)], err = step.aggregate(table[at].members); err != nil {

@@ -523,11 +523,11 @@ type StepRef struct {
 var standaloneNumber = regexp.MustCompile(`(^|[^\p{L}\p{N}_])[+-]?\p{Nd}[\p{Nd},.]*%?($|[^\p{L}\p{N}_])`)
 
 // ParseRunBlock holds the spec a run's model wrote to RunBlock's schema. A spec that holds a
-// number is refused - a JSON number anywhere but a step's step and call, or a number written on
-// its own in the title or a label - so every number the block shows is the server's. So is a
-// spec of a kind no block of a run is, one naming a field RunBlock has not, one that names no
-// step or the same step twice, one whose chain refuses a step, and one that names no column to
-// draw.
+// number is refused - a JSON number anywhere but a step and a call naming a saved result (numberIn),
+// or a number written on its own in the title or a label - so every number the block shows is the
+// server's. So is a spec of a kind no block of a run is, one naming a field RunBlock has not, which
+// is told every argument draw_block takes (runBlockArguments), one that names no step or the same
+// step twice, one whose chain refuses a step, and one that names no column to draw.
 func ParseRunBlock(spec json.RawMessage) (RunBlock, error) {
 	decoder := json.NewDecoder(bytes.NewReader(spec))
 	decoder.UseNumber()
@@ -542,7 +542,7 @@ func ParseRunBlock(spec json.RawMessage) (RunBlock, error) {
 	strict := json.NewDecoder(bytes.NewReader(spec))
 	strict.DisallowUnknownFields()
 	if err := strict.Decode(&block); err != nil {
-		return RunBlock{}, fmt.Errorf("going: the block spec does not fit draw_block's arguments: %v", err)
+		return RunBlock{}, fmt.Errorf("going: the block spec does not fit draw_block's arguments: %v. %s", err, runBlockArguments)
 	}
 	block.Title = strings.TrimSpace(block.Title)
 	for _, drawn := range []struct{ name, text string }{{"title", block.Title}, {"label", block.Label}, {"compare_label", block.CompareLabel}} {
@@ -580,8 +580,16 @@ func ParseRunBlock(spec json.RawMessage) (RunBlock, error) {
 	return block, nil
 }
 
+// runBlockArguments is what a spec that does not fit RunBlock's shape is told of it: each of
+// draw_block's arguments, so the model can write the spec again in one call.
+const runBlockArguments = "draw_block takes kind (chart, table or metric), title, steps - each {step, call, rows} naming a saved tool result of this run - " +
+	"and chain - each {op, ...} of filter (field and one of is, is_not, in, has, since, before or present), group (field, per, as), count (as), sum, mean, min and max (field, as) and sort (field, order) - " +
+	"then x, y and mark for a chart, columns for a table, or field, label, compare and compare_label for a metric"
+
 // numberIn is the first JSON number of a spec, in its fields' order, with where it is, outside
-// the two places a spec writes one: each step's step and call.
+// the places a spec writes one: a step's step and call. A step or a call under any other name is
+// still a result the model names, not a number it writes, so it is left to the strict decode,
+// which names the field it is under (a spec whose steps are under data is refused for data).
 func numberIn(spec map[string]any) (string, json.Number, bool) {
 	var walk func(value any, at string) (string, json.Number, bool)
 	walk = func(value any, at string) (string, json.Number, bool) {
@@ -596,6 +604,9 @@ func numberIn(spec map[string]any) (string, json.Number, bool) {
 			}
 		case map[string]any:
 			for _, name := range slices.Sorted(maps.Keys(value)) {
+				if _, isNumber := value[name].(json.Number); isNumber && (name == "step" || name == "call") {
+					continue
+				}
 				if where, number, held := walk(value[name], at+"."+name); held {
 					return where, number, true
 				}
@@ -604,21 +615,7 @@ func numberIn(spec map[string]any) (string, json.Number, bool) {
 		return "", "", false
 	}
 	for _, name := range slices.Sorted(maps.Keys(spec)) {
-		if steps, isList := spec[name].([]any); name == "steps" && isList {
-			for index, step := range steps {
-				ref, isObject := step.(map[string]any)
-				if !isObject {
-					continue
-				}
-				for _, field := range slices.Sorted(maps.Keys(ref)) {
-					if _, isNumber := ref[field].(json.Number); isNumber && (field == "step" || field == "call") {
-						continue
-					}
-					if where, number, held := walk(ref[field], fmt.Sprintf("steps[%d].%s", index, field)); held {
-						return where, number, true
-					}
-				}
-			}
+		if _, isNumber := spec[name].(json.Number); isNumber && (name == "step" || name == "call") {
 			continue
 		}
 		if where, number, held := walk(spec[name], name); held {
