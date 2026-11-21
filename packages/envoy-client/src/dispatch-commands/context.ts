@@ -115,7 +115,8 @@ export interface CheckedCall {
   /** Every problem the check found; the call is refused once, listing them all. */
   readonly problems: string[];
   readonly owner: OwnerResolution;
-  /** The arguments as the schema parsed them (the owner-resolved ones when it refused them). */
+  /** The arguments as the schema parsed them: the owner-resolved ones when it refused them, or
+   *  when it parsed them with the stand-in issue. */
   readonly args: ToolArguments;
   readonly pictures: LocalPicture[];
 }

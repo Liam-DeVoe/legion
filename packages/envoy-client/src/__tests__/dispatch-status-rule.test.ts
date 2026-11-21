@@ -429,7 +429,7 @@ describe("dispatch issue-update with an option of the status change", () => {
     expect(requests).toEqual([]);
   });
 
-  // The same ruling for a second command whose schema requires issue: a request for changes with
+  // The same holds for a second command whose schema requires issue: a request for changes with
   // no reason and no owner names the missing reason (`REVIEW_REASON_RULE` in
   // packages/contracts/src/dispatch-tools.ts) beside the missing issue.
   test("review with no owner, --verdict changes_requested and no --reason names both problems before anything is sent", async () => {
@@ -448,6 +448,19 @@ describe("dispatch issue-update with an option of the status change", () => {
     expect(stdout).toContain(
       "verdict changes_requested requires reason, a non-empty note saying what must change before the document can be approved."
     );
+    expect(requests).toEqual([]);
+  });
+
+  // dispatch suggest's rule refuses the owner and the document in one sentence
+  // (`NAMED_DOCUMENT_OWNER_RULE` in packages/contracts/src/dispatch-tools.ts). With no owner and
+  // neither --artifact nor --ref, the refusal names the unnamed document beside the missing issue:
+  // supplying the issue alone leaves the document unnamed, and the next call is refused again.
+  test("suggest with no owner and no --artifact or --ref names both problems before anything is sent", async () => {
+    const { code, stdout } = await run(["suggest", "--quote", "a", "--replace-with", "b"]);
+
+    expect(code).toBe(2);
+    expect(stdout).toContain("issue is required; supply issue or set LEGION_ISSUE");
+    expect(stdout).toContain("artifact or ref must name the document");
     expect(requests).toEqual([]);
   });
 
