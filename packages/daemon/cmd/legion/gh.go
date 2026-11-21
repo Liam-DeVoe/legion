@@ -201,8 +201,9 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// own visibility reads never use it (their own cases below, and ghCallModeOf), but it is made
 	// for every call, so no mode meets a nil guard; New resolves one program on PATH and runs
 	// nothing. Where the call reads one repository of an owner the bundle holds no directory for
-	// (ghTarget.read), that repository's visibility is read through it with no credential
-	// (liftForPublicRead) before its check clears the call below.
+	// (ghTarget.read) and R4 of dispatch://INFRA-3399 leaves it refused, that repository's
+	// visibility is read through it with no credential (liftForPublicRead) before its check clears
+	// the call below.
 	guard := leakguard.New(leakguard.Options{
 		OnVisibility: func(source leakguard.VisibilitySource) { visibilitySource = string(source) },
 		Curl:         leakguardCurl,
@@ -799,19 +800,20 @@ func ghWrapperFile(path string) (bool, error) {
 // GH_CONFIG_DIR already names; owner, the lowercased owner of the repository it acts on, "" where
 // the selectors named no owner or two; and repo, that repository's name keyed as gh reads a name
 // of it where every selector of the command named that one repository of that owner, or where
-// the command is one of knives' audit GraphQL reads, whose owner variable names the owner alone
-// and whose name variable the repository (knivesAuditRead), and "" where they named more than
-// one, where one named the owner alone, and where none named a repository at all. read is
-// whether the call only reads that one repository, owner/repo: a call that writes nothing and
-// names it, or one of knives' audit GraphQL reads of it, which the read grammar does not hold. It
-// decides nothing but whether a call naming an owner the bundle holds no directory for, which R4
-// of dispatch://INFRA-3399 leaves refused, may run under GH_CONFIG_DIR (liftForPublicRead).
-// command is the resolved command path with no arguments. files are the files the command would
-// send to GitHub as content (ghSentFiles), which the leak guard reads the text of, and stdinSent
-// whether it sends its standard input as content as well. writesNothing is whether the call is in
-// a read grammar (ghWritesNothing), so that under the shared check that rule was proven against
-// the guard runs that check alone for it (runGh's ghReadCall). Such a call sends no file: no
-// grammar names an option of ghSentFileOptions (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
+// the command is one of knives' audit GraphQL reads that R4 of dispatch://INFRA-3399 does not
+// admit, whose owner variable names the owner alone and whose name variable the repository
+// (knivesAuditRead), and "" where they named more than one, where one named the owner alone, and
+// where none named a repository at all. read is whether the call only reads that one repository,
+// owner/repo: a call that writes nothing and names it, or such a read of knives' of it, which the
+// read grammar does not hold. It decides nothing but whether a call naming an owner the bundle
+// holds no directory for, which R4 leaves refused, may run under GH_CONFIG_DIR
+// (liftForPublicRead). command is the resolved command path with no arguments. files are the
+// files the command would send to GitHub as content (ghSentFiles), which the leak guard reads the
+// text of, and stdinSent whether it sends its standard input as content as well. writesNothing is
+// whether the call is in a read grammar (ghWritesNothing), so that under the shared check that
+// rule was proven against the guard runs that check alone for it (runGh's ghReadCall). Such a call
+// sends no file: no grammar names an option of ghSentFileOptions
+// (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
 type ghTarget struct {
 	dir, owner, repo string
 	read             bool
@@ -947,14 +949,15 @@ func ghCallerToken(env map[string]string) string {
 // guard's reading of the call rests on. The target's repository is the one repository they all
 // name, which is none where a selector names an owner alone, and the repository the name
 // variable of one of knives' audit GraphQL reads names (knivesAuditRead), which that read is
-// routed by. Another GraphQL query naming its repository otherwise, by a node id or in the query
-// text, names none gh could resolve. GH_HOST naming another host than github.com, where gh would
-// send no token of the bundle's, and a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any
-// directory's token, are errors. The refusals of the selectors' routing (selectors.dir), a
-// routing dirFor refuses and selectors that route to two directories, come with the target the
-// command names, its dir "", so that runGh can lift the refusal of an owner the bundle holds no
-// directory for from a read of one public repository of it that R4 leaves refused
-// (liftForPublicRead); every other error comes with the zero target.
+// routed by where R4 does not admit it; one R4 admits is routed by its owner alone, as R4 routes
+// every call, and names no repository. Another GraphQL query naming its repository otherwise, by
+// a node id or in the query text, names none gh could resolve. GH_HOST naming another host than
+// github.com, where gh would send no token of the bundle's, and a GH_TOKEN or GITHUB_TOKEN, which
+// gh sends in place of any directory's token, are errors. The refusals of the selectors' routing
+// (selectors.dir), a routing dirFor refuses and selectors that route to two directories, come with
+// the target the command names, its dir "", so that runGh can lift the refusal of an owner the
+// bundle holds no directory for from a read of one public repository of it that R4 leaves
+// refused (liftForPublicRead); every other error comes with the zero target.
 func ghTargetOf(argv []string, env map[string]string, help func(path []string) (string, error), remotes func() ([]ghRemote, error), dirFor func(owner, name string) (string, error)) (ghTarget, error) {
 	if host := env["GH_HOST"]; host != "" && !strings.EqualFold(host, "github.com") {
 		return ghTarget{}, fmt.Errorf("GH_HOST is %q, another host than github.com, so it sends no token; unset GH_HOST", host)
@@ -1024,23 +1027,33 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	files, stdinSent := ghSentFiles(parsed)
 	command := strings.Join(cmd.path, " ")
 	writesNothing := ghWritesNothing(argv, cmd.path)
-	owner, repo, read := sel.onlyOwner(), sel.onlyRepository(), false
-	switch {
-	case writesNothing && repo != "":
-		read = true
-	case sel.api && slices.Equal(parsed.positionals, []string{"graphql"}) && len(sel.named) == 1:
-		// Its owner variable names the owner alone, and its name variable the repository it reads,
-		// which is what the call is routed by.
-		if name := knivesAuditRead(parsed, owner); name != "" {
-			repo, read = name, true
-			sel.named[0].name = name
-		}
-	}
 	fallback := ""
 	if writesNothing || ghGraphQLQueryRead(argv) {
 		fallback = env["GH_CONFIG_DIR"]
 	}
 	dir, err := sel.dir(dirFor, fallback)
+	owner, repo, read := sel.onlyOwner(), sel.onlyRepository(), false
+	switch {
+	case writesNothing && repo != "":
+		read = true
+	case sel.api && slices.Equal(parsed.positionals, []string{"graphql"}) && len(sel.named) == 1:
+		// One of knives' audit reads: its owner variable names the owner alone, and its name
+		// variable the repository it reads, which the call is routed by instead, but where R4
+		// admits it: the fallback answered a call that, routed with none, is refused. Such a read
+		// stays routed by its owner alone and names no repository, as R4 runs it.
+		name := knivesAuditRead(parsed, owner)
+		if name == "" {
+			break
+		}
+		if err == nil {
+			if _, refused := sel.dir(dirFor, ""); refused != nil {
+				break
+			}
+		}
+		repo, read = name, true
+		sel.named[0].name = name
+		dir, err = sel.dir(dirFor, fallback)
+	}
 	return ghTarget{dir: dir, owner: owner, repo: repo, read: read, command: command, files: files, stdinSent: stdinSent, writesNothing: writesNothing}, err
 }
 

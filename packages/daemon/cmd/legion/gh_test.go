@@ -1537,11 +1537,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	}
 
 	// In a clone of sjawhar's repository, a command naming none acts on sjawhar's repository.
-	clone := t.TempDir()
-	fixture := fixturegit.Runner{TB: t, Env: []string{"PATH=" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}}
-	for _, args := range [][]string{fixturegit.InitWorkTree("", "")[1:], {"remote", "add", "origin", "https://github.com/sjawhar/legion-smoke"}} {
-		fixture.Run(clone, append([]string{"git"}, args...)...)
-	}
+	clone := githubClone(t, "sjawhar/legion-smoke")
 	for _, args := range [][]string{{"pr", "list"}, {"pr", "list", "-R", "sjawhar/legion-smoke"}} {
 		if code, stdout, stderr := legionGhIn(t, clone, env, "", args...); code != 0 || !strings.HasPrefix(stdout, stub+"|"+filepath.Join(root, "sjawhar")+"|") {
 			t.Errorf("legion gh %q in that clone = exit %d, stdout %q, stderr %q; want sjawhar's directory", args, code, stdout, stderr)
@@ -1570,6 +1566,19 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	}
 }
 
+// githubClone is a working directory that is a git repository whose one remote, origin, is the
+// https URL of repository, owner/name, on github.com, made with no git configuration file but its
+// own.
+func githubClone(t *testing.T, repository string) string {
+	t.Helper()
+	clone := t.TempDir()
+	fixture := fixturegit.Runner{TB: t, Env: []string{"PATH=" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}}
+	for _, args := range [][]string{fixturegit.InitWorkTree("", "")[1:], {"remote", "add", "origin", "https://github.com/" + repository}} {
+		fixture.Run(clone, append([]string{"git"}, args...)...)
+	}
+	return clone
+}
+
 // A read of one repository of an owner the bundle holds no directory for, which R4 of
 // dispatch://INFRA-3399 leaves refused, runs under GH_CONFIG_DIR, the issue owner's directory,
 // once an unauthenticated `git ls-remote` of the repository's https URL lists a ref of it, which
@@ -1593,14 +1602,12 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 // (ghRecordingWrapperDir), which records none.
 //
 // A read R4 admits, one naming only that owner, in a working directory whose remotes name no
-// github.com repository, runs under GH_CONFIG_DIR with no ls-remote before it: under the check the
-// read rule was proven against, which alone checks a call in the read grammar, no visibility is
-// read at all, whether the repository is public, private (other/thing), missing (other/gone) or
-// empty (other/empty), and a GraphQL query that names no repository is guarded whole and reads
-// none either. knives' GraphQL reads typed as knives types them, which R4 admits and the guard
-// guards whole, are routed by their name variable, so the guard reads other/open's visibility:
-// its REST read, which `legion gh` refuses for that owner, and then the one ls-remote, made with
-// no credential as above, which the call log names.
+// github.com repository, runs under GH_CONFIG_DIR with no ls-remote before it and no gh through
+// the wrapper: under the check the read rule was proven against, which alone checks a call in the
+// read grammar, no visibility is read at all, whether the repository is public, private
+// (other/thing), missing (other/gone) or empty (other/empty); and a GraphQL query, which the
+// guard guards whole, names no repository whose visibility it would read, knives' GraphQL reads
+// typed as knives types them among them, since R4 routes them by their owner alone.
 //
 // Everything else naming that owner is refused, exit 2, `the role's GitHub App is not installed
 // on "other"`, and gh runs for none of it: a write naming that same repository, `repo clone`,
@@ -1675,16 +1682,7 @@ func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing
 			}
 		}
 	}
-	// cloneOf is a working directory whose one remote, origin, is repository's https URL.
-	cloneOf := func(repository string) string {
-		clone := t.TempDir()
-		fixture := fixturegit.Runner{TB: t, Env: []string{"PATH=" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}}
-		for _, args := range [][]string{fixturegit.InitWorkTree("", "")[1:], {"remote", "add", "origin", "https://github.com/" + repository}} {
-			fixture.Run(clone, append([]string{"git"}, args...)...)
-		}
-		return clone
-	}
-	open := cloneOf("other/open")
+	open := githubClone(t, "other/open")
 	proven := ghCheckAt(t, ghCheckPasses)
 	sweep := "query=" + knivesSweepQuery
 	facts := "query=" + knivesQueryHead + "p12: pullRequest(number: 12) { ...facts } p19126: pullRequest(number: 19126) { ...facts }" + knivesFactsTail
@@ -1730,8 +1728,7 @@ func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing
 	}
 
 	// R4's reads, in a working directory that is no git repository, under the check the read rule
-	// was proven against: no ls-remote and no gh before gh runs the read, but for knives' GraphQL
-	// reads, which the guard guards whole and reads other/open's visibility for.
+	// was proven against: no ls-remote and no gh before gh runs the read.
 	for _, args := range [][]string{
 		{"api", "repos/other/open/pulls/19126", "--jq", ".state"},
 		{"repo", "view", "other/open", "--json", "nameWithOwner,id"},
@@ -1741,6 +1738,8 @@ func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing
 		{"repo", "view", "other/gone"},
 		{"repo", "view", "other/empty", "--json", "name"},
 		{"repo", "list", "other"},
+		{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", sweep},
+		{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", facts},
 		{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", sweep, "-f", "after=x"},
 	} {
 		what := fmt.Sprintf("legion gh %q, which R4 admits", args)
@@ -1750,23 +1749,6 @@ func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing
 		}
 		if len(got.lsRemotes) != 0 || got.ghRuns != "" {
 			t.Errorf("%s ran git ls-remote %q and gh through the wrapper %q; want neither", what, got.lsRemotes, got.ghRuns)
-		}
-	}
-	for _, args := range [][]string{
-		{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", sweep},
-		{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", facts},
-	} {
-		what := fmt.Sprintf("legion gh %q, which R4 admits", args)
-		got := run(t, t.TempDir(), proven, nil, args)
-		if want := defaultDir + "|" + strings.Join(args, " ") + "\n"; got.code != 0 || got.stdout != want {
-			t.Errorf("%s = exit %d, stdout %q, stderr %q; want exit 0 and %q", what, got.code, got.stdout, got.stderr, want)
-		}
-		readWithNoCredential(t, what, got.lsRemotes, "other/open")
-		if strings.Count(got.ghRuns, "\n") != 1 {
-			t.Errorf("%s ran gh through the wrapper %q; want the guard's one REST visibility read, which `legion gh` refuses", what, got.ghRuns)
-		}
-		if strings.Count(got.log, "\n") != 1 || !strings.Contains(got.log, `visibility="ls-remote"`) || !strings.Contains(got.log, `repository="other/open"`) {
-			t.Errorf("%s left the call log %q; want one line naming other/open and its visibility read's source, ls-remote", what, got.log)
 		}
 	}
 
@@ -1788,9 +1770,9 @@ func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing
 		{args: []string{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", "query=mutation { addStar(input: {starrableId: \"R_1\"}) { clientMutationId } }"}},
 		{args: leakguard.VisibilityReadWithHeadersArgs("other/open"), env: map[string]string{leakguard.VisibilityReadVar: "other/open"}},
 		{args: leakguard.VisibilityGraphQLArgs("other/open"), env: map[string]string{leakguard.VisibilityReadVar: "other/open"}},
-		{dir: cloneOf("other/thing"), args: []string{"api", "repos/{owner}/{repo}", "--jq", ".full_name"}, lsRemote: "other/thing"},
-		{dir: cloneOf("other/gone"), args: []string{"repo", "view"}, lsRemote: "other/gone"},
-		{dir: cloneOf("other/empty"), args: []string{"repo", "view", "--json", "name"}, lsRemote: "other/empty"},
+		{dir: githubClone(t, "other/thing"), args: []string{"api", "repos/{owner}/{repo}", "--jq", ".full_name"}, lsRemote: "other/thing"},
+		{dir: githubClone(t, "other/gone"), args: []string{"repo", "view"}, lsRemote: "other/gone"},
+		{dir: githubClone(t, "other/empty"), args: []string{"repo", "view", "--json", "name"}, lsRemote: "other/empty"},
 	} {
 		what := fmt.Sprintf("legion gh %q", tc.args)
 		dir := tc.dir

@@ -403,7 +403,12 @@ const (
 
 var credentialedURL = strings.Replace(theURL, "https://", "https://"+credentialUserinfo, 1)
 
-// wantNoCredential fails the test where err names credentialedURL's user or token.
+// queriedURL is theURL carrying credentialToken in its query, the other place a URL can carry a
+// token, built apart from the URL as credentialedURL's userinfo is.
+var queriedURL = theURL + "?access_token=" + credentialToken
+
+// wantNoCredential fails the test where err names credentialedURL's user or token, which
+// queriedURL carries too.
 func wantNoCredential(t *testing.T, err error) {
 	t.Helper()
 	if strings.Contains(err.Error(), credentialUser) || strings.Contains(err.Error(), credentialToken) {
@@ -414,18 +419,19 @@ func wantNoCredential(t *testing.T, err error) {
 // A read of what the destination holds that fails refuses the push as a setup failure, never a
 // push read as one whose destination holds nothing, and the failure names the remote and the URL
 // without its credential. The URL git hands a pre-push hook can hold a user and a token
-// (https://user:token@host/...), and the failure names the URL and quotes git, which names it
-// too: both are written without the user and the token. A push made to a URL rather than to a
-// remote, `git push https://user:token@host/...`, hands the hook that URL as the remote's name
-// too, which every failure of the push names (PushName). The pushed commit adds a line the rules
-// refuse, so a read that held the commit or read nothing would answer otherwise. The stand-in git
-// here fails every call with a URL that holds a user, as a git that cannot reach the host does,
-// and runs the real git for every other call.
+// (https://user:token@host/...) or a token in its query, and the failure names the URL and quotes
+// git, which names it too: both are written without the user, the query and the token
+// (redact.URLCredentials). A push made to a URL rather than to a remote, `git push
+// https://user:token@host/...`, hands the hook that URL as the remote's name too, which every
+// failure of the push names (PushName). The pushed commit adds a line the rules refuse, so a read
+// that held the commit or read nothing would answer otherwise. The stand-in git here fails every
+// call with a URL that holds a user or a query, as a git that cannot reach the host does, and
+// runs the real git for every other call.
 func TestAFailedReadNamesItsURLWithoutItsCredential(t *testing.T) {
 	bin := t.TempDir()
 	writeProgram(t, bin, "git", `for arg; do
   case "$arg" in
-  *://*@*) echo "fatal: unable to access '$arg/': Could not resolve host: github.com" >&2; exit 128 ;;
+  *://*@*|*://*[?]*) echo "fatal: unable to access '$arg/': Could not resolve host: github.com" >&2; exit 128 ;;
   esac
 done
 exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
@@ -433,25 +439,36 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 	unreachable := " exited 128: fatal: unable to access '" + theURL + "/': Could not resolve host: github.com"
 	for _, tc := range []struct {
 		name string
-		// remote is the remote's name git hands the hook.
-		remote string
-		want   string
+		// remote is the remote's name git hands the hook, and url the URL.
+		remote, url string
+		want        string
 	}{
 		{
 			name:   "a push to a remote",
 			remote: "origin",
+			url:    credentialedURL,
 			want:   "LEAK CHECK SETUP ERROR: the push to origin: the destination's refs could not be read: git ls-remote " + theURL + unreachable,
 		},
 		{
 			name:   "a push to a URL",
 			remote: credentialedURL,
+			url:    credentialedURL,
 			want:   "LEAK CHECK SETUP ERROR: the push to " + theURL + ": the destination's refs could not be read: git ls-remote " + theURL + unreachable,
+		},
+		{
+			// git's quote of the URL loses the "/" it writes after it with the query, which runs
+			// to the quote's end.
+			name:   "a push to a URL whose query carries a token",
+			remote: queriedURL,
+			url:    queriedURL,
+			want: "LEAK CHECK SETUP ERROR: the push to " + theURL + ": the destination's refs could not be read: git ls-remote " + theURL +
+				" exited 128: fatal: unable to access '" + theURL + "': Could not resolve host: github.com",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo, base, head, _ := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
-			err := guard.Push(bound(t), mainPush(repo, base, head, tc.remote, credentialedURL))
+			err := guard.Push(bound(t), mainPush(repo, base, head, tc.remote, tc.url))
 			wantSetupFailure(t, err, tc.want)
 			wantNoCredential(t, err)
 		})

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -115,13 +114,14 @@ type PushRequest struct {
 //
 // A push to a URL rather than to a remote, `git push https://user:token@github.com/...`, hands the
 // hook that URL as the remote's name, and every refusal and setup failure of the push is printed
-// for whoever reads the log, so the name is written without the user and password a URL can carry
-// (withoutUserinfo), as a failure that names the URL itself is.
+// for whoever reads the log, so the name is written without the user and password and the query
+// a URL can carry, where a token can be (redact.URLCredentials), as a failure that names the URL
+// itself is.
 func PushName(remote string) string {
 	if remote == "" {
 		return "the push"
 	}
-	return "the push to " + withoutUserinfo(remote)
+	return "the push to " + redact.URLCredentials(remote)
 }
 
 // Push checks a push before it is made. The shared check runs in its pre-push shape — the update
@@ -423,18 +423,4 @@ func gitSaid(stderr string) string {
 		return said
 	}
 	return fmt.Sprintf("(%d bytes left out) …%s", cut, said)
-}
-
-// userinfo is the user and password a URL with a scheme can carry, the "user:token@" of
-// https://user:token@host/path: what follows "://" up to the last "@" before the first "/", "?",
-// "#", quote or space, which end the host.
-var userinfo = regexp.MustCompile(`://[^/?#\s'"]*@`)
-
-// withoutUserinfo is text with the user and password of each URL in it taken out, so that
-// https://user:token@host/path reads https://host/path. It is what a failure that names a URL
-// prints, git's own account of one being gitSaid's: the URL git hands a pre-push hook can carry a
-// token, and a failure is printed for whoever reads the log. A URL in git's scp form
-// (user@host:path) names a user and no password, and is left as it is.
-func withoutUserinfo(text string) string {
-	return userinfo.ReplaceAllLiteralString(text, "://")
 }

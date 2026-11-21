@@ -767,11 +767,11 @@ until_true 90 "the GitHub ingress bridge to report ready" grep -q 'BRIDGE READY'
 # operator's build has no recorded digest, so its install is not checked, and pinned-omp.sh says so
 # on stderr.
 pin=${box_pin:-$(<"$root/.omp-pin")}
-bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$pin" >/dev/null ||
+omp_bin=$(bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$pin") ||
   fail "Oh My Pi $pin could not be installed, or its install does not match .omp-pin.sha256 (the reason is above)"
 # The program every pane's Oh My Pi runs (daemon_runs_the_pinned_omp holds the daemon to it), by
 # which omp_descendant knows a pane's agent.
-omp_exe=$(realpath -e -- "$(mise where "$pin")/bin/omp") || fail "the Oh My Pi $pin has no bin/omp"
+omp_exe=$(realpath -e -- "$omp_bin") || fail "the Oh My Pi $pin has no bin/omp"
 envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-envoy --profile "$profile" --home "$omp_home" --dest "$work/pi-envoy" --omp "$pin")
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion" --omp "$pin")
 cat >"$work/instructions.md" <<'EOF'

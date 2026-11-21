@@ -111,9 +111,10 @@ func (g *Guard) FreshVisibility(ctx context.Context, slug string) (Visibility, e
 // github.com and nothing else.
 //
 // `legion gh` reads with it the visibility of a repository of an owner its bundle holds no gh
-// directory for (cmd/legion's liftForPublicRead): it refuses the guard's own REST and GraphQL
-// reads of such a repository, which would run with that bundle's token, so this read is the one
-// it makes, and a repository GitHub hides behind authentication never reads public.
+// directory for, for a read of it that R4 of dispatch://INFRA-3399 leaves refused (cmd/legion's
+// liftForPublicRead): it refuses the guard's own REST and GraphQL reads of such a repository,
+// which would run with that bundle's token, so this read is the one it makes, and a repository
+// GitHub hides behind authentication never reads public.
 func (g *Guard) VisibilityWithoutCredential(ctx context.Context, slug string) (Visibility, error) {
 	if err := unservable(slug); err != nil {
 		return "", err

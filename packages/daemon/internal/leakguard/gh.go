@@ -30,8 +30,9 @@ type GhRequest struct {
 	// (Guard.VisibilityWithoutCredential): the guard reads no visibility of it and goes on as for
 	// any public destination, so a call it guards whole gets the private-name pass. A caller that
 	// sets it wrongly only makes the guard scan what it would have skipped. `legion gh` sets it
-	// for a read of a repository of an owner its bundle holds no gh directory for, whose REST and
-	// GraphQL visibility reads it refuses (cmd/legion's liftForPublicRead).
+	// for a read of a repository of an owner its bundle holds no gh directory for that R4 of
+	// dispatch://INFRA-3399 leaves refused, whose REST and GraphQL visibility reads it refuses
+	// (cmd/legion's liftForPublicRead).
 	Public bool
 	// Files are the files this call would send to GitHub as content, read by a caller that
 	// parses the argv as gh does. `legion gh` is that caller: it reads the command's own help

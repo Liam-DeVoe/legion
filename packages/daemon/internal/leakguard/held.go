@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -138,10 +139,11 @@ var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/de
 // repository with no branch and no tag, holds nothing. A git that cannot be run, that exits other
 // than 0, or that its bound stops is an error naming url, never a repository read as holding
 // nothing, and the error carries no credential: the URL it names is written without the user and
-// password a URL can carry (withoutUserinfo), and git's standard error it quotes is quoted as
-// gitSaid quotes it, with every URL's credentials taken out before the cap (redact.Tail).
+// password and the query a URL can carry (redact.URLCredentials), and git's standard error it
+// quotes is quoted as gitSaid quotes it, with every URL's credentials taken out before the cap
+// (redact.Tail).
 func (g *Guard) advertised(ctx context.Context, dir, url string) (commits, objects []string, err error) {
-	read := "git ls-remote " + withoutUserinfo(url)
+	read := "git ls-remote " + redact.URLCredentials(url)
 	bounded, cancel := context.WithTimeout(ctx, g.heldReadBound)
 	defer cancel()
 	var stderr strings.Builder

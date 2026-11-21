@@ -148,11 +148,11 @@ export LEGION_GH_PATH
 # The pinned Oh My Pi, installed and held to .omp-pin.sha256 (lib/pinned-omp.sh) before anything
 # runs it: the plugin installs, the daemon's boot probes and `legion controller start`.
 pin=$(<"$root/.omp-pin")
-bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$pin" >/dev/null ||
+omp_bin=$(bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$pin") ||
   fail "the pinned Oh My Pi $pin could not be installed, or its install does not match .omp-pin.sha256 (the reason is above)"
 # The program the controller's Oh My Pi runs: what controller.yaml's omp_invocation, `mise x $pin --
 # omp`, execs. controller_omp knows the controller's process by it, as the kernel records it.
-omp_exe=$(realpath -e -- "$(mise where "$pin")/bin/omp") || fail "the pinned Oh My Pi $pin has no bin/omp"
+omp_exe=$(realpath -e -- "$omp_bin") || fail "the pinned Oh My Pi $pin has no bin/omp"
 # The daemon's port is one the kernel chose, held by a keeper for the run (lib/rig.sh's keep_port),
 # so legion.yaml and controller.yaml can name it before the daemon starts on a copy of its socket.
 keep_port daemon_keeper daemon_port

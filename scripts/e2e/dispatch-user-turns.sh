@@ -218,12 +218,12 @@ refuse_leftovers legion-e2e-user-turns
 make_omp_home "$omp_home"
 # Installed, and held to .omp-pin.sha256 when it is the pinned build (lib/pinned-omp.sh; the header
 # says why a DISPATCH_USER_TURNS_OMP build is not), before anything runs it.
-bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$omp_tool" >/dev/null ||
+omp_bin=$(bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$omp_tool") ||
   fail "Oh My Pi $omp_tool could not be installed, or its install does not match .omp-pin.sha256 (the reason is above)"
 # The program the session's Oh My Pi runs: what `mise x $omp_tool -- omp` execs. session_gone knows
 # the session by it, so it is the binary itself (native_program, lib/process-tree.sh): a script's
 # or a mise shim's process runs another file, and the wait for the session to end would pass at once.
-omp_exe=$(native_program "$(mise where "$omp_tool")/bin/omp") || fail "the Oh My Pi $omp_tool: $omp_exe"
+omp_exe=$(native_program "$omp_bin") || fail "the Oh My Pi $omp_tool: $omp_exe"
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 (cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/dispatch" ./cmd/dispatch)
 (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) || fail "the SPA did not build; see $evidence/logs/build-web.log"

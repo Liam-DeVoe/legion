@@ -130,8 +130,8 @@ It carries:
     A destination the guard cannot name that wants a credential set through git configuration is refused as a setup error, and so is a push that needs a transport setting made there, such as `core.sshCommand`, `http.proxy` or `http.sslCAInfo` in the user's file, the machine's or a `GIT_CONFIG_COUNT` block; `GIT_SSH_COMMAND`, the proxy variables and `GIT_SSL_CAINFO` still apply.
     The read has a bound of its own, two minutes, since the hook's context has none (`Guard.heldReadBound`); seven reads of cybermonklabs/legion's 5,749 branches and tags from an issue pod took 0.63 s at the median on 2026-11-18.
     A destination that stops answering refuses the push as a setup error that names the URL and the bound.
-    The URL such an error names carries no user and no token (`withoutUserinfo`), and nor does git's own message it quotes (`gitSaid`, through `redact.Tail`).
-    A push made to a URL rather than to a remote is named by that URL in every refusal and setup failure, and that name carries no user and no token either (`PushName`).
+    The URL such an error names carries no user, no token and no query (`redact.URLCredentials`), and nor does git's own message it quotes (`gitSaid`, through `redact.Tail`).
+    A push made to a URL rather than to a remote is named by that URL in every refusal and setup failure, written the same way (`PushName`).
     A branch or a tag at a commit the clone does not have holds nothing, so where that commit is ahead of the clone's, the clone's commits it reaches are read, which fails closed.
     A push whose destination holds nothing the clone has, an empty local bare repository among them, fails closed the same way:
     it reads every commit the branch reaches, at one read of each, which is thousands for a fork's branch.
