@@ -221,7 +221,8 @@ func TestARelaySocketForwardsNoFrameWhoseReceiptNamesAnotherSession(t *testing.T
 			t.Fatalf("publish a frame whose receipt is %s: %v", reply, err)
 		}
 	}
-	own := &natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: relayFrameReceipt(session), Data: []byte(`{"own":true}`)}
+	own := &natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: relayFrameReceipt(session), Data: []byte(`{"own":true}`),
+		Header: natsgo.Header{relayHeaderSubject: {"notifications.dispatch.issue." + relaySocketProject + "." + relaySocketProject + "-1.comment.created"}}}
 	if err := publisher.PublishMsg(own); err != nil {
 		t.Fatalf("publish the session's own frame: %v", err)
 	}

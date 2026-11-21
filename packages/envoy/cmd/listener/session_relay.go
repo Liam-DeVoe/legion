@@ -674,9 +674,10 @@ func (m *sessionRelays) loop() {
 		case <-m.ctx.Done():
 			m.stopAll(relayCancelListenerStopping)
 			return
-		case <-prune.C:
+		case now := <-prune.C:
 			// Each lapse it finds is a change, which onChange hears.
 			m.sessions.PruneLapsed()
+			m.pruneAdmissions(now)
 			continue
 		case <-m.wake:
 		}
@@ -748,6 +749,17 @@ func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 			m.start(sessionID, run.done)
 		}
 	}
+}
+
+// pruneAdmissions forgets, as of now, the admission of each session the cache holds no entry of
+// (session.SessionRegistry.Get) that this replica admitted more than edgeAdmissionGrace ago
+// (edgeAdmissions.prune): a session that deregistered, or whose entry lapsed, keeps no list here.
+// Every listener that is no edge records no admission, and this forgets nothing there.
+func (m *sessionRelays) pruneAdmissions(now time.Time) {
+	m.delivery.admissions.prune(now.Add(-edgeAdmissionGrace), func(sessionID string) bool {
+		_, err := m.sessions.Get(sessionID)
+		return err != nil
+	})
 }
 
 // stopAll stops every relay, each cancelled for reason: the listener is stopping, or the machine's
@@ -976,7 +988,12 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 	if m.delivery.afterStoredRowRead != nil {
 		m.delivery.afterStoredRowRead()
 	}
-	return m.delivery.storedRowFilter(m.registry, sessionID, topics), revision, true
+	filtered, err := m.delivery.storedRowFilter(ctx, m.registry, sessionID, topics)
+	if err != nil {
+		m.logger.Warn("session relay could not filter the session's stored interests; retrying", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return nil, 0, false
+	}
+	return filtered, revision, true
 }
 
 // settleFilter holds a restart's filter write to the interest row it was built from: wrote is the
@@ -1033,6 +1050,20 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 // was sending reach a session that was only slow without waiting for a registration.
 func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutcome {
 	sessionID := run.sessionID
+	// An edge listener relays a session only on the projects of the token it admitted the
+	// session's registration or role claim on, which it holds in memory (edgeAdmissions) and never
+	// reads back from the session's record. A session no registration or claim of reached this
+	// listener since it started - one this replica's restart forgot, one whose record names this
+	// machine and was written by neither here, or one whose admission was forgotten after its entry
+	// left the cache (pruneAdmissions) - is relayed nothing, and its messages wait in its consumer
+	// until it registers through this listener, which starts the relay again (apply).
+	if m.repositories != nil {
+		if _, admitted := m.delivery.admissions.of(sessionID); !admitted {
+			m.logger.Info("edge relay holds the session's messages in its consumer until the session registers through this listener",
+				slog.String("session_id", sessionID))
+			return relayEnded
+		}
+	}
 	start, pull, outcome := m.restart(ctx, run)
 	if pull == nil {
 		return outcome
@@ -1143,6 +1174,12 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// gives back a frame whose copy did not store, so a redelivery marks the entry and a move
 		// or a restart before the session's next frame still sends the mark.
 		if withhold, reason := m.edgeWithholds(sessionID, msg); withhold {
+			if reason == withheldNotAdmitted {
+				// A frame of a session this replica admitted no registration of is left
+				// unacknowledged, for the consumer to deliver it again once the session registers
+				// here; never acknowledged away.
+				continue
+			}
 			if reason == withheldAnswerUnknown {
 				mark, err := m.noteRepositoryGap(ctx, sessionID)
 				if err != nil {
@@ -1249,15 +1286,24 @@ func (m *sessionRelays) forgetRepositoryGap(sessionID string) {
 	delete(m.repositoryGaps, sessionID)
 }
 
-// edgeWithholds reports whether an edge listener withholds msg from sessionID, and why. Every
-// other listener withholds nothing. A withheld message is acknowledged (acknowledgeWithheld) or
-// given back (giveBackWithheld) by the relay loop, which decides which.
+// edgeWithholds reports whether an edge listener withholds msg from sessionID, and why: a frame
+// reaches the session only for a project of the token it was admitted on, as its own message, or
+// as a GitHub event whose own repository a fresh answer of its token's projects names
+// (edgeFrameVerdict). The projects are the token's this replica admitted the session's
+// registration on (edgeAdmissions), never the session's stored record, so no record the bus can
+// forge widens them; a session this replica admitted no registration of withholds every frame
+// unacknowledged (withheldNotAdmitted). Every other listener withholds nothing. A withheld message
+// is acknowledged (acknowledgeWithheld) or given back (giveBackWithheld) by the relay loop, which
+// decides which.
 func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) (bool, string) {
 	if m.repositories == nil {
 		return false, ""
 	}
-	entry, _ := m.sessions.Lookup(sessionID)
-	return m.repositories.relayVerdict(entry.Projects, msg.Subject, msg.Data)
+	projects, admitted := m.delivery.admissions.of(sessionID)
+	if !admitted {
+		return true, withheldNotAdmitted
+	}
+	return edgeFrameVerdict(m.repositories, sessionID, projects, msg.Subject, msg.Data)
 }
 
 // acknowledgeWithheld acknowledges msg, a GitHub event the edge withholds from sessionID for

@@ -440,7 +440,7 @@ func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
 // under a PRIV token. Controls: with edge mode off, the role is not released and the row fails;
 // with the rig's listener running without the edge's grant, the takeover copies the frame to the
 // role's kept lane, the session's first frame is the PRIV event, and the row fails.
-func TestAnEdgeRelaysARoleMessageForwardedBeforeItsRegistration(t *testing.T) {
+func TestAnEdgeWithholdsARoleMessageForwardedBeforeItsRegistration(t *testing.T) {
 	rig := newEdgeRig(t)
 	const sessionID, infraRole = "ses_edge_forwarded_before", "legion-infra-infra-5-tester"
 	rig.placeElsewhere(t, sessionID, "INFRA")
@@ -467,12 +467,9 @@ func TestAnEdgeRelaysARoleMessageForwardedBeforeItsRegistration(t *testing.T) {
 		t.Fatalf("after the registration at the edge %s's claim reads %+v (%v): the role was not released, so a frame of it is not one the release left", infraRole, claim, err)
 	}
 	sentinel, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-1.comment.created")
-	// The relay sends in stream order, so the forward, stored first, is the first frame unless the
-	// relay holds it.
-	if first := standIn.collect(t, 1, 10*time.Second)[0].item; first.EventID != item.EventID {
-		t.Fatalf("the session's first frame at the edge is %s on %s, not INFRA's %s message forwarded before the registration: the relay held that frame, "+
-			"as #4730's check of each frame's topic does; turn this row to require it withheld", first.EventID, first.Topic, infraRole)
-	}
+	// The relay sends in stream order, so the forward, stored first, would be the first frame were
+	// it not withheld. Its role topic is of INFRA, a project the session's PRIV token does not list,
+	// so the edge withholds it (edgeFrameVerdict): the session's first frame is the PRIV sentinel.
 	requireFrames(t, standIn.collect(t, 1, 10*time.Second), sentinel)
 }
 
