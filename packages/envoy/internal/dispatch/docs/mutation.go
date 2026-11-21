@@ -770,22 +770,20 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 // textRefusalError marks a refusal ReplaceText makes of its markdown alone: its parse's
 // (parseWrittenReplacing), the ask rule's refusal that the parse's read-back names instead
 // (askRefusalInstead) among them, and its render's (renderTreeWithLayout). ReplaceText answers
-// err, the refusal it marks, as it stands, in its own words and chain, without the context
-// "replace live document" it puts before every other failure of the write: a new document's
-// upload (SeedText) and the markdown round trip without new_document (SeedRendering) make the same
-// refusals of the same text in those words, and `dispatch artifact --force` takes the round trip's
-// refusal in its dry run and the upload's in its call, so the two print one refusal only where the
-// two answers are one. A repair's render refusal reaches ReplaceText as the document's own refusal
-// instead (joinedSchemaError), which carries no mark. It is used by pointer, as pmdoc's
-// unknownElementError is: two values of it compared with == compare the errors they hold, which
-// panics where those are of one type that cannot be compared.
-type textRefusalError struct {
-	err error
-}
+// the refusal it marks as it stands, in its own words and chain, without the context "replace
+// live document" it puts before every other failure of the write: a new document's upload
+// (SeedText) and the markdown round trip without new_document (SeedRendering) make the same
+// refusals of the same text in those words. `dispatch artifact --force` asks that round trip
+// before it uploads and throws the round trip's refusal, so this refusal reaches a client that
+// uploads without that check: an older `dispatch`, a call whose check got no answer, or a caller
+// of the API itself. Each of them gets the round trip's own words. A repair's render refusal
+// reaches ReplaceText as the document's own refusal instead (joinedSchemaError), which carries
+// no mark. Its text and what it wraps are the refusal's own, as pmdoc's liveHeldRefusal's are. It
+// is used by pointer, as pmdoc's unknownElementError is: two values of it compared with ==
+// compare the errors they hold, which panics where those are of one type that cannot be compared.
+type textRefusalError struct{ error }
 
-func (e *textRefusalError) Error() string { return e.err.Error() }
-
-func (e *textRefusalError) Unwrap() error { return e.err }
+func (e *textRefusalError) Unwrap() error { return e.error }
 
 // ReplaceText replaces the entire live document tree so connected clients
 // receive document uploads as a regular server-side transaction. The precondition names the
@@ -861,7 +859,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		var target *pmdoc.Node
 		target, read, err = parseWrittenReplacing(current, markdown)
 		if err != nil {
-			return &textRefusalError{err: err}
+			return &textRefusalError{err}
 		}
 		// A repair is a whole new document, held to every ask's content rule and to the bound
 		// an ask's wording shares, as RebuildDocument holds supplied markdown, and it keeps
@@ -879,7 +877,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		var offsets []pmdoc.BlockOffset
 		var layout *pmdoc.Layout
 		if canonical, offsets, layout, err = renderTreeWithLayout(target); err != nil {
-			return &textRefusalError{err: err}
+			return &textRefusalError{err}
 		}
 		written = renderedTree{tree: target, markdown: canonical, offsets: offsets, layout: layout}
 		if !repairing && currentMarkdown == canonical {
@@ -994,7 +992,7 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	if err != nil && !(unchanged && errors.Is(err, websocket.ErrNoChanges)) {
 		var refused *textRefusalError
 		if errors.As(err, &refused) {
-			return "", refused.err
+			return "", refused.error
 		}
 		return "", wrapUnlessTooLarge(err, "replace live document")
 	}

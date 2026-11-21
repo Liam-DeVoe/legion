@@ -1,7 +1,8 @@
 // The stored-text check of an upload Dispatch stores as a Markdown document: whether the call
 // refuses its text for its size, and, for inline text, whether Dispatch would store the text under
 // another spelling, read from the store's own parse and render. `dispatch artifact` and its dry run
-// both make it (`artifactCommand` and `artifactDryRun` in documents.ts), so the two answer alike.
+// both make it, chosen by one function (`artifactTextCheck`, which `artifactCommand` and
+// `artifactDryRun` in documents.ts call), so the two answer alike.
 import {
   MARKDOWN_DOCUMENT_MAX_BYTES,
   MARKDOWN_DOCUMENT_TOO_LARGE,
@@ -178,7 +179,7 @@ export type StoredTextCheck =
  * call before it reads whether the owner holds the name (`artifactCommand`), and the call and its
  * dry run before they ask the round trip (`storedTextCheck`, and `documentFileBytes` for a file).
  */
-export function documentTooLarge(measured: string | Uint8Array | number): Error | undefined {
+function documentTooLarge(measured: string | Uint8Array | number): Error | undefined {
   const bytes =
     typeof measured === "number"
       ? measured
@@ -311,7 +312,7 @@ async function askRoundTrip(
  * every character of this set but a tab, a line feed, a carriage return and a space, each of the
  * rest rendering to itself.
  */
-export async function storedTextCheck(
+async function storedTextCheck(
   client: () => DispatchClient,
   tool: string,
   name: string,
@@ -359,9 +360,11 @@ export async function storedTextCheck(
  * with no refusal for its spelling. The upload refuses the file for everything the round trip
  * would refuse its bytes for, so a round trip that gave no answer - none in time, a failure, or a
  * Dispatch without the route, which answers 404 or 405 - is `unchecked`, and the call uploads the
- * file, leaving its refusal to the upload, as it did before the route existed.
+ * file, leaving its refusal to the upload. The call uploads the file whatever the round trip failed
+ * with, so asking it again would only delay that upload: `client` asks it once in the call, as in
+ * the dry run (`artifactTextCheck`).
  */
-export async function storedFileCheck(
+async function storedFileCheck(
   client: () => DispatchClient,
   bytes: Uint8Array,
   force: boolean
@@ -377,4 +380,33 @@ export async function storedFileCheck(
     case "unanswered":
       return unchecked(answer);
   }
+}
+
+/**
+ * The check of the text `dispatch artifact` uploads as a Markdown document, chosen here for the
+ * call and its dry run alike (`artifactCommand`, `artifactDryRun`), so the two refuse a text alike:
+ * inline `content` takes storedTextCheck, asked through `textClient`; a `--path` file's `bytes`, as
+ * `documentFileBytes` answers them, take storedFileCheck, asked through `fileClient`; and an upload
+ * holding neither - a file Dispatch stores as its bytes, or a name alone - is asked nothing
+ * (undefined). The call hands its own client for inline text, since a failed check of such text
+ * refuses the upload, so the check asks again as every request of the call does; for a file it
+ * hands a client that asks once within DRY_RUN_DEADLINE_MS, since the file goes up whatever its
+ * check failed with. The dry run hands its own client for both. The check is returned unasked, so
+ * its caller decides what becomes of an error building a client throws.
+ */
+export function artifactTextCheck(upload: {
+  readonly tool: string;
+  readonly name: string;
+  readonly content: string | undefined;
+  readonly bytes: Uint8Array | undefined;
+  readonly force: boolean;
+  readonly textClient: () => DispatchClient;
+  readonly fileClient: () => DispatchClient;
+}): (() => Promise<StoredTextCheck>) | undefined {
+  const { tool, name, content, bytes, force } = upload;
+  if (content !== undefined) {
+    return () => storedTextCheck(upload.textClient, tool, name, content, force);
+  }
+  if (bytes !== undefined) return () => storedFileCheck(upload.fileClient, bytes, force);
+  return undefined;
 }

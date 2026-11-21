@@ -12,7 +12,11 @@ import type {
 import { urlForText } from "@legion/contracts/log-text";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
-import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
+import {
+  DispatchClient,
+  type DispatchClientOptions,
+  type DispatchWriteRetry,
+} from "../dispatch-http";
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
@@ -122,6 +126,13 @@ export interface DryRunContext {
   readonly deadline: AbortSignal;
   readonly deadlineMs: number;
 }
+
+/** How long a dry run waits on Dispatch for its step's answer (`DispatchCommand.dryRun`): well
+ *  inside the 20 s an AskGate older than DISPATCH_DRY_RUN_LOCAL gives a dry run, so a slow Dispatch
+ *  passes that gate's dry run with a warning rather than failing it. AskGate now sets the
+ *  variable, under which no step runs. The call of `dispatch artifact` asks its check of a
+ *  Markdown file within the same bound, as its dry run asks it (`artifactCommand`). */
+export const DRY_RUN_DEADLINE_MS = 5_000;
 
 /**
  * What a dry-run step found, which the dry run answers with the call's own output and exit code:
@@ -296,9 +307,12 @@ export interface SessionContext {
   readonly hostSession: string | undefined;
   /**
    * A factory, not one instance: the constructor starts the request deadline, and the main path
-   * resolves the origin (a subprocess) before it needs a client.
+   * resolves the origin (a subprocess) before it needs a client. `options` are laid over the
+   * session's own (its signal, its write pacing and its sleep), for a request that runs under a
+   * budget of its own: the call of `dispatch artifact` asks its check of a Markdown file once,
+   * within DRY_RUN_DEADLINE_MS (`artifactCommand`).
    */
-  newClient(): DispatchClient;
+  newClient(options?: DispatchClientOptions): DispatchClient;
 }
 
 /**
@@ -361,11 +375,12 @@ export function sessionContext(
     configUrl,
     linkBase: linkBaseOf(input.config.publicUrl ?? url),
     hostSession: input.sessionId?.trim(),
-    newClient: () =>
+    newClient: (options = {}) =>
       new DispatchClient(url, credential, fetchImpl, {
         signal: input.signal,
         writeRetry: input.writeRetry,
         sleep: input.sleep,
+        ...options,
       }),
   };
 }

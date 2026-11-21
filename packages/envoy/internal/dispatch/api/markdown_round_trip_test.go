@@ -372,8 +372,11 @@ func textRefusalText(parts []textRefusalPart) (string, error) {
 // permissive replacement reaches it and is refused it; and a check CI proves breaking each of the
 // three rules its attributes keep (ciCheckBreaks).
 //
-// The texts are built to the sizes checked here, and a row's words are the constant's where the
-// Go code names one, the CI checks' as ciCheckRefusal writes them.
+// The texts are built to the sizes checked here, a row's words are the constant's where the Go
+// code names one, the CI checks' as ciCheckRefusal writes them, and a row whose text or rendering
+// is a value the other tests here use (askAfterOptions, misreadRendering, repeatedCheckID,
+// mintedCheckID and each ciCheckBreaks rule's block) is that value, so the list and those tests
+// cannot drift apart. A row's sent names "inline" and "file" alone.
 func roundTripRefusals(t *testing.T) []roundTripRefusal {
 	t.Helper()
 	raw, err := os.ReadFile(textRefusalsFile)
@@ -395,6 +398,11 @@ func roundTripRefusals(t *testing.T) []roundTripRefusal {
 		}
 		if _, ok := named[row.Name]; ok {
 			t.Fatalf("%s names two rows %q", textRefusalsFile, row.Name)
+		}
+		for _, way := range row.Sent {
+			if way != "inline" && way != "file" {
+				t.Fatalf(`%s gives %q the way %q in sent, want "inline" or "file"`, textRefusalsFile, row.Name, way)
+			}
 		}
 		refusal := roundTripRefusal{
 			name: row.Name, text: text, sent: row.Sent, status: row.Status, code: row.Code, words: row.Words, scope: row.Scope,
@@ -442,6 +450,31 @@ func roundTripRefusals(t *testing.T) []roundTripRefusal {
 			t.Fatalf("%s gives %q the words %q, want %q", textRefusalsFile, name, got, words)
 		}
 	}
+	texts := map[string]string{
+		"an ask block that breaks its content rule":                                            askAfterOptions,
+		"markdown whose rendering no reader reads back":                                        misreadRendering,
+		"an ask that breaks its content rule in markdown whose rendering no reader reads back": askAfterOptions + "\n" + misreadRendering,
+		"a block id named on two blocks":                                                       repeatedCheckID,
+		"a block id named on two blocks beside a list the store respells":                      "* a\n\n" + repeatedCheckID,
+		"a block id named on two blocks in markdown whose rendering no reader reads back":      repeatedCheckID + "\n" + misreadRendering,
+	}
+	for _, rule := range ciCheckBreaks {
+		texts["a check proved by CI with "+rule.name] = "Intro.\n\n" + ciCheckBlock("c2", rule.markdown)
+	}
+	for name, text := range texts {
+		if got := rowNamed(name).text; got != text {
+			t.Fatalf("%s gives %q the text %q, want %q", textRefusalsFile, name, got, text)
+		}
+	}
+	renderings := map[string]string{
+		"a block id named on two blocks":                                  mintedCheckID,
+		"a block id named on two blocks beside a list the store respells": "- a\n\n" + mintedCheckID,
+	}
+	for name, rendering := range renderings {
+		if got := rowNamed(name).replaced.rendering; got != rendering {
+			t.Fatalf("%s gives %q the replaced rendering %q, want %q", textRefusalsFile, name, got, rendering)
+		}
+	}
 	return refusals
 }
 
@@ -450,15 +483,20 @@ func roundTripRefusals(t *testing.T) []roundTripRefusal {
 var roundTripDeclaredRefusal = regexp.MustCompile(`\b[0-9]{3} [A-Z][A-Z0-9_]*\b`)
 
 // TestEveryRefusalTheRoundTripsDeclareHasATextRefusalRow binds textRefusalsFile to the round
-// trips' contract: each refusal the descriptions of POST /api/v1/markdown/round-trip and POST
-// /api/v1/markdown/file-round-trip name, which the OpenAPI document publishes, is the status and
-// code of at least one row, so a refusal the contract declares cannot go without a text that
-// proves it. The pairs are read from the route table itself, not from a copy of it.
+// trips' contract: each status and code pair the descriptions of POST /api/v1/markdown/round-trip
+// and POST /api/v1/markdown/file-round-trip name, which the OpenAPI document publishes, is the
+// status and code of at least one row. The pairs are read from the route table itself, not from a
+// copy of it. A pair is all it binds, so a declared refusal that shares its pair with another is
+// bound through that pair alone, and three declared refusals are not bound by this test by
+// themselves: 400 INVALID_MARKDOWN for an element this build cannot create yet and 413
+// CAP_EXCEEDED for text whose rendering is past the elements one document holds, which no row
+// holds and whose pairs other rows hold, and a render that fails, which the descriptions give no
+// pair of its own.
 //
 // The inline round trip's description also names the route's own refusal of a body past its
 // bound, 413 CAP_EXCEEDED, which is no refusal of a text. It needs no exclusion: it is the pair of
 // the refusal of text past the bytes one document holds, which the description names too and rows
-// prove, and a pair is all this test asks a row for.
+// prove.
 func TestEveryRefusalTheRoundTripsDeclareHasATextRefusalRow(t *testing.T) {
 	held := map[string]bool{}
 	for _, refusal := range roundTripRefusals(t) {

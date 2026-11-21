@@ -101,7 +101,7 @@
 # loads what that filter's programs compile or its bundles load. dispatch_browser takes the
 # union of dispatch_ui's set and dispatch_two_builds_go's, the bundle of the dispatch command:
 # its rows run the SPA and the e2e helpers that dispatch_ui's programs compile, and they spawn
-# that command (packages/dispatch/e2e/dispatch-cli.ts:8,39). dispatch_two_builds takes the same
+# that command (packages/dispatch/e2e/dispatch-cli.ts:8,58-59). dispatch_two_builds takes the same
 # union, for its browser half and for the command its Go step runs. LISTED says why for each.
 # check-ci-filters.sh, which can run neither tsc nor `bun build`, holds no declared read to those
 # files: rule 9's second direction passes over a listed block's patterns, since this check holds

@@ -102,7 +102,7 @@ LISTED = [
     # packages/dispatch, which bundles the proof editor, and the Playwright config and the e2e
     # helpers it loads are packages/dispatch/e2e, which the dashboard's program compiles: that
     # much of @legion/contracts is dispatch_ui's set. Its rows also spawn the dispatch command:
-    # packages/dispatch/e2e/dispatch-cli.ts:8,39 runs `bun packages/envoy-client/bin/dispatch.ts`
+    # packages/dispatch/e2e/dispatch-cli.ts:8,58-59 runs `bun packages/envoy-client/bin/dispatch.ts`
     # for the inbox-cli, asked-of-cli, asked-of and doc specs, and ci_job_reads.py's
     # dispatch_browser gate declares that entry as a read. The contracts modules that command
     # loads are its bundle's, which BUNDLES pairs with dispatch_two_builds_go, so the block is
@@ -116,7 +116,7 @@ LISTED = [
     ("dispatch_browser", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
      "the browser suite runs the SPA built from packages/dispatch and the Playwright config and e2e helpers of "
      "packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, and its rows spawn "
-     "the dispatch command (packages/dispatch/e2e/dispatch-cli.ts:8,39 runs `bun packages/envoy-client/bin/dispatch.ts`) "
+     "the dispatch command (packages/dispatch/e2e/dispatch-cli.ts:8,58-59 runs `bun packages/envoy-client/bin/dispatch.ts`) "
      "whose bundle dispatch_two_builds_go's row builds; no step loads any other"),
     # The two-build job's Go step reaches packages/contracts through the one dispatch command its
     # twobuild_cli_test.go runs, which BUNDLES builds.

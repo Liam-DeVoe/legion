@@ -27,19 +27,18 @@ export interface CliRun {
  * `HOME` and `DISPATCH_STATE_DIR` are the row's own temporary directory, so the command reads no
  * developer's `envoy.json` and writes its session state nowhere but there.
  *
- * `token` is the bearer the command presents: the harness's shared agent token unless a row hands
- * it one of its own, which is how a row runs the command under a person's own personal token, as
- * an agent acting for its person runs it.
+ * `options.token` is the bearer the command presents: the harness's shared agent token unless a
+ * row hands it one of its own, which is how a row runs the command under a person's own personal
+ * token, as an agent acting for its person runs it.
  *
- * `stdin` is the bytes the command reads on its standard input, as a pipe hands them to a
+ * `options.stdin` is the bytes the command reads on its standard input, as a pipe hands them to a
  * `--content-file -`, and then the end of that input; without it the command's standard input is
- * ignored, as before.
+ * ignored.
  */
 export function runDispatch(
   args: readonly string[],
   home: string,
-  token: string = e2eAgentToken,
-  stdin?: Uint8Array
+  { token = e2eAgentToken, stdin }: { readonly token?: string; readonly stdin?: Uint8Array } = {}
 ): Promise<CliRun> {
   const argv = [dispatchEntry, ...args];
   const options = {

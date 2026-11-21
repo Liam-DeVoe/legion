@@ -16,7 +16,7 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
-import { defined } from "./dispatch-commands/context";
+import { DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
 import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
@@ -145,12 +145,6 @@ export function cliRefusals(text: string): CliRefusal[] {
 /** How long a result waits on the listener for the session's subscriptions, after the write
  *  itself has landed: one attempt, no retry, since the read is best effort. */
 const SUBSCRIPTIONS_TIMEOUT_MS = 1_500;
-
-/** How long a dry run waits on Dispatch for its step's answer (`DispatchCommand.dryRun`): well
- *  inside the 20 s an AskGate older than DISPATCH_DRY_RUN_LOCAL gives a dry run, so a slow Dispatch
- *  passes that gate's dry run with a warning rather than failing it. AskGate now sets the
- *  variable, under which no step runs. */
-const DRY_RUN_DEADLINE_MS = 5_000;
 
 /** Why the session's Dispatch is off, in the words the call is refused with after `dispatch: `. */
 function dispatchOffText(off: SectionOff): string {

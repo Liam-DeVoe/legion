@@ -1170,8 +1170,10 @@ upload's file part, and take only its refusal (`storedFileCheck`), never a spell
 stores a Markdown file as the store spells it. The call throws that refusal before it uploads, so
 the two print the same refusal and exit alike; on any other answer, a spelling or none (no answer
 in time, a failure, or a Dispatch without the route, which answers 404 or 405), the call uploads
-the file, and its upload makes its own refusal. A file Dispatch stores as its bytes is asked
-nothing, by the call as by the dry run. What only the call checks, since it needs more than the
+the file, and its upload makes its own refusal. Since the file goes up whatever the round trip
+failed with, the call asks it as the dry run does: once, within the same 5 s, with no wait before
+asking a route again. A file Dispatch stores as its bytes is asked nothing, by the call as by
+the dry run. What only the call checks, since it needs more than the
 text, stays the call's: whether the owner holds the name, the token of a replacement, a
 replacement's own rules, a block pointer's target, whether a check proved by CI holds a recorded
 result, and the issue's state. The call checks the text, inline or a file's, before it reads
@@ -1182,9 +1184,10 @@ Dispatch configured, the dry run of inline text or of a Markdown file passes wit
 the call is refused for the same reason. The step waits
 at most 5 s. When it gets no answer (no Dispatch configured, any other failure, no answer in time,
 or a Dispatch without the route), the dry run passes, and one `dispatch: warning:` line on stderr
-says why and what the call does then, as the check's kind says it: a Dispatch without the route
-cannot check the text or the file, which the call uploads unchecked; blank text or a file whose
-check got no answer goes up unchecked too; any other text the call refuses until Dispatch answers.
+says why and what the call does then, as the check's kind says it: inline text a Dispatch without
+the route cannot check, and blank text whose check got no answer, the call uploads unchecked; a
+file the call asks about once more, and uploads unchecked if that gets no answer either; any other
+text the call refuses until Dispatch answers.
 The JSON stays alone on stdout. With
 `DISPATCH_DRY_RUN_LOCAL=1` an upload's dry run asks Dispatch nothing, for a caller that reads the
 arguments alone; the variable does not change a

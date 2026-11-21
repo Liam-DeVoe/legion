@@ -11726,12 +11726,11 @@ describe("executeDispatchTool", () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
       requests.push({ path: pathname, method: init?.method ?? "GET" });
-      if (pathname === "/api/v1/markdown/round-trip") {
-        return response({ markdown: JSON.parse(String(init?.body)).markdown });
-      }
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([held]);
       }
+      const preflight = uploadPreflight(url, init);
+      if (preflight !== undefined) return preflight;
       throw new Error(`unexpected request: ${pathname}`);
     };
     const upload = (args: Record<string, unknown>) =>
@@ -11873,12 +11872,11 @@ describe("executeDispatchTool", () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const { pathname } = new URL(String(url));
       requests.push({ path: pathname, method: init?.method ?? "GET" });
-      if (pathname === "/api/v1/markdown/round-trip") {
-        return response({ markdown: JSON.parse(String(init?.body)).markdown });
-      }
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([held]);
       }
+      const preflight = uploadPreflight(url, init);
+      if (preflight !== undefined) return preflight;
       throw new Error(`unexpected request: ${pathname}`);
     };
 

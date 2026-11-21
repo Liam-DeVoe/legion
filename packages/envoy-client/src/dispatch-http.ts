@@ -942,6 +942,23 @@ function reachesDispatch(status: number): boolean {
   return status >= 500;
 }
 
+/** What a `DispatchClient` is built with beside its URL, its credential and its fetch. */
+export interface DispatchClientOptions {
+  readonly signal?: AbortSignal | undefined;
+  /** The client's own deadline, counted from now: `DISPATCH_TOOL_DEADLINE_MS` when absent. A
+   *  maker with a budget of its own names it here rather than as a timed `signal`, so the
+   *  credential is given that budget less the request's reserve (`#credentialSignal`). */
+  readonly deadlineMs?: number | undefined;
+  readonly writeRetry?: DispatchWriteRetry | undefined;
+  readonly sleep?: Sleep | undefined;
+  /** Whether a request a Dispatch process answered with no route for it is asked again
+   *  (`#noRoute`), true by default. False runs each request once and throws that answer as it
+   *  came (a `DispatchServiceError` `isNoRoute` recognises), for a caller that has an answer
+   *  of its own to a missing route and wants it at once, rather than after the waits of
+   *  `NO_ROUTE_RETRY_DELAYS_MS`. */
+  readonly retryNoRoute?: boolean | undefined;
+}
+
 /**
  * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
  * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
@@ -989,21 +1006,7 @@ export class DispatchClient {
     baseUrl: string,
     credential: RequestCredential,
     readonly fetchImpl: typeof fetch = fetch,
-    options: {
-      readonly signal?: AbortSignal | undefined;
-      /** The client's own deadline, counted from now: `DISPATCH_TOOL_DEADLINE_MS` when absent. A
-       *  maker with a budget of its own names it here rather than as a timed `signal`, so the
-       *  credential is given that budget less the request's reserve (`#credentialSignal`). */
-      readonly deadlineMs?: number | undefined;
-      readonly writeRetry?: DispatchWriteRetry | undefined;
-      readonly sleep?: Sleep | undefined;
-      /** Whether a request a Dispatch process answered with no route for it is asked again
-       *  (`#noRoute`), true by default. False runs each request once and throws that answer as it
-       *  came (a `DispatchServiceError` `isNoRoute` recognises), for a caller that has an answer
-       *  of its own to a missing route and wants it at once, rather than after the waits of
-       *  `NO_ROUTE_RETRY_DELAYS_MS`. */
-      readonly retryNoRoute?: boolean | undefined;
-    } = {}
+    options: DispatchClientOptions = {}
   ) {
     this.#credential = credential;
     // Its user info held, as the Envoy client's is (`holdUrlUserinfo`).

@@ -3,13 +3,13 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  baseUrl,
   createIssue,
   createIssueArtifact,
   createProject,
-  e2eAgentToken,
+  documentBase,
   getArtifactText,
   listIssueArtifacts,
+  markdownRoundTrip,
 } from "./api";
 import { type CliRun, runDispatch } from "./dispatch-cli";
 import { expect, test } from "./test";
@@ -73,15 +73,6 @@ const rows = JSON.parse(readFileSync(textRefusalsFile, "utf8")) as readonly Text
 
 const utf8 = new TextEncoder();
 
-/** `unit` repeated until it fills `length` bytes, the last copy cut where the bytes end. */
-function repeated(unit: Uint8Array, length: number): Uint8Array {
-  const bytes = new Uint8Array(length);
-  for (let at = 0; at < length; at += unit.length) {
-    bytes.set(unit.subarray(0, Math.min(unit.length, length - at)), at);
-  }
-  return bytes;
-}
-
 /** The bytes a row's parts stand for, joined as bytes: a `base64` part is raw bytes, which a
  *  string could not carry, and `{"repeat", "bytes"}` cuts by bytes rather than by characters. A
  *  part that is none of the four fails the row by its index, as `textRefusalText` does. */
@@ -92,23 +83,17 @@ function textOf(row: TextRefusalRow): Uint8Array {
     if (members === "base64" && "base64" in part) return Buffer.from(part.base64, "base64");
     if (members === "repeat,times" && "times" in part && part.repeat !== "" && part.times > 0) {
       const unit = utf8.encode(part.repeat);
-      return repeated(unit, unit.length * part.times);
+      return Buffer.alloc(unit.length * part.times, unit);
     }
     if (members === "bytes,repeat" && "bytes" in part && part.repeat !== "" && part.bytes > 0) {
-      return repeated(utf8.encode(part.repeat), part.bytes);
+      return Buffer.alloc(part.bytes, utf8.encode(part.repeat));
     }
     throw new Error(
       `${textRefusalsFile.pathname}: part ${index} of ${JSON.stringify(row.name)} is none of ` +
         '{"text": s}, {"base64": s}, {"repeat": s, "times": n} and {"repeat": s, "bytes": n}'
     );
   });
-  const text = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
-  let at = 0;
-  for (const part of parts) {
-    text.set(part, at);
-    at += part.length;
-  }
-  return text;
+  return Buffer.concat(parts);
 }
 
 /** The ways a text is given, each with the member of `sent` that admits it. */
@@ -136,7 +121,7 @@ async function storedOf(
 
 /** A long string as a failure prints it: its length and digest, so a 1 MiB text is no diff. */
 function digested(text: string): string {
-  return `${utf8.encode(text).length} bytes, sha256 ${createHash("sha256").update(text).digest("hex")}`;
+  return `${Buffer.byteLength(text, "utf8")} bytes, sha256 ${createHash("sha256").update(text).digest("hex")}`;
 }
 
 /** The arguments a dry run that passed printed, with the inline text digested. */
@@ -154,28 +139,11 @@ function shown(label: string, run: CliRun): string {
 
 /** The markdown the most permissive replacement stores for `markdown`: the round trip's answer
  *  without `new_document`, which is what `--force` asks (requireReplacementAnswer,
- *  markdown_round_trip_test.go). It fails the row unless Dispatch answers a rendering, so a
- *  replacement that came to refuse what the row's `replaced` says it takes is no pass here. */
+ *  markdown_round_trip_test.go). A refusal fails the row, since `markdownRoundTrip` throws on any
+ *  answer but a rendering, so a replacement that came to refuse what the row's `replaced` says it
+ *  takes is no pass here. */
 async function replacementRendering(markdown: string): Promise<string> {
-  const answered = await fetch(new URL("/api/v1/markdown/round-trip", baseUrl), {
-    body: JSON.stringify({ markdown }),
-    headers: { Authorization: `Bearer ${e2eAgentToken}`, "Content-Type": "application/json" },
-    method: "POST",
-  });
-  const body = await answered.text();
-  expect(answered.status, `the round trip without new_document: ${body.slice(0, 500)}`).toBe(200);
-  const answer: unknown = JSON.parse(body);
-  if (
-    typeof answer !== "object" ||
-    answer === null ||
-    !("markdown" in answer) ||
-    typeof answer.markdown !== "string"
-  ) {
-    throw new Error(
-      `the round trip without new_document answered no markdown: ${body.slice(0, 500)}`
-    );
-  }
-  return answer.markdown;
+  return (await markdownRoundTrip({ markdown })).markdown;
 }
 
 /** An id the parse mints for a block whose id another block already names: a random v4 uuid,
@@ -194,7 +162,8 @@ async function expectedOf(
   row: TextRefusalRow,
   sent: "inline" | "file",
   force: boolean,
-  text: Uint8Array
+  text: Uint8Array,
+  rendering: () => Promise<string>
 ): Promise<Expected> {
   if (row.scope === "upload" || !force) {
     return { kind: "refused alike", exit: 1, names: [`${row.code}: `, row.words] };
@@ -208,7 +177,7 @@ async function expectedOf(
   }
   if (sent === "inline") {
     const given = new TextDecoder().decode(text);
-    const stored = await replacementRendering(given);
+    const stored = await rendering();
     // The store ends every document with a line feed, and that one line feed is the only
     // difference the command's check forgives (`withoutFinalLineFeed`,
     // packages/envoy-client/src/dispatch-commands/stored-text.ts).
@@ -238,14 +207,27 @@ test.afterEach(() => {
 });
 
 for (const [index, row] of rows.entries()) {
+  // The row's text, and the markdown the most permissive replacement stores for it, each made by
+  // the first combination that reads it and shared by the rest, since both depend on the row
+  // alone: a text of up to 1 MiB is built once a row, and the round trip asked once a row.
+  let built: Uint8Array | undefined;
+  const textOfRow = (): Uint8Array => {
+    built ??= textOf(row);
+    return built;
+  };
+  let rendered: Promise<string> | undefined;
+  const renderingOfRow = (): Promise<string> => {
+    rendered ??= replacementRendering(new TextDecoder().decode(textOfRow()));
+    return rendered;
+  };
   for (const way of ways) {
     if (!row.sent.includes(way.sent)) continue;
     for (const force of [false, true]) {
       for (const target of ["a new name", "a held name"] as const) {
         // The row, the way, --force and the target, so a failure names all four.
         const combination = `${row.name}: ${way.label}, ${force ? "--force" : "no --force"}, over ${target}`;
-        // SLOW(>=2s): two cold `bun` starts of the real `dispatch` command for the row, a third
-        // for the held document's token under --force, and texts of up to 1 MiB sent through it.
+        // SLOW(>=2s): two cold `bun` starts of the real `dispatch` command for the row, and texts
+        // of up to 1 MiB sent through it.
         test(combination, async () => {
           const output = test.info().outputPath();
           const home = join(output, "home");
@@ -253,24 +235,16 @@ for (const [index, row] of rows.entries()) {
           await createProject({ key: "DRY", name: "Dry runs" });
           const issue = await createIssue({ project: "DRY", title: "The dry run and the call" });
           const name = `row-${index}-${way.key}-${force ? "force" : "plain"}-${target === "a held name" ? "held" : "new"}.md`;
-          const text = textOf(row);
+          const text = textOfRow();
 
           // The held name: a document the issue holds under it, with a short text. An upload
-          // with --force names the token it replaces, read as an agent reads it.
+          // with --force names the token it replaces.
           let held: string | undefined;
-          let base: { document: string } | undefined;
+          let base: { readonly document: string } | undefined;
           if (target === "a held name") {
             const created = await createIssueArtifact(issue.key, { content: heldText, name });
             held = created.artifact.id;
-            if (force) {
-              const read = await runDispatch(
-                ["doc-read", "--issue", issue.key, "--artifact", created.artifact.slug],
-                home
-              );
-              const token = /^Document token: (sha256:\S+)$/m.exec(read.stdout)?.[1];
-              expect(token, shown("doc-read", read)).toBeDefined();
-              base = { document: token ?? "" };
-            }
+            if (force) base = await documentBase(held);
           }
           const before = await storedOf(issue.key, held);
 
@@ -299,17 +273,19 @@ for (const [index, row] of rows.entries()) {
             ...(force ? ["--force"] : []),
             ...(base === undefined ? [] : ["--precondition-json", JSON.stringify(base)]),
           ];
-          const dry = await runDispatch([...args, "--dry-run"], home, undefined, source.stdin);
-          const call = await runDispatch(args, home, undefined, source.stdin);
+          const dry = await runDispatch([...args, "--dry-run"], home, { stdin: source.stdin });
+          const call = await runDispatch(args, home, { stdin: source.stdin });
           const both = `${shown("the dry run", dry)}\n${shown("the call", call)}`;
-          const expected = await expectedOf(row, way.sent, force, text);
+          const expected = await expectedOf(row, way.sent, force, text, renderingOfRow);
 
           if (expected.kind === "gap") {
             // The documented limit, "What the dry run cannot give": with --force the dry run
             // asks for none of a new document's refusals, so it passes, printing the arguments,
             // while the call is refused - over a new name because that upload makes a new
             // document, and over a held one because a replacement holds the rule for the
-            // blocks it adds or changes. A change that closes or widens the gap fails here.
+            // blocks it adds or changes, or, for a rendering past the bytes, because the growth
+            // check refuses a rendering that grows past them over the version it replaces. A
+            // change that closes or widens the gap fails here.
             expect(dry.code, both).toBe(0);
             expect(printedArguments(dry.stdout), both).toEqual({
               issue: issue.key,
