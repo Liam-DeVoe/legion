@@ -1,56 +1,62 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/cputest"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// Saving a document takes time linear in a pathological run over the tested ladder sizes
-// (LEGION-465). Before the fix Postgres's search indexing read a run of `a_` or `q_` in quadratic
-// time, and pmdoc parsed `a_b*` in nearly quadratic time. On one loaded machine, before the fix
-// and after it at the same moment, 64 KiB of `a_` saved in 46 s and 0.3 s, 128 KiB of `a_b*` in
-// 33 s and 1.3-2.1 s, an issue titled with 32 KiB of `q_` in 12 s and 0.06-0.17 s, and the
-// duplicate check against a 16 KiB title took 18-21 s and 0.12-0.31 s. Times after the fix follow
-// the runner's load, so no wall-clock bound holds on every runner; each save is timed at growing
-// sizes instead, and its growth is bounded (growsLinearly).
+// Saving a pathological body costs work linear in it, at every size a caller may send. Two
+// defects made a save quadratic, and the row holds each to the work it did, which a busy machine
+// cannot move, where it held the save's time before and failed on loaded runners (39 times
+// against a bound of 32, and 72 times, both on correct code).
 //
-// A ladder's first size is small enough that the request's own cost is most of its time, about
-// the same before the fix and after (1 KiB of `a_`: 39-48 ms before, 51-61 ms after); its second
-// is where the code before the fix is many times slower, so that code fails the first step by
-// several times the bound. Written as paragraph text, the larger runs make more elements than one
-// write may (TestUploadRefusesADocumentTooLargeToStore), so each run is a code block's text: the
-// document stores it whole and search indexes it whole, which is where the time went, and pmdoc's
-// linear-time test holds the parser on the same runs. The `)_` ladder stops at 256 KiB, as before
-// the element limit. `)_` saved in linear time before the fix too and is held to the same growth.
+// Postgres's text-search parser tries to read a host name wherever letters or digits meet an
+// underscore, and scans on to the end of the whitespace-free run each time, so a run such as
+// `a_a_a_…` cost time quadratic in its length: 64 KiB of `a_` saved in 46 s. search_text (migration
+// 0056) breaks every run with a space after its sixteenth underscore-joined segment, which bounds
+// the rescans, and each search trigger hands the parser search_text's answer. The parser's work
+// never reaches a count this test can read; its input does. So the row holds the input: the
+// triggers of the two tables these saves write read their text through search_text
+// (assertSearchTriggersNormalise), and search_text leaves no run of more than searchTextSegments
+// segments in the text of each save (searchRunSegments), counted before it is saved. With
+// search_text answering its input unchanged, 64 KiB of `a_` reads as one run of 32,763 segments.
 //
-// A comment, a comment edit, a message and a broadcast hold up to contracts.DispatchBlockUnits
-// characters in one block - 32,000 since INFRA-45, sixteen times the 2,000 that was too short
-// for a ladder to tell the code before the fix from the code after it, whose removed timings
-// measured a 2,000-character `a_` comment at 51 ms before the fix and 56 ms after. That bound is
-// laddered here ("comment a_"), a one-block `a_` comment at it being the longest pathological
-// text a caller can write outside a document; growsLinearly is what holds it, so a write that
-// stops being bounded at the block bound fails this test rather than waiting for a reader to
-// notice. An issue title is capped at 1,000 (contracts.IssueTitleMax), too short to ladder; the
-// title's ladders, and the duplicate check's against a stored title, went with the title cap
-// (TestIssueTitlesAreCappedOnCreateAndRetitle). Every one of these texts
-// is indexed through the search_text the document ladders time.
+// pmdoc's Update wrote each new block at its own index, and ygo walks a fragment from its first
+// child to the index it is given, so replacing a quote of n headings with a quote of n rules took
+// n²/2 steps: 10.5 s of CPU at 21,844 blocks, the most one write's element limit allows of it,
+// where it takes 1.5 s with one insert for the run. The row counts those steps
+// (pmdoc.CountWalksForTest): a replacement may walk past no more children than its document holds
+// blocks. With an insert for each block, 682 blocks walk past 232,221.
 //
-// Settlement is held off. A document's settlement holds its issue's row while it renders, so a
-// save timed while one ran would count the wait for it; and the test server's shutdown, which
-// would otherwise spend its drain budget settling 1 MiB documents, finds no document loaded and
-// leaves each to resume.
+// The ladders keep their sizes, each save is answered 201, and the largest of each is the most a
+// caller can send: a mebibyte of document, contracts.DispatchBlockUnits characters of comment, and
+// 21,844 replaced blocks. Written as paragraph text, the larger document runs make more elements
+// than one write may (TestUploadRefusesADocumentTooLargeToStore), so each run is a code block's
+// text, which the document stores and search indexes whole; pmdoc's linear-time test holds the
+// parser on the same runs. An issue title is capped at 1,000 characters (contracts.IssueTitleMax),
+// and its index reads it through search_text too.
+//
+// What no count here holds: a change to the save that costs CPU and walks no more children and
+// leaves search_text's runs as they are, in Postgres or in Go.
+//
+// Settlement is held off, so no settlement writes a document while a replacement's walks are
+// counted, and the test server's shutdown, which would otherwise spend its drain budget settling
+// mebibyte documents, finds no document loaded and leaves each to resume. No test in this package
+// calls t.Parallel, so no other write runs beside the one counted.
 func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
-	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createArtifactIssue(t, handler)
+	assertSearchTriggersNormalise(t, database)
 	documents := 0
 	for _, test := range []struct {
 		shape string
@@ -61,178 +67,132 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 		{")_", []int{256, 16 << 10, 256 << 10}},
 	} {
 		t.Run("document "+test.shape, func(t *testing.T) {
-			growsLinearly(t, "saving a document of `"+test.shape+"`", test.sizes, func(size int) time.Duration {
-				documents++
+			for _, size := range test.sizes {
 				const fence = "```\n"
 				body := fence + strings.Repeat(test.shape, (size-2*len(fence)-1)/len(test.shape)) + "\n" + fence
-				started := time.Now()
+				assertSearchRunsBounded(t, database, fmt.Sprintf("a document of %s of `%s`", sizeText(size), test.shape), body)
+				documents++
 				response := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 					"name": fmt.Sprintf("pathological-%d.md", documents),
 				}, "body.md", "text/markdown", []byte(body), "alice")
-				elapsed := time.Since(started)
 				if response.Code != http.StatusCreated {
 					t.Fatalf("upload %s of %q: status=%d body=%.200s", sizeText(size), test.shape, response.Code, response.Body.String())
 				}
-				return elapsed
-			})
+			}
 		})
 	}
-	// A comment's whole body is one search_text run, as a document's is, so the same pathological
-	// shape is timed at the longest block a caller may send, in three rungs derived from it: the
-	// block bound is a thirty-second of the largest document rung, enough of a span for a ladder
-	// since INFRA-45.
+	// A comment's whole body is one search_text run, as a document's is, so the same shape is held
+	// at the longest block a caller may send, and at a thirty-second and a quarter of it.
 	t.Run("comment a_", func(t *testing.T) {
 		const shape = "a_"
-		sizes := []int{contracts.DispatchBlockUnits / 32, contracts.DispatchBlockUnits / 4, contracts.DispatchBlockUnits}
-		growsLinearly(t, "writing a comment of `"+shape+"`", sizes, func(size int) time.Duration {
+		for _, size := range []int{contracts.DispatchBlockUnits / 32, contracts.DispatchBlockUnits / 4, contracts.DispatchBlockUnits} {
 			body := strings.Repeat(shape, size/len(shape))
-			started := time.Now()
+			assertSearchRunsBounded(t, database, fmt.Sprintf("a comment of %s of `%s`", sizeText(size), shape), body)
 			response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 				"body": body,
 			}, "alice")
-			elapsed := time.Since(started)
 			if response.Code != http.StatusCreated {
 				t.Fatalf("comment of %s of %q: status=%d body=%.200s", sizeText(size), shape, response.Code, response.Body.String())
 			}
-			return elapsed
-		})
+		}
 	})
-	// Replacing a document of many short blocks with as many others, every block changing type,
-	// takes time linear in its blocks (LEGION-465): pmdoc wrote each new block at its own index,
-	// walking the document to it, so the replacement grew with the square of its blocks. A quote of
-	// n headings replaced with a quote of n rules took 34 ms of server CPU at 682 blocks and 10.5 s
-	// at 21,844, the most one write's element limit allows of it, before the fix, and 27 ms and
-	// 1.5 s after it, on one machine at a load of 309 to 343. Replaced blocks that stand apart, kept
-	// blocks between them, still cost a walk each in ygo (pmdoc's TestUpdateIsLinearInTheBlockCount).
-	// Each rung is timed in this process's CPU (cputest.Process), since a rung's wall time at these
-	// sizes is mostly the request's own cost and the runner's load, over as many replacements, each
-	// of a document of its own, as the clock needs to resolve their time (cputest.Measure). No test
-	// in this package calls t.Parallel.
+	// Replacing a quote of many headings with a quote of as many rules, every block changing type,
+	// is one run of replaced blocks: Update deletes the run with one call and inserts its
+	// replacements with another, each walking to the run's first index.
 	t.Run("replacing many blocks", func(t *testing.T) {
 		const from, to = "> #\n", "> ***\n"
-		growsLinearly(t, "replacing a quote of headings with a quote of rules", []int{682 * len(to), 5_461 * len(to), 21_844 * len(to)}, func(size int) time.Duration {
-			blocks := size / len(to)
-			headings, rules := []byte(strings.Repeat(from, blocks)), []byte(strings.Repeat(to, blocks))
-			upload := func(name string, body []byte) {
-				owner := "/api/v1/issues/" + issue.Key + "/artifacts"
-				fields := map[string]string{"name": name}
-				if base := uploadBaseNamed(t, handler, owner, name); base != nil {
-					fields["precondition"] = encodeUploadBase(t, base)
-				}
+		owner := "/api/v1/issues/" + issue.Key + "/artifacts"
+		for _, blocks := range []int{682, 5_461, 21_844} {
+			documents++
+			name := fmt.Sprintf("many-blocks-%d.md", documents)
+			upload := func(body []byte, fields map[string]string) {
 				response := multipartRequest(t, handler, owner, fields, "body.md", "text/markdown", body, "alice")
 				if response.Code != http.StatusCreated {
 					t.Fatalf("upload %d blocks of %q: status=%d body=%.200s", blocks, body[:len(from)], response.Code, response.Body.String())
 				}
 			}
-			took, _ := cputest.Measure(func(runs int) (time.Duration, error) { // this batch has no error to report
-				names := make([]string, runs)
-				for i := range names {
-					documents++
-					names[i] = fmt.Sprintf("many-blocks-%d.md", documents)
-					upload(names[i], headings)
-				}
-				before := cputest.Process()
-				for _, name := range names {
-					upload(name, rules)
-				}
-				return cputest.Process() - before, nil
-			})
-			return took
-		})
-	})
-}
-
-// TestGrowsLinearlyRejectsQuadraticFinalRung proves the final-rung bound stays anchored to the
-// first rung, even when a prior rung fills the permitted per-step growth. The helper must fail for
-// both an ordinary first sample and one artificial slow first sample.
-func TestGrowsLinearlyRejectsQuadraticFinalRung(t *testing.T) {
-	for _, slowFirstSample := range []bool{false, true} {
-		t.Run(fmt.Sprintf("slow first sample %t", slowFirstSample), func(t *testing.T) {
-			command := exec.Command(os.Args[0], "-test.run=^TestGrowsLinearlyRejectsQuadraticFinalRungHelper$")
-			command.Env = append(os.Environ(), fmt.Sprintf("GROWS_LINEARLY_SLOW_FIRST=%t", slowFirstSample))
-			output, err := command.CombinedOutput()
-			if err == nil {
-				t.Fatalf("quadratic final rung passed:\n%s", output)
+			upload([]byte(strings.Repeat(from, blocks)), map[string]string{"name": name})
+			fields := map[string]string{"name": name, "precondition": encodeUploadBase(t, uploadBaseNamed(t, handler, owner, name))}
+			var walked atomic.Int64
+			stop := pmdoc.CountWalksForTest(&walked)
+			upload([]byte(strings.Repeat(to, blocks)), fields)
+			stop()
+			t.Logf("replacing a quote of %d headings with a quote of %d rules walked past %d children, at most %d", blocks, blocks, walked.Load(), blocks)
+			if walked.Load() > int64(blocks) {
+				t.Fatalf("replacing a quote of %d headings with a quote of %d rules walked past %d children, want at most the %d blocks it writes: the write walks to each block it inserts",
+					blocks, blocks, walked.Load(), blocks)
 			}
-			if !strings.Contains(string(output), "at "+sizeText(quadraticFinalRung)) {
-				t.Fatalf("quadratic final rung failed unexpectedly:\n%s", output)
-			}
-		})
-	}
-}
-
-// quadraticFinalRung is the last size of the helper's ladder, the rung whose time grows
-// quadratically and fails the bound.
-const quadraticFinalRung = 64
-
-func TestGrowsLinearlyRejectsQuadraticFinalRungHelper(t *testing.T) {
-	slowFirstValue, helper := os.LookupEnv("GROWS_LINEARLY_SLOW_FIRST")
-	if !helper {
-		t.Skip("subprocess helper")
-	}
-	slowFirstSample := slowFirstValue == "true"
-	firstSamples := 0
-	growsLinearly(t, "a quadratic final rung", []int{1, 8, quadraticFinalRung}, func(size int) time.Duration {
-		switch size {
-		case 1:
-			firstSamples++
-			if slowFirstSample && firstSamples == 1 {
-				return 50 * time.Millisecond
-			}
-			return time.Millisecond
-		case 8:
-			return 32 * time.Millisecond
-		case quadraticFinalRung:
-			return time.Duration(size*size/4) * time.Millisecond
-		default:
-			t.Fatalf("unexpected size %d", size)
-			return 0
 		}
 	})
 }
 
-// growthAllowance is the permitted variation in time per input byte from the first rung. A linear
-// save takes no more time per input byte as it grows, so each later rung may take four times the
-// first rung's time per byte. Quadratic growth exceeds that headroom across this ladder's input
-// ratios.
-const growthAllowance = 4
+// searchTextSegments is the most underscore-joined segments search_text (migration 0056) leaves
+// in one run before it breaks the run with a space, which bounds the parser's rescans of it.
+const searchTextSegments = 16
 
-// growsLinearly times a three-rung ladder and compares each later rung with the first. The first
-// size, where the request's own cost is most of the time, is timed three times before the second
-// size and three times after it, and the fastest of the six kept: the first save's warm-up does
-// not count as that cost, and a load spike inflates it only if it lasts all six first-rung saves.
-// A rung over the bound is timed again and keeps the faster time, so a one-save load spike is not
-// read as growth.
-func growsLinearly(t *testing.T, what string, sizes []int, timed func(size int) time.Duration) {
+// searchRunSegments is the most underscore-joined segments in one run of text as search_text
+// leaves it, by the database's own search_text and the pattern it breaks runs at: a segment is
+// letters, digits, `.` and `-` ending in `_`.
+func searchRunSegments(t *testing.T, database *store.Store, text string) int {
 	t.Helper()
-	firstSize, secondSize, thirdSize := sizes[0], sizes[1], sizes[2]
-	first := func() time.Duration { return min(timed(firstSize), timed(firstSize), timed(firstSize)) }
-	firstTook := first()
-
-	secondTook := timed(secondSize)
-	firstTook = min(firstTook, first())
-	checkLinearGrowth(t, what, firstSize, firstTook, secondSize, secondTook, timed)
-
-	thirdTook := timed(thirdSize)
-	checkLinearGrowth(t, what, firstSize, firstTook, thirdSize, thirdTook, timed)
+	var segments int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(max(length(run[1]) - length(replace(run[1], '_', ''))), 0)
+		from regexp_matches(search_text($1), '((?:[A-Za-z0-9.-]+_)+)', 'g') as run`, text).Scan(&segments); err != nil {
+		t.Fatalf("read the runs search_text leaves: %v", err)
+	}
+	return segments
 }
 
-func checkLinearGrowth(t *testing.T, what string, firstSize int, firstTook time.Duration, size int, took time.Duration, timed func(size int) time.Duration) {
+// assertSearchRunsBounded holds what's text, before it is saved, to search_text's bound on a run.
+func assertSearchRunsBounded(t *testing.T, database *store.Store, what, text string) {
 	t.Helper()
-	growth := size / firstSize
-	bound := time.Duration(growthAllowance*growth) * firstTook
-	if took > bound {
-		t.Logf("%s: %s at %s against %s at %s is over the bound; timing it again", what, took.Round(time.Millisecond), sizeText(size), firstTook.Round(time.Millisecond), sizeText(firstSize))
-		took = min(took, timed(size))
+	if segments := searchRunSegments(t, database, text); segments > searchTextSegments {
+		t.Fatalf("search_text leaves a run of %d underscore-joined segments in %s, want at most %d: the text-search parser rescans a run to its end from every segment",
+			segments, what, searchTextSegments)
 	}
-	ratio := float64(took) / float64(firstTook)
-	if took > bound {
-		t.Fatalf("%s took %s at %s, %.0f times the %s it took at %s: the input grew %d times, and a save linear in it may grow %d times at most (growthAllowance)",
-			what, took.Round(time.Millisecond), sizeText(size), ratio, firstTook.Round(time.Millisecond), sizeText(firstSize), growth, growthAllowance*growth)
-	}
-	t.Logf("%s: %s at %s, %s at %s, %.1f times for an input %d times larger (at most %d)", what, firstTook.Round(time.Millisecond), sizeText(firstSize), took.Round(time.Millisecond), sizeText(size), ratio, growth, growthAllowance*growth)
 }
 
+// assertSearchTriggersNormalise holds the triggers that index what this test saves to reading it
+// through search_text: the one trigger function of each table that writes the row's search
+// vector, read from the catalog as the database runs it, applies search_text to the column it
+// indexes. A trigger that handed the parser the raw text would index the same lexemes, so no
+// stored vector tells the two apart.
+func assertSearchTriggersNormalise(t *testing.T, database *store.Store) {
+	t.Helper()
+	for table, column := range map[string]string{"artifact_versions": "markdown", "comments": "body"} {
+		rows, err := database.Pool.Query(context.Background(), `
+			select p.proname, p.prosrc
+			from pg_trigger tr
+			join pg_proc p on p.oid = tr.tgfoid
+			where tr.tgrelid = $1::regclass and not tr.tgisinternal and p.prosrc like '%new.search :=%'`, table)
+		if err != nil {
+			t.Fatalf("read the search triggers of %s: %v", table, err)
+		}
+		writers := map[string]string{}
+		for rows.Next() {
+			var name, source string
+			if err := rows.Scan(&name, &source); err != nil {
+				t.Fatalf("read a search trigger of %s: %v", table, err)
+			}
+			writers[name] = source
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the search triggers of %s: %v", table, err)
+		}
+		if len(writers) != 1 {
+			t.Fatalf("%s has %d trigger functions that write its search vector (%v), want one", table, len(writers), writers)
+		}
+		for name, source := range writers {
+			if want := "search_text(new." + column + ")"; !strings.Contains(source, want) {
+				t.Fatalf("%s's search trigger %s does not read %s through search_text (%s):\n%s", table, name, column, want, source)
+			}
+		}
+	}
+}
+
+// sizeText writes a size in bytes as a failure names it.
 func sizeText(size int) string {
 	switch {
 	case size >= 1<<20 && size%(1<<20) == 0:

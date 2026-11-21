@@ -181,6 +181,7 @@ func updateChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, want []*Node
 			for left+run < len(ychildren)-right && left+run < len(pchildren)-right && !sameKind(ychildren[left+run], pchildren[left+run]) {
 				run++
 			}
+			countWalk(left)
 			frag.Delete(txn, left, run)
 			if err := insertPChildren(txn, frag, left, pchildren[left:left+run]); err != nil {
 				return err
@@ -197,6 +198,7 @@ func updateChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, want []*Node
 		}
 	}
 	if deleteCount > 0 {
+		countWalk(left)
 		frag.Delete(txn, left, deleteCount)
 	}
 	return insertPChildren(txn, frag, left, pchildren[left:len(pchildren)-right])
@@ -319,6 +321,7 @@ func insertPChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, index int, 
 		}
 		nodes = append(nodes, element)
 	}
+	countWalk(index)
 	frag.Insert(txn, index, nodes...)
 	return nil
 }
