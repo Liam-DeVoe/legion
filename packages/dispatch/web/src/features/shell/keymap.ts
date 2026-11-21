@@ -600,8 +600,12 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
   };
 }
 
-/** The application's registry; `KeymapProvider` binds it to `window`. Unit tests build their own. */
-export const appKeymap = createKeymap({ strict: import.meta.env.DEV });
+/** The application's registry; `KeymapProvider` binds it to `window`. Unit tests build their own.
+ *  Strict in Vite's development build. A module loaded outside Vite has no `import.meta.env`:
+ *  the browser rows import names from the app's control modules in Node (`e2e/issue-page-h.e2e.ts`
+ *  imports `repoControlName`), and those modules reach this one through the shared list
+ *  (`MultiSelect`) and the focus rescue (`components/focus-place.ts`). */
+export const appKeymap = createKeymap({ strict: import.meta.env?.DEV === true });
 
 /** Registers `bindings` under `scope` for the component's lifetime; closures stay current. */
 export function useKeymap(scope: KeymapScope, bindings: readonly KeyBinding[]): void {
