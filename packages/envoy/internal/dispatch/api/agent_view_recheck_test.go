@@ -107,3 +107,42 @@ func TestAnAgentViewOfAnAllPublicDeploymentReadsWhetherAProjectIsPrivateBeforeEa
 		t.Errorf("alice's agent view of carol's pod session, which wrote in PRIV, sends %s once PRIV is private, want it ended (dropped) before the frame", sent)
 	}
 }
+
+// rosterListedSession is a session the listener lists with PUB and no person is tied to.
+const rosterListedSession = "6a3f8b6d-0e7c-4fc0-9b8d-6c7d8e9fa0b1"
+
+// TestAnAgentViewOfAListedSessionOutlivesItsStoredListenerAnswer: the content rule reads a
+// session's listener list only from a stored listener answer that has not passed its expires_at,
+// and the stored answer expires five seconds after the listener's answer, so the view refreshes
+// it (readRouteRoster) before each ask of the rule. alice, an open viewer PRIV's list does not
+// name, watches a session the listener lists with PUB alone, which no person is tied to: the
+// listed arm passes it. The stored answer then passes its expires_at with the listener still
+// answering, and the session publishes a frame: the view fetches the listener's answer again, the
+// rule reads its list, and the frame reaches alice.
+//
+// Control: the ask reading the stored answer as it is (no refresh); the expired answer lists
+// nothing, the untied session passes no open viewer, and alice's view ends (dropped).
+func TestAnAgentViewOfAListedSessionOutlivesItsStoredListenerAnswer(t *testing.T) {
+	rig := newReachedRigOf(t, `[
+		{"session_id":"`+rosterListedSession+`","title":"Lists PUB","capabilities":["btw"],"last_seen":900,"projects":["PUB"]}
+	]`, rosterListedSession)
+	if _, err := rig.seed.database.Pool.Exec(t.Context(), `insert into session_projects (session_id, project_key) values ($1, $2)`,
+		rosterListedSession, seedPublic); err != nil {
+		t.Fatalf("record the listed session's history in PUB: %v", err)
+	}
+	client, got := agentVerdict(t, rig.seed, rig.url, callerAlice, rosterListedSession)
+	if got != agentViewResponding {
+		t.Fatalf("alice's agent view of the listed session answers %s, want its responder: the row proves nothing", got)
+	}
+	_ = client.next(t, eventFeedWait, "alice's replay of the listed session")
+	if _, err := rig.seed.database.Pool.Exec(t.Context(), `update route_roster set expires_at = now() - interval '1 second'`); err != nil {
+		t.Fatalf("let the stored listener answer pass its expires_at: %v", err)
+	}
+	after := `{"v":1,"kind":"turn","session":"` + rosterListedSession + `","after":"the stored answer expired"}`
+	rig.stream.Publish(rosterListedSession, agentstream.Frame(after))
+	frame := client.next(t, 5*time.Second, "alice's agent view of the listed session after its stored answer expired")
+	if agent, ok := frame.(LiveAgentFrame); !ok || string(agent.Data) != after {
+		sent, _ := json.Marshal(frame)
+		t.Errorf("alice's agent view of a session the listener still lists with PUB sends %s once the stored answer expired, want the session's frame", sent)
+	}
+}

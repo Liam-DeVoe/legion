@@ -289,6 +289,11 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //     a private project's person proved only by a viewer who sees that project too, and one with
 //     neither a list nor a tie by nobody.
 //
+// A listener list counts only from a stored listener answer (route_roster) that has not passed its
+// expires_at; a session of an expired answer is judged as one whose listener sent no list. A reader
+// that asks this rule again over time refreshes the stored answer first (api:
+// refreshRosterForContent), and a refresh that fails leaves it expired, which fails closed.
+//
 // The server's viewer, the viewer's own session and an open viewer of a deployment that holds no
 // private project are answered in the statement's own SQL, so those rows call nothing and read
 // nothing (R9: with no private project an open viewer reads every session's content, as before).

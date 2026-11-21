@@ -97,13 +97,23 @@ func frameSize(p []byte) (size uint64, control bool) {
 	return header + length, control
 }
 
+// SetRosterRefresh sets what refreshes the stored listener answer before a socket's ask
+// (socketStillReads): the session content rule, which a session's documents follow, reads a
+// listener list only from a stored answer that has not passed its expires_at. The API sets it
+// once, as it mounts the sockets.
+func (s *Service) SetRosterRefresh(refresh func(context.Context)) {
+	s.rosterRefresh.Store(&refresh)
+}
+
 // socketStillReads reports whether admission's person may still read its room, asked before a
 // batch of the room's frames goes out on the socket (recheckedConn), and revokes the socket when
 // they may not or the read fails (errAccessRevoked), as recheckAdmission does. It reads nothing for
 // a socket not yet admitted (its admission's own read decides), nor, for a person whose browser was
 // open at admission, while no project is private: then every room they hold passes the rule
 // before it reads a row (R9), and it reads only whether a project is private now
-// (access.AnyProjectPrivate, one exists), as the live agent view's re-ask does.
+// (access.AnyProjectPrivate, one exists), as the live agent view's re-ask does. Before the rule's
+// read it refreshes the stored listener answer (SetRosterRefresh), which the rule reads only while
+// it is fresh.
 func (s *Service) socketStillReads(ctx context.Context, admission *schemaAdmission, open bool) bool {
 	if admission.key.room == "" || ctx.Err() != nil {
 		return true
@@ -113,6 +123,9 @@ func (s *Service) socketStillReads(ctx context.Context, admission *schemaAdmissi
 		if err == nil && !private {
 			return true
 		}
+	}
+	if refresh := s.rosterRefresh.Load(); refresh != nil {
+		(*refresh)(ctx)
 	}
 	readable, err := s.readableRooms(ctx, admission.person, []*schemaAdmission{admission})
 	if err == nil && readable[admission.key.room] {
