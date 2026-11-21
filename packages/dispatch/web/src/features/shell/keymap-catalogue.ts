@@ -30,6 +30,19 @@ export type CatalogueScope =
  * The `project` scope stays pushed under the Board and the Architecture page, but only one tab
  * panel of a project mounts at a time, so the List's own keys (`project-list`) and the Board's
  * never meet; both meet the project page's own (`project-page`).
+ *
+ * An issue's address draws one of two pages, never both (`issue-page/IssuePage.tsx`): today's
+ * page or the new issue page a reader turns on. Each action only today's page draws is of
+ * `issue`, and each only the new page draws is of `issue-outline`: its outline's keys, which
+ * share today's page's `issue` scope, `j` and `k` among them, and Details' key, which the new
+ * page's frame draws where every other page draws the margin, so Toggle margin is drawn on every
+ * page but the new issue page (`margin`). The actions both pages draw, the header's keys and
+ * rows and the tab chords, are of `issue-both`, drawn with each of the two, so a key on either
+ * page meets every key that page draws. An action of today's page alone meets exactly the keys it
+ * met before the new page had keys of its own, and an action of both pages meets the new page's
+ * keys too. Two actions share a key on purpose, by focus: on the new page `a` approves on a
+ * focused approval chip and answers on a focused row of the outline (`keymap-refusal.ts`'s
+ * `EXCLUSIVE_BY_FOCUS`).
  */
 export type KeySurface =
   | "agents"
@@ -40,6 +53,9 @@ export type KeySurface =
   | "global"
   | "inbox"
   | "issue"
+  | "issue-both"
+  | "issue-outline"
+  | "margin"
   | "project-list"
   | "project-page";
 
@@ -182,13 +198,27 @@ export const KEYMAP_CATALOGUE = {
     palette: true,
     surface: "global",
   },
+  // Every page but the new issue page registers it: the new page's frame draws Details in place of
+  // the margin, and registers Details' own action instead (`app.tsx`).
   "global.toggle-margin": {
     scope: "global",
     id: "toggle-margin",
     label: "Toggle margin",
     keys: ["Shift+M"],
     palette: true,
-    surface: "global",
+    surface: "margin",
+  },
+  // The new issue page's frame (`app.tsx`), and Details' sheet on a phone (`margin/Margin.tsx`),
+  // which registers it under `dialog`: the sheet is a dialog, which masks every global key. It
+  // opens and closes Details, not the margin, so it is an action apart from Toggle margin, and a
+  // key a person gives one of the two leaves the other as it was.
+  "global.toggle-details": {
+    scope: "global",
+    id: "toggle-details",
+    label: "Open or close Details",
+    keys: ["Shift+M"],
+    palette: true,
+    surface: "issue-outline",
   },
 
   // The Inbox: `inbox/Inbox.tsx`, on its page and, under the `dialog` scope, in its drawer.
@@ -631,13 +661,16 @@ export const KEYMAP_CATALOGUE = {
   },
 
   // Today's issue page: `issue/IssuePage.tsx`, `issue/IssueHeader.tsx` and the Conversation tab.
+  // The new issue page registers the actions of `issue-both` too: the header's keys
+  // (`issue-page/useHeaderKeys.ts`), its command bar rows (`issue-page/useIssuePalette.ts`) and
+  // the tab chords.
   "issue.status": {
     scope: "issue",
     id: "status",
     label: "Open the status menu",
     keys: ["s"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.priority": {
     scope: "issue",
@@ -645,7 +678,7 @@ export const KEYMAP_CATALOGUE = {
     label: "Open the priority menu",
     keys: ["p"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.set-priority": {
     scope: "issue",
@@ -654,7 +687,7 @@ export const KEYMAP_CATALOGUE = {
     keys: [],
     fixedKeys: ["0", "1", "2", "3"],
     palette: false,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.labels": {
     scope: "issue",
@@ -670,7 +703,7 @@ export const KEYMAP_CATALOGUE = {
     label: "Edit the title",
     keys: ["e"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.pin": {
     scope: "issue",
@@ -678,31 +711,36 @@ export const KEYMAP_CATALOGUE = {
     label: "Pin or unpin the issue",
     keys: ["Shift+P"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
+  // The tab chords. The new issue page registers six of them too: the five of its filter row
+  // (`issue-page/useIssueKeymap.ts`), where `t c` turns every filter off, and `t h`, which moves
+  // to the issue's children in its outline (`issue-page/useTreeKeymap.ts`). Each is one action on
+  // both pages, so a key a person gives it works on both, and its label names its purpose first
+  // and says in brackets what it does on the new page.
   "issue.tab-spec": {
     scope: "issue",
     id: "tab-spec",
-    label: "Spec tab",
+    label: "Spec: open its tab (on the new page, its filter)",
     keys: ["t s"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.tab-verification": {
     scope: "issue",
     id: "tab-verification",
-    label: "Verification tab",
+    label: "Verification: open its tab (on the new page, its filter)",
     keys: ["t k"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.tab-plan": {
     scope: "issue",
     id: "tab-plan",
-    label: "Plan tab",
+    label: "Plan: open its tab (on the new page, its filter)",
     keys: ["t p"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.tab-steps": {
     scope: "issue",
@@ -715,18 +753,18 @@ export const KEYMAP_CATALOGUE = {
   "issue.tab-conversation": {
     scope: "issue",
     id: "tab-conversation",
-    label: "Conversation tab",
+    label: "Conversation: open its tab (on the new page, every filter off)",
     keys: ["t c"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.tab-children": {
     scope: "issue",
     id: "tab-children",
-    label: "Children tab",
+    label: "Children: open its tab (on the new page, move to them)",
     keys: ["t h"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.tab-artifacts": {
     scope: "issue",
@@ -747,10 +785,10 @@ export const KEYMAP_CATALOGUE = {
   "issue.tab-decisions": {
     scope: "issue",
     id: "tab-decisions",
-    label: "Decisions tab",
+    label: "Decisions: open its tab (on the new page, its filter)",
     keys: ["t d"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.tab-collaborators": {
     scope: "issue",
@@ -782,7 +820,7 @@ export const KEYMAP_CATALOGUE = {
     label: "Close issue",
     keys: [],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.reopen": {
     scope: "issue",
@@ -790,7 +828,7 @@ export const KEYMAP_CATALOGUE = {
     label: "Reopen issue",
     keys: [],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.set-p0": {
     scope: "issue",
@@ -798,7 +836,7 @@ export const KEYMAP_CATALOGUE = {
     label: "Set priority P0",
     keys: [],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.set-p1": {
     scope: "issue",
@@ -806,7 +844,7 @@ export const KEYMAP_CATALOGUE = {
     label: "Set priority P1",
     keys: [],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.set-p2": {
     scope: "issue",
@@ -814,7 +852,7 @@ export const KEYMAP_CATALOGUE = {
     label: "Set priority P2",
     keys: [],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.set-p3": {
     scope: "issue",
@@ -822,7 +860,7 @@ export const KEYMAP_CATALOGUE = {
     label: "Set priority P3",
     keys: [],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.approve": {
     scope: "issue",
@@ -830,7 +868,7 @@ export const KEYMAP_CATALOGUE = {
     label: "Approve",
     keys: ["a"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.request-changes": {
     scope: "issue",
@@ -838,7 +876,7 @@ export const KEYMAP_CATALOGUE = {
     label: "Request changes",
     keys: ["Shift+R"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   "issue.next-turn": {
     scope: "issue",
@@ -889,6 +927,192 @@ export const KEYMAP_CATALOGUE = {
     keys: ["Shift+Y"],
     palette: true,
     surface: "issue",
+  },
+
+  // The new issue page's outline: `issue-page/useTreeKeymap.ts`, in the `issue` scope, where
+  // today's issue page is never drawn beside it (`KeySurface`). Moving through the rows, folding
+  // them and stepping through a row's controls is what those keys are for, so none of them is a
+  // row of the command bar; nor are `o` and `.`, which act on the row in hand, nor Tab, Enter and
+  // Escape, which move the focus into the outline, into a row's text and out again. Home and End
+  // are keys a person can change: no run reads which key was pressed, and neither is a key that
+  // keeps its own action (`keymap-refusal.ts`).
+  "issue.tree-enter": {
+    scope: "issue",
+    id: "tree-enter",
+    label: "Move into the tree",
+    keys: [],
+    fixedKeys: ["Tab", "Shift+Tab"],
+    palette: false,
+    surface: "issue-outline",
+  },
+  "issue.tree-next": {
+    scope: "issue",
+    id: "tree-next",
+    label: "Move to the next row",
+    keys: ["j"],
+    fixedKeys: ["ArrowDown"],
+    palette: false,
+    surface: "issue-outline",
+  },
+  "issue.tree-previous": {
+    scope: "issue",
+    id: "tree-previous",
+    label: "Move to the previous row",
+    keys: ["k"],
+    fixedKeys: ["ArrowUp"],
+    palette: false,
+    surface: "issue-outline",
+  },
+  "issue.tree-first": {
+    scope: "issue",
+    id: "tree-first",
+    label: "Move to the first row",
+    keys: ["Home"],
+    palette: false,
+    surface: "issue-outline",
+  },
+  "issue.tree-last": {
+    scope: "issue",
+    id: "tree-last",
+    label: "Move to the last row",
+    keys: ["End"],
+    palette: false,
+    surface: "issue-outline",
+  },
+  "issue.tree-unfold": {
+    scope: "issue",
+    id: "tree-unfold",
+    label: "Unfold the focused row, or move into it",
+    keys: [],
+    fixedKeys: ["ArrowRight"],
+    palette: false,
+    surface: "issue-outline",
+  },
+  "issue.tree-fold": {
+    scope: "issue",
+    id: "tree-fold",
+    label: "Fold the focused row, or move to its parent",
+    keys: [],
+    fixedKeys: ["ArrowLeft"],
+    palette: false,
+    surface: "issue-outline",
+  },
+  "issue.tree-pin": {
+    scope: "issue",
+    id: "tree-pin",
+    label: "Keep the focused row's body open",
+    keys: ["o"],
+    palette: false,
+    surface: "issue-outline",
+  },
+  "issue.tree-keep": {
+    scope: "issue",
+    id: "tree-keep",
+    label: "Keep the focused decision",
+    keys: ["Shift+K"],
+    palette: true,
+    surface: "issue-outline",
+  },
+  "issue.tree-change": {
+    scope: "issue",
+    id: "tree-change",
+    label: "Change the focused decision",
+    keys: ["Shift+C"],
+    palette: true,
+    surface: "issue-outline",
+  },
+  "issue.tree-link": {
+    scope: "issue",
+    id: "tree-link",
+    label: "Move to the next link or control on the focused row",
+    keys: ["f"],
+    palette: false,
+    surface: "issue-outline",
+  },
+  "issue.tree-zoom-in": {
+    scope: "issue",
+    id: "tree-zoom-in",
+    label: "Zoom into the focused row",
+    keys: ["."],
+    palette: false,
+    surface: "issue-outline",
+  },
+  "issue.tree-zoom-out": {
+    scope: "issue",
+    id: "tree-zoom-out",
+    label: "Zoom back out one level",
+    keys: [","],
+    palette: true,
+    surface: "issue-outline",
+  },
+  "issue.tree-question": {
+    scope: "issue",
+    id: "tree-question",
+    label: "Move to the next open question",
+    keys: ["q"],
+    palette: true,
+    surface: "issue-outline",
+  },
+  "issue.tree-decision": {
+    scope: "issue",
+    id: "tree-decision",
+    label: "Move into the decision behind the focused row",
+    keys: ["w"],
+    palette: true,
+    surface: "issue-outline",
+  },
+  "issue.tree-reply": {
+    scope: "issue",
+    id: "tree-reply",
+    label: "Reply to the focused row",
+    keys: ["r"],
+    palette: true,
+    surface: "issue-outline",
+  },
+  "issue.tree-answer": {
+    scope: "issue",
+    id: "tree-answer",
+    label: "Answer the focused question",
+    keys: ["a"],
+    palette: true,
+    surface: "issue-outline",
+  },
+  "issue.tree-cycle": {
+    scope: "issue",
+    id: "tree-cycle",
+    label: "Cycle how much of the tree is drawn",
+    keys: ["z"],
+    palette: true,
+    surface: "issue-outline",
+  },
+  "issue.tree-edit": {
+    scope: "issue",
+    id: "tree-edit",
+    label: "Put the caret in the focused row",
+    keys: [],
+    fixedKeys: ["Enter"],
+    palette: false,
+    surface: "issue-outline",
+  },
+  // Fires from the row's own text, the editor the caret is in, which is what it leaves.
+  "issue.tree-leave-caret": {
+    scope: "issue",
+    id: "tree-leave-caret",
+    label: "Leave the row's text",
+    keys: [],
+    fixedKeys: ["Escape"],
+    palette: false,
+    inEditable: true,
+    surface: "issue-outline",
+  },
+  "issue.tree-leave": {
+    scope: "issue",
+    id: "tree-leave",
+    label: "Leave the control, then the tree",
+    keys: [],
+    fixedKeys: ["Escape"],
+    palette: false,
+    surface: "issue-outline",
   },
 
   // A document page: `doc/ProofDocument.tsx`.

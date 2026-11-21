@@ -40,6 +40,8 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { setActionKeys } from "../shell/keymap-keys";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import {
   DocumentAdmissionProvider,
@@ -284,11 +286,12 @@ function EditedDocument({
  *  (`slots/body.tsx`); `editor` stands in for the editor of the document a row is editing in,
  *  which the page draws on that row's stage; `emptyLine` is what the tree says where the issue
  *  holds nothing, none where it is not given; `isClosed` is whether the issue is closed;
- *  `readsHeld` is whether the reads the tree is built from hold their answers, until `holdReads`
- *  draws the same tree with them held; `redraw` draws the same tree again, as a read answering
- *  does, and `reread` draws it over another tree, as a read answering with other nodes does;
- *  `admit` answers for a document's room, as the page's row editor reports what that room
- *  admitted the page to (`document-admission.tsx`). */
+ *  `login` is who the keys are for, whose own keys the keymap takes (`KeymapProvider`), and
+ *  nobody where it is not given; `readsHeld` is whether the reads the tree is built from hold
+ *  their answers, until `holdReads` draws the same tree with them held; `redraw` draws the same
+ *  tree again, as a read answering does, and `reread` draws it over another tree, as a read
+ *  answering with other nodes does; `admit` answers for a document's room, as the page's row
+ *  editor reports what that room admitted the page to (`document-admission.tsx`). */
 function renderTree(
   root: TreeNode,
   {
@@ -297,6 +300,7 @@ function renderTree(
     editor,
     emptyLine,
     isClosed = false,
+    login,
     readsHeld = true,
     readsSettled = true,
     reveal,
@@ -306,6 +310,7 @@ function renderTree(
     editor?: StandInEditor;
     emptyLine?: string;
     isClosed?: boolean;
+    login?: string;
     readsHeld?: boolean;
     readsSettled?: boolean;
     reveal?: readonly TreeNode[];
@@ -326,7 +331,7 @@ function renderTree(
     <MemoryRouter>
       <AddressProbe seen={seen} />
       <QueryClientProvider client={client}>
-        <KeymapProvider>
+        <KeymapProvider login={login}>
           <MarginProvider>
             <FocusedNodeProvider>
               <DocumentAdmissionProvider>
@@ -7850,6 +7855,30 @@ test("Left on the row the tree is zoomed to, the whole tree drawn, says the tree
     widths: [1440],
     zoomed: true,
   });
+});
+
+// R14: the outline's keys are actions of the keymap's catalogue, so a key a person gives one of
+// them in Settings (`keymap-keys.ts`) moves the reader on this page, and the default key it
+// replaced does nothing here any more. Down is a key nobody changes, so it still moves.
+test("a key alice gave Move to the next row moves the focus down the tree, and j no longer does", async () => {
+  setViewport(1440);
+  setActionKeys("alice", "issue.tree-next", ["n"]);
+  const user = userEvent.setup();
+  const view = renderTree(twoCommentsTree(), { login: "alice" });
+  try {
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard("j");
+    expect(focusedRow(view.container), "j moved the focus").toBe("comment-1");
+    await user.keyboard("n");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+    await user.keyboard("k");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard("{ArrowDown}");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(userPreferenceStorageKey("alice", "shell.keymap"));
+  }
 });
 
 // A zoom the drawn tree no longer holds - the reader zoomed into a row, then a filter left that

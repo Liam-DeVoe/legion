@@ -193,7 +193,9 @@ closedTest(
     await expect(row("Edit labels")).toHaveAttribute("data-enabled", "false");
     await expect(row("Set priority P0–P3")).toHaveAttribute("data-enabled", "false");
     await expect(row("Pin or unpin the issue")).toHaveAttribute("data-enabled", "true");
-    await expect(row("Conversation tab")).toHaveAttribute("data-enabled", "true");
+    await expect(
+      row("Conversation: open its tab (on the new page, every filter off)")
+    ).toHaveAttribute("data-enabled", "true");
   }
 );
 

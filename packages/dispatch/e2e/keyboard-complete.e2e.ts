@@ -5588,17 +5588,18 @@ const ISSUE_TABS = [
 
 type IssueTabAt = (typeof ISSUE_TABS)[number];
 
-/** Each key the chord hint lists after `t`, with the action it names. */
+/** Each key the chord hint lists after `t`, with the action it names. A chord the new issue page
+ *  shares names its purpose, then what it does on the new page. */
 const TAB_CHORD_HINT = [
-  "s Spec tab",
-  "k Verification tab",
-  "p Plan tab",
+  "s Spec: open its tab (on the new page, its filter)",
+  "k Verification: open its tab (on the new page, its filter)",
+  "p Plan: open its tab (on the new page, its filter)",
   "e Steps tab",
-  "c Conversation tab",
-  "h Children tab",
+  "c Conversation: open its tab (on the new page, every filter off)",
+  "h Children: open its tab (on the new page, move to them)",
   "a Artifacts tab",
   "v Activity tab",
-  "d Decisions tab",
+  "d Decisions: open its tab (on the new page, its filter)",
   "o Collaborators tab",
 ];
 

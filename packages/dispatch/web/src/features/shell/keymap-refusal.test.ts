@@ -96,11 +96,88 @@ test("the List's and the Board's own o are no duplicate, but both meet the proje
   });
 });
 
+test("the new issue page's keys meet its documents' and the shell's, and never today's issue page's own or the margin's", () => {
+  // Shift+M is Toggle margin on every page but the new issue page, whose frame opens Details by it.
+  for (const action of ["global.toggle-margin", "global.toggle-details"] as const) {
+    expect(refusalOf(action, ["Shift+M"], NO_PERSON_KEYS), action).toEqual({
+      kind: "accepted",
+      notices: [],
+    });
+  }
+  // Toggle margin is not drawn on the new page, so a key of its outline is free for it.
+  expect(refusalOf("global.toggle-margin", ["z"], NO_PERSON_KEYS)).toEqual({
+    kind: "accepted",
+    notices: [],
+  });
+  // The outline's `j` and today's Next turn: the two pages are never drawn together.
+  expect(refusalOf("issue.tree-next", ["j"], NO_PERSON_KEYS)).toEqual({
+    kind: "accepted",
+    notices: [],
+  });
+  // Details' key is in the `global` scope beside every other key of the shell there.
+  expect(refusalOf("global.toggle-details", ["c"], NO_PERSON_KEYS)).toMatchObject({
+    kind: "refused",
+    other: "global.create",
+  });
+  // The new page draws its documents too.
+  expect(refusalOf("issue.tree-cycle", ["Alt+Enter"], NO_PERSON_KEYS)).toMatchObject({
+    kind: "refused",
+    other: "document.open-link",
+  });
+  // A key of the shell the outline takes is the outline's on the new page, as on any page.
+  expect(refusalOf("issue.tree-cycle", ["c"], NO_PERSON_KEYS)).toEqual({
+    kind: "accepted",
+    notices: ["Create issue does not work on the new issue page."],
+  });
+});
+
+// The header's keys and the tab chords are drawn on both issue pages, so on the new page they
+// meet the outline's keys as on today's page they meet that page's own.
+test("on the new issue page an outline action is refused a header key, and a header action an outline key", () => {
+  const outline = refusalOf("issue.tree-link", ["s"], NO_PERSON_KEYS);
+  expect(outline).toMatchObject({ kind: "refused", other: "issue.status" });
+  expect(outline.kind === "refused" && outline.message).toContain("Open the status menu");
+  const header = refusalOf("issue.status", ["f"], NO_PERSON_KEYS);
+  expect(header).toMatchObject({ kind: "refused", other: "issue.tree-link" });
+  expect(header.kind === "refused" && header.message).toContain(
+    "Move to the next link or control on the focused row"
+  );
+  // A key of today's page alone and a key of the outline alone still never meet.
+  expect(refusalOf("issue.next-turn", ["f"], NO_PERSON_KEYS)).toEqual({
+    kind: "accepted",
+    notices: [],
+  });
+});
+
+// INFRA-1196's decision 164: `a` approves on the header's approval chip on both pages, and on the
+// new page it answers the question of a focused outline row, two `when`s that never hold at once.
+test("a is Approve's and Answer's both on the new issue page, as is any key a person gives the two", () => {
+  for (const action of ["issue.approve", "issue.tree-answer"] as const) {
+    expect(refusalOf(action, ["a"], NO_PERSON_KEYS), action).toEqual({
+      kind: "accepted",
+      notices: [],
+    });
+  }
+  expect(refusalOf("issue.tree-answer", ["Shift+A"], { "issue.approve": ["Shift+A"] })).toEqual({
+    kind: "accepted",
+    notices: [],
+  });
+  // The pair shares no other key of the new page, and neither takes the first press of the other.
+  expect(refusalOf("issue.tree-answer", ["Shift+R"], NO_PERSON_KEYS)).toMatchObject({
+    kind: "refused",
+    other: "issue.request-changes",
+  });
+  expect(
+    refusalOf("issue.tree-answer", ["Shift+A z"], { "issue.approve": ["Shift+A"] })
+  ).toMatchObject({ kind: "refused", other: "issue.approve" });
+});
+
 test("a key listed twice, or a key that is the first press of another key of the action, is refused", () => {
-  expect(refusalOf("inbox.snooze", ["q", "q"], NO_PERSON_KEYS).kind).toBe("refused");
-  expect(refusalOf("inbox.snooze", ["q", "q w"], NO_PERSON_KEYS).kind).toBe("refused");
-  expect(refusalOf("inbox.snooze", ["q w", "q"], NO_PERSON_KEYS).kind).toBe("refused");
+  // `u` is no action's key, so each refusal below is the action's own keys'.
+  expect(refusalOf("inbox.snooze", ["u", "u"], NO_PERSON_KEYS).kind).toBe("refused");
+  expect(refusalOf("inbox.snooze", ["u", "u w"], NO_PERSON_KEYS).kind).toBe("refused");
+  expect(refusalOf("inbox.snooze", ["u w", "u"], NO_PERSON_KEYS).kind).toBe("refused");
   expect(refusalOf("inbox.snooze", ["Shift++"], NO_PERSON_KEYS).kind).toBe("refused");
   // Two chords that share a first press are no prefix of each other, as `g i` and `g a` are not.
-  expect(refusalOf("inbox.snooze", ["q w", "q e"], NO_PERSON_KEYS).kind).toBe("accepted");
+  expect(refusalOf("inbox.snooze", ["u w", "u e"], NO_PERSON_KEYS).kind).toBe("accepted");
 });

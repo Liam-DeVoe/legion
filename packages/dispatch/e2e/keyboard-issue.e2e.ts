@@ -159,14 +159,23 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
       issueSection.getByRole("listitem").filter({ hasText: "Set priority P0–P3" }).locator("kbd")
     ).toHaveText(["0", "3"]);
     await expect(
-      issueSection.getByRole("listitem").filter({ hasText: "Conversation tab" }).locator("kbd")
+      issueSection
+        .getByRole("listitem")
+        .filter({ hasText: "Conversation: open its tab (on the new page, every filter off)" })
+        .locator("kbd")
     ).toHaveText(["t", "c"]);
     // `t v` is Activity and `t c` the Conversation, so Verification takes its checks' `k`.
     await expect(
-      issueSection.getByRole("listitem").filter({ hasText: "Verification tab" }).locator("kbd")
+      issueSection
+        .getByRole("listitem")
+        .filter({ hasText: "Verification: open its tab (on the new page, its filter)" })
+        .locator("kbd")
     ).toHaveText(["t", "k"]);
     await expect(
-      issueSection.getByRole("listitem").filter({ hasText: "Plan tab" }).locator("kbd")
+      issueSection
+        .getByRole("listitem")
+        .filter({ hasText: "Plan: open its tab (on the new page, its filter)" })
+        .locator("kbd")
     ).toHaveText(["t", "p"]);
     await expect(
       issueSection.getByRole("listitem").filter({ hasText: "Steps tab" }).locator("kbd")

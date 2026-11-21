@@ -70,7 +70,7 @@ These work on every page.
 | `g d` | Go to the current project's Documents (on a project or issue page) |
 | `g p` | Go to project… |
 | `Shift+S` | Toggle the sidebar (wide screens) |
-| `Shift+M` | Toggle the margin (wide screens, on a page with a document) |
+| `Shift+M` | Toggle the margin (wide screens, on a page with a document). On the new issue page, open or close **Details** |
 | `y` on a focused link | Copy the link's address: the `dispatch://` reference of a link to a Dispatch item, else its URL |
 
 `y` on a focused link also works in every dialog, the Inbox drawer and the margin's sheet included,
@@ -303,6 +303,43 @@ The focus stays on the turn when `Enter` or `o` expands its thread. An open ask 
 answer and a handoff takes no reply, so `r` does nothing on one. A handoff has no reference, so
 `y` and `Shift+Y` do nothing on one.
 
+### The new issue page
+
+**Settings → Preview → New issue page** shows an issue as the new page. On that page, the outline
+takes these keys while the focus is on the page itself or on a row of the outline.
+
+| Keys | Action |
+| --- | --- |
+| `Tab` / `Shift+Tab` | From the page itself, move into the outline, at the row you were on last |
+| `j` or `↓` / `k` or `↑` | Next / previous row |
+| `Home` / `End` | First / last row, while the focus is in the outline |
+| `→` | Unfold the focused row, or move into it |
+| `←` | Fold the focused row, or move to its parent |
+| `o` | Keep the focused row's body open, or let it close again |
+| `Enter` | Put the cursor in the focused row's text (from the row) |
+| `Escape` | Leave the row's text. From a control in a row, go back to the row. From a row, leave the outline. |
+| `f` | Move to the next link or control on the focused row |
+| `Shift+K` / `Shift+C` | Keep / Change the focused decision |
+| `r` | Reply to the focused row |
+| `a` | Answer the focused question |
+| `q` | Move to the next open question |
+| `w` | Move into the decision behind the focused row |
+| `.` / `,` | Zoom into the focused row / zoom back out one level |
+| `z` | Change how much of the outline shows |
+| `t s`, `t k`, `t p`, `t d` | Turn the Spec, Verification, Plan or Decisions filter on or off |
+| `t c` | Turn every filter off |
+| `t h` | Move to the issue's children |
+| `Shift+M` | Open or close **Details**, at every width |
+
+On the header, `s`, `p`, `0` – `3`, `e` and `Shift+P` work as on today's issue page. `a` and
+`Shift+R` approve and request changes while the focus is on an approval chip whose request waits
+on you.
+
+The `t` keys are the same actions on both issue pages, so a key that you change works on both.
+Settings lists each of them once, with what it does on each page, such as **Spec: open its tab
+(on the new page, its filter)**. Settings lists the outline's keys under **Issue**, and **Open or
+close Details** under **Global**.
+
 ## Document
 
 These work in an issue's documents and in a project's documents.
@@ -386,8 +423,13 @@ without a change.
 
 Dispatch refuses a key, and names the action that has it, when:
 
-- another action has it on the same page, or on a part shown at the same time. The issue page is
+- another action has it on the same page, or on a part shown at the same time. Each issue page is
   shown with its documents, and a project's page with its List, Board or Architecture tab.
+  Today's issue page and the new one are never shown together, so an action of one page only can
+  have the key of an action of the other page only. The header's keys and the `t` keys are on
+  both pages, so each of them meets the keys of both pages. On the new issue page, `a` is the key
+  of **Approve** on a focused approval chip and of **Answer the focused question** on a focused
+  row. Only one of the two can run at a time, so the two actions can have the same key.
 - it is the first key of another action's sequence, or another action's key is its first key.
 
 Dispatch also refuses the digits, the arrow keys, `Enter`, `Escape`, `Tab` and `Space`, alone or

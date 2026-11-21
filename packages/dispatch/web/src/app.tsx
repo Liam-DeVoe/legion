@@ -750,11 +750,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       when: () => !isCompactViewport && !issueFrame,
     },
     // In the new issue page's frame the margin is Details, which Shift+M opens and closes at
-    // every width, under that frame's own label; the frame builds its own keys, so its binding
-    // is no catalogue action and a person's keys do not move it. Its id differs from the
-    // margin's, so that crossing the gate registers the binding again and the list of keys reads
-    // the label of the shell it is in. On today's pages Shift+M is the catalogue's Toggle margin,
-    // whose key a person can change (R14).
+    // every width: the catalogue's Open or close Details, an action apart from Toggle margin, so
+    // a key a person gives one of the two leaves the other as it was (R14). Its id differs from
+    // the margin's, so that crossing the gate registers the binding again and the list of keys
+    // reads the label of the shell it is in. On today's pages Shift+M is the catalogue's Toggle
+    // margin, whose key a person can change too.
     detailsDrawer === undefined
       ? {
           action: "global.toggle-margin",
@@ -765,9 +765,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           when: () => !isCompactViewport && hasMargin,
         }
       : {
-          id: "toggle-details",
-          keys: "Shift+M",
-          label: "Open or close Details",
+          action: "global.toggle-details",
           run: () => detailsDrawer.setOpen(!detailsDrawer.open),
         },
   ]);

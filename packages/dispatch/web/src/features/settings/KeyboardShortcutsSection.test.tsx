@@ -102,6 +102,96 @@ test("every action is listed under its scope, in the help's order, with its keys
   }
 });
 
+// The new issue page's keys are the catalogue's (R14): its outline's are listed under Issue, its
+// chords are today's tab actions, and Details' key is listed under Global, each with the keys it
+// has. Today's issue page and the new one are never drawn together, nor the margin and Details,
+// so the keys they share carry no note.
+test("the new issue page's actions are listed under their scopes with their default keys", () => {
+  const view = drawSection();
+  try {
+    const section = screen.getByRole("region", { name: "Keyboard shortcuts" });
+    const issue = within(section).getByRole("region", { name: "Issue" });
+    const listed: readonly (readonly [KeymapActionId, readonly string[]])[] = [
+      ["issue.tree-enter", ["Tab", "Shift+Tab"]],
+      ["issue.tree-next", ["j", "↓"]],
+      ["issue.tree-previous", ["k", "↑"]],
+      ["issue.tree-first", ["Home"]],
+      ["issue.tree-last", ["End"]],
+      ["issue.tree-unfold", ["→"]],
+      ["issue.tree-fold", ["←"]],
+      ["issue.tree-pin", ["o"]],
+      ["issue.tree-keep", ["Shift+K"]],
+      ["issue.tree-change", ["Shift+C"]],
+      ["issue.tree-link", ["f"]],
+      ["issue.tree-zoom-in", ["."]],
+      ["issue.tree-zoom-out", [","]],
+      ["issue.tree-question", ["q"]],
+      ["issue.tree-decision", ["w"]],
+      ["issue.tree-reply", ["r"]],
+      ["issue.tree-answer", ["a"]],
+      ["issue.tree-cycle", ["z"]],
+      ["issue.tree-edit", ["Enter"]],
+      ["issue.tree-leave-caret", ["Esc"]],
+      ["issue.tree-leave", ["Esc"]],
+      ["issue.tab-spec", ["t", "s"]],
+      ["issue.tab-verification", ["t", "k"]],
+      ["issue.tab-plan", ["t", "p"]],
+      ["issue.tab-decisions", ["t", "d"]],
+      ["issue.tab-conversation", ["t", "c"]],
+      ["issue.tab-children", ["t", "h"]],
+    ];
+    for (const [action, keys] of listed) {
+      expect(issue.contains(line(action)), action).toBe(true);
+      expect(keysOf(action), action).toEqual([...keys]);
+    }
+    const global = within(section).getByRole("region", { name: "Global" });
+    expect(global.contains(line("global.toggle-details"))).toBe(true);
+    expect(keysOf("global.toggle-details")).toEqual(["Shift+M"]);
+    for (const action of [
+      "issue.tree-next",
+      "issue.next-turn",
+      "global.toggle-details",
+      "global.toggle-margin",
+    ] as const) {
+      expect(line(action).querySelector("p"), action).toBeNull();
+    }
+  } finally {
+    view.unmount();
+  }
+});
+
+// The header's keys are drawn on both issue pages: a key of today's Conversation tab is refused
+// one as it always was, and so is a key of the new page's outline, each naming the header's
+// action.
+test("a key of today's issue page or of the new page's outline is refused a header key, naming the header's action", async () => {
+  const view = drawSection();
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      await user.click(control("issue.next-turn", "Change j"));
+      await user.keyboard("s");
+      await jump(CHORD_TIMEOUT_MS);
+      expect(within(line("issue.next-turn")).getByRole("alert").textContent).toContain(
+        "s is already the key of Open the status menu."
+      );
+      await user.keyboard("{Escape}");
+
+      await user.click(control("issue.tree-link", "Change f"));
+      await user.keyboard("s");
+      await jump(CHORD_TIMEOUT_MS);
+      expect(within(line("issue.tree-link")).getByRole("alert").textContent).toContain(
+        "s is already the key of Open the status menu."
+      );
+      await user.keyboard("{Escape}");
+    });
+    expect(stored()).toEqual({});
+    expect(keysOf("issue.next-turn")).toEqual(["j"]);
+    expect(keysOf("issue.tree-link")).toEqual(["f"]);
+  } finally {
+    view.unmount();
+  }
+});
+
 test("two presses within one second are one key of two presses, and no page key acts on either", async () => {
   // In the capture phase, before the recorder: what the page's keymap would read, which skips a
   // press a handler took (`defaultPrevented`); and, in the bubble phase, whether one reached it.
