@@ -11,6 +11,7 @@ import {
   defaultBounds,
   diskReadings,
   emit,
+  type Hit,
   judged,
   pinnedRoutes,
   pinSection,
@@ -18,11 +19,13 @@ import {
   readData,
   readsHeld,
   report,
+  rigRecords,
   rigShell,
   rigShellArgv,
   runRigShell,
   servedReads,
   Tree,
+  WHOLE_WORLD_ROW,
   Worlds,
   WRITE_FAILED,
   worldOfDir,
@@ -670,6 +673,26 @@ test.each(PLANTED)(
   },
   60_000
 );
+
+// Catches: a file rig.sh builds into every run (`--outfile "$R/<path>"`, the gh bundle) read as
+// nothing to find, whose words no reading of rig.sh's text can see: at 9083afb5 the bundle took
+// the route table's evidence, which named a scenario, and the launch guard refused every reviewer
+// of INFRA-764's round 30. The check holds such a file to rig.test.ts's row that builds and reads
+// it, and calls it an instance in a tree whose rig.test.ts has no such row.
+test("a file rig.sh builds into a run is held by rig.test.ts's whole-world row, and an instance without it", () => {
+  const built = (hits: readonly Hit[]) =>
+    hits
+      .filter(({ text }) => text.includes('--outfile "$R/'))
+      .map(({ at, verdict }) => [at, verdict]);
+  const held = built(rigRecords(tree));
+  expect(held).toEqual([[expect.stringMatching(new RegExp(`^${RIG}/rig\\.sh:\\d+$`)), "true"]]);
+  const file = `${RIG}/rig.test.ts`;
+  const without = new Tree(
+    CHECKOUT,
+    new Map([[file, existing(file).replaceAll(`"${WHOLE_WORLD_ROW}"`, '"another row"')]])
+  );
+  expect(built(rigRecords(without))).toEqual([[held[0]?.[0], "instance"]]);
+});
 
 // Catches: hand search 3 reading a line about the reviewer's thermonuclear pair, whose two halves
 // are its two review agents with a `Thermo` row each (main's gate on an approval in

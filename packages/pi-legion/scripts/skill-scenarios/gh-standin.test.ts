@@ -17,6 +17,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { DAEMON_MODULE, labelGhSelectors, labelGhTable, RIG_GH_TOKEN } from "./daemon-pane";
 import { readWorld, sentBody } from "./gh-call";
+import { ROUTE_EVIDENCE } from "./gh-route-evidence";
 import {
   commandsIn,
   routeOf,
@@ -874,6 +875,98 @@ test("every body edit gh takes leaves the pull request that body, and the record
     ]);
   }
   // Fourteen runs, each a world and two stand-in calls: longer than bun's five-second default.
+}, 60_000);
+
+// The gh stand-in is rig code too (the architect's ruling of 2026-11-21T14:24:55Z). It writes the
+// run's fixtures.json after the run's first launch, when an agent's call edits the pull request's
+// body, and launch's guard reads that file at the first launch alone (run-names.ts's
+// AGENT_WRITTEN): so all such a write adds there is what the call gave it, or what the file held as
+// the rig wrote it, which the first launch read. Each write an agent can make to the pull
+// request's body or its reviews runs in a run of its own: the body edit in each form the stand-in
+// models (`gh pr edit` with a body or a body file, and a PATCH of the pull request with a `-f`
+// field, an `@file` field or an `--input` body), the GraphQL `updatePullRequest`, which no world
+// models, a review's create through the REST route, and `gh pr review`, which the world refuses.
+// Every string of fixtures.json after the call, each value and each key, is one the file held
+// before it or one the call gave: an argument, the part of one after an `=`, a file an argument
+// names (as `@<file>` or whole) and each string of the JSON such a file holds. Catches: a
+// stand-in that writes a string of its own into fixtures.json on such a write, which the guard
+// would not read before a later agent read it; and a body edit that keeps nothing there, which
+// would leave this row holding no write at all.
+test("a write the gh stand-in keeps in fixtures.json adds nothing the call did not give it", () => {
+  const text = "the body after the edit, where a=b";
+  const pull = "repos/example/widgets/pulls/1001";
+  const strings = (value: unknown, into = new Set<string>()): Set<string> => {
+    if (typeof value === "string") into.add(value);
+    else if (Array.isArray(value)) for (const one of value) strings(one, into);
+    else if (typeof value === "object" && value !== null)
+      for (const [key, one] of Object.entries(value)) {
+        into.add(key);
+        strings(one, into);
+      }
+    return into;
+  };
+  const jsonOf = (content: string): unknown => {
+    try {
+      return JSON.parse(content);
+    } catch {
+      return undefined;
+    }
+  };
+  const mutation = `mutation { updatePullRequest(input: {pullRequestId: "PR_1", body: "${text}"}) { pullRequest { body } } }`;
+  /** Each write: its name, whether it keeps the body in fixtures.json, and its arguments. */
+  const writes: [string, boolean, (md: string, json: string, head: string) => string[]][] = [
+    ["pr edit --body", true, () => ["pr", "edit", "1001", "--body", text]],
+    ["pr edit -b=", true, () => ["pr", "edit", "1001", `-b=${text}`]],
+    ["pr edit --body-file", true, (md) => ["pr", "edit", "1001", "--body-file", md]],
+    ["PATCH -f body=", true, () => ["api", "-X", "PATCH", pull, "-f", `body=${text}`]],
+    ["PATCH -F body=@", true, (md) => ["api", "--method", "PATCH", pull, "-F", `body=@${md}`]],
+    ["PATCH --input", true, (_, json) => ["api", "--method=patch", pull, "--input", json]],
+    ["GraphQL updatePullRequest", false, () => ["api", "graphql", "-f", `query=${mutation}`]],
+    [
+      "review create",
+      false,
+      (_, __, head) => [
+        ...["api", "-X", "POST", REVIEWS, "-f", `commit_id=${head}`],
+        ...["-f", "event=APPROVE", "-f", `body=${text}`],
+      ],
+    ],
+    ["pr review", false, () => ["pr", "review", "1001", "--approve", "--body", text]],
+  ];
+  const added: string[] = [];
+  const kept: [string, boolean][] = [];
+  for (const [name, , call] of writes) {
+    const { dir, first } = runDir({ fixture: true });
+    const md = path.join(dir, "body.md");
+    writeFileSync(md, text);
+    const json = path.join(dir, "body.json");
+    writeFileSync(json, JSON.stringify({ body: text }));
+    const fixtures = path.join(dir, "fixtures.json");
+    const before = strings(JSON.parse(readFileSync(fixtures, "utf8")));
+    const argv = call(md, json, first);
+    ghCall(dir, ...argv);
+    const after = strings(JSON.parse(readFileSync(fixtures, "utf8")));
+    const given = new Set<string>();
+    for (const arg of argv) {
+      given.add(arg);
+      for (let at = arg.indexOf("="); at >= 0; at = arg.indexOf("=", at + 1))
+        given.add(arg.slice(at + 1));
+    }
+    for (const one of [...given]) {
+      const named = one.startsWith("@") ? one.slice(1) : one;
+      if (!path.isAbsolute(named) || !existsSync(named)) continue;
+      const content = readFileSync(named, "utf8");
+      given.add(content);
+      strings(jsonOf(content), given);
+    }
+    for (const one of after)
+      if (!before.has(one) && !given.has(one)) added.push(`${name}: ${JSON.stringify(one)}`);
+    kept.push([name, after.has(text) && !before.has(text)]);
+  }
+  expect({ added, kept }).toEqual({
+    added: [],
+    kept: writes.map(([name, keeps]) => [name, keeps]),
+  });
+  // Nine runs, each a world and a stand-in call: longer than bun's five-second default.
 }, 60_000);
 
 // A `body` field on a call that is no PATCH of the pull request edits nothing: a POST of that
@@ -5926,7 +6019,7 @@ for (const name of PINNED_GRAPHQL)
 // launches of the arm. Catches: the read refused, a file read from anywhere but the run's own
 // remote at that commit (the fix push changes it), a raw read given a newline the file has not
 // got, JSON whose content or sha is not the blob's, a ref or a path the remote has not got
-// answered 200, and a route the world serves with no evidence in the table (gh-routes.ts).
+// answered 200, and a route the world serves with no evidence (gh-route-evidence.ts).
 test("the contents read answers the file at the commit from the run's own remote, raw or as GitHub's JSON", () => {
   const dir = worldDir("approved_world", "", { threadsCase: "correct" });
   const head = builtHead(dir);
@@ -5991,8 +6084,8 @@ test("the contents read answers the file at the commit from the run's own remote
     out: notFoundOf("https://docs.github.com/rest/repos/contents#get-repository-content"),
     err: "gh: Not Found (HTTP 404)\n",
   });
-  const key = routeOf(raw(head))?.key ?? "";
-  expect(worldRouteOf(key)).toMatchObject({
+  const route = worldRouteOf(routeOf(raw(head))?.key ?? "")?.route ?? "";
+  expect({ route, evidence: ROUTE_EVIDENCE[route] }).toMatchObject({
     route: "GET repos/{owner}/{repo}/contents/{path+}",
     evidence: { run: "not-counted-r24/threads-closed-text-fixes-head-3/calls.jsonl:16" },
   });
@@ -8421,18 +8514,23 @@ for (const [label, root] of [
   );
 
 // The both-ways pin's world side. Catches a route the world answers that neither label's texts
-// name and that carries no evidence: a recorded run that called it
-// (`<batch>/<run>/calls.jsonl:<line>`, with its reason), or why GitHub serves it to a role.
+// name and that carries no evidence (gh-route-evidence.ts's ROUTE_EVIDENCE): a recorded run that
+// called it (`<batch>/<run>/calls.jsonl:<line>`, with its reason), or why GitHub serves it to a
+// role; and evidence declared for a route the world does not answer, which no reader would find.
 test("every route the world answers is named by a role text or declared with its evidence", () => {
   const named = checkouts.flatMap(([, root]) => sweep(root).named.map(({ key }) => key));
   expect(
     WORLD_ROUTES.filter(
       (row) =>
-        row.evidence === undefined &&
+        ROUTE_EVIDENCE[row.route] === undefined &&
         !named.some((key) => worldRouteOf(key) === row && templateMatches(row.route, key))
     ).map(({ route }) => route)
   ).toEqual([]);
-  for (const { route, evidence } of WORLD_ROUTES) {
+  expect(
+    Object.keys(ROUTE_EVIDENCE).filter((route) => !WORLD_ROUTES.some((row) => row.route === route))
+  ).toEqual([]);
+  for (const { route } of WORLD_ROUTES) {
+    const evidence = ROUTE_EVIDENCE[route];
     if (evidence === undefined) continue;
     expect([route, "run" in evidence ? evidence.run : "world"]).toEqual([
       route,

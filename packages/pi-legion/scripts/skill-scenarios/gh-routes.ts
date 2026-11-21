@@ -2,10 +2,12 @@
 // texts name. GitHub answers the same routes whichever label asks, so the routes a world must
 // answer are every `gh` read the role texts of either label name — `skills/` and
 // `packages/daemon/internal/prompts/` of each checkout — and every route the census saw an agent
-// call, each of those declared with the run that called it (`WORLD_ROUTES`). A route a text
-// names that the world does not answer is a refusal production never gives, and it voids the run
-// that meets it; a route the world answers that nothing names is a world that tells an agent
-// more than it was asked about.
+// call (`WORLD_ROUTES`), each of those declared with the run that called it in a module of its own
+// (gh-route-evidence.ts's ROUTE_EVIDENCE), which no module of the gh stand-in imports: that
+// evidence names recorded runs by their names, and the stand-in's bundle is in every run's world.
+// A route a text names that the world does not answer is a refusal production never gives, and it
+// voids the run that meets it; a route the world answers that nothing names is a world that tells
+// an agent more than it was asked about.
 //
 // A route is written as a method and a path template: `GET repos/{owner}/{repo}/commits/{ref}/
 // status` for a REST call, `GRAPHQL query repository.pullRequest.reviewThreads` for a GraphQL
@@ -941,27 +943,20 @@ function notFound(field: string, args: Json): string {
   return `Could not resolve to a ${field[0]?.toUpperCase() ?? ""}${field.slice(1)}.`;
 }
 
-/** Why a world answers a route no role text of either label names: a recorded run whose agent
- * called it (`run`, `<batch>/<run>/calls.jsonl:<line>`), or, where no recorded run called it, why
- * GitHub serves it to a role (`world`). A world that stopped answering such a route would give a
- * refusal production does not, so it stays, and says why. */
-export type Evidence =
-  | { readonly run: string; readonly reason: string }
-  | { readonly world: string };
-
-/** One route a world answers: its key (`templateMatches`), what its answer is read from, and,
- * for a route no role text of either label names, its evidence. */
+/** One route a world answers: its key (`templateMatches`) and what its answer is read from. A
+ * route no role text of either label names carries its evidence in gh-route-evidence.ts's
+ * ROUTE_EVIDENCE, which this module holds none of: rig.sh's `standins` bundles it into every run's
+ * <run>/lib/gh.js, and the evidence names recorded runs by their names. */
 export interface WorldRoute {
   readonly route: string;
   readonly answer: string;
-  readonly evidence?: Evidence;
 }
 
 /** Every route a worker world answers (rig.sh's fixture_write and the gh stand-in's own answers).
- * A route a role text names needs no evidence; a route neither label's texts name carries its
- * evidence (`Evidence`). A call outside this table is refused as `gh: Not Found (HTTP 404)`
- * (gh-standin.ts), which `rig.sh health` reports as a world missing an answer, and, for a write,
- * as a write the world does not model. */
+ * A route a role text names needs no evidence; a route neither label's texts name has its
+ * evidence in ROUTE_EVIDENCE (gh-route-evidence.ts). A call outside this table is refused as `gh:
+ * Not Found (HTTP 404)` (gh-standin.ts), which `rig.sh health` reports as a world missing an
+ * answer, and, for a write, as a write the world does not model. */
 export const WORLD_ROUTES: readonly WorldRoute[] = [
   // Reads.
   {
@@ -978,19 +973,11 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
     route: "GET repos/{owner}/{repo}/pulls/{number}/commits",
     answer:
       "the remote: the commits the pull request's head holds and its base does not, oldest first, paged, or GitHub's 404 for a pull request the world has not got",
-    evidence: {
-      world:
-        "GitHub's REST list of the pull request's commits, the read `gh pr view --json commits` makes through GraphQL",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/pulls/{number}/files",
     answer:
       "the remote: the files of the pull request's diff from its merge base, as the comparison lists them, paged, or GitHub's 404 for a pull request the world has not got",
-    evidence: {
-      world:
-        "GitHub's REST list of the pull request's files, the read `gh pr view --json files` and `gh pr diff --name-only` make",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/pulls/{number}/reviews",
@@ -999,35 +986,19 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   {
     route: "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}",
     answer: "the review calls.jsonl records the run creating, or the world's review by id, or 404",
-    evidence: {
-      run: "round17-forty/threads-closed-text-fixes-base-2/calls.jsonl:33",
-      reason: "a reviewer reads one review back by its id",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/pulls/{number}/reviews/{id}/comments",
     answer: "the comments of that review's threads: the world's, and the ones its create carried",
-    evidence: {
-      run: "round17-forty/reviewer-text-findings-text-only-head-2/calls.jsonl:26",
-      reason: "a reviewer reads back the inline comments of the review it created",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/pulls/{number}/comments",
     answer:
       "every comment of the review threads: the world's, then each one calls.jsonl records the run making",
-    evidence: {
-      run: "round17-forty/reviewer-text-findings-text-only-head-2/calls.jsonl:25",
-      reason: "a reviewer lists the pull request's inline comments beside its threads",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/issues/{number}/comments",
     answer: "the pull request's conversation: the comments calls.jsonl records the run posting",
-    evidence: {
-      run: "round17-forty/reviewer-text-findings-defect-base-2/calls.jsonl:29",
-      reason: "a reviewer reads the pull request's conversation before it reviews",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/commits/{ref}/check-runs",
@@ -1041,19 +1012,11 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
     route: "GET repos/{owner}/{repo}/commits/{ref+}",
     answer:
       "the remote: the commit the ref resolves to, its parents, files and stats, or GitHub's 422",
-    evidence: {
-      run: "round29-world-health/94caf2e09844/calls.jsonl:8",
-      reason: "a reviewer reads the commit the implementer pushed, for its author and parents",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/commits",
     answer:
       "the remote: the commits the `sha` parameter's ref reaches, newest first, paged, or GitHub's 404",
-    evidence: {
-      world:
-        "GitHub's list of the commits a branch reaches, the REST form of the history beside the read of one commit",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/actions/runs",
@@ -1071,27 +1034,15 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   {
     route: "GET repos/{owner}/{repo}/rulesets",
     answer: "the repository's rulesets: the one on its base branch",
-    evidence: {
-      world:
-        "the list of the rulesets whose id each rule of the base branch names, which a reviewer reaches from those rules",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/rulesets/{id}",
     answer: "the base branch's ruleset, its conditions and its rules; GitHub's 404 for another id",
-    evidence: {
-      world:
-        "the ruleset a rule of the base branch names by its id, which a reviewer reads for the rules it holds",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/branches/{branch}/protection",
     answer:
       "GitHub's 403 to a role App, whose token may not read a repository's administration: `Resource not accessible by integration`",
-    evidence: {
-      world:
-        "GitHub's protection read of the base branch the merge gate reads, which a reviewer reaches for its required checks",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/branches/{branch+}",
@@ -1102,16 +1053,10 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
     route: "GET repos/{owner}/{repo}/branches",
     answer:
       "the remote's branches, each with its tip, the base alone protected, filtered by `protected`, paged",
-    evidence: {
-      world: "GitHub's list of the branches, beside the read of one branch the world serves",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/tags",
     answer: "the remote's tags, newest version first: none in any world, so an empty list",
-    evidence: {
-      world: "GitHub's list of the tags, which it answers empty for a repository with none",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/compare/{basehead+}",
@@ -1125,52 +1070,33 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   {
     route: "GET repos/{owner}/{repo}/git/refs",
     answer: "the remote's refs and the pull request's two, by name",
-    evidence: {
-      world: "GitHub's list of every ref, the plural form of the ref read the world serves",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/git/refs/{ref+}",
     answer:
       "the ref the path names, or the list of the refs its name starts, or GitHub's 404, as GitHub answers `git/refs/<ref>`",
-    evidence: {
-      world:
-        "GitHub's read of one ref or of the refs under a name, the plural form of the ref read the world serves",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/git/commits/{sha}",
     answer: "the remote: the commit's git data for a full SHA, or GitHub's 404",
-    evidence: {
-      world: "GitHub's git-data read of one commit, which it serves beside the read of a commit",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/git/trees/{sha+}",
     answer: "the remote: the tree of the object the path names, recursive where asked, or 404",
-    evidence: {
-      world: "GitHub's read of a commit's tree, the files of a head listed without a checkout",
-    },
   },
   {
     route: "GET repos/{owner}/{repo}/contents/{path+}",
     answer: "the remote: the file or directory at the ref, raw or as GitHub's JSON, or 404",
-    evidence: {
-      run: "not-counted-r24/threads-closed-text-fixes-head-3/calls.jsonl:16",
-      reason: "a head reviewer re-reads the fixed file at the head through the API",
-    },
   },
   {
     route: "GET user",
     answer:
       "GitHub's 403 to a role App, whose installation token is no user's: `Resource not accessible by integration`",
-    evidence: { world: "the identity read every gh session can make, which GitHub refuses an App" },
   },
   {
     route: "GH auth status",
     answer:
       "gh's text for the pane's gh configuration: the account its hosts.yml names and the rig's token as gh masks it, no token read",
-    evidence: { world: "the identity read every gh session can make" },
   },
   {
     route: "GH pr view",
@@ -1180,10 +1106,6 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   {
     route: "GH pr diff",
     answer: "the remote: the issue branch against the base",
-    evidence: {
-      world:
-        "gh's read of the pull request's diff, which round 25's agents made in two spellings no role text named, `gh pr diff <n>` and `gh pr diff <n> --color never` (production-shapes.json's `gh pr diff -` and `gh pr diff ---color`, their readings again of 2026-11-18); the one text that named the read, conflicts-and-rewrites.md's `gh pr diff <n> --name-only`, left with #4464",
-    },
   },
   { route: "GH pr checks", answer: "the world's check runs of the branch's tip" },
   {
@@ -1218,16 +1140,11 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   {
     route: "POST repos/{owner}/{repo}/pulls/{number}/reviews/{id}/events",
     answer: "the pending review calls.jsonl records the run creating, or 422",
-    evidence: { world: "submits the pending review the world's own create leaves" },
   },
   {
     route: "PUT repos/{owner}/{repo}/pulls/{number}/reviews/{id}",
     answer:
       "the review with the body the call sends, which every later read of it reads; 404 for a review the pull request has not got, 422 for no body",
-    evidence: {
-      run: "round25-runs/1e2a0aeced4b/calls.jsonl:23",
-      reason: "a reviewer rewrites its approval's body after it submitted it",
-    },
   },
   {
     route: "PATCH repos/{owner}/{repo}/pulls/{number}",
@@ -1238,21 +1155,15 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
     route: "POST repos/{owner}/{repo}/pulls/{number}/comments/{id}/replies",
     answer:
       "the reply, in the thread of the comment the path names, replying to its first comment; 404 where no thread holds it",
-    evidence: { world: "the REST form of the review-thread reply" },
   },
   {
     route: "POST repos/{owner}/{repo}/pulls/{number}/comments",
     answer:
       "the comment the call makes: a thread of its own, or a reply where it names in_reply_to",
-    evidence: {
-      run: "round17-forty/reviewer-text-findings-text-only-head-5/calls.jsonl:21",
-      reason: "a reviewer posts an inline comment on its own",
-    },
   },
   {
     route: "POST repos/{owner}/{repo}/issues/{number}/comments",
     answer: "the comment on the conversation, numbered after the run's earlier ones, and kept",
-    evidence: { world: "the REST form of the conversation comment gh pr comment posts" },
   },
   {
     route: "GH pr comment",
@@ -1262,10 +1173,6 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
     route: "GH pr edit",
     answer:
       "the pull request's URL; the body the call leaves kept; an edit of anything else refused",
-    evidence: {
-      run: "round17-forty/reviewer-text-findings-defect-base-4/calls.jsonl:32",
-      reason: "a role writes the body's sections with gh pr edit",
-    },
   },
   {
     route: "GRAPHQL mutation resolveReviewThread",
@@ -1274,10 +1181,6 @@ export const WORLD_ROUTES: readonly WorldRoute[] = [
   {
     route: "GRAPHQL mutation addPullRequestReviewThreadReply",
     answer: "the reply the call posts in the thread it names, or GitHub's NOT_FOUND",
-    evidence: {
-      run: "round17-forty/reviewer-text-findings-defect-base-5/calls.jsonl:34",
-      reason: "a reviewer replies on a review thread through GraphQL",
-    },
   },
 ];
 

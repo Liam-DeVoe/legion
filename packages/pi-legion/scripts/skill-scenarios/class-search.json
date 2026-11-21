@@ -29,7 +29,7 @@
       "check": "an agent's world: a record of the rig's that names the rig",
       "at": "rig\\.sh:\\d+ .*\"\\$R/services-from\"",
       "ruled": "2026-11-18T08:40Z",
-      "words": "The rig's records that are files at the top of the run's directory (`built-from`, `services-from`, `namespace.txt`, `launch.sh` and the rest) are not hidden, since a gVisor pod refuses a mount onto a file, and the guard does not read them, since `services-from` names the rig's own directory in every run: an agent can still read them, and hiding them needs them moved into a directory the namespace covers.",
+      "words": "The rig's records that are files at the top of the run's directory (`built-from`, `services-from`, `namespace.txt`, `launch.sh` and the rest) are not hidden, since a gVisor pod refuses a mount onto a file, and `services-from` names the rig's own directory in every run, which the guard reads it less (run-names.ts's `worldFiles`): an agent can still read them, and hiding them needs them moved into a directory the namespace covers.",
       "source": "packages/pi-envoy/scripts/README.md, \"skill-scenarios/rig.sh\" (what the launch guard reads); rig.sh's world_paths"
     },
     {
@@ -356,7 +356,7 @@
     {
       "entry": 34,
       "finding": "Preflight at cc09c638: the guard read a checkout's bundle and a run's own transcripts.",
-      "held": "rig.test.ts's planted-word row and its unreadable system prompt row, which hold the launch guard to what the rig composes (run-names.ts's COMPOSED)"
+      "held": "rig.test.ts's planted-word row and its unreadable system prompt row, which hold the launch guard to what the rig composes, and its whole-world row, which reads every scenario's composed run through the guard's own walker (run-names.ts's `worldFiles`)"
     },
     {
       "entry": 35,

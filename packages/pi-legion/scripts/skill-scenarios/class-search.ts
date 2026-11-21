@@ -1173,16 +1173,28 @@ const printedCredential: Check = {
   },
 };
 
+/** The row of rig.test.ts that holds every file rig.sh builds into a run: it composes each
+ * scenario's run for both labels as cmd_run composes it, up to its first agent
+ * (SKILL_SCENARIOS_COMPOSE_ONLY), and reads every file of it for the guard's words. */
+export const WHOLE_WORLD_ROW =
+  "no file rig.sh writes, copies or builds into a run before its agent starts names a word of the measurement";
+
 /** The rig's records a run's agent can read that name the rig: each file rig.sh copies into the
  * top of a run's directory (`cp <file> "$R/<name>"`), which the run's namespace shows (world_paths
  * prints `rw $R` and hides only what it prints `hide` for), whose source a writer fills with a
  * line naming `$here`, the rig's own directory. A writer is a line that redirects into the
  * source (the same path, or a call of the same function where the source is one's output), read
- * as the function it calls, or as the `{ … }` group it closes. */
+ * as the function it calls, or as the `{ … }` group it closes. And each file rig.sh builds into a
+ * run (`--outfile "$R/<path>"`), a bundle of a module of the rig's and every module it imports,
+ * whose words no reading of rig.sh's text can see: the gh bundle took the route table's evidence
+ * at 9083afb5, which named a scenario, and the guard refused every reviewer of INFRA-764's round
+ * 30. Such a file is held by rig.test.ts's WHOLE_WORLD_ROW, which builds it as the rig does and
+ * reads it, and is an instance where that row is not there. */
 export function rigRecords(tree: Tree): Hit[] {
   const file = rig("rig.sh");
   const lines = tree.lines(file);
   const script = lines.join("\n");
+  const wholeWorld = tree.text(rig("rig.test.ts")).includes(`"${WHOLE_WORLD_ROW}"`);
   const hidden = [...script.matchAll(/printf 'hide %s\\n' "\$R\/([\w.-]+)"/g)].map(
     ([, name]) => name
   );
@@ -1203,6 +1215,21 @@ export function rigRecords(tree: Tree): Hit[] {
   const hits: Hit[] = [];
   lines.forEach((text, index) => {
     if (comment(file, text)) return;
+    const built = /--outfile "\$R\/([^"]+)"/.exec(text);
+    if (built !== null) {
+      hits.push({
+        at: `${file}:${index + 1}`,
+        text,
+        ...(wholeWorld
+          ? holds(
+              `<run>/${built[1]}, built into every run, is held by rig.test.ts's "${WHOLE_WORLD_ROW}", which builds it as the rig does and reads it for the guard's words`
+            )
+          : instance(
+              `<run>/${built[1]} is built into every run, which the agent can read, and no row of rig.test.ts ("${WHOLE_WORLD_ROW}") builds and reads it`
+            )),
+      });
+      return;
+    }
     const copied = /\bcp (?:-\w+ )*(.+?) "\$R\/([\w.-]+)"\s*$/.exec(text);
     if (copied === null || hidden.includes(copied[2] ?? "")) return;
     const source = (copied[1] ?? "").replace(/^"|"$/g, "");
@@ -1233,8 +1260,8 @@ const runRecords: Check = {
   name: "an agent's world: a record of the rig's that names the rig",
   class: "Anything an agent can read naming the test.",
   reading:
-    'rig.sh: each `cp <file> "$R/<name>"` into the top of a run\'s directory, which world_paths shows (`rw $R`) and does not hide, and the functions that write <file>',
-  rule: "a record whose writer prints `$here`, the rig's own directory (which holds `skill-scenarios`), is an instance; one whose writers print no such path is a true statement",
+    'rig.sh: each `cp <file> "$R/<name>"` into the top of a run\'s directory, which world_paths shows (`rw $R`) and does not hide, and the functions that write <file>; and each `--outfile "$R/<path>"`, a file it builds into every run',
+  rule: `a record whose writer prints \`$here\`, the rig's own directory (which holds \`skill-scenarios\`), is an instance; one whose writers print no such path is a true statement; a built file is a true statement where rig.test.ts holds "${WHOLE_WORLD_ROW}", which builds and reads it, and an instance where it does not`,
   run: rigRecords,
 };
 

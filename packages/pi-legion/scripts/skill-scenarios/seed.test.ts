@@ -814,8 +814,10 @@ describe("state", () => {
   }
 
   // Catches: a state that lists a seeded ask, an answered ask or an approval request as an open
-  // question, misses the spec's approval request, or takes another document's for it.
-  test("writes and prints each open question and the spec's open approval request", async () => {
+  // question, misses the spec's approval request, or takes another document's for it; and one that
+  // prints an ask's text, which rig.sh appends to <run>/fixture.log, a file of the rig's that
+  // launch's guard reads before the next turn, so the agent's own words would refuse its turn.
+  test("writes each open question and the spec's open approval request, and prints their count alone", async () => {
     const spec = dispatch.issue(KEY);
     world(spec);
     const dir = runDir();
@@ -837,7 +839,9 @@ describe("state", () => {
     };
     expect(result).toEqual(expected);
     expect(JSON.parse(readFileSync(path.join(dir, "state-3.json"), "utf8"))).toEqual(expected);
-    expect(logSpy.mock.calls.map((call) => JSON.parse(String(call[0])))).toEqual([expected]);
+    expect(logSpy.mock.calls).toEqual([
+      ["turn 3: 1 open asks, spec approval request open: version 4"],
+    ]);
   });
 
   // Catches: a state that reports an approval when the spec has none open.

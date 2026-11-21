@@ -32,12 +32,18 @@ import { headUnmoved } from "./health";
 import { leakCheckEnv } from "./leak-check-env";
 import { PERSON_ROUTE_SOURCES } from "./person-routes";
 import {
+  AGENT_WRITTEN,
+  agentsOwn,
+  agentWritten,
+  firstLaunch,
   nameWords,
   runIdentity,
+  SCENARIOS,
   textWords,
   vocabulary,
   WORLD_PROJECT,
   WORLD_REMOTE_VCS,
+  worldFiles,
 } from "./run-names";
 import {
   bundled,
@@ -6820,13 +6826,14 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
 
 // The routes a world answers are the routes GitHub answers a role, and GitHub answers the same
 // routes whichever label asks: every gh read either label's role texts name, and every route a
-// recorded run called, each declared with its evidence (gh-routes.ts's WORLD_ROUTES, which
-// gh-standin.test.ts pins against the texts). These rows pin the table against the worlds rig.sh
-// builds: every route of the table answered in every world, with the shape GitHub's answer has;
-// and every route a world writes into its fixtures.json reached by a route of the table, so a
-// route added to a world and declared nowhere fails here. Measured at 3a2ea66a: 14 gh calls of
-// round 17's forty and the world-health check's eight runs refused with no refusal production
-// gives (gh-refused-calls.json), which voids each run that meets one.
+// recorded run called, each declared with its evidence (gh-routes.ts's WORLD_ROUTES and
+// gh-route-evidence.ts's ROUTE_EVIDENCE, which gh-standin.test.ts pins against the texts). These
+// rows pin the table against the worlds rig.sh builds: every route of the table answered in
+// every world, with the shape GitHub's answer has; and every route a world writes into its
+// fixtures.json reached by a route of the table, so a route added to a world and declared nowhere
+// fails here. Measured at 3a2ea66a: 14 gh calls of round 17's forty and the world-health check's
+// eight runs refused with no refusal production gives (gh-refused-calls.json), which voids each
+// run that meets one.
 /** `text` as the one JSON value it holds, written compactly, or `text` as it is when it holds no
  * one JSON value: jq indents the values it prints, and a row reads the value. */
 function compact(text: string): string {
@@ -8138,12 +8145,12 @@ describe("what the rig writes into a run's world", () => {
       ])
     );
     // And the gh answers: every world's routes, `gh api user` (GitHub's 403 to a role App, its
-    // route `^gh api /?user…`) among them, so a world whose fixtures.json the walk did not read is
-    // no answer read as clean.
+    // route `^gh api (.* )?/?user…`) among them, so a world whose fixtures.json the walk did not
+    // read is no answer read as clean.
     for (const world of ["tester_proof_world", "review_world", "approved_world dropped"])
       expect([...read.keys()]).toEqual(
         expect.arrayContaining([
-          expect.stringMatching(new RegExp(`^${world}: route \\d+ .*api /\\?user`)),
+          expect.stringMatching(new RegExp(`^${world}: route \\d+ .*api \\(\\.\\* \\)\\?/\\?user`)),
         ])
       );
     for (const [where, text] of read)
@@ -10434,18 +10441,19 @@ sleep() { command sleep 0.05; }`;
   );
 
   // Catches: the services' logs readable by a run's agents in the run's own directory, and a hide
-  // that lets the agent write into the host's; and a guard that reads the rig's records
-  // (run-names.ts's RECORDS), which would refuse every run, since services-from names the rig's
-  // own directory in every one. The records that are files stay readable: this gVisor host
-  // refuses a mount onto a file.
+  // that lets the agent write into the host's; and a guard that reads the rig's records as an
+  // agent's words, or reads services-from with the rig's own directory in it, which would refuse
+  // every run, since services-from names that directory in every one (run-names.ts's
+  // `worldFiles`). The records that are files stay readable: this gVisor host refuses a mount onto
+  // a file.
   test.skipIf(withoutNamespace)(
-    "the services' logs read empty inside a run and stay whole outside it, and the guard passes the rig's records over",
+    "the services' logs read empty inside a run and stay whole outside it, and the guard reads services-from less the rig's own directory",
     () => {
       const work = freshDir("launch-records");
       const name = "threads-closed-correct-head-1";
       const R = runDirOf(work, name);
       const records = {
-        "services-from": "gh-standin.ts shared /co/packages/pi-legion/scripts/skill-scenarios -\n",
+        "services-from": `gh-standin.ts shared ${realpathSync(RIG)} -\n`,
         "built-from": "checkout /co\n",
         "logs/dispatch.log": "a line of the server's\n",
       };
@@ -10463,6 +10471,40 @@ sleep() { command sleep 0.05; }`;
       expect(out).toBe("logs=\nrefused\nexit=0\n");
       for (const [file, text] of Object.entries(records))
         expect(readFileSync(path.join(R, file), "utf8")).toBe(text);
+    }
+  );
+
+  // Catches: a record of the run's launches an agent of the run can write. The guard tells a run's
+  // first launch from a later one by it (run-names.ts's `firstLaunch`), and reads what an agent
+  // can write (AGENT_WRITTEN) at the first alone: an agent that could empty it would have the next
+  // launch read its own words as the rig's, and one that could add a line would have the next
+  // launch pass over what the rig wrote. launch appends its line once the guard has passed, and
+  // <run>/logs is under an empty read-only tmpfs in the agent's namespace (world_paths' `hide`).
+  // The agent tries the file, the directory, and a user and mount namespace of its own, in which a
+  // mount its namespace was made with cannot be taken off. After two launches the record holds the
+  // rig's two lines, and none of the agent's.
+  test.skipIf(withoutNamespace)(
+    "an agent of the run cannot write the run's record of its launches",
+    () => {
+      const work = freshDir("launch-record");
+      const name = "threads-closed-correct-head-1";
+      const R = runDirOf(work, name);
+      const record = path.join(R, "logs", "launches");
+      const agent = [
+        `(echo forged >>${record}) 2>/dev/null && echo appended || echo refused`,
+        `(: >${record}) 2>/dev/null && echo emptied || echo kept`,
+        `mv ${R}/logs ${R}/logs-moved 2>/dev/null && echo moved || echo stayed`,
+        `unshare -Urm sh -c 'umount -l ${R}/logs; echo forged >>${record}' 2>/dev/null && echo unshared || echo held`,
+      ].join("\n");
+      const launches = [launched(work, name, agent), launched(work, name, agent)];
+      const line = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z t-threads-closed-correct-head-1$/;
+      expect({
+        launches: launches.map(({ result, out }) => [result.code, out]),
+        record: existsSync(record) ? readFileSync(record, "utf8").split("\n") : "no record",
+      }).toEqual({
+        launches: [0, 0].map((code) => [code, "refused\nkept\nstayed\nheld\nexit=0\n"]),
+        record: [expect.stringMatching(line), expect.stringMatching(line), ""],
+      });
     }
   );
 
@@ -11007,6 +11049,405 @@ sleep() { command sleep 0.05; }`;
     ).toBe(undefined);
   });
 
+  /** The batch's services and what a run reaches of them, over rig.sh sourced whole: the
+   * namespace and tmux probes and the listener, which write nothing into a run; the given
+   * Postgres and NATS, which nothing here reaches; the Envoy listener's and the Dispatch server's
+   * builds, each a binary outside every run (the label's build of daemon-pane.go, which composes
+   * the pane and its system prompt, is built for real); the processes a run starts beside its
+   * agent, the daemon stand-in saying it listens as its own log does and opening the run's record
+   * of what reached it, which serve the agent and write only their own records; and seed.ts,
+   * which files the run's issue on its own Dispatch and writes the ids that Dispatch gave it into
+   * the run (fixture.json), here an issue of the world's project with ids of the shape Dispatch
+   * gives. */
+  const WHOLE_WORLD_SERVICES = [
+    "require_namespace() { :; }",
+    "tmux_ready() { :; }",
+    "until_true() { :; }",
+    'pg_sql() { [ "$2" != "SHOW max_connections" ] || echo 200; }',
+    "start_listener() { envoy_port=1; }",
+    'eval "rig_$(declare -f go_binary)"',
+    "go_binary() {",
+    '  if [ "$4" = daemon-pane ]; then rig_go_binary "$@"; else printf \'%s/%s\\n\' "$(build_dir "$1")" "$4"; fi',
+    "}",
+    "start_dispatch() { dispatch_port=1; }",
+    "start_process() {",
+    "  printf -v \"$1_pid\" '%s' ''",
+    '  [ "$1" != daemon ] || {',
+    "    printf 'listening on http://127.0.0.1:4321\\n' >\"$R/logs/daemon.log\"",
+    '    printf \'{"at":"2026-11-21T00:00:00.000Z","opened":"daemon.log"}\\n\' >>"$R/daemon.log"',
+    "  }",
+    "}",
+    "await_start() { :; }",
+    "seed_standin() {",
+    "  local key",
+    "  case $1 in",
+    "  ask-on-message | measure-before-ask | askgate | tester-proof | spec-writing | spec-rewrite)",
+    `    jq -n '{issue:"${WORLD_PROJECT}-1", message:"01a2d000-0000-7000-8000-000000000001", comment_ref:"dispatch://${WORLD_PROJECT}-1/comment/01a2d000-0000-7000-8000-000000000002"}' >"$2"`,
+    "    ;;",
+    "  plan | implement-handoff | tester-result | review-handoff)",
+    "    case $1 in plan) key=plan ;; implement-handoff) key=implement ;; tester-result) key=test ;; *) key=review ;; esac",
+    '    jq --arg key "$key" \'.[$key] = {id:"01a2d000-0000-7000-8000-000000000003", version:1}\' "$2" >"$2.next"',
+    '    mv "$2.next" "$2"',
+    "    ;;",
+    "  esac",
+    "}",
+    'bun() { if [ "$1" = "$here/seed.ts" ]; then shift; seed_standin "$@"; else command bun "$@"; fi; }',
+  ];
+
+  /** Composes each run `runs` names (`<scenario>:<case>:<label>:<the case's variable>:<n>`, then
+   * `:plant` for a run with PLANT set) as cmd_run composes it, with rig.sh sourced whole, over
+   * WHOLE_WORLD_SERVICES and then `stubs`, under `env`: each of `labels` gets a profile on this
+   * checkout as cmd_profile records one, the batch's services come up as services_up brings them
+   * up, and a run that cannot be composed is named on stderr (`could not compose <run>`). Both
+   * labels are built from this checkout, since the base label's own checkout is none this test
+   * has; each label's install is what load_label reads of one (its profile's settings), since
+   * `rig.sh profile` packs the plugins with the pinned Oh My Pi and installs a model route whose
+   * credentials no test holds. Returns bash's result and each run as the rig left it, archived
+   * (stop_run), by the name its record gives it. */
+  function composeRuns(
+    dir: string,
+    labels: readonly string[],
+    runs: readonly string[],
+    stubs: readonly string[],
+    env: Record<string, string>
+  ) {
+    const rigWork = path.join(dir, "work");
+    const bin = path.join(dir, "bin");
+    mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
+    writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(
+      path.join(bin, "mise"),
+      `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\nshift 3\nexec "$@"\n`,
+      { mode: 0o755 }
+    );
+    // The caller's go caches, which the build of daemon-pane.go compiles with: childEnv's HOME
+    // holds none.
+    const printed = spawnChecked(
+      ["go", "env", "-json", "GOCACHE", "GOMODCACHE", "GOPATH", "GOFLAGS", "GOTOOLCHAIN"],
+      { stdout: "pipe", stderr: "pipe" }
+    );
+    expect(printed.exitCode).toBe(0);
+    const go = Object.fromEntries(
+      Object.entries(JSON.parse(printed.stdout.toString()) as Record<string, string>).filter(
+        ([, value]) => value !== ""
+      )
+    );
+    const result = bash(
+      [
+        `. ${JSON.stringify(path.join(import.meta.dir, "rig.sh"))}`,
+        ...WHOLE_WORLD_SERVICES,
+        ...stubs,
+        // Each label's profile, as cmd_profile records it, on this checkout.
+        "for label in $LABELS; do",
+        "  id=$(printf '%s' \"$label\" | sha256sum | cut -c1-12)",
+        "  P=$work/profiles/$label I=$work/installs/$id",
+        '  mkdir -p "$P" "$I/home/.omp/profiles/legion/agent"',
+        '  printf \'%s\\n\' "$root" >"$P/checkout"',
+        "  printf 'legion\\n' >\"$P/profile\"",
+        '  printf \'%s\\n\' "$id" >"$P/install"',
+        '  cp "$root/.omp-pin" "$P/pin"',
+        '  printf \'checkout %s\\n\' "$root" >"$P/built-from"',
+        "  printf 'extensionHandlers:\\n  toolCallTimeoutMs: 120000\\n' >\"$I/home/.omp/profiles/legion/agent/config.yml\"",
+        '  : >"$P/superpowers"',
+        '  : >"$P/ready"',
+        "done",
+        // The source a spec run seeds its issue from (fetch-spec-sources.ts writes one).
+        "source=$work/sources/$SKILL_SCENARIOS_SOURCE",
+        'mkdir -p "$source"',
+        "printf 'Move the nightly export\\n' >\"$source/title.txt\"",
+        "printf 'Move the nightly export to 04:00 UTC.\\n' >\"$source/messages.md\"",
+        "printf '[]\\n' >\"$source/asks.json\"",
+        "printf '# The nightly export\\n\\nIt runs at 02:00 UTC.\\n' >\"$source/old-spec.md\"",
+        "lock_services",
+        "services_up $LABELS",
+        'for one in "$@"; do',
+        '  IFS=: read -r scenario case_name label variable n plant <<<"$one"',
+        "  (",
+        '    [ -z "$variable" ] || export "$variable=$case_name"',
+        '    [ -z "$plant" ] || export PLANT=1',
+        '    cmd_run "$scenario" "$label" "$n" 1 1700000000',
+        "  ) || printf 'could not compose %s\\n' \"$one\" >&2",
+        "done",
+      ].join("\n"),
+      [...runs],
+      {
+        ...go,
+        TMPDIR: SCRATCH,
+        PATH: `${bin}:${childEnv.PATH}`,
+        LABELS: labels.join(" "),
+        SKILL_SCENARIOS_WORK: rigWork,
+        SKILL_SCENARIOS_SOURCE: "nightly-export",
+        SKILL_SCENARIOS_POSTGRES_URL: "postgres://127.0.0.1:1/postgres",
+        SKILL_SCENARIOS_NATS_URL: "nats://127.0.0.1:1",
+        ...env,
+      }
+    );
+    const archive = path.join(rigWork, "archive", "runs");
+    const composed = new Map<string, string>();
+    for (const file of existsSync(archive) ? readdirSync(archive) : [])
+      if (file.endsWith(".json"))
+        composed.set(
+          JSON.parse(readFileSync(path.join(archive, file), "utf8")).name,
+          path.join(archive, file.slice(0, -".json".length))
+        );
+    return { result, composed };
+  }
+
+  // Catches: a word of the measurement in any file rig.sh writes, copies or builds into a run
+  // before its agent starts, the files the guard reads none of included: the fixtures and the
+  // world's repositories, the seeds' ids, the rig's records, the pane and its system prompt, the
+  // stand-ins and the gh bundle. The row above builds the bundle alone, with standins' own
+  // command; this one composes each scenario's run, each case of it, for both labels, as cmd_run
+  // composes it, with rig.sh sourced whole, so a file the rig comes to write is read with no edit
+  // here: the batch's services as services_up brings them up (WHOLE_WORLD_SERVICES), then each run
+  // up to its first agent (SKILL_SCENARIOS_COMPOSE_ONLY), where launch's guard reads it, and then
+  // every file the run holds, read whole, as the guard reads a file. INFRA-764's round 30 at
+  // 9083afb5: the bundle took the route table's evidence, and the guard refused every reviewer.
+  // The files are read through the guard's own walker (run-names.ts's `worldFiles`) as it reads
+  // them at a run's first launch, which no launch on the run's record (logs/launches) makes: it
+  // passes over AGENTS_OWN and reads what an agent can write (AGENT_WRITTEN) as the rig wrote it,
+  // and reads services-from less the rig's own directory, a residual of the ruling of
+  // 2026-11-18T08:40Z.
+  test.skipIf(withoutGo)(
+    "no file rig.sh writes, copies or builds into a run before its agent starts names a word of the measurement",
+    () => {
+      const labels = ["head", "base"];
+      const runs = labels.flatMap((label) =>
+        Object.entries(SCENARIOS).flatMap(([scenario, { variable, cases }]) =>
+          (cases.length === 0 ? [""] : cases).map((one) => ({
+            name: `${scenario}${one === "" ? "" : `-${one}`}-${label}-1`,
+            argument: `${scenario}:${one}:${label}:${variable ?? ""}:1`,
+          }))
+        )
+      );
+      const { result, composed } = composeRuns(
+        freshDir("whole-world"),
+        labels,
+        runs.map(({ argument }) => argument),
+        [],
+        { SKILL_SCENARIOS_COMPOSE_ONLY: "1" }
+      );
+      // Every file of each run as the guard reads it at the first launch, through its own walker
+      // (run-names.ts's `worldFiles`), by its path and its text.
+      const vocab = vocabulary(labels);
+      const named: string[] = [];
+      const first: string[] = [];
+      for (const [name, run] of [...composed].sort()) {
+        if (!firstLaunch(run)) first.push(name);
+        for (const { file, text } of worldFiles(run)) {
+          const inName = textWords(file, vocab);
+          const word = inName ?? textWords(text, vocab);
+          if (word === undefined) continue;
+          const at = Math.max(0, text.toLowerCase().replaceAll("_", "-").indexOf(word));
+          named.push(
+            `${name}: <run>/${file} names "${word}"${inName === undefined ? `: ${text.slice(Math.max(0, at - 60), at + 60)}` : ""}`
+          );
+        }
+      }
+      expect({
+        code: result.code,
+        stderr: result.stderr,
+        runs: [...composed.keys()].sort(),
+        named,
+        notFirst: first,
+      }).toEqual({
+        code: 0,
+        stderr: "",
+        runs: runs.map(({ name }) => name).sort(),
+        named: [],
+        notFirst: [],
+      });
+    },
+    1_200_000
+  );
+
+  /** What a run meets after its first agent, over WHOLE_WORLD_SERVICES, so cmd_run goes on past
+   * it and composes every later launch of the run: an agent that starts, writes nothing and exits
+   * 0 (tmux's new-session, marking the namespace ready as a started agent's does); a claim boot
+   * the daemon stand-in refused before the boot's first turn, so boot_agent launches every worker
+   * agent once more (boot-refusal.ts); the person stand-in's answer to each open ask (judge.ts
+   * answer); and a spec run's issue as Dispatch holds it after each turn, read by seed.ts's own
+   * `state` (STATE_READER): after the first turn the open ask the agent wrote, which names a case of
+   * the measurement, and after the second the spec's approval request. A spec run's seed holds the
+   * shape seed.ts writes a spec run's fixture in, and with PLANT set its line in fixture.log names
+   * that case too. At each launch's guard, rig.sh's own `run-names.ts guard`, the run as the guard
+   * reads it is copied to $LAUNCHED/<run id>/<n>, the run's n-th launch counted from 0. */
+  const LATER_LAUNCHES = [
+    'tmux() { case $1 in new-session) printf \'exit=0\\n\' >>"$R/out.txt" && : >"$R/namespace-ready" ;; esac; }',
+    "launched_copy() {",
+    "  local into n",
+    '  into=$LAUNCHED/$(basename "$1")',
+    '  mkdir -p "$into"',
+    '  n=$(find "$into" -mindepth 1 -maxdepth 1 | wc -l)',
+    '  cp -a "$1" "$into/$n"',
+    "}",
+    'eval "whole_$(declare -f seed_standin)"',
+    "seed_standin() {",
+    "  case $1 in",
+    "  spec-writing | spec-rewrite)",
+    `    jq -n '{issue:"${WORLD_PROJECT}-1", spec_artifact:"01a2d000-0000-7000-8000-000000000004"}' >"$2"`,
+    '    printf \'[]\\n\' >"$(dirname "$2")/seeded.json"',
+    `    printf 'seeded ${WORLD_PROJECT}-1%s\\n' "\${PLANT:+, a text-only change}"`,
+    "    ;;",
+    '  *) whole_seed_standin "$@" ;;',
+    "  esac",
+    "}",
+    'eval "whole_$(declare -f bun)"',
+    "bun() {",
+    "  case $1 in",
+    '  "$here/run-names.ts") [ "$2" != guard ] || launched_copy "$3" ;;',
+    '  "$here/boot-refusal.ts") echo "claim boot failed before the first turn"; return 0 ;;',
+    `  "$here/judge.ts") printf '{"ask":"01a2d000-0000-7000-8000-000000000005","selected":["Text-only"],"text":"It is."}\\n' >"$3/answers-$4.jsonl"; return 0 ;;`,
+    '  "$here/seed.ts") [ "$2" != state ] || { shift; command bun "$STATE_READER" "$@"; return; } ;;',
+    "  esac",
+    '  whole_bun "$@"',
+    "}",
+  ];
+  /** seed.ts's own `state <file> <turn> <run dir>` (STATE_READER's arguments), over a Dispatch
+   * that answers the issue's asks: after the first turn the agent's open question, which says
+   * `text-only`, and after every later one that question answered and the spec's approval request
+   * open. */
+  const STATE_READER = `import { state } from ${JSON.stringify(path.join(import.meta.dir, "seed.ts"))};
+const [, file = "", turn = "", run = ""] = Bun.argv.slice(2);
+const { issue, spec_artifact } = JSON.parse(await Bun.file(file).text());
+const author = { kind: "session", id: "01a2d000-0000-7000-8000-000000000006" };
+const question = {
+  id: "01a2d000-0000-7000-8000-000000000005", issue_key: issue, author, kind: "question",
+  question: "Is the change text-only, or does it move the export's code too?",
+  options: [{ label: "Text-only", description: "Only the text-only lines change." }, { label: "Code" }],
+  multiple: false, state: turn === "1" ? "open" : "answered", answer: null, edited_at: null,
+  created_at: "2026-11-21T00:00:00Z",
+};
+const approval = {
+  ...question, id: "01a2d000-0000-7000-8000-000000000007", kind: "approval", question: "Approve?",
+  options: [{ label: "Approve" }, { label: "Request changes" }], state: "open",
+  approval: { artifact_id: spec_artifact, name: "spec.md", version: 1, requested_version: 1 },
+};
+globalThis.fetch = (async () => Response.json(turn === "1" ? [question] : [question, approval])) as typeof fetch;
+await state(file, Number(turn), run);
+`;
+
+  // Catches: the rig writing into a path an agent of the run can write (run-names.ts's
+  // AGENT_WRITTEN) after the run's first launch. The guard reads those paths at the first launch
+  // alone, as the rig wrote them, and passes over them at every later one, where what is there is
+  // an agent's as well (the architect's ruling of 2026-11-21T14:24:55Z), so a word the rig wrote
+  // there after the first launch would reach a later agent with no guard reading it. Each worker
+  // scenario's case and each spec scenario is composed past its first agent, by an agent that
+  // writes nothing (LATER_LAUNCHES), to every later launch it reaches: boot_agent's relaunch of
+  // every worker boot, threads-closed-correct's reviewer and its relaunch, and a spec run's
+  // second and third turns. Every file of AGENT_WRITTEN outside AGENTS_OWN is held, at each later
+  // launch's guard, to the bytes the first launch's guard read; since no agent wrote, any change is
+  // the rig's, and the row names the run, the launch and the path. Each launch's guard sees as
+  // many launches on the run's record (logs/launches) as went before it, so the guard read the
+  // first as the first and every other as a later one. And a spec run's later turn is not refused
+  // on the agent's own ask, which says `text-only`: seed.ts's `state` prints no ask's text into
+  // <run>/fixture.log, which the guard reads at every turn; the same word in the seed's line of
+  // fixture.log, which the rig wrote before the first turn (spec-writing-head-2), refuses that run.
+  test.skipIf(withoutGo)(
+    "after a run's first launch the rig writes nothing into what an agent of the run can write",
+    () => {
+      const dir = freshDir("later-launches");
+      const launchedDir = path.join(dir, "launched");
+      const reader = path.join(dir, "state-reader.ts");
+      writeFileSync(reader, STATE_READER);
+      const runs: [string, string][] = [
+        ["tester-proof-head-1", "tester-proof::head::1"],
+        ...SCENARIOS["reviewer-text-findings"].cases.map((one): [string, string] => [
+          `reviewer-text-findings-${one}-head-1`,
+          `reviewer-text-findings:${one}:head:SKILL_SCENARIOS_REVIEWER_CASE:1`,
+        ]),
+        ...SCENARIOS["threads-closed"].cases.map((one): [string, string] => [
+          `threads-closed-${one}-head-1`,
+          `threads-closed:${one}:head:SKILL_SCENARIOS_THREADS_CASE:1`,
+        ]),
+        ["spec-writing-head-1", "spec-writing::head::1"],
+        ["spec-rewrite-head-1", "spec-rewrite::head::1"],
+        ["spec-writing-head-2", "spec-writing::head::2:plant"],
+      ];
+      const { result, composed } = composeRuns(
+        dir,
+        ["head"],
+        runs.map(([, argument]) => argument),
+        LATER_LAUNCHES,
+        { LAUNCHED: launchedDir, STATE_READER: reader }
+      );
+      /** The files of the run copied to `at` that the first launch reads and no later one does:
+       * AGENT_WRITTEN's, outside AGENTS_OWN, each a regular file, by its path under the run. */
+      const written = (at: string) => {
+        const files = new Map<string, Buffer>();
+        for (const file of readdirSync(at, { recursive: true, encoding: "utf8" }))
+          if (agentWritten(file) && !agentsOwn(file) && lstatSync(path.join(at, file)).isFile())
+            files.set(file, readFileSync(path.join(at, file)));
+        return files;
+      };
+      const records: Record<string, number[]> = {};
+      const changed: string[] = [];
+      const held = new Set<string>();
+      for (const [name, run] of [...composed].sort()) {
+        const copies = path.join(launchedDir, path.basename(run));
+        const launches = (existsSync(copies) ? readdirSync(copies) : [])
+          .map(Number)
+          .sort((a, b) => a - b)
+          .map((n) => path.join(copies, String(n)));
+        records[name] = launches.map((at) => {
+          const record = path.join(at, "logs", "launches");
+          return existsSync(record) ? readFileSync(record, "utf8").split("\n").length - 1 : 0;
+        });
+        const [first, ...later] = launches;
+        if (first === undefined) continue;
+        const before = written(first);
+        for (const file of before.keys())
+          held.add(AGENT_WRITTEN.find(({ path: one }) => one.test(file))?.path.source ?? file);
+        for (const [index, at] of later.entries()) {
+          const after = written(at);
+          for (const file of new Set([...before.keys(), ...after.keys()])) {
+            const was = before.get(file);
+            const is = after.get(file);
+            if (was !== undefined && is !== undefined && was.equals(is)) continue;
+            const how = was === undefined ? "added" : is === undefined ? "removed" : "changed";
+            changed.push(`${name}, launch ${index + 2}: <run>/${file} ${how}`);
+          }
+        }
+      }
+      const control = composed.get("spec-writing-head-2") ?? "";
+      expect({
+        code: result.code,
+        refused: result.stderr
+          .split("\n")
+          .filter((line) => / names "|could not compose/.test(line))
+          .map((line) => line.replace(/^(.* in <run>\/[^:]+):.*$/, "$1")),
+        records,
+        changed,
+      }).toEqual({
+        code: 0,
+        refused: [
+          `the world of ${path.basename(control)} names "text-only" in <run>/fixture.log`,
+          "could not compose spec-writing::head::2:plant",
+        ],
+        records: {
+          "reviewer-text-findings-defect-head-1": [0, 1],
+          "reviewer-text-findings-text-only-head-1": [0, 1],
+          "spec-rewrite-head-1": [0, 1, 2],
+          "spec-writing-head-1": [0, 1, 2],
+          "spec-writing-head-2": [0],
+          "tester-proof-head-1": [0, 1],
+          "threads-closed-accept-head-1": [0, 1],
+          "threads-closed-code-defect-head-1": [0, 1],
+          "threads-closed-correct-head-1": [0, 1, 2, 3],
+        },
+        changed: [],
+      });
+      // What the first launches held of AGENT_WRITTEN, so a walk that found none of it is no
+      // path held: the gh answers, the workspace, the HOME and the pane's XDG directories.
+      expect([...held]).toEqual(
+        expect.arrayContaining(
+          [/^fixtures\.json$/, /^ws\//, /^home\//, /^state\/home\//].map(({ source }) => source)
+        )
+      );
+    },
+    1_200_000
+  );
+
   // Catches: a guard that reads the reviewer's prompt of a threads-closed run as the rig's own
   // text. run_threads_closed builds that prompt from the implementer's own messages to the
   // reviewer (reviewer_wake, kept whole in <run>/reviewer-wake.json), and launch's own comment says
@@ -11201,12 +11642,17 @@ sleep() { command sleep 0.05; }`;
   // label's install ships a checkout's own words: every base agent of the preflight at cc09c638
   // was refused on `var SPEC_WRITING_POINTER` in pi-legion's dist/legion.js, a production name,
   // and the head's passed only because its legion.js was over a size bound, so the plant here is
-  // small. And what the run has written before a later agent's launch holds the agents' own
-  // words: the first agent's transcript refused threads-closed-correct-head-1's reviewer. Each
-  // row plants a word in one such file, and the agent starts, so the row needs the namespace the
-  // agent starts in, as its siblings that start one do.
+  // small. And what an agent wrote before a later agent's launch holds the agents' own words
+  // (run-names.ts's AGENTS_OWN): the first agent's transcript refused
+  // threads-closed-correct-head-1's reviewer. Each of those plants a word in one such file, and
+  // the agent starts. What an agent of the run can write (run-names.ts's AGENT_WRITTEN) is read at
+  // the run's first launch alone (the architect's ruling of 2026-11-21T14:24:55Z): its working
+  // directory, and the gh answers the gh stand-in rewrites on its body edit. There the first agent
+  // writes the word, and the run's second launch starts; the same word in the same file before
+  // the first launch is the rig's, and refuses it, naming the word and the file. The rows start
+  // agents, so they need the namespace an agent starts in, as their siblings that start one do.
   test.skipIf(withoutNamespace)(
-    "a word in the label's install or in what the run wrote does not refuse the launch",
+    "a word in the label's install or in what the run's agents wrote does not refuse a launch, and in what an agent can write it refuses the first",
     () => {
       const name = "threads-closed-correct-head-1";
       const plants: { what: string; options: (work: string) => Launch }[] = [
@@ -11242,16 +11688,6 @@ sleep() { command sleep 0.05; }`;
             files: { "out-implementer.txt": "The code-defect is fixed.\nexit=0\n" },
           }),
         },
-        {
-          what: "a file an agent wrote in the working directory",
-          options: () => ({ files: { "cwd/notes.md": "text-only, both threads\n" } }),
-        },
-        {
-          what: "the gh answers a body edit rewrote",
-          options: () => ({
-            files: { "fixtures.json": '{"routes":[{"stdout":"threads-closed"}]}\n' },
-          }),
-        },
       ];
       const refused: string[] = [];
       for (const plant of plants) {
@@ -11261,7 +11697,55 @@ sleep() { command sleep 0.05; }`;
         if (result.code !== 0 || !existsSync(ran))
           refused.push(`${plant.what}: exit ${result.code}: ${result.stderr.trim()}`);
       }
-      expect(refused).toEqual([]);
+      // What an agent of the run can write: written by the first agent, and by the rig.
+      const written: { what: string; file: string; line: string; word: string }[] = [
+        {
+          what: "a file in the working directory",
+          file: "cwd/notes.md",
+          line: "text-only, both threads",
+          word: "text-only",
+        },
+        {
+          what: "the gh answers a body edit rewrote",
+          file: "fixtures.json",
+          line: '{"routes":[{"stdout":"threads-closed"}]}',
+          word: "threads-closed",
+        },
+      ];
+      const unrefused: string[] = [];
+      for (const plant of written) {
+        const work = freshDir("launch-written");
+        const R = runDirOf(work, name);
+        const first = launched(work, name, `printf '%s\\n' '${plant.line}' >${R}/${plant.file}`);
+        const ran = path.join(R, "agent-ran");
+        const later = launched(work, name, `: >${ran}`);
+        const wrote = existsSync(path.join(R, plant.file))
+          ? readFileSync(path.join(R, plant.file), "utf8")
+          : "";
+        if (
+          first.result.code !== 0 ||
+          wrote !== `${plant.line}\n` ||
+          later.result.code !== 0 ||
+          !existsSync(ran)
+        )
+          refused.push(
+            `${plant.what}, the first agent's: exit ${first.result.code} then ${later.result.code}: ${later.result.stderr.trim()}`
+          );
+        const rigWork = freshDir("launch-written-before");
+        const rigRan = path.join(runDirOf(rigWork, name), "agent-ran");
+        const before = launched(rigWork, name, `: >${rigRan}`, [], {
+          files: { [plant.file]: `${plant.line}\n` },
+        });
+        if (
+          before.result.code !== 1 ||
+          !before.result.stderr.includes(`names "${plant.word}" in <run>/${plant.file}`) ||
+          existsSync(rigRan)
+        )
+          unrefused.push(
+            `${plant.what}, the rig's: exit ${before.result.code}: ${before.result.stderr.trim()}`
+          );
+      }
+      expect({ refused, unrefused }).toEqual({ refused: [], unrefused: [] });
     }
   );
 

@@ -111,7 +111,8 @@
 //                                          the block and the source
 //   seed.ts state <file> <turn> <run dir>  the open questions on the issue, no seeded ask among
 //                                          them, and the spec's open approval request; writes them
-//                                          to <run dir>/state-<turn>.json and prints the same JSON
+//                                          to <run dir>/state-<turn>.json and prints their count
+//                                          and no text of an ask (`state` says why)
 //   seed.ts answer <file> <answers file>   answers, as alice, the ask of each JSONL line
 //                                          {ask, selected, text} of <answers file>; refuses a line
 //                                          that names a seeded ask
@@ -450,7 +451,11 @@ export interface TurnState {
 }
 
 /** `state <file> <turn> <run dir>`: the open questions no seed opened, and the spec's open
- * approval request. */
+ * approval request, written to <run>/state-<turn>.json. What it prints, which rig.sh's seed_ts
+ * appends to <run>/fixture.log, is a count and no text of an ask: fixture.log is the rig's, and
+ * launch's guard reads it before every later turn, where a question or option the agent wrote
+ * would refuse the turn on the agent's own words (the architect's ruling of 2026-11-21T14:24:55Z).
+ * state-<turn>.json, which holds them, is the agent's (run-names.ts's AGENTS_OWN). */
 export async function state(file: string, turn: number, runDir: string): Promise<TurnState> {
   const fixture = loadSpecFixture(file);
   const asks = await listIssueAsks(fixture.issue, { as: "agent" });
@@ -476,7 +481,10 @@ export async function state(file: string, turn: number, runDir: string): Promise
   };
   const text = JSON.stringify(result);
   writeFileSync(path.join(runDir, `state-${turn}.json`), `${text}\n`);
-  console.log(text);
+  const pending = result.approval === null ? "none" : `version ${result.approval.version}`;
+  console.log(
+    `turn ${turn}: ${result.open_asks.length} open asks, spec approval request open: ${pending}`
+  );
   return result;
 }
 

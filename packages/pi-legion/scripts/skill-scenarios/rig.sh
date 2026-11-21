@@ -310,6 +310,10 @@
 #                             names no scenario, case or label, nor the rig (launch refuses one)
 #   SKILL_SCENARIOS_PARALLEL  concurrent runs in a batch (default 5)
 #   SKILL_SCENARIOS_TIMEOUT   seconds one run, or one turn of a spec run, may take (default 1500)
+#   SKILL_SCENARIOS_COMPOSE_ONLY  set to anything, each run composes its world up to its first
+#                                 agent, runs launch's guard over it and ends there, exit 0, with
+#                                 no agent started (launch): a batch's worlds read before any model
+#                                 call is made, each run archived as any run is
 #   SKILL_SCENARIOS_ASKGATE_CASE  askgate: facts, link, upload, nochange, nochange-rebuttal,
 #                                 nochange-block, untried or tried (required for that scenario)
 #   SKILL_SCENARIOS_ASKGATE_MODE  askgate: warn or block, the agent's OMP_ASKGATE (unset: the
@@ -1272,11 +1276,13 @@ world_paths() {
   printf 'rw %s\n' "$R"
   # Hidden inside it: the services' logs (<run>/logs), the one directory of the rig's records,
   # under an empty read-only tmpfs once the run's directory is bound back (private_world), so an
-  # agent reads none of it and the host keeps it whole. The rig's records that are files
-  # (built-from, services-from, namespace.txt and the rest) cannot be hidden so: a mount onto a
-  # file is refused on a gVisor pod ("mount point is not a directory"), so an agent can read
-  # them, and launch's guard, which reads only what the rig composes for a launch
-  # (run-names.ts's COMPOSED), does not read them.
+  # agent reads none of it and writes none of it, and the host keeps it whole: the run's record of
+  # its launches (<run>/logs/launches, launch's), which tells the guard a run's first launch from
+  # a later one, is there for that. The rig's records that are files (built-from, services-from,
+  # namespace.txt and the rest) cannot be hidden so: a mount onto a file is refused on a gVisor
+  # pod ("mount point is not a directory"), so an agent can read them, and launch's guard reads
+  # them as it reads every file of the run (run-names.ts's `worldFiles`), services-from less the
+  # rig's own directory, which it names in every run.
   printf 'hide %s\n' "$R/logs"
   {
     # The label's install: its packed plugins and model route, which the HOME copied from it
@@ -1465,17 +1471,45 @@ tmux_ready() {
 #
 # Nothing the rig composes for the agent names the run's scenario, case or label, or a name the
 # rig gave its world: before the agent starts, `run-names.ts guard` reads every variable of its
-# pane, every mount of its namespace, its working and session directories, its prompt, its system
-# prompt, its stand-ins and its jj configuration for a word of the vocabulary (run-names.ts's
-# `worldNames`, COMPOSED), and the run fails, naming the word and where it is, where one is there.
-# It reads neither the label's install, whose words are its checkout's own, nor what the run has
-# written, whose words are its agents' own, nor a message one agent of the run sent the next that
-# the rig relays into the next one's prompt (run_threads_closed, which keeps each whole in
-# $R/reviewer-wake.json): the message's words are its sender's, so the guard reads the prompt less
-# each message, at the place the rig wrote it, and the rest, each line's own prefix included, is
-# the rig's (run-names.ts's `promptOf`); a reviewer-wake.json it cannot parse fails the run. On
-# 2026-11-16, 16 of the 36 runs of the batch at c273084d reasoned from the run's name, which every
-# path of the run carried.
+# pane, every mount of its namespace, its working and session directories, its system prompt and
+# every file of the run's directory, by its path and its text, the ones the rig builds (the gh
+# bundle) included, for a word of the vocabulary (run-names.ts's `worldNames`, through its one
+# walker of a run's files, `worldFiles`), and the run fails, naming the word and where it is,
+# where one is there. It reads nothing whose words are an agent's own (run-names.ts's
+# AGENTS_OWN, each with why): the agents' transcripts, output and logs, an earlier agent's HOME
+# and TMPDIR, the repositories' version-control records, and a message one agent of the run sent
+# the next that the rig relays into the next one's prompt (run_threads_closed, which keeps each
+# whole in $R/reviewer-wake.json): the message's words are its sender's, so the guard reads the
+# prompt less each message, at the place the rig wrote it, and the rest, each line's own prefix
+# included, is the rig's (run-names.ts's `promptOf`); a reviewer-wake.json it cannot parse fails
+# the run. On 2026-11-16, 16 of the 36 runs of the batch at c273084d reasoned from the run's
+# name, which every path of the run carried.
+#
+# What an agent of the run can write is read at the run's first launch alone (run-names.ts's
+# AGENT_WRITTEN, each with the write that reaches it): its working directory, the issue workspace
+# and its clone, its HOME and its pane's XDG directories, the Legion plugin's files in the state
+# directory, and the gh answers the gh stand-in rewrites on an agent's body edit (fixtures.json).
+# Before the first launch they hold only what the rig wrote, and the guard reads them; at every
+# later launch (a spec run's later turn, threads-closed's reviewer, boot_agent's relaunch) they
+# hold what an agent wrote too, whose words are that agent's own (the architect's ruling of
+# 2026-11-21T14:24:55Z), and the guard reads every other file of the run. First is told from later
+# by the run's record of its launches, $R/logs/launches, a line `<time> <tmux session>` that this
+# function appends once the guard has passed and before the agent starts: <run>/logs is under the
+# empty read-only tmpfs every agent's namespace covers it with (world_paths' `hide`), which a
+# namespace of the agent's own cannot take off either, so no agent can write the record, and a run
+# with no line in it is at its first launch (run-names.ts's `firstLaunch`). The rig writes nothing
+# into those paths after the first launch: rig.test.ts's "after a run's first launch the rig writes
+# nothing into what an agent of the run can write" composes every later launch the scenarios
+# reach and holds each path to the bytes its first launch read.
+#
+# Under SKILL_SCENARIOS_COMPOSE_ONLY the run ends once the guard has read its world, exit 0, its
+# agent never started and no launch on its record: everything the rig writes, copies and builds
+# into the run before its first agent is there, and nothing of an agent's. rig.test.ts's "no file
+# rig.sh writes, copies or builds into a run before its agent starts names a word of the
+# measurement" composes every scenario's run so, as cmd_run composes it, and reads every file of
+# it through the guard's walker: at 9083afb5 the gh bundle carried the route table's evidence, a
+# scenario's name in a file that no row had built, and the guard refused every reviewer of
+# INFRA-764's round 30.
 launch() {
   local system='' extra='' omp unshare kind path other hidden
   omp=$(pinned_omp "$pin") || exit 1
@@ -1484,7 +1518,7 @@ launch() {
   shift
   [ $# = 0 ] || extra=" $(printf '%q ' "$@")" extra=${extra% }
   [ ! -f "$R/system-args" ] || system=" $(<"$R/system-args")"
-  mkdir -p "$R/tmp" "$work/runs" "$work/archive"
+  mkdir -p "$R/tmp" "$R/logs" "$work/runs" "$work/archive"
   world_paths "$R" "$work" "$I" "$R/pane.env" "${omp%/bin/omp}" >"$R/namespace.txt"
   while read -r kind path; do
     case $kind in rw | ro) ;; *) continue ;; esac
@@ -1495,6 +1529,11 @@ launch() {
   done <"$R/namespace.txt"
   bun "$here/run-names.ts" guard "$R" "${sessions_dir:-$R/sessions}" "$work" ||
     fail "launch: the world of ${R##*/} names the run or the rig (above), so its agent does not start"
+  if [ -n "${SKILL_SCENARIOS_COMPOSE_ONLY:-}" ]; then
+    note "${R##*/}: composed, and the guard read its world; SKILL_SCENARIOS_COMPOSE_ONLY starts no agent"
+    exit 0
+  fi
+  printf '%s %s\n' "$(date -u +%FT%T.%3NZ)" "$session" >>"$R/logs/launches"
   rm -f "$R/namespace-ready"
   cat >"$R/launch.sh" <<EOF
 #!/usr/bin/env bash
@@ -4763,6 +4802,11 @@ cmd_class_search() {
   [ "$status" = 0 ] || printf 'class-search: bun exited %s\n' "$status" >&2
   return "$status"
 }
+
+# Sourced (`. rig.sh`), the script defines its functions and values and runs no command:
+# rig.test.ts composes each scenario's run so, by services_up and cmd_run themselves, with the
+# processes and servers a run reaches stubbed (launch's SKILL_SCENARIOS_COMPOSE_ONLY).
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0
 
 # Bash reads a script as it runs it, so the dispatch and its exit are one command line: a batch
 # outlives any edit to this file, and resuming at its old offset would run whatever lies there now.

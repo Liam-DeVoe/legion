@@ -22,8 +22,19 @@
 //                                           <run>/reviewer-wake.json cannot be parsed
 //                                           (`promptOf`): rig.sh's launch asks before every agent
 //                                           starts, and starts none of a world that names one or
-//                                           that it cannot read whole
-import { existsSync, readdirSync, readFileSync, type Stats, statSync } from "node:fs";
+//                                           that it cannot read whole. At a later launch of the
+//                                           run (one <run>/logs/launches records, `firstLaunch`)
+//                                           it reads nothing an agent of the run can write
+//                                           (AGENT_WRITTEN)
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  type Stats,
+  statSync,
+} from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 
@@ -672,29 +683,147 @@ export function rigText(prompt: string, relayed: readonly RelayedAt[]): string {
   return text + prompt.slice(from);
 }
 
-/** The files of a run the rig composes for each launch of an agent, beside its pane file (read
- * as its variables), its prompt and its system prompt (`worldNames`), each written afresh before
- * the launch the guard reads it for: the stand-ins on its PATH (rig.sh's standins: <run>/bin/gh,
- * <run>/bin/bun and the gh bundle <run>/lib/gh.js) and the jj configuration its JJ_CONFIG names
- * (worker_boot's <run>/jj.toml). Each is small and read whole.
- *
- * Nothing else the world shows is read, for three reasons:
- *   - the label's install (<work>/installs/<id>: its packed plugins, HOME and model route) is a
- *     checkout's production artifact, which a production agent reads too, and a scenario's word
- *     is often this product's own (`SPEC_WRITING_POINTER` in pi-legion's dist/legion.js, from
- *     packages/contracts/src/dispatch-tools.ts): every base agent of the preflight at cc09c638 was
- *     refused on it, and the head's passed only because its legion.js was over a size bound;
- *   - what a run has written (its sessions/, out*.txt, cwd/, ws/, calls.jsonl, a HOME an agent
- *     used), which holds its agents' own words: read before a run's second agent, the first
- *     agent's transcript refused it (threads-closed-text-fixes-head-1 at cc09c638);
- *   - the world's repositories, their remote helpers and gh answers (world.json, fixtures.json,
- *     src/, ws/, the shared clone repos/, remote.git, bin/git-remote-<vcs> and
- *     lib/git-core/git-remote-https: rig.sh's world_remote), written before the first agent and
- *     written into by the run after, which rig.test.ts's "what the rig writes into a run's world"
- *     holds to the same words for every world rig.sh builds; and the rig's records (built-from,
- *     services-from, namespace.txt and the rest), which name the rig's own paths in every run and
- *     which a gVisor pod cannot hide (rig.sh's world_paths). */
-export const COMPOSED = ["bin/gh", "bin/bun", "lib/gh.js", "jj.toml"];
+/** The paths of a run whose words are an agent's own whenever they are there, which the walker of
+ * a run's files (`worldFiles`) passes over at every launch, each with why: everything else under
+ * the run's directory is read at the run's first launch (AGENT_WRITTEN is read there alone), by
+ * launch's guard before every agent (`worldNames`) and by rig.test.ts's "no file rig.sh writes,
+ * copies or builds into a run before its agent starts names a word of the measurement", which
+ * reads each scenario's composed run through the same walker. The architect's ruling of
+ * 2026-11-21T13:57:03Z: the guard reads every file the rig wrote before the agent starts, the
+ * built ones included, after the gh bundle (<run>/lib/gh.js) carried a scenario's name into every
+ * run at 9083afb5, which no row had built. Each pattern is matched against a path under the run's
+ * directory. */
+export const AGENTS_OWN: readonly { readonly path: RegExp; readonly why: string }[] = [
+  {
+    path: /^reviewer-wake\.json$/,
+    why: "each message one agent of the run sent the next, kept whole, whose words are its sender's (the architect's ruling of 2026-11-20T17:30Z); prompt.txt is read less each of them (`promptOf`, `rigText`)",
+  },
+  { path: /^sessions\//, why: "each agent's transcripts, its Oh My Pi session directory (launch)" },
+  {
+    path: /^out(?:-[^/]+)?\.txt$/,
+    why: "each agent's own output, and each earlier agent's or turn's",
+  },
+  {
+    path: /^boot-1\//,
+    why: "a relaunched agent's first attempt: its output, its transcripts and the daemon stand-in's lines of it (boot_agent)",
+  },
+  { path: /^home-[^/]+\//, why: "the HOME an earlier agent of the run worked in (worker_boot)" },
+  { path: /^tmp\//, why: "the agent's TMPDIR, which is its /tmp too (base_env, private_world)" },
+  {
+    path: /^(?:logs\/|calls\.jsonl$|published\.jsonl$|daemon\.log$|pushes\.log$)/,
+    why: "the logs of what the agents did: the services' logs, and the run's records of each gh and bun call, each Envoy publish, each request to the daemon and each push its agents made",
+  },
+  {
+    path: /^(?:state-\d+\.json|answers(?:-\d+)?\.jsonl)$/,
+    why: "a spec run's asks as the agent wrote them on its issue after each turn (seed.ts state), and the person stand-in's answers to them (judge.ts answer)",
+  },
+  {
+    path: /(?:^|\/)\.(?:jj|git)\/|^remote\.git\/(?!hooks\/)/,
+    why: "the version-control records of the run's repositories, which keep each agent's commands, commits and branch names as it makes them (jj's operation log holds a command's own arguments); the trees, histories and hooks the rig builds are held by rig.test.ts's \"what the rig writes into a run's world\"",
+  },
+];
+
+/** The paths of a run an agent of it can write, each with the write that reaches it, which the
+ * walker of a run's files (`worldFiles`) reads at the run's first launch alone, when no agent has
+ * run and each holds only what the rig wrote, and passes over at every later launch, when each
+ * holds what an agent wrote as well: what an agent of the run wrote is that agent's own (the
+ * architect's ruling of 2026-11-21T14:24:55Z, as the ruling of 2026-11-20T17:30Z holds for the
+ * messages one agent sends the next). The rig writes nothing into them after the first launch:
+ * rig.test.ts's "after a run's first launch the rig writes nothing into what an agent of the run
+ * can write" composes every later launch it reaches, with agents that write nothing, and holds
+ * each of these paths to the bytes the first launch read; and gh-standin.test.ts's "a write the gh
+ * stand-in keeps in fixtures.json adds nothing the call did not give it" holds the one stand-in
+ * that writes here. The other paths an agent writes are AGENTS_OWN's, read at no launch: its
+ * transcripts, output and TMPDIR, the records of its calls, its pushes and its publishes, and the
+ * version-control records of the run's repositories (the remote it pushes to through
+ * <run>/bin/git-remote-<vcs>, but for the hooks the rig writes there, which a push writes none
+ * of). Each pattern is matched against a path under the run's directory. */
+export const AGENT_WRITTEN: readonly { readonly path: RegExp; readonly why: string }[] = [
+  {
+    path: /^cwd\//,
+    why: "the agent's working directory, where launch starts it (launch.sh's `cd` and private_world's): every file it makes or edits there; before the first launch, what the scenario put there (stranded.csv, export-host.crontab, todo.py)",
+  },
+  {
+    path: /^ws\//,
+    why: "the issue workspace (fixture_workspace), the workspace a worker pane names, where each role writes its change with jj and git",
+  },
+  {
+    path: /^repos\//,
+    why: "the shared clone the workspace is a worktree of (fixture_workspace), which every jj and git command of a role in the workspace writes through",
+  },
+  {
+    path: /^home\//,
+    why: "the agent's HOME (base_env), where its Oh My Pi (PI_CODING_AGENT_DIR) and every tool that keeps a file under HOME write: a spec run's later turns keep it (spec_turns), and a worker run's later agent gets the label's afresh (worker_boot)",
+  },
+  {
+    path: /^state\/home\//,
+    why: "a worker pane's four XDG base directories under its LEGION_STATE_DIR (daemon-pane.go's pane, the tmux runtime's xdgDirectories), where its jj reads and writes the repository's configuration (fixture_workspace) and its tools keep their caches",
+  },
+  {
+    path: /^state\/(?:legion-stall-exits-[^/]+\.json|omp-attribution-[^/]+\.toml)$/,
+    why: "the Legion plugin's own files in its pane's LEGION_STATE_DIR: the count of its stall exits (pi-legion's stall-exits.ts) and its session's jj attribution layer (pi-shared's jj-attribution.ts)",
+  },
+  {
+    path: /^fixtures\.json$/,
+    why: "the gh answers, which the gh stand-in writes again on an agent's edit of the pull request's body (gh-standin.ts: `gh pr edit` with a body, a PATCH of the pull request with one)",
+  },
+];
+
+/** Whether `file`, a path under a run's directory, is AGENTS_OWN's, which no launch reads. */
+export function agentsOwn(file: string): boolean {
+  return AGENTS_OWN.some(({ path: own }) => own.test(file));
+}
+
+/** Whether `file`, a path under a run's directory, is AGENT_WRITTEN's, which the first launch
+ * alone reads. */
+export function agentWritten(file: string): boolean {
+  return AGENT_WRITTEN.some(({ path: written }) => written.test(file));
+}
+
+/** The run's record of its launches, a line for each (`<time> <tmux session>`), which rig.sh's
+ * launch appends once the guard has passed and before the agent starts. It is under <run>/logs,
+ * which every agent's namespace covers with an empty read-only tmpfs (rig.sh's world_paths and
+ * private_world), a mount a namespace of the agent's own cannot take off either, so only the rig
+ * writes it: rig.test.ts's "an agent of the run cannot write the run's record of its launches". */
+export const LAUNCHES = "logs/launches";
+
+/** Whether the agent about to start in `runDir` is the run's first: its record of launches
+ * (LAUNCHES) is not there or holds none. */
+export function firstLaunch(runDir: string): boolean {
+  const file = path.join(runDir, LAUNCHES);
+  return !existsSync(file) || readFileSync(file, "utf8").trim() === "";
+}
+
+/** Every file under `runDir`, the run's directory, in byte order, as the agent about to start can
+ * read it: each regular file, a link never followed, with no part of AGENTS_OWN, and, at a later
+ * launch of the run (`firstLaunch`), with no part of AGENT_WRITTEN either, by its path under the
+ * run and its text. The prompt is the rig's text of it (`promptOf`, `rigText`), and services-from
+ * is read less the rig's own directory, which the run's service provenance names in every run
+ * (services_from: each program it runs, by where it is): a residual of the architect's ruling of
+ * 2026-11-18T08:40Z (class-search.json's "<run>/services-from is readable under gVisor"). That
+ * directory is read here, where only the launch guard (`worldNames`) and rig.test.ts's whole-world
+ * row reach it, and no reader of a run (health.ts, score.ts, judge.ts), which reads a run by what it
+ * recorded alone. */
+export function worldFiles(runDir: string): { file: string; text: string }[] {
+  const rigDirectory = realpathSync(import.meta.dir);
+  const files: { file: string; text: string }[] = [];
+  const first = firstLaunch(runDir);
+  const prompt = promptOf(runDir);
+  for (const file of readdirSync(runDir, { recursive: true, encoding: "utf8" }).sort()) {
+    if (agentsOwn(file) || (!first && agentWritten(file))) continue;
+    const at = path.join(runDir, file);
+    if (!lstatSync(at).isFile()) continue;
+    if (file === "prompt.txt" && prompt !== undefined)
+      files.push({ file, text: rigText(prompt.text, prompt.relayed) });
+    else if (file === "services-from")
+      files.push({
+        file,
+        text: readFileSync(at, "utf8").replaceAll(rigDirectory, "<the rig's directory>"),
+      });
+    else files.push({ file, text: readFileSync(at, "utf8") });
+  }
+  return files;
+}
 
 /** The first word of the vocabulary (`vocabulary` of `labels`) in what the rig composes for the
  * agent about to start in `runDir`, as rig.sh's launch has written it: every variable of its pane
@@ -702,12 +831,13 @@ export const COMPOSED = ["bin/gh", "bin/bun", "lib/gh.js", "jj.toml"];
  * `nameWords`; any other as text: `textWords`), which holds its profile, its Legion project,
  * issue and tree (so the Envoy topics they make), its HOME and TMPDIR; every path its namespace
  * mounts (`mountedPaths`: each a mount point and the host source /proc/self/mountinfo names);
- * its working directory and session directory; its prompt, less each message the rig relayed
- * into it from another agent of the run, whose words are that agent's own (`promptOf`, which
- * refuses a <run>/reviewer-wake.json it cannot parse, and so does the guard, and `rigText`); its
- * system prompt, which its command line, /proc/1's, carries, and the text of the prompt file that
- * argument names, which its Oh My Pi reads (`systemPromptOf`, which refuses a system prompt it
- * cannot read, and so does the guard); and the files of COMPOSED, each named with the text around
+ * its working directory and session directory; its system prompt, which its command line,
+ * /proc/1's, carries, and the text of the prompt file that argument names, which its Oh My Pi
+ * reads (`systemPromptOf`, which refuses a system prompt it cannot read, and so does the guard);
+ * and every file of the run's directory, by its path and its text (`worldFiles`: its prompt less
+ * each message the rig relayed into it from another agent of the run, which `promptOf` refuses
+ * to read where <run>/reviewer-wake.json cannot be parsed, and so does the guard; nothing of
+ * AGENTS_OWN; and, at a later launch, nothing of AGENT_WRITTEN), each named with the text around
  * the word. */
 export function worldNames(
   runDir: string,
@@ -728,25 +858,16 @@ export function worldNames(
     checks.push({ place: "a mount of its namespace", value: mounted, name: true });
   checks.push({ place: "its working directory", value: path.join(runDir, "cwd"), name: true });
   checks.push({ place: "its session directory", value: sessionsDir, name: true });
-  const composed = (file: string) => {
-    const at = path.join(runDir, file);
-    if (existsSync(at) && statSync(at).isFile())
-      checks.push({ place: `<run>/${file}`, value: readFileSync(at, "utf8"), name: false });
-  };
-  const prompt = promptOf(runDir);
-  if (prompt !== undefined)
-    checks.push({
-      place: "<run>/prompt.txt",
-      value: rigText(prompt.text, prompt.relayed),
-      name: false,
-    });
   const system = systemPromptOf(runDir);
   if (system !== undefined) {
     checks.push({ place: "<run>/system-args", value: system.argument, name: false });
     if (system.place !== "<run>/system-args")
       checks.push({ place: system.place, value: system.text, name: false });
   }
-  for (const file of COMPOSED) composed(file);
+  for (const { file, text } of worldFiles(runDir)) {
+    checks.push({ place: `the path <run>/${file}`, value: file, name: false });
+    checks.push({ place: `<run>/${file}`, value: text, name: false });
+  }
   for (const { place, value, name } of checks) {
     const word = name ? nameWords(value, vocab) : textWords(value, vocab);
     if (word === undefined) continue;

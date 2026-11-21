@@ -473,37 +473,79 @@ once gave its world: before an agent starts, `launch` runs `run-names.ts guard`,
 variable of the pane (its name and its value: the profile, the Legion project, issue and role its
 Envoy topics are made of, HOME, TMPDIR, PATH), every mount of the namespace (each is a mount point
 and the host source `/proc/self/mountinfo` names, so the work directory's own path is held too),
-the working and session directories, the prompt and system prompt (`/proc/1`'s command line), and
-the files the rig writes for each launch (`run-names.ts`'s `COMPOSED`: `bin/gh`, `bin/bun`, the
-`gh` bundle `lib/gh.js` and `jj.toml`), each read whole, and the run fails, naming the word and the
-place with the text around it, where one is there. It reads nothing else the world shows:
+the working and session directories, the system prompt (`/proc/1`'s command line and the file it
+names), and every file of the run's directory, by its path and its text, read whole: the rig's
+records, the stand-ins in `bin/`, what the rig builds (the `gh` bundle `lib/gh.js`), the pane, the
+prompt, the HOME copied from the label's install, the seeds' ids, the fixtures and the world's
+repositories. The run fails, naming the word and the place with the text around it, where one is
+there. One walker reads a run's files (`run-names.ts`'s `worldFiles`), and at every launch it
+passes over what an agent wrote, whose words are its own (`AGENTS_OWN`, each entry with why):
 
-- not the label's install (`installs/<id>`: its packed plugins, HOME and model route), a
-  checkout's production artifact whose words are production's, which a production agent reads
-  too: several scenario words are ordinary words of this product, and the preflight at `cc09c638`
-  refused every base agent on `SPEC_WRITING_POINTER` in pi-legion's `dist/legion.js`, while the
-  head's passed only because its `legion.js` was over a size bound;
-- not what the run has written (`sessions/`, `out*.txt`, `cwd/`, `ws/`, `calls.jsonl`, a HOME an
-  agent used), which holds its agents' own words: read before a run's second agent, the first
-  agent's transcript refused it;
-- not a message one agent of the run sent the next, which `run_threads_closed` relays into the
-  reviewer's prompt and keeps whole in `<run>/reviewer-wake.json`: the guard reads the prompt less
-  each such message, at the end of the line the rig wrote it on, so the rig's own prefix of that
-  line is still read and the message's words are its sender's (`run-names.ts`'s `promptOf`); a
-  `reviewer-wake.json` it cannot parse fails the run. In INFRA-764's round 26 the implementer's
-  "Pushed one text-only commit" refused its reviewer's launch;
-- not the world's repositories, their remote helpers and gh answers (`world.json`,
-  `fixtures.json`, `src/`, `ws/`, the shared clone `repos/`, `remote.git`, `bin/git-remote-ghapp`
-  and `lib/git-core/git-remote-https`), which the run writes into after its first agent, and which
-  `rig.test.ts`'s "what the rig writes into a run's world" holds to the same words for every world
-  `rig.sh` builds.
+- a message one agent of the run sent the next, which `run_threads_closed` relays into the
+  reviewer's prompt and keeps whole in `<run>/reviewer-wake.json` (the architect's ruling of
+  2026-11-20T17:30Z): the guard reads the prompt less each such message, at the end of the line
+  the rig wrote it on, so the rig's own prefix of that line is still read and the message's words
+  are its sender's (`run-names.ts`'s `promptOf`); a `reviewer-wake.json` it cannot parse fails the
+  run. In INFRA-764's round 26 the implementer's "Pushed one text-only commit" refused its
+  reviewer's launch;
+- each agent's transcripts (`sessions/`), output (`out*.txt`, `boot-1/`), the HOME an earlier agent
+  used (`home-<role>/`), its TMPDIR (`tmp/`), and the logs of what the agents did (`logs/`,
+  `calls.jsonl`, `published.jsonl`, `daemon.log`, `pushes.log`): read before a run's second
+  agent, the first agent's transcript refused it;
+- a spec run's asks as Dispatch holds them after a turn (`state-<turn>.json`) and the person
+  stand-in's answers to them (`answers*.jsonl`);
+- the repositories' version-control records (`.jj/`, `.git/`, and `remote.git` but its hooks),
+  which keep each agent's commands, commits and branch names as it makes them; the trees,
+  histories and hooks the rig builds are held by `rig.test.ts`'s "what the rig writes into a run's
+  world" for every world `rig.sh` builds.
+
+What an agent of the run can write is read at the run's first launch alone (`AGENT_WRITTEN`, each
+entry with the write that reaches it; the architect's ruling of 2026-11-21T14:24:55Z): its working
+directory (`cwd/`), the issue workspace (`ws/`) and the clone it is a worktree of (`repos/`), its
+HOME (`home/`), a worker pane's XDG directories (`state/home/`) and the Legion plugin's files in
+its state directory, and the gh answers (`fixtures.json`), which the gh stand-in writes again on
+an agent's edit of the pull request's body. Before the first launch they hold only what the rig
+wrote, and the guard reads them. At every later launch (boot_agent's relaunch, threads-closed's
+reviewer, a spec run's later turn) they hold what an agent wrote too, and the guard reads every
+other file of the run. `launch` tells the first from a later one by the run's record of its
+launches, `<run>/logs/launches`, a line `<time> <tmux session>` it appends once the guard has
+passed and before the agent starts. `<run>/logs/` is under an empty read-only tmpfs in every
+agent's namespace, and a namespace of the agent's own cannot take that mount off either, so only
+the rig writes the record (`rig.test.ts`'s "an agent of the run cannot write the run's record of
+its launches"). A run with no line there is at its first launch (`run-names.ts`'s
+`firstLaunch`). The rig writes nothing into those paths after the first launch:
+`rig.test.ts`'s "after a run's first launch the rig writes nothing into what an agent of the run
+can write" composes every worker scenario's case and both spec scenarios past their first agent,
+with an agent that writes nothing, to each later launch they reach (every relaunch, the
+reviewer of `correct`, a spec run's second and third turns), and holds each such file to the
+bytes the first launch read. The gh stand-in is rig code too: `gh-standin.test.ts`'s "a write the
+gh stand-in keeps in fixtures.json adds nothing the call did not give it" holds each body edit it
+models, and the review writes, to strings the call gave or the file already held. The rig writes
+no agent's words into a file the guard reads either: `seed.ts state` writes a spec run's open
+asks to `state-<turn>.json` and prints only their count into `fixture.log`, where the agent's ask
+would otherwise refuse its next turn.
+
+`services-from` names the rig's own directory in every run, and the walker reads it less that
+directory (the residual below). `rig.test.ts`'s "no file rig.sh writes, copies or builds into a
+run before its agent starts names a word of the measurement" holds the same walker to every world
+the rig composes, as it reads it at the first launch. It sources `rig.sh` whole, brings a batch's
+services up with `services_up` (the listener, the Dispatch server, `seed.ts` and the processes a
+run starts beside its agent stubbed; the label's build of `daemon-pane.go`, which composes the
+pane and its system prompt, built), and runs `cmd_run` for each scenario and case of `SCENARIOS`
+and both labels, both built from the test's own checkout, under `SKILL_SCENARIOS_COMPOSE_ONLY`,
+which ends a run once `launch`'s guard has read its world, records no launch and starts no
+agent; then it reads every file of each run through `worldFiles`. The `gh` bundle holds every
+module `gh-standin.ts` imports, so the evidence of the world's routes, which names recorded runs
+by the names they ran under, is in a module the stand-in does not import
+(`gh-route-evidence.ts`'s `ROUTE_EVIDENCE`), and the stand-in reads `gh-routes.ts`'s routes and
+answers alone: at `9083afb5` the stand-in came to import the route table with its evidence, and the
+guard refused every reviewer of INFRA-764's round 30 on the scenario's name in `<run>/lib/gh.js`.
 
 The services' logs (`<run>/logs/`) are hidden from the agent under an empty read-only tmpfs. The
 rig's records that are files at the top of the run's directory (`built-from`, `services-from`,
 `namespace.txt`, `launch.sh` and the rest) are not hidden, since a gVisor pod refuses a mount onto
-a file, and the guard does not read them, since `services-from` names the rig's own directory in
-every run: an agent can still read them, and hiding them needs them moved into a directory the
-namespace covers. The words are derived, never typed: every scenario and case of `run-names.ts`'s
+a file: an agent can read them, the guard reads them, and hiding them needs them moved into a
+directory the namespace covers. The words are derived, never typed: every scenario and case of `run-names.ts`'s
 `SCENARIOS`, the rig's one scenario table, every label, and `REMOVED_NAMES` (`rig-`,
 `skill-scenario`, `lweval`, `e2e-seed`, `example/widgets`). So the work directory's default is
 `$TMPDIR/work`, the world's repository is `fernbrook/widgets`, its Dispatch project is `WID`, the
@@ -717,8 +759,9 @@ pull request, a branch, a repository or a `--json` field GitHub or gh has not go
 Legion gh wrapper's refusal, exit 2, of a call naming a repository whose owner is outside the
 project, and the world's 404 to a read of such an owner's repository that the label's wrapper runs
 on the pane's own token (`OWNER_UNHELD`, below); the world answers
-every `gh` read either label's role texts name, which `gh-routes.ts`'s `WORLD_ROUTES` lists and the
-rig's tests pin against both checkouts); no `gh` write (a GraphQL mutation, a `gh api` call sent
+every `gh` read either label's role texts name, which `gh-routes.ts`'s `WORLD_ROUTES` lists, each
+route no text names with its evidence in `gh-route-evidence.ts`, and the rig's tests pin against
+both checkouts); no `gh` write (a GraphQL mutation, a `gh api` call sent
 with a verb other than GET, a `gh pr`, `gh run` or `gh auth` command that writes) went unanswered by
 every route and answer the world models: one the gh stand-in recorded as answered by nothing
 (`handler` `unrouted` in `calls.jsonl`) or, in a record from before it kept `handler`, one the
@@ -2220,7 +2263,10 @@ The checks:
   what the rig declared, where production's pane reads the host's own file, as the empty file once
   bound over the system git configuration on the premise that the worker image had none. A bind
   into the holder (`/dev/shm`), a held path bound back at its own path, and the run's own
-  `<run>/tmp` bound onto `/tmp` are no finding.
+  `<run>/tmp` bound onto `/tmp` are no finding. A file `rig.sh` builds into every run
+  (`--outfile "$R/<path>"`, the `gh` bundle), whose words no reading of `rig.sh`'s text sees, is
+  held by `rig.test.ts`'s row that builds and reads it (the launch guard's section above), and is
+  an instance where that row is not there.
 - A stand-in's declaration of a behaviour it does not model. Every program of the rig (each
   stand-in it runs among them: `daemon-standin.ts`, `standin-record.ts`, `gh-standin.ts`,
   `github-standin.ts`, `daemon-pane.ts` and `daemon-pane.go`) is read for `not modelled` in a
