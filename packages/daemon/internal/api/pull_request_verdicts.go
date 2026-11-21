@@ -206,8 +206,13 @@ func (s *server) sidePullRequest(w http.ResponseWriter, r *http.Request, repo st
 	if s.verdictEntry == nil {
 		return forbid("a side review is taken only on a verdict repository, and this daemon writes legion-verdict on none")
 	}
-	if entry, named := s.verdictEntry(requested); !named || !entry.SideReviews {
-		return forbid("a side review is taken only on a repository whose verdict_repositories entry sets side_reviews: true, and %s's entry does not", requested)
+	// The verdict is recorded, and the writer asked, under the name GitHub holds the repository
+	// under now, so the entry is looked up under that name, as the writer looks it up
+	// (workflowRuntime.verdictEntry): a call the writer would write nothing for is refused here,
+	// before anything is recorded.
+	repository := s.serving(requested)
+	if entry, named := s.verdictEntry(repository); !named || !entry.SideReviews {
+		return forbid("a side review is taken only on a repository whose verdict_repositories entry sets side_reviews: true, under the name GitHub holds it under now, and %s's entry does not", repository)
 	}
 	ctx := r.Context()
 	var recorded *record.PullRequest
@@ -229,7 +234,7 @@ func (s *server) sidePullRequest(w http.ResponseWriter, r *http.Request, repo st
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
 		return ghrepo.Repository{}, false
 	}
-	repository := s.serving(requested)
+	// GitHub's own read, minted for and addressed to the repository under the name it holds now.
 	lease, err := s.tokens.ReadToken(ctx, repository.Owner())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: mint the read token for a side review's pull request", "repository", repository.String())

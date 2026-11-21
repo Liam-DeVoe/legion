@@ -46,7 +46,10 @@ func newSideGitHub(t *testing.T) *sideGitHub {
 	g.url = githubtest.Server(t, githubtest.Spec{Token: "read-token-for-acme", Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
-		number, found := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/pulls/")
+		// Any repository of acme answers its pull requests alike, so a call addressed under the name
+		// a rename moved a repository to reaches the same pull request.
+		_, rest, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/repos/acme/"), "/")
+		number, found := strings.CutPrefix(rest, "pulls/")
 		var n int
 		if _, err := fmt.Sscan(number, &n); r.Method != http.MethodGet || !found || err != nil {
 			githubtest.Unexpected(t, w, r)
@@ -90,25 +93,39 @@ type sideRig struct {
 
 func newSideRig(t *testing.T) *sideRig {
 	t.Helper()
+	return newSideRigServing(t, func(recorded ghrepo.Repository) ghrepo.Repository { return recorded })
+}
+
+// newSideRigServing is newSideRig whose daemon finds the repository GitHub holds a named one under
+// with serving (Options.Serving), and reads a verdict entry as the daemon's
+// workflowRuntime.verdictEntry does: under the name it is given, then under serving's name for it.
+func newSideRigServing(t *testing.T, serving func(ghrepo.Repository) ghrepo.Repository) *sideRig {
+	t.Helper()
 	rig := &sideRig{harness: newHarness(t), github: newSideGitHub(t)}
 	entries := []config.VerdictRepository{
 		{Repository: ghrepo.MustParse("acme/widgets"), SideReviews: true},
 		{Repository: ghrepo.MustParse("acme/gadgets"), CIReviewer: "example-ci-review[bot]"},
+	}
+	entry := func(repository ghrepo.Repository) (config.VerdictRepository, bool) {
+		at := slices.IndexFunc(entries, func(entry config.VerdictRepository) bool {
+			return strings.EqualFold(entry.Repository.String(), repository.String())
+		})
+		if at < 0 {
+			return config.VerdictRepository{}, false
+		}
+		return entries[at], true
 	}
 	rig.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: rig.supervisor, BootTokens: rig.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: rig.store, Grants: credential.New(nil),
 		Pool: rig.store.Pool(), Record: record.NewStore(), Tokens: handoffTokens{}, GitHubAPI: rig.github.url,
-		Log: slog.New(slog.NewTextHandler(rig.serverLog, nil)),
+		Log: slog.New(slog.NewTextHandler(rig.serverLog, nil)), Serving: serving,
 		VerdictEntry: func(repository ghrepo.Repository) (config.VerdictRepository, bool) {
-			at := slices.IndexFunc(entries, func(entry config.VerdictRepository) bool {
-				return strings.EqualFold(entry.Repository.String(), repository.String())
-			})
-			if at < 0 {
-				return config.VerdictRepository{}, false
+			if found, ok := entry(repository); ok {
+				return found, true
 			}
-			return entries[at], true
+			return entry(serving(repository))
 		},
 		WriteVerdict: func(repository string, number int, head string) {
 			rig.mu.Lock()
@@ -117,6 +134,61 @@ func newSideRig(t *testing.T) *sideRig {
 		},
 	}).Handler
 	return rig
+}
+
+// A side review is taken only where the writer of legion-verdict writes it. The verdict is
+// recorded under the name GitHub holds the repository under now, and the writer is asked under
+// that name; the writer finds the entry under that name, or under the one GitHub serves it under
+// (verdictEntry), and never under the name a rename moved it away from. So a call on acme/widgets,
+// whose entry is written under that name, once GitHub holds it as acme/widgets-next, is refused
+// before anything is recorded, rather than answered 200 with a verdict no check is ever written
+// from. A call under the name a rename moved away from, acme/widgets-old, which GitHub holds as
+// acme/widgets, is taken, recorded and written under acme/widgets.
+func TestASideReviewIsTakenOnlyWhereTheWriterWritesIt(t *testing.T) {
+	t.Run("an entry under the name a rename moved the repository away from", func(t *testing.T) {
+		rig := newSideRigServing(t, func(recorded ghrepo.Repository) ghrepo.Repository {
+			if strings.EqualFold(recorded.String(), "acme/widgets") {
+				return ghrepo.MustParse("acme/widgets-next")
+			}
+			return recorded
+		})
+		rig.github.serve(7, "open", "fix/parser", sideHead)
+		message := refused(t, rig.nameReviewer(PullRequestReviewerRequest{GrantID: rig.controllerGrant(), Repository: "acme/widgets",
+			Number: 7, Head: sideHead, Session: "ses_s"}), http.StatusForbidden, "VERDICT_CALLER_FORBIDDEN")
+		if !strings.Contains(message, "acme/widgets-next") {
+			t.Fatalf("the refusal says %q, want it to name acme/widgets-next, the name the writer is asked under", message)
+		}
+		refused(t, rig.relayVerdict(PullRequestVerdictRequest{GrantID: rig.controllerGrant(), Repository: "acme/widgets", Number: 7,
+			Head: sideHead, Verdict: "approve", Session: "ses_s"}), http.StatusForbidden, "VERDICT_CALLER_FORBIDDEN")
+		if reviewers, verdicts := rig.sideRows(); len(reviewers) != 0 || len(verdicts) != 0 {
+			t.Fatalf("the store records side reviewers %+v and verdicts %+v, want none", reviewers, verdicts)
+		}
+		if got := rig.written(); len(got) != 0 {
+			t.Fatalf("writes of legion-verdict = %v, want none", got)
+		}
+	})
+	t.Run("a call under the name a rename moved the repository away from", func(t *testing.T) {
+		rig := newSideRigServing(t, func(recorded ghrepo.Repository) ghrepo.Repository {
+			if strings.EqualFold(recorded.String(), "acme/widgets-old") {
+				return ghrepo.MustParse("acme/widgets")
+			}
+			return recorded
+		})
+		rig.github.serve(7, "open", "fix/parser", sideHead)
+		for _, recorder := range []*httptest.ResponseRecorder{
+			rig.nameReviewer(PullRequestReviewerRequest{GrantID: rig.controllerGrant(), Repository: "acme/widgets-old", Number: 7,
+				Head: sideHead, Session: "ses_s"}),
+			rig.relayVerdict(PullRequestVerdictRequest{GrantID: rig.controllerGrant(), Repository: "acme/widgets-old", Number: 7,
+				Head: sideHead, Verdict: "approve", Session: "ses_s"}),
+		} {
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("a call under acme/widgets-old = %d: %s", recorder.Code, recorder.Body)
+			}
+		}
+		if got, want := rig.written(), []string{"acme/widgets#7@" + sideHead}; !slices.Equal(got, want) {
+			t.Fatalf("writes of legion-verdict = %v, want %v", got, want)
+		}
+	})
 }
 
 // controllerGrant is a grant the project's controller session minted, ses_controller registered
