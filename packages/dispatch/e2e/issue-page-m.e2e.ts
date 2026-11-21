@@ -3237,7 +3237,10 @@ async function seedHeldRows({ waiting }: { waiting: boolean }): Promise<string> 
 }
 
 /** The reads Details makes once it opens that a row holds back, each until its promise settles:
- *  the blockers' titles, and, where named, the issue's log and the issues waiting on it. */
+ *  the blockers' titles, and, where named, the issue's log and the issues waiting on it with
+ *  their titles. Blocks reads what waits on the issue, then those issues' titles in a read of
+ *  their own, so the issues and their titles land together, as a reader's slow read of what
+ *  waits brings both. */
 interface HeldReads {
   readonly log?: Promise<void>;
   readonly titles: Promise<void>;
@@ -3265,8 +3268,14 @@ async function afterTo(
     }
     await route.continue();
   });
+  // A read of titles that names a blocker is the blockers' read, held by `titles`; any other is
+  // the read of the titles of what waits on the issue, held with that read by `waiting`.
+  const blockers = new Set(
+    ((await getIssue(key)).blocked_by ?? []).map((blocker) => `dispatch://${blocker}`)
+  );
   await page.route("**/api/v1/reference-targets?**", async (route) => {
-    await held.titles;
+    const refs = new URL(route.request().url()).searchParams.getAll("ref");
+    await (refs.some((ref) => blockers.has(ref)) ? held.titles : (held.waiting ?? held.titles));
     await route.continue();
   });
   await gotoIssue(page, `/issues/${key}`);
