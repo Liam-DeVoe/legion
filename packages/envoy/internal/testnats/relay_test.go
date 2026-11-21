@@ -1,11 +1,70 @@
 package testnats
 
 import (
+	"bufio"
 	"maps"
 	"net"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// A hold lets a client's handshake PING, the first operation after its CONNECT, through and waits
+// for it, so the client gets its PONG while the hold is in force. A client held between the two
+// would have its CONNECT processed and its first PONG unsent, and nats-server sends such a client
+// a PING of its own when Connz reads its round-trip time 2 s after it connected (relay.hold), which
+// its handshake reads where it waits for the PONG.
+func TestAHoldLetsAClientsHandshakePingThrough(t *testing.T) {
+	server, uri := Start(t)
+	conn, err := net.Dial("tcp", strings.TrimPrefix(uri, "nats://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+	if line, err := reader.ReadString('\n'); err != nil || !strings.HasPrefix(line, "INFO ") {
+		t.Fatalf("the server's first line was %q (%v), want its INFO", line, err)
+	}
+	if _, err := conn.Write([]byte("CONNECT {\"verbose\":false,\"lang\":\"go\"}\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	testwait.Until(t, "the relay to write the client's CONNECT", func() (bool, bool) {
+		server.relay.mu.Lock()
+		defer server.relay.mu.Unlock()
+		for j := range server.relay.joins {
+			if j.sent.connected {
+				return true, true
+			}
+		}
+		return false, false
+	})
+	type held struct {
+		release func()
+		err     error
+	}
+	holding := make(chan held, 1)
+	go func() {
+		release, err := server.relay.hold()
+		holding <- held{release, err}
+	}()
+	if _, err := conn.Write([]byte("PING\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	lines := make(chan string, 1)
+	go func() {
+		line, _ := reader.ReadString('\n')
+		lines <- line
+	}()
+	if line := testwait.Receive(t, "the PONG to the client's handshake PING, sent during a hold", lines); line != "PONG\r\n" {
+		t.Fatalf("the server answered the handshake's PING with %q, want PONG", line)
+	}
+	h := testwait.Receive(t, "the hold to stop the client past its handshake's PING", holding)
+	defer h.release()
+	if h.err != nil {
+		t.Fatalf("hold: %v", h.err)
+	}
+}
 
 // The relay keeps the address of a connection it holds, and of one it has let go while the server
 // still lists it, and forgets one it has let go that the server no longer lists: a client that
@@ -52,23 +111,35 @@ const clientStream = "CONNECT {\"verbose\":false,\"headers\":true}\r\nPING\r\n" 
 // its CONNECT, and where each operation ends, however the stream is cut: a hold stops a client only
 // between two operations, and the relay's own PING goes in there, so a boundary inside a payload
 // would put the PING inside a message, and a PING counted from a payload would leave the relay
-// waiting for a PONG the server never sends. A stream of its CONNECT alone has nothing after it,
-// so the barrier sends it no PING (relay.barrier).
+// waiting for a PONG the server never sends. A stream of its CONNECT alone is not where a hold may
+// stop it (settled): the next bytes, if they begin a PING, are its handshake's PING, which a hold
+// lets through (relay.hold).
 func TestTheRelaysRecordOfAClientsStreamFindsItsOperationsWhereverTheStreamIsCut(t *testing.T) {
 	for _, cut := range []int{1, 2, 3, 7, 64, len(clientStream)} {
 		var stream protocolStream
 		for start := 0; start < len(clientStream); start += cut {
 			stream.wrote([]byte(clientStream[start:min(start+cut, len(clientStream))]))
 		}
-		if stream.broken != nil || !stream.connected || stream.pings != 2 || stream.afterConnect != 10 || !stream.atBoundary() {
-			t.Errorf("pieces of %d bytes: broken %v, connected %v, pings %d, after the CONNECT %d, at a boundary %v; want nil, true, 2, 10, true",
-				cut, stream.broken, stream.connected, stream.pings, stream.afterConnect, stream.atBoundary())
+		if stream.broken != nil || !stream.connected || stream.pings != 2 || stream.afterConnect != 10 || !stream.settled() {
+			t.Errorf("pieces of %d bytes: broken %v, connected %v, pings %d, after the CONNECT %d, settled %v; want nil, true, 2, 10, true",
+				cut, stream.broken, stream.connected, stream.pings, stream.afterConnect, stream.settled())
 		}
 	}
 	var connectOnly protocolStream
 	connectOnly.wrote([]byte("CONNECT {\"verbose\":false}\r\n"))
-	if !connectOnly.connected || connectOnly.afterConnect != 0 {
-		t.Errorf("a stream of its CONNECT alone: connected %v, after the CONNECT %d; want true, 0", connectOnly.connected, connectOnly.afterConnect)
+	if !connectOnly.connected || connectOnly.afterConnect != 0 || !connectOnly.atBoundary() || connectOnly.settled() {
+		t.Errorf("a stream of its CONNECT alone: connected %v, after the CONNECT %d, at a boundary %v, settled %v; want true, 0, true, false",
+			connectOnly.connected, connectOnly.afterConnect, connectOnly.atBoundary(), connectOnly.settled())
+	}
+	for next, want := range map[string]bool{"PING\r\n": true, "ping\r\nSUB a 1\r\n": true, "PI": true, "PUB a 0\r\n\r\n": false, "SUB a 1\r\n": false} {
+		if got := connectOnly.handshakePing([]byte(next)); got != want {
+			t.Errorf("after a CONNECT alone, %q is the handshake's PING: %v, want %v", next, got, want)
+		}
+	}
+	var pinged protocolStream
+	pinged.wrote([]byte("CONNECT {\"verbose\":false}\r\nPING\r\n"))
+	if pinged.handshakePing([]byte("PING\r\n")) || !pinged.settled() {
+		t.Errorf("after a CONNECT and its PING: a second PING is the handshake's %v, settled %v; want false, true", pinged.handshakePing([]byte("PING\r\n")), pinged.settled())
 	}
 	// A message is whole at the LF after its payload, so neither the payload's last byte nor the CR
 	// after it ends the operation; toBoundary says how far the next bytes take it.
