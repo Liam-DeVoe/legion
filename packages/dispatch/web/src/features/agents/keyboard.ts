@@ -6,6 +6,7 @@
  */
 import type { RefObject } from "react";
 
+import { panelOf } from "../../components/focus-place";
 import type { ListMarks } from "../../components/MultiSelect";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching } from "../shell/roving";
@@ -31,10 +32,9 @@ const AGENT_LIST_SELECTOR = "[data-agents-list]";
 
 /** The text box of the Issue list `toggle` opened, or `null` while it is shut. The list is
  *  portalled out of the row, so it is found through the panel the toggle names in
- *  `aria-controls`. */
+ *  `aria-controls` (`panelOf`). */
 export function issueSearchOf(toggle: Element): HTMLElement | null {
-  const panel = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
-  return panel?.querySelector<HTMLElement>(`[${ISSUE_SEARCH_ATTRIBUTE}]`) ?? null;
+  return panelOf(toggle)?.querySelector<HTMLElement>(`[${ISSUE_SEARCH_ATTRIBUTE}]`) ?? null;
 }
 
 /**

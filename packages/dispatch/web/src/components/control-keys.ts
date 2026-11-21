@@ -4,7 +4,7 @@ import { useKeymap } from "../features/shell/keymap";
 import type { KeymapActionId } from "../features/shell/keymap-catalogue";
 import { noteOpenedFrom } from "./AnchoredPanel";
 import { CONTROL, type ControlName, controlIn } from "./control-names";
-import { focusableIn } from "./focus-place";
+import { focusableIn, panelOf } from "./focus-place";
 
 /**
  * The keys of a page's control row (R24): Shift+F opens its filter panel and Shift+V its display
@@ -50,8 +50,7 @@ export function openRowControl(row: Element, name: ControlName): boolean {
     trigger.click();
     return true;
   }
-  const id = trigger.getAttribute("aria-controls");
-  const panel = id === null ? null : document.getElementById(id);
+  const panel = panelOf(trigger);
   if (panel !== null) (focusableIn(panel)[0] ?? panel).focus();
   return true;
 }

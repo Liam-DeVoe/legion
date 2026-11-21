@@ -170,11 +170,10 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("ConversationTab | CommentTurn | form | key={phoneThread.id}", { reason: REASONS[9] }),
   ...answers("ConversationTab | - | form | if (phone.id === id)", { reason: REASONS[8] }),
   ...answers("ConversationTab | - | form | if (isPhoneViewport)", { reason: REASONS[8] }),
-  ...answers("ConversationTab | - | form | (isPhoneViewport) ? …", { reason: REASONS[8] }),
-  ...answers(
-    "ConversationTab | - | form | if (comment !== undefined && !isPhoneViewport) return …",
-    { reason: REASONS[8] }
-  ),
+  ...answers("useTurnKeys | - | form | (isPhoneViewport) ? …", { reason: REASONS[8] }),
+  ...answers("useTurnKeys | - | form | if (comment !== undefined && !isPhoneViewport) return …", {
+    reason: REASONS[8],
+  }),
   ...answers("CommentTurn | - | form | if (forceExpanded || (isPhone && !expanded)) return …", {
     reason: REASONS[8],
   }),

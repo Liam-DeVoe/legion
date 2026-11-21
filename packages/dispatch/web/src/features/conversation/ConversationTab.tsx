@@ -1,6 +1,5 @@
 import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import { Link } from "react-router-dom";
 
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
@@ -19,7 +18,6 @@ import { heldPress } from "../../components/held-press";
 import { PinButton } from "../../components/PinButton";
 import { useSending } from "../../hooks/useSending";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { copyText } from "../../lib/clipboard";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   borderDefault,
@@ -55,18 +53,10 @@ import {
 } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import {
-  buildIssuePath,
-  buildReferencePath,
-  documentItemPath,
-  parseNodeReference,
-  sessionOfAddress,
-} from "../refs/routes";
+import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
-import { useKeymap } from "../shell/keymap";
-import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { PHONE_VIEWPORT_QUERY, useDialog, useMediaQuery } from "../shell/useDialog";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -114,14 +104,10 @@ import type { CarriedBlockIds } from "./send-request";
 import { capabilitiesForTarget, TargetedMessageCard } from "./TargetedMessageCard";
 import {
   ConversationTurns,
-  openReplyBox,
-  ownControl,
-  REPLY_BOX,
-  ROOT_TURN,
-  TURN_FOLD,
-  TURN_ROW,
+  type KeyedThread,
   turnFocusRing,
   turnMarks,
+  useTurnKeys,
 } from "./turn-keys";
 import { useFollowLatest } from "./use-follow-latest";
 import { useAgents } from "./useAgents";
@@ -146,24 +132,6 @@ const FILTERS: readonly { readonly label: string; readonly value: ConversationFi
   { label: "Open", value: "open" },
   { label: "Closed", value: "closed" },
 ];
-
-/** How a key of the tab opened a comment thread inline. Enter or `o` opened it `standing`: its
- *  reply box takes no focus, which stays on the turn. `r` opened it, or reached its open box, to
- *  `reply`: the box has the focus, and Escape in it gives the focus back to the turn `r` was
- *  pressed on and leaves the thread open. A thread a click or a link opened is neither: its box
- *  takes the focus, and Escape in it closes the thread. */
-type KeyedThread = "standing" | "reply";
-
-/** A turn's Reply (`ReplyButton`), which `r` presses on a message. */
-const REPLY_BUTTON = 'button[aria-label="Reply"]';
-
-/** The comment whose thread `turn`, a conversation's own turn, is: its `data-turn` names it
- *  `comment:<id>` (`conversationItemId`). */
-function commentOfTurn(turn: HTMLElement): string | undefined {
-  const prefix = conversationItemId("comment", "");
-  const id = turn.dataset.turn;
-  return id?.startsWith(prefix) === true ? id.slice(prefix.length) : undefined;
-}
 
 /** A delivery's address as `AgentParts` draws it: a `session:` address is that session, drawn
  *  by `AgentName`; a role address stays text. */
@@ -1092,36 +1060,17 @@ export function ConversationTab({
     sendKey,
     sendingNow,
   });
-  // The comments whose thread the reader has open inline.
-  const [openThreads, setOpenThreads] = useState<ReadonlySet<string>>(() => new Set());
-  // The open threads a key of the tab opened, by how (`KeyedThread`): the thread card's reply box
-  // follows it. A thread a click opened, or a link, is in neither.
-  const [keyedThreads, setKeyedThreads] = useState<ReadonlyMap<string, KeyedThread>>(
-    () => new Map()
-  );
-  // The turn `r` was pressed on for each thread whose box it put the reader in: where Escape in
-  // that box gives the focus back.
-  const replyOrigins = useRef(new Map<string, HTMLElement>());
-  /** Opens or closes comment `id`'s thread, by a key of the tab where `keyed` says how; a thread
-   *  opened any other way, and every thread closed, is a key's no longer. */
-  const setThreadOpen = useCallback((id: string, open: boolean, keyed?: KeyedThread) => {
-    setOpenThreads((current) => {
-      if (current.has(id) === open) return current;
-      const next = new Set(current);
-      if (open) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-    const how = open ? keyed : undefined;
-    if (how !== "reply") replyOrigins.current.delete(id);
-    setKeyedThreads((current) => {
-      if (current.get(id) === how) return current;
-      const next = new Map(current);
-      if (how === undefined) next.delete(id);
-      else next.set(id, how);
-      return next;
-    });
-  }, []);
+  // The comments whose thread the reader has open inline, and the keys of the turns, which walk
+  // them, open and close their threads and reply in them (R22, `useTurnKeys`).
+  const {
+    beginDockedReply,
+    giveBackFromDockedReply,
+    giveBackFromThread,
+    keyedThreads,
+    openThreads,
+    setThreadOpen,
+    turnList,
+  } = useTurnKeys({ isPhoneViewport, openPhoneThread: phone.open, sendKey, visible });
   // The comment whose editor is open in each thread, by the thread's root: the tab's rather than
   // a card's, since a phone's thread view draws its comment's card afresh each time it opens.
   // Back, then that comment's thread again, finds the editor open where the reader left it, with
@@ -1214,11 +1163,8 @@ export function ConversationTab({
   // (`redirectedReplyTarget`'s doc comment explains why a Reply elsewhere while it holds a
   // refusal redirects onto that comment or message instead of overwriting its draft).
   const [replyTo, setReplyTo] = useHeldReplyTo(sendKey);
-  // The turn `r` started the docked composer's reply from, where Escape in it, or its Cancel
-  // reply, gives the focus back. A reply started by a click starts from nowhere.
-  const dockedReplyFrom = useRef<HTMLElement | null>(null);
   const beginReply = (target: ReplyTarget): boolean => {
-    dockedReplyFrom.current = null;
+    beginDockedReply();
     if (sendingNow()) return false;
     const reply = redirectedReplyTarget(store, sendKey, target);
     setReplyTo(reply);
@@ -1384,142 +1330,6 @@ export function ConversationTab({
       op: isPinnedConversation(dismissed, id) ? "unpin" : "pin",
     }));
 
-  // The keys of the turns (R22, `turn-keys.ts`). `j` and `k` walk the turns and the replies the
-  // list draws, an open thread's replies among them; Enter, `o`, `r`, `y` and Shift+Y act on the
-  // turn the focus is on itself, never on one that merely holds a focused control, whose keys
-  // are its own. Every key stands down while another tab is shown.
-  const turnList = useRef<HTMLOListElement>(null);
-  /** The turn or reply of the list that holds the keyboard's focus itself. */
-  const focusedTurn = (): HTMLElement | null => {
-    const turn = focusedMatching(TURN_ROW);
-    return turn !== null && turnList.current?.contains(turn) === true ? turn : null;
-  };
-  /** What `of` finds to do on the focused turn, while the tab is shown. */
-  const onFocusedTurn = (of: (turn: HTMLElement) => (() => void) | null) => {
-    const turn = visible ? focusedTurn() : null;
-    return turn === null ? null : of(turn);
-  };
-  /** The reference `y` copies off the focused turn, while the tab is shown. */
-  const turnRef = (): string | undefined => (visible ? focusedTurn()?.dataset.turnRef : undefined);
-  /** What Enter and `o` do on `turn`: open or close its comment thread - with the reply box
-   *  standing, so the focus stays on the turn - or press its conversation's other fold
-   *  (`TURN_FOLD`). Where the press takes the turn away, a reply in the closed thread or fold,
-   *  its conversation takes the focus. Null where there is nothing to open or close, and on a
-   *  thread whose own reply is out, which stays open until it lands, as a resolve holds it. */
-  const toggleOf = (turn: HTMLElement): (() => void) | null => {
-    const root = turn.closest<HTMLElement>(ROOT_TURN);
-    if (root === null) return null;
-    const comment = commentOfTurn(root);
-    let press: (() => void) | undefined;
-    if (comment === undefined) {
-      const fold = ownControl(root, TURN_FOLD);
-      if (fold !== null) press = () => fold.click();
-    } else if (!openThreads.has(comment)) {
-      press = isPhoneViewport
-        ? () => phone.open(comment)
-        : () => setThreadOpen(comment, true, "standing");
-    } else if (
-      queryClient.isMutating({ mutationKey: threadReplySendKey(sendKey, comment) }) === 0
-    ) {
-      press = () => setThreadOpen(comment, false);
-    }
-    if (press === undefined) return null;
-    const pressed = press;
-    return () => {
-      flushSync(pressed);
-      if (!turn.isConnected) root.focus();
-    };
-  };
-  /** Where `r` puts the caret from `turn`: in its comment thread's reply box - opening the thread
-   *  first, its box not standing, so the box takes the focus as it mounts - or an answered ask's
-   *  box behind its "Write a reply". A message, and a comment on a phone, press their own Reply,
-   *  which hands the docked composer, or the phone's thread, the reply. Null where nothing takes
-   *  a reply: an open ask waits on its answer, a handoff takes none, and a Reply is held while a
-   *  send is out. */
-  const replyOf = (turn: HTMLElement): (() => void) | null => {
-    const root = turn.closest<HTMLElement>(ROOT_TURN);
-    if (root === null) return null;
-    const comment = commentOfTurn(root);
-    if (comment !== undefined && !isPhoneViewport) {
-      const box = openThreads.has(comment)
-        ? root.querySelector<HTMLElement>(`[data-thread-reply]:not([hidden]) ${REPLY_BOX}`)
-        : undefined;
-      if (box === null) return null;
-      return () => {
-        replyOrigins.current.set(comment, turn);
-        setThreadOpen(comment, true, "reply");
-        box?.focus();
-      };
-    }
-    const opener = root.querySelector<HTMLElement>("[data-reply-opener]");
-    if (opener !== null) return () => openReplyBox(opener);
-    const reply = ownControl(turn, REPLY_BUTTON) ?? ownControl(root, REPLY_BUTTON);
-    if (reply === null || reply.getAttribute("aria-disabled") === "true") return null;
-    return () => {
-      reply.click();
-      dockedReplyFrom.current = turn;
-    };
-  };
-  /** Escape in the reply box of comment `comment`'s thread, which `r` put the reader in: the
-   *  focus goes back to the turn `r` was pressed on, or to the thread's own turn where that one
-   *  is gone, and the thread stays open. */
-  const giveBackFromThread = (comment: string) => {
-    const from = replyOrigins.current.get(comment);
-    const turn =
-      from?.isConnected === true
-        ? from
-        : turnList.current?.querySelector<HTMLElement>(
-            `[data-turn="${CSS.escape(conversationItemId("comment", comment))}"]`
-          );
-    turn?.focus();
-  };
-  useKeymap("issue", [
-    ...(
-      [
-        ["issue.next-turn", 1],
-        ["issue.previous-turn", -1],
-      ] as const
-    ).map(([action, step]) => ({
-      action,
-      run: () =>
-        roveFocus(
-          [...(turnList.current?.querySelectorAll<HTMLElement>(TURN_ROW) ?? [])],
-          closestMatching(document.activeElement, TURN_ROW),
-          step
-        ),
-      when: () => visible && turnList.current?.querySelector(TURN_ROW) != null,
-    })),
-    {
-      action: "issue.toggle-turn",
-      run: () => onFocusedTurn(toggleOf)?.(),
-      when: () => onFocusedTurn(toggleOf) !== null,
-    },
-    {
-      action: "issue.reply-turn",
-      run: () => onFocusedTurn(replyOf)?.(),
-      when: () => onFocusedTurn(replyOf) !== null,
-    },
-    {
-      action: "issue.copy-turn-ref",
-      run: () => {
-        const reference = turnRef();
-        if (reference !== undefined) void copyText(reference);
-      },
-      when: () => turnRef() !== undefined,
-    },
-    {
-      // The turn's own page address: its issue's Conversation, landed on the turn.
-      action: "issue.copy-turn-address",
-      run: () => {
-        const route = parseNodeReference(turnRef() ?? "");
-        if (route !== undefined) {
-          void copyText(`${window.location.origin}${buildReferencePath(route)}`);
-        }
-      },
-      when: () => turnRef() !== undefined,
-    },
-  ]);
-
   if (loading) {
     return <p className={textMutedOnCanvas}>Loading conversation…</p>;
   }
@@ -1555,10 +1365,7 @@ export function ConversationTab({
             notice={parkedNotice}
             onCancelReply={() => {
               setReplyTo(null);
-              // A reply `r` started gives the focus back to the turn it was pressed on.
-              const from = dockedReplyFrom.current;
-              dockedReplyFrom.current = null;
-              if (from?.isConnected === true) from.focus();
+              giveBackFromDockedReply();
             }}
             onClose={() => setReplyTo(null)}
             onSent={() => {

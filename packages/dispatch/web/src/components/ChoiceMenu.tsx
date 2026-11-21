@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 
-import { focusOnDocument } from "../features/shell/roving";
+import { focusOnDocument, stepIndex } from "../features/shell/roving";
 import { ControlKeyHint, digitKbdClass, keyshortcutsOf } from "../features/shell/ShortcutHelp";
 import {
   borderDefault,
@@ -65,16 +65,6 @@ interface ChoiceMenuProps<V extends string> {
  *  is portalled to the body, but it is a React child of the control, so its presses would bubble
  *  to the same card. */
 const keepPress = (event: SyntheticEvent) => event.stopPropagation();
-
-/** Where a key moves the highlight from `index` in a menu of `count`, or undefined for a key that
- *  moves nothing. The arrows wrap at the ends, as the menu button pattern allows. */
-function stepTo(key: string, index: number, count: number): number | undefined {
-  if (key === "ArrowDown") return index === count - 1 ? 0 : index + 1;
-  if (key === "ArrowUp") return index === 0 ? count - 1 : index - 1;
-  if (key === "Home") return 0;
-  if (key === "End") return count - 1;
-  return undefined;
-}
 
 /** The digits a menu takes, as its foot line names them: a run ("1–4", "0–3"), else each. */
 function digitsText(choices: readonly MenuChoice<string>[]): string | undefined {
@@ -265,7 +255,8 @@ export function ChoiceMenu<V extends string>({
 
   const onChoiceKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (event.altKey || event.ctrlKey || event.metaKey) return;
-    const step = stepTo(event.key, index, choices.length);
+    // The arrows wrap at the ends, as the menu button pattern allows.
+    const step = stepIndex(event.key, index, choices.length, "ArrowUp", "ArrowDown");
     if (step !== undefined) {
       event.preventDefault();
       highlight(step);

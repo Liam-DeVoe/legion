@@ -645,6 +645,14 @@ export function openerOf(target: Element): Element | null {
     : document.querySelector(`[aria-controls="${CSS.escape(panel.id)}"]`);
 }
 
+/** The panel `trigger` names as what it opened (`aria-controls`), the other way from `openerOf`:
+ *  a menu's, a list's, or the box a disclosure draws under it. Null while the trigger names none
+ *  or the page holds no element of that id. */
+export function panelOf(trigger: Element): HTMLElement | null {
+  const id = trigger.getAttribute("aria-controls");
+  return id === null ? null : document.getElementById(id);
+}
+
 /** The places a press could have taken `element`'s focus from and still be the reader's own doing:
  *  the element itself, every row around it (`rowsAround`, by the rule `inRow` reads), and the
  *  dialog, panel or selection bar it was lost from. Every row counts, not the nearest alone: a
