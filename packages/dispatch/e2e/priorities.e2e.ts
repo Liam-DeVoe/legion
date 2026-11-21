@@ -2253,10 +2253,12 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
         fit.wide,
         `at 1280 no column of the ${tab} tab but Title is wider than its widest header or cell needs`
       ).toEqual([]);
+      // The chips that take more than one line on this tab, which the radius clause reads.
+      let wrapped = 0;
       for (const one of claimed) {
         const chip = rowOf(tab === "none" ? one.unplaced : one.parked).getByTestId("issue-claim");
         await expect(chip).toBeVisible();
-        const cut = await settledValue(`the ${tab} tab's claim chip of ${one.holder}`, () =>
+        const read = await settledValue(`the ${tab} tab's claim chip of ${one.holder}`, () =>
           chip.evaluate((element) => {
             const cell = element.closest("td")?.getBoundingClientRect();
             const parts = [element, ...element.querySelectorAll("*")].filter(
@@ -2265,19 +2267,52 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
                 (part.scrollWidth > part.clientWidth || part.scrollHeight > part.clientHeight)
             );
             const box = element.getBoundingClientRect();
+            // The lines the chip's words take: its text's line boxes grouped by their tops, two
+            // boxes on one line when their tops lie within half a line of each other, since the
+            // chip's parts align on their centres and their tops can differ by a pixel or two.
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            const half = Number.parseFloat(getComputedStyle(element).lineHeight) / 2 || 8;
+            const sorted = [...range.getClientRects()]
+              .filter((rect) => rect.width > 0 && rect.height > 0)
+              .map((rect) => rect.top)
+              .sort((a, b) => a - b);
+            const tops = sorted.filter(
+              (top, at) => at === 0 || top - (sorted[at - 1] ?? top) > half
+            );
             return {
               cut: parts.map(
                 (part) =>
                   `${part.tagName.toLowerCase()} ${(part.textContent ?? "").trim().slice(0, 24)}`
               ),
               insideCell: cell !== undefined && box.right <= cell.right + 0.5,
+              lines: tops.length,
+              radius: Number.parseFloat(getComputedStyle(element).borderTopLeftRadius),
             };
           })
         );
-        soft(cut, `the ${tab} tab draws the claim chip of ${one.holder} whole`).toEqual({
-          cut: [],
-          insideCell: true,
-        });
+        soft(
+          { cut: read.cut, insideCell: read.insideCell },
+          `the ${tab} tab draws the claim chip of ${one.holder} whole`
+        ).toEqual({ cut: [], insideCell: true });
+        // Verification v67: a chip that takes more than one line has a corner radius of at most
+        // 8 px, so its fill holds its words; a pill's full radius draws an oval that leaves them
+        // outside it.
+        if (read.lines > 1) {
+          wrapped += 1;
+          soft(
+            read.radius,
+            `the ${tab} tab's claim chip of ${one.holder}, on ${read.lines} lines, has a corner radius of at most 8 px`
+          ).toBeLessThanOrEqual(8);
+        }
+      }
+      // On the Parked tab, the narrower of the two, at least one of these holders' chips takes
+      // more than one line, so the radius clause is read on a chip it is about.
+      if (tab === "parked") {
+        soft(
+          wrapped,
+          "at least one claim chip of the Parked tab takes more than one line"
+        ).toBeGreaterThan(0);
       }
     }
     await page.goto(`/priorities/${seed.ids[0]}`);
