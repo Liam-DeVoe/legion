@@ -1,14 +1,14 @@
 ---
 title: Dispatch server
 parent: envoy
-depends_on: [envoy-listener, dispatch-api, dispatch-architecture, dispatch-auth, dispatch-delivery, dispatch-docs, dispatch-duty, dispatch-embedqueue, dispatch-events, dispatch-legion, dispatch-model, dispatch-outbox, dispatch-redeliver, dispatch-refs, dispatch-store]
+depends_on: [envoy-listener, dispatch-api, dispatch-architecture, dispatch-auth, dispatch-delivery, dispatch-docs, dispatch-duty, dispatch-embedqueue, dispatch-events, dispatch-legion, dispatch-model, dispatch-outbox, dispatch-redeliver, dispatch-refs, dispatch-store, dispatch-textversions]
 paths: [packages/envoy/cmd/dispatch, packages/envoy/internal/dispatch/routes]
 ---
 The composition root of the native Dispatch API: `cmd/dispatch` reads its boot configuration from the environment and assembles the server, and `internal/dispatch/routes` is the route table and the router wiring every handler package together. Each subsystem it composes is a child component below. Its wire types match the language-neutral contracts, which is a compatibility rule rather than a Go source dependency, so no edge is drawn for it.
 
 It also starts the background loops, in three shapes (`cmd/dispatch/README.md`, "Background loops"): woken loops (the embedding queue, the reference excerpts, the edit notices, the suggestion outcomes, the intakes' delivery settings, and the copy of the GitHub reads' record, `githubreads.Copy`, which `/healthz` answers `github` from), boot passes (embedding coverage, task progress), and timers that stay because nothing announces what they would miss (the delivery reconcile, the architecture import and the webhook redelivery sweep, each jittered every period, the keyed writes' maintenance sweep, `api.RunMaintenanceSweep`, once a minute under lease `suggestion-outcomes`, and the Legion sampler, `legion.RunSampler`, once a minute under lease `legion-state`, which reads each configured project's daemon in turn). Every woken loop waits on one shared listener per process, a `pglisten.Hub` named `dispatch-listener <process id>` in `pg_stat_activity`, which the document rooms' room sync is registered on too, on one held connection of the store's listener pool: it LISTENs on `dispatch_embeddings`, `dispatch_excerpts_owed`, `dispatch_edit_notices`, `dispatch_events`, `dispatch_duty_holds`, `dispatch_delivery_settings` and `dispatch_github_read_attempts` (each only when its loop runs) beside the room-sync channels, and signals every loop after each successful LISTEN, since Postgres does not replay a notification sent while it was reconnecting. No loop waits for it: each runs its boot pass whether or not it has connected.
 
-It starts one loop only after the server listens and the registry of live server processes admits the process: the keyword fill (`textversions.Run`).
+It starts one loop only after the server listens and the registry of live server processes admits the process: the keyword fill (`textversions.Run`, `dispatch-textversions`).
 So the fill never runs inside a migration, and it never runs in a process that the registry refuses or has not admitted yet.
 The pause of the fill reads the answers reads that its process serves, and a process that the registry has not admitted serves none.
 The fill is a held duty, and it has none of the three shapes above.

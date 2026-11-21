@@ -1,8 +1,8 @@
 ---
 title: Postgres store and migrations
 parent: dispatch-server
-depends_on: [dispatch-api, dispatch-auth, dispatch-duty, dispatch-events, dispatch-model]
-paths: [packages/envoy/internal/dispatch/store, packages/envoy/internal/dispatch/store/migrations, packages/envoy/internal/pgmigrate, packages/envoy/internal/dispatch/workflowstore, packages/envoy/internal/dispatch/textversions]
+depends_on: [dispatch-auth, dispatch-duty, dispatch-model]
+paths: [packages/envoy/internal/dispatch/store, packages/envoy/internal/dispatch/store/migrations, packages/envoy/internal/pgmigrate, packages/envoy/internal/dispatch/workflowstore]
 ---
 The schema every other package reads and writes through: ordered migrations applied in one transaction each at boot, the pool, and the session and people rows — which is why it imports `auth`. The boot's migration lock goes back through `duty.FreeSessionLockThenReset`, which returns the connection to the pool only once Postgres has freed the lock — which is why it imports `duty`. `internal/pgmigrate` holds the runner's rules, which the secrets broker's runner shares: the whole migration set is refused before anything applies when two files share a version or a file is misnamed or unreadable, and every migration's lock waits are bounded at five seconds. `internal/pgmigrate` reads migration and census SQL as Postgres 18's lexer does.
 
@@ -21,15 +21,8 @@ It holds the record of each run of each step of an issue's workflow as a node an
 It holds the keyword table of each past version of the searchable text, in two tables with no foreign key (`20261120021308_search_text_versions`).
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, and no row is ever updated.
 `search_text_versions_fill` holds the one cursor row of the keyword fill: every event at or below its `event_id` has its rows.
-`internal/dispatch/textversions` is the fill, the one writer of both tables, and no migration writes them.
-It runs in a serving process, under the hold `search-text-versions-fill`, so one process writes at a time and the others stand by.
-It starts only after the server listens and the registry of live server processes admits the process, so a process that the registry refuses writes nothing.
-It reads the event log up to the safe horizon in batches of at most 500 events and 2 MB of text, and after each batch it rests for as long as the batch ran.
-A batch counts the payload of each event the rules read, and of each version an event starts the text its vector reads besides: the markdown of the primary document version an issue's row names, and the whole body of a post whose event cut it.
-Before each batch it pauses while an answers read that its process serves took longer than 800 ms within the last 10 s, or has run longer than 800 ms (`sessionanswers.Latency`).
-A reset of the event log (`events.EventLogWasReset`) empties both tables and starts the cursor again at the first event.
+The keyword fill (`dispatch-textversions`) is the one writer of both tables, and no migration writes them.
 `store.TextVersionsAt` gives `store.TextVersions`, the relation of the version of each item that held at a cut, only for a cut at or before the reach.
 It refuses a later cut with `store.TextVersionsNotReachedError`, which names the reach.
 The reach is the latest time at or before which every event has its rows, an event that a transaction still open will commit included.
 `store.ComputeTextVersionsReach` takes the earliest of the oldest open transaction that can write an event, the oldest event above the cursor, and the time less 1 s.
-The fill imports `events` (`dispatch-events`), for the horizon and the reset check, and `sessionanswers` (`dispatch-api`), for the pause, which is why both are among this note's `depends_on`.
