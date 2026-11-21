@@ -152,8 +152,9 @@ One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/4`
 Playwright workers, and the run's `globalSetup` starts one stack per worker, each with a
 Postgres, a harness and a file-store bucket of its own (packages/dispatch/e2e/
 harness-pool.ts), so this job has no `postgres:` service and no job-level DATABASE_URL:
-one database cannot serve stacks that truncate it per row, and a run of more than one
-stack starts a server per stack and hands each its own (e2e/harness-postgres.ts).
+one database cannot serve stacks that each empty theirs once before a worker's first row,
+and a run of more than one stack starts a server per stack and hands each its own
+(e2e/harness-postgres.ts).
 
 The image this repository builds and publishes for every CI job that can launch WebKit or
 Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
@@ -724,7 +725,8 @@ That Postgres is the harness's own, a `docker run` of the image the job's "Pull 
 harness starts its servers with crash safety off, so no commit waits for the runner's disk.
 With it on, merge-group run 44456291758 (job 135332117623) failed here: the disk stopped
 answering for about 5 s, the read mark a closed page left in flight could neither commit nor
-be cancelled, and the next row's reset could not lock `user_document_reads` within its 5 s. A
+be cancelled, and the next row's reset (the suite then emptied the database before every
+row) could not lock `user_document_reads` within its 5 s. A
 service can be given those three settings too, with `alter system` and a reload, as
 docs-site.yaml's is; this job takes the harness's server rather than a second copy of its
 settings, and that server loads the stall library below as it starts, which a service,
