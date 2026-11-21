@@ -186,7 +186,7 @@ it must equal the URL humans type into their browser, and the sign-in pool's app
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
 
 `DISPATCH_OUTSIDE_ORIGIN` is a second origin Dispatch answers at, the one people from outside reach it at, whatever path the deployment gives them.
-A request whose `Host` is its host, compared without regard to case, is answered as that origin.
+A request whose `Host` is its host, compared without regard to case, one trailing dot on the name or the scheme's default port (`outside.example.`, `outside.example:443`), is answered as that origin (`routes.sameHost`).
 With `DISPATCH_SIGNIN_OUTSIDE=1` its Google sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the sign-in client must list too; under every other sign-in `/auth/start` and `/auth/callback` answer there the `404` a path no route serves answers, and the client lists no outside callback (`routes.googleSignInHere`).
 A browser write carrying a session cookie passes the origin check only with that origin's `Origin`, so a page on one origin cannot write as a person signed in on the other.
 Every other request is answered as `DISPATCH_SERVER_URL`'s.
