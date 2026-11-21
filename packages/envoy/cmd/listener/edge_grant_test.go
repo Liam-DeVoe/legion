@@ -53,7 +53,8 @@ func TestAnEdgeListenerGrantRefusesAListThatIsNoListOfProjectKeys(t *testing.T) 
 
 // An edge listener's grant publishes no kept role lane, so the edge keeps no role message and
 // hands no kept lane over: a handover of a lane that holds a copy for a live holder forwards
-// nothing and writes no cursor, the sweep ends before it starts, and a keep stores nothing. The
+// nothing and writes no cursor, and neither does the handover a claim that landed at the edge
+// starts (runTakenRoleDrain); the sweep ends before it starts, and a keep stores nothing. The
 // same listener without the edge's grant hands the same copy over to the same holder and keeps the
 // same message, which shows the rig sees a handover and a keep when one is made.
 func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
@@ -90,6 +91,15 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 	}
 	if cursor, err := harness.client.ReadKeptRoleCursor(ctx, role); err != nil || cursor.Sequence != 0 {
 		t.Fatalf("role %s's drain cursor after the edge's handover is %+v (%v), want none written", role, cursor, err)
+	}
+	runTakenRoleDrain(edge, role)
+	select {
+	case key := <-forwards:
+		t.Fatalf("the handover of the edge's claim of role %s handed over %s, which its grant may not write a cursor of", role, key)
+	default:
+	}
+	if cursor, err := harness.client.ReadKeptRoleCursor(ctx, role); err != nil || cursor.Sequence != 0 {
+		t.Fatalf("role %s's drain cursor after the handover of the edge's claim is %+v (%v), want none written", role, cursor, err)
 	}
 	select {
 	case <-startKeptRoleSweep(ctx, edge, time.Hour):
