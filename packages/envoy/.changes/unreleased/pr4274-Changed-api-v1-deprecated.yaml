@@ -12,6 +12,7 @@ body: |-
   at this release the `dispatch` command, the plugins, the Legion daemon and the secrets broker
   still do. The cookie-origin guard's refusal carries a `code` now, as every other refusal does.
 
-  The secrets broker's judge and project-access check name the broker in their Dispatch requests'
-  `User-Agent`, `envoy-broker-judge/<commit>` and `envoy-broker-project-access/<commit>`, so
+  The secrets broker's judge, project-access check and project-repositories read name the broker
+  in their Dispatch requests' `User-Agent`, `envoy-broker-judge/<commit>`,
+  `envoy-broker-project-access/<commit>` and `envoy-broker-project-repositories/<commit>`, so
   Dispatch's access log tells their calls apart.

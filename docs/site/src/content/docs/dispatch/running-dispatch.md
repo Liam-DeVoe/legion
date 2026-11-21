@@ -782,8 +782,9 @@ release the `dispatch` command, the Oh My Pi and Claude Code plugins, the Legion
 Secrets Broker still call `/api/v1`. Each names itself and its release in its `User-Agent`
 (`dispatch/<version> (<plugin>)`, `pi-envoy/<version>`, `pi-legion/<version>`,
 `claude-envoy/<version>`, `claude-envoy-hooks/<version>`, `legion-daemon/<release>`,
-`envoy-broker-judge/<commit>`, `envoy-broker-project-access/<commit>`), so the `user_agent` of
-Dispatch's access log shows which of them still call it.
+`envoy-broker-judge/<commit>`, `envoy-broker-project-access/<commit>`,
+`envoy-broker-project-repositories/<commit>`), so the `user_agent` of Dispatch's access log shows
+which of them still call it.
 
 `/api/v1` ends at the instant `DISPATCH_API_V1_END` names, an RFC 3339 time with its offset, such
 as `2027-01-01T00:00:00Z`; `envoy-infra`'s `gcp:Dispatch` component sets it from its `apiV1End`
