@@ -1,6 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { symlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import { PHASE_STALL_ENTRY } from "@legion/pi-shared/phase-stall";
 import {
   type Cleanup,
@@ -10,8 +13,11 @@ import {
   ompNatsGuard,
   type Reply,
   type Request,
+  type Rpc,
   runLegionPane,
+  sendRelayFrame,
 } from "@legion/pi-shared/test/omp-harness";
+import { connect, headers, StringCodec } from "nats";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
 // shows when the host fires `session_stop`, how it turns the returned follow-up into the next turn,
@@ -23,6 +29,11 @@ import {
 // registers nothing and claims nothing (INFRA-771). A run without both skips, except on GitHub
 // Actions, where a skip would hide the only run of the check on the host that ships it
 // (`ompNatsGuard`).
+// It is also the check that a wait the worker declares holds the reminder in a real host
+// (dispatch://INFRA-2040): the worker calls the `legion` tool's `declare_wait` as a real tool
+// call, a real Envoy delivery reaches the session over that NATS server, and the stand-in daemon
+// receives the plugin's report of news with the key the card carries, which only the real card
+// path (pi-envoy's `handCard`) can show.
 // It is also the only check that the run-end nudge's hidden self-check starts no run: the nudge
 // treats any `agent_start` after a settle as a newer run and withholds its steer, so a host that
 // counted the side turn as a run would silence the nudge with every unit test still green.
@@ -42,6 +53,12 @@ interface StallPane extends LegionPane {
   /** The commit `legion/STALL-2@origin` names in the pane's workspace: the pushed tip its
    * `handoff_complete` reports beside the record. */
   readonly pushedTip: string;
+  /** The body of each `POST /legion/v1/claims/wait` the pane made, in order: each wait the
+   * worker declared. */
+  readonly declarations: () => Record<string, unknown>[];
+  /** The body of each `POST /legion/v1/claims/wait-news` the pane made, in order: each report of
+   * news after a declared wait. */
+  readonly newsReports: () => Record<string, unknown>[];
 }
 
 /** `POST /legion/v1/claims/activity`, the session's own report of what it is doing
@@ -129,6 +146,36 @@ async function runJj(jj: string, cwd: string, args: readonly string[]): Promise<
  * (`POST /legion/v1/claims/owed`), which the reminder and the architect notice name. */
 const STALL_WORK = "the implementing phase of STALL-2";
 
+/** The update round's ask as its card carries its key: the daemon's key for a round
+ * (`update-ask-key.json`, which the daemon's golden test writes), behind the listener's
+ * role-forward prefix (D9 of dispatch://INFRA-2040's plan). The stand-in daemon answers a report
+ * with it `ended: false`, as the daemon answers the key of its own update ask. */
+const UPDATE_ASK_KEY = (() => {
+  const fixture: unknown = JSON.parse(
+    readFileSync(
+      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/update-ask-key.json"),
+      "utf8"
+    )
+  );
+  if (
+    typeof fixture !== "object" ||
+    fixture === null ||
+    !("key" in fixture) ||
+    typeof fixture.key !== "string"
+  ) {
+    throw new Error("update-ask-key.json names no key");
+  }
+  return `envoy.role.forward.${fixture.key}`;
+})();
+
+/** The wait the stand-in daemon's record holds once the worker declared it. */
+interface StandInWait {
+  readonly id: string;
+  readonly waitingOn: string;
+  readonly wakeAt: string;
+  readonly declaredAt: string;
+}
+
 /** The daemon's state as the pane's `handoff_complete` reads it: STALL-2 at implementing, the
  * phase whose handoff is the `implement` record. */
 const STALL_STATE = {
@@ -206,10 +253,13 @@ function legionToolDescription(request: Request): string {
 }
 
 /** How one pane differs from the implementer pane the phase-stall cases run: the runner's
- * `legion`, `quietMs`, `selfCheck` and environment, what the stand-in answers ahead of this
- * file's own routes, and the stand-in's open-ask snapshot. */
+ * `legion`, `quietMs`, `selfCheck`, environment, frame callback and idle step, what the stand-in
+ * answers ahead of this file's own routes, and the stand-in's open-ask snapshot. */
 interface PaneOptions
-  extends Pick<LegionPaneOptions, "legion" | "quietMs" | "selfCheck" | "env" | "answer"> {
+  extends Pick<
+    LegionPaneOptions,
+    "legion" | "quietMs" | "selfCheck" | "env" | "answer" | "onFrame" | "whileUp"
+  > {
   /** The count the stand-in Dispatch's open-ask snapshot answers with. */
   readonly openAsks?: number;
   /** The held ask questions the stand-in returns in the session's open-ask snapshot. */
@@ -218,13 +268,18 @@ interface PaneOptions
 
 /**
  * Runs one implementer pane on the real Oh My Pi (`runLegionPane`), the stand-in answering the
- * daemon's state, owed and completion routes and, as Dispatch, the issue's handoff records and the
- * open-ask snapshot, until its run settles. The stand-in's record holds `STALL_WORK` owed until a
- * completion lands and nothing after it, as the daemon's own record does once the workflow takes a
- * completion (`owedBy` in `packages/daemon/internal/api/owed.go`); a case that answers
- * `claims/owed` itself decides otherwise. The pane's workspace is a jj repository whose change
- * is committed and pushed to a bare origin's `legion/STALL-2`, and the stand-in Dispatch holds the
- * implement record written to it, as a worker leaves both before completing, so the pane's
+ * daemon's state, owed, completion and wait routes and, as Dispatch, the issue's handoff records
+ * and the open-ask snapshot, until its run settles. The stand-in's record holds `STALL_WORK` owed
+ * until a completion lands and nothing after it, as the daemon's own record does once the workflow
+ * takes a completion (`owedBy` in `packages/daemon/internal/api/owed.go`); a case that answers
+ * `claims/owed` itself decides otherwise. The record also holds the wait the worker declared
+ * (`claims/wait`, each declaration minting `stall-wait-<n>` in place of the one standing) and gives
+ * it in the owed answer while it stands, and a report of news (`claims/wait-news`) is answered as
+ * the daemon answers it (`claimWaitNews` in `packages/daemon/internal/api/wait.go`): `ended: false`
+ * for the update ask's key, `ended: true` for the wait that stands, which ends it, and
+ * `ended: false` for any other. The pane's workspace is a jj repository whose change is committed
+ * and pushed to a bare origin's `legion/STALL-2`, and the stand-in Dispatch holds the implement
+ * record written to it, as a worker leaves both before completing, so the pane's
  * `handoff_complete` finds the record and the pushed tip.
  */
 async function stallPane(
@@ -237,6 +292,9 @@ async function stallPane(
   const records: Array<typeof STALL_RECORD & { body: string }> = [];
   /** Whether the stand-in's record still holds the implementer's work owed. */
   let owes = true;
+  /** The wait the stand-in's record holds, and how many the worker has declared. */
+  let wait: StandInWait | undefined;
+  let declared = 0;
   const pane = await runLegionPane(
     run.binary,
     replies,
@@ -251,6 +309,8 @@ async function stallPane(
       legion: options.legion,
       quietMs: options.quietMs,
       selfCheck: options.selfCheck,
+      onFrame: options.onFrame,
+      whileUp: options.whileUp,
       env: {
         ...PANE_IDENTITY,
         // The daemon puts the project token on every pane, and the architect notice's role topic
@@ -299,11 +359,34 @@ async function stallPane(
           return Response.json(STALL_STATE.issues["STALL-2"]);
         }
         if (url.pathname === "/legion/v1/claims/owed") {
-          return Response.json(owes ? { owes: true, work: STALL_WORK } : { owes: false, work: "" });
+          return Response.json({
+            ...(owes ? { owes: true, work: STALL_WORK } : { owes: false, work: "" }),
+            ...(wait === undefined ? {} : { wait }),
+          });
         }
         if (url.pathname === "/legion/v1/handoff/complete") {
           owes = false;
           return Response.json({});
+        }
+        if (url.pathname === "/legion/v1/claims/wait") {
+          declared += 1;
+          wait = {
+            id: `stall-wait-${declared}`,
+            waitingOn: String(body.waitingOn),
+            wakeAt: String(body.wakeAt),
+            declaredAt: "2026-11-21T09:00:00.123456Z",
+          };
+          return Response.json({ wait });
+        }
+        if (url.pathname === "/legion/v1/claims/wait-news") {
+          if (body.deliveryKey === UPDATE_ASK_KEY) {
+            return Response.json({ ended: false, updateAsk: true });
+          }
+          if (wait !== undefined && body.waitId === wait.id) {
+            wait = undefined;
+            return Response.json({ ended: true });
+          }
+          return Response.json({ ended: false });
         }
         if (url.pathname === "/api/v1/issues/STALL-2/handoffs/implement/latest") {
           const newest = records.at(-1);
@@ -356,6 +439,14 @@ async function stallPane(
         .map((request) => request.body),
     phaseEntries: () => pane.transcriptEntries(PHASE_STALL_ENTRY),
     pushedTip,
+    declarations: () =>
+      pane.requests
+        .filter((request) => request.path === "/legion/v1/claims/wait")
+        .map((request) => request.body),
+    newsReports: () =>
+      pane.requests
+        .filter((request) => request.path === "/legion/v1/claims/wait-news")
+        .map((request) => request.body),
   };
 }
 
@@ -379,22 +470,26 @@ test.skipIf(skip)(
       [{ type: "text", text: "Reported." }],
     ]);
 
-    // The worker registered through the daemon's routes; the reminder asked the daemon what the
-    // claim owes before it was sent, and the handoff_complete read the issue's record, read the
-    // newest implement record from the pane's Dispatch, held the head that record names to the
-    // commit the pane's workspace stands on, pushed to legion/STALL-2@origin, with the pane's jj,
-    // minted a grant in-process and posted the completion at that head with the record: no grant
-    // file, no `legion` command, and no handoff file. Each of the two runs the host settled also
-    // reported the turn it ended to the daemon (`src/turn-outcome.ts`); the turn that ended on the
-    // tool call ends no run of its own, so it earns no report.
+    // The worker registered through the daemon's routes, and its boot asked the daemon what the
+    // claim owes before it armed its resume reminder; the reminder asked again before it was sent,
+    // and the handoff_complete read the issue's record, read the newest implement record from the
+    // pane's Dispatch, held the head that record names to the commit the pane's workspace stands
+    // on, pushed to legion/STALL-2@origin, with the pane's jj, minted a grant in-process and posted
+    // the completion at that head with the record: no grant file, no `legion` command, and no
+    // handoff file. The last turn's end asked once more before it armed anything, since a wait or
+    // the design gate's hold would arm nothing (dispatch://INFRA-2040). Each of the two runs the
+    // host settled also reported the turn it ended to the daemon (`src/turn-outcome.ts`); the
+    // turn that ended on the tool call ends no run of its own, so it earns no report.
     expect(daemonRoutes(pane)).toEqual([
       "/legion/v1/claims/register",
       "/legion/v1/claims/ready",
+      "/legion/v1/claims/owed",
       "/legion/v1/claims/owed",
       "/legion/v1/claims/turn-outcome",
       "/legion/v1/issues/STALL-2/record",
       "/legion/v1/grants",
       "/legion/v1/handoff/complete",
+      "/legion/v1/claims/owed",
       "/legion/v1/claims/turn-outcome",
     ]);
     expect(pane.pushedTip).toMatch(/^[0-9a-f]{40}$/);
@@ -430,7 +525,10 @@ test.skipIf(skip)(
     expect(userText(turns[1] as Request)).toContain(
       `Your turn ended with ${STALL_WORK} still owed`
     );
-    expect(userText(turns[1] as Request)).toContain("WAITING");
+    // A worker that waits on something outside its own work is told to declare the wait, and no
+    // reminder tells it that a WAITING line buys a quiet wait (dispatch://INFRA-2040).
+    expect(userText(turns[1] as Request)).toContain("op `declare_wait`");
+    expect(userText(turns[1] as Request)).not.toContain("WAITING");
     expect(userText(turns[1] as Request)).toContain("repeats at the end of every turn");
     // The transcript holds every change, which a worker relaunched with --resume restores: one
     // reminder was counted, and the completion's tool call put the count back to zero. The record
@@ -498,21 +596,33 @@ test.skipIf(skip)(
   120_000
 );
 
+/** The shortened reminder delay the wait's cases run under (`LEGION_STALL_REMINDER_MS`): a reminder
+ * a timer carries comes this long after the turn that armed it settled. */
+const REMINDER_MS = 500;
+
+/** The time the declared wait names. The stand-in records it as given: the daemon holds the
+ * window, from 1 minute to 24 hours after the declaration. */
+const WAKE_AT = "2026-11-22T09:00:00Z";
+
+/** The claim token `runLegionPane` registers the implementer pane under. */
+const STALL_CLAIM = "legion-stall-stall-2-implementer";
+
+// c-real-omp's negative control (dispatch://INFRA-2040): a WAITING line buys nothing. A turn that
+// ends with one, and with no wait declared, gets the reminder a turn without it gets: the run's
+// continuation first, and after the next such turn the reminder's own timer, at the shortened
+// reminder delay, though the quiet wait background work buys is ten minutes here.
 test.skipIf(skip)(
-  "a WAITING reply buys its quiet wait, and the reminder comes again when the wait is over",
+  "a turn that ends with a WAITING line and no declared wait gets the reminder within the shortened reminder delay",
   async () => {
     const run = setup();
-    // Every request the stand-in served, with the moment it was served: the proposition is that
-    // nothing reached the session until the wait was over, and only elapsed time shows it.
+    // Every request the stand-in served, with the moment it was served: only elapsed time shows
+    // which delay the reminder came after.
     const seen: { readonly path: string; readonly at: number }[] = [];
-    // The quiet wait a WAITING line buys, and the bound every assertion below measures against.
-    // The bound allows the timer a little early, since a host timer may fire slightly short.
-    const waitMs = 1_500;
-    const waitedAtLeastMs = waitMs - 100;
     const pane = await stallPane(
       run,
       [
         [{ type: "text", text: "Pushed the change.\nWAITING: CI on the pull request." }],
+        [{ type: "text", text: "WAITING: CI on the pull request." }],
         [
           {
             type: "tool_use",
@@ -523,7 +633,10 @@ test.skipIf(skip)(
         [{ type: "text", text: "Reported." }],
       ],
       {
-        env: { LEGION_STALL_WAITING_MS: String(waitMs) },
+        env: {
+          LEGION_STALL_REMINDER_MS: String(REMINDER_MS),
+          LEGION_STALL_WAITING_MS: "600000",
+        },
         quietMs: 4_000,
         answer: (url) => {
           seen.push({ path: url.pathname, at: Date.now() });
@@ -532,53 +645,252 @@ test.skipIf(skip)(
       }
     );
 
+    // Four turns: the prompt's, the continuation's, the timer's reminder's, and the reply to the
+    // tool result. A WAITING line that bought a quiet wait would have left the prompt's alone.
     const turns = pane.turns();
-    expect(turns).toHaveLength(3);
-    const [waitingTurn = 0, reminderTurn = 0] = seen
+    expect(turns).toHaveLength(4);
+    const [, waitingTurn = 0, reminderTurn = 0] = seen
       .filter((request) => request.path === "/anthropic/v1/messages")
       .map((request) => request.at);
-    // The WAITING line bought the wait: no turn started while it ran, and the reminder's did
-    // only once it was over.
-    expect(reminderTurn - waitingTurn).toBeGreaterThanOrEqual(waitedAtLeastMs);
-    // Nothing arrived from outside in between: in that gap the pane spoke only to the daemon,
-    // for the reminder's own question of what the claim owes, the outcome of the turn that bought
-    // the wait and the activity report its settle sends, and to the listener for its session
-    // registration. The stand-in also serves as Dispatch, which holds the handoff record, so the
-    // session reads its people's answers before every model request (pi-envoy's answers line),
-    // the reminder's included. That read belongs to the reminder's turn, so it comes only once the
-    // wait is over.
-    const between = seen.filter((request) => request.at > waitingTurn && request.at < reminderTurn);
-    const answersRead = /^\/api\/v1\/agents\/[^/]+\/answers$/;
-    for (const request of between.filter(({ path }) => answersRead.test(path))) {
-      expect(request.at - waitingTurn).toBeGreaterThanOrEqual(waitedAtLeastMs);
+    // The second WAITING turn armed the reminder's own timer, not the quiet wait: the reminder's
+    // turn came the shortened delay after it, a host timer firing a little early allowed for, and
+    // inside the 4 s the pane would have settled in, ten minutes short of the quiet wait.
+    expect(reminderTurn - waitingTurn).toBeGreaterThanOrEqual(REMINDER_MS - 100);
+    expect(reminderTurn - waitingTurn).toBeLessThan(4_000);
+    for (const index of [1, 2]) {
+      expect(userText(turns[index] as Request)).toContain(
+        `Your turn ended with ${STALL_WORK} still owed`
+      );
     }
-    expect(
-      between
-        .map((request) => request.path)
-        .filter(
-          (path) =>
-            path !== "/legion/v1/claims/owed" &&
-            path !== "/legion/v1/claims/turn-outcome" &&
-            path !== ACTIVITY_ROUTE &&
-            path !== "/v1/interests/subscribe" &&
-            !answersRead.test(path)
-        )
-    ).toEqual([]);
-    // What the worker is told once its wait is over: the reminding repeats, rather than this
-    // being the last it hears until something arrives.
-    expect(userText(turns[1] as Request)).toContain(STALL_WORK);
-    expect(userText(turns[1] as Request)).toContain("handoff_complete");
-    expect(userText(turns[1] as Request)).toContain("repeats at the end of every turn");
-    expect(userText(turns[1] as Request)).not.toContain(
-      "nothing more will be sent until a new event arrives"
-    );
-    expect(userText(turns[1] as Request)).not.toContain("written as text");
-    const entries = await pane.phaseEntries();
-    expect(stallCounts(entries)).toEqual([0, 1, 0]);
-    expect(entries.at(-1)).toMatchObject({ state: "active", count: 0 });
+    expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2, 0]);
     expect(pane.completions()).toHaveLength(1);
   },
   120_000
+);
+
+// c-real-omp (dispatch://INFRA-2040): the worker declares a wait with the `legion` tool's
+// `declare_wait`, as a real tool call, and ends its turn. While the stand-in's owed answer gives
+// that wait, no reminder comes, though the reminder delay is short, and the activity report says
+// that none is due. A real Envoy delivery then reaches the session over NATS, as the listener's
+// relay hands it: first the update round's ask, under the fixture's key behind the role-forward
+// prefix, then another delivery under a key of its own. The plugin reports each to the stand-in
+// with the key the card carries, which shows that the real card path keeps the key, and the
+// update ask's answer `ended: false` keeps the wait standing. A prompt of the daemon's sent
+// between the two reports nothing. The second report ends the wait, so the owed answer gives owed
+// work and no wait, and that turn's end gets the reminder.
+test.skipIf(skip)(
+  "a declared wait holds every reminder; each real Envoy delivery is reported with the key its card carries, a daemon prompt is not, and once the answer gives no wait the turn's end is reminded",
+  async () => {
+    const run = setup();
+    const otherKey = `envoy.role.forward.publish.${randomUUID().replaceAll("-", "")}`;
+    /** The session the listener registered, whose deliver subject each card is relayed on. */
+    let sessionID = "";
+    /** When each turn the gateway served arrived, every activity report and every report of
+     * news, in order, and how many runs of the session have ended. */
+    const turnsAt: number[] = [];
+    const activity: Record<string, unknown>[] = [];
+    let reports = 0;
+    let runsEnded = 0;
+    /** The checks of every wait still open, run after each frame omp prints and each request the
+     * stand-in serves. */
+    const waits = new Set<() => void>();
+    const recheck = (): void => {
+      for (const check of [...waits]) check();
+    };
+    /** What the case read during the idle life, asserted once the pane has settled. */
+    const during: {
+      quietForMs: number;
+      turnsAfterQuiet: number;
+      activityBeforeNews: Record<string, unknown> | undefined;
+      reportsAfterAsk: number;
+      reportsAfterPrompt: number;
+    } = {
+      quietForMs: 0,
+      turnsAfterQuiet: 0,
+      activityBeforeNews: undefined,
+      reportsAfterAsk: 0,
+      reportsAfterPrompt: 0,
+    };
+    /** Resolves once `holds` does, read after each frame and each request; rejects naming `what`
+     * once 60 s pass without it, and with omp's stderr once omp has closed its RPC stream. */
+    const until = (rpc: Rpc, what: string, holds: () => boolean): Promise<void> => {
+      if (holds()) return Promise.resolve();
+      const { promise, resolve, reject } = Promise.withResolvers<void>();
+      // The one clock of the wait: it bounds only a pane that never does what is waited for.
+      const giveUp = setTimeout(() => {
+        waits.delete(check);
+        reject(new Error(`the pane never did this within 60 s: ${what}`));
+      }, 60_000);
+      const check = (): void => {
+        if (!holds()) return;
+        waits.delete(check);
+        clearTimeout(giveUp);
+        resolve();
+      };
+      waits.add(check);
+      return Promise.race([promise, rpc.closed]);
+    };
+
+    const pane = await stallPane(
+      run,
+      [
+        [
+          {
+            type: "tool_use",
+            name: "legion",
+            input: { op: "declare_wait", waiting_on: "CI on the pull request", wake_at: WAKE_AT },
+          },
+        ],
+        [{ type: "text", text: "Declared the wait on CI." }],
+        // The update ask's turn, then the daemon prompt's, then the other delivery's.
+        [{ type: "text", text: "That is the update round's ask; CI still runs." }],
+        [{ type: "text", text: "CI still runs." }],
+        [{ type: "text", text: "Read the review." }],
+        // The reminder that turn's end earned, answered with the completion.
+        [
+          {
+            type: "tool_use",
+            name: "legion",
+            input: { op: "handoff_complete", summary: "The review is answered." },
+          },
+        ],
+        [{ type: "text", text: "Reported." }],
+      ],
+      {
+        env: { LEGION_STALL_REMINDER_MS: String(REMINDER_MS) },
+        // Longer than three reminder delays, so the declaring run settles on a quiet gateway only
+        // once a reminder its turn's end armed would have come.
+        quietMs: 4 * REMINDER_MS,
+        answer: (url, body) => {
+          if (url.pathname === "/anthropic/v1/messages") turnsAt.push(Date.now());
+          if (url.pathname === "/v1/interests/subscribe" && typeof body.session_id === "string") {
+            sessionID = body.session_id;
+          }
+          if (url.pathname === ACTIVITY_ROUTE) activity.push(body);
+          if (url.pathname === "/legion/v1/claims/wait-news") reports += 1;
+          recheck();
+          return undefined;
+        },
+        onFrame: (frame) => {
+          if (
+            "type" in frame &&
+            frame.type === "agent_end" &&
+            !("isTerminal" in frame && frame.isTerminal === false)
+          ) {
+            runsEnded += 1;
+          }
+          recheck();
+        },
+        whileUp: async (rpc) => {
+          // No reminder within three times the shortened delay of the declaring turn's end. A real
+          // clock, deliberately: the reminder's timer runs in the omp process, which no test can
+          // move, and a host that sends nothing emits no signal, so only elapsed time shows it.
+          const quietFrom = turnsAt.at(-1) ?? Date.now();
+          await Bun.sleep(Math.max(0, quietFrom + 3 * REMINDER_MS + 100 - Date.now()));
+          during.quietForMs = Date.now() - quietFrom;
+          during.turnsAfterQuiet = turnsAt.length;
+          during.activityBeforeNews = activity.at(-1);
+
+          if (sessionID === "") throw new Error("the pane registered no Envoy session");
+          const nc = await connect({ servers: run.nats });
+          cleanup.push(() => nc.close());
+          const codec = StringCodec();
+          /** Relays one Envoy delivery under `key` to the session, as the listener's relay of its
+           * consumer does, and resolves once the run it started has ended. */
+          const deliver = async (seq: number, key: string, summary: string): Promise<void> => {
+            const ended = runsEnded;
+            await sendRelayFrame({
+              connection: nc,
+              newHeaders: headers,
+              sessionID,
+              subject: `notifications.agent.${sessionID}`,
+              seq,
+              payload: codec.encode(
+                JSON.stringify({
+                  event_id: `evt-${randomUUID()}`,
+                  source: "envoy",
+                  source_event_id: `source-${seq}`,
+                  // The role lane of the implementer's claim.
+                  topic: `${ROLE_TOPIC_PREFIX}${STALL_CLAIM}`,
+                  dedupe_key: key,
+                  issued_at: Date.now(),
+                  payload_summary: summary,
+                  trace_id: `trace-${seq}`,
+                })
+              ),
+            });
+            await until(rpc, `end the run delivery ${seq} started`, () => runsEnded > ended);
+          };
+
+          await deliver(
+            1,
+            UPDATE_ASK_KEY,
+            "Your pod is being updated: push what you keep, then answer with ready_for_update."
+          );
+          during.reportsAfterAsk = reports;
+
+          const ended = runsEnded;
+          rpc.send({ type: "prompt", message: "Look at CI on STALL-2's pull request again." });
+          await until(rpc, "end the daemon prompt's run", () => runsEnded > ended);
+          during.reportsAfterPrompt = reports;
+
+          await deliver(2, otherKey, "The review of STALL-2 is in.");
+        },
+      }
+    );
+
+    // The declaration went to the daemon as a real tool call, with the claim, and its answer
+    // reached the model.
+    expect(pane.declarations()).toEqual([
+      {
+        claimToken: STALL_CLAIM,
+        sessionId: expect.any(String),
+        secret: expect.any(String),
+        waitingOn: "CI on the pull request",
+        wakeAt: WAKE_AT,
+      },
+    ]);
+    expect(pane.toolResults()[0]?.text).toContain("stall-wait-1");
+    // The wait held the reminder: no turn started for three reminder delays after the declaring
+    // turn, and the turn's end reported that no reminder is due.
+    expect(during.quietForMs).toBeGreaterThanOrEqual(3 * REMINDER_MS);
+    expect(during.turnsAfterQuiet).toBe(2);
+    expect(during.activityBeforeNews).toMatchObject({
+      activity: { phase: { nextReminderAt: null } },
+    });
+    // Seven turns: the prompt's and the one its declaration's result continued, the update
+    // ask's, the daemon prompt's, the other delivery's, the reminder's, and the reply to the
+    // completion's result.
+    const turns = pane.turns();
+    expect(turns).toHaveLength(7);
+    // Each delivery was reported with the key its card carries, against the wait, and the
+    // daemon prompt between them was not reported at all.
+    expect(pane.newsReports()).toEqual([
+      expect.objectContaining({
+        claimToken: STALL_CLAIM,
+        waitId: "stall-wait-1",
+        deliveryKey: UPDATE_ASK_KEY,
+      }),
+      expect.objectContaining({
+        claimToken: STALL_CLAIM,
+        waitId: "stall-wait-1",
+        deliveryKey: otherKey,
+      }),
+    ]);
+    expect(during.reportsAfterAsk).toBe(1);
+    expect(during.reportsAfterPrompt).toBe(1);
+    // The update ask's `ended: false` kept the wait standing through its turn and the daemon
+    // prompt's: no reminder reached the worker before the other delivery's turn ended.
+    expect(userText(turns[4] as Request)).not.toContain("Your turn ended with");
+    // That delivery ended the wait, and the owed answer then gave owed work and no wait: the
+    // turn's end got the reminder, which names the operation that declares a wait.
+    expect(userText(turns[5] as Request)).toContain(
+      `Your turn ended with ${STALL_WORK} still owed`
+    );
+    expect(userText(turns[5] as Request)).toContain("op `declare_wait`");
+    expect(pane.completions()).toHaveLength(1);
+  },
+  180_000
 );
 
 test.skipIf(skip)(
@@ -661,7 +973,16 @@ test.skipIf(skip)(
         [{ type: "tool_use", name: "bash", input: { command: "echo ran" } }],
         [{ type: "text", text: "Ran the check." }],
         [{ type: "text", text: "Nothing new." }],
-        [{ type: "text", text: "WAITING: CI on the pull request." }],
+        // The second run of reminders ends with a declared wait, which holds the next one, so
+        // the run settles on the scripted turns alone.
+        [
+          {
+            type: "tool_use",
+            name: "legion",
+            input: { op: "declare_wait", waiting_on: "CI on the pull request", wake_at: WAKE_AT },
+          },
+        ],
+        [{ type: "text", text: "Waiting on CI." }],
       ],
       {
         env: {
@@ -673,10 +994,11 @@ test.skipIf(skip)(
       }
     );
 
-    expect(pane.turns()).toHaveLength(6);
-    // Two reminders, the tool call putting the count back to zero, then two more: never three
-    // unanswered in a row, so the threshold is never reached.
-    expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2, 0, 1, 2]);
+    expect(pane.turns()).toHaveLength(7);
+    // Two reminders, the tool call putting the count back to zero, then two more, and the
+    // declaration's tool call putting it back again: never three unanswered in a row, so the
+    // threshold is never reached.
+    expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2, 0, 1, 2, 0]);
     expect(pane.publishes()).toEqual([]);
   },
   120_000
@@ -734,9 +1056,10 @@ test.skipIf(skip)(
         answer: (url) => {
           if (url.pathname !== "/legion/v1/claims/owed") return undefined;
           asked += 1;
-          // The first question is the continuation reminder's own; by the timer's the daemon's
-          // record has moved on.
-          return Response.json(asked === 1 ? { owes: true, work: STALL_WORK } : OWES_NOTHING);
+          // The first three questions are the boot's, the continuation reminder's own and the
+          // second turn's end's, which arms the timer (dispatch://INFRA-2040: every turn's end
+          // asks before it arms anything); by the timer's the daemon's record has moved on.
+          return Response.json(asked <= 3 ? { owes: true, work: STALL_WORK } : OWES_NOTHING);
         },
       }
     );
@@ -744,7 +1067,7 @@ test.skipIf(skip)(
     // Two turns: the prompt's and the continuation reminder's. The timer the second settle armed
     // was answered that nothing is owed and sent the reminder it carried to nobody.
     expect(pane.turns()).toHaveLength(2);
-    expect(asked).toBe(2);
+    expect(asked).toBe(4);
     expect(pane.publishes()).toEqual([]);
     const entries = await pane.phaseEntries();
     expect(stallCounts(entries)).toEqual([0, 1]);
@@ -754,27 +1077,33 @@ test.skipIf(skip)(
 );
 
 // Where the daemon's answer does not arrive the worker is still nudged, and the nudge says
-// it could not read the record. It names no phase and no operation, because it read neither. The
-// stand-in answers `claims/owed` as a proxy does for a daemon it cannot reach: a 503 whose body is
-// not the daemon's (`daemonUnreachable` in packages/pi-shared/src/daemon-client.ts).
+// it could not read the record. It names no phase and no operation that ends one, because it read
+// neither. The stand-in answers `claims/owed` as a proxy does for a daemon it cannot reach: a 503
+// whose body is not the daemon's (`daemonUnreachable` in packages/pi-shared/src/daemon-client.ts).
+// The daemon comes back once the third turn has been served, and its answer that nothing is owed
+// ends the reminding there: a WAITING line would buy nothing (dispatch://INFRA-2040).
 test.skipIf(skip)(
   "with the daemon unreachable the worker is still nudged, by a reminder that names no phase and no operation",
   async () => {
     const run = setup();
+    let served = 0;
     const pane = await stallPane(
       run,
       [
         [{ type: "text", text: "Pushed the change." }],
         [{ type: "text", text: "Still pushing." }],
-        [{ type: "text", text: "WAITING: the daemon to come back." }],
+        [{ type: "text", text: "Still waiting for the daemon to come back." }],
       ],
       {
         env: { LEGION_STALL_REMINDER_MS: "500" },
         quietMs: 4_000,
-        answer: (url) =>
-          url.pathname === "/legion/v1/claims/owed"
+        answer: (url) => {
+          if (url.pathname === "/anthropic/v1/messages") served += 1;
+          if (url.pathname !== "/legion/v1/claims/owed") return undefined;
+          return served < 3
             ? new Response("upstream connect error", { status: 503 })
-            : undefined,
+            : Response.json(OWES_NOTHING);
+        },
       }
     );
 
@@ -887,16 +1216,25 @@ test.skipIf(skip)(
       [
         [call("bash", { command: "sleep 4; echo background-done", async: true })],
         [{ type: "text", text: "I started the build; I will be woken when it is done." }],
-        [{ type: "text", text: "WAITING: nothing more." }],
+        // The woken turn completes the phase, so the daemon's answer at the next turn's end owes
+        // nothing and the run settles on the scripted turns alone.
+        [
+          {
+            type: "tool_use",
+            name: "legion",
+            input: { op: "handoff_complete", summary: "The build passed." },
+          },
+        ],
+        [{ type: "text", text: "Reported." }],
       ],
       // Longer than the job, so the pane settles on the woken turn rather than before it.
       { quietMs: 12_000 }
     );
 
     const turns = pane.turns();
-    // Three turns: the assignment's, the one its tool result continued, and the one the finished
-    // job woke. Nothing prompted the third.
-    expect(turns).toHaveLength(3);
+    // Four turns: the assignment's, the one its tool result continued, the one the finished job
+    // woke, and the reply to the completion's result. Nothing prompted the third.
+    expect(turns).toHaveLength(4);
     expect(userText(turns[2] as Request)).toContain("background-done");
     // No reminder reached the worker in between: the turn that ended with the job running earned
     // none, because `session_stop` never fired while the job was pending.
@@ -905,9 +1243,8 @@ test.skipIf(skip)(
     }
     const entries = await pane.phaseEntries();
     expect(stallCounts(entries).filter((count) => count !== 0)).toEqual([]);
-    // The WAITING line of the woken turn is what quiets the rhythm underneath.
-    expect(entries.at(-1)).toMatchObject({ state: "waiting", count: 0 });
-    expect(pane.completions()).toHaveLength(0);
+    expect(entries.at(-1)).toMatchObject({ state: "active", count: 0 });
+    expect(pane.completions()).toHaveLength(1);
   },
   180_000
 );

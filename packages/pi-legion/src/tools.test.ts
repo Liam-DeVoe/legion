@@ -230,6 +230,13 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
   "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move " +
   "counts a review round. " +
+  "declare_wait declares that you wait on something outside your own work: `waiting_on` says what you wait on, and `wake_at` is the RFC 3339 time, " +
+  "from 1 minute to 24 hours ahead, when the daemon wakes you if nothing has. Declare it, then end your turn. While the wait stands, no reminder comes. " +
+  "News ends the wait and wakes you: a message to your role or your session, a person's message, or new work from the daemon; the update round's " +
+  "message does not. A message whose wake is lost waits until the wait's time. A new declaration replaces the standing one, and the answer is " +
+  "the wait the daemon recorded. The daemon refuses an empty `waiting_on` (WAIT_TEXT_REQUIRED), a time too soon or too far ahead (WAIT_TOO_SOON, " +
+  "WAIT_TOO_FAR), a role that does not work its issue's open phase (WAIT_NOT_OPEN_PHASE) and a merger the closed design gate holds " +
+  "(WAIT_HELD_BY_DESIGN_GATE), and records nothing. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
   "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
@@ -333,6 +340,7 @@ const toolFor = (active: LegionToolSession) =>
     daemon: recordingDaemon({}).daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
+    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -367,6 +375,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "handoff_complete",
         "ready_for_update",
         "read_build",
+        "declare_wait",
         "read_state",
         "set_status",
         "fresh_session",
@@ -417,6 +426,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     plan_rating: { type: "integer", minimum: 1, maximum: 5 },
     plan_reason: { type: "string" },
     round: { type: "string" },
+    waiting_on: { type: "string" },
     status: { type: "string", enum: ["todo", "backlog", "icebox"] },
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
@@ -486,6 +496,7 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
+      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -498,6 +509,7 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
     daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
+    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -668,6 +680,7 @@ test("retry_or_escalate takes a reason", async () => {
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
+      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -727,6 +740,7 @@ test("park_child refuses a reason before any grant, naming issue and the dispatc
     daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
+    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -801,6 +815,7 @@ test("read_release_records reads the window with this session's claim, and repor
       daemon: answering,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
+      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -879,6 +894,7 @@ test("the legion tool's description gives a verdict to the tester alone", () => 
     daemon: recordingDaemon({}).daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
+    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -906,6 +922,7 @@ test("a workflow refusal tells the agent both its code and message", async () =>
     })) as never,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
+    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -939,6 +956,7 @@ test("register_gate takes the document reference the Dispatch tools take, and re
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
+      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: async (issue: string, reference: string) => {
@@ -1042,6 +1060,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, and 
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
+      onWaitDeclared: () => undefined,
       handoffReport: (phase, role) =>
         findHandoffReport({ phase, role, env: paneEnv, jj, latestHandoff }),
       branchHead: noBranchHead,
@@ -1211,6 +1230,7 @@ test("the planner, the tester and the reviewer post their phase's handoff record
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
+      onWaitDeclared: () => undefined,
       handoffReport: (issuePhase, claimRole) =>
         findHandoffReport({
           phase: issuePhase,
@@ -1263,6 +1283,7 @@ test("the retro's handoff_complete posts its rating of the plan as planRating an
     daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
+    onWaitDeclared: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
         phase,
@@ -1319,6 +1340,7 @@ test("a completion once the issue moved on posts the role's own newest record of
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
+      onWaitDeclared: () => undefined,
       handoffReport: (issuePhase, claimRole) =>
         findHandoffReport({
           phase: issuePhase,
@@ -1370,6 +1392,7 @@ test("an implementer whose issue is in testing posts its implement record, thoug
     daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
+    onWaitDeclared: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
         phase,
@@ -1422,6 +1445,7 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
     daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
+    onWaitDeclared: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
         phase,
@@ -1489,6 +1513,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
+      onWaitDeclared: () => undefined,
       // A check report resolves no record and no commit: the report is never asked.
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
@@ -1559,6 +1584,7 @@ test("a report on its closed issue's production check carries a verdict and no c
     daemon: testerDaemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
+    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -1593,6 +1619,7 @@ test("a report on its closed issue's production check carries a verdict and no c
     daemon: closedDaemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
+    onWaitDeclared: () => undefined,
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     resolveDocument: noDocumentLookup,
@@ -1621,6 +1648,7 @@ test("a refused completion surfaces the daemon's code", async () => {
     daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
+    onWaitDeclared: () => undefined,
     handoffReport: (phase, role) =>
       findHandoffReport({
         phase,
@@ -1779,6 +1807,9 @@ function controllerTool(daemon: () => LegionDaemonClient, minted: string[]): Reg
     },
     onUpdateAnswered: () => {
       throw new Error("a controller answers no update message");
+    },
+    onWaitDeclared: () => {
+      throw new Error("a controller declares no wait");
     },
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
@@ -1947,6 +1978,7 @@ test("read_build answers the package and version this process loaded, both contr
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
+      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -1977,6 +2009,7 @@ test("read_build says the daemon stated no contract, and belongs to the controll
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
+      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -2134,6 +2167,7 @@ test("pause and resume are offered to no architect and no phase worker", async (
       daemon,
       controllerGrant: noControllerGrant,
       onUpdateAnswered: () => undefined,
+      onWaitDeclared: () => undefined,
       handoffReport: noHandoffReport,
       branchHead: noBranchHead,
       resolveDocument: noDocumentLookup,
@@ -2150,6 +2184,71 @@ test("pause and resume are offered to no architect and no phase worker", async (
     }
   }
   expect(posted).toEqual([]);
+});
+
+// dispatch://INFRA-2040: a phase worker declares its wait with its own claim, as its
+// ready_for_update is authenticated, and the tool hands the session the id of the wait the daemon
+// recorded, which the session's phase reminder reports news against. An architect and the
+// controller are refused it by the operation's name, before any request.
+test("a phase worker's declare_wait posts the declaration with its claim and tells the session the wait's id", async () => {
+  const { posted, daemon } = goldenDaemon({ "/legion/v1/claims/wait": "wait.json" });
+  const declared: Array<readonly [string, string]> = [];
+  const toolOf = (session: LegionToolSession) =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onUpdateAnswered: () => undefined,
+      onWaitDeclared: (waitContext, waitId) => {
+        declared.push([waitContext.sessionManager.getSessionId(), waitId]);
+      },
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    });
+  const parameters = {
+    op: "declare_wait",
+    waiting_on: "the review of LEGION-207's pull request",
+    wake_at: "2026-11-14T08:00:00Z",
+  };
+
+  const result = await toolOf(claimSession("reviewer")).execute(
+    "",
+    parameters,
+    undefined,
+    undefined,
+    context()
+  );
+  expect(result.isError).toBeUndefined();
+  expect(result.details).toEqual(daemonFixture("wait.json"));
+  expect(posted).toEqual([
+    [
+      "/legion/v1/claims/wait",
+      {
+        claimToken: roleToken("omp", "LEGION-208", "reviewer"),
+        sessionId: "ses_208",
+        secret: CLAIM_SECRET,
+        waitingOn: "the review of LEGION-207's pull request",
+        wakeAt: "2026-11-14T08:00:00Z",
+      },
+    ],
+  ]);
+  expect(declared).toEqual([["ses_208", "3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68"]]);
+
+  for (const session of EVERY_SESSION.filter((candidate) => candidate.kind !== "phase-worker")) {
+    await expect(
+      toolOf(session).execute("", parameters, undefined, undefined, context())
+    ).resolves.toEqual({
+      content: [
+        { type: "text", text: `declare_wait is not available to a ${session.kind} session` },
+      ],
+      details: {},
+      isError: true,
+    });
+  }
+  expect(posted).toHaveLength(1);
+  expect(declared).toHaveLength(1);
 });
 
 test("read_state with no field summarizes 92 issues under the tool's limit, naming every one", async () => {

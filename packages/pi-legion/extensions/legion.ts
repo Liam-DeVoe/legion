@@ -172,6 +172,27 @@ function envoyPluginRefusal(): string | undefined {
   }
 }
 
+/** Whether `message` is a user message: the daemon's RPC `prompt`, or a person's direct message
+ * that envoy.ts sent in as the user's own turn (`matchInjectedUserTurn` tells the two apart). */
+function userMessage(message: unknown): boolean {
+  return (
+    typeof message === "object" && message !== null && "role" in message && message.role === "user"
+  );
+}
+
+/** The delivery's own key on an Envoy card: the `dedupe_key` of its `details`, which pi-envoy's
+ * `handCard` copies from the frame (`ledgerIdentity` in `@legion/envoy-client/delivery-ledger`)
+ * when that key names the frame's event, the update ask's key among them (D9 of
+ * dispatch://INFRA-2040's plan). Undefined for a card that carries none. */
+function cardDeliveryKey(message: unknown): string | undefined {
+  if (typeof message !== "object" || message === null || !("details" in message)) return undefined;
+  const details = message.details;
+  if (typeof details !== "object" || details === null || !("dedupe_key" in details)) {
+    return undefined;
+  }
+  return typeof details.dedupe_key === "string" ? details.dedupe_key : undefined;
+}
+
 export default function legionExtension(pi: PiApi): void {
   // One instance per session (a `task` subagent gets its own); the id tells them apart in the log.
   const instance = randomUUID().slice(0, 8);
@@ -670,7 +691,13 @@ export default function legionExtension(pi: PiApi): void {
       // timer, since nothing else would wake it; the daemon's answer when the timer is due says
       // whether it is owed. The guard drops that timer when any turn started meanwhile, which is
       // exactly the case to drop — the daemon re-sending an interrupted task arrives as a prompt.
-      if (phaseWorkerSession(context)) phaseReminder.armResumeReminder();
+      // The arming first sends every report of news the restored record kept unsent, then reads
+      // the owed answer, which names the wait that stands, and arms nothing while a wait the
+      // worker declared or the design gate's hold stands (`armResumeReminder` in
+      // `@legion/pi-shared/phase-reminder`). It is awaited, so the first activity report the
+      // interval below sends says no reminder is due while either stands, and the daemon can
+      // release the pod.
+      if (phaseWorkerSession(context)) await phaseReminder.armResumeReminder();
       /**
        * INFRA-927: the session measures its six capability rows on this interval, while it is
        * idle, up to three times, until every row is present — a check that lost the boot-time
@@ -840,22 +867,43 @@ export default function legionExtension(pi: PiApi): void {
   pi.on("session_branch", (_event, context) => afterSessionChange(context));
   pi.on("session_tree", (_event, context) => afterSessionChange(context));
 
-  // A message from outside the session — the daemon's task (a user message), an Envoy delivery, a
-  // person's direct message — starts the rhythm's count again and says nothing else: what the
-  // claim owes is the daemon's answer at the next reminder (`@legion/pi-shared/phase-stall`). A
-  // person's direct message that envoy.ts sent in as the user's own turn is a user message too,
+  // A message from outside the session starts the rhythm's count again and says nothing of what
+  // the claim owes, which is the daemon's answer at the next reminder
+  // (`@legion/pi-shared/phase-stall`). Its kind, never its text, says what else it is (D8 of
+  // dispatch://INFRA-2040's plan). News is a person's direct message and an Envoy delivery: an
+  // `envoy-message` card that is not the Envoy extension's own notice (`LOCAL_ENVOY_NOTICE`,
+  // which `isInbound` leaves out). While a wait the worker declared stands, the reminder reports
+  // news to the daemon, whose answer is the word on the wait. A delivery is reported with its own
+  // key, the card's `details.dedupe_key`, so the daemon tells its own update ask from other
+  // news; a person's message has no key. Any other user message is a prompt of the daemon's (a
+  // task, the resume task, the update task, the wait's own task), which reports nothing and ends
+  // no wait. News is after the declaration when its `message_start` comes after the result of
+  // the `declare_wait` call, which has told the reminder the wait by then (`onWaitDeclared`
+  // below); news before it is reported against no wait.
+  //
+  // The report is not awaited: the host waits on this handler before it goes on with the
+  // message, and the report is a request to the daemon. The reminder sends one report at a time,
+  // and the turn's end sends every report still going or kept before it reads the owed answer.
+  //
+  // A person's direct message that envoy.ts sent in as the user's own turn is a user message too,
   // or a `skill-prompt` custom message for a `/skill:`, which `isInbound` does not know: the
   // record envoy.ts keeps of the turns it sent in says which message that is, whichever of the
   // two extensions asks first. The one turn that record misses is a `/skill:` the host starts
   // under a new session id (queued across a branch or a session file's move-off, or a session
-  // change during its `sendUserInput`), which then puts no count back at zero. Every message,
-  // classified or not, says a turn is running and leaves every armed reminder timer stale.
+  // change during its `sendUserInput`), which then puts no count back at zero and reports no
+  // news. Every message, classified or not, says a turn is running and leaves every armed
+  // reminder timer stale.
   pi.on("message_start", async (event, context) => {
     if (!phaseWorkerSession(context)) return;
     phaseReminder.turnStarted();
-    const injected =
-      matchInjectedUserTurn(context.sessionManager.getSessionId(), event.message) !== undefined;
-    if (injected || isInbound(event.message)) phaseReminder.apply({ kind: "prompt" });
+    const message = event.message;
+    if (matchInjectedUserTurn(context.sessionManager.getSessionId(), message) !== undefined) {
+      void phaseReminder.news();
+      return;
+    }
+    if (!isInbound(message)) return;
+    if (userMessage(message)) phaseReminder.apply({ kind: "prompt" });
+    else void phaseReminder.news(cardDeliveryKey(message));
   });
 
   // An assistant message that settled: one that ended aborted closes every call the stall watch
@@ -893,7 +941,11 @@ export default function legionExtension(pi: PiApi): void {
   // answers still owes work earns a reminder (src/phase-stall.ts), unless the provider refused
   // the turn, which earns none of its own. The first reminder of a run comes back as the host's
   // own continuation, one more turn of this same session; every one after it is a timer, so the
-  // run settles and the daemon sees the turn end (src/phase-reminder.ts).
+  // run settles and the daemon sees the turn end (src/phase-reminder.ts). While the daemon's
+  // answer gives a wait the worker declared (`declare_wait`) or the design gate's hold, the turn
+  // earns no reminder and arms no timer, but for a tool call written as text. A WAITING line in
+  // the worker's reply buys nothing: only the worker's own background work buys a quiet wait,
+  // and Oh My Pi fires this hook only once that work is idle.
   pi.on("session_stop", async (event, context) => {
     if (event.signal.aborted) return undefined;
     if (!phaseWorkerSession(context)) {
@@ -915,6 +967,13 @@ export default function legionExtension(pi: PiApi): void {
   // end.
   const onUpdateAnswered = (context: SessionContext): void => {
     if (phaseWorkerSession(context)) phaseReminder.apply({ kind: "update-answered" });
+  };
+
+  // A successful `declare_wait`: the daemon recorded the wait, and the reminder reports news
+  // after it against that wait, in the declaring turn and in a later one. An architect declares
+  // no wait (`OPERATIONS` in src/tools.ts), and its session has no phase reminder.
+  const onWaitDeclared = (context: SessionContext, waitId: string): void => {
+    if (phaseWorkerSession(context)) phaseReminder.waitDeclared(waitId);
   };
 
   const activateLegionTool = async (): Promise<void> => {
@@ -947,6 +1006,7 @@ export default function legionExtension(pi: PiApi): void {
         },
         controllerGrant: (sessionId) => controllerSession.mintGrant(sessionId),
         onUpdateAnswered,
+        onWaitDeclared,
         // The pane's own environment: its workspace and issue; PATH's jj, the one its shell runs;
         // and the Dispatch pi-envoy's session reads (Oh My Pi's rule, in the same process), which
         // the pane's `dispatch handoff-write` wrote the record to.
