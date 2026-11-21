@@ -1,8 +1,8 @@
 // Package plan is the plan the owner of an issue gives Legion: its tasks, the steps of each task,
 // the roles those steps name, and the two checks a plan passes before Legion takes it — Validate,
-// what Legion cannot carry out in any release (R14), and Supported, what this release does not
-// carry out yet. It reads the blocks of one version of the plan document, each need as the
-// task it names (FromBlocks), and compares two versions (ChangedTasks); it holds no store and calls
+// what Legion cannot carry out in any release, and Supported, what this release does not carry
+// out yet. It reads the blocks of one version of the plan document, each need as the task it
+// names (FromBlocks), and compares two versions (ChangedTasks); it holds no store and calls
 // nothing.
 //
 // It imports internal/phase alone, so both the configuration loader, which reads a project's
@@ -20,10 +20,11 @@ import (
 )
 
 // Type is the type of work a role does. Legion records it on each step and reads it for the
-// returns of R7, the commit of R11 and the retro of R13, and for nothing else (R3).
+// return of a failed step's work, the commit a review step is given and the retro, and for
+// nothing else.
 type Type string
 
-// The types Legion's list starts with (R3); a deployment adds its own in a later release.
+// The types Legion's list starts with; a deployment adds its own in a later release.
 const (
 	TypeDesign         Type = "design"
 	TypePlanning       Type = "planning"
@@ -33,7 +34,7 @@ const (
 )
 
 // Step is one step of a task: the role whose agent does it, and the key of that agent, which is
-// empty for a fresh agent (C3, R6).
+// empty for a fresh agent.
 type Step struct{ Role, Key string }
 
 // String is the step as a plan writes it: `role`, or `role:key`.
@@ -45,7 +46,7 @@ func (s Step) String() string {
 }
 
 // DefaultTask is the id of the one task of an issue whose owner gives no plan, which runs the
-// project's default steps (R5).
+// project's default steps.
 const DefaultTask = "default"
 
 // Task is one `plan_task` block of a plan, as FromBlocks reads it.
@@ -63,15 +64,16 @@ type Task struct {
 	PartOf, Owner string
 	// Merges is `merges`: true unless the block leaves the attribute out or writes `false`.
 	Merges bool
-	// HasSteps says whether the block names a step at all: a block with no `steps`, or with
-	// `steps` of no word, has none, and runs the project's default steps (StepsOf, R5).
-	HasSteps bool
-	// Steps are the steps the block names, in order; nil when HasSteps is false.
+	// Steps are the steps the block names, in order; none where its `steps` has no word or it has
+	// no `steps`, and then the task runs the project's default steps (StepsOf).
 	Steps []Step
-	// Text is the block's text, which says what each step must do (R2) and which a later version
+	// Text is the block's text, which says what each step must do and which a later version
 	// changes a task by (ChangedTasks).
 	Text string
 }
+
+// NamesSteps says whether t's block names a step at all.
+func (t Task) NamesSteps() bool { return len(t.Steps) > 0 }
 
 // Sinks is the ids of the tasks of tasks that no task needs, in id order: the tasks whose work
 // ends the plan, where it merges. A need is a task id (FromBlocks).
@@ -112,7 +114,7 @@ type Plan struct {
 }
 
 // Deployment is what the deployment gives a plan: the roles a step can name, by name. In this
-// release that is BuiltinRoles alone (B-18).
+// release that is BuiltinRoles alone.
 type Deployment struct{ Roles map[string]RoleDef }
 
 // Refusal is one reason Legion does not take a plan: the task it names, "" for a cause of the
@@ -141,10 +143,10 @@ var builtinRoles = []RoleDef{
 	{Name: "acceptance", Type: TypeReview, Phase: phase.Accepting},
 }
 
-// nameWord is the grammar of a role and of a key (C3).
+// nameWord is the grammar of a role and of a key.
 var nameWord = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
-// ParseSteps reads the words of a `steps` attribute (C3): each word is `role` or `role:key`, a
+// ParseSteps reads the words of a `steps` attribute: each word is `role` or `role:key`, a
 // role and a key each matching [a-z][a-z0-9-]*, with white space between two words. Text of no
 // word is no step. The key `owner` is reserved for the owner of the task: the grammar takes it,
 // and Supported says which keys this release carries out.
@@ -162,10 +164,10 @@ func ParseSteps(text string) ([]Step, error) {
 }
 
 // StepsOf is the steps task t runs: its own when its block names any, the project's defaults
-// when it names neither steps nor a sub-owner (R5), and none for the task of a sub-owner, whose
+// when it names neither steps nor a sub-owner, and none for the task of a sub-owner, whose
 // work is its parts. The answer is t's or defaults' own slice, which the caller does not change.
 func StepsOf(t Task, defaults []Step) []Step {
-	if t.HasSteps {
+	if t.NamesSteps() {
 		return t.Steps
 	}
 	if t.Owner == "" {
@@ -176,7 +178,7 @@ func StepsOf(t Task, defaults []Step) []Step {
 
 // Line is the phases a task walks in this release, where each step runs as the phase of its
 // role: the steps' phases in their order, then Legion's own retro and merge, which no plan names
-// and no plan leaves out (R13). A role d does not define has no phase and stands in the line as
+// and no plan leaves out. A role d does not define has no phase and stands in the line as
 // "", which no row of the workflow moves into, so the caller walks only a plan Validate took.
 func Line(steps []Step, d Deployment) []phase.Phase {
 	line := make([]phase.Phase, 0, len(steps)+2)

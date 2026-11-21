@@ -53,7 +53,7 @@ func startRun(t *testing.T, handler http.Handler, project, issue, task, role str
 	t.Helper()
 	id := uuid.NewString()
 	putStepOK(t, handler, issue, id, map[string]any{
-		"actor": daemonSession(project), "task": task, "step": place, "kind": "step", "role": role,
+		"actor": daemonSessionOf(project), "task": task, "step": place, "kind": "step", "role": role,
 		"generation": generation, "started_at": started,
 	})
 	return id
@@ -71,9 +71,10 @@ func startRun(t *testing.T, handler http.Handler, project, issue, task, role str
 // reader that answers [] for a node with none (the default task's needs are not null).
 func TestTheStepsOfAnIssueListThePlansTasks(t *testing.T) {
 	handler := newTestHandler(t)
-	issues := stepIssues(t, handler, "LEG", 3)
-	owner, defaults, none := issues[0], issues[1], issues[2]
-	daemon := daemonSession("LEG")
+	owner := createTestIssue(t, handler, "LEG", "A run of steps")
+	defaults := createAdvancingIssue(t, handler, map[string]any{"project": "LEG", "title": "Another run of steps"}, "alice").Key
+	none := createAdvancingIssue(t, handler, map[string]any{"project": "LEG", "title": "A third run of steps"}, "alice").Key
+	daemon := daemonSessionOf("LEG")
 
 	putPlanRecordOK(t, handler, owner, uuid.NewString(), map[string]any{
 		"actor": daemon, "generation": 1, "source": "owner", "artifact_id": uuid.NewString(), "version": 2,
@@ -129,8 +130,8 @@ func TestTheStepsOfAnIssueListThePlansTasks(t *testing.T) {
 // of generation 2 reads passed.
 func TestAPlannedStepStandsWhereTheRunsOfItsOwnGenerationStand(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
-	daemon := daemonSession("LEG")
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	daemon := daemonSessionOf("LEG")
 	node := func(generation int, steps ...string) {
 		putPlanRecordOK(t, handler, issue, uuid.NewString(), map[string]any{
 			"actor": daemon, "generation": generation, "source": "default",
@@ -176,15 +177,15 @@ func TestAPlannedStepStandsWhereTheRunsOfItsOwnGenerationStand(t *testing.T) {
 // write that stores the needs it is given unread.
 func TestAPlanWriteRecordsEachTasksNeeds(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
-	daemon := daemonSession("LEG")
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	daemon := daemonSessionOf("LEG")
 	id := uuid.NewString()
 
 	refused := putPlanRecord(t, handler, issue, id, map[string]any{
 		"actor": daemon, "generation": 1, "source": "default",
 		"tasks": []map[string]any{{"id": "a", "steps": []string{"implementer"}, "needs": []string{"x"}}},
 	})
-	requireStepRefusal(t, "a need of no task", refused, http.StatusBadRequest, codePlanInput, "task a", `"x"`)
+	expectRefusal(t, "a need of no task", refused, http.StatusBadRequest, codePlanInput, "task a", `"x"`)
 	if tasks := readSteps(t, handler, issue).Tasks; len(tasks) != 0 {
 		t.Fatalf("a refused plan write left the tasks %+v, want none", tasks)
 	}
@@ -197,7 +198,7 @@ func TestAPlanWriteRecordsEachTasksNeeds(t *testing.T) {
 			{"id": "c", "steps": []string{"reviewer"}},
 		},
 	})
-	if got, want := [][]string{written.Tasks[0].Needs, written.Tasks[1].Needs, written.Tasks[2].Needs}, [][]string{{}, {"a"}, nil}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("the written plan's needs = %#v, want %#v", got, want)
+	if got, want := []*[]string{written.Tasks[0].Needs, written.Tasks[1].Needs, written.Tasks[2].Needs}, []*[]string{{}, {"a"}, nil}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the written plan's needs = %v, %v, %v, want &[], &[a], <nil>", written.Tasks[0].Needs, written.Tasks[1].Needs, written.Tasks[2].Needs)
 	}
 }

@@ -14,7 +14,7 @@ import (
 // is Validate's and does not say "yet".
 const noTask = "the plan has no task block, so it gives Legion no work."
 
-// notYet ends each reason of Supported: what a later release carries out (C6).
+// notYet ends each reason of Supported: what a later release carries out.
 const notYet = " This release of Legion does not carry it out yet."
 
 // todaysOrder is the order this release runs the steps of a task in, as its refusal names it.
@@ -176,7 +176,7 @@ func taskReasons(t Task) []string {
 	if t.Merges {
 		reasons = append(reasons, fmt.Sprintf("task %s names merges.", t.ID))
 	}
-	if t.HasSteps {
+	if t.NamesSteps() {
 		reasons = append(reasons, stepReasons(t)...)
 	}
 	return reasons

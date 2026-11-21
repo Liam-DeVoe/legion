@@ -9,7 +9,9 @@ import {
   decodeRelayFrame,
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
+  inboundRestoredNoticeText,
   inboundUnavailable,
+  NoRelaySubjectError,
   RELAY_PROGRESS_INTERVAL_MS,
   RelayHeader,
   type RelayMessage,
@@ -793,6 +795,58 @@ describe("follow filter", () => {
     expect(seqs(handed)).toEqual([1]);
   });
 
+  // A message name the rename moves has two forms while every reader takes both
+  // (dispatch://INFRA-3862): the listener's filters carry both, so this client, the last reader
+  // of a frame, must take a frame in either form of a topic the session follows. One that
+  // compares the spellings as they are drops every event of a session that followed the other
+  // form, and drops it in silence: the frame is answered `done` and the resume point passes it.
+  test("a frame reaches the session in either form of a topic it follows", () => {
+    const stored = T0 + MINUTE;
+    for (const [followed, subject] of [
+      [ISSUE_TOPIC, ISSUE],
+      [ISSUE_TOPIC, "notifications.dispatch.issue.INFRA.INFRA-1.comment"],
+      ["notifications.dispatch.issue.INFRA.INFRA-1.>", ISSUE],
+      [
+        "notifications.dispatch.issue.INFRA.INFRA-1.>",
+        "notifications.dispatch.issue.INFRA.INFRA-1.comment",
+      ],
+    ] as const) {
+      const { delivery, handed, replies } = setup();
+      delivery.setFollowed([followed]);
+      delivery.receive(relay({ seq: 1, subject, storedAt: stored, reply: "_INBOX.1" }));
+
+      expect(seqs(handed), `${subject} while following ${followed}`).toEqual([1]);
+      expect(repliesTo(replies, "_INBOX.1"), `${subject} while following ${followed}`).toEqual([
+        "received",
+      ]);
+    }
+  });
+
+  // The session's own inbox in either form is its own, whenever it was stored, as the old form
+  // always was; another session's inbox in either form is not, so the rename widens no reach.
+  test("the session's own agent subject is taken in either form, and no other session's", () => {
+    for (const subject of [
+      AGENT,
+      "notifications.agent._.ses_a",
+      "notifications.agent.PRIV.ses_a",
+    ]) {
+      const { delivery, handed } = setup();
+      delivery.receive(relay({ seq: 1, subject, storedAt: T0 - 60 * MINUTE }));
+
+      expect(seqs(handed), subject).toEqual([1]);
+    }
+    for (const subject of [
+      "notifications.agent.ses_other",
+      "notifications.agent._.ses_other",
+      "notifications.agent.PRIV.ses_other",
+    ]) {
+      const { delivery, handed } = setup();
+      delivery.receive(relay({ seq: 1, subject, storedAt: T0 - 60 * MINUTE }));
+
+      expect(seqs(handed), subject).toEqual([]);
+    }
+  });
+
   test("a topic's follow time survives a restart, and an unfollow forgets it", () => {
     const { delivery, clock } = setup();
     delivery.setFollowed([ISSUE_TOPIC]);
@@ -1112,7 +1166,10 @@ describe("one registration", () => {
       // The bare base a stored row or a transcript brings back: the listener stores it for no
       // session and warns about it, so it never goes out (INFRA-771 review).
       followed: [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
-      outage: inboundUnavailable((why) => told.push(why)),
+      outage: inboundUnavailable(
+        (why) => told.push(why),
+        () => told.push("restored")
+      ),
       send: (topics, delivery) => {
         sent.push({ topics, epoch: delivery.epoch });
         return Promise.resolve("registered");
@@ -1127,7 +1184,10 @@ describe("one registration", () => {
 
   test("a session holding no relay subject registers nothing and is told once", async () => {
     const told: string[] = [];
-    const outage = inboundUnavailable((why) => told.push(why));
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
     const sent: unknown[] = [];
     const register = () =>
       registerWithRelay({
@@ -1151,6 +1211,29 @@ describe("one registration", () => {
     ]);
   });
 
+  test("a session whose relay could not be opened says why in the refusal and in the one outage notice", async () => {
+    const told: string[] = [];
+    const refusal = await registerWithRelay({
+      relay: undefined,
+      relayMissing: "Authentication Timeout",
+      ownAgentSubject: AGENT,
+      followed: [TEAM],
+      outage: inboundUnavailable(
+        (why) => told.push(why),
+        () => told.push("restored")
+      ),
+      send: () => Promise.resolve("registered"),
+      answered: () => undefined,
+    }).catch((error: unknown) => error);
+
+    const expected =
+      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing, because its relay subject could not be opened: Authentication Timeout";
+    if (!(refusal instanceof NoRelaySubjectError))
+      throw new Error(`no refusal: ${String(refusal)}`);
+    expect(refusal.message).toBe(expected);
+    expect(told).toEqual([expected]);
+  });
+
   test("a refused registration tells the session once and takes no answer", async () => {
     const relay = fakeRelay();
     const told: string[] = [];
@@ -1161,7 +1244,10 @@ describe("one registration", () => {
         relay,
         ownAgentSubject: AGENT,
         followed: [TEAM],
-        outage: inboundUnavailable((why) => told.push(why)),
+        outage: inboundUnavailable(
+          (why) => told.push(why),
+          () => told.push("restored")
+        ),
         send: () => Promise.reject(new Error("no_grant")),
         answered: (answer: string) => answers.push(answer),
       })
@@ -1169,5 +1255,39 @@ describe("one registration", () => {
 
     expect(relay.followed).toEqual([[AGENT, TEAM]]);
     expect([answers, told]).toEqual([[], ["no_grant"]]);
+  });
+
+  test("a registration accepted after an outage tells the session once that it receives again", async () => {
+    const told: string[] = [];
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
+    let refuse = true;
+    const register = () =>
+      registerWithRelay({
+        relay: fakeRelay(),
+        ownAgentSubject: AGENT,
+        followed: [TEAM],
+        outage,
+        send: () =>
+          refuse ? Promise.reject(new Error("no_grant")) : Promise.resolve("registered"),
+        answered: () => undefined,
+      }).catch(() => undefined);
+
+    await register();
+    await register();
+    refuse = false;
+    await register();
+    // A heartbeat that is accepted again says nothing: the session already knows.
+    await register();
+    expect(told).toEqual(["no_grant", "restored"]);
+    // A second outage is told again, and its end too.
+    refuse = true;
+    await register();
+    refuse = false;
+    await register();
+    expect(told).toEqual(["no_grant", "restored", "no_grant", "restored"]);
+    expect(inboundRestoredNoticeText()).toContain("Envoy inbound restored");
   });
 });

@@ -23,7 +23,7 @@ func todaysSteps(t *testing.T) []plan.Step {
 	return steps
 }
 
-// A project that names no `default_steps` runs today's line up to the owner's acceptance (R5),
+// A project that names no `default_steps` runs today's line up to the owner's acceptance,
 // and so does a Project the loader never read, such as one a test builds, since the unset field
 // resolves to that line rather than to no step.
 func TestDefaultStepsDefaultToTodaysLine(t *testing.T) {

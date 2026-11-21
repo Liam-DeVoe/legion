@@ -59,9 +59,9 @@ func TestEachRefusalIsALineOfTheOwnersGuide(t *testing.T) {
 		oneTask("a", "implementer acceptance"),
 		oneTask("a", "implementer:cd"),
 		withRoles,
-		{Tasks: []Task{{ID: "a", Merges: true, HasSteps: true, Steps: implementer}}},
+		{Tasks: []Task{{ID: "a", Merges: true, Steps: implementer}}},
 		{Tasks: []Task{{ID: "f", Owner: "architect"}}},
-		{Tasks: []Task{{ID: "f1", PartOf: "f", HasSteps: true, Steps: implementer}}},
+		{Tasks: []Task{{ID: "f1", PartOf: "f", Steps: implementer}}},
 		{},
 	}
 	matched := make([]bool, len(templates))

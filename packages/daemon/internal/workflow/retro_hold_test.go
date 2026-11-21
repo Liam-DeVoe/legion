@@ -32,7 +32,7 @@ func approveReview(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	t.Helper()
 	row := roleRowOf(t, pool, engine, "LEGION-208", claim.RoleReviewer)
 	row.HandoffRecord, row.HandoffVersion, row.HandoffCommit, row.Summary = "review-record", 1, "c0ffee", "approved"
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		if err := engine.store.PutPhase(ctx, tx, row); err != nil {
 			return err
 		}
@@ -46,6 +46,7 @@ func approveReview(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 		}
 		return engine.transition(ctx, tx, *issue, TriggerReviewApproved, "", row, pr, "")
 	})
+
 }
 
 // retroStarts is the count of starts step_starts holds for the retro of key, and how many rows
@@ -62,7 +63,7 @@ func retroStarts(t *testing.T, pool *pgxpool.Pool, key string) (starts int64, ro
 func startsIn(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role, p phase.Phase) []record.SuperviseRequest {
 	t.Helper()
 	var in []record.SuperviseRequest
-	for _, start := range startsOf(t, pool, key, role) {
+	for _, start := range roleStartsOf(t, pool, key, role) {
 		if start.Phase == p {
 			in = append(in, start)
 		}
@@ -94,7 +95,7 @@ func lastStepEnd(t *testing.T, pool *pgxpool.Pool, key, role string) string {
 }
 
 // A parent whose plan has no acceptance step passes its last step while an issue beneath it is in
-// the workflow (B-8, C2-1). Its head proves its children's merged work, so Legion holds it before
+// the workflow. Its head proves its children's merged work, so Legion holds it before
 // its retro: issues.phase held, from retro for its children, at the retro's place, with no slot
 // and no retro started, its owner told once in a retro-held notice naming the child. The child's
 // leave is the last one, so the hold ends, the parent stands in retro, its Dispatch status is
@@ -231,7 +232,7 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		assertWalksAt(t, pool, engine, "LEGION-208", phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
 	})
 
-	// R20: an issue with no plan rows walks today's line, whose review approval goes to accepting
+	// An issue with no plan rows walks today's line, whose review approval goes to accepting
 	// with an issue beneath it in the workflow, as today; the child's leave starts nothing of it.
 	t.Run("an issue with no plan rows goes to accepting, and the child's leave starts nothing", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -258,4 +259,52 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 			t.Fatalf("the log = %q, want no hold and no release of one", line)
 		}
 	})
+}
+
+// The reviewer's own report can land after its approval moved a parent with no acceptance step
+// into its hold before the retro. It is the first report of the run the approval ended, so it is
+// taken as such a report is wherever else the issue stands (leftItsPhase): on the reviewer's own
+// row and on its ended step's record, moving nothing, and the parent stays held for its child.
+// The control is the same reviewer's second report, of a run whose report already stands, which
+// is refused HANDOFF_NOT_CURRENT_PHASE as it is in every other phase. Before, a parent held for
+// its children stood where no role works, and the first report was refused too, so its handoff
+// never reached the step's record.
+func TestAReviewersReportAfterItsApprovalHeldAParentForItsChildrenIsTaken(t *testing.T) {
+	pool := migratedPool(t)
+	engine, _ := loggedEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
+	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	seedClaimSession(t, pool, "reviewer-claim", "ses-reviewer")
+	// The review event approves the round before the reviewer reports: its row has no report yet.
+	move(t, pool, engine, root.Key, TriggerReviewApproved, "", roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer))
+	if held := issueOf(t, pool, engine, root.Key); !record.HeldForChildren(held) {
+		t.Fatalf("%s after the approval stands in %s with hold %+v, want held from retro for its children", root.Key, held.Phase, held.Hold)
+	}
+	report := intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleReviewer, Claim: "reviewer-claim", Summary: "approved",
+		Commit: "c0ffee", HandoffRecord: "review-late", HandoffVersion: 1}
+	apply := applyFacts(t, pool, engine)
+
+	if result := apply("the reviewer's report", report); result.Refusal != nil {
+		t.Fatalf("the reviewer's report after its approval held %s was refused %+v, want it taken", root.Key, result.Refusal)
+	}
+	if row := roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer); !row.Completed() || row.HandoffRecord != "review-late" {
+		t.Fatalf("the reviewer's row = %+v, want its report recorded, naming review-late", row)
+	}
+	writes := stepWrites(t, pool, root.Key)
+	if last := writes[len(writes)-1]; last.Role != "reviewer" || last.Report == nil || *last.Report != "review-late" {
+		t.Fatalf("the last step record write = %+v, want the reviewer's ended step reporting review-late", last)
+	}
+	if held := issueOf(t, pool, engine, root.Key); !record.HeldForChildren(held) {
+		t.Fatalf("%s after the reviewer's report stands in %s with hold %+v, want it still held from retro for its children", root.Key, held.Phase, held.Hold)
+	}
+
+	again := report
+	again.HandoffRecord = "review-again"
+	want := intake.NotCurrentPhase(claim.RoleReviewer, phase.Held, root.Key)
+	if result := apply("the reviewer's second report", again); !reflect.DeepEqual(result.Refusal, want) {
+		t.Fatalf("the reviewer's second report = %+v, want %+v", result.Refusal, want)
+	}
 }
