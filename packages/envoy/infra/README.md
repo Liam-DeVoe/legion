@@ -3429,103 +3429,14 @@ update`, or are removed: beside a callout those users are rendered without their
 `envoy-infra consumer-names` (package `consumernames`) is the operator's side of the fresh
 JetStream consumer names: each creator names a consumer `<base>~<nuid>` and selects it through a
 record, a session's and a listener durable's in the KV bucket `envoy_session_consumers`, Dispatch's
-in its database's `intake_consumers` table, and each Legion daemon's in its own database's. The
-commands move every family from the fixed names to the fresh ones (the cutover), recover a lost
-bucket, roll every family back to the fixed names, and enrol a daemon store made after the cutover.
-Every command runs as the deployment's one operator identity, whose NATS grant is the writer hold's
-phase's, and reads the hold row first: `status` and `backup` run while the row is `released`,
-outside any hold, `prepare` while it is `prepare`, and every other command only while it is `held`
-under its `--hold`, inside a hold of a workflow that names it (`envoy-infra hold`).
-
-```text
-envoy-infra consumer-names status         [--hold ID]
-envoy-infra consumer-names backup         --out DIR
-envoy-infra consumer-names prepare        --hold ID
-envoy-infra consumer-names create-bucket  --hold ID [--replicas N]
-envoy-infra consumer-names create-bucket  --hold ID --after-loss [--replay-from SEQ] [--backup DIR] [--replicas N]
-envoy-infra consumer-names replay         --hold ID --key K --from SEQ [--final]
-envoy-infra consumer-names convert        --hold ID
-envoy-infra consumer-names cleanup        --hold ID [--gone PROJECT-KEY] [--final]
-envoy-infra consumer-names restore        --hold ID (--prepare | --finish | --key K --from SEQ)
-envoy-infra consumer-names replace        --hold ID --listener MACHINE-ID [--final]
-envoy-infra consumer-names enroll         --hold ID --daemon PROJECT-KEY
-envoy-infra consumer-names repair-sentinel --hold ID
-```
-
-- `status` lists each family's records (the current name, an open operation, the start, the last
-  floor, the retired names), each store's marker, the broker's cutover rows, and a `BLOCKER` line
-  for each thing that stops a cutover, ending with `blockers: N`.
-- `backup` writes the released walk of the selection bucket into `--out DIR`, a directory it makes
-  and refuses when it exists: the records-only copy of `KV_envoy_session_consumers`, one
-  `STREAM.INFO` and then every stored message read by sequence with `STREAM.MSG.GET`
-  (`internal/bus/kvrecords`), the two reads of that stream the released grant holds. It prints the
-  copy's sha256; `create-bucket --after-loss --backup DIR` loads the copy and records that sha256 as
-  the recovery's `backup_sha256`.
-- `prepare` records the cutover boundary (the notification stream's first retained sequence) and
-  each fixed name's floor in the hold's cohort record, and raises each fixed name's inactive
-  threshold to 7 days for the window.
-- In a `cutover` hold: `create-bucket` makes the selection bucket and its sentinel with the
-  boundary; `convert` saves the whole fixed set, then replaces each fixed name by a fresh one at its
-  safe start (the lowest of one past its ack floor, Dispatch's hold-token start and any saved
-  start), lists again until no fixed name is left, and marks each family's broker cutover row and
-  store marker `done`; `streams census` then ends the hold.
-- In a `selection-recovery` hold: `create-bucket --after-loss` records the recovery's inputs
-  first, loads a held snapshot or a released walk of the bucket's records (`--backup`), adopts only
-  a recovery of its own, lists the orphans and runs its postcheck; `replay` gives one logical name
-  its start.
-- In a `rollback` hold: `restore --prepare` saves each record's safe start and removes the fresh
-  names, `restore --key` gives a name with no start its start, and `restore --finish` restarts and
-  proves every declared server, recreates each fixed name at its start and marks every family
-  `rolled_back`.
-- In a `consumer-cleanup` hold, and only there: `cleanup` deletes the retired names the records
-  hold, and never a name a record still selects; `replace` gives one listener's durable a fresh name
-  at one past its ack floor (in fresh mode; the fixed mode's procedure is in `deploy/README.md`);
-  and `cleanup --gone PROJECT-KEY` removes the consumers of a daemon whose store is gone, which
-  `streams census` leaves. Each runs again as often as needed, and each run's done entry names what
-  it removed or replaced; a run of any of them with `--final` completes the hold's record, so `hold
-  release` ends the hold. A hold of another workflow refuses them, naming `consumer-cleanup`.
-  `cleanup --gone` reads the project's Deployment again when it runs and reads its store
-  (`--daemon-database PROJECT-KEY=F`) by the census's rule, below: it removes the daemon's
-  consumers, each named `legion-go-<PROJECT-KEY>-<kind>` or `legion-go-<PROJECT-KEY>-<kind>~<nuid>`,
-  only when the server at exactly that address answers SQLSTATE 3D000, and names each removal. Any
-  other answer refuses it and removes nothing.
-- `enroll`, in an `enroll` hold, marks a daemon store made after the cutover converted, with the
-  stream's boundary and identity, only when no consumer, checkpoint or record of its own already
-  exists, and no other daemon's Deployment names its store's address.
-- `repair-sentinel`, in a `sentinel-repair` hold, writes the selection bucket's sentinel
-  `envoy.bucket` again from the broker's records alone, over whatever value was stored there
-  (any client whose grant holds a JetStream API request can store the server's answer under it
-  through a reply subject, and every session consumer call then fails closed): the session
-  family's cutover row gives its state, `done` or `rolled_back`; the hold that row names, or for
-  `rolled_back` the cutover hold the rollback's `restore --prepare` recorded, gives the hold; and
-  that hold's cohort record gives the boundary. It refuses when no such row or record exists, and
-  never writes over a missing sentinel, a delete marker or a selection recovery's sentinel, which
-  are `create-bucket --after-loss`'s.
-
-Every command takes the hold's flags as `envoy-infra hold` takes them: `--broker-url`,
-`--token-file`, `--verify-keys` and `--nats`, and every command but `status` `--signing-key-secret`;
-every held command reads the hub's Kubernetes objects (`--kube-namespace`, `--statefulset`,
-`--configmap`), and `restore --finish` also needs `--probe-token-file`. A family's store is
-`--dispatch-database-file F` for Dispatch and `--daemon-database PROJECT-KEY=F` for each daemon,
-each file holding the database URL with the operator's credential on its first line; a daemon's
-file holds on its second line the Cloud SQL instance connection name that URL reaches. `streams
-census` and `cleanup --gone` read a daemon's store only at the address its Deployment names, by
-the annotations `envoy-infra.consumer-names/store-database` and
-`envoy-infra.consumer-names/store-instance`: the file's URL must name that database, and its
-second line that instance (every other command reads the first line alone). Each daemon's store
-is a database of its own: an address that two Deployments name is refused, as unreconciled naming
-each Deployment and its project, by the census's readers and by `cleanup --gone`, and `enroll`
-refuses it too. Only SQLSTATE 3D000 at that address makes a store gone; any other answer, 57P01
-and 57P03 among them, which a dying server answers in the seconds after its instance is deleted,
-leaves it unreconciled. Before it changes anything, every held command reads the hub's servers,
-the protected streams, the writer census and the report again, and refuses while any client but
-itself and the auth service is connected; it reads the selection bucket only behind the hold's
-barrier on it. Every held command writes its intent, then its done or stop entry, in the hold's
-journal; a stop records what every run of it in the hold left, so `hold release` ends only a hold
-that changed nothing and `hold abort` is the way out otherwise. `streams census` reads the session
-consumers and the fresh names these records hold, and brings each daemon store's stream identity
-to the stream's, through this package's readers. Exit codes: 0 done; 1 refused, naming what; 2 a
-usage error, or UNKNOWN, a reading that is not whole, which is never a pass.
+in its database's `intake_consumers` table, and each Legion daemon's in its own database's. Its
+commands run the cutover from the fixed names, the recovery of a lost bucket, the rollback to the
+fixed names, the enrolment of a daemon store made after the cutover, the repair of the bucket's
+sentinel and the cleanup of retired names. `status` and `backup` run while the hold row is
+`released`, `prepare` while it is `prepare`, and every other command only inside a hold
+(`envoy-infra hold`) whose workflow names it. Its runbook, with each command's flags and order,
+what `status` prints and what blocks `convert`, is
+[`consumernames/README.md`](consumernames/README.md).
 
 ## The listener's sender limit
 
