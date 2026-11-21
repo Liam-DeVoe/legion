@@ -1381,3 +1381,94 @@ test("an ask drawn in its block's row names what the ask shaped there", () => {
     chips: [shaped],
   });
 });
+
+// R1, root R4: a plan task's `needs` is a chip for each task its attribute names, as the outline
+// drew one for every pointer. The read answers a tuple only where it holds the far end, so a
+// pointer at a task a write removed has none: its chip is named by the batched reference read,
+// which answers the removed task as gone ("Deleted"); a task the read ties is named by its words.
+test("a plan task's needs pointer the read ties no node to is still a chip, named by the reference read", () => {
+  const needed = `dispatch://${KEY}/artifact/plan-md#b-t1`;
+  const removed = `dispatch://${KEY}/artifact/plan-md#b-t9`;
+  const tree = answer(
+    [
+      block("t1", "plan_task", KEY, PLAN, 0),
+      block("t2", "plan_task", KEY, PLAN, 1, { attributes: { needs: `${needed} ${removed}` } }),
+    ],
+    [tuple("needs", "t2", "t1")]
+  );
+  const { root } = drawn(tree, {
+    issue: issueDetails(),
+    targets: [{ gone: true, kind: "block", name: "", ref: removed }],
+  });
+
+  expect(
+    nodeOf(root, blockNodeId("plan-md", "t2"))?.chips.map((chip) => ({
+      gone: chip.gone,
+      label: chip.label,
+      name: chip.name,
+      ref: chip.ref,
+    }))
+  ).toEqual([
+    { gone: false, label: "needs", name: "Words of t1.", ref: needed },
+    { gone: true, label: "needs", name: "", ref: removed },
+  ]);
+});
+
+// R1: an `ask` block's row draws its question as the asks read holds it, as the outline drew an
+// ask: the read's reading of the block is of its whole content, and the options it lists are the
+// asks read's, which the row's body draws apart.
+test("an ask block's row draws the asks read's question, not the options its block lists", () => {
+  const words = "At which width does the identity block condense?";
+  const whole = {
+    content: [
+      {
+        attrs: { blockId: "q-open" },
+        content: [
+          { content: [{ text: words, type: "text" }], type: "paragraph" },
+          {
+            content: [
+              "1024 px: the phone layout begins there.",
+              "1280 px: the row keeps labels.",
+            ].map((item) => ({
+              content: [{ content: [{ text: item, type: "text" }], type: "paragraph" }],
+              type: "list_item",
+            })),
+            type: "bullet_list",
+          },
+        ],
+        type: "ask",
+      },
+    ],
+    type: "doc",
+  };
+  const tree = answer([
+    block("q-open", "ask", KEY, SPEC, 0, {
+      text: `:::ask{#q-open}\n${words}\n:::`,
+      text_tree: whole,
+    }),
+  ]);
+  const { root } = drawn(tree, {
+    asks: [
+      {
+        ...question("ask-q", {
+          artifact_id: SPEC.id,
+          block_id: "q-open",
+          options: [
+            { description: "the phone layout begins there.", label: "1024 px" },
+            { description: "the row keeps labels.", label: "1280 px" },
+          ],
+          question: words,
+        }),
+        question_tree: reading(words),
+      },
+    ],
+    issue: issueDetails(),
+  });
+  const row = nodeOf(root, blockNodeId("spec", "q-open"));
+
+  expect(row === undefined ? undefined : [nodeWords(row), row.tree]).toEqual([
+    words,
+    reading(words),
+  ]);
+  expect(row?.options?.map((option) => option.label)).toEqual(["1024 px", "1280 px"]);
+});

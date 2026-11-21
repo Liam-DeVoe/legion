@@ -32,6 +32,7 @@ import {
   blockNodeId,
   checkStanding,
   type Draft,
+  deciderOf,
   decisionState,
   markKeptAndUnsure,
   plainWords,
@@ -52,10 +53,11 @@ import type { TreeAnswer, TreeAnswerNode, TreeFilter, TreeTuple } from "./tree-r
  * `serves` tuples name (root R4).
  *
  * What the answer does not hold - an ask's options and answer, a check's standing and facts, a
- * requirement's counts and gaps, a child's row - comes from the page's other reads, each row
- * matched to its node by its `dispatch://` address (`KeptReads`). A node's words are its
- * `text_tree`, read by the outline's word rules (`nodeWords`, `lineWords`), so a row reads as it
- * read when the outline was built from the page's other reads.
+ * requirement's counts and gaps, a child's row, a decision's decider - comes from the page's
+ * other reads, each row matched to its node by its `dispatch://` address (`KeptReads`). A node's
+ * words are its `text_tree`, read by the outline's word rules (`nodeWords`, `lineWords`), so a
+ * row reads as it read when the outline was built from the page's other reads; an `ask` block's
+ * are its question as the asks read holds it (`draftAsk`).
  *
  * Each kind the page draws is one step of `treeDraftSteps`. A node of any other kind - a
  * criterion, a lens and its kind, a finding, a risk, a constraint, an interaction - reaches no
@@ -564,10 +566,12 @@ function draftResult(
  * as chips, each stale where the decision changed after it named that node. Its time is its
  * words' last change, the decisions read's `changed_at` as the outline draws it, and its links
  * are that read's `shaped` edge, where it holds an entry for the decision; the read answers both
- * on the node's `decision`, the decisions read's own object, where it holds none. A person's
- * Change the read hangs under it says it waits on its agent (`decisionNodeChanges`), and it waits
- * on the reader by the outline's review list rule (`inReviewList`), where a link ties it to a
- * statement the coverage read holds.
+ * on the node's `decision`, the decisions read's own object, where it holds none. Its author is
+ * who decided it, as that entry names them (`DecisionEntry.decided_by`, `deciderOf`), since the
+ * node's `decision` names no decider; none where the read holds no entry or the entry names
+ * nobody. A person's Change the read hangs under it says it waits on its agent
+ * (`decisionNodeChanges`), and it waits on the reader by the outline's review list rule
+ * (`inReviewList`), where a link ties it to a statement the coverage read holds.
  *
  * An agent's decision of the decisions read that is no node of the answer - a section of
  * `decisions.md` a server of the release before answers - is drawn as the outline draws it, by
@@ -584,6 +588,8 @@ function draftDecision(
   const kept = context.kept.decisions.get(draft.id);
   const changedAt = kept === undefined ? decision.changed_at : kept.changed_at;
   if (typeof changedAt === "string") draft.at = changedAt;
+  const decider = deciderOf(kept?.decided_by ?? null);
+  if (decider !== undefined) draft.author = decider;
   const links = kept?.shaped ?? decision.links ?? [];
   const stale = new Set(
     links.flatMap((link) =>
@@ -615,6 +621,10 @@ function draftDecision(
  * approval request belongs to the document it reviews and is no node of the tree, as in the
  * outline. An ask the asks read has not answered for yet is open, as the outline drew an ask
  * block before that read answered.
+ *
+ * An `ask` block of a document is drawn by its question as the asks read holds it, with that
+ * read's reading of it, as the outline drew an ask: the read's reading of the block is of its
+ * whole content, whose options the asks read holds apart and the row's body draws apart.
  */
 function draftAsk(
   node: TreeAnswerNode,
@@ -634,6 +644,11 @@ function draftAsk(
     return draft;
   }
   draft.state = askState(ask);
+  if (node.document !== undefined) {
+    draft.text = ask.question;
+    if (ask.question_tree === undefined) delete draft.tree;
+    else draft.tree = ask.question_tree;
+  }
   if (ask.answer !== null) draft.answer = answerOf(ask.answer);
   if ((ask.options ?? []).length > 0) {
     draft.options = (ask.options ?? []).map((option) => ({
@@ -813,21 +828,36 @@ function tupleChips(node: TreeAnswerNode, kind: string, context: TreeDraftContex
 }
 
 /**
- * The chips of what a check or a plan task `needs`, one per task needed, in the order its tuples
- * first name each, labelled as the outline labels them. The server accepts one task needed by a
- * pinned and an unpinned pointer at once (`#b-a1@v1 #b-a1`), and both need the one task, so the
- * chips are told apart by what they name with any version pin dropped (`pinDropped`). A task
- * named both ways is drawn by its unpinned chip, which names the task's current words; one only
- * pinned ties name, by the first one's.
+ * The chips of what a check or a plan task `needs`, one per task needed, labelled as the outline
+ * labels them: each its tuples name, in the order they first name each, then each pointer of its
+ * `needs` attribute no tuple names, in the order it is written. The read answers a tuple only
+ * where the answer holds its far end (`issue_tree_read.go`'s `answer`), so a pointer at a task a
+ * write removed has none, and the outline drew a chip for every pointer the attribute holds,
+ * named by the batched reference read (`chipOf`), which names a removed task as gone; a pointer
+ * no tuple names is drawn so. The server accepts one task needed by a pinned and an unpinned
+ * pointer at once (`#b-a1@v1 #b-a1`), and both need the one task, so the chips are told apart by
+ * the node they name with any version pin dropped (`pinDropped`, `nodeIdOf`). A task named both
+ * ways is drawn by its unpinned chip, which names the task's current words; one only pinned ties
+ * name, by the first one's.
  */
 function needsChips(node: TreeAnswerNode, context: TreeDraftContext): NodeChip[] {
   const needed = new Map<string, { readonly chip: NodeChip; readonly pinned: boolean }>();
+  const keyOf = (reference: string): { readonly key: string; readonly pinned: boolean } => {
+    const { pinned, target } = pinDropped(reference);
+    return { key: context.nodeIdOf(target) ?? target, pinned };
+  };
+  const offer = (chip: NodeChip | undefined): void => {
+    if (chip === undefined) return;
+    const { key, pinned } = keyOf(chip.ref);
+    const held = needed.get(key);
+    if (held === undefined || (held.pinned && !pinned)) needed.set(key, { chip, pinned });
+  };
   for (const tuple of context.tuplesFrom(node.id)) {
-    const chip = tuple.kind === "needs" ? chipTo(tuple.to.id, context) : undefined;
-    if (chip === undefined) continue;
-    const { pinned, target } = pinDropped(chip.ref);
-    const held = needed.get(target);
-    if (held === undefined || (held.pinned && !pinned)) needed.set(target, { chip, pinned });
+    if (tuple.kind === "needs") offer(chipTo(tuple.to.id, context));
+  }
+  const tied = new Set(needed.keys());
+  for (const pointer of parseBlockPointerValue(node.attributes?.needs ?? "", POINTER_ITEMS) ?? []) {
+    if (!tied.has(keyOf(pointer).key)) offer(context.chipOf(pointer));
   }
   return [...needed.values()].map(({ chip }) => ({
     ...chip,

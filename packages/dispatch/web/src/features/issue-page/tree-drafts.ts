@@ -767,9 +767,11 @@ export function addDecisions(
  * other read names as a `user` actor. A session carries the title it stamped on what it wrote
  * (`decided_by.title`) as its origin's `session_title`, so a session the registry no longer lists
  * is still named by it (`AgentName.tsx`'s `drawnSessionName`); one that stamped none carries no
- * origin. Undefined where the entry names nobody, or a node of another kind.
+ * origin. Undefined where the entry names nobody, or a node of another kind. A decision node of
+ * the tree read draws its decider by it too (`tree-read/tree-nodes.ts`' `draftDecision`), from
+ * its entry in the decisions read, since the node's `decision` names no decider.
  */
-function deciderOf(node: DecisionEntry["decided_by"]): Actor | undefined {
+export function deciderOf(node: DecisionEntry["decided_by"]): Actor | undefined {
   if (node === null) return undefined;
   if (node.kind === "session") {
     return node.title === undefined
