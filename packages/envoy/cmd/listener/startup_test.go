@@ -305,15 +305,14 @@ func receiveAsSession(t *testing.T, client *bus.Client, sessionID string) <-chan
 	return frames
 }
 
-// callListener calls a listener /v1 route as the test's shared-token caller and returns its status
-// and body.
+// callListener calls a listener /v1 route with no credential, as a loopback listener serves it, and
+// returns its status and body.
 func callListener(t *testing.T, port int, method, path, body string) (int, string) {
 	t.Helper()
 	request, err := http.NewRequest(method, "http://127.0.0.1:"+strconv.Itoa(port)+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
-	request.Header.Set("Authorization", "Bearer "+listenerTestToken)
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -399,7 +398,6 @@ func TestTheListenerStartsOverKeysAnEarlierListenerStored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("role request: %v", err)
 	}
-	request.Header.Set("Authorization", "Bearer "+listenerTestToken)
 	if status, answer := do(t, request); status != http.StatusOK || !strings.Contains(answer, `"holder":"ses_live"`) {
 		t.Fatalf("GET /v1/roles/reviewer beside the earlier listener's keys: status %d %q, want 200 naming ses_live\n%s", status, answer, listener.Output.String())
 	}
