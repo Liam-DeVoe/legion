@@ -1058,13 +1058,17 @@ const COUNTED_SET_IS_NEVER_REQUIRED =
 
 /**
  * The sentence of `## One re-run belongs to the head` that reads the spend over every run of the
- * head, pinned whole and literally, right after the `actions/runs` read. Round 18 of INFRA-1303's
- * batch (o-head-1, 2, 4 and 5) read only the failing run's attempts, saw attempt 1, and pressed at
- * a head whose one re-run another run's attempt 2 had already spent. A reader that lost it takes
- * the failing run's first attempt for an unspent head.
+ * head once the counted set reports the check, pinned whole and literally, right after the
+ * `actions/runs` read. Round 18 of INFRA-1303's batch (o-head-1, 2, 4 and 5) read only the failing
+ * run's attempts, saw attempt 1, and pressed at a head whose one re-run another run's attempt 2 had
+ * already spent. Round 19 (three world-t reviewers) read every run before the counted set reported
+ * the check, found the failed run there, and pressed, where R1's order is the counted set's report,
+ * then the spend, then the record, then the press (the architect's sentence, 2026-11-21). A reader
+ * that lost it takes the failing run's first attempt for an unspent head, or reads the spend of a
+ * red GitHub does not count yet.
  */
 const EVERY_RUN_OF_THE_HEAD_IS_READ =
-  "Read every `pull_request` run of the head, not only the one that failed: the failing run on its first attempt says nothing, since another run's second attempt spends the head's one re-run too.";
+  "Once the counted set reports the check completed, and before any re-run of it, read the spend over every `pull_request` run of the head: the failing run on its first attempt says nothing, since another run's second attempt spends the head's one re-run too.";
 
 /**
  * The exit statuses of the ancestry read, pinned literally. The sentence read "1 is not carried
@@ -1293,7 +1297,7 @@ export function redAtTheHeadFaults(pages: {
         {
           sentence: EVERY_RUN_OF_THE_HEAD_IS_READ,
           because:
-            "a role that reads only the failing run's attempts sees attempt 1 and presses at a head whose one re-run another run already spent",
+            "a role that reads only the failing run's attempts sees attempt 1 and presses at a head whose one re-run another run already spent, and one that reads the runs before the counted set reports the check presses a red GitHub does not count yet",
         },
         {
           sentence: RECORD_BEFORE_THE_PRESS,

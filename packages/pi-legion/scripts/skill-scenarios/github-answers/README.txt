@@ -94,6 +94,21 @@ With no file, since the page holds the runs of the repository: `actions/workflow
 branch=main&per_page=1` (line 17) and `actions/runs?branch=main&per_page=1` (line 19) each answered
 a page whose run holds the same 35 keys in the same order, the run of the workflow list in the
 shape the runs list gives one.
+Measured on 2026-11-21 for INFRA-1303's round-19 fixes, with the pod's own gh 2.98.0 (a GraphQL
+read, no mutation) against cybermonklabs/legion#3514, at 21:20:43Z to 21:21:33Z: the query of
+trial-i-head-2's review threads read of round 19, `query($o:String!,$r:String!,$n:Int!,$endCursor:
+String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:
+$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{author{login}
+body}}}}}}}` (one line), each <name>.stdout what gh printed and <name>.stderr what it printed there:
+threads-paginate-slurp   gh api graphql --paginate --slurp -f query=<that query> -F o=cybermonklabs -F r=legion -F n=3514   (exit 0; one page, 52 threads and hasNextPage false, in a list of one)
+threads-paginate         the same with --paginate alone   (exit 0; the same bytes without the list's `[` and `]`)
+slurp-jq                 the same as threads-paginate-slurp with trial-i-head-2's own --jq, `[.[].data.repository.pullRequest.reviewThreads.nodes[]] | length as $c | "threads: \($c)"`   (exit 1, nothing on stdout; gh's refusal before any request, its message, a blank line and its usage: pkg/cmd/api/api.go:256-264 at v2.98.0)
+(The same query with first:20 took three pages, 20, 20 and 12 threads, hasNextPage true on the
+first two: with --slurp gh printed `[<page 1>,<page 2>,<page 3>]`, and with --paginate alone the
+three pages one after another, nothing between them and no newline after, each page the body
+GitHub sent, which is compact JSON. gh asks each next page with the variable endCursor set to the
+page's pageInfo.endCursor while its hasNextPage is true: findEndCursor in pkg/cmd/api/
+pagination.go and api.go:456-460, read from raw.githubusercontent.com at v2.98.0.)
 
 What GitHub answered to the reads below, measured the same way on 2026-11-18, which the rig's
 answers follow (no file: each is stated here and in the comment of the code that follows it):

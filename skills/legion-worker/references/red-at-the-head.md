@@ -109,9 +109,8 @@ gh pr checks <n>
 
 Never with `--required`, which prints the checks the base requires and no other, so a lane under
 an aggregate such as `ci-ok` and a check the base does not require are never in it, and on a base
-that requires nothing it prints that no required checks are reported and exits 1.
-
-At a named head, which is what a role holds after a push, the rollup of that commit:
+that requires nothing it prints that no required checks are reported and exits 1. At a named head,
+which is what a role holds after a push, the rollup of that commit:
 
 ```bash
 gh api graphql --paginate -F oid=<head> -f query='query($oid:GitObjectID!,$endCursor:String){repository(owner:"<owner>",name:"<repo>"){object(oid:$oid){... on Commit{statusCheckRollup{state contexts(first:100, after:$endCursor){totalCount pageInfo{hasNextPage endCursor} nodes{__typename ... on CheckRun{name databaseId status conclusion checkSuite{app{databaseId} workflowRun{event databaseId}}} ... on StatusContext{context state}}}}}}}}'
@@ -134,11 +133,12 @@ gh api "repos/<o>/<r>/actions/runs?head_sha=<head>&event=pull_request&per_page=1
   --jq '.workflow_runs[] | [.id,.name,.run_attempt,.conclusion] | @tsv'
 ```
 
-Read every `pull_request` run of the head, not only the one that failed: the failing run on its
-first attempt says nothing, since another run's second attempt spends the head's one re-run too. A
-run of that head whose `run_attempt` is above 1 is a re-run somebody already pressed. Whether it
-spent the head's one re-run is read on each earlier attempt of that run, `<n>` from 1 to one below
-the run's `run_attempt`:
+Once the counted set reports the check completed, and before any re-run of it, read the spend over
+every `pull_request` run of the head: the failing run on its first attempt says nothing, since
+another run's second attempt spends the head's one re-run too. A run of that head whose
+`run_attempt` is above 1 is a re-run somebody already pressed. Whether it spent the head's one
+re-run is read on each earlier attempt of that run, `<n>` from 1 to one below the run's
+`run_attempt`:
 
 ```bash
 gh api --paginate "repos/<o>/<r>/actions/runs/<run-id>/attempts/<n>/jobs?per_page=100" \

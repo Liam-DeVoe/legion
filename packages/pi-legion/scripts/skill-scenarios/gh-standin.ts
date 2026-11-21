@@ -26,8 +26,15 @@
 //   1, before any request; a name on it that the route's answer does not hold, of the object or of
 //   any object of a list, is a request the rig does not model. The fields picked print in the order
 //   gh prints them, by name. `--jq`/`-q` runs jq over what the call prints, as gh does;
-//   `--paginate` on a REST read follows every page a route's program gives (below), `--slurp`
-//   with it prints the pages in one list, and `--slurp` with a `--jq` is not modeled.
+//   `--paginate` on a REST read follows every page a route's program gives (below), and on a
+//   GraphQL query prints its one page: gh asks the next only while the page's `pageInfo` says
+//   `hasNextPage` (findEndCursor, pkg/cmd/api/pagination.go at v2.98.0), and each connection a
+//   world holds is whole, `hasNextPage` false, a page that leaves nodes out being one the rig
+//   answers only where the query does not read its page info (gh-graphql.ts). `--slurp` with it
+//   prints the pages in one list (measured, github-answers/threads-paginate-slurp and README.txt).
+//   `--slurp` with a `--jq` is refused as gh 2.98.0 refuses it, its message and its usage, exit 1,
+//   before any request (measured, github-answers/slurp-jq), and `--slurp` with no `--paginate`
+//   is not modeled.
 // A call no route matches, and a call its route matched but does not model, is a request the rig
 // does not model: it answers `rig: request not modeled: gh <argv...>` on stderr, exits 1, and its
 // record carries `unmodeled: true`, so the run is the rig's error rather than the role's
@@ -681,6 +688,28 @@ export async function parseCall(
           kind: "gh",
           stderr: `Unknown JSON field: ${JSON.stringify(unknown)}\nAvailable fields:\n${listed.map((field) => `  ${field}\n`).join("")}`,
         };
+    }
+    // gh refuses `--slurp` with `--jq` before it reads a field or sends anything, once the checks
+    // it makes first have passed: one endpoint, and no `--paginate` with a method other than GET
+    // on an endpoint other than graphql, or with an `--input`, which the rig does not model
+    // (pkg/cmd/api/api.go:226-264 at v2.98.0). Its words are measured (github-answers/slurp-jq,
+    // with trial-i-head-2's review threads read of round 19).
+    if (command === "api" && has("--slurp") && (filter ?? "") !== "") {
+      const method = flagValue("--method");
+      const paging = has("--paginate");
+      if (
+        positional.length !== 1 ||
+        (paging &&
+          method !== undefined &&
+          method.toUpperCase() !== "GET" &&
+          positional[0] !== "graphql") ||
+        (paging && (flagValue("--input") ?? "") !== "")
+      )
+        refuse();
+      return {
+        kind: "gh",
+        stderr: `the \`--slurp\` option is not supported with \`--jq\` or \`--template\`\n\n${GH_API_USAGE}`,
+      };
     }
 
     // What the call hands GitHub: a body, a review, fields and an --input.

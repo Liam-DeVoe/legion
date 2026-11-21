@@ -2760,6 +2760,92 @@ describe("the reads of the repository and the pull request", () => {
     ]).toEqual(["", true, 1]);
   });
 
+  // Round 19's trial-i-head-2 read the threads with `--paginate --slurp` and a `--jq` over the
+  // list, and the stand-in refused it as unmodeled. gh 2.98.0 refuses `--slurp` with `--jq` itself,
+  // before any request (pkg/cmd/api/api.go:256-264; measured, github-answers/slurp-jq), and pages a
+  // GraphQL query on its page info's endCursor while hasNextPage holds, `--slurp` printing the
+  // pages in one list and `--paginate` alone each page as GitHub sent it (api.go:354-467 and
+  // pagination.go; measured on cybermonklabs/legion#3514, github-answers/threads-paginate-slurp
+  // and threads-paginate). A world's threads are one page, so gh asks one. Catches: that call
+  // refused as unmodeled where gh refuses it in its own words, and the same read with no `--jq`,
+  // or with no `--slurp`, answered with other threads than the world's, in another shape than
+  // GitHub's, or printed other than gh prints its pages.
+  test("the threads read with --paginate --slurp and a --jq answers gh's refusal, and with no --jq or no --slurp the world's threads", async () => {
+    const run = builtWorld("i");
+    await postReview(run, {
+      event: "REQUEST_CHANGES",
+      body: "test (notify) is red at the head.",
+      comments: [{ path: "greet.ts", line: 2, body: "Trim before the greeting." }],
+    });
+    /** trial-i-head-2's read as it sent it, of this world's pull request, with `flags` in the
+     * place of its own and `filter` as its --jq. */
+    const threads = (flags: string[], filter?: string) =>
+      gh(run, [
+        "api",
+        "graphql",
+        ...flags,
+        "-f",
+        "query=query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{author{login} body}}}}}}}",
+        "-F",
+        "o=example",
+        "-F",
+        "r=widgets",
+        "-F",
+        `n=${RED_PR}`,
+        ...(filter === undefined ? [] : ["--jq", filter]),
+      ]);
+    const count = '| length as $c | "threads: \\($c)"';
+    const asSent = await threads(
+      ["--paginate", "--slurp"],
+      `[.[].data.repository.pullRequest.reviewThreads.nodes[]] ${count}`
+    );
+    const slurped = await threads(["--paginate", "--slurp"]);
+    const paged = await threads(["--paginate"]);
+    const counted = await threads(
+      ["--paginate"],
+      `[.data.repository.pullRequest.reviewThreads.nodes[]] ${count}`
+    );
+    /** Each key of an answer in its order, with the type of each value, a list read by its first
+     * item. */
+    const shape = (value: unknown): unknown =>
+      Array.isArray(value)
+        ? value.slice(0, 1).map(shape)
+        : typeof value === "object" && value !== null
+          ? Object.entries(value).map(([key, item]) => [key, shape(item)])
+          : typeof value;
+    const measured = (name: string) =>
+      readFileSync(path.join(import.meta.dir, "github-answers", `${name}.stdout`), "utf8");
+    const page = JSON.parse(paged.stdout).data.repository.pullRequest.reviewThreads;
+    expect({
+      asSent: [asSent.stdout, asSent.stderr, asSent.exit],
+      slurped: [slurped.stdout, slurped.stderr, slurped.exit],
+      shape: shape(JSON.parse(slurped.stdout)),
+      paged: [
+        page.pageInfo.hasNextPage,
+        page.nodes.map((thread: { isResolved: boolean; comments: unknown }) => [
+          thread.isResolved,
+          thread.comments,
+        ]),
+        paged.stderr,
+        paged.exit,
+      ],
+      counted: [counted.stdout, counted.stderr, counted.exit],
+      measured: measured("threads-paginate-slurp") === `[${measured("threads-paginate")}]`,
+    }).toEqual({
+      asSent: githubAnswer("slurp-jq"),
+      slurped: [`[${paged.stdout}]`, "", 0],
+      shape: shape(JSON.parse(measured("threads-paginate-slurp"))),
+      paged: [
+        false,
+        [[false, { nodes: [{ author: { login: "rig" }, body: "Trim before the greeting." }] }]],
+        "",
+        0,
+      ],
+      counted: ["threads: 1\n", "", 0],
+      measured: true,
+    });
+  });
+
   // Catches: a reviewer that reads its own login through GraphQL and is answered another than
   // the one `gh api user` answers, the login every kept review carries, or is refused.
   test("the GraphQL viewer's login is the login gh api user answers", async () => {
