@@ -3846,7 +3846,8 @@ Every address a pod is handed must be one a pod can reach, so `daemon_url`, `env
 This is a breaking configuration change for a file that names a host in Unicode; write it in its `xn--` form.
 `envoy_url` and each `nats_urls` entry are endpoints, not request URLs: they refuse a query string or fragment.
 This is a breaking configuration change for a file that has either; put credentials in URL userinfo or in a Secret, never in a query.
-`envoy_url`, `dispatch_url` and `daemon_url` also refuse an `@` after the host, which is how a token or password holding an unescaped `/`, `?` or `#` written in the userinfo parses; write such a credential percent-encoded (`%2F`, `%3F`, `%23`). The refusal names the key and quotes none of the URL.
+`envoy_url`, `dispatch_url`, `daemon_url` and each `nats_urls` entry also refuse an `@` after the host, which is how a token or password holding an unescaped `/`, `?` or `#` written in the userinfo parses; write such a credential percent-encoded (`%2F`, `%3F`, `%23`).
+The refusal names the key, or a `nats_urls` entry by its position, and quotes none of the URL.
 `advertise_host` is an IP address or an ASCII DNS name, the host alone, and only `runtime: kubernetes` accepts it.
 A pod's own IP changes on every restart, so a daemon running inside the cluster binds `0.0.0.0` and lets `advertise_host` name the Service DNS name that reaches whichever pod is live.
 Pods dial it at the port the worker stream listens on, so the Service exposes `worker_stream_port` as that same port number.

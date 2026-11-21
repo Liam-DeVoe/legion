@@ -685,16 +685,18 @@ func namesKey(value *yaml.Node, name string) bool {
 	return false
 }
 
-// readNatsURLs is `nats_urls`: valid URLs, in order, each once.
+// readNatsURLs is `nats_urls`: valid URLs, in order, each once. A refusal names its entry by its
+// position alone (`nats_urls entry 2`), never by any of its text: a query can hold a token, and a
+// token holding a "/" written as the user is what validURL refuses for an "@" after its host.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	read, err := readStrings(value, key)
 	if err != nil || read == nil {
 		return read, err
 	}
 	urls := make([]string, 0, len(read))
-	for _, raw := range read {
+	for index, raw := range read {
 		if _, err := endpointURL(raw, key); err != nil {
-			return nil, fmt.Errorf("%s entry %q%s", key, raw, strings.TrimPrefix(err.Error(), key))
+			return nil, fmt.Errorf("%s entry %d%s", key, index+1, strings.TrimPrefix(err.Error(), key))
 		}
 		if !slices.Contains(urls, raw) {
 			urls = append(urls, raw)

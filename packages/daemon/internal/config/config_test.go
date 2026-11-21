@@ -1095,13 +1095,21 @@ func TestLoadRefuses(t *testing.T) {
 			name: "nats_urls entry with a query string",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
 				`nats_urls: ["nats://127.0.0.1:4222?token=token"]`+"\n", 1),
-			want: `nats_urls entry "nats://127.0.0.1:4222?token=token" must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+			want: `nats_urls entry 1 must not include a query string or fragment; use URL userinfo or a secret for credentials`,
 		},
 		{
 			name: "nats_urls entry with a fragment",
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
 				`nats_urls: ["nats://127.0.0.1:4222#fragment"]`+"\n", 1),
-			want: `nats_urls entry "nats://127.0.0.1:4222#fragment" must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+			want: `nats_urls entry 1 must not include a query string or fragment; use URL userinfo or a secret for credentials`,
+		},
+		{
+			// A made-up token holding a "/", written as the user: the refusal names the entry by its
+			// position and quotes none of it, where it quoted the entry whole.
+			name: "nats_urls entry naming a token that holds a / as its user",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222", "nats://madeUpNatsToken/abc@127.0.0.1:4222"]`+"\n", 1),
+			want: `nats_urls entry 2 cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`,
 		},
 		{
 			name: "envoy_url with a query string",
@@ -1257,7 +1265,7 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			name: "nats_urls holding something that is not a URL",
 			body: minimalFile + "nats_urls: [nats://127.0.0.1:4222, nats-host]\n",
-			want: `nats_urls entry "nats-host" must be a valid URL`,
+			want: `nats_urls entry 2 must be a valid URL`,
 		},
 		{
 			name: "envoy_token_file blank",
