@@ -82,9 +82,6 @@ const (
 	ServerDown     Point = "server.down"
 )
 
-// HoldPoints are the hold points, in the order above.
-var HoldPoints = []Point{WritePreIO, WritePreRename, FlushEncoded, StoreCreate, APIWorker, ClientPublish, MetaApply, StreamApply}
-
 // missing are the hold points a hooked server version does not have, each with the reason.
 var missing = map[string]map[Point]string{
 	"2.10.29": {WritePreRename: "it writes a consumer's o.dat in place, with no temporary file and no rename"},
