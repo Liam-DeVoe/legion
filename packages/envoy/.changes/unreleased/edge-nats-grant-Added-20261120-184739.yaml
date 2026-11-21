@@ -7,7 +7,7 @@ body: |-
   receipts), `notifications.envoy.resume.>`, and
   `notifications.envoy.exceptions.notifications.agent.>` and
   `notifications.envoy.exceptions.notifications.role.<KEY>.>` for each project, with no create or
-  update of the stream, and subscribing its own machine's inbox prefix
+  update of the stream or of any bucket's stream (so it sets no republish), and subscribing its own machine's inbox prefix
   `_INBOX_envoy_edge_<machine id>.>`, the relay subjects and its own machine's relay receipts
   `notifications.envoy.relayreply.<machine id>.>`, and no role lane. Both refuse a machine id that
   is not one subject token and a project list that is empty or not project keys, sorted, each once.

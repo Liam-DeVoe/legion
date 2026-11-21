@@ -170,7 +170,8 @@ func EdgeInboxPrefix(machineID string) string {
 // EdgeRelayReplyPrefix is the receipt family of the edge listener of machine machineID:
 // bus.RelayReplyPrefix followed by the machine id, under which its session relay names a relay
 // frame's receipt subject (the prefix, a dot and a token of its own). Edge subscribes only its own
-// machine's family, so no edge machine reads another machine's receipts, and publishes every edge
+// machine's family, so no edge machine subscribes another machine's receipts, and since it can
+// change no stream's subjects, no stream it reads captures them. It publishes every edge
 // machine's (bus.RelayReplyPrefix): the listener serving a session's relay socket may be another
 // edge machine than the one holding the session's consumer, and it publishes the receipt on the
 // owner's family. So one edge machine can forge a receipt for another machine's frame, which adds
@@ -209,11 +210,18 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // kept role lane (bus.KeptTopicPrefix, its copies and drain cursors, which only a listener that
 // takes the role lane writes), no exception of any other topic and no reply to another client's
 // request. A message on a role lane of its own project that names a role of another project is
-// the shared listeners' role lane to refuse. It holds no create or update of the stream, so it
-// cannot change the stream's configuration: its start reads the stream and refuses when it is
-// missing. The rest of Listener's publish list stays as it is: the stream's info and
-// stored-message get, its durable's calls, JetStream's account info, the KV calls of every bucket
-// of bus.ListenerBuckets, the interest bucket's purge and the session consumers' calls.
+// the shared listeners' role lane to refuse. It holds no create or update of the stream or of any
+// bucket's stream, so it cannot change any stream's configuration - its subjects, its limits, or a
+// republish. On the hub's image a republish to a $JS.API. subject reaches that subject's
+// subscribers and the JetStream API takes no action on it
+// (TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI). Its start reads the stream and
+// refuses when it is
+// missing, and opens each bucket by finding it (bus.EnsureKeyValue): a bucket the server lacks,
+// or holds at fewer copies than the deployment's count, ends the start naming the bucket's create
+// or raise the server refused. The rest of Listener's publish list stays as it is: the stream's
+// info and stored-message get, its durable's calls, JetStream's account info, the KV calls of
+// every bucket of bus.ListenerBuckets but its stream's create and update, the interest bucket's
+// purge and the session consumers' calls.
 //
 // Subscribe: its own machine's inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so
 // the server delivers it no other client's replies; every session's relay subject
@@ -252,6 +260,11 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //     its stream subject, as a message of that stream and never as a key, and counts it toward
 //     that stream's limits. That is the one write this route has, and it needs some other client
 //     to subscribe the deliver subject, since the edge subscribes none a stream takes.
+//   - Its KV calls include a consumer on each bucket's stream (CONSUMER.CREATE.KV_<bucket>.>),
+//     and that stream does not carry the notification subjects, so such a consumer can deliver a
+//     bucket's message onto the Dispatch, GitHub, Slack, Legion, team, kept and resume subjects
+//     wherever a client subscribes them: the cycle refusal holds only for the notification
+//     stream's own consumers.
 //   - Today's agent, relay and resume subjects name no project, so it can publish on any
 //     session's, and a consumer on any filter reads any stored message.
 //   - Its KV calls write every record of the seven buckets of bus.ListenerBuckets: interests,
@@ -270,6 +283,9 @@ func Edge(machineID string, projects []string) (Permissions, error) {
 		bus.NotificationTopicPrefix + ">",
 		jsAPI + "STREAM.CREATE." + bus.Stream,
 		jsAPI + "STREAM.UPDATE." + bus.Stream,
+	}
+	for _, bucket := range bus.ListenerBuckets() {
+		removed = append(removed, jsAPI+"STREAM.CREATE."+kvStream+bucket, jsAPI+"STREAM.UPDATE."+kvStream+bucket)
 	}
 	publish := []string{contracts.AgentTopicPrefix + ">"}
 	for _, project := range projects {

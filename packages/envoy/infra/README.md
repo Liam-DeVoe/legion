@@ -4003,12 +4003,17 @@ that names no project, nothing on the kept role lane `notifications.envoy.kept.>
 exception lane. A message on a role lane of its own project that
 names a role of another project is the shared listeners' role lane to refuse, which it does once
 the edge mode of #4657 is in. It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
-`ENVOY_NOTIFICATIONS`: an edge listener reads the stream and its start ends, naming the stream, on
-a server that has none. It subscribes its own machine's inbox prefix
+`ENVOY_NOTIFICATIONS` or of any bucket's stream (`KV_<bucket>`), so it can change no stream's
+subjects, limits or republish. On the hub's image a republish to a `$JS.API.…` subject reaches
+that subject's subscribers and the JetStream API takes no action on it; the edge cannot set one
+anyway. An edge listener reads the stream and its start ends, naming the stream, on a server that has
+none, and it finds each bucket: one the server lacks, or holds at fewer copies than
+`ENVOY_NATS_REPLICAS`, ends the start naming the refused create or raise. It subscribes its own
+machine's inbox prefix
 `_INBOX_envoy_edge_<machine id>.>` in place of `_INBOX.>`, so one edge machine is delivered no
 other machine's replies, every session's relay subject `notifications.envoy.deliver.*`, its own
-machine's relay receipts `notifications.envoy.relayreply.<machine id>.>`, so no edge machine reads
-another machine's receipts, and no role lane: every
+machine's relay receipts `notifications.envoy.relayreply.<machine id>.>`, so no edge machine
+subscribes another machine's receipts, and no stream it reads captures them, and no role lane: every
 connection of an edge listener names its inboxes under that prefix, and a shared listener forwards
 a role message held at the edge to the holder's agent subject. Its lists name no `agentstream.`
 subject.
@@ -4060,7 +4065,11 @@ What the lists do not hold back:
 - Today's agent, relay and resume subjects name no project, so an edge listener can publish on
   any session's.
 - Its key-value calls write every record of the seven listener buckets: interests, roles,
-  sessions, known sessions, Legion agents, CI state and DPoP proofs.
+  sessions, known sessions, Legion agents, CI state and DPoP proofs. They include a consumer on
+  each bucket's stream, which does not carry the notification subjects, so such a consumer can
+  deliver a bucket's message onto the Dispatch, GitHub, Slack, Legion, team, kept and resume
+  subjects wherever a client subscribes them: the cycle refusal above holds only for the
+  notification stream's own consumers.
 
 Its read is the whole bus until subjects and keys name their project, and its writes through the
 consumer calls are as wide until something other than the edge creates its consumers. The auth

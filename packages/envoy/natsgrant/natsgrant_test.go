@@ -135,9 +135,9 @@ func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 			listener, edge := natsgrant.Listener(id), edge(t, id, projects...)
 			require.Equal(t, "notifications.>", listener.Publish[0])
 			kept := slices.DeleteFunc(slices.Clone(listener.Publish[1:]), func(entry string) bool {
-				return entry == "$JS.API.STREAM.CREATE.ENVOY_NOTIFICATIONS" || entry == "$JS.API.STREAM.UPDATE.ENVOY_NOTIFICATIONS"
+				return strings.HasPrefix(entry, "$JS.API.STREAM.CREATE.") || strings.HasPrefix(entry, "$JS.API.STREAM.UPDATE.")
 			})
-			require.Len(t, kept, len(listener.Publish)-3, "Listener(%q) holds every notification topic, the stream's create and its update", id)
+			require.Len(t, kept, len(listener.Publish)-1-2*(1+len(bus.ListenerBuckets())), "Listener(%q) holds every notification topic, and the create and update of the stream and of each bucket's stream", id)
 			own := []string{"notifications.agent.>"}
 			for _, project := range projects {
 				own = append(own, "notifications.role."+project+".>")
@@ -222,6 +222,9 @@ func TestTheEdgeGrantPublishesNothingOutsideItsLanes(t *testing.T) {
 		"notifications.envoy.exceptions.notifications.role.INFRA.x",
 		"notifications.envoy.exceptions.notifications.team.deploy-squad",
 		"notifications.envoy.relayreply",
+		"$JS.API.STREAM.CREATE.KV_envoy_interests",
+		"$JS.API.STREAM.UPDATE.KV_envoy_interests",
+		"$JS.API.STREAM.UPDATE.KV_envoy_dpop_proofs",
 	} {
 		require.False(t, admits(edge.Publish, subject), "Edge publishes %s", subject)
 		require.True(t, admits(listener.Publish, subject), "Listener does not publish %s, so the matcher finds nothing", subject)
