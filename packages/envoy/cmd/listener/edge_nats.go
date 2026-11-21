@@ -30,14 +30,14 @@ import (
 func edgeMode(cfg config.Service) bool { return len(cfg.EdgeProjects) > 0 }
 
 // listenerConnectOptions are the options every NATS connection of the listener takes, the main
-// client's and the session consumers' alike: in edge mode the edge's inbox prefix
+// client's and the session consumers' alike: in edge mode the edge's inbox prefix for its machine
 // (natsgrant.EdgeInboxPrefix), which is the one inbox family its grant subscribes, and none
 // otherwise.
 func listenerConnectOptions(cfg config.Service) []bus.ConnectOption {
 	if !edgeMode(cfg) {
 		return nil
 	}
-	return []bus.ConnectOption{bus.WithInboxPrefix(natsgrant.EdgeInboxPrefix)}
+	return []bus.ConnectOption{bus.WithInboxPrefix(natsgrant.EdgeInboxPrefix(cfg.MachineID))}
 }
 
 // connectListenerBus opens the listener's main client. Every listener but an edge one owns the
@@ -98,13 +98,18 @@ type edgeGrant struct {
 }
 
 // newEdgeGrant is the grant of the edge listener of machineID serving projects, counting what it
-// withholds on met.
-func newEdgeGrant(machineID string, projects []string, met *metrics.Registry) *edgeGrant {
+// withholds on met. It refuses what natsgrant.Edge refuses: a project list config.Load would not
+// have read.
+func newEdgeGrant(machineID string, projects []string, met *metrics.Registry) (*edgeGrant, error) {
+	grant, err := natsgrant.Edge(machineID, projects)
+	if err != nil {
+		return nil, fmt.Errorf("edge mode: the edge listener's grant: %w", err)
+	}
 	return &edgeGrant{
-		publish: natsgrant.Edge(machineID, projects).Publish,
+		publish: grant.Publish,
 		withheld: met.NewCounter("envoy_edge_exceptions_withheld_total",
 			"Delivery exceptions the edge listener did not publish because its NATS grant holds no publish of their lane, by the topic prefix of the message each reports and its reason; the message is finalized as if the exception had gone out"),
-	}
+	}, nil
 }
 
 // withholds reports whether the edge withholds item's delivery exception for reason: whether the

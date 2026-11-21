@@ -156,11 +156,20 @@ func TestListenerPermissionsNameTheDurableAndQueueOfAMachineIDWithASpace(t *test
 	require.Contains(t, p.Subscribe.Allow, "notifications.role.> envoy-listener-example-host")
 }
 
+// edgePermissions is core.EdgePermissions(machineID, projects), which must take the list.
+func edgePermissions(t *testing.T, machineID string, projects ...string) core.Permissions {
+	t.Helper()
+	p, err := core.EdgePermissions(machineID, projects)
+	require.NoError(t, err, "EdgePermissions(%q, %v)", machineID, projects)
+	return p
+}
+
 // The edge listener's set is the listener's with the edge's changes: in place of every
 // notification topic, its own lanes (the agent subjects, each project's role subjects, the relay
 // subjects and receipts, the resume lane, and the exception lanes of the agent subjects and of
-// each project's role subjects), no create or update of the stream, its own inbox prefix in place
-// of every reply inbox, every session's relay subject and the relay receipts, and no role lane.
+// each project's role subjects), no create or update of the stream, its own machine's inbox prefix
+// in place of every reply inbox, every session's relay subject and the relay receipts, and no role
+// lane.
 func TestEdgePermissions(t *testing.T) {
 	edgePublish := []string{
 		"notifications.agent.>",
@@ -181,20 +190,32 @@ func TestEdgePermissions(t *testing.T) {
 	require.Len(t, edgePublish, len(listenerPublish)+4)
 	require.Equal(t, core.Permissions{
 		Publish:   core.Rules{Allow: edgePublish},
-		Subscribe: core.Rules{Allow: []string{"_INBOX_envoy_edge.>", "notifications.envoy.deliver.*", "notifications.envoy.relayreply.>"}},
-	}, core.EdgePermissions("example-host-a", []string{"PRIV"}))
+		Subscribe: core.Rules{Allow: []string{"_INBOX_envoy_edge_example-host-a.>", "notifications.envoy.deliver.*", "notifications.envoy.relayreply.>"}},
+	}, edgePermissions(t, "example-host-a", "PRIV"))
+}
+
+// EdgePermissions refuses a project list natsgrant.Edge refuses, and renders nothing of it: a
+// wildcard key would render every project's role subjects.
+func TestEdgePermissionsRefuseAListThatIsNoListOfProjectKeys(t *testing.T) {
+	for _, projects := range [][]string{{"*"}, {">"}, {"PRIV.X"}, {"priv"}, {"PRIV", "PRIV"}, {"PRIV", "OTHER"}} {
+		p, err := core.EdgePermissions("example-host-a", projects)
+		require.Error(t, err, "EdgePermissions(example-host-a, %q)", projects)
+		require.Equal(t, core.Permissions{}, p)
+	}
 }
 
 // A user holding EdgePermissions subscribes to no reply inbox of another client: its replies come
-// under its own prefix, which no other client's inbox begins with. The rules are read from the
-// rendered block, as the server reads them; the listener's own set, which the same check reads,
-// subscribes to every reply inbox.
+// under its own machine's prefix, which no other client's inbox begins with, another edge
+// machine's included. The rules are read from the rendered block, as the server reads them; the
+// listener's own set, which the same check reads, subscribes to every reply inbox.
 func TestEdgePermissionsRefuseASubscribeToOtherClientsInboxes(t *testing.T) {
-	_, subscribe := renderedRules(t, core.EdgePermissions("example-host-a", []string{"PRIV"}))
-	require.Contains(t, subscribe, "_INBOX_envoy_edge.>")
+	_, subscribe := renderedRules(t, edgePermissions(t, "example-host-a", "PRIV"))
+	require.Contains(t, subscribe, "_INBOX_envoy_edge_example-host-a.>")
 	for _, entry := range subscribe {
 		require.False(t, admitsInbox(entry), "the edge's subscribe entry %q admits a reply inbox", entry)
 	}
+	_, other := renderedRules(t, edgePermissions(t, "example-host-b", "PRIV"))
+	require.NotContains(t, other, "_INBOX_envoy_edge_example-host-a.>")
 	_, listener := renderedRules(t, core.ListenerPermissions("example-host-a"))
 	require.True(t, slices.ContainsFunc(listener, admitsInbox), "the listener's set subscribes to the inboxes")
 }
@@ -206,7 +227,9 @@ func TestEdgePermissionsRefuseASubscribeToOtherClientsInboxes(t *testing.T) {
 func TestEdgePermissionsAreTheEdgeGrant(t *testing.T) {
 	for _, id := range []string{"m", "example-edge-a", "example host"} {
 		for _, projects := range [][]string{{"PRIV"}, {"OTHER", "PRIV"}} {
-			grant, rules := natsgrant.Edge(id, projects), core.EdgePermissions(id, projects)
+			grant, err := natsgrant.Edge(id, projects)
+			require.NoError(t, err)
+			rules := edgePermissions(t, id, projects...)
 			require.Equal(t, grant.Publish, rules.Publish.Allow, "EdgePermissions(%q, %v) publish", id, projects)
 			require.Equal(t, grant.Subscribe, rules.Subscribe.Allow, "EdgePermissions(%q, %v) subscribe", id, projects)
 			require.Empty(t, rules.Publish.Deny, "EdgePermissions(%q, %v) publish deny", id, projects)
@@ -337,7 +360,7 @@ func TestDispatchPermissions(t *testing.T) {
 func TestOnlyTheListenersOwnSetsHoldTheSessionConsumersCalls(t *testing.T) {
 	require.Subset(t, core.ListenerPermissions("example-host-a").Publish.Allow, sessionConsumerPublish)
 	require.Subset(t, core.ListenerHostPermissions("example-host-a").Publish.Allow, sessionConsumerPublish)
-	require.Subset(t, core.EdgePermissions("example-host-a", []string{"PRIV"}).Publish.Allow, sessionConsumerPublish)
+	require.Subset(t, edgePermissions(t, "example-host-a", "PRIV").Publish.Allow, sessionConsumerPublish)
 	for name, p := range map[string]core.Permissions{
 		"host":     core.HostPermissions("example-host-a"),
 		"dispatch": core.DispatchPermissions("example-host-a"),
@@ -359,7 +382,7 @@ func TestNoSetRepeatsAnEntry(t *testing.T) {
 		"host":          core.HostPermissions("example-host-a"),
 		"daemon":        core.DaemonPermissions(),
 		"dispatch":      core.DispatchPermissions("example-host-a"),
-		"edge":          core.EdgePermissions("example-host-a", []string{"OTHER", "PRIV"}),
+		"edge":          edgePermissions(t, "example-host-a", "OTHER", "PRIV"),
 	}
 	for name, p := range sets {
 		for direction, allow := range map[string][]string{"publish": p.Publish.Allow, "subscribe": p.Subscribe.Allow} {

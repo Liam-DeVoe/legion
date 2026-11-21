@@ -180,7 +180,9 @@ func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
 			require.NoError(t, err)
 			decision, err := Decide(t.Context(), deps, services, serviceRequest("edge-token"))
 			require.NoError(t, err)
-			require.Equal(t, Decision{Name: "edge-listener/edge-a", Grant: natsgrant.Edge("edge-a", test.projects), Expires: now.Add(time.Hour)}, decision)
+			want, err := natsgrant.Edge("edge-a", test.projects)
+			require.NoError(t, err)
+			require.Equal(t, Decision{Name: "edge-listener/edge-a", Grant: want, Expires: now.Add(time.Hour)}, decision)
 			for _, project := range test.projects {
 				require.Contains(t, decision.Grant.Publish, "notifications.role."+project+".>")
 				require.Contains(t, decision.Grant.Publish, "notifications.envoy.exceptions.notifications.role."+project+".>")
@@ -190,6 +192,17 @@ func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
 			require.Nil(t, guard(decision.Grant))
 		})
 	}
+}
+
+// An edge listener's entry whose projects natsgrant.Edge refuses - one ParseServices would not
+// have read, a wildcard among them - is answered with no grant, which the guard refuses as an open
+// direction, and never with a grant built of that list.
+func TestAnEdgeEntryWhoseProjectsEdgeRefusesGetsNoGrant(t *testing.T) {
+	grant := serviceGrant(ServiceEntry{Kind: KindEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"*"}})
+	require.Equal(t, natsgrant.Permissions{}, grant)
+	refused := guard(grant)
+	require.NotNil(t, refused)
+	require.Equal(t, labelOpenDirection, refused.Label)
 }
 
 // Every refusal is one line naming why, carries nothing of the credential, and is counted under
