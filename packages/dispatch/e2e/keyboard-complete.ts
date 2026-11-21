@@ -313,6 +313,26 @@ export function dismissWrites(page: Page): KeyedWrite<unknown>[] {
   return watchWrites(page, "POST", DISMISS_PATH);
 }
 
+/** The writes in `writes` as the actions they carry, in the order each first went out: the first
+ *  request of each distinct `Idempotency-Key`, so an attempt the page sends again under its key
+ *  is the same write (`KeyedWrite`). Each request sent with no key is kept as a write of its own,
+ *  so a write the page sends unkeyed is never merged with another. */
+export function firstAttempts<T>(writes: readonly KeyedWrite<T>[]): KeyedWrite<T>[] {
+  const keys = new Set<string>();
+  return writes.filter(({ key }) => {
+    if (key === undefined) return true;
+    if (keys.has(key)) return false;
+    keys.add(key);
+    return true;
+  });
+}
+
+/** How many writes `writes` holds, read as the actions they carry: the length of
+ *  `firstAttempts`, so a count and a row's read of the n-th write never disagree. */
+export function writesSent(writes: readonly KeyedWrite<unknown>[]): number {
+  return firstAttempts(writes).length;
+}
+
 /** The writes `holdWrites` caught, and what lets them through. */
 export interface HeldWrites {
   /** Each write's body, in the order sent. */

@@ -81,6 +81,7 @@ import {
   dismissThread,
   dismissWrites,
   expectKeyHint,
+  firstAttempts,
   type HeldWrites,
   handOnControl,
   handOnWrites,
@@ -105,6 +106,7 @@ import {
   snoozeWrites,
   unsnoozeWrites,
   versionReviewWrites,
+  writesSent,
 } from "./keyboard-complete";
 import { onBody, openIssue } from "./keyboard-issue";
 import { type KeyedWrite, watchWrites } from "./keyed-writes";
@@ -205,9 +207,9 @@ function laterBand(inbox: InboxAt, count: number): Locator {
   return inbox.scope.getByRole("button", { name: new RegExp(`^Later \\(${count}\\)`) });
 }
 
-/** How many writes the lists of writes hold together. */
+/** How many writes the lists of writes hold together, each list counted by `writesSent`. */
 function countOf(writes: readonly (readonly KeyedWrite<unknown>[])[]): number {
-  return writes.reduce((sum, list) => sum + list.length, 0);
+  return writes.reduce((sum, list) => sum + writesSent(list), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -326,10 +328,12 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   const laterFrom = Date.now();
   await page.keyboard.press("Enter");
   await expect
-    .poll(() => snoozesOf(first).length, { message: step("Enter writes Later today: one request") })
+    .poll(() => writesSent(snoozesOf(first)), {
+      message: step("Enter writes Later today: one request"),
+    })
     .toBe(1);
   expect(sent(), step("Enter sends one request")).toBe(1);
-  const laterToday = snoozedUntil(snoozesOf(first)[0]);
+  const laterToday = snoozedUntil(firstAttempts(snoozesOf(first))[0]);
   expect(laterToday, step("Enter writes Later today: a moment ahead")).toBeGreaterThan(laterFrom);
   expect(laterToday, step("Enter writes Later today: three hours on at most")).toBeLessThanOrEqual(
     Date.now() + 3 * 60 * 60 * 1000
@@ -343,12 +347,13 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   const mornings = await returnMornings(page);
   await page.keyboard.press("2");
   await expect
-    .poll(() => snoozesOf(second).length, { message: step("2 sends one request") })
+    .poll(() => writesSent(snoozesOf(second)), { message: step("2 sends one request") })
     .toBe(1);
   expect(sent(), step("2 sends one request")).toBe(2);
-  expect(snoozedUntil(snoozesOf(second)[0]), step("2 snoozes the ask until Tomorrow")).toBe(
-    mornings.tomorrow
-  );
+  expect(
+    snoozedUntil(firstAttempts(snoozesOf(second))[0]),
+    step("2 snoozes the ask until Tomorrow")
+  ).toBe(mornings.tomorrow);
 
   // The third ask's menu from a click on its Snooze control: Tab, and a click outside, close it.
   await goTo(inbox, third);
@@ -391,7 +396,7 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   const week = await returnMornings(page);
   await page.keyboard.press("3");
   await expect
-    .poll(() => [snoozesOf(second).length, snoozesOf(third).length], {
+    .poll(() => [writesSent(snoozesOf(second)), writesSent(snoozesOf(third))], {
       message: step("b then 3 sends one snooze for each selected ask"),
     })
     .toEqual([2, 1]);
@@ -401,7 +406,7 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
     [third, 0],
   ] as const) {
     expect(
-      snoozedUntil(snoozesOf(id)[index]),
+      snoozedUntil(firstAttempts(snoozesOf(id))[index]),
       step("b then 3 snoozes each selected ask until Next week")
     ).toBe(week.nextWeek);
   }
@@ -414,7 +419,7 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   await expectSnoozeChoices(menu, step("a snoozed ask's menu also holds Un-snooze"), true);
   await page.keyboard.press("0");
   await expect
-    .poll(() => unsnoozes.length, { message: step("0 un-snoozes the ask: one request") })
+    .poll(() => writesSent(unsnoozes), { message: step("0 un-snoozes the ask: one request") })
     .toBe(1);
   expect(sent(), step("0 sends one request, the un-snooze")).toBe(5);
 }
@@ -532,8 +537,10 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   await page.keyboard.press("p");
   await expect(menu, step("p opens the menu again")).toBeVisible();
   await page.keyboard.press("0");
-  await expect.poll(() => writes.length, { message: step("p then 0 sends one write") }).toBe(1);
-  expect(writes[0]?.input, step("p then 0 writes P0")).toEqual({ priority: 0 });
+  await expect
+    .poll(() => writesSent(writes), { message: step("p then 0 sends one write") })
+    .toBe(1);
+  expect(firstAttempts(writes)[0]?.input, step("p then 0 writes P0")).toEqual({ priority: 0 });
   await expect(mark, step("after p then 0 the row's mark reads P0")).toHaveText("P0");
   await expectStillOn(inbox, seed.askId, step("after p then 0"));
   await page.keyboard.press("p");
@@ -542,9 +549,11 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   await expect(radio("P1"), step("ArrowDown moves the highlight to P1")).toBeFocused();
   await page.keyboard.press("Enter");
   await expect
-    .poll(() => writes.length, { message: step("p, ArrowDown, Enter sends one write") })
+    .poll(() => writesSent(writes), { message: step("p, ArrowDown, Enter sends one write") })
     .toBe(2);
-  expect(writes[1]?.input, step("Enter writes the highlighted P1")).toEqual({ priority: 1 });
+  expect(firstAttempts(writes)[1]?.input, step("Enter writes the highlighted P1")).toEqual({
+    priority: 1,
+  });
   await expect(mark, step("after Enter the row's mark reads P1")).toHaveText("P1");
   await expectStillOn(inbox, seed.askId, step("after p, ArrowDown, Enter"));
 
@@ -575,7 +584,7 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
   }
-  expect(writes, step("nothing else writes the priority")).toHaveLength(2);
+  expect(writesSent(writes), step("nothing else writes the priority")).toBe(2);
 }
 
 // SLOW(>=2s): three kinds of item seeded, two writes read back, and the help opened twice.
@@ -613,11 +622,13 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
   await expect(radio("P2"), "k-priority-menu: on the issue page p highlights P2").toBeFocused();
   await page.keyboard.press("1");
   await expect
-    .poll(() => writes.length, { message: "k-priority-menu: on the issue page 1 sends one write" })
+    .poll(() => writesSent(writes), {
+      message: "k-priority-menu: on the issue page 1 sends one write",
+    })
     .toBe(1);
-  expect(writes[0]?.input, "k-priority-menu: on the issue page 1 writes P1").toEqual({
-    priority: 1,
-  });
+  expect(firstAttempts(writes)[0]?.input, "k-priority-menu: on the issue page 1 writes P1").toEqual(
+    { priority: 1 }
+  );
   await expect(
     priorityTrigger(page.getByTestId("issue-header"), issue.key),
     "k-priority-menu: on the issue page the header reads P1"
@@ -638,10 +649,7 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
   // A write is counted by its key: one the page sends again under the same key - an attempt
   // after one that got no answer, or one a load of the next page sends again because it was
   // still out - is that one write, which CI run 44535117619 saw twice here.
-  expect(
-    new Set(writes.map((write) => write.key)).size,
-    "k-priority-menu: on the Board Escape writes nothing"
-  ).toBe(1);
+  expect(writesSent(writes), "k-priority-menu: on the Board Escape writes nothing").toBe(1);
 
   // The project List: a click on a row's priority control opens the same menu.
   await page.getByRole("button", { exact: true, name: "List" }).click();
@@ -657,10 +665,7 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
   );
   await page.keyboard.press("Escape");
   await expect(menu, "k-priority-menu: on the List Escape closes the menu").toHaveCount(0);
-  expect(
-    new Set(writes.map((write) => write.key)).size,
-    "k-priority-menu: on the List nothing more is written"
-  ).toBe(1);
+  expect(writesSent(writes), "k-priority-menu: on the List nothing more is written").toBe(1);
 });
 
 // ---------------------------------------------------------------------------
@@ -717,11 +722,14 @@ test("k-status-menu: s opens the status menu on the issue page, where the arrows
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await expect
-    .poll(() => writes.length, { message: "k-status-menu: s, ArrowDown, Enter sends one write" })
+    .poll(() => writesSent(writes), {
+      message: "k-status-menu: s, ArrowDown, Enter sends one write",
+    })
     .toBe(1);
-  expect(writes[0]?.input, "k-status-menu: Enter writes the highlighted In progress").toEqual({
-    status: "in_progress",
-  });
+  expect(
+    firstAttempts(writes)[0]?.input,
+    "k-status-menu: Enter writes the highlighted In progress"
+  ).toEqual({ status: "in_progress" });
   await expect(status, "k-status-menu: the header shows In progress").toHaveText("In progress");
 });
 
@@ -892,11 +900,12 @@ async function choiceWritesOnEnter(page: Page, choice: ChoiceControl): Promise<v
   const chosen = await pressChoiceKeys(page, choice, rest, "the keys before Enter");
   await page.keyboard.press("Enter");
   await expect
-    .poll(() => choice.writes.length, { message: `${say}: Enter sends one request` })
+    .poll(() => writesSent(choice.writes), { message: `${say}: Enter sends one request` })
     .toBe(1);
-  expect(choice.writes[0]?.input, `${say}: Enter writes the choice shown, ${chosen.text}`).toEqual(
-    choice.body(chosen.text)
-  );
+  expect(
+    firstAttempts(choice.writes)[0]?.input,
+    `${say}: Enter writes the choice shown, ${chosen.text}`
+  ).toEqual(choice.body(chosen.text));
 }
 
 // SLOW(>=2s): the issue page loaded and its assignee driven through four passes of seven keys.
@@ -1281,7 +1290,9 @@ test("k-phone: a tap opens the Snooze and the priority menus, whose choices take
   await snooze.tap();
   await menu.getByRole("menuitem", { exact: true, name: "Tomorrow" }).tap();
   await expect
-    .poll(() => snoozes[0]?.length, { message: "k-phone: a tap on Tomorrow sends one snooze" })
+    .poll(() => writesSent(snoozes[0] ?? []), {
+      message: "k-phone: a tap on Tomorrow sends one snooze",
+    })
     .toBe(1);
   expect(sent(), "k-phone: a tap on Tomorrow sends nothing else").toBe(1);
 
@@ -1290,9 +1301,11 @@ test("k-phone: a tap opens the Snooze and the priority menus, whose choices take
   await expectTapHeight(menu.getByRole("menuitemradio"), "the priority menu");
   await menu.getByRole("menuitemradio", { exact: true, name: "P1" }).tap();
   await expect
-    .poll(() => priorityWrites.length, { message: "k-phone: a tap on P1 sends one write" })
+    .poll(() => writesSent(priorityWrites), { message: "k-phone: a tap on P1 sends one write" })
     .toBe(1);
-  expect(priorityWrites[0]?.input, "k-phone: a tap on P1 writes P1").toEqual({ priority: 1 });
+  expect(firstAttempts(priorityWrites)[0]?.input, "k-phone: a tap on P1 writes P1").toEqual({
+    priority: 1,
+  });
   expect(sent(), "k-phone: a tap on P1 sends nothing else").toBe(2);
 });
 
@@ -2719,10 +2732,10 @@ test("k-other-key: the digit after a question's last option picks Other and puts
   await page.keyboard.type("my own words");
   await page.keyboard.press("Control+Enter");
   await expect
-    .poll(() => answers.length, { message: "k-other-key: Ctrl+Enter sends one answer" })
+    .poll(() => writesSent(answers), { message: "k-other-key: Ctrl+Enter sends one answer" })
     .toBe(1);
   expect(
-    answers[0]?.input,
+    firstAttempts(answers)[0]?.input,
     "k-other-key: the answer is the words alone, with no option"
   ).toMatchObject({ selected: [], text: "my own words" });
 
@@ -2902,7 +2915,7 @@ test("k-answer-box: Enter puts the caret in the answer box from the row, the bod
     inboxRow(page, secondAsk),
     "k-answer-box: after the answer the second question's row has the focus"
   ).toBeFocused();
-  expect(answers, "k-answer-box: Ctrl+Enter sends one answer").toHaveLength(1);
+  expect(writesSent(answers), "k-answer-box: Ctrl+Enter sends one answer").toBe(1);
   const secondBox = pane.getByTestId(`ask-${secondAsk}`).locator("[data-ask-answer]");
   await expect(secondBox, "k-answer-box: the column shows the second question").toBeVisible();
   await page.keyboard.press("Enter");
@@ -3713,7 +3726,7 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   );
   const reviews = watchReviews(page, approvals);
   const questionAnswers = answerWrites(page, question.id);
-  const sent = () => reviewCount(reviews) + questionAnswers.length;
+  const sent = () => reviewCount(reviews) + writesSent(questionAnswers);
   const step = (text: string) => `k-approval-keys: the reading pane: ${text}`;
   const head = paneHead(page);
   // The Approve that takes a press: the head draws Approve from its first draw and holds it
@@ -3751,11 +3764,13 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   await expect(firstRow, step("the focus is still on the request's row")).toBeFocused();
   await page.keyboard.press("a");
   await expect
-    .poll(() => reviews[0]?.versioned.length, { message: step("a sends one review of version 2") })
+    .poll(() => writesSent(reviews[0]?.versioned ?? []), {
+      message: step("a sends one review of version 2"),
+    })
     .toBe(1);
-  expect(reviews[0]?.versioned[0]?.input, step("the review approves")).toEqual({
-    state: "approved",
-  });
+  expect(firstAttempts(reviews[0]?.versioned ?? [])[0]?.input, step("the review approves")).toEqual(
+    { state: "approved" }
+  );
   expect(sent(), step("a sends that one review and nothing else")).toBe(1);
   await expect(dialog, step("a opens no dialog")).toHaveCount(0);
 
@@ -3780,12 +3795,12 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   await page.keyboard.type(ROLLBACK_REASON);
   await page.keyboard.press("Control+Enter");
   await expect
-    .poll(() => reviews[1]?.versioned.length, {
+    .poll(() => writesSent(reviews[1]?.versioned ?? []), {
       message: step("Ctrl+Enter sends one review of version 2"),
     })
     .toBe(1);
   expect(
-    reviews[1]?.versioned[0]?.input,
+    firstAttempts(reviews[1]?.versioned ?? [])[0]?.input,
     step("the review requests changes, with the reason")
   ).toEqual({ reason: ROLLBACK_REASON, state: "changes_requested" });
   expect(sent(), step("Ctrl+Enter sends that one review and nothing else")).toBe(2);
@@ -3842,9 +3857,12 @@ async function approvalCardSteps(page: Page, place: "card mode" | "the drawer"):
 
   await page.keyboard.press("a");
   await expect
-    .poll(() => reviews[0]?.answers.length, { message: step("a sends one answer") })
+    .poll(() => writesSent(reviews[0]?.answers ?? []), { message: step("a sends one answer") })
     .toBe(1);
-  expect(reviews[0]?.answers[0]?.input, step("the answer approves")).toMatchObject({
+  expect(
+    firstAttempts(reviews[0]?.answers ?? [])[0]?.input,
+    step("the answer approves")
+  ).toMatchObject({
     selected: ["Approve"],
   });
   expect(reviewCount(reviews), step("a sends that one review and nothing else")).toBe(1);
@@ -3923,13 +3941,13 @@ test("k-approval-keys: on today's issue page a approves the spec from the header
 
   await page.keyboard.press("a");
   await expect
-    .poll(() => reviews[0]?.versioned.length, {
+    .poll(() => writesSent(reviews[0]?.versioned ?? []), {
       message: step("a sends one review of the spec's version 2"),
     })
     .toBe(1);
-  expect(reviews[0]?.versioned[0]?.input, step("the review approves")).toEqual({
-    state: "approved",
-  });
+  expect(firstAttempts(reviews[0]?.versioned ?? [])[0]?.input, step("the review approves")).toEqual(
+    { state: "approved" }
+  );
   expect(reviewCount(reviews), step("a sends that one review and nothing else")).toBe(1);
   await expect(dialog, step("a opens no dialog")).toHaveCount(0);
 });
@@ -4202,7 +4220,7 @@ async function nextItemDismissSteps(page: Page, place: InboxPlace): Promise<void
     "Nothing dismissed"
   );
   await expect(empty, step("the Dismissed view's empty message has the focus")).toBeFocused();
-  expect(dismissals, step("e sends one Move to Inbox")).toHaveLength(1);
+  expect(writesSent(dismissals), step("e sends one Move to Inbox")).toBe(1);
 
   // Back in the Inbox, the moved thread is the last item. e on the first thread hands the reader
   // on to the item after it.
@@ -4226,7 +4244,9 @@ async function nextItemDismissSteps(page: Page, place: InboxPlace): Promise<void
     secondThread,
     step("a dismiss of the last item hands on to the item before it")
   );
-  await expect.poll(() => dismissals.length, { message: step("each e sends one write") }).toBe(3);
+  await expect
+    .poll(() => writesSent(dismissals), { message: step("each e sends one write") })
+    .toBe(3);
 }
 
 /** k-next-item's reviews and answer where `place` draws the Inbox - `a` on the first approval
@@ -4300,7 +4320,7 @@ async function nextItemReviewSteps(page: Page, place: InboxPlace): Promise<void>
   ).toBeFocused();
   await page.keyboard.press("Control+Enter");
   await expectInHand(inbox, a, step("an answer to the question hands on to A"));
-  expect(answers, step("Ctrl+Enter sends one answer")).toHaveLength(1);
+  expect(writesSent(answers), step("Ctrl+Enter sends one answer")).toBe(1);
 
   // A search that leaves one item, the second thread, which e dismisses: the list's empty message
   // has the focus, and the Inbox's keys work from it.
@@ -4478,7 +4498,9 @@ test("k-next-item: beside the reading pane a Dismiss on a row that is not in han
   await rowC.hover();
   await rowC.getByRole("button", { name: /^Dismiss/ }).click();
   await expect(rowC, step("the Dismiss takes C out")).toHaveCount(0);
-  expect(dismisses.length, step("the two Dismisses send two dismissals, and Enter none")).toBe(2);
+  expect(writesSent(dismisses), step("the two Dismisses send two dismissals, and Enter none")).toBe(
+    2
+  );
   await expect(rowA, step("A, which the reader did not dismiss, is still listed")).toHaveCount(1);
 });
 
@@ -4947,9 +4969,13 @@ async function everyActionRunSteps(page: Page, place: EveryActionPlace): Promise
   await take(seed.unassigned);
   await runFromCommandBar(page, "Assign to me", step("Assign to me"));
   await expect
-    .poll(() => assigns.length, { message: step("Assign to me writes the issue's assignee") })
+    .poll(() => writesSent(assigns), {
+      message: step("Assign to me writes the issue's assignee"),
+    })
     .toBe(1);
-  expect(assigns[0]?.input, step("Assign to me names the reader")).toEqual({ assignee: "alice" });
+  expect(firstAttempts(assigns)[0]?.input, step("Assign to me names the reader")).toEqual({
+    assignee: "alice",
+  });
   await expect
     .poll(async () => (await getIssue(seed.issues.unassigned)).assignee, {
       message: step("Assign to me: the issue's assignee is the reader"),
@@ -4961,7 +4987,9 @@ async function everyActionRunSteps(page: Page, place: EveryActionPlace): Promise
   const unsnoozes = unsnoozeWrites(page, seed.snoozed);
   await take(seed.snoozed);
   await runFromCommandBar(page, "Un-snooze", step("Un-snooze"));
-  await expect.poll(() => unsnoozes.length, { message: step("Un-snooze sends one write") }).toBe(1);
+  await expect
+    .poll(() => writesSent(unsnoozes), { message: step("Un-snooze sends one write") })
+    .toBe(1);
   await expect(row(seed.snoozed), step("Un-snooze: the ask leaves Later")).not.toHaveAttribute(
     "data-inbox-section",
     "later"
@@ -5008,9 +5036,12 @@ async function everyActionRunSteps(page: Page, place: EveryActionPlace): Promise
   await readThrough(seed.askBack, "the question answered with a question");
   await runFromCommandBar(page, "Ask back instead", step("Ask back instead"));
   await expect
-    .poll(() => backs.length, { message: step("Ask back instead sends the question back") })
+    .poll(() => writesSent(backs), { message: step("Ask back instead sends the question back") })
     .toBe(1);
-  expect(backs[0]?.input, step("Ask back instead sends the question to its asker")).toEqual({
+  expect(
+    firstAttempts(backs)[0]?.input,
+    step("Ask back instead sends the question to its asker")
+  ).toEqual({
     ask_id: seed.askBack,
     body: question,
   });
