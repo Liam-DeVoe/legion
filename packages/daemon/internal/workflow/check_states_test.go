@@ -315,10 +315,11 @@ func (r *statesRig) movedBackNaming(named []string, unnamed ...string) {
 }
 
 // The rule of a passing check is judgeStates' alone: a check passes when it reads yes at the tested
-// head, whatever roles its results came from. A check of the head's set with no state, a state
-// Dispatch could not read and a CI run still going with no result wait; every other state fails
-// and is named with why. A state of a check outside the set is no part of the judgement, and no
-// set held is no judgement at all.
+// head, whatever roles its results came from. A check of the head's set with no state, and a CI run
+// still going with no result, wait, since neither is a state the check ends at; every other state
+// is conclusive, and one that is not yes fails and is named with why, a state Dispatch could not
+// read among them. A state of a check outside the set is no part of the judgement, and no set held
+// is no judgement at all.
 func TestJudgeStates(t *testing.T) {
 	state := func(check, answer, reason, ciCase string, roles ...string) record.CheckState {
 		return record.CheckState{Check: check, State: answer, Reason: reason, CICase: ciCase, Roles: roles}
@@ -343,8 +344,10 @@ func TestJudgeStates(t *testing.T) {
 			testingJudgement{Failing: []string{"k1: no (fail)"}}},
 		{"unknown for pass_and_fail", held([]string{"k1"}, state("k1", "unknown", "pass_and_fail", "")),
 			testingJudgement{Failing: []string{"k1: unknown (pass_and_fail)"}}},
+		// Dispatch published a state it could not compute: a held, conclusive state that is not
+		// yes, so the check does not pass, named with its reason.
 		{"read_failed", held([]string{"k1"}, state("k1", "unknown", "read_failed", "")),
-			testingJudgement{Waiting: []string{"k1"}}},
+			testingJudgement{Failing: []string{"k1: unknown (read_failed)"}}},
 		{"a check of the set with no state", held([]string{"k1", "k2"}, state("k1", "yes", "", "", "tester")),
 			testingJudgement{Waiting: []string{"k2"}}},
 		{"a state of a check outside the set", held([]string{"k1"}, state("k1", "yes", "", "", "tester"), state("k9", "no", "fail", "")),
@@ -357,7 +360,11 @@ func TestJudgeStates(t *testing.T) {
 			testingJudgement{Failing: []string{"k1: unknown (pass_and_fail)"}}},
 		{"no for fail with a CI run going on", held([]string{"k1"}, state("k1", "no", "fail", "not_completed")),
 			testingJudgement{Failing: []string{"k1: no (fail)"}}},
-		{"a fail beside a check that waits", held([]string{"k1", "k2"}, state("k1", "no", "fail", ""), state("k2", "unknown", "read_failed", "")),
+		{"a fail beside a state Dispatch could not read", held([]string{"k1", "k2"}, state("k1", "no", "fail", ""), state("k2", "unknown", "read_failed", "")),
+			testingJudgement{Failing: []string{"k1: no (fail)", "k2: unknown (read_failed)"}}},
+		{"a fail beside a check with no state", held([]string{"k1", "k2"}, state("k1", "no", "fail", "")),
+			testingJudgement{Waiting: []string{"k2"}, Failing: []string{"k1: no (fail)"}}},
+		{"a fail beside a CI run that goes on with no result", held([]string{"k1", "k2"}, state("k1", "no", "fail", ""), state("k2", "no", "no_result", "not_completed")),
 			testingJudgement{Waiting: []string{"k2"}, Failing: []string{"k1: no (fail)"}}},
 		{"a head with no check", held([]string{}), testingJudgement{}},
 	} {
@@ -573,8 +580,10 @@ func TestTheFirstEventsOfAHeadGiveItsSet(t *testing.T) {
 
 // Each pair of a state of the issue and an event the testing move meets, each its own row. A
 // completion that waits tells the architect once, in one phase-finished notice naming what it
-// waits for; a later event that still leaves it waiting tells nothing more. A fail decides at
-// once, even while another check of the set waits.
+// waits for; a later event that still leaves it waiting tells nothing more. The move decides only
+// once every check of the set holds a conclusive state, so a fail waits while another check has no
+// state or a CI run with no result goes on, and the task of a move back names every check that does
+// not pass, a state Dispatch could not read among them.
 func TestTheTestingMoveStateTable(t *testing.T) {
 	fenceReason := "the move waits for Dispatch's check states through serial 7 at " + headOne
 	for _, tc := range []struct {
@@ -682,13 +691,40 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 			event: func(r *statesRig) { r.states(headOne, 2, ofSet(passOf("k2", "tester"), "k1", "k2")) },
 			then:  func(r *statesRig) { assertPhase(r.t, r.pool, phase.Reviewing) },
 		},
+		// Dispatch could not compute k1's state and published that: a held, conclusive state that is
+		// not yes, so the issue goes back naming k1 with its reason, and waits for nothing.
 		{
-			name: "testing, tester completed, k1 read_failed | the completion | waits", at: phase.Testing,
+			name: "testing, tester completed, k1 unknown for read_failed | the completion | implementing, the task names k1 with read_failed", at: phase.Testing,
 			given: func(r *statesRig) {
 				r.states(headOne, 1, stateOf("k1", "unknown", "read_failed"), passOf("k2", "tester"))
 			},
 			event: func(r *statesRig) { r.complete(headOne, 2) },
-			then:  func(r *statesRig) { r.waitsSaying("the move waits for the states of k1 at " + headOne) },
+			then:  func(r *statesRig) { r.movedBackNaming([]string{"k1: unknown (read_failed)"}, "k2:") },
+		},
+		{
+			name: "testing, tester completed, k1 no for fail, k2 has no state | the completion | waits, the notice names k2", at: phase.Testing,
+			given: func(r *statesRig) {
+				r.states(headOne, 1, ofSet(stateOf("k1", "no", "fail"), "k1", "k2"))
+			},
+			event: func(r *statesRig) { r.complete(headOne, 1) },
+			then:  func(r *statesRig) { r.waitsSaying("the move waits for the states of k2 at " + headOne) },
+		},
+		{
+			name: "testing, tester completed, k1 no for fail, k2 has no state | the state of k2, yes from tester | implementing, the task names k1 alone", at: phase.Testing,
+			given: func(r *statesRig) {
+				r.states(headOne, 1, ofSet(stateOf("k1", "no", "fail"), "k1", "k2"))
+				r.complete(headOne, 1)
+			},
+			event: func(r *statesRig) { r.states(headOne, 2, ofSet(passOf("k2", "tester"), "k1", "k2")) },
+			then:  func(r *statesRig) { r.movedBackNaming([]string{"k1: no (fail)"}, "k2:") },
+		},
+		{
+			name: "testing, tester completed, k1 no for fail, k2 no for no_result, ci_case not_completed | the completion | waits", at: phase.Testing,
+			given: func(r *statesRig) {
+				r.states(headOne, 1, stateOf("k1", "no", "fail"), inCI(stateOf("k2", "no", "no_result"), "not_completed"))
+			},
+			event: func(r *statesRig) { r.complete(headOne, 2) },
+			then:  func(r *statesRig) { r.waitsSaying("the move waits for the states of k2 at " + headOne) },
 		},
 		{
 			name: "testing, tester completed | a state of k1, no for fail | implementing, the task names k1", at: phase.Testing,
@@ -745,12 +781,12 @@ func TestTheTestingMoveStateTable(t *testing.T) {
 			},
 		},
 		{
-			name: "testing, tester completed, k1 no for fail, k2 read_failed | the completion | implementing, the task names k1", at: phase.Testing,
+			name: "testing, tester completed, k1 no for fail, k2 unknown for read_failed | the completion | implementing, the task names k1 and k2", at: phase.Testing,
 			given: func(r *statesRig) {
 				r.states(headOne, 1, stateOf("k1", "no", "fail"), stateOf("k2", "unknown", "read_failed"))
 			},
 			event: func(r *statesRig) { r.complete(headOne, 2) },
-			then:  func(r *statesRig) { r.movedBackNaming([]string{"k1: no (fail)"}, "k2:") },
+			then:  func(r *statesRig) { r.movedBackNaming([]string{"k1: no (fail)", "k2: unknown (read_failed)"}) },
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

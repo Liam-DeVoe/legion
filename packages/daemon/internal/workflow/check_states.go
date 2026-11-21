@@ -17,9 +17,6 @@ import (
 // check.state_changed (intake.DispatchCheckState).
 const (
 	stateYes = "yes"
-	// reasonReadFailed is a state Dispatch could not compute: a read it needed failed, and its
-	// settler tries again.
-	reasonReadFailed = "read_failed"
 	// reasonNoResult is a check with no result at the head.
 	reasonNoResult = "no_result"
 	// ciNotCompleted is the case of a check CI proves whose run at the head has not concluded.
@@ -31,22 +28,23 @@ const (
 // not pass with why, as the implementer's task and the architect's notice name it. A judgement
 // with neither passes.
 type testingJudgement struct {
-	// Waiting is each check with no state, a state Dispatch could not read (read_failed), or no
-	// result while its CI run goes on (ci_case not_completed with the reason no_result).
+	// Waiting is each check whose state is not conclusive: one with no state, or with no result
+	// while its CI run goes on (ci_case not_completed with the reason no_result).
 	Waiting []string
-	// Failing is each other check that does not pass, as "k2: no (fail)" or "k3: unknown
-	// (pass_and_fail)".
+	// Failing is each check with a conclusive state that is not yes, as "k2: no (fail)", "k3:
+	// unknown (pass_and_fail)" or "k4: unknown (read_failed)".
 	Failing []string
 }
 
 // judgeStates judges the states the daemon holds of the head's checks, and is the one place the
 // rule of a passing check is written: a check passes when it reads yes at its head, whichever
-// results Dispatch counted for it. Every check of the head's set is
-// judged in the set's order, and a state of a check outside the set is no part of it, so a check
-// removed from the Verification document holds nothing. A check with no state, one whose reason is
-// read_failed, and one with no result while its CI run goes on wait; every other check that does
-// not pass fails, a pass and a fail or a fail among them whatever its CI run says, since neither
-// can end in a pass at that head. false is no set held at the head, which judges nothing.
+// results Dispatch counted for it. Every check of the head's set is judged in the set's order, and
+// a state of a check outside the set is no part of it, so a check removed from the Verification
+// document holds nothing. A check with no state, and one with no result while its CI run goes on,
+// wait: neither is a state the check ends at. Every other state is conclusive, and one that is not
+// yes fails: a fail, a pass and a fail whatever its CI run says, and a state Dispatch published
+// because a read it needed failed (read_failed), which is a state of the check all the same. false
+// is no set held at the head, which judges nothing.
 func judgeStates(head record.HeadStates) (testingJudgement, bool) {
 	if head.Checks == nil {
 		return testingJudgement{}, false
@@ -55,7 +53,7 @@ func judgeStates(head record.HeadStates) (testingJudgement, bool) {
 	for _, check := range head.Checks {
 		state, held := head.States[check]
 		switch {
-		case !held || state.Reason == reasonReadFailed:
+		case !held:
 			judgement.Waiting = append(judgement.Waiting, check)
 		case state.State == stateYes:
 			continue
@@ -92,13 +90,14 @@ func testedHead(issue record.Issue, row record.PhaseRow, pr *record.PullRequest)
 // It moves nothing until the daemon holds every state event of the issue from the lowest serial it
 // holds through the record's (record.Store.StatesFenceReached), since each event the tester's
 // results caused has a serial at or below it: below that fence the states held may be the ones from
-// before those results. At the fence, a check that fails sends the issue back to implementing at
-// once, the task naming each check that does not pass, even while another check of the set waits,
-// since no state of the waiting check makes the round a pass. With nothing failing, a head with no
-// set held, or a check the judgement waits for, moves nothing; otherwise the issue goes to
-// reviewing. atCompletion is whether the tester's completion is the fact deciding: only that one
-// tells the architect of a wait, in one phase-finished notice that names what the move waits for,
-// so each later state event that leaves the move waiting tells nothing more.
+// before those results. At the fence it decides only once every check of the head's set holds a
+// conclusive state there (judgeStates): a head with no set held, or a check the judgement waits
+// for, moves nothing, whatever the other checks read, since a later state of the waiting check
+// changes what the task must name. Then every check passing moves the issue to reviewing, and
+// otherwise it goes back to implementing, the task naming each check that does not pass with its
+// state and its reason. atCompletion is whether the tester's completion is the fact deciding: only
+// that one tells the architect of a wait, in one phase-finished notice that names what the move
+// waits for, so each later state event that leaves the move waiting tells nothing more.
 func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest, atCompletion bool) error {
 	repo, head := testedHead(issue, row, pr)
 	reached, err := e.store.StatesFenceReached(ctx, tx, issue.Key, row.StatesSerial)
@@ -115,14 +114,14 @@ func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issu
 	}
 	judgement, judged := judgeStates(held)
 	switch {
-	case len(judgement.Failing) > 0:
-		return e.transition(ctx, tx, issue, TriggerTesterFailed, "", row, pr,
-			"these checks do not pass at "+head+": "+strings.Join(judgement.Failing, "; "))
 	case !judged:
 		return e.testingWaits(ctx, tx, issue, row, head, atCompletion, "the move waits for Dispatch's states at "+head)
 	case len(judgement.Waiting) > 0:
 		return e.testingWaits(ctx, tx, issue, row, head, atCompletion,
 			"the move waits for the states of "+strings.Join(judgement.Waiting, ", ")+" at "+head)
+	case len(judgement.Failing) > 0:
+		return e.transition(ctx, tx, issue, TriggerTesterFailed, "", row, pr,
+			"these checks do not pass at "+head+": "+strings.Join(judgement.Failing, "; "))
 	}
 	return e.transition(ctx, tx, issue, TriggerTesterPassed, "", row, pr, "")
 }

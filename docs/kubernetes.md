@@ -2498,7 +2498,7 @@ Upgrade, and roll back, every daemon of one database in the same change.
 
 This release moves an issue out of `testing` by the states Dispatch publishes of the issue's `before_merge` checks, the `check.state_changed` events, and a phase completion carries no verdict (daemon API contract 206, the entry of `packages/daemon/internal/api/version.go` that names `CheckStatesContract`).
 A tester completes naming its `test` record, and the move waits until the daemon holds every state event of the issue through the record's `check_states_serial`.
-At the head that record names, a check that fails sends the issue back to `implementing`, every check passing moves it to `reviewing`, and a check with no state, a state Dispatch could not read or a CI run still going holds it.
+At the head that record names, a check with no state, or with no result while its CI run still goes, holds the move whatever the other checks read; then every check passing moves the issue to `reviewing`, and otherwise it goes back to `implementing` with a task naming each check that does not pass, a state Dispatch could not read (`read_failed`) among them.
 
 **Deploy envoy-dispatch first, then the daemon.**
 The daemon of this release waits for states that only an envoy-dispatch of the same change publishes, and for the serial that only such a Dispatch stores on a `test` record.

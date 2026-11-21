@@ -57,8 +57,8 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		// moves the issue.
 		{"tester", claim.RoleTester, false, []string{"core/common.md", "core/tester.md", "mechanics/headless.md", "tester.md"}, []string{"tester.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
 			"record each check's result with `dispatch result` first, then end this phase with the `legion` tool: `op: \"handoff_complete\"` and a `summary`, and no `verdict`.",
-			"The daemon moves the issue by Dispatch's state of each `before_merge` check at the head your test record names: to the reviewer when each reads yes, whichever roles' results made it yes, and back to the implementer at once when one reads no, or not known for a pass and a fail, even while another still waits.",
-			"A check with no state yet holds the move until Dispatch publishes one, and so does a check Dispatch could not read, or one with no result while its CI run at that head goes on, until its state changes.",
+			"The daemon moves the issue by Dispatch's state of each `before_merge` check at the head your test record names, once each check has a state there that it ends at: a check with no state yet, or with no result while its CI run at that head goes on, holds the move until Dispatch publishes its next state, whatever the other checks read.",
+			"Then the issue goes to the reviewer when each check reads yes, whichever roles' results made it yes, and otherwise back to the implementer, whose task names each check that does not read yes with its state and its reason, a check Dispatch could not read (`read_failed`) among them.",
 			"A `before_merge` check reads yes at the head you test when a pass of it counts at that commit and no fail does, whichever role recorded the pass",
 			"`implementerProof` (`{how}` alone)",
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
@@ -289,9 +289,11 @@ func TestNoComposedPromptSaysLegionRefusesAMergeOverACheck(t *testing.T) {
 // the tester that the states move the issue, the reviewer that its evidence is the line of its
 // head in `dispatch results`, and the architect what the tester's notice names. The tester's
 // prompt also says Dispatch's own rule of a yes, a pass of any role with no fail at that commit
-// (api's subjectState), and no other sentence of it that one role's pass is none. The production
-// check's report keeps its pass, pending and fail, so the bare word stays. This shows the text is
-// loaded, never that a role follows it.
+// (api's subjectState), and no other sentence of it that one role's pass is none; and it no longer
+// says the rule before the move waited for a state of each check: that a fail sends the issue back
+// at once while another check waits, or that a check Dispatch could not read holds the move. The
+// production check's report keeps its pass, pending and fail, so the bare word stays. This shows
+// the text is loaded, never that a role follows it.
 func TestTheComposedPromptsSayTheStatesDecideAndNoCompletionCarriesAVerdict(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -307,7 +309,8 @@ func TestTheComposedPromptsSayTheStatesDecideAndNoCompletionCarriesAVerdict(t *t
 			[]string{"and no `verdict`", "The daemon moves the issue by Dispatch's state of each `before_merge` check at the head your test record names",
 				"whichever role recorded the pass", "say in your `test` handoff's `implementerProof.how` how you judged those results"},
 			[]string{`verdict: "pass"`, `verdict: "fail"`, "the verdict lets the daemon choose", "implementerProof.verdict", `"verified" | "rejected"`,
-				"record the verdict in your `test` handoff", "a pass from one role alone is no pass", "complete the phase as a failure"}},
+				"record the verdict in your `test` handoff", "a pass from one role alone is no pass", "complete the phase as a failure",
+				"back to the implementer at once", "even while another still waits", "and so does a check Dispatch could not read"}},
 		{claim.RoleReviewer, false,
 			[]string{"No phase completion carries a `verdict` (`VERDICT_NOT_TAKEN`): your decision is the review you submit on GitHub, and the evidence of each check is the line of your head in `dispatch results`."},
 			[]string{"VERDICT_ROLE_FORBIDDEN", "Tester's verdict:", "A `verdict` is the tester's alone"}},
