@@ -177,9 +177,8 @@ func readAnswers(value *yaml.Node, key string) (*answersFile, error) {
 }
 
 // readAnswerProviders reads `answers.providers`: anthropic, openai or both. An absent or null key
-// and an empty mapping name none, which answers an empty map and leaves the loop off
-// (resolveAnswers); a mapping whose every provider is written with no value is refused, as a
-// provider with no endpoint is.
+// and an empty mapping name none, which answers no provider and leaves the loop off
+// (resolveAnswers); a mapping that names a provider and gives none of them an endpoint is refused.
 func readAnswerProviders(value *yaml.Node, key string) (map[AnswerProvider]AnswerEndpoint, error) {
 	if value == nil {
 		return nil, nil
@@ -195,7 +194,7 @@ func readAnswerProviders(value *yaml.Node, key string) (map[AnswerProvider]Answe
 		return nil, err
 	}
 	if len(named) == 0 {
-		return nil, fmt.Errorf("%s must name at least one provider: anthropic or openai", key)
+		return nil, fmt.Errorf("%s names no provider with an endpoint: give anthropic or openai its base_url and its key, or remove the key to leave the loop off", key)
 	}
 	providers := make(map[AnswerProvider]AnswerEndpoint, len(named))
 	for _, name := range answerProviders {
@@ -416,7 +415,13 @@ func resolveAnswers(file fileConfig, configDir string, cfg *Config) error {
 		return err
 	}
 	if len(read.providers) == 0 {
-		off = answersOffWithNoProvider
+		// With no connection to the conversation store either, the line names both things to
+		// set, so an operator who follows it meets no second line at the next boot.
+		if off != "" {
+			off = answersOffWithNoProvider + answersOffAndNoStore
+		} else {
+			off = answersOffWithNoProvider
+		}
 	}
 	if off != "" {
 		cfg.Warnings = append(cfg.Warnings, off)
@@ -504,3 +509,7 @@ const answersOffWithNoProvider = answersKey + " is set, but the answer loop is o
 	".providers names no model provider the loop may call, so a message to a stopped agent is refused and dropped as it is without " +
 	answersKey + "; to turn the loop on, set " + answersKey + ".providers to at least one provider (anthropic, openai) with its base_url and its key, and " +
 	answersKey + ".prices to the price of each model the loop may answer on"
+
+// answersOffAndNoStore ends answersOffWithNoProvider for a Kubernetes file that names no
+// connection to the conversation store either.
+const answersOffAndNoStore = ", and " + conversationStoreKey + " to the daemon's connection to the conversation store as well"

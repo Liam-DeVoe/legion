@@ -414,7 +414,8 @@ With the answer loop on (`answers` set in `legion.yaml` with what the loop needs
 `docs/kubernetes.md`, "The answer loop", lists), the loop, which answers a question to a stopped
 agent in its name, runs this same real gh on the daemon's own host as its `gh` tool: boot resolves
 it as above under either runtime (`answersGH`) and refuses to start without one, naming `gh` and
-`LEGION_GH_PATH`. With the loop off, boot resolves no gh for it. The tool is not a pane: it runs only an allow list of commands, adds the agent's
+`LEGION_GH_PATH`. With the loop off, boot resolves no gh for it. The tool is not a pane: it runs
+only an allow list of commands, adds the agent's
 Legion footer to every comment and review itself, and runs gh with a scrubbed environment and a
 per-answer copy of the agent's gh bundle under `<state_dir>/answers/`
 (docs/kubernetes.md, "The answer loop"). The same section covers `runtime.tmux.session_store:

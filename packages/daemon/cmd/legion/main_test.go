@@ -1004,6 +1004,9 @@ const (
 	answersOffUnderPostgres  = "answers is set, but the answer loop is off: under runtime.kubernetes.session_store postgres, answers.conversation_store.dsn_file names the daemon's connection to the conversation store, and the file sets none, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.conversation_store.dsn_file to the file holding the postgres:// URL of the database the conversations live in"
 	answersOffUnderCloudSQL  = "answers is set, but the answer loop is off: under runtime.kubernetes.session_store cloudsql-iam, answers.conversation_store.user names the daemon's connection to the conversation store, and the file sets none, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.conversation_store.user to the IAM login the daemon signs in to runtime.kubernetes.session_database's instance as"
 	answersOffWithNoProvider = "answers is set, but the answer loop is off: answers.providers names no model provider the loop may call, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.providers to at least one provider (anthropic, openai) with its base_url and its key, and answers.prices to the price of each model the loop may answer on"
+	// answersOffNoStoreEither ends the provider line where a Kubernetes file names no connection
+	// to the conversation store either, as answersWithNoProvider does not.
+	answersOffNoStoreEither = ", and answers.conversation_store to the daemon's connection to the conversation store as well"
 )
 
 // A file that sets `answers` the loop cannot run on passes `legion config check` with exit 0, the
@@ -1020,8 +1023,8 @@ func TestConfigCheckWarnsThatAnAnswersBlockItCannotRunLeavesTheLoopOff(t *testin
 	for _, tc := range []struct{ name, block, store, warning string }{
 		{"postgres, no conversation store", answersWithNoStore, "", answersOffUnderPostgres},
 		{"cloudsql-iam, no conversation store", answersWithNoStore, cloudSQL, answersOffUnderCloudSQL},
-		{"postgres, no provider", answersWithNoProvider, "", answersOffWithNoProvider},
-		{"cloudsql-iam, no provider", answersWithNoProvider, cloudSQL, answersOffWithNoProvider},
+		{"postgres, no provider", answersWithNoProvider, "", answersOffWithNoProvider + answersOffNoStoreEither},
+		{"cloudsql-iam, no provider", answersWithNoProvider, cloudSQL, answersOffWithNoProvider + answersOffNoStoreEither},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config := kubernetesCheckConfig(t, tc.block)
@@ -1059,7 +1062,7 @@ func TestConfigCheckWarnsThatAnAnswersBlockItCannotRunLeavesTheLoopOff(t *testin
 func TestStartLogsTheAnswersOffWarningOnceAsItBoots(t *testing.T) {
 	for _, tc := range []struct{ name, block, warning string }{
 		{"no conversation store", answersWithNoStore, answersOffUnderPostgres},
-		{"no provider", answersWithNoProvider, answersOffWithNoProvider},
+		{"no provider", answersWithNoProvider, answersOffWithNoProvider + answersOffNoStoreEither},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			legions := legionState(t)

@@ -551,7 +551,7 @@ runtime:
 #                                      # the deployment's leak_check (above, or its two variables), which
 #                                      # the daemon reads at the pin in its environment
 #                                      # (LEGION_LEAK_CHECK_TAG, which the worker image sets) and holds to
-#                                      # that manifest digest. Boot refuses to start without any of them.
+#                                      # that manifest digest. Boot refuses to start if any of them is missing.
 #   providers:                         # anthropic and/or openai: the endpoint the loop calls, and exactly
 #     anthropic: { base_url: "https://<gateway>.internal.example/anthropic", api_key_file: ./anthropic-key }
 #     openai: { base_url: "https://<gateway>.internal.example/openai", api_key_command: "<a command that prints the key>" }

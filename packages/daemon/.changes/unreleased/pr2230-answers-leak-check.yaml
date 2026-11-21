@@ -2,7 +2,7 @@ kind: Added
 body: |-
   The answer loop's `gh` tool runs the shared public leak check before every call, and the daemon
   hands it that check: the tool asks for the check at every call and hands it to the guard, which
-  never resolves one of its own. With `answers` set, a Kubernetes daemon reads the check from the
+  never resolves one of its own. With the answer loop on, a Kubernetes daemon reads the check from the
   repository the deployment's leak check setting names (`LEGION_LEAK_CHECK_REPOSITORY` and
   `LEGION_LEAK_CHECK_MANIFEST_SHA256`, or the `leak_check` block), at its own environment's
   `LEGION_LEAK_CHECK_TAG`, through the reader it pushes every pod's launcher the check from, and
@@ -16,7 +16,7 @@ body: |-
   `<state_dir>/answers/`, since the daemon's container has no role's private directory to make it
   in.
 
-  Boot refuses to start with `answers` set and no check, as it refuses one with no `gh`, and so do
+  Boot refuses to start with the answer loop on and no check, as it refuses one with no `gh`, and so do
   `legion config check` and `legion probe-boot`: under tmux when none of `PUBLIC_LEAK_CHECK`,
   `public-leak-check.sh` on `PATH` and the pointer file under the configuration home names one,
   and under Kubernetes when the deployment names no leak check setting, naming its two variables

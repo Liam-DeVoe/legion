@@ -28,7 +28,7 @@ type bootReads struct {
 	hookPrompts                           map[string]string // the words of each hook whose prompt_file names a file, by hook name; nil while no hook names one
 	tmux                                  tmuxReads         // runtime: tmux
 	sandbox                               sandboxReads      // runtime: kubernetes
-	answers                               answersReads      // with `answers` set, under either runtime
+	answers                               answersReads      // with the answer loop on, under either runtime
 }
 
 // variantInstructions is one declared variant's instructions file as boot read it: the experiment
@@ -48,7 +48,7 @@ type variantInstructions struct {
 // (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
 // (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, the
 // file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
-// file, the runtime's own reads (readTmux, readSandbox), and, with `answers` set, the answer
+// file, the runtime's own reads (readTmux, readSandbox), and, with the answer loop on, the answer
 // loop's (readAnswersBoot).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check

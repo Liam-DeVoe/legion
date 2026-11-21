@@ -1761,7 +1761,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		endDrain()
 		return nil, fmt.Errorf("build the %s runtime: %w", cfg.Runtime.Name, err)
 	}
-	// Every start passes the store's CheckLaunch; with `answers` set, the answer gate's first.
+	// Every start passes the store's CheckLaunch; with the answer loop on, the answer gate's first.
 	launches := gateLaunch(tokens.Recording(st), p.checkLaunch)
 	var gate *answerGate
 	if cfg.Answers != nil {

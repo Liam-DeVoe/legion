@@ -1219,7 +1219,7 @@ A Claude Code start into such a pod is admitted: the launcher matches no agent's
 `postgres` holds the whole connection URL, password and all, in one providers-Secret key.
 The daemon holds no copy of the connection string for its pods:
 put it in the providers Secret (`legion-<project>-providers`) under the key `session_dsn_secret` names, as one `postgres://…` URL.
-With `answers` set, the daemon also holds a connection of its own to that database, for its answer loop, through `answers.conversation_store.dsn_file`, a file the daemon reads at boot, and a block without that key leaves the loop off ([The answer loop](#the-answer-loop)).
+With the answer loop on, the daemon also holds a connection of its own to that database, through `answers.conversation_store.dsn_file`, a file the daemon reads at boot, and an `answers` block without that key leaves the loop off ([The answer loop](#the-answer-loop)).
 Every issue pod, the controller's pod and the image probe mount that key read-only at `/var/run/legion/providers/OMP_SESSION_SQL_DSN`, whatever the key is called, so a Secret without it refuses boot at the image probe, naming the Secret and its keys (`internal/runtime/sandbox/manifest.go`, `providers`).
 
 With the store settled, every generation a launcher starts gets two variables in its start command (`mainEnvironment`):
@@ -1355,7 +1355,7 @@ Keep the route unchanged across the copy below in particular: there every sessio
 
 No session key, anywhere.
 No issue pod, no controller pod and no image-probe pod mounts one (`sessionSecretKey`, `internal/runtime/sandbox/manifest.go`, which answers for `postgres` alone), the daemon holds no connection string for its pods, and no URL sits in a Secret, a volume, an argv, an environment value or a log;
-with `answers` set, the daemon signs in to the same database itself, as `answers.conversation_store.user`, through a Cloud SQL proxy of its own, and a block without that key leaves the loop off ([The answer loop](#the-answer-loop)).
+with the answer loop on, the daemon signs in to the same database itself, as `answers.conversation_store.user`, through a Cloud SQL proxy of its own, and an `answers` block without that key leaves the loop off ([The answer loop](#the-answer-loop)).
 What the pod's `legion launcher` is told instead is where the database is
 — `--session-instance <project:region:instance>`, `--session-database <name>` and `--session-user <login>`, in that order, the three values of `session_database` (`sessionProxyFlags` over `sessionProxyFlagNames`, `manifest.go`), once for every role it serves.
 When `impersonate_service_account` is set, a fourth flag follows the three: `--session-impersonate-service-account <email>` (`sessionProxyAccountFlag`, `manifest.go`).
@@ -1680,7 +1680,7 @@ The daemon never probes a host Oh My Pi for this: pods run the image's build, no
 
 ## The answer loop
 
-With `answers` set in `legion.yaml`, the daemon answers a question to one of its agents that is not running
+With the answer loop on, which `answers` in `legion.yaml` configures, the daemon answers a question to one of its agents that is not running
 — a Dispatch message sent to it, a Dispatch comment that mentions it, a reply on the thread of an ask it opened, another agent's Envoy message
 — in that agent's name, from the agent's own conversation, on the model that conversation last ran on.
 It adds the exchange to the conversation in the harness's own format, so the agent finds it there when it next resumes, and posts the reply where the question was asked.
@@ -1758,7 +1758,7 @@ The loop is off, as without `answers`, in two ways.
 A block that names no model provider, its `providers` absent, null or empty, leaves the loop off under either runtime.
 Under `runtime: kubernetes`, a block that names a provider and no connection to the conversation store, its `conversation_store` left out or empty, leaves it off too.
 Either way the daemon boots, resolving no `gh` and no leak check for the loop, and logs one line, `answers is set, but the answer loop is off: …`, naming the key that turns the loop on and what to set it to;
-a block that names neither gets the provider line alone.
+a block that names neither gets the provider line alone, which then names `conversation_store` too.
 `legion config check` prints the same line right after `Config OK` and exits 0;
 and every message to a stopped agent is refused and dropped as it is without `answers`.
 The rest of the block is still read first and held to its rules, so a malformed provider, price or bound, an unknown key and a `conversation_store` key the runtime does not use are refused, never turned off.

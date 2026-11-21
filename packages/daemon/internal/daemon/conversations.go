@@ -24,10 +24,10 @@ import (
 const conversationProofTimeout = 30 * time.Second
 
 // conversationHistory is the daemon's record of its agents' conversations (agenthistory): the
-// recorder every registration writes through, whatever the configuration; with `answers` set, the
-// boot's backfill by title and the agent registry's mirror; and the project's answering heartbeat,
-// which says whether the answer loop runs. The mirror and the backfill run beside the daemon from
-// its boot record on (start).
+// recorder every registration writes through, whatever the configuration; with the answer loop
+// on, the boot's backfill by title and the agent registry's mirror; and the project's answering
+// heartbeat, which says whether the answer loop runs. The mirror and the backfill run beside the
+// daemon from its boot record on (start).
 type conversationHistory struct {
 	recorder agenthistory.Recorder
 	// mirror is nil for a daemon without `answers` that has no Envoy credential, and writes the
@@ -41,7 +41,7 @@ type conversationHistory struct {
 // only when answering is: `answers` set and the workflow open, so the loop runs. A daemon without
 // `answers` still says it does not answer, with its own Envoy credential, so an operator who
 // removes `answers` stops the listener's hand-offs at its next boot rather than when the last
-// answering key ages out; with no credential it writes nothing. With `answers` set, the mirror
+// answering key ages out; with no credential it writes nothing. With the answer loop on, the mirror
 // writes the history to the daemon's own Envoy listener with its own credential, and the backfill
 // reads the conversation store the loop reads: Oh My Pi's session table under a database store
 // (the URL boot read, or, under cloudsql-iam, a proxy of the daemon's own), else the pane home's

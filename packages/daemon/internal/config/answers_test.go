@@ -28,7 +28,10 @@ const (
 	answersOffDSN     = "answers is set, but the answer loop is off: under runtime.kubernetes.session_store postgres, answers.conversation_store.dsn_file names the daemon's connection to the conversation store, and the file sets none, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.conversation_store.dsn_file to the file holding the postgres:// URL of the database the conversations live in"
 	answersOffUser    = "answers is set, but the answer loop is off: under runtime.kubernetes.session_store cloudsql-iam, answers.conversation_store.user names the daemon's connection to the conversation store, and the file sets none, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.conversation_store.user to the IAM login the daemon signs in to runtime.kubernetes.session_database's instance as"
 	answersOffNoModel = "answers is set, but the answer loop is off: answers.providers names no model provider the loop may call, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.providers to at least one provider (anthropic, openai) with its base_url and its key, and answers.prices to the price of each model the loop may answer on"
-	tmuxPostgresStore = "runtime: {tmux: {session_store: postgres, session_dsn_file: session-dsn}}\n"
+	// answersOffNoStoreEither ends the provider line where a Kubernetes file names no connection to
+	// the conversation store either.
+	answersOffNoStoreEither = ", and answers.conversation_store to the daemon's connection to the conversation store as well"
+	tmuxPostgresStore       = "runtime: {tmux: {session_store: postgres, session_dsn_file: session-dsn}}\n"
 )
 
 // answersBlock is an `answers` block of providers, prices and whatever else rest adds.
@@ -307,14 +310,16 @@ func TestAnswersUnderAFileSessionStoreIsRefusedAsWithoutTheBlock(t *testing.T) {
 // store, so a block that names neither gets that line alone. With no provider, `prices` may be
 // absent, null or empty, since there is nothing to price.
 func TestAnswersThatNameNoProviderLeaveTheLoopOff(t *testing.T) {
-	type runtimeFile struct{ name, file, store string }
+	// want is the one line: the provider line, which under Kubernetes names the conversation
+	// store too where the file names no connection to it either.
+	type runtimeFile struct{ name, file, store, want string }
 	runtimes := []runtimeFile{
-		{"tmux", minimalFile, ""},
-		{"postgres, no conversation_store", kubernetesFile, ""},
-		{"postgres, an empty conversation_store", kubernetesFile, noStoreKey},
-		{"postgres, dsn_file", kubernetesFile, daemonDSNFile},
-		{"cloudsql-iam, no conversation_store", withSessionStore(cloudSQLStore), ""},
-		{"cloudsql-iam, user", withSessionStore(cloudSQLStore), daemonIAMLogin},
+		{"tmux", minimalFile, "", answersOffNoModel},
+		{"postgres, no conversation_store", kubernetesFile, "", answersOffNoModel + answersOffNoStoreEither},
+		{"postgres, an empty conversation_store", kubernetesFile, noStoreKey, answersOffNoModel + answersOffNoStoreEither},
+		{"postgres, dsn_file", kubernetesFile, daemonDSNFile, answersOffNoModel},
+		{"cloudsql-iam, no conversation_store", withSessionStore(cloudSQLStore), "", answersOffNoModel + answersOffNoStoreEither},
+		{"cloudsql-iam, user", withSessionStore(cloudSQLStore), daemonIAMLogin, answersOffNoModel},
 	}
 	blocks := map[string]string{
 		"providers absent":                 "answers:\n  bounds: {concurrent: 2}\n",
@@ -334,20 +339,20 @@ func TestAnswersThatNameNoProviderLeaveTheLoopOff(t *testing.T) {
 				if cfg.Answers != nil {
 					t.Errorf("Answers = %+v, want nil: no model provider, no loop", cfg.Answers)
 				}
-				if !reflect.DeepEqual(cfg.Warnings, []string{answersOffNoModel}) {
-					t.Errorf("Warnings = %#v, want the one line %q", cfg.Warnings, answersOffNoModel)
+				if !reflect.DeepEqual(cfg.Warnings, []string{rt.want}) {
+					t.Errorf("Warnings = %#v, want the one line %q", cfg.Warnings, rt.want)
 				}
 			})
 		}
 	}
-	for name, body := range map[string]string{
-		"tmux, an empty block":     minimalFile + "answers: {}\n",
-		"postgres, an empty block": kubernetesFile + "answers: {}\n",
+	for _, tc := range []struct{ name, body, want string }{
+		{"tmux, an empty block", minimalFile + "answers: {}\n", answersOffNoModel},
+		{"postgres, an empty block", kubernetesFile + "answers: {}\n", answersOffNoModel + answersOffNoStoreEither},
 	} {
-		t.Run(name, func(t *testing.T) {
-			cfg, err := LoadForValidation(writeConfigFile(t, body), noEnv)
-			if err != nil || cfg.Answers != nil || !reflect.DeepEqual(cfg.Warnings, []string{answersOffNoModel}) {
-				t.Fatalf("LoadForValidation = answers %+v, warnings %#v, %v; want no loop and the one line %q", cfg.Answers, cfg.Warnings, err, answersOffNoModel)
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
+			if err != nil || cfg.Answers != nil || !reflect.DeepEqual(cfg.Warnings, []string{tc.want}) {
+				t.Fatalf("LoadForValidation = answers %+v, warnings %#v, %v; want no loop and the one line %q", cfg.Answers, cfg.Warnings, err, tc.want)
 			}
 		})
 	}
@@ -363,7 +368,7 @@ func TestAnswersThatNameNoProviderStillRefuseAMalformedBlock(t *testing.T) {
 		{"providers not a mapping", minimalFile + "answers:\n  providers: [anthropic]\n",
 			"answers.providers must be a mapping of provider (anthropic, openai) to its base_url and key"},
 		{"a provider written with no value", kubernetesFile + "answers:\n  providers: {anthropic: null}\n",
-			"answers.providers must name at least one provider: anthropic or openai"},
+			"answers.providers names no provider with an endpoint: give anthropic or openai its base_url and its key, or remove the key to leave the loop off"},
 		{"an unknown provider written with no value", minimalFile + "answers:\n  providers: {gemini: null}\n",
 			"unknown key answers.providers.gemini"},
 		{"an unknown key", kubernetesFile + "answers:\n  model: anthropic/claude-opus-5-5\n", "unknown key answers.model"},
@@ -402,7 +407,7 @@ func TestAnswersRefusesEachMalformedShapeByName(t *testing.T) {
 		{"not a mapping", "answers: on\n", "answers must be a mapping"},
 		{"an unknown key", answersBlock(anthropicByFile, opusPrice, "  model: anthropic/claude-opus-5-5\n"), "unknown key answers.model"},
 		{"no providers, a model priced", "answers:\n  prices:\n" + opusPrice, "answers.prices.anthropic/claude-opus-5-5 prices a model of anthropic, which answers.providers does not name, so the loop never calls it; remove it or configure the provider"},
-		{"a provider written with no value", answersBlock("    anthropic: null\n", opusPrice, ""), "answers.providers must name at least one provider: anthropic or openai"},
+		{"a provider written with no value", answersBlock("    anthropic: null\n", opusPrice, ""), "answers.providers names no provider with an endpoint: give anthropic or openai its base_url and its key, or remove the key to leave the loop off"},
 		{"providers not a mapping", "answers:\n  providers: [anthropic]\n  prices:\n" + opusPrice, "answers.providers must be a mapping of provider (anthropic, openai) to its base_url and key"},
 		{"an unknown provider", answersBlock(anthropicByFile+"    gemini: {base_url: https://gateway.internal.example/gemini, api_key_file: gemini}\n", opusPrice, ""), "unknown key answers.providers.gemini"},
 		{"an unknown provider key", answersBlock("    anthropic: {base_url: https://gateway.internal.example/anthropic, api_key: sk-fixture}\n", opusPrice, ""), "unknown key answers.providers.anthropic.api_key"},

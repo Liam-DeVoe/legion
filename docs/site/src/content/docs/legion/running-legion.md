@@ -837,7 +837,7 @@ What each part is for:
   role its model route yourself, as you do Oh My Pi's: `ANTHROPIC_API_KEY` through `provider_keys`,
   and `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` in `runtime.kubernetes.pod.env`. The repository's
   `docs/deployment.md` ("Phase workers on Claude Code") and `docs/kubernetes.md` cover the rest.
-- **`answers`** (optional) turns on the daemon's answer loop: a question to an agent that is not
+- **`answers`** (optional) configures the daemon's answer loop: a question to an agent that is not
   running (a Dispatch message to it, a mention of it, a reply on its ask, another agent's Envoy
   message) is answered by the daemon in the agent's name, from the agent's own conversation, on the
   model that conversation last ran on, and the exchange is added to the conversation; what it

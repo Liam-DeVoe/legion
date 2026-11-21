@@ -78,7 +78,7 @@ type workflowRuntime struct {
 	dispatchProject string
 	stateDir        string
 	log             *slog.Logger
-	// answers is the answer loop with `answers` set, nil without it.
+	// answers is the answer loop where it is on (config.Answers settled), nil where it is off.
 	answers *answering
 	// conn is the Envoy NATS connection. It is written only on run's own goroutine while the
 	// daemon boots, once per connect attempt: connect runs there, inside bootprobe.Run, which

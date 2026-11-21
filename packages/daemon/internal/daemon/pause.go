@@ -360,7 +360,7 @@ func (p *projectPause) Paused(ctx context.Context, held store.Pause, asked []sto
 // pause stopped owing a launch is resumed by rule (resumeOwedSpawns); the hold of each pod with a
 // live role ends (endLiveHolds); every outbox lane of the project with a row is woken, so the rows
 // the pause held run now (outbox.wakeUnfinished); one admission pass is applied
-// (applyResumePass); and the answer loop, where `answers` is set, is woken, so the questions the
+// (applyResumePass); and the answer loop, where it is on, is woken, so the questions the
 // pause held are answered now rather than at its next sweep. Every launch goes through the pacing:
 // each held row launches its role when it runs, and an operator's spawn, whose launch no row can
 // carry, is launched by the rule's resume, which the pacing paces as it paces every resume of the

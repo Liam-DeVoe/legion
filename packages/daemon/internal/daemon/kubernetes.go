@@ -79,7 +79,7 @@ type sandboxReads struct {
 // pod reads its bearer from its claim's Secret), no secretsd provider keys (a pod mounts its keys
 // from the providers Secret), and no host gh, git, or jj (a pod runs the image's). The one host
 // tool a Kubernetes daemon runs itself is the answer loop's gh, which readBoot resolves only when
-// `answers` is set (answersGH), beside the deployment's leak check setting and the pin of the
+// the answer loop is on (answersGH), beside the deployment's leak check setting and the pin of the
 // shared public leak check that tool's guard runs, which the daemon installs and runs itself
 // (answersLeakCheck).
 func readSandbox(cfg config.Config, project, dispatchToken, paneNatsUser string, lookup func(string) (string, bool), log *slog.Logger) (sandboxReads, error) {

@@ -27,9 +27,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// answering is the daemon's answer loop, with `answers` set: the Legion project token it answers
-// for, the hand-off consumer connect opens, and the loop attachAnswers builds once supervision runs
-// (the gate is supervision's).
+// answering is the daemon's answer loop, where it is on (config.Answers settled): the Legion
+// project token it answers for, the hand-off consumer connect opens, and the loop attachAnswers
+// builds once supervision runs (the gate is supervision's).
 type answering struct {
 	project  string
 	handoffs *intake.Handoffs

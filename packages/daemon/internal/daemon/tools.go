@@ -85,9 +85,9 @@ func resolveTool(lookupEnv func(string) (string, bool), tool string) (string, er
 }
 
 // answersGH is the real gh the answer loop's gh tool runs on the daemon's own host, which a daemon
-// with `answers` set resolves at boot under either runtime: the gh resolveTools already resolved for
-// a tmux daemon's own tools, else resolveTool's (LEGION_GH_PATH, or the first gh on PATH, never a
-// script). A Kubernetes daemon resolves none otherwise, since its pods run the image's gh. Boot is
+// with the answer loop on resolves at boot under either runtime: the gh resolveTools already
+// resolved for a tmux daemon's own tools, else resolveTool's (LEGION_GH_PATH, or the first gh on
+// PATH, never a script). A Kubernetes daemon resolves none otherwise, since its pods run the image's gh. Boot is
 // refused, naming gh and its override, when neither gives one.
 func answersGH(lookupEnv func(string) (string, bool), resolved map[string]string) (string, error) {
 	if gh := resolved["gh"]; gh != "" {
