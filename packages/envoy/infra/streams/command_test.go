@@ -136,6 +136,9 @@ func TestTheStreamsCommandWords(t *testing.T) {
 		admin, err := natsgo.Connect(url)
 		require.NoError(t, err)
 		defer admin.Close()
+		// A fixture's connection to the test's own server creates the buckets a listener copies
+		// (bus.CreateCopiedBucketsOn), which EnsureStreams opens through bus.EnsureKeyValue.
+		bus.CreateCopiedBucketsOn(admin)
 		require.NoError(t, streamset.EnsureStreams(t.Context(), admin, streamset.Settings{}))
 		measure, _ := streamset.Find(streamset.Declared(streamset.Settings{}), streamset.MeasureStream)
 		_, err = js.AddStream(&measure.Config)

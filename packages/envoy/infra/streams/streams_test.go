@@ -62,6 +62,10 @@ func startHub(t *testing.T, n int, grant natsgrant.Permissions) *hub {
 	}
 	admin := testnats.Connect(t, url)
 	t.Cleanup(admin.Close)
+	// The admin is the fixture of a server of the test's own, so streamset.EnsureStreams through it
+	// creates the buckets a listener copies, which bus.EnsureKeyValue creates on no other
+	// connection (bus.CreateCopiedBucketsOn).
+	bus.CreateCopiedBucketsOn(admin)
 	js, err := admin.JetStream(natsgo.MaxWait(30 * time.Second))
 	require.NoError(t, err)
 	return &hub{url: url, admin: admin, js: js, writes: testnats.WatchStreamWrites(t, url)}
