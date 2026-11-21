@@ -145,9 +145,9 @@ func (e *Erasure) list(read *erasedRead) {
 	e.Digest = digest(e.Listing)
 }
 
-// nodeProject is the project whose term statistics count the node's words, which the run counts
-// again once its items moved (api.RecountSearchTermStatsTx): a comment's issue's or document's
-// project, a block's document's, and empty for a node no project holds.
+// nodeProject is the project whose term statistics count the node's words, which the run takes
+// the erased words out of once its items moved (api.ForgetErasedTermsTx): a comment's issue's or
+// document's project, a block's document's, and empty for a node no project holds.
 func (e *Erasure) nodeProject(ctx context.Context, tx pgx.Tx, document *ownDocument) (string, error) {
 	project := ""
 	if document != nil {
