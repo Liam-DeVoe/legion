@@ -146,23 +146,7 @@ type InterestPlan struct {
 	Topics   []string
 	Withheld []string
 	Revision uint64
-	Dropped  []string
 	// afterConflict is set on a plan PlanInterestAfterConflict made, whose row was read from the
 	// stream's leader; UpsertPlanned reads the row it fences the write on the same way.
 	afterConflict bool
-}
-
-// Without is the plan with topics left out of it: out of Topics, which the session's consumer is
-// filtered on, and out of the row its write stores (Dropped), the stored row's own topics among
-// them. It is how a caller holding a session to a rule of its own (cmd/listener's edge listener,
-// which holds a session to its token's projects) drops what that rule refuses from a plan whose
-// topics the store merged in from the row another listener wrote. The plan's revision stands, so
-// its write is still refused when another writer stored the row since.
-func (p InterestPlan) Without(topics []string) InterestPlan {
-	if len(topics) == 0 {
-		return p
-	}
-	p.Topics = slices.DeleteFunc(slices.Clone(p.Topics), func(topic string) bool { return slices.Contains(topics, topic) })
-	p.Dropped = append(slices.Clone(p.Dropped), topics...)
-	return p
 }

@@ -684,18 +684,22 @@ func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 }
 
 // withhold answers a frame the edge's rule withholds on its receipt subject, and logs it. A frame
-// withheld for want of a fresh repository answer (withheldAnswerUnknown) is answered nak, so the
-// relay that sent it delivers it again after the nak delay, when this replica may have the answer,
-// and marks the gap itself when it withholds it; it is not counted, since it is not yet withheld
-// for good. Every other is answered done, so the relay acknowledges its message undelivered, and
-// counted under reason. A frame no relay sent has a receipt no relay awaits, and that answer
-// reaches nobody.
+// withheld for want of a fresh repository answer (withheldAnswerUnknown), and any frame that carries
+// a repository gap mark (relayHeaderGap), is answered nak, so the relay that sent it delivers it
+// again after the nak delay, when this replica may have the answer, and re-marks the session's gap
+// itself (onReply); neither is counted, since it is not yet withheld for good, and a done would clear
+// a gap mark on a frame that never reached the client. Every other is answered done, so the relay
+// acknowledges its message undelivered, and counted under reason. A frame no relay sent has a receipt
+// no relay awaits, and that answer reaches nobody.
 func (socket *relaySocket) withhold(msg *nats.Msg, subject, reason string) {
 	answer := relayReplyDone
-	if reason == withheldAnswerUnknown {
+	switch {
+	case reason == withheldAnswerUnknown, msg.Header.Get(relayHeaderGap) == "true":
 		answer = relayReplyNak
-	} else if socket.repositories != nil {
-		socket.repositories.withheld.Inc([2]string{"reason", reason})
+	default:
+		if socket.repositories != nil {
+			socket.repositories.withheld.Inc([2]string{"reason", reason})
+		}
 	}
 	socket.sockets.logger.Info("listener: the relay socket withheld a frame from its session",
 		slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", reason), slog.String("answer", answer))

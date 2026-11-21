@@ -121,7 +121,7 @@ func newEdgeRepositories(brokerURL string, account ciphertoken.Account, projects
 // token does not list (withheldProjectNotHeld, edge_frames.go).
 func newEdgeWithheldCounter(met *metrics.Registry) *metrics.Counter {
 	return met.NewCounter("envoy_edge_github_withheld_total",
-		"Frames the edge listener withheld from a session, by reason: not_in_project and project_not_held acknowledged undelivered, answer_unknown left for the consumer to deliver again")
+		"Frames the edge listener withheld from a session, by reason: not_in_project and project_not_held acknowledged undelivered, answer_unknown acknowledged undelivered with its gap mark owed to the session's next frame")
 }
 
 // read asks the broker for project's repositories now, and keeps the answer when it is a whole

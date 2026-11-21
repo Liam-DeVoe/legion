@@ -532,6 +532,12 @@ type relayFrame struct {
 	delivered uint64
 	// answered is set once the session sent any reply for the frame, under framesMu.
 	answered bool
+	// gapMark is the repository gap mark the frame carried (the owed mark publishFrame was given),
+	// "" for a frame that carried none and for a stream retention gap. The relay clears the mark
+	// when it publishes the frame; a nak means the session did not take it (a slow consumer, or the
+	// socket withholding it on a replica with no fresh answer), so onReply re-marks the session by
+	// this, and the mark is not lost to a frame that never reached the client.
+	gapMark string
 }
 
 // relayEdgeInFlight is how many of a session's frames an edge listener's relay holds in flight,
@@ -1200,7 +1206,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		if m.takeOverFrame(ctx, sessionID, msg) {
 			continue
 		}
-		if err := m.publishFrame(ctx, run, msg, streamID, gap, gapReason); err != nil {
+		if err := m.publishFrame(ctx, run, msg, streamID, gap, gapReason, owed); err != nil {
 			if ctx.Err() != nil {
 				return relayEnded
 			}
@@ -1338,10 +1344,10 @@ func (m *sessionRelays) giveBackWithheld(sessionID string, msg bus.SessionMessag
 // its own under the listener's reply inbox that names the session (bus.SessionReplySubject). gap
 // marks the frame as the first after a gap, and gapReason names that gap when it is not the
 // stream's retention gap.
-func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool, gapReason string) error {
+func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool, gapReason, owed string) error {
 	reply := bus.SessionReplySubject(m.inbox, run.sessionID)
 	token := reply[strings.LastIndexByte(reply, '.')+1:]
-	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), delivered: msg.Delivered}
+	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), delivered: msg.Delivered, gapMark: owed}
 	m.framesMu.Lock()
 	if run.outstanding == nil {
 		run.outstanding = map[string]*relayFrame{}
@@ -1516,6 +1522,14 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 		err = frame.acker.Ack()
 	case relayReplyNak:
 		err = frame.acker.NakWithDelay(relayNakDelayFor(frame.delivered))
+		if frame.gapMark != "" {
+			noteCtx, cancel := context.WithTimeout(context.Background(), sendRequestBudget)
+			if _, noteErr := m.noteRepositoryGap(noteCtx, frame.run.sessionID); noteErr != nil {
+				m.logger.Warn("session relay could not re-mark a withheld gap frame's session; its next run sends the mark",
+					slog.String("session_id", frame.run.sessionID), slog.String("error", noteErr.Error()))
+			}
+			cancel()
+		}
 	}
 	if err != nil {
 		m.logger.Warn("session relay could not answer the consumer for a frame", slog.String("session_id", frame.run.sessionID), slog.String("reply", reply), slog.String("error", err.Error()))

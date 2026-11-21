@@ -430,16 +430,16 @@ func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
 }
 
 // A role message the role lane forwarded to a session's own agent subject before its edge
-// registration still reaches the session after that registration released the role: an edge
-// listener runs with its grant, which turns the frame takeover off (takeOverFrame), and nothing
-// else at the edge holds a frame already forwarded. This row states that gap, as the edge section
-// of packages/envoy/README.md does: the relay's check of each frame's topic, which #4730 adds,
-// withholds the frame, and once it is in, this row fails and is turned to require the frame
-// withheld. Here the session holds INFRA's role through another listener, the shared listener's
-// role lane forwards a message of that role to it, and the session then registers at the edge
-// under a PRIV token. Controls: with edge mode off, the role is not released and the row fails;
-// with the rig's listener running without the edge's grant, the takeover copies the frame to the
-// role's kept lane, the session's first frame is the PRIV event, and the row fails.
+// registration is withheld after that registration: its topic is of INFRA, a project the session's
+// PRIV token does not list, so the edge's relay check of each frame's topic withholds it
+// (edgeFrameVerdict), a frame already forwarded to the session's own subject held by it like any
+// other. An edge listener runs with its grant, which turns the frame takeover off (takeOverFrame),
+// so nothing copies the forward to the role's kept lane; the relay holds it in place. Here the
+// session holds INFRA's role through another listener, the shared listener's role lane forwards a
+// message of that role to it, and the session then registers at the edge under a PRIV token, which
+// releases the INFRA claim. Its first frame is the PRIV sentinel, not the INFRA forward. Live
+// control: the frame rule off at the relay (edgeWithholds back to the base's GitHub-only verdict)
+// lets the INFRA forward through, and the row fails naming it.
 func TestAnEdgeWithholdsARoleMessageForwardedBeforeItsRegistration(t *testing.T) {
 	rig := newEdgeRig(t)
 	const sessionID, infraRole = "ses_edge_forwarded_before", "legion-infra-infra-5-tester"
