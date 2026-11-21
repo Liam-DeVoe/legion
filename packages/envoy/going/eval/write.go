@@ -285,8 +285,8 @@ func (w *seedWriter) writeIssues(ctx context.Context) error {
 					return fmt.Errorf("the %s of issue %s: %w", holder.Role, issue.Key, err)
 				}
 			}
-			// Every issue holds its spec document, as the create route makes it, with a version
-			// only where the seed gives the spec a text.
+			// Every issue holds its spec document, as the create route makes it. Its version, empty
+			// where the seed gives the spec no text, is written with the other documents.
 			if _, err := w.tx.Exec(ctx, `
 				insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, created_at, last_seq)
 				values ($1, $2, $3, 'spec', 'spec.md', 'doc', true, $4::jsonb, $5, 0)
@@ -381,17 +381,16 @@ func ownerOf(reference string) owner {
 	return owner{issue: &reference}
 }
 
-// writeArtifacts writes each issue's spec text and each document and file of an issue or a
-// project, every one at one version dated at its creation.
+// writeArtifacts writes each issue's spec and each document and file of an issue or a project,
+// every one at one version dated at its creation. A spec the seed gives no text is version 1 of an
+// empty document, as the create route writes the spec of an issue created with none, so a route
+// that reads a spec's latest version (a reopen's, docs.Service.FollowClosedIssueVersions) finds it.
 func (w *seedWriter) writeArtifacts(ctx context.Context) error {
 	creator, err := w.actorJSON(w.creator())
 	if err != nil {
 		return err
 	}
 	for _, issue := range w.seed.Issues {
-		if issue.Spec == "" {
-			continue
-		}
 		if err := w.writeDocumentVersion(ctx, artifactID(issue.Key, "spec"), issue.Spec, issue.CreatedAt, true); err != nil {
 			return fmt.Errorf("the spec of issue %s: %w", issue.Key, err)
 		}

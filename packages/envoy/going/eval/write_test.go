@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -20,10 +21,11 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 // TestTheSeededStoreHoldsTheSeed writes the committed seed into an empty database and reads it
 // back as Dispatch stores it: each issue's fields, its close and its claim at the seed's own times,
-// its spec, each blocks and relates link, each ask with its answer and its opening event, each
-// comment with its event, each message and file, and the project counters a server's next write
-// takes. A second write leaves the store as it is, and a database holding another project is
-// refused.
+// its spec at version 1 (empty where the seed gives it no text), each blocks and relates link, each
+// ask with its answer and its opening event, each comment with its event, each message and file,
+// and the project counters a server's next write takes. Each closed issue reopens as the reopen
+// route reopens it. A second write leaves the store as it is, and a database holding another
+// project is refused.
 func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 	ctx := context.Background()
 	seed, err := LoadSeed(Files)
@@ -44,14 +46,17 @@ func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 		var created time.Time
 		var closed, claimed *time.Time
 		var specVersions int
+		var specAt *time.Time
 		if err := database.Pool.QueryRow(ctx, `
 			select i.title, i.status, i.labels, i.priority, i.parent_key, i.assignee, coalesce(i.route, ''),
 			       i.created_at, i.closed_at, coalesce(i.claimed_by->>'id', ''), i.claimed_at,
 			       (select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id
-			         where a.issue_key = i.key and a.is_primary)
+			         where a.issue_key = i.key and a.is_primary),
+			       (select v.created_at from artifact_versions v join artifacts a on a.id = v.artifact_id
+			         where a.issue_key = i.key and a.is_primary and v.number = 1)
 			from issues i where i.key = $1
 		`, want.Key).Scan(&title, &status, &labels, &priority, &parent, &assignee, &route, &created, &closed,
-			&claimedBy, &claimed, &specVersions); err != nil {
+			&claimedBy, &claimed, &specVersions, &specAt); err != nil {
 			t.Fatalf("read issue %s: %v", want.Key, err)
 		}
 		if title != want.Title || status != want.Status || !slices.Equal(labels, orEmpty(want.Labels)) {
@@ -75,8 +80,10 @@ func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 		if claimedBy != wantClaim || !sameTime(claimed, wantClaimed) {
 			t.Errorf("issue %s is claimed by %q at %v, want %q at %v", want.Key, claimedBy, claimed, wantClaim, wantClaimed)
 		}
-		if wantVersions := min(len(want.Spec), 1); specVersions != wantVersions {
-			t.Errorf("the spec of issue %s holds %d versions, want %d", want.Key, specVersions, wantVersions)
+		// Every spec holds version 1 dated at its issue's creation, as the create route writes it,
+		// an empty one included.
+		if specVersions != 1 || !sameTime(specAt, &want.CreatedAt) {
+			t.Errorf("the spec of issue %s holds %d versions, the first at %v; want 1 at %s", want.Key, specVersions, specAt, want.CreatedAt)
 		}
 	}
 
@@ -285,6 +292,21 @@ func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 	for _, issue := range seed.Issues {
 		if issue.Spec != "" {
 			read(issue.Key, "spec", issue.Spec)
+			continue
+		}
+		if text, _, err := service.TextWithToken(ctx, artifactID(issue.Key, "spec")); err != nil || strings.TrimSpace(text) != "" {
+			t.Errorf("the text of %s/spec, which the seed gives none, reads %q (%v), want an empty text", issue.Key, text, err)
+		}
+	}
+
+	// A reopen follows the latest version of each document of its issue (the reopen route's
+	// docs.Service.FollowClosedIssueVersions), so each closed issue reopens, its empty spec too.
+	for _, issue := range seed.Issues {
+		if issue.ClosedAt == nil {
+			continue
+		}
+		if err := reopen(ctx, database, service, issue.Key); err != nil {
+			t.Errorf("reopen %s: %v", issue.Key, err)
 		}
 	}
 
@@ -316,6 +338,29 @@ func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 	if written, err := WriteSeed(ctx, other, seed); written || err == nil || !strings.Contains(err.Error(), "ELSE") {
 		t.Errorf("WriteSeed on a database holding project ELSE = %v, %v; want a refusal naming ELSE", written, err)
 	}
+}
+
+// reopen reopens the issue key as the reopen route does in its transaction, joined with the
+// document service: it clears the issue's close, marks owing a settlement each of its documents
+// whose ask blocks wait for the reopen, and follows the latest version of each of its documents.
+func reopen(ctx context.Context, database *store.Store, service *docs.Service, key string) error {
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	joined, ledger := service.Join(ctx, tx)
+	defer ledger.Discard()
+	if _, err := tx.Exec(ctx, `update issues set status = 'todo', closed_at = null where key = $1`, key); err != nil {
+		return err
+	}
+	if err := service.MarkReopenOwedAskDocuments(joined, key); err != nil {
+		return err
+	}
+	if err := service.FollowClosedIssueVersions(joined, key); err != nil {
+		return err
+	}
+	return ledger.Commit(joined)
 }
 
 func orEmpty(values []string) []string {
