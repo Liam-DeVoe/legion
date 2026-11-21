@@ -333,6 +333,15 @@ export function writesSent(writes: readonly KeyedWrite<unknown>[]): number {
   return firstAttempts(writes).length;
 }
 
+/** How many requests the lists in `writes` hold together: the sum of their lengths, each attempt
+ *  counted. `writesSent` counts each `Idempotency-Key` once, so an attempt the page sends again
+ *  under a key it already sent adds nothing there; here it adds one. A step that says no request
+ *  is sent reads this before its press and after it, so a resend of any key fails the step
+ *  (Verification, "A write is one key"), where a step that counts writes reads `writesSent`. */
+export function requestsSent(writes: readonly (readonly KeyedWrite<unknown>[])[]): number {
+  return writes.reduce((sum, list) => sum + list.length, 0);
+}
+
 /** The writes `holdWrites` caught, and what lets them through. */
 export interface HeldWrites {
   /** Each write's body, in the order sent. */

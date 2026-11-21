@@ -91,6 +91,7 @@ import {
   newPageAt,
   OTHER_SITE,
   reloaded,
+  requestsSent,
   returnMornings,
   reviewWrites,
   type SeededApproval,
@@ -296,7 +297,9 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   const snoozes = new Map(inbox.order.map((id) => [id, snoozeWrites(page, id)] as const));
   const snoozesOf = (id: string) => snoozes.get(id) ?? [];
   const unsnoozes = unsnoozeWrites(page, first);
-  const sent = () => countOf([...snoozes.values(), unsnoozes]);
+  const watched = [...snoozes.values(), unsnoozes];
+  const sent = () => countOf(watched);
+  const requests = () => requestsSent(watched);
   const step = (text: string) => `k-snooze-menu: ${place}: ${text}`;
   const menu = page.getByRole("menu");
   const choice = (name: string) => menu.getByRole("menuitem", { exact: true, name });
@@ -308,12 +311,14 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   await expect(menu, step("b shows a menu")).toBeVisible();
   await expectSnoozeChoices(menu, step("b shows a menu"));
   await expect(choice("Later today"), step("b highlights the first choice")).toBeFocused();
+  const beforeArrowDown = requests();
   await page.keyboard.press("ArrowDown");
   await expect(choice("Tomorrow"), step("ArrowDown moves the highlight to Tomorrow")).toBeFocused();
-  expect(sent(), step("ArrowDown sends no request")).toBe(0);
+  expect(requests(), step("ArrowDown sends no request")).toBe(beforeArrowDown);
+  const beforeEscape = requests();
   await page.keyboard.press("Escape");
   await expect(menu, step("Escape closes the menu")).toHaveCount(0);
-  expect(sent(), step("Escape sends no request")).toBe(0);
+  expect(requests(), step("Escape sends no request")).toBe(beforeEscape);
   await expect(rowOf(inbox, first), step("Escape leaves the ask in its band")).toHaveAttribute(
     "data-inbox-section",
     band
@@ -360,15 +365,17 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   const snooze = controlsOf(page, inbox, third).getByRole("button", { name: /^Snooze / });
   await snooze.click();
   await expect(menu, step("a click on the Snooze control opens its menu")).toBeVisible();
+  const beforeTab = requests();
   await page.keyboard.press("Tab");
   await expect(menu, step("Tab closes the menu")).toHaveCount(0);
-  expect(sent(), step("Tab sends no request")).toBe(2);
+  expect(requests(), step("Tab sends no request")).toBe(beforeTab);
   await expect(snooze, step("Tab leaves the focus on the Snooze control")).toBeFocused();
   await snooze.click();
   await expect(menu, step("a click on the Snooze control opens its menu again")).toBeVisible();
+  const beforeOutside = requests();
   await inbox.outside.click();
   await expect(menu, step("a click outside the menu closes it")).toHaveCount(0);
-  expect(sent(), step("a click outside the menu sends no request")).toBe(2);
+  expect(requests(), step("a click outside the menu sends no request")).toBe(beforeOutside);
 
   // The second ask, out in Later, and the third, selected with x: the bar's Snooze opens the
   // same menu, and b then 3 snoozes both until Next week.
@@ -385,9 +392,10 @@ async function snoozeMenuSteps(page: Page, place: InboxPlace): Promise<void> {
     "Snooze selected asks"
   );
   await expectSnoozeChoices(menu, step("a click on the bar's Snooze opens the same menu"));
+  const beforeBarEscape = requests();
   await page.keyboard.press("Escape");
   await expect(menu, step("Escape closes the bar's menu")).toHaveCount(0);
-  expect(sent(), step("Escape on the bar's menu sends no request")).toBe(2);
+  expect(requests(), step("Escape on the bar's menu sends no request")).toBe(beforeBarEscape);
   await rowOf(inbox, third).focus();
   await page.keyboard.press("b");
   await expect(menu, step("b with asks selected opens the bar's menu")).toHaveAccessibleName(
@@ -513,6 +521,7 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   const seed = await seedPriorityInbox();
   const inbox = await openInboxAt(page, place, 3);
   const writes = issueWrites(page, seed.issueKey);
+  const requests = () => requestsSent([writes]);
   const step = (text: string) => `k-priority-menu: ${place}: ${text}`;
   const menu = page.getByRole("menu");
   const radio = (name: string) => menu.getByRole("menuitemradio", { exact: true, name });
@@ -525,12 +534,14 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   await expect(menu, step("p shows a menu")).toBeVisible();
   await expectPriorityChoices(menu, "P2", step("p shows a menu"));
   await expect(radio("P2"), step("p highlights the checked P2")).toBeFocused();
+  const beforeArrowUp = requests();
   await page.keyboard.press("ArrowUp");
   await expect(radio("P1"), step("ArrowUp moves the highlight to P1")).toBeFocused();
-  expect(writes, step("ArrowUp sends no request")).toHaveLength(0);
+  expect(requests(), step("ArrowUp sends no request")).toBe(beforeArrowUp);
+  const beforeEscape = requests();
   await page.keyboard.press("Escape");
   await expect(menu, step("Escape closes the menu")).toHaveCount(0);
-  expect(writes, step("Escape sends no request")).toHaveLength(0);
+  expect(requests(), step("Escape sends no request")).toBe(beforeEscape);
   await expect(mark, step("after Escape the row's mark still reads P2")).toHaveText("P2");
 
   // p then 0 writes P0; p, ArrowDown, Enter writes the highlighted P1.
@@ -557,7 +568,9 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
   await expect(mark, step("after Enter the row's mark reads P1")).toHaveText("P1");
   await expectStillOn(inbox, seed.askId, step("after p, ArrowDown, Enter"));
 
-  // A click on the priority control opens the same menu.
+  // A click on the priority control opens the same menu. From here on nothing writes the
+  // priority: not the click, nor its Escape, nor p and ? on the document's ask and the thread.
+  const beforeRest = requests();
   await control.click();
   await expect(menu, step("a click on the priority control opens the same menu")).toBeVisible();
   await expectPriorityChoices(
@@ -584,7 +597,7 @@ async function priorityMenuSteps(page: Page, place: InboxPlace): Promise<void> {
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
   }
-  expect(writesSent(writes), step("nothing else writes the priority")).toBe(2);
+  expect(requests(), step("nothing else writes the priority")).toBe(beforeRest);
 }
 
 // SLOW(>=2s): three kinds of item seeded, two writes read back, and the help opened twice.
@@ -611,6 +624,7 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
   await patchIssue(issue.key, { priority: 2 });
   await page.setViewportSize(WIDE);
   const writes = issueWrites(page, issue.key);
+  const requests = () => requestsSent([writes]);
   const menu = page.getByRole("menu");
   const radio = (name: string) => menu.getByRole("menuitemradio", { exact: true, name });
 
@@ -644,14 +658,18 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
     `Priority of ${issue.key}`
   );
   await expectPriorityChoices(menu, "P1", "k-priority-menu: on the Board p opens the card's menu");
+  // The count is read just before Escape and again once the menu is closed, so any request
+  // between the two fails the step, a resend of any key included (Verification, "A write is one
+  // key"). A request the issue page's write sent again before then - one the load of this page
+  // sends again because it was still out, which CI run 44535117619 counted here - is not Escape's.
+  const beforeBoardEscape = requests();
   await page.keyboard.press("Escape");
   await expect(menu, "k-priority-menu: on the Board Escape closes the menu").toHaveCount(0);
-  // A write is counted by its key: one the page sends again under the same key - an attempt
-  // after one that got no answer, or one a load of the next page sends again because it was
-  // still out - is that one write, which CI run 44535117619 saw twice here.
-  expect(writesSent(writes), "k-priority-menu: on the Board Escape writes nothing").toBe(1);
+  expect(requests(), "k-priority-menu: on the Board Escape writes nothing").toBe(beforeBoardEscape);
 
-  // The project List: a click on a row's priority control opens the same menu.
+  // The project List: a click on a row's priority control opens the same menu, and nothing more
+  // is written.
+  const beforeList = requests();
   await page.getByRole("button", { exact: true, name: "List" }).click();
   await priorityTrigger(
     page.getByRole("row", { exact: true, name: `${issue.key} ${title}` }),
@@ -665,7 +683,7 @@ test("k-priority-menu: p opens the priority menu on the issue page and on a Boar
   );
   await page.keyboard.press("Escape");
   await expect(menu, "k-priority-menu: on the List Escape closes the menu").toHaveCount(0);
-  expect(writesSent(writes), "k-priority-menu: on the List nothing more is written").toBe(1);
+  expect(requests(), "k-priority-menu: on the List nothing more is written").toBe(beforeList);
 });
 
 // ---------------------------------------------------------------------------
@@ -682,6 +700,7 @@ test("k-status-menu: s opens the status menu on the issue page, where the arrows
   await patchIssue(issue.key, { status: "todo" });
   await page.setViewportSize(WIDE);
   const writes = issueWrites(page, issue.key);
+  const requests = () => requestsSent([writes]);
   const menu = page.getByRole("menu");
   const radio = (name: string) => menu.getByRole("menuitemradio", { exact: true, name });
   const status = statusTrigger(page);
@@ -704,15 +723,17 @@ test("k-status-menu: s opens the status menu on the issue page, where the arrows
     "true"
   );
   await expect(radio("Todo"), "k-status-menu: s highlights the current Todo").toBeFocused();
+  const beforeArrowDown = requests();
   await page.keyboard.press("ArrowDown");
   await expect(
     radio("In progress"),
     "k-status-menu: ArrowDown moves the highlight to In progress"
   ).toBeFocused();
-  expect(writes, "k-status-menu: ArrowDown sends no request").toHaveLength(0);
+  expect(requests(), "k-status-menu: ArrowDown sends no request").toBe(beforeArrowDown);
+  const beforeEscape = requests();
   await page.keyboard.press("Escape");
   await expect(menu, "k-status-menu: Escape closes the menu").toHaveCount(0);
-  expect(writes, "k-status-menu: Escape sends no request").toHaveLength(0);
+  expect(requests(), "k-status-menu: Escape sends no request").toBe(beforeEscape);
   await expect(status, "k-status-menu: after Escape the status still reads Todo").toHaveText(
     "Todo"
   );
@@ -832,9 +853,9 @@ async function tabTo(page: Page, control: Locator, message: string): Promise<voi
   expect(await isActive(control), message).toBe(true);
 }
 
-/** Presses `CHOICE_KEYS` and then `choice.letter`, reading after each press that no request went
- *  out, and that at least one press showed a choice other than the item's value (`rest`). The
- *  choice shown after the last press is the answer. */
+/** Presses `CHOICE_KEYS` and then `choice.letter`, reading before and after each press that it
+ *  sent no request, and that at least one press showed a choice other than the item's value
+ *  (`rest`). The choice shown after the last press is the answer. */
 async function pressChoiceKeys(
   page: Page,
   choice: ChoiceControl,
@@ -845,10 +866,11 @@ async function pressChoiceKeys(
   let shown = rest;
   let other = false;
   for (const key of [...CHOICE_KEYS, choice.letter]) {
+    const before = requestsSent([choice.writes]);
     await page.keyboard.press(key);
     shown = await shownBy(choice.control);
     other ||= showsOther(shown, rest);
-    expect(choice.writes, `${say}: ${key} sends no request`).toHaveLength(0);
+    expect(requestsSent([choice.writes]), `${say}: ${key} sends no request`).toBe(before);
   }
   expect(other, `${say}: a key shows a choice other than the item's value, ${rest.text}`).toBe(
     true
@@ -856,10 +878,18 @@ async function pressChoiceKeys(
   return shown;
 }
 
-/** Reads that `choice` shows the item's value again (`rest`), with its list closed, and that no
- *  request went out, after the step `step`. */
-async function expectItemValue(choice: ChoiceControl, rest: Shown, step: string): Promise<void> {
+/** Presses `key`, the step `step`, and reads that `choice` shows the item's value again (`rest`),
+ *  with its list closed, and that the press sent no request. */
+async function pressToItemValue(
+  page: Page,
+  choice: ChoiceControl,
+  rest: Shown,
+  key: "Escape" | "Tab",
+  step: string
+): Promise<void> {
   const say = `k-choice-writes-on-enter: ${choice.what}, ${step}`;
+  const before = requestsSent([choice.writes]);
+  await page.keyboard.press(key);
   await expect
     .poll(
       async () => {
@@ -869,7 +899,7 @@ async function expectItemValue(choice: ChoiceControl, rest: Shown, step: string)
       { message: `${say} shows the item's value, ${rest.text}` }
     )
     .toBe(true);
-  expect(choice.writes, `${say} sends no request`).toHaveLength(0);
+  expect(requestsSent([choice.writes]), `${say} sends no request`).toBe(before);
 }
 
 /** Every step of k-choice-writes-on-enter on one choice control, on the page that draws it. */
@@ -880,20 +910,29 @@ async function choiceWritesOnEnter(page: Page, choice: ChoiceControl): Promise<v
 
   // The keys with the focus on the control, then Escape.
   await pressChoiceKeys(page, choice, rest, "the keys on the focused control");
-  await page.keyboard.press("Escape");
-  await expectItemValue(choice, rest, "Escape after the keys on the focused control");
+  await pressToItemValue(
+    page,
+    choice,
+    rest,
+    "Escape",
+    "Escape after the keys on the focused control"
+  );
 
   // The keys in the list a click opened, then Escape.
   await choice.control.click();
   await pressChoiceKeys(page, choice, rest, "the keys in the list a click opened");
-  await page.keyboard.press("Escape");
-  await expectItemValue(choice, rest, "Escape after the keys in the list a click opened");
+  await pressToItemValue(
+    page,
+    choice,
+    rest,
+    "Escape",
+    "Escape after the keys in the list a click opened"
+  );
 
   // The keys again, then Tab.
   await expect(choice.control, `${say}: Escape puts the focus back on the control`).toBeFocused();
   await pressChoiceKeys(page, choice, rest, "the keys before Tab");
-  await page.keyboard.press("Tab");
-  await expectItemValue(choice, rest, "Tab after the keys");
+  await pressToItemValue(page, choice, rest, "Tab", "Tab after the keys");
 
   // The keys again, then Enter: one request, of the choice shown.
   await expect(choice.control, `${say}: Tab leaves the focus on the control`).toBeFocused();
@@ -997,9 +1036,32 @@ function highlightedRow(control: Locator): Promise<HighlightedRow | undefined> {
   });
 }
 
+/** The scroll box of an open single pick's list (`MultiSelect`'s panel): the height of its rows,
+ *  the height it shows, and how far down it is scrolled. */
+interface ListScroll {
+  readonly clientHeight: number;
+  readonly scrollHeight: number;
+  readonly scrollTop: number;
+}
+
+/** How the open list of `control`, a single pick's trigger, is scrolled (`ListScroll`), or
+ *  undefined while the list is closed. */
+function listScroll(control: Locator): Promise<ListScroll | undefined> {
+  return control.evaluate((trigger): ListScroll | undefined => {
+    const panel = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
+    if (panel === null) return undefined;
+    const { clientHeight, scrollHeight, scrollTop } = panel;
+    return { clientHeight, scrollHeight, scrollTop };
+  });
+}
+
 // SLOW(>=2s): five more people signed in, the issue page loaded, and the assignee's list walked
 // from End up to its first row and opened again by ArrowUp.
-test("k-choice-writes-on-enter: on the issue page with seven people and no assignee, End on the closed assignee, each ArrowUp after it up to the first row, and ArrowUp on the closed assignee each leave the highlighted row inside the list's box, below its search box", async ({
+// @webkit @firefox: the scroll that keeps the list's highlighted row in sight under its sticky
+// search box (`MultiSelect`'s layout effect), which rests on each engine's layout of the list,
+// and the keys each engine sends to a closed trigger: End and ArrowUp open the list and move its
+// highlight.
+test("k-choice-writes-on-enter: on the issue page with seven people and no assignee, End on the closed assignee, each ArrowUp after it up to the first row, and ArrowUp on the closed assignee each leave the highlighted row inside the list's box, below its search box @firefox @webkit", async ({
   page,
 }) => {
   const { issueKey, title } = await seedChoices();
@@ -1032,6 +1094,18 @@ test("k-choice-writes-on-enter: on the issue page with seven people and no assig
 
   await page.keyboard.press("End");
   await inView("End on the closed assignee");
+  // The highlighted row can stand under the search box or below the box only while the list
+  // scrolls, which it does only while its rows overflow its box (`max-h-72`): End has scrolled
+  // it, or no read of this row tests the scroll.
+  const scroll = await listScroll(control);
+  if (scroll === undefined) throw new Error(say("End on the closed assignee leaves no list open"));
+  expect(
+    scroll.scrollHeight,
+    say(`after End the list's rows overflow its box, ${scroll.clientHeight} px high`)
+  ).toBeGreaterThan(scroll.clientHeight);
+  expect(scroll.scrollTop, say("after End the list is scrolled down from its top")).toBeGreaterThan(
+    0
+  );
   for (let press = 1; press < count; press += 1) {
     await page.keyboard.press("ArrowUp");
     await inView(`ArrowUp ${press} after End`);
@@ -1271,7 +1345,8 @@ test("k-phone: a tap opens the Snooze and the priority menus, whose choices take
   const otherWrites = [...issueOf.values()]
     .filter((key) => key !== secondKey)
     .map((key) => issueWrites(page, key));
-  const sent = () => countOf([...snoozes, priorityWrites, ...otherWrites]);
+  const watched = [...snoozes, priorityWrites, ...otherWrites];
+  const sent = () => countOf(watched);
   const menu = page.getByRole("menu");
 
   const snooze = inboxRow(page, first).getByRole("button", { name: /^Snooze / });
@@ -1284,9 +1359,12 @@ test("k-phone: a tap opens the Snooze and the priority menus, whose choices take
     "k-phone: a tap on the first card's Snooze opens the snooze menu"
   ).toBeVisible();
   await expectTapHeight(menu.getByRole("menuitem"), "the snooze menu");
+  const beforeTapOutside = requestsSent(watched);
   await page.getByRole("heading", { exact: true, level: 1, name: "Inbox" }).tap();
   await expect(menu, "k-phone: a tap outside the menu closes it").toHaveCount(0);
-  expect(sent(), "k-phone: a tap outside the menu sends no request").toBe(0);
+  expect(requestsSent(watched), "k-phone: a tap outside the menu sends no request").toBe(
+    beforeTapOutside
+  );
   await snooze.tap();
   await menu.getByRole("menuitem", { exact: true, name: "Tomorrow" }).tap();
   await expect
@@ -3700,9 +3778,14 @@ function watchReviews(page: Page, approvals: readonly SeededApproval[]): Reviews
   }));
 }
 
+/** Every watched list of `reviews`, on every route. */
+function reviewLists(reviews: readonly ReviewsSent[]): KeyedWrite<unknown>[][] {
+  return reviews.flatMap((sent) => [sent.answers, sent.unversioned, sent.versioned]);
+}
+
 /** How many reviews the watched lists hold together, on every route. */
 function reviewCount(reviews: readonly ReviewsSent[]): number {
-  return countOf(reviews.flatMap((sent) => [sent.answers, sent.unversioned, sent.versioned]));
+  return countOf(reviewLists(reviews));
 }
 
 // SLOW(>=2s): three approval requests seeded at version 2, one document's read held while `a` is
@@ -3727,6 +3810,7 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   const reviews = watchReviews(page, approvals);
   const questionAnswers = answerWrites(page, question.id);
   const sent = () => reviewCount(reviews) + writesSent(questionAnswers);
+  const requests = () => requestsSent([...reviewLists(reviews), questionAnswers]);
   const step = (text: string) => `k-approval-keys: the reading pane: ${text}`;
   const head = paneHead(page);
   // The Approve that takes a press: the head draws Approve from its first draw and holds it
@@ -3750,6 +3834,7 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   const firstRow = inboxRow(page, first.askId);
   await firstRow.focus();
   await requested;
+  const beforeEarlyA = requests();
   await page.keyboard.press("a");
   await expect(
     approve,
@@ -3760,7 +3845,7 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
     approve,
     step("the read returns and the head's Approve takes a press")
   ).toBeVisible();
-  expect(sent(), step("a before the document's read returns sends nothing")).toBe(0);
+  expect(requests(), step("a before the document's read returns sends nothing")).toBe(beforeEarlyA);
   await expect(firstRow, step("the focus is still on the request's row")).toBeFocused();
   await page.keyboard.press("a");
   await expect
@@ -3784,9 +3869,10 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
     dialog.getByLabel("Reason"),
     step("Shift+R puts the focus in the reason field")
   ).toBeFocused();
+  const beforeEscape = requests();
   await page.keyboard.press("Escape");
   await expect(dialog, step("Escape closes Request changes")).toHaveCount(0);
-  expect(sent(), step("Escape sends nothing")).toBe(1);
+  expect(requests(), step("Escape sends nothing")).toBe(beforeEscape);
   await page.keyboard.press("Shift+R");
   await expect(
     dialog.getByLabel("Reason"),
@@ -3809,6 +3895,7 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   // available.
   await selectRow(page, question.id);
   await expect(inboxPane(page).getByTestId(`ask-${question.id}`)).toBeVisible();
+  const beforeQuestion = requests();
   await page.keyboard.press("a");
   await page.keyboard.press("Shift+R");
   await expect(dialog, step("on the question Shift+R opens nothing")).toHaveCount(0);
@@ -3823,7 +3910,7 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   }
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
-  expect(sent(), step("on the question a and Shift+R send nothing")).toBe(2);
+  expect(requests(), step("on the question a and Shift+R send nothing")).toBe(beforeQuestion);
 });
 
 /** The steps of k-approval-keys where `place` draws the approval request as a card, with
@@ -3844,6 +3931,7 @@ async function approvalCardSteps(page: Page, place: "card mode" | "the drawer"):
   ).toBeVisible();
   await row.focus();
 
+  const beforeShiftR = requestsSent(reviewLists(reviews));
   await page.keyboard.press("Shift+R");
   await expect(requestChanges, step("Shift+R picks Request changes")).toBeChecked();
   await expect(
@@ -3853,7 +3941,9 @@ async function approvalCardSteps(page: Page, place: "card mode" | "the drawer"):
   await page.keyboard.press("Escape");
   await expect(requestChanges, step("Escape lets go of Request changes")).not.toBeChecked();
   await expect(row, step("Escape puts the focus back on the row")).toBeFocused();
-  expect(reviewCount(reviews), step("Shift+R and Escape send nothing")).toBe(0);
+  expect(requestsSent(reviewLists(reviews)), step("Shift+R and Escape send nothing")).toBe(
+    beforeShiftR
+  );
 
   await page.keyboard.press("a");
   await expect
@@ -3904,6 +3994,7 @@ test("k-approval-keys: on today's issue page a approves the spec from the header
     asker
   );
   const reviews = watchReviews(page, [approval]);
+  const requests = () => requestsSent(reviewLists(reviews));
   const step = (text: string) => `k-approval-keys: the issue page: ${text}`;
   const header = page.getByTestId("issue-header");
   const dialog = page.getByRole("dialog", { name: "Request changes" });
@@ -3920,15 +4011,17 @@ test("k-approval-keys: on today's issue page a approves the spec from the header
   const questionTurn = page.locator(`#issue-conversation-panel [data-turn="ask:${question.id}"]`);
   await questionTurn.focus();
   await expect(questionTurn, step("the question's turn takes the focus")).toBeFocused();
+  const beforeTurn = requests();
   await page.keyboard.press("a");
   await page.keyboard.press("Shift+R");
   await expect(dialog, step("on the question's turn Shift+R opens nothing")).toHaveCount(0);
   await expect(questionTurn, step("on the question's turn the focus stays there")).toBeFocused();
-  expect(reviewCount(reviews), step("on the question's turn a and Shift+R send nothing")).toBe(0);
+  expect(requests(), step("on the question's turn a and Shift+R send nothing")).toBe(beforeTurn);
 
   await openIssue(page, approval.issueKey, title);
   await expect(approve, step("the header draws the spec's Approve")).toBeVisible();
 
+  const beforeShiftR = requests();
   await page.keyboard.press("Shift+R");
   await expect(dialog, step("Shift+R opens Request changes")).toBeVisible();
   await expect(
@@ -3937,7 +4030,7 @@ test("k-approval-keys: on today's issue page a approves the spec from the header
   ).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog, step("Escape closes Request changes")).toHaveCount(0);
-  expect(reviewCount(reviews), step("Shift+R and Escape send nothing")).toBe(0);
+  expect(requests(), step("Shift+R and Escape send nothing")).toBe(beforeShiftR);
 
   await page.keyboard.press("a");
   await expect
@@ -3992,6 +4085,7 @@ test("k-approval-keys: on today's issue page a and Shift+R send nothing while on
     header.getByRole("button", { exact: true, name: "Request changes" }),
     step("the header draws the spec's Request changes")
   ).toBeVisible();
+  const beforeKeys = requestsSent(writes);
   await page.keyboard.press("a");
   await page.keyboard.press("Shift+R");
   await expect(dialog, step("Shift+R opens no Request changes")).toHaveCount(0);
@@ -4006,7 +4100,7 @@ test("k-approval-keys: on today's issue page a and Shift+R send nothing while on
   }
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
-  expect(countOf(writes), step("a and Shift+R send nothing")).toBe(0);
+  expect(requestsSent(writes), step("a and Shift+R send nothing")).toBe(beforeKeys);
 });
 
 // ---------------------------------------------------------------------------
@@ -4447,6 +4541,23 @@ test("k-next-item: in the drawer a dismiss focuses the item after, the item befo
   await nextItemDismissSteps(page, "the drawer");
 });
 
+/** How many requests `dismisses` held before the first that names the Inbox row `rowId` among
+ *  the threads it takes out (`POST /api/v1/me/inbox/dismiss`'s `threads`): that request's place
+ *  in the list, or -1 where none names it. */
+function requestsBeforeDismissalOf(
+  dismisses: readonly KeyedWrite<unknown>[],
+  rowId: string
+): number {
+  return dismisses.findIndex(
+    ({ input }) =>
+      typeof input === "object" &&
+      input !== null &&
+      "threads" in input &&
+      Array.isArray(input.threads) &&
+      input.threads.includes(rowId)
+  );
+}
+
 // SLOW(>=2s): four threads seeded, two dismissed by their row's own Dismiss beside the reading
 // pane, and Enter pressed between the two.
 test("k-next-item: beside the reading pane a Dismiss on a row that is not in hand leaves the focus on no other row, so Enter after it dismisses nothing", async ({
@@ -4491,16 +4602,20 @@ test("k-next-item: beside the reading pane a Dismiss on a row that is not in han
 
   // Enter presses a focused button (R18), so a Dismiss of A that held the focus, with no ring
   // drawn after a pointer's press, would take A out too.
+  const beforeEnter = requestsSent([dismisses]);
   await page.keyboard.press("Enter");
-  // The pointer's Dismiss on C is sent after anything Enter sent, so once C is gone every write
-  // Enter set off is in the list.
+  // The pointer's Dismiss on C is sent after anything Enter sent, so the requests before C's
+  // dismissal are the ones before Enter where Enter sent none; one between the two, a resend of
+  // any key included, fails the step.
   const rowC = inboxRow(page, c);
   await rowC.hover();
   await rowC.getByRole("button", { name: /^Dismiss/ }).click();
   await expect(rowC, step("the Dismiss takes C out")).toHaveCount(0);
-  expect(writesSent(dismisses), step("the two Dismisses send two dismissals, and Enter none")).toBe(
-    2
-  );
+  expect(writesSent(dismisses), step("the two Dismisses send two dismissals")).toBe(2);
+  expect(
+    requestsBeforeDismissalOf(dismisses, c),
+    step("Enter sends no request: C's dismissal is the first request after it")
+  ).toBe(beforeEnter);
   await expect(rowA, step("A, which the reader did not dismiss, is still listed")).toHaveCount(1);
 });
 
@@ -4575,17 +4690,21 @@ test("k-next-item: beside the reading pane a Dismiss on a row that is not in han
 
   // Enter on the pane carries the reader into the question's answer box (R18); on the Dismiss of
   // A, the row in B's place, it would take A out.
+  const beforeEnter = requestsSent([dismisses]);
   await page.keyboard.press("Enter");
   await expect(answerBox, step("Enter puts the caret in the question's answer box")).toBeFocused();
-  // The pointer's Dismiss on C is sent after anything Enter sent, so once C is gone every write
-  // Enter set off is in the list.
+  // The pointer's Dismiss on C is sent after anything Enter sent, so the requests before C's
+  // dismissal are the ones before Enter where Enter sent none; one between the two, a resend of
+  // any key included, fails the step.
   const rowC = inboxRow(page, c);
   await rowC.hover();
   await rowC.getByRole("button", { name: /^Dismiss/ }).click();
   await expect(rowC, step("the Dismiss takes C out")).toHaveCount(0);
-  expect(writesSent(dismisses), step("the two Dismisses send two dismissals, and Enter none")).toBe(
-    2
-  );
+  expect(writesSent(dismisses), step("the two Dismisses send two dismissals")).toBe(2);
+  expect(
+    requestsBeforeDismissalOf(dismisses, c),
+    step("Enter sends no request: C's dismissal is the first request after it")
+  ).toBe(beforeEnter);
   await expect(
     inboxRow(page, a),
     step("A, the row in B's place, which the reader did not dismiss, is still listed")
@@ -6083,8 +6202,18 @@ test("k-remap: a key changed in Settings works at once on the Inbox in another p
   }
 });
 
-// SLOW(>=2s): a key recorded on Settings and read on the Inbox of another page, then on Settings
-// loaded again.
+/** How long Settings' recorder waits for a key's second press before the first alone is the key:
+ *  `CHORD_TIMEOUT_MS` of `web/src/features/shell/keymap.ts`, written here for two reasons. A row
+ *  cannot load that module, which reads `import.meta.env` as it loads, and Playwright's process
+ *  does not define it; and the merge base the rows also run on does not export it. */
+const CHORD_TIMEOUT_MS = 1_000;
+
+/** How many times the row of a key left within the second tries its press and click: a machine
+ *  slow enough to take the second over one try does not fail the row wrongly. */
+const IN_TIME_TRIES = 3;
+
+// SLOW(>=2s): a key recorded on Settings, tried again where the click came after the second, and
+// read on the Inbox of another page, then on Settings loaded again.
 test("k-remap: a key pressed in Settings and left by a click on the page before the second press's second ends is the new key, as R14 makes the next key press", async ({
   browser,
 }) => {
@@ -6098,16 +6227,38 @@ test("k-remap: a key pressed in Settings and left by a click on the page before 
     const inbox = await context.newPage();
     await settings.goto("/settings");
     const snooze = shortcutLine(settings, "Inbox", SNOOZE_LABEL);
-    await snooze.getByRole("button", { exact: true, name: "Change b" }).click();
     const recorder = settings.getByRole("button", { name: "Press the new key" });
-    await expect(recorder, step("Change b waits for the new key")).toBeFocused();
-    await settings.keyboard.press("Shift+B");
-    await expect(snooze.locator("kbd"), step("Snooze draws Shift+B and h")).toHaveText([
-      "Shift+B",
-      "h",
-    ]);
-    // The click lands well inside the one second a second press may still come in.
-    await settings.getByRole("heading").first().click();
+    // While the recorder waits for a second press it already draws `Shift+B then …`, so the read
+    // of Snooze's keys below passes whether or not the one second has run out and kept Shift+B:
+    // only the time from the press to the click says that the click ended the recording. A try
+    // whose click came later proves nothing, and the timer kept its key, so Reset all puts b back
+    // and the row tries again.
+    let inTime = false;
+    for (let attempt = 1; attempt <= IN_TIME_TRIES && !inTime; attempt += 1) {
+      const tried = (text: string) => step(`try ${attempt}, ${text}`);
+      if (attempt > 1) {
+        await shortcutsSection(settings)
+          .getByRole("button", { exact: true, name: "Reset all" })
+          .click();
+        await expect(snooze.locator("kbd"), tried("Reset all puts back b and h")).toHaveText([
+          "b",
+          "h",
+        ]);
+      }
+      await snooze.getByRole("button", { exact: true, name: "Change b" }).click();
+      await expect(recorder, tried("Change b waits for the new key")).toBeFocused();
+      const pressedAt = performance.now();
+      await settings.keyboard.press("Shift+B");
+      await expect(snooze.locator("kbd"), tried("Snooze draws Shift+B and h")).toHaveText([
+        "Shift+B",
+        "h",
+      ]);
+      // The click lands inside the one second a second press may still come in, or the try does
+      // not count.
+      await settings.getByRole("heading").first().click();
+      inTime = performance.now() - pressedAt < CHORD_TIMEOUT_MS;
+    }
+    expect(inTime, step("the click never came within the second in three tries")).toBe(true);
 
     // The Inbox takes the person's keys when the browser tells it, with no reload.
     await inbox.goto(inboxAt(ask.id));

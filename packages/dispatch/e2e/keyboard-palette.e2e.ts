@@ -689,6 +689,9 @@ test("a row whose control has gone since the palette opened does nothing", async
 // listener attached in a passive effect came 6 to 30 ms after the heading, since `AuthGate` draws
 // the shell in a render its own passive effect starts, and every one of those presses was lost
 // (dispatch://INFRA-2160/artifact/keymap-listener-order-md).
+// @webkit @firefox: when each engine delivers a key the page sends as the heading enters the DOM
+// (from a mutation observer's callback) against the layout effects of the first commit that draws
+// the shell, in which `features/shell/KeymapProvider.tsx` attaches its window listener.
 test("a Control+k sent as the Inbox heading enters the page opens the bar @firefox @webkit", async ({
   browser,
 }) => {

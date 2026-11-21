@@ -316,12 +316,18 @@ const parallelProjects = [
   // pickers' keyboard-step rule rests on: all five rows of `keyboard-session-pickers`.
   // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
   // shared single-pick list (`MultiSelect`) is driven by: the five rows of `keyboard-agents-picker`
-  // that drive the Agents composer's Issue list from the keyboard, the three
+  // that drive the Agents composer's Issue list from the keyboard, the four
   // `k-choice-writes-on-enter` rows of `keyboard-complete`, whose keys on a focused closed trigger
-  // (the assignee, the repository, an ask's hand-on) open its list and move the highlight, and
-  // whose list writes only on Enter, and `table-controls`'s row that Tab and Escape never leave a
-  // panel for the page behind it, which leaves a list's text box by Tab on a page and by Shift+Tab
-  // in a dialog and reads the focus on the list's trigger.
+  // (the assignee, the repository, an ask's hand-on) open its list and move the highlight - three
+  // whose list writes only on Enter, and the fourth, the assignee's list of seven people, whose End
+  // and each ArrowUp keep the highlighted row in sight under the list's sticky search box by a
+  // scroll that rests on the engine's layout of the list - and `table-controls`'s row that Tab and
+  // Escape never leave a panel for the page behind it, which leaves a list's text box by Tab on a
+  // page and by Shift+Tab in a dialog and reads the focus on the list's trigger.
+  // When the engine delivers a key the page sends as a page is first drawn, against the layout
+  // effects of the first commit that draws the shell, in which `KeymapProvider` attaches the
+  // keymap's window listener: `keyboard-palette`'s row that a Control+k sent as the Inbox heading
+  // enters the page opens the bar.
   // A send held open across two in-app navigations, with the row's draft, its picker and its
   // Reply held until the server answers: `keyboard-agents-picker`'s row back after the reader
   // left mid-send, which carries `@webkit` alone because each of its six measured failures was
@@ -423,12 +429,18 @@ const parallelProjects = [
   // pickers' keyboard-step rule rests on: all five rows of `keyboard-session-pickers`.
   // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
   // shared single-pick list (`MultiSelect`) is driven by: the five rows of `keyboard-agents-picker`
-  // that drive the Agents composer's Issue list from the keyboard, the three
+  // that drive the Agents composer's Issue list from the keyboard, the four
   // `k-choice-writes-on-enter` rows of `keyboard-complete`, whose keys on a focused closed trigger
-  // (the assignee, the repository, an ask's hand-on) open its list and move the highlight, and
-  // whose list writes only on Enter, and `table-controls`'s row that Tab and Escape never leave a
-  // panel for the page behind it, which leaves a list's text box by Tab on a page and by Shift+Tab
-  // in a dialog and reads the focus on the list's trigger.
+  // (the assignee, the repository, an ask's hand-on) open its list and move the highlight - three
+  // whose list writes only on Enter, and the fourth, the assignee's list of seven people, whose End
+  // and each ArrowUp keep the highlighted row in sight under the list's sticky search box by a
+  // scroll that rests on the engine's layout of the list - and `table-controls`'s row that Tab and
+  // Escape never leave a panel for the page behind it, which leaves a list's text box by Tab on a
+  // page and by Shift+Tab in a dialog and reads the focus on the list's trigger.
+  // When the engine delivers a key the page sends as a page is first drawn, against the layout
+  // effects of the first commit that draws the shell, in which `KeymapProvider` attaches the
+  // keymap's window listener: `keyboard-palette`'s row that a Control+k sent as the Inbox heading
+  // enters the page opens the bar.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
   // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's
