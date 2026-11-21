@@ -139,7 +139,8 @@ before it reads or removes anything.
   `stream_id.daemon/<P>` for each store it rewrote.
 - On a row restored `released` with its hold id while its journal shows `prepare` (no done
   `hold set`, not ended), it is admitted, deletes the cohort record and writes its `done` entry,
-  which ends the hold.
+  which ends the hold. With no journal at all (a row lost in `prepare` before its journal was
+  written), it deletes the cohort record alone and writes no entry, since there is no journal.
 - A crashed abort's rerun runs the whole abort again. An abort killed after its row move writes its
   `done` entry when rerun.
 
@@ -154,17 +155,19 @@ decides, not the journal.
   works as before: set's rerun, `hold abort` after a stop, or `hold release` with nothing changed.
   With no `--hold` the refusal names `--hold`, and no row is written.
 - After any other entry the row comes back `released`: with the hold's id when `--hold` names a hold
-  that has not ended (a row lost in `prepare`, before `hold set`'s move, or after an abort from
-  `prepare`), and the output names the cohort record that stays and the next step, `hold abort` or
-  a new `hold prepare`; with no hold id for a hold that has ended, or with no `--hold`.
+  that has not ended (a row lost in `prepare`, before `hold set`'s move, after an abort from
+  `prepare`, or before the hold's journal was written), and the output names the cohort record that
+  stays and the next step, `hold abort` or a new `hold prepare`; with no hold id for a hold that has
+  ended, or with no `--hold`. After a `prepare` entry the broker stores `released` only with that
+  entry's hold id (409 `hold_mismatch` otherwise).
 - `--bootstrap` writes the first row, and only into an empty log.
 
 ## Stated residuals
 
-- The command bounds no restore gen of its own. `holdrecord.RestoreRow` checks the broker's
-  `restore_gen` only for a `held` restore with a hold id, and only once its client has verified a
-  row. After a row loss the broker's per-replica floor of the row and its signature check are the
-  guards.
+- The command bounds no restore gen of its own. `holdrecord.RestoreRow` and `Bootstrap` restore at
+  one above the highest row gen their client has verified, and a new `hold restore` process has
+  verified none. After a row loss the broker's per-replica floor of the row and its signature check
+  are the guards.
 - A prepared hold with no journal takes abort's `prepare` path. After a broker restart, whose floor
   of the records starts empty, a database admin who deletes a set hold's journal and puts back its
   signed `prepare` row makes the abort release it. This is the plan's stated residual for the

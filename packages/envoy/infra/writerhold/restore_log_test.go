@@ -78,3 +78,45 @@ func TestHoldAHoldAbortedFromPrepareIsRestoredReleased(t *testing.T) {
 	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
 	require.True(t, h.listenerAdmitted(), "a writer was refused under the restored released row")
 }
+
+// A row lost in prepare before the hold's journal was written (startHold moved the row and the
+// cohort was written, and the journal insert did not land) leaves the hold's cohort and no journal.
+// `hold restore --hold` reads no journal for it, so the hold has not ended, and restores the row
+// released with the hold's id, which the route stores after the prepare entry of that id (#4679
+// round 5: another id or none is 409 hold_mismatch). `hold abort` on that row, with no journal to
+// admit it, deletes the cohort alone and writes no entry (holdrecord's ReleasedNoJournalAbort), and
+// the row stays released. The control is the commands as they stood at cb50702463: the restore
+// read the journal and failed, so no row came back, and the abort read the journal and failed, so
+// the cohort stayed for good.
+func TestHoldARowLostInPrepareBeforeItsJournalIsRestoredAndAborted(t *testing.T) {
+	h := newHeldStack(t)
+	ctx := context.Background()
+	id := newHoldID()
+	_, err := h.s.Records.MoveRow(ctx, h.row().Gen, natsgrant.OperatorPhasePrepare, id, "startHold's move; its journal insert did not land")
+	require.NoError(t, err)
+	_, err = h.s.Records.PutRecord(ctx, id, "cohort", "cohort", 0, []byte(`{"boundary":1}`))
+	require.NoError(t, err, "the prepare's cohort record")
+	journaled, err := hasJournal(ctx, h.s.Records, id)
+	require.NoError(t, err)
+	require.False(t, journaled, "the hold has a journal")
+	h.deleteRow()
+
+	code, stdout, stderr := h.run(actionRestore, "--hold", id, "--reason", "lost in prepare before its journal")
+	require.Zero(t, code, "the restore of a row lost in prepare before its journal: %s", stderr)
+	row := h.row()
+	require.Equal(t, natsgrant.OperatorPhaseReleased, row.Phase)
+	require.Equal(t, id, row.HoldID)
+	require.Contains(t, stdout, "hold abort --hold "+id)
+
+	code, stdout, stderr = h.run(actionAbort, "--hold", id, "--reason", "end the hold that never wrote a journal")
+	require.Zero(t, code, "hold abort of the released row with a cohort and no journal: %s", stderr)
+	require.Contains(t, stdout, "no journal")
+	cohort, err := h.s.Records.Records(ctx, id, "cohort")
+	require.NoError(t, err)
+	require.Empty(t, cohort, "the abort left the hold's cohort record")
+	require.Equal(t, natsgrant.OperatorPhaseReleased, h.row().Phase)
+	journaled, err = hasJournal(ctx, h.s.Records, id)
+	require.NoError(t, err)
+	require.False(t, journaled, "the abort wrote a journal for a hold that had none")
+	h.prepared(holdrecord.WorkflowBucketsCreate)
+}

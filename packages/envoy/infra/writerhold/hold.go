@@ -144,8 +144,10 @@ func prepare(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 // outside any hold, which it names), then its done entry. On a row already released under this
 // hold id it sends no move: while the journal shows prepare (a row lost in prepare and restored
 // released) it is admitted, deletes the cohort record and writes its done entry, which ends the
-// hold (abortReleasedPrepare); otherwise it writes the done entry an abort killed after its move
-// left unwritten.
+// hold (abortReleasedPrepare); with no journal at all (a row lost in prepare before its journal was
+// written) it deletes the cohort record alone and writes no entry, which the table admits with no
+// journal (holdrecord's ReleasedNoJournalAbort); otherwise it writes the done entry an abort killed
+// after its move left unwritten.
 func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores StreamIDWriter, o options, stdout io.Writer) error {
 	row, err := records.Row(ctx)
 	if err != nil {
@@ -154,13 +156,17 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores
 	if row.HoldID != o.holdID {
 		return refusef(StepPreflight, "the hold row is %s under hold %s, not %s", row.Phase, row.HoldID, o.holdID)
 	}
-	if row.Phase == natsgrant.OperatorPhasePrepare {
+	if row.Phase == natsgrant.OperatorPhasePrepare || row.Phase == natsgrant.OperatorPhaseReleased {
 		journaled, err := hasJournal(ctx, records, o.holdID)
 		if err != nil {
 			return err
 		}
-		if !journaled {
+		switch {
+		case journaled:
+		case row.Phase == natsgrant.OperatorPhasePrepare:
 			return abortPrepared(ctx, records, row, o, stdout)
+		default:
+			return abortReleasedNoJournal(ctx, records, row, o, stdout)
 		}
 	}
 	d, _, err := records.Journal(ctx, o.holdID)
@@ -253,6 +259,18 @@ func abortReleasedPrepare(ctx context.Context, records *holdrecord.Client, row h
 		return err
 	}
 	fmt.Fprintf(stdout, "aborted hold %s, whose row reads released (gen %d) and whose journal shows prepare: its cohort record is deleted and the hold has ended\n", o.holdID, row.Gen)
+	return nil
+}
+
+// abortReleasedNoJournal ends hold o.holdID, whose row reads released with its hold id and which
+// has no journal (a row lost in prepare before its journal was written, and restored released): the
+// cohort record deleted alone, which the cohort-delete route admits on that row with no journal,
+// and no entry, since there is no journal to write it in. A rerun deletes nothing and answers nil.
+func abortReleasedNoJournal(ctx context.Context, records *holdrecord.Client, row holdrecord.Row, o options, stdout io.Writer) error {
+	if err := records.DeleteCohort(ctx, o.holdID); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "aborted hold %s, whose row reads released (gen %d) and which has no journal: its cohort record is deleted\n", o.holdID, row.Gen)
 	return nil
 }
 

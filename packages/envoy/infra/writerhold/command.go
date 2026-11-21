@@ -315,12 +315,15 @@ func mapLine(label string, m map[string]string) string {
 // so the row comes back held with its hold id and the hold goes on closed. After any other entry
 // (released, or prepare: a row lost in prepare, before hold set's move or after an abort from
 // prepare) the route stores released, with the hold's id when --hold names a hold that has not
-// ended, so `hold abort` can end it (the table admits abort on a released row whose journal shows
-// prepare), and with none for an ended hold or no --hold. With no --hold a refused released row
-// names `hold restore --hold`, and nothing is written, so no row reads released and every writer
-// stays refused. The command bounds no gen of its own: holdrecord.RestoreRow follows the route's
-// restore_gen for a held row with its hold id only, and only after its client verified a row; after
-// a row loss the route's per-replica floor of the row and its signature check are the guards.
+// ended (a hold with no journal, lost in prepare before its journal was written, has not), so
+// `hold abort` can end it (the table admits abort on a released row whose journal shows prepare,
+// or which has no journal), and with none for an ended hold or no --hold. After a prepare entry the
+// route stores released only with that entry's hold id (409 hold_mismatch for another or none). A
+// released row refused after a held entry with no --hold names `hold restore --hold`, and nothing
+// is written, so no row reads released and every writer stays refused. The command bounds no gen of
+// its own: holdrecord.RestoreRow and Bootstrap restore at one above the highest row gen their
+// client has verified, and a new process has verified none, so after a row loss the route's
+// per-replica floor of the row and its signature check are the guards.
 func restore(ctx context.Context, records *holdrecord.Client, o options, stdout io.Writer) error {
 	var lost *holdrecord.RestoreGenError
 	var refused *holdrecord.RouteError
@@ -339,12 +342,19 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 	}
 	holdID := ""
 	if o.holdID != "" {
-		d, _, err := records.Journal(ctx, o.holdID)
+		journaled, err := hasJournal(ctx, records, o.holdID)
 		if err != nil {
 			return err
 		}
-		if !holdEnded(d) {
-			holdID = o.holdID
+		holdID = o.holdID
+		if journaled {
+			d, _, err := records.Journal(ctx, o.holdID)
+			if err != nil {
+				return err
+			}
+			if holdEnded(d) {
+				holdID = ""
+			}
 		}
 	}
 	row, gen, err := restoreAt(ctx, records, natsgrant.OperatorPhaseReleased, holdID, o.reason)
