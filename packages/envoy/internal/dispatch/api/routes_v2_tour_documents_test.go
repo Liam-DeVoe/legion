@@ -894,6 +894,44 @@ func TestAV2ArtifactListWithItsTextTakesAPageOfTwenty(t *testing.T) {
 	}
 }
 
+// TestAV2ArtifactListWithItsBlocksTakesAPageOfTwenty: include=blocks renders each listed
+// document's tree (documentBlocks), as include=text does, so a page of an issue's or a project's
+// artifacts that carries it holds at most 20 as well (the architect's ruling of 2026-11-21 on test
+// round 3 of dispatch://INFRA-4071). limit=21 with include=blocks is 400 INVALID_LIMIT naming 20
+// before anything is read, a missing owner's list too; limit=20 with it is 200; include=blocks
+// naming no limit reads a page of 20; and limit=21 with no include still reads a page of 21.
+func TestAV2ArtifactListWithItsBlocksTakesAPageOfTwenty(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	for _, list := range []string{"/api/v2/issues/" + issue.Key + "/artifacts", "/api/v2/projects/CORE/artifacts"} {
+		read := func(target string) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+		}
+		for _, target := range []string{list + "?limit=21&include=blocks", list + "?limit=200&include=blocks"} {
+			refused := read(target)
+			if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_LIMIT" || !strings.Contains(text, "1 to 20") {
+				t.Errorf("GET %s answered %d %s, want 400 INVALID_LIMIT naming 20", target, refused.Code, refused.Body.String())
+			}
+		}
+		for query, limit := range map[string]int{"limit=20&include=blocks": 20, "include=blocks": 20, "limit=21": 21} {
+			answered := read(list + "?" + query)
+			if answered.Code != http.StatusOK {
+				t.Errorf("GET %s?%s answered %d %s, want 200", list, query, answered.Code, answered.Body.String())
+				continue
+			}
+			if got := decodeBody[page[json.RawMessage]](t, answered); got.Limit != limit {
+				t.Errorf("GET %s?%s read a page of %d, want %d", list, query, got.Limit, limit)
+			}
+		}
+	}
+	for _, missing := range []string{"/api/v2/issues/CORE-404/artifacts", "/api/v2/projects/NOPE/artifacts"} {
+		if code, _ := refusalOf(t, dispatchRequest(t, handler, http.MethodGet, missing+"?limit=21&include=blocks", nil, "alice")); code != "INVALID_LIMIT" {
+			t.Errorf("GET %s?limit=21&include=blocks answered %s, want INVALID_LIMIT before the owner is read", missing, code)
+		}
+	}
+}
+
 // TestAV2HandoffListWithItsBodiesTakesAPageOfTwenty: include=body answers each handoff's body, up
 // to contracts.DispatchHandoffBodyMax each, so a page of an issue's handoffs that carries it holds
 // at most 20 (includedPageMax), as a list of artifacts with include=text does
