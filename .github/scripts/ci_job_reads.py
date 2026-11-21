@@ -3012,7 +3012,7 @@ GATES = [
         ("README.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :201"),
         ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
         (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
-        ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay (:43-50) and runs go run (:53), go test -c (:60) and its test binary (:67)"),
+        ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay (:46-55) and runs go run (:58), go test -c (:65) and its test binary (:72)"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                          "import @legion/envoy-client/*")
       + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")
