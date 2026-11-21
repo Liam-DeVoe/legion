@@ -1330,7 +1330,7 @@ func ReadPodFile(path string) (PodConfig, error) {
 	// the document.
 	var document yaml.Node
 	if err := yaml.Unmarshal(raw, &document); err != nil {
-		return PodConfig{}, yamlerr.Refusal(path, err)
+		return PodConfig{}, fmt.Errorf("parse %s: %s", path, yamlerr.Reason(err))
 	}
 	if len(document.Content) != 1 {
 		return PodConfig{}, fmt.Errorf("%s holds no %s mapping", path, podKey)

@@ -118,7 +118,7 @@ func Hosts(token string) string {
 func TokenFromHosts(data []byte) (string, error) {
 	var hosts hostsFile
 	if err := yaml.Unmarshal(data, &hosts); err != nil {
-		return "", yamlerr.Refusal(HostsFile, err)
+		return "", fmt.Errorf("parse %s: %s", HostsFile, yamlerr.Reason(err))
 	}
 	if hosts.GitHub.OAuthToken == "" {
 		return "", fmt.Errorf("%s names no github.com oauth_token", HostsFile)

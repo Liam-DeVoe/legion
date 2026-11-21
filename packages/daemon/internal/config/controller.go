@@ -75,7 +75,7 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 	// yamlerr: the file's URLs can carry userinfo, and yaml.v3's text quotes the document.
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
-		return ControllerConfig{}, fmt.Errorf("Invalid controller configuration: %w", yamlerr.Refusal(path, err))
+		return ControllerConfig{}, fmt.Errorf("Invalid controller configuration: %s", yamlerr.Reason(err))
 	}
 	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
 		return ControllerConfig{}, errors.New("controller.yaml must be a mapping")

@@ -465,7 +465,7 @@ func load(path string, env func(string) string, resolveAppKeys bool) (Config, er
 	// text quotes the document.
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
-		return Config{}, yamlerr.Refusal(path, err)
+		return Config{}, fmt.Errorf("parse %s: %s", path, yamlerr.Reason(err))
 	}
 
 	root, err := rootMapping(&document)

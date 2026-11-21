@@ -221,11 +221,11 @@ func TestTokenFromHostsQuotesNoTokenOfAFileItCannotDecode(t *testing.T) {
 	const token = "ghs_madeUpHostsToken0123456789"
 	for name, tc := range map[string]struct{ data, want string }{
 		"the token where the mapping goes": {"github.com: " + token + "\n",
-			"hosts.yml cannot be read at line 1: it does not parse as YAML, or holds a value of another kind there than the file takes"},
+			"parse hosts.yml: the YAML holds a value of another kind than the file takes at line 1"},
 		"the token after a star": {"github.com:\n    oauth_token: *" + token + "\n",
-			"hosts.yml cannot be read: it does not parse as YAML"},
+			"parse hosts.yml: the YAML does not parse"},
 		"a file that does not parse": {"github.com:\n    oauth_token: [" + token + "\n",
-			"hosts.yml cannot be read at line 1: it does not parse as YAML, or holds a value of another kind there than the file takes"},
+			"parse hosts.yml: the YAML does not parse at line 1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := TokenFromHosts([]byte(tc.data))
