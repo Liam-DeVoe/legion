@@ -1460,8 +1460,8 @@ Dispatch's background loops come in three shapes, so that a database nobody writ
 `cmd/dispatch/main.go` states the classes at the call site.
 
 **Woken loops** run a pass at start and then only when a Postgres notification says their work may have changed, or when a due time their last pass asked for comes round.
-With nothing written and nothing due they hold no timer and send no statement.
-The four that run passes (`duty.RunWoken`) start two passes no closer together than the period of the ticker each replaced, so under load each runs no more often than that ticker did.
+With nothing written and nothing due they hold no timer and send no statement, all but the check states settler, which keeps one pass a minute so a mark whose notification no process received is settled within that minute, and that pass sends its one read of the due marks whether or not any is owed.
+Each loop that runs passes through `duty.RunWoken` starts two passes no closer together than its own least gap, so under load each runs no more often than that gap allows; for the loops that replaced a ticker, the gap is that ticker's period.
 
 - The embedding queue (`embedqueue.Run`) scans when a write enqueues a row:
   the issue trigger's `embeddings_enqueue` (migration `0151`) and each indexer's `embeddings_enqueue_window` (migration `20261102233625`) notify `dispatch_embeddings` for a new row or a text whose hash changed, and a write that leaves the text as it was notifies nothing.
