@@ -52,6 +52,7 @@ import "../agent-view/AgentConversationPage";
 import "../margin/Margin";
 import "./BroadcastPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
@@ -1742,25 +1743,69 @@ test("Agents retain targeted-message retries and attempt history", async () => {
   }
 });
 
+/** Where the focus is, in words: the button that holds it, by its text, else the tag of the
+ *  element that does. */
+function focusedControl(): string {
+  const focused = document.activeElement;
+  return focused instanceof HTMLButtonElement
+    ? `button ${focused.textContent ?? ""}`
+    : (focused?.tagName.toLowerCase() ?? "nothing");
+}
+
+/** How each retry button of `names` in `row` stands, in words: `disabled` while it is disabled,
+ *  `held` while it is held (`aria-disabled`), and `free` otherwise. */
+function retryButtons(row: HTMLElement, names: readonly string[]): string[] {
+  return names.map((name) => {
+    const button = within(row).getByRole<HTMLButtonElement>("button", { name });
+    const held = button.getAttribute("aria-disabled") === "true" ? "held" : "free";
+    return `${name}: ${button.disabled ? "disabled" : held}`;
+  });
+}
+
+/** A message whose one attempt, an aside, failed: its retry row draws Retry and both mode
+ *  changes. */
+const failedAside = {
+  message: message("Can this ship?", { deliveries: [failedAttempt("message-1", "aside")] }),
+  replies: [],
+} as const;
+
 // `DispatchQueryClient` answers the invalidation of the idle conversation after a delivery retry
 // with the conversation's own fetch, which TanStack pauses while the browser is offline, and no
 // request deadline runs while a fetch is paused. So the retry's hold through that read has a
-// timer of its own, the request deadline (`REQUEST_DEADLINE_MS`): Retry and the mode change,
-// held while the retry is out, are enabled again then, and the conversation says it is not read
-// yet and why. Once the network returns, the conversation is read and the note goes. A message's
-// retry row and a reply's are two writes of their own, each held through the same read.
+// timer of its own, the request deadline (`REQUEST_DEADLINE_MS`). Retry and the mode changes are
+// held (`aria-disabled`), never disabled, while the retry is out and through that read. A
+// disabled button drops the focus to the page's body in a browser, and does here under
+// `emulateChromiumFocusFixup`. So the pressed button keeps the focus, and a second press sends
+// nothing. At the deadline the row is let go, and the conversation says it is not read yet and
+// why. Once the network returns, the conversation is read and the note goes. A message's retry
+// row and a reply's are two writes of their own, each held through the same read.
 test.each([
   {
-    exchange: {
-      message: message("Can this ship?", { deliveries: [failedAttempt("message-1", "btw")] }),
-      replies: [],
-    },
-    instead: "Use Send instead",
-    mode: "btw",
+    drawn: ["Retry", "Use BTW instead", "Use Send instead"],
+    exchange: failedAside,
+    mode: "aside",
+    pressed: "Retry",
     retried: "message-1",
     which: "message's",
   },
   {
+    drawn: ["Retry", "Use BTW instead", "Use Send instead"],
+    exchange: failedAside,
+    mode: "btw",
+    pressed: "Use BTW instead",
+    retried: "message-1",
+    which: "message's",
+  },
+  {
+    drawn: ["Retry", "Use BTW instead", "Use Send instead"],
+    exchange: failedAside,
+    mode: "steer",
+    pressed: "Use Send instead",
+    retried: "message-1",
+    which: "message's",
+  },
+  {
+    drawn: ["Retry", "Use BTW instead"],
     exchange: {
       // The session's answer takes the message's own retry row away, so only the reply's is drawn.
       message: message("Can this ship?"),
@@ -1777,15 +1822,16 @@ test.each([
         }),
       ],
     },
-    instead: "Use BTW instead",
     mode: "steer",
+    pressed: "Retry",
     retried: "message-3",
     which: "reply's",
   },
-] as const)("offline, a $which delivery Retry that landed lets Retry and the mode change go at the request deadline, saying why", async ({
+] as const)("offline, the $which $pressed holds its retry row with the focus on it through the write and the paused read, and lets go at the request deadline, saying why", async ({
+  drawn,
   exchange,
-  instead: insteadName,
   mode,
+  pressed: pressedName,
   retried,
 }) => {
   const online = onlineManager.isOnline();
@@ -1798,19 +1844,33 @@ test.each([
   // The retry's answer, held until the case moves the clock, so what it sets off runs in `act`.
   const delivered = Promise.withResolvers<MessageDelivery>();
   page.createMessageDelivery.mockImplementation(() => delivered.promise);
+  const stopFocusFixup = emulateChromiumFocusFixup();
 
   try {
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");
-    const retry = await within(planner).findByRole("button", { name: "Retry" });
-    const instead = within(planner).getByRole("button", { name: insteadName });
+    const pressed = await within(planner).findByRole("button", { name: pressedName });
+    const row = () => ({ buttons: retryButtons(planner, drawn), focus: focusedControl() });
+    const held = { buttons: drawn.map((name) => `${name}: held`), focus: `button ${pressedName}` };
     const reads = page.listAgentMessages.mock.calls.length;
     jest.useFakeTimers();
     const onClock = userOnFakeClock();
+    /** Presses the held button again, by key and by pointer, and lets what it set off run. */
+    const pressAgain = async () => {
+      await onClock.keyboard("{Enter}");
+      await onClock.click(pressed);
+      await tick(0);
+    };
     onlineManager.setOnline(false);
-    await onClock.click(retry);
+    act(() => pressed.focus());
+    await onClock.keyboard("{Enter}");
     await tick(0);
     expect(page.createMessageDelivery).toHaveBeenCalledWith(retried, mode, keyedAttempt);
+    // The retry is out: the row is held, and the pressed button keeps the focus.
+    expect(row()).toEqual(held);
+    await pressAgain();
+    expect(page.createMessageDelivery).toHaveBeenCalledTimes(1);
+
     delivered.resolve({
       ...failedAttempt(retried, mode),
       attempt: 2,
@@ -1822,16 +1882,20 @@ test.each([
     expect(
       page.queryClient.getQueryState(["agents", "planner-session", "messages"])?.fetchStatus
     ).toBe("paused");
-    expect(retry).toBeDisabled();
-    expect(instead).toBeDisabled();
+    // The retry landed and its read is paused: the row is still held, with the focus.
+    expect(row()).toEqual(held);
+    await pressAgain();
+    expect(page.createMessageDelivery).toHaveBeenCalledTimes(1);
 
     // The retry landed within the second before, which is when the hold's timer started.
     await tick(REQUEST_DEADLINE_MS - 2_000);
-    expect(retry).toBeDisabled();
+    expect(row()).toEqual(held);
 
     await tick(2_000);
-    expect(retry).not.toBeDisabled();
-    expect(instead).not.toBeDisabled();
+    expect(row()).toEqual({
+      buttons: drawn.map((name) => `${name}: free`),
+      focus: `button ${pressedName}`,
+    });
     expect(page.listAgentMessages.mock.calls.length).toBe(reads);
     expect(within(planner).getByText(/^Could not load this conversation\./).textContent).toBe(
       "Could not load this conversation. Dispatch could not be reached."
@@ -1842,6 +1906,7 @@ test.each([
     expect(page.listAgentMessages.mock.calls.length).toBeGreaterThan(reads);
     expect(within(planner).queryByText(/^Could not load this conversation\./)).toBeNull();
   } finally {
+    stopFocusFixup();
     // The page and its reads go before the network returns, so no read paused offline goes on.
     page.view.unmount();
     page.queryClient.clear();

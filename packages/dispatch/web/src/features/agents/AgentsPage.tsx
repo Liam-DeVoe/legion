@@ -215,10 +215,10 @@ function AgentExchangeReply({
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
-    // Pending through the read that draws the new attempt: Retry and the mode changes stay
-    // disabled until that read takes them away, so the press is still the cause of their going
-    // (`causedByReader`). The read settles either way, and a failed one lets them go. A read that
-    // has not settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused while the
+    // Pending through the read that draws the new attempt: Retry and the mode changes stay held
+    // (`DeliveryRetry`) until that read takes them away, so the press is still the cause of their
+    // going (`causedByReader`). The read settles either way, and a failed one lets them go. A read
+    // that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused while the
     // browser is offline - lets them go then, and the conversation says why it is not read yet
     // (`useReadBound`).
     onSuccess: holdThroughRead,
