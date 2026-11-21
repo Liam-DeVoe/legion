@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -586,7 +587,7 @@ func requireDismissalHeldTo(t *testing.T, handler http.Handler, database *store.
 // read and no difference.
 func requireThreadsCensusAgrees(t *testing.T, database *store.Store, when string) {
 	t.Helper()
-	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("the store census %s: %v", when, err)
 	}
