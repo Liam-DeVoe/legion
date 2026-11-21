@@ -2591,6 +2591,7 @@ envoy_go_race:
   - '!packages/envoy/internal/bus/norace_test.go'
   - '!packages/envoy/internal/bus/session_consumer_scan_live_test.go'
   - '!packages/envoy/internal/bus/stream_max_consumers_live_test.go'
+  - '!packages/envoy/internal/bus/kvrecords/**/*_test.go'
   - '!packages/envoy/internal/bus/signedrecord/**/*_test.go'
   - '!packages/envoy/internal/cipher/answer/**/*_test.go'
   - '!packages/envoy/internal/cipher/api/**/*_test.go'

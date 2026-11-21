@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -82,9 +83,10 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 	require.Equal(t, base.DispatchDurables, natsgrant.DispatchDurables())
 }
 
-// Measure is the measurement job's grant as the deployment repository deploys it today
-// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe at fe26eb31). The copy there
-// goes when the job moves to the auth service, and this test with it.
+// Measure is the measurement job's grant as the deployment repository deploys it
+// (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe, once the measurement user
+// configures no stream): eight JetStream reads and its own cutover inbox. The copy there goes when
+// the job moves to the auth service, and this test with it.
 func TestMeasureMatchesTheDeployedList(t *testing.T) {
 	var deployed set
 	readJSON(t, "testdata/deployment-measure-grant.json", &deployed)
@@ -220,11 +222,12 @@ func TestTheGrantTableNamesEveryGrant(t *testing.T) {
 	}
 }
 
-// The buckets envoy-infra buckets copies, whose backup the operator takes outside a hold and whose
-// streams it makes, changes, removes and restores only inside one.
+// The buckets envoy-infra buckets copies, whose infos the operator reads outside a hold and whose
+// streams it snapshots, makes, changes, removes and restores only inside one.
 var copiedBuckets = []string{"envoy_interests", "envoy_roles", "envoy_sessions", "envoy_known_sessions", "envoy_ci_state"}
 
-// operatorReleased is Operator(OperatorPhaseReleased)'s publish list as the plan writes it.
+// operatorReleased is Operator(OperatorPhaseReleased)'s publish list: reads only, no snapshot and
+// no stream create, each of which writes a subject its requester chooses.
 func operatorReleased() []string {
 	publish := []string{
 		"$JS.API.INFO",
@@ -234,18 +237,10 @@ func operatorReleased() []string {
 	for _, b := range copiedBuckets {
 		publish = append(publish, "$JS.API.STREAM.INFO.KV_"+b)
 	}
-	for _, b := range copiedBuckets {
-		publish = append(publish, "$JS.API.STREAM.SNAPSHOT.KV_"+b, "$JS.SNAPSHOT.ACK.KV_"+b+".>")
-	}
-	// The selection bucket's backup, which consumer-names create-bucket --after-loss --backup
-	// restores inside a hold: a backup only reads, so it needs no hold.
-	publish = append(publish,
-		"$JS.API.STREAM.SNAPSHOT.KV_envoy_session_consumers", "$JS.SNAPSHOT.ACK.KV_envoy_session_consumers.>")
 	return append(publish,
 		"$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers",
 		"$JS.API.CONSUMER.NAMES.ENVOY_NOTIFICATIONS",
 		"$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.*",
-		"$JS.API.STREAM.CREATE.ENVOY_MEASURE",
 		"$JS.API.STREAM.INFO.ENVOY_MEASURE",
 	)
 }
@@ -260,7 +255,8 @@ func operatorPrepare() []string {
 	)
 }
 
-// operatorHeld is Operator(OperatorPhaseHeld)'s publish list as the plan writes it.
+// operatorHeld is Operator(OperatorPhaseHeld)'s publish list as the plan writes it, with every
+// snapshot and the create of ENVOY_MEASURE, which released held before.
 func operatorHeld() []string {
 	publish := append(operatorPrepare(),
 		"$JS.API.STREAM.CREATE.ENVOY_HOLD_BARRIER",
@@ -269,8 +265,11 @@ func operatorHeld() []string {
 		"$JS.API.STREAM.NAMES",
 		"$JS.API.CONSUMER.LIST.*",
 		"$JS.API.CONSUMER.DELETE.ENVOY_NOTIFICATIONS.*",
+		"$JS.API.STREAM.CREATE.ENVOY_MEASURE",
 		"$KV.envoy_session_consumers.>",
 		"$JS.API.STREAM.CREATE.KV_envoy_session_consumers",
+		"$JS.API.STREAM.SNAPSHOT.KV_envoy_session_consumers",
+		"$JS.SNAPSHOT.ACK.KV_envoy_session_consumers.>",
 		"$JS.API.STREAM.RESTORE.KV_envoy_session_consumers",
 		"$JS.SNAPSHOT.RESTORE.KV_envoy_session_consumers.*",
 	)
@@ -279,6 +278,8 @@ func operatorHeld() []string {
 			"$JS.API.STREAM.CREATE.KV_"+b,
 			"$JS.API.STREAM.UPDATE.KV_"+b,
 			"$JS.API.STREAM.DELETE.KV_"+b,
+			"$JS.API.STREAM.SNAPSHOT.KV_"+b,
+			"$JS.SNAPSHOT.ACK.KV_"+b+".>",
 			"$JS.API.STREAM.RESTORE.KV_"+b,
 			"$JS.SNAPSHOT.RESTORE.KV_"+b+".*",
 			"$KV."+b+".hold.barrier.*",
@@ -345,5 +346,28 @@ func TestNoGrantNamesTheRetiredHoldBucket(t *testing.T) {
 			require.False(t, strings.Contains(entry, "KV_envoy_maintenance") || strings.Contains(entry, "$KV.envoy_maintenance."),
 				"%s names the retired hold bucket in %q", name, entry)
 		}
+	}
+}
+
+// No grant the package builds subscribes a subject a KV bucket's key can have, by NATS's own
+// wildcard rules (nats-server's SubjectMatchesFilter), so a $KV.>, a *.> or a > is caught as a
+// literal is. A push consumer of ENVOY_NOTIFICATIONS, which the prepare and held operator can
+// create, becomes active only while some client subscribes exactly its deliver subject
+// (nats-server v2.15.1 server/sublist.go:186-193), and then delivers each message under its own
+// subject to every matching subscriber (server/stream.go:8620-8621), the bucket's stream, which
+// captures $KV.<bucket>.>, among them: measured on one server, a notification was stored inside
+// KV_envoy_sessions. A subscribe of a key subject in any grant would be that client.
+func TestNoGrantSubscribesAKeySubject(t *testing.T) {
+	const key = "$KV.envoy_sessions.k"
+	for name, grant := range grantTable(t) {
+		for _, entry := range grant.Subscribe {
+			fields := strings.Fields(entry)
+			require.NotEmpty(t, fields, "%s subscribes a blank entry", name)
+			require.False(t, natsserver.SubjectMatchesFilter(key, fields[0]),
+				"%s subscribes %q, which matches the key subject %s", name, entry, key)
+		}
+	}
+	for _, pattern := range []string{"$KV.>", "$KV.*.>", ">", "*.>", "$KV.envoy_sessions.*", key} {
+		require.True(t, natsserver.SubjectMatchesFilter(key, pattern), "the matcher misses %q", pattern)
 	}
 }
