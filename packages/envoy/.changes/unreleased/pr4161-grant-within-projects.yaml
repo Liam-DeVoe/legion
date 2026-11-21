@@ -11,8 +11,8 @@ body: |-
   and a grant that would end with an empty publish or subscribe list. Nothing calls it yet: the
   auth service holds a daemon to projects only after the daemon and every listener run the change
   that moves their consumers and wake reports, and each `legion-go-<project>-*` durable filters on
-  its own kind's lane only, since the grant names a daemon's consumers, not their filters, and so
-  reads a wider durable whole.
+  its own kind's lane only, since its info, pull and acknowledgements name a consumer, not its
+  filter, so the grant reads a wider durable whole.
 time: 2026-11-16T05:24:20Z
 custom:
     Issue: pr4161
