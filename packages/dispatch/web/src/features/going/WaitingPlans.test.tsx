@@ -75,32 +75,58 @@ test("a refusal of a run's plan does not show under the plan the run proposes in
 });
 
 // Approve in the Inbox names the version of the plan the list read, so Dispatch refuses it where
-// the plan changed since, as another page read it again, and the row says why under that plan.
-test("Approve sends the version the list read, and a plan that changed since is refused under it", async () => {
+// the plan changed since, as another page read it again. The row says why under that plan and the
+// list is read again, so the person's next Approve names the plan's version now.
+test("a plan that changed since the list read it is refused under it, and the next Approve sends its version now", async () => {
   const user = userEvent.setup();
-  const list = spyOn(api, "myGoingPlans").mockResolvedValue({
-    limit: 50,
-    offset: 0,
-    rows: [waiting],
-    total: 1,
+  let reads = 0;
+  const list = spyOn(api, "myGoingPlans").mockImplementation(async () => {
+    reads += 1;
+    return {
+      limit: 50,
+      offset: 0,
+      rows: [reads === 1 ? waiting : { ...waiting, version: "e9a250" }],
+      total: 1,
+    };
   });
   const approve = answerRoute<
     (run: string, body: unknown, bounds: WriteBounds) => Promise<GoingPlanAnswer>
   >("POST", "/api/v1/going/runs/*/plan/approve");
-  approve.mockImplementation(async () => {
+  approve.mockImplementationOnce(async () => {
     throw new ApiError(409, {
       code: "GOING_PLAN_CHANGED",
       error: "This plan changed after this page read it. Read it again before you approve it.",
     });
   });
+  approve.mockImplementation(async () => ({
+    mode: "ask",
+    plan: 1,
+    rows: [],
+    run: "run-1",
+    state: "running",
+    summary: waiting.summary,
+    version: "e9a250",
+  }));
   try {
     renderWithQueries(<WaitingPlans />);
     await user.click(await screen.findByTestId("inbox-going-plan-approve"));
     const row = screen.getByTestId("inbox-going-plan");
-    expect(await within(row).findByRole("alert")).toHaveTextContent(
-      "This plan changed after this page read it. Read it again before you approve it."
-    );
+    await within(row).findByRole("alert");
     expect(approve).toHaveBeenCalledWith("run-1", { plan: 1, version: "c41d07" }, keyedAttempt);
+
+    // The list is read again, and the refusal stays under the plan, which is still plan 1.
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    expect(within(screen.getByTestId("inbox-going-plan")).getByRole("alert")).toHaveTextContent(
+      "This plan changed since the list read it. Open it to read what it does now before you approve it."
+    );
+    await user.click(screen.getByTestId("inbox-going-plan-approve"));
+    await waitFor(() =>
+      expect(approve).toHaveBeenLastCalledWith(
+        "run-1",
+        { plan: 1, version: "e9a250" },
+        keyedAttempt
+      )
+    );
   } finally {
     list.mockRestore();
   }

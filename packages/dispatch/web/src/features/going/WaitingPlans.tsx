@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
-import { api, apiErrorMessage, goingPlanApproveRequest } from "../../api/client";
+import { api, apiErrorCodeIn, apiErrorMessage, goingPlanApproveRequest } from "../../api/client";
 import { goingConversationsQuery, goingPlanQuery, goingWaitingPlansQuery } from "../../api/queries";
 import type { GoingConversation, GoingPlanAnswer, GoingWaitingPlan } from "../../api/types";
 import {
@@ -17,7 +17,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { openConversation } from "./going-store";
-import { planTarget } from "./usePlan";
+import { PLAN_CHANGED, planTarget } from "./usePlan";
 
 /** Opens the conversation of a waiting plan in the bar: the conversation as History lists it
  *  (`listed`), or, where History does not list it yet, its run alone. */
@@ -53,12 +53,21 @@ function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNod
   const approve = useKeyedWrite<GoingPlanAnswer, GoingWaitingPlan>({
     inline: true,
     label: () => "Approve the command bar's plan",
-    onError: (error, waiting) =>
+    onError: (error, waiting) => {
+      const changed = apiErrorCodeIn(error, PLAN_CHANGED);
       setRefused({
-        message: apiErrorMessage(error, "The approval did not reach Dispatch."),
+        message: changed
+          ? "This plan changed since the list read it. Open it to read what it does now before you approve it."
+          : apiErrorMessage(error, "The approval did not reach Dispatch."),
         plan: waiting.plan,
         run: waiting.run,
-      }),
+      });
+      // The list is read again, so the row holds the plan's version now and its next Approve
+      // names that version rather than meeting the same refusal.
+      if (changed) {
+        void queryClient.invalidateQueries({ queryKey: goingWaitingPlansQuery().queryKey });
+      }
+    },
     onSuccess: (answered) => {
       if (answered !== null) {
         queryClient.setQueryData(goingPlanQuery(plan.run).queryKey, answered);

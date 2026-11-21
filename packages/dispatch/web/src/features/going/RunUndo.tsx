@@ -71,8 +71,12 @@ export function RunUndo({ run }: { readonly run: string }): ReactNode {
           {lines.length === 0 ? (
             <li className={textMutedOnSurface}>Nothing of this run was left to undo.</li>
           ) : (
-            lines.map((line) => (
-              <li data-testid="going-undo-line" key={`${line.plan}-${line.row}`}>
+            lines.map((line, index) => (
+              // One row can have two lines - a reason sent, not undone, and its close written
+              // back - and the lines are one answer's, drawn once in Dispatch's order, so a line
+              // is its place in that answer.
+              // biome-ignore lint/suspicious/noArrayIndexKey: a line's place in the answer never changes
+              <li data-testid="going-undo-line" key={index}>
                 {lineText(line)}
               </li>
             ))

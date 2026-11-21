@@ -20,8 +20,9 @@ export function planTarget(run: string): string {
   return `going-plan:${run}`;
 }
 
-/** Dispatch's refusal of an approval naming a version of the plan older than the plan now. */
-const PLAN_CHANGED: ReadonlySet<string> = new Set(["GOING_PLAN_CHANGED"]);
+/** Dispatch's refusal of an approval naming a version of the plan older than the plan now, which
+ *  every surface that approves a plan meets by reading the plan again. */
+export const PLAN_CHANGED: ReadonlySet<string> = new Set(["GOING_PLAN_CHANGED"]);
 
 /** What a surface answers a plan with, and how that stands. */
 export interface PlanAnswering {
