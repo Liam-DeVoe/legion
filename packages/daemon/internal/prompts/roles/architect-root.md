@@ -78,6 +78,8 @@ with the person. A root waiting on a person gets no `design-approved` notice: wh
 The resume names the act that answered the wait and carries the person's words in a block, so read those words in the task. Where that block names a `rest` or `more`, the words were cut: read the rest at the ask's link.
 After a retraction (`act: retracted`), no person will answer that ask, because its decision block left the spec: read the spec as it stands, and ask again only if you still need the decision.
 After a close by anyone who is not a person (`act: closed`, where `closed_by` names who closed it), no person will answer that ask either: read its thread, and ask again only if you still need the decision.
+After a session's reply handed your question back to your turn (`act: turn`), no person is asked anything in that ask: read its thread.
+After an act that no other word names (`act: acted`), read the issue's asks and its spec.
 Each ask that the task lists as waiting on you (`waiting_on_you`) is yours to answer: read its thread and reply in it.
 Each item that the task lists as still with the person (`with_person`, and `approval_request` for the approval request) waits for you to hand it back once you have done what the answer asks.
 Hand an item back with a reply in its thread that leaves the turn with the person, or, while the gate is armed and closed, with a new approval request and `register_gate` of that version.
