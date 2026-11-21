@@ -600,43 +600,66 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 
 // apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App, of a repository
 // that person may see (repositoryHidden): any other repository answers as one the App is not
-// installed on (githubapi.ProxyREST).
+// installed on, and while a project is private a read is held to its repository
+// (githubapi.ProxyREST).
 func (r *router) apiGithubRest(w http.ResponseWriter, req *http.Request) {
 	login, ok := r.login(w, req)
 	if !ok {
 		return
 	}
-	githubapi.ProxyREST(w, req, r.ctx.apiDeps.GitHub, func(owner, repo string) (bool, error) {
-		return r.repositoryHidden(req.Context(), login, owner+"/"+repo)
+	githubapi.ProxyREST(w, req, r.ctx.apiDeps.GitHub, func(owner, repo string, identify githubapi.Identify) (githubapi.Gate, error) {
+		return r.repositoryHidden(req.Context(), login, owner+"/"+repo, identify)
 	})
 }
 
-// repositoryHidden reports whether the person login may not see repository: the cookie's viewer
-// (access.Resolve of model.BrowserActor) fails refs.RepositoryClause. A repository is shown when an
-// issue of a project the person sees resolves to it, and otherwise only to an open viewer, when no
+// repositoryHidden is the GitHub proxy's gate for the person login and repository
+// (githubapi.Gate). Hidden is whether the cookie's viewer (access.Resolve of model.BrowserActor)
+// fails refs.RepositoryClause for the repository's GitHub id: a repository is shown when an issue
+// of a project the person sees resolves to it, and otherwise only to an open viewer, when no
 // private project the person does not see owns it (refs.ProjectRepositoriesSQL: the issues that
-// resolve to it, whether open or done). It is one statement and asks GitHub nothing. A router with
-// no Store, a test's, has no viewer to resolve, so it reads the person as the closed viewer, which
-// sees no repository: every repository is hidden there.
-func (r *router) repositoryHidden(ctx context.Context, login, repository string) (bool, error) {
+// resolve to it, whether open or done). Held is the viewer's private flag, the one the clause's R9
+// arm reads: while the deployment holds a private project the proxy follows no redirect off the
+// repository, and with none it follows GitHub's redirects as it always did (R9).
+//
+// The clause judges a repository by the id GitHub answers for the name now (identify), so a
+// private project's repository renamed or moved on GitHub stays hidden under each of its names,
+// and a name another repository took later shows that repository and not the one an issue meant
+// by it. The id is read only where the answer turns on it: not for a viewer that sees every
+// object, nor for an open viewer of a deployment with no private project, which the clause passes
+// whatever the repository (R9); a restricted member is never an open viewer, so it is read for one
+// in every state. A read that fails, a rate limit, a 5xx, a 404 or a transport failure, hides the
+// repository: the clause cannot tell it from a private project's repository under a new name. The
+// next request reads again. A router with no Store, a test's, has no viewer to resolve, so it
+// reads the person as the closed viewer, which sees no repository and reads as though a project
+// were private: every repository is hidden there, and GitHub is not asked.
+func (r *router) repositoryHidden(ctx context.Context, login, repository string, identify githubapi.Identify) (githubapi.Gate, error) {
 	if r.ctx.Store == nil {
-		return true, nil
+		return githubapi.Gate{Hidden: true, Held: true}, nil
 	}
 	viewer, err := access.Resolve(ctx, r.ctx.Store.Pool, model.BrowserActor(login))
 	if err != nil {
-		return false, err
+		return githubapi.Gate{}, err
+	}
+	if viewer.All || (viewer.Open && !viewer.AnyPrivate) {
+		return githubapi.Gate{Held: viewer.AnyPrivate}, nil
+	}
+	current, err := identify()
+	if err != nil {
+		slog.Info("dispatch: GitHub proxy hides a repository whose GitHub id it could not read", "repository", repository, "error", err)
+		return githubapi.Gate{Hidden: true, Held: viewer.AnyPrivate}, nil
 	}
 	var visible bool
 	if err := r.ctx.Store.Pool.QueryRow(ctx, repositoryVisibleQuery,
-		refs.VisibilityArg(model.Actor{Viewer: &viewer}), repository).Scan(&visible); err != nil {
-		return false, fmt.Errorf("read whether %s sees %s: %w", login, repository, err)
+		refs.VisibilityArg(model.Actor{Viewer: &viewer}), repository, current.ID).Scan(&visible); err != nil {
+		return githubapi.Gate{}, fmt.Errorf("read whether %s sees %s: %w", login, repository, err)
 	}
-	return !visible, nil
+	return githubapi.Gate{Hidden: !visible, Held: viewer.AnyPrivate, Location: current.Location}, nil
 }
 
-// repositoryVisibleQuery is refs.RepositoryClause over the repository bound at $2 for the viewer
-// bound at $1. No placeholder differs between requests, so the text is built once.
-var repositoryVisibleQuery = `select ` + refs.RepositoryClause("$2::text", "$1")
+// repositoryVisibleQuery is refs.RepositoryClause over the repository bound at $2, whose GitHub id
+// is bound at $3, for the viewer bound at $1. No placeholder differs between requests, so the text
+// is built once.
+var repositoryVisibleQuery = `select ` + refs.RepositoryClause("$2::text", "$3::bigint", "$1")
 
 // login is the signed-in person the request's cookie names, and the caller its access-log line
 // names: the /auth routes and the GitHub proxy resolve their caller here and nowhere else.

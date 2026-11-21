@@ -90,9 +90,10 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/credentials/capabilities": reads("the secrets broker's own metadata, relayed whole", nil, readclass.None),
 
 	// Whether Dispatch's App is installed on a repository, which the Legion daemon asks for every
-	// repository it serves, whatever its token lists.
-	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository, which is no project's content",
-		readProbe{"owner": probeRepositoryOwner, "repo": probeRepositoryName}, readclass.None),
+	// repository it serves: held to the GitHub proxy's rule (refs.RepositoryClause), so a repository
+	// the caller may not see answers as one the App is not installed on.
+	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository the caller may see by the GitHub proxy's rule; any other repository answers as not installed",
+		readProbe{"owner": probeRepositoryOwner, "repo": probeRepositoryName}, readclass.Project),
 
 	// The caller's own rows, keyed on its credential or its person.
 	"GET /api/v1/whoami":                 reads("who the caller's own credential names", nil, readclass.Caller),
@@ -125,6 +126,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/projects/{key}/architecture":             reads("one project's components and the issues attached to them", byProject, readclass.Project),
 	"GET /api/v1/projects/{key}/plans":                    reads("one project's finished issues with their plans and ratings, rows of that project", byProject, readclass.Project),
 	"GET /api/v1/projects/{key}/access":                   reads("one project's access list, which names people", byProject, readclass.Project, readclass.People),
+	"GET /api/v1/projects/{key}/repositories":             reads("the repository names one project's own rows hold, for its owner; what other projects hold of each is a count that names no project", byProject, readclass.Project),
 	"GET /api/v1/projects/{key}/legion/daemon":            reads("which Legion daemon the deployment reads one project's state from: the deployment's setting, as its writes are, under a project the caller must see", byProject, readclass.Deployment, readclass.Project),
 	"GET /api/v1/projects/{key}/legion/board":             reads("one project's Legion board: its issues, as its daemon reports them, and the issues a blocker link holds each on", byProject, readclass.Project),
 	"GET /api/v1/near-copy-checks":                        reads("one project's near-copy gate answers, each naming issues of that project", nil, readclass.Project),

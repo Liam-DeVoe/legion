@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -83,6 +84,25 @@ func workflowRunsOfOneCommit(rawQuery string) bool {
 	return seen["head_sha"]
 }
 
+// Gate is the proxy's gate's answer for one read of a repository: Hidden, whether the person
+// asking may not see it, and Held, whether the read is held to it (githubapp.HoldToRepository), so
+// that a redirect GitHub answers with is followed to that repository alone: by its name, or to
+// Location, where GitHub answered the gate's read of the repository's id
+// (githubapp.RepositoryAnswer.Location), nil where it answered the name itself or the gate read
+// none. A read is held while the deployment holds a private project, the flag
+// refs.RepositoryClause's R9 arm reads; with none, the proxy follows GitHub's redirects as it did
+// before a project could be private (R9).
+type Gate struct {
+	Hidden, Held bool
+	Location     *url.URL
+}
+
+// Identify reads, for the gate, the repository the path's name reaches on GitHub now: its id and
+// full name (githubapp.RepositoryAnswer), read with the installation token ProxyREST mints for the
+// name, following GitHub's redirect from an old name. A gate calls it only where its answer turns
+// on the id, and at most once; an error is any failure to read it.
+type Identify func() (githubapp.RepositoryAnswer, error)
+
 // ProxyREST answers GET Prefix<path> with GitHub's answer to GET /<path>, read with an
 // installation token of the App installation covering the path's repository. A workflow-runs read
 // GitHub answers 200 is trimmed to workflowRuns, and a body that does not decode as workflow runs
@@ -90,20 +110,29 @@ func workflowRunsOfOneCommit(rawQuery string) bool {
 // passes through as GitHub sent it, but a rate limit. Any other method is 405; a path the web app
 // does not read, or a workflow-runs read whose query is not one commit's head_sha and its page, is
 // 404 GITHUB_PATH_REFUSED; a repository the App is not installed on, or a deployment with no App
-// key, is 503 GITHUB_TOKEN_UNAVAILABLE. A rate limit is 503 GITHUB_RATE_LIMITED with Retry-After:
-// GitHub's answer to the token mint or to the read, or a limit another request or process already
-// met (githubapp.Limits), in which case GitHub is not asked. The caller has already established
-// that a person is asking.
+// key, is 503 GITHUB_TOKEN_UNAVAILABLE, and so is a held read (Gate.Held) GitHub redirects to any
+// repository but the one the gate passed (githubapp.HoldToRepository), whose redirect is not
+// followed. A rate limit is 503 GITHUB_RATE_LIMITED with Retry-After: GitHub's answer to the token
+// mint or to the read, or a limit another request or process already met (githubapp.Limits), in
+// which case GitHub is not asked. The caller has already established that a person is asking.
 //
-// hidden answers whether the person asking may not see the repository (its owner and name as the
-// path spells them), and an error from it is a 500. It is asked before GitHub is sent anything, and
-// after the one answer every repository shares, a deployment with no App key's. A hidden repository
-// sends GitHub no request and answers what one the App is not installed on answers when GitHub is
-// not asked either: the rate limit, while a limit is in force on the App's scope (where the
-// installation lookup of an uninstalled repository is held unsent), and otherwise that the App is
-// not installed on it. So a hidden repository is never answered as a deployment with no App key
-// answers every repository, nor as anything a visible one answers.
-func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client, hidden func(owner, repo string) (bool, error)) {
+// gate answers, for the repository the path names (its owner and name as the path spells them),
+// whether the person asking may not see it and whether the read is held to it (Gate), and an error
+// from it is a 500. It is asked before GitHub is sent anything for the read, and after the one
+// answer every repository shares, a deployment with no App key's. Where its answer turns on the
+// repository's GitHub id it calls identify, which mints the name's installation token as the read
+// would and reads the repository's id with it, and nothing else of the repository is read for a
+// hidden one. Each answer such a gate makes is the answer a repository the App is not installed on
+// makes at the same step: a mint GitHub refuses as rate limited answers the rate limit, one with
+// no installation answers that the App is not installed on, and every other outcome of a hidden
+// repository, a minted token and an id read included, answers that the App is not installed on
+// too, the token dropped unused. A gate that hides a repository without calling identify sends
+// GitHub nothing and answers what one the App is not installed on answers when GitHub is not asked
+// either: the rate limit, while a limit is in force on the App's scope (where the installation
+// lookup of an uninstalled repository is held unsent), and otherwise that the App is not installed
+// on it. So a hidden repository is never answered as a deployment with no App key answers every
+// repository, nor as anything a visible one answers.
+func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client, gate func(owner, repo string, identify Identify) (Gate, error)) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		api.WriteJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "the GitHub proxy reads only: use GET", "code": "METHOD_NOT_ALLOWED"})
@@ -122,13 +151,47 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 		unavailable(w, "the GitHub App is not configured")
 		return
 	}
-	concealed, err := hidden(owner, repo)
+	// The token identify mints is the one the read uses, so a gate that reads the id costs the
+	// repository one GitHub read beyond the read it proxies. The mint follows GitHub's redirect from
+	// an old name, as the id read does: the id, not the name, is what the gate judged.
+	var (
+		token    string
+		tokenErr error
+		minted   bool
+	)
+	identify := func() (githubapp.RepositoryAnswer, error) {
+		if minted {
+			return githubapp.RepositoryAnswer{}, errors.New("the gate read the repository's id twice")
+		}
+		minted = true
+		token, tokenErr = client.RepositoryToken(r.Context(), owner, repo)
+		if tokenErr != nil {
+			return githubapp.RepositoryAnswer{}, tokenErr
+		}
+		return client.RepositoryIdentity(r.Context(), token, owner, repo, "")
+	}
+	answer, err := gate(owner, repo, identify)
 	if err != nil {
 		slog.Error("dispatch: GitHub proxy could not read whether the caller sees the repository", "repository", owner+"/"+repo, "error", err)
 		api.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error", "code": "INTERNAL"})
 		return
 	}
-	if concealed {
+	if minted {
+		// The mint's own refusals answer as they would for a repository the gate did not ask
+		// about, whether the gate went on to hide it or not.
+		if limited, ok := githubapp.AsRateLimit(tokenErr); ok {
+			rateLimited(w, limited)
+			return
+		}
+		if tokenErr != nil || answer.Hidden {
+			if tokenErr != nil && !errors.Is(tokenErr, githubapp.ErrNoInstallation) && !errors.Is(tokenErr, githubapp.ErrRedirectedOffRepository) {
+				slog.Warn("dispatch: GitHub proxy could not mint an installation token to read a repository's id", "repository", owner+"/"+repo, "error", tokenErr)
+			}
+			unavailable(w, "the GitHub App is not installed on "+owner+"/"+repo)
+			return
+		}
+	}
+	if answer.Hidden {
 		if limited := client.HeldLimit(r.Context(), githubapp.AppScope); limited != nil {
 			rateLimited(w, limited)
 			return
@@ -136,13 +199,25 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 		unavailable(w, "the GitHub App is not installed on "+owner+"/"+repo)
 		return
 	}
-	token, err := client.RepositoryToken(r.Context(), owner, repo)
+	// A held read sends GitHub every request held to the repository the gate passed
+	// (githubapp.HoldToRepository): GitHub redirects an old name of a renamed or transferred
+	// repository to that repository's new location, which the gate's read of its id reached where
+	// it read one, so such a redirect is followed only to that location or to the name the path
+	// spells, and any other answers as a repository the App is not installed on. A read that is not
+	// held follows GitHub's redirects, as every read did before a project could be private.
+	ctx := r.Context()
+	if answer.Held {
+		ctx = githubapp.HoldToRepository(ctx, owner, repo, answer.Location)
+	}
+	if !minted {
+		token, err = client.RepositoryToken(ctx, owner, repo)
+	}
 	if limited, ok := githubapp.AsRateLimit(err); ok {
 		rateLimited(w, limited)
 		return
 	}
 	switch {
-	case errors.Is(err, githubapp.ErrNoInstallation):
+	case errors.Is(err, githubapp.ErrNoInstallation), errors.Is(err, githubapp.ErrRedirectedOffRepository):
 		unavailable(w, "the GitHub App is not installed on "+owner+"/"+repo)
 		return
 	case err != nil:
@@ -160,9 +235,13 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 			return client.ReadWithin(ctx, token, path, workflowRunsResponseLimit)
 		}
 	}
-	body, status, header, err := read(r.Context(), token, target)
+	body, status, header, err := read(ctx, token, target)
 	if limited, ok := githubapp.AsRateLimit(err); ok {
 		rateLimited(w, limited)
+		return
+	}
+	if errors.Is(err, githubapp.ErrRedirectedOffRepository) {
+		unavailable(w, "the GitHub App is not installed on "+owner+"/"+repo)
 		return
 	}
 	if err != nil {

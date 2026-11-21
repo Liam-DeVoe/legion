@@ -134,21 +134,26 @@ func IssueDescendants(ctx context.Context, q Queryer, who model.Actor, key strin
 // its page, so such a chain fails the page it is on and no other (api/issue_queries.go,
 // issueSummaryQuery).
 //
+// Beside each name the terms carry the GitHub id recorded with it (`owned_id`): the repo_id of the
+// one issue on the chain whose own repository the walk stopped at, null where that row holds none
+// (IssueRepoResolvedID). A chain holds at most one such issue, so `max` reads its id alone.
+//
 // This is the server's one repository-resolution rule. The issue page resolves a page of issues
 // through these terms (api's issue reads), IssueRepository resolves one key through them, and
 // delivery's attribution splices them over the candidate keys of a pull request to hold its
 // issue to the repository it is in, so the results read and the pull-request head attribution
 // can never disagree with the issue page.
 var IssueRepoTerms = `repo_chain as (
-		select s.key as start, i.parent_key, i.repo, 0 as depth
+		select s.key as start, i.parent_key, i.repo, i.repo_id, 0 as depth
 		from subjects s join issues i on i.key = s.key
 		union all
-		select c.start, p.parent_key, p.repo, c.depth + 1
+		select c.start, p.parent_key, p.repo, p.repo_id, c.depth + 1
 		from repo_chain c join issues p on p.key = c.parent_key
 		where c.repo is null and c.depth < ` + issueDepthCapSQL + `
 	), repo as (
 		select c.start as key,
 		       max(c.repo) as owned,
+		       max(c.repo_id) filter (where c.repo is not null) as owned_id,
 		       bool_or(c.depth = ` + issueDepthCapSQL + ` and c.repo is null and c.parent_key is not null) as too_deep
 		from repo_chain c
 		group by c.start
@@ -161,12 +166,39 @@ var IssueRepoTerms = `repo_chain as (
 const IssueRepoJoin = `left join repo on repo.key = i.key
 	left join repo_projects repo_default on repo_default.project = i.project_key and repo_default.is_default`
 
+// projectDefaultRepoSQL is the default repository of the project projectExpr names, read as
+// IssueRepoJoin reads it (the project's default mapping), null where it has none: the repository an
+// issue of that project resolves to when its chain names none. RepositoryClause's index path
+// (repositorySeen) reads it, so the default comes from this file's one read of it.
+func projectDefaultRepoSQL(projectExpr string) string {
+	return projectDefaultSQL(projectExpr, "repo")
+}
+
+// projectDefaultRepoIDSQL is the GitHub id recorded beside that default (repo_projects.repo_id),
+// null where the project has no default or its default holds no id.
+func projectDefaultRepoIDSQL(projectExpr string) string {
+	return projectDefaultSQL(projectExpr, "repo_id")
+}
+
+// projectDefaultSQL is column of the project's one default mapping row, which the unique index
+// repo_projects_default_per_project allows once a project, so `max` reads that row's.
+func projectDefaultSQL(projectExpr, column string) string {
+	return `(select max(repo_default.` + column + `) from repo_projects repo_default where repo_default.project = (` + projectExpr + `) and repo_default.is_default)`
+}
+
 // IssueRepoResolved is the repository an issue resolves to, over IssueRepoJoin: the nearest one
 // its chain names, else its project's default mapping, else null. A statement that holds an
 // issue to a repository rather than reading one — delivery's attributionHeld, which keeps a
 // pull request's issue to the repository the pull request is in — compares against this
 // expression, so it can never be a second copy of the rule drifting from this one.
 const IssueRepoResolved = `coalesce(repo.owned, repo_default.repo)`
+
+// IssueRepoResolvedID is the GitHub id recorded beside the repository an issue resolves to, over
+// IssueRepoJoin: the id of the chain's issue whose own repository it is, else the default's, null
+// where that row holds no id or the issue resolves to none. An issue with a name and no id is one
+// written before Dispatch recorded ids, or one whose write could not read GitHub; the GitHub proxy
+// judges it by its name (RepositoryClause).
+const IssueRepoResolvedID = `case when repo.owned is not null then repo.owned_id else repo_default.repo_id end`
 
 // IssueRepoTooDeep reports whether the walk ran out of depth with links still above it, which
 // every reader of the resolved repository refuses rather than answer with the project's default

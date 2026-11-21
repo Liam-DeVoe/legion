@@ -9,12 +9,13 @@ import (
 
 // TestTheGitHubProxyHidesARepositoryAHiddenProjectHolds: a repository only a private project's
 // issues resolve to is hidden from alice, who does not see that project, however she spells it, and
-// GitHub is asked nothing about it. Over seedProxyGate's rows she reads, through a pull request
-// path, acme/priv, which PRIV-1 names, ACME/Priv, the same in another case, acme/privdefault, PRIV's
-// default, and acme/oldname, which PRIV-6 names. Each answers, in status and bytes, what
-// acme/uninstalled answers, and GitHub sees no request for it at all: no installation lookup, no
-// token mint, no read. carol, who sees PRIV, reads each as GitHub's
-// answer, so the hidden answer is the gate's.
+// GitHub is asked nothing about it but its id. Over seedProxyGate's rows she reads, through a pull
+// request path, acme/priv, which PRIV-1 names, ACME/Priv, the same in another case,
+// acme/privdefault, PRIV's default, and acme/oldname, which PRIV-6 names. Each answers, in status
+// and bytes, what acme/uninstalled answers, and GitHub sees no request for it but the ones its id
+// read makes: the installation lookup, the token mint and the read of the repository itself, never
+// the read the path asks for. carol, who sees PRIV, reads each as GitHub's answer, so the hidden
+// answer is the gate's.
 func TestTheGitHubProxyHidesARepositoryAHiddenProjectHolds(t *testing.T) {
 	database := seedProxyGate(t)
 	hidden := []string{"acme/priv", "ACME/Priv", "acme/privdefault", "acme/oldname"}
@@ -28,9 +29,11 @@ func TestTheGitHubProxyHidesARepositoryAHiddenProjectHolds(t *testing.T) {
 	for _, repository := range hidden {
 		before := len(fake.requests())
 		got := proxyAnswer(t, handler, "alice@example.com", repository, "pulls/1")
-		if asked := fake.requests()[before:]; got != uninstalled || len(asked) != 0 {
-			t.Errorf("alice reads %s, which only PRIV's issues resolve to, as\n\t%s\nGitHub asked %q\nwant what %s answers, with GitHub asked nothing:\n\t%s",
-				repository, got, asked, uninstalledRepository, uninstalled)
+		idRead := []string{"GET /repos/" + repository + "/installation", "POST /app/installations/11/access_tokens", "GET /repos/" + repository}
+		asked := fake.requests()[before:]
+		if got != uninstalled || slices.ContainsFunc(asked, func(request string) bool { return !slices.Contains(idRead, request) }) {
+			t.Errorf("alice reads %s, which only PRIV's issues resolve to, as\n\t%s\nGitHub asked %q\nwant what %s answers, with GitHub asked nothing but %q:\n\t%s",
+				repository, got, asked, uninstalledRepository, idRead, uninstalled)
 		}
 		if seen := proxyAnswer(t, handler, "carol@example.com", repository, "pulls/1"); seen != `200 "" {"repository":"<repo>"}` {
 			t.Errorf("carol, who sees PRIV, reads %s as %s, want GitHub's answer", repository, seen)

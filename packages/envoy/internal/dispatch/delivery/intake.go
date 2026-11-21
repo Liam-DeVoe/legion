@@ -624,7 +624,7 @@ func completePullRequest(ctx context.Context, pool *store.Pool, github *githubap
 		return err
 	}
 	return UpsertPullRequest(ctx, pool, DeliveryPullRequest{
-		Repo: repoFull, Number: number, Title: fetched.Title, URL: fetched.URL, Author: fetched.Author,
+		Repo: repoFull, RepoID: recordedRepoID(fetched.RepoID), Number: number, Title: fetched.Title, URL: fetched.URL, Author: fetched.Author,
 		CreatedAt: &fetched.CreatedAt, MergedAt: fetched.MergedAt, FirstCommitAt: fetched.FirstCommitAt,
 		MergeCommitSHA: fetched.MergeCommitSHA, Additions: fetched.Additions, Deletions: fetched.Deletions,
 		Rework: IsRework(fetched.Title), IssueKey: issueKey, Sessions: sessionTrailers(messages),

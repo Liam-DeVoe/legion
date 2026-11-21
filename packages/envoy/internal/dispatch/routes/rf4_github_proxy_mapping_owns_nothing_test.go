@@ -2,6 +2,7 @@ package routes
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -10,9 +11,11 @@ import (
 // repository, so it shows nothing to a restricted member and hides nothing from an open viewer;
 // only issues own repositories. Every project public first: PUB-3 names acme/pubonly, and bob, a
 // restricted member PRIV's list names, reads it as one the App is not installed on, before and after
-// a full member maps acme/pubonly to PRIV, and GitHub is asked nothing. Then with PRIV private: PRIV
-// maps acme/privonlymapped, which no issue resolves to, and alice, an open viewer who does not see
-// PRIV, reads it as GitHub answers it; carol reads it too.
+// a full member maps acme/pubonly to PRIV, and GitHub is asked nothing but the repository's id (the
+// installation lookup, the token mint and the read of the repository itself, which the proxy's
+// gate makes for a restricted member). Then with PRIV private: PRIV maps acme/privonlymapped, which
+// no issue resolves to, and alice, an open viewer who does not see PRIV, reads it as GitHub
+// answers it; carol reads it too.
 //
 // At the merge head before this change the mapping arm made PRIV an owner of each mapped
 // repository, so bob read acme/pubonly once it was mapped and alice did not read
@@ -32,11 +35,13 @@ func TestARepositoryMappingNeitherShowsNorHidesARepository(t *testing.T) {
 	if !strings.HasPrefix(uninstalled, `503 "" `) || !strings.Contains(uninstalled, "is not installed on <repo>") {
 		t.Fatalf("bob's read of %s, which the App is not installed on, answered %s: the comparison proves nothing", uninstalledRepository, uninstalled)
 	}
+	idRead := []string{"GET /repos/acme/pubonly/installation", "POST /app/installations/11/access_tokens", "GET /repos/acme/pubonly"}
 	read := func(state string) {
 		before := len(fake.requests())
-		if got := proxyAnswer(t, handler, "bob@example.com", "acme/pubonly", "pulls/1"); got != uninstalled || len(fake.requests()) != before {
-			t.Errorf("%s, bob reads acme/pubonly, which only PUB-3 names, as\n\t%s\nGitHub asked %q\nwant what %s answers, with GitHub asked nothing:\n\t%s",
-				state, got, fake.requests()[before:], uninstalledRepository, uninstalled)
+		got := proxyAnswer(t, handler, "bob@example.com", "acme/pubonly", "pulls/1")
+		if asked := fake.requests()[before:]; got != uninstalled || slices.ContainsFunc(asked, func(request string) bool { return !slices.Contains(idRead, request) }) {
+			t.Errorf("%s, bob reads acme/pubonly, which only PUB-3 names, as\n\t%s\nGitHub asked %q\nwant what %s answers, with GitHub asked nothing but %q:\n\t%s",
+				state, got, asked, uninstalledRepository, idRead, uninstalled)
 		}
 	}
 	read("before any mapping")

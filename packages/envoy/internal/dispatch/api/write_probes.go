@@ -81,6 +81,7 @@ var writeProbes = map[string]writeProbe{
 	"POST /api/v1/projects/{key}/artifacts/{slug}/edits":                   {byProjectSlug, `{` + probeActor + `,"summary":"A walked edit.","ops":[]}`},
 	"PUT /api/v1/projects/{key}/default-assignee":                          {byProject, `{"assignee":"alice"}`},
 	"PATCH /api/v1/projects/{key}/access":                                  {byProject, `{"visibility":"public"}`},
+	"POST /api/v1/projects/{key}/repositories/confirm":                     {byProject, `{"repo":"acme/probed","id":1}`},
 	"PUT /api/v1/projects/{key}/access/people/{email}":                     {readProbe{"key": probeProject, "email": probeEmail}, ""},
 	"DELETE /api/v1/projects/{key}/access/people/{email}":                  {readProbe{"key": probeProject, "email": probeEmail}, ""},
 	"PUT /api/v1/projects/{key}/access/groups/{name}":                      {readProbe{"key": probeProject, "name": probeGroup}, ""},

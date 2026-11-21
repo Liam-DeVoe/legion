@@ -74,7 +74,9 @@ type putRepoProjectInput struct {
 // owner/name and needs no mapping, so no issue holds a mapping in place. Every mapping the write
 // changes emits settings.repo_project.updated on its project, and a moved mapping emits one on
 // the project it left too, deleted:true there. lockRepoProjectWrite orders the write against
-// every other one.
+// every other one. A write that leaves the mapping its project's default is 403
+// REPOSITORY_NOT_AVAILABLE when the GitHub proxy hides the repository from the caller
+// (refuseRepoHidden), as an issue's own repository is.
 //
 // Renamed_to is the full `owner/name` this repository is called today, canonicalised as the
 // route's own path is (externalRef). **Absent, and JSON null, leave the stored pair exactly as
@@ -100,6 +102,10 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	input.Project = strings.TrimSpace(input.Project)
 	if !contracts.ValidProjectKey(input.Project) {
 		writeError(w, "INVALID_REPO_PROJECT", http.StatusBadRequest, projectKeyProblem("project", input.Project))
@@ -119,6 +125,22 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The GitHub id of the repository, read before the transaction so no lock waits on GitHub, while
+	// a project is private, for a write that makes the mapping its project's default where it is not
+	// that already: a write that leaves a default as it was keeps the row's id, or its lack of one,
+	// and reads nothing (writtenRepository). The mapping is read here with nothing locked, as the
+	// caller sees it, and again below under the mapping's locks, which decide; a read GitHub did not
+	// answer is kept and refuses the write there.
+	written := s.writtenRepository(repo, who)
+	if input.Default != nil && *input.Default {
+		var mapped string
+		var wasDefault bool
+		err := s.deps.Store.Pool.QueryRow(r.Context(), `select project, is_default from repo_projects where repo = $1 and `+
+			access.ProjectClause("project", "$2"), repo, refs.VisibilityArg(who)).Scan(&mapped, &wasDefault)
+		if err != nil || mapped != input.Project || !wasDefault {
+			_, _ = written.id(r.Context())
+		}
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -135,6 +157,40 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	isDefault := previous != nil && !moved && previous.Default
 	if input.Default != nil {
 		isDefault = *input.Default
+	}
+	// The id the default records: the one the mapping holds where it stays its project's default,
+	// and else GitHub's, read above or, where the mapping changed since, now; a read GitHub did not
+	// answer refuses the write (repositoryIDUnavailable).
+	keepRepoID := isDefault && previous != nil && !moved && previous.Default
+	var repoID *int64
+	switch {
+	case keepRepoID:
+		if err := tx.QueryRow(r.Context(), `select repo_id from repo_projects where repo = $1`, repo).Scan(&repoID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	case isDefault:
+		if repoID, err = written.id(r.Context()); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	// A project's default is the repository each of its issues that names none resolves to, so a
+	// mapping this write leaves as a default is held to the rule an issue's own repository is
+	// (refuseRepoHidden), judged by that id, under the mapping's locks and before anything is
+	// written; and a private project's default takes no new name without its id
+	// (refuseUnidentifiedRepository), read under the project's owner lock those locks hold.
+	if isDefault {
+		if err := refuseRepoHidden(r.Context(), tx, who, &repo, repoID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !keepRepoID {
+			if err := refuseUnidentifiedRepository(r.Context(), tx, input.Project, &repo, repoID); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
 	}
 	// An absent or null renamed_to keeps the pair the mapping already holds, and a row this
 	// write creates holds none; `""` clears one, which adds no edge to the rename graph and so
@@ -167,11 +223,12 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	mapping, err := scanRepoProject(tx.QueryRow(r.Context(), `
-		insert into repo_projects (repo, project, created_by, is_default, renamed_to)
-		values ($1, $2, $3, $4, $5)
+		insert into repo_projects (repo, project, created_by, is_default, renamed_to, repo_id)
+		values ($1, $2, $3, $4, $5, $6)
 		on conflict (repo) do update set project = excluded.project, created_by = excluded.created_by,
-			is_default = excluded.is_default, renamed_to = excluded.renamed_to
-		returning `+repoProjectColumns, repo, input.Project, actorJSON, isDefault, renamedTo))
+			is_default = excluded.is_default, renamed_to = excluded.renamed_to,
+			repo_id = case when $7 then repo_projects.repo_id else excluded.repo_id end
+		returning `+repoProjectColumns, repo, input.Project, actorJSON, isDefault, renamedTo, repoID, keepRepoID))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

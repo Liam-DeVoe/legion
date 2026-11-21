@@ -108,7 +108,12 @@ func (p Production) Conclusion(job DeliveryRunJob) *DeliveryJobConclusion {
 // than retrying forever; both nil for every normal row, and cleared by any later successful
 // fetch of the same pull request.
 type DeliveryPullRequest struct {
-	Repo              string             `json:"repo"`
+	Repo string `json:"repo"`
+	// RepoID is the GitHub id of Repo as GitHub's own answer about the pull request named it
+	// (its base repository's id), nil for a row no such answer wrote yet (a search result's
+	// partial row). A read that hides a pull request naming no issue by its repository judges it
+	// by this id (refs.RepositoryClause). Dispatch's own field, answered to no client.
+	RepoID            *int64             `json:"-"`
 	Number            int                `json:"number"`
 	Title             string             `json:"title"`
 	URL               string             `json:"url"`
@@ -171,7 +176,12 @@ const (
 // start; CreatedAt is GitHub's created_at, which a re-run keeps, nil on a row stored before it was
 // (Created says what stands in for it).
 type DeliveryRun struct {
-	Repo         string                 `json:"repo"`
+	Repo string `json:"repo"`
+	// RepoID is the GitHub id of Repo as GitHub's answer about the run named it (the run's
+	// repository), nil for a row written before Dispatch read it. A read that hides a run by its
+	// repository judges it by this id (refs.RepositoryClause). Dispatch's own field, answered to no
+	// client.
+	RepoID       *int64                 `json:"-"`
 	RunID        int64                  `json:"run_id"`
 	Kind         DeliveryRunKind        `json:"kind"`
 	PRNumber     *int                   `json:"pr_number"`

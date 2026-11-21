@@ -87,6 +87,9 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync",
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions",
 	"POST /api/v1/projects/{key}/related",
+	// The owner's confirmation of a repository before a switch to private: it acts as the
+	// project's owner, as the access routes above do.
+	"POST /api/v1/projects/{key}/repositories/confirm",
 	"POST /api/v1/signins/{id}/revoke",
 	"PUT /api/v1/access-groups/{name}",
 	"PUT /api/v1/asks/{id}/asked-of",

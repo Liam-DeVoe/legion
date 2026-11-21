@@ -541,19 +541,19 @@ func (s *server) readDeliveryRows(ctx context.Context, reader model.Actor, setti
 // Pipeline page (readPipelinePopulation). A pull request left keeps its first shipping run, since a
 // run left out ships none of them. A key no issue row holds is taken off the pull request, which
 // then reads as naming no issue. hidden is the repositories hidden from reader (openRepositories,
-// read by repositoriesHidden): a pull request that names no issue is shown to an open reader only
-// when hidden does not hold its repository, and a run that shipped none only when hidden does not
-// hold the deploy repository, whose run it is.
-func (p *deliveryPopulation) cutTo(reader model.Actor, settings delivery.DeliverySettings, hidden map[string]bool) {
+// read by repositoriesHidden), each judged by the GitHub id its row records: a pull request that
+// names no issue is shown to an open reader only when hidden does not hold its repository, and a
+// run that shipped none only when hidden holds none of the deploy repository's, whose run it is.
+func (p *deliveryPopulation) cutTo(reader model.Actor, settings delivery.DeliverySettings, hidden map[askedRepository]bool) {
 	open := reader.Viewer != nil && reader.Viewer.Open
 	shown := func(pr *delivery.DeliveryPullRequest) bool {
 		if pr.IssueKey == nil {
-			return open && !hidden[pr.Repo]
+			return open && !hidden[askedOf(pr.Repo, pr.RepoID)]
 		}
 		issue, found := p.issues[*pr.IssueKey]
 		if !found {
 			pr.IssueKey = nil
-			return open && !hidden[pr.Repo]
+			return open && !hidden[askedOf(pr.Repo, pr.RepoID)]
 		}
 		return issue.seen
 	}
@@ -582,7 +582,7 @@ func (p *deliveryPopulation) cutTo(reader model.Actor, settings delivery.Deliver
 		}
 	}
 	p.prs, p.waiting = prs, waiting
-	p.shipsShown, p.unnamedShown = shipsShown, open && !hidden[settings.DeployRepo]
+	p.shipsShown, p.unnamedShown = shipsShown, open && !slices.ContainsFunc(p.deployRepositories(settings.DeployRepo), func(deploy askedRepository) bool { return hidden[deploy] })
 	kept := func(run delivery.DeliveryRun) bool { return p.runShown(run.RunID) }
 	p.applyRuns, p.jobsByRun = runsWhere(p.applyRuns, p.jobsByRun, kept)
 	p.windowRuns, p.windowJobs = runsWhere(p.windowRuns, p.windowJobs, kept)
@@ -598,28 +598,31 @@ func (p deliveryPopulation) runShown(run int64) bool {
 }
 
 // openRepositories is the repositories whose visibility to reader decides what of the population an
-// open reader is shown (cutTo), once each: the repository of each pull request, the window's and
-// those waiting, that names no issue or a key no issue row holds, and deployRepo, whose runs that
-// shipped nothing or name no stored pull request it decides. A reader that is not open is shown none
-// of those, so none is named for it.
-func (p deliveryPopulation) openRepositories(reader model.Actor, deployRepo string) []string {
-	repositories := []string{}
+// open reader is shown (cutTo), once each, each with the GitHub id its row records: the repository
+// of each pull request, the window's and those waiting, that names no issue or a key no issue row
+// holds, and the deploy repository (deployRepositories), whose runs that shipped nothing or name no
+// stored pull request it decides. A reader that is not open is shown none of those, so none is
+// named for it.
+func (p deliveryPopulation) openRepositories(reader model.Actor, deployRepo string) []askedRepository {
+	repositories := []askedRepository{}
 	if reader.Viewer == nil || !reader.Viewer.Open {
 		return repositories
 	}
-	add := func(repository string) {
+	add := func(repository askedRepository) {
 		if !slices.Contains(repositories, repository) {
 			repositories = append(repositories, repository)
 		}
 	}
-	add(deployRepo)
+	for _, deploy := range p.deployRepositories(deployRepo) {
+		add(deploy)
+	}
 	issueless := func(pr delivery.DeliveryPullRequest) {
 		if pr.IssueKey != nil {
 			if _, found := p.issues[*pr.IssueKey]; found {
 				return
 			}
 		}
-		add(pr.Repo)
+		add(askedOf(pr.Repo, pr.RepoID))
 	}
 	for _, pr := range p.prs {
 		issueless(pr)
@@ -628,6 +631,24 @@ func (p deliveryPopulation) openRepositories(reader model.Actor, deployRepo stri
 		issueless(pr.DeliveryPullRequest)
 	}
 	return repositories
+}
+
+// deployRepositories is the deploy repository deployRepo as the population's runs record it, once
+// for each GitHub id those runs carry, and by its name alone for runs that carry none or when
+// there is no run: a run that shipped nothing is shown only when none of them is hidden (cutTo).
+func (p deliveryPopulation) deployRepositories(deployRepo string) []askedRepository {
+	deploys := []askedRepository{}
+	for _, runs := range [][]delivery.DeliveryRun{p.applyRuns, p.windowRuns} {
+		for _, run := range runs {
+			if deploy := askedOf(deployRepo, run.RepoID); !slices.Contains(deploys, deploy) {
+				deploys = append(deploys, deploy)
+			}
+		}
+	}
+	if len(deploys) == 0 {
+		deploys = append(deploys, askedRepository{Repo: deployRepo})
+	}
+	return deploys
 }
 
 // groupsShown is the groups of which every session passes access.SessionClause for the reader whose
