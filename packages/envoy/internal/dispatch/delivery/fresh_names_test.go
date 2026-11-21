@@ -9,6 +9,8 @@ package delivery
 // scripts/forced-order.sh as well as here.
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -16,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/consumernames"
@@ -94,6 +98,123 @@ func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
 				t.Fatalf("CheckNamingMode = %v, want the process to start", err)
 			}
 		})
+	}
+}
+
+// scriptedMarker is a database whose reads of the cutover row answer, in turn, each of answers:
+// an error the Scan returns, or the sentinel's record. Past the last it repeats the last.
+type scriptedMarker struct {
+	mu      sync.Mutex
+	answers []any
+	reads   int
+}
+
+func (s *scriptedMarker) QueryRow(ctx context.Context, _ string, _ ...any) pgx.Row {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	answer := s.answers[min(s.reads, len(s.answers)-1)]
+	s.reads++
+	return scriptedRow{ctx: ctx, answer: answer}
+}
+
+func (s *scriptedMarker) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reads
+}
+
+type scriptedRow struct {
+	ctx    context.Context
+	answer any
+}
+
+// errHangs is an answer that waits for the read's context to end, as a database that does not
+// answer does.
+var errHangs = errors.New("the database does not answer")
+
+func (r scriptedRow) Scan(dest ...any) error {
+	switch answer := r.answer.(type) {
+	case error:
+		if errors.Is(answer, errHangs) {
+			<-r.ctx.Done()
+			return r.ctx.Err()
+		}
+		return answer
+	case string:
+		*dest[0].(*[]byte) = []byte(answer)
+		*dest[1].(*int64) = 1
+	}
+	return nil
+}
+
+// A fixed process decides on the marker it read and on nothing else. A read Postgres refused
+// (42501), like a missing table, is no marker, and the process starts. A database it cannot reach,
+// one that does not answer, or a row it cannot read, it reads again until it can, and never starts
+// unread: the call returns only with the marker read, or when its context ends. The control is the
+// same unreachable database answering at last: done refuses, and no marker starts.
+func TestTheFixedModeReadsItsMarkerBeforeItRuns(t *testing.T) {
+	shrink := namingMarkerRetry
+	namingMarkerRetry = 10 * time.Millisecond
+	t.Cleanup(func() { namingMarkerRetry = shrink })
+	unreachable := errors.New("dial tcp 127.0.0.1:5432: connect: connection refused")
+	for name, row := range map[string]struct {
+		answers []any
+		refused bool
+	}{
+		"a read Postgres refused":                        {[]any{&pgconn.PgError{Code: "42501", Message: "permission denied for table intake_consumers"}}, false},
+		"no table":                                       {[]any{&pgconn.PgError{Code: "42P01", Message: "relation does not exist"}}, false},
+		"no sentinel":                                    {[]any{pgx.ErrNoRows}, false},
+		"unreachable, then done":                         {[]any{unreachable, unreachable, `{"cutover":"done"}`}, true},
+		"not answering, then no marker":                  {[]any{errHangs, errHangs, pgx.ErrNoRows}, false},
+		"a row it cannot read, then one before cutover": {[]any{`{"cutover":`, `{}`}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			db := &scriptedMarker{answers: row.answers}
+			err := CheckNamingMode(t.Context(), db, consumernames.ModeFixed)
+			if row.refused != (err != nil) {
+				t.Fatalf("CheckNamingMode = %v, want refused %t", err, row.refused)
+			}
+			if want := len(row.answers); db.count() < want {
+				t.Fatalf("it read the marker %d times, want at least %d: it decided before it read", db.count(), want)
+			}
+		})
+	}
+	t.Run("never answering, it never starts", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+		defer cancel()
+		db := &scriptedMarker{answers: []any{unreachable}}
+		if err := CheckNamingMode(ctx, db, consumernames.ModeFixed); err == nil {
+			t.Fatal("CheckNamingMode started a fixed process over a marker it never read")
+		}
+		if db.count() < 2 {
+			t.Fatalf("it read the marker %d times in 300 ms, want it to keep reading", db.count())
+		}
+	})
+}
+
+// Defence in depth: a fixed process reads its marker again each time its database or NATS
+// reconnects, and is told to exit once it reads done. The control: the same marker written done,
+// with no reconnect after it, tells it nothing, so it is the reconnect that reads it.
+func TestAFixedProcessExitsWhenAReconnectReadsTheCutoverDone(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	reconnects := make(chan struct{})
+	told := make(chan error, 1)
+	go WatchFixedMarker(ctx, pool, reconnects, func(err error) { told <- err })
+	reconnects <- struct{}{}
+	writeCutover(t, pool, "done")
+	select {
+	case err := <-told:
+		t.Fatalf("told %v with no reconnect since done was written", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	reconnects <- struct{}{}
+	select {
+	case err := <-told:
+		if err == nil || !strings.Contains(err.Error(), "ENVOY_CONSUMER_NAMES=fixed") {
+			t.Fatalf("told %v, want the refusal naming ENVOY_CONSUMER_NAMES=fixed", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a reconnect after done was written told the process nothing")
 	}
 }
 
