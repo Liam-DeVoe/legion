@@ -23,7 +23,11 @@ type Scope struct {
 	// refuses it.
 	Projects []string
 	// Identity is the account the token names: its sub, or a Google token's email. It names the
-	// reply prefix (InboxPrefix).
+	// reply prefix (InboxPrefix), which depends on the identity alone. So one identity must have
+	// one scope: two connections of one identity with different project lists would subscribe the
+	// same prefix, and the narrower would receive the wider one's pull deliveries. The auth
+	// service keeps this by taking one BROKER_NATS_SERVICES entry per account, so each account
+	// gets one project list.
 	Identity string
 }
 
