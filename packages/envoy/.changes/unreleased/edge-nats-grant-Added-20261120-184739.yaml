@@ -1,0 +1,26 @@
+kind: Added
+body: |-
+  `natsgrant.Edge(machineID, projects)` and `core.EdgePermissions(machineID, projects)` are the NATS
+  grant of an edge listener's own user: the listener's grant, publishing in place of every
+  notification topic only `notifications.agent.>`, `notifications.role.<KEY>.>` for each project,
+  `notifications.envoy.deliver.*`, `notifications.envoy.relayreply.<machine id>.>`,
+  `notifications.envoy.resume.>`, and `notifications.envoy.exceptions.notifications.agent.>` and
+  `notifications.envoy.exceptions.notifications.role.<KEY>.>` for each project, with no create or
+  update of the stream, and subscribing its own machine's inbox prefix
+  `_INBOX_envoy_edge_<machine id>.>`, the relay subjects and its own machine's relay receipts, and
+  no role lane. Both refuse a machine id that is not one subject token and a project list that is
+  empty or not project keys, sorted, each once. `natsgrant/testdata/edge.golden.json` pins it for
+  machine `m` and project `PRIV`. The session consumers' calls it keeps reach every consumer of the
+  stream and deliver to any subject a client subscribes that the stream does not carry; a delivery
+  takes no JetStream API action, and its one write is a subject another stream of the account
+  captures while a client subscribes it. The infra README's "Permission sets" says how far. The
+  NATS auth service answers an `edge-listener` entry of `BROKER_NATS_SERVICES` with it, for the
+  projects the entry lists. A listener started with `ENVOY_EDGE_PROJECTS` names every inbox under
+  that prefix, reads the stream and ends its start, naming it, when the server has none,
+  subscribes no role lane,
+  publishes no Legion wake report, keeps no role message and hands no kept lane over (a publish to
+  an unheld role is answered 404), and publishes no delivery exception on a lane its grant leaves
+  out, counting each on `envoy_edge_exceptions_withheld_total`.
+time: 2026-11-20T18:47:39Z
+custom:
+    Issue: edge-nats-grant

@@ -3985,6 +3985,101 @@ authorization, which replaces a VM hub's instance and reaches a clustered hub on
 reload. This repository's listener runs under this set against the real servers below: it answers
 a registration `consumer` and relays a send on the session's relay subject, with no refusal.
 
+`EdgePermissions(machineID, projects)` is the grant of an edge listener's own NATS user: the
+listener that serves the sessions of an outside person's projects (`ENVOY_EDGE_PROJECTS`), which no
+session and no other listener shares. It is `ListenerPermissions(machineID)` with these changes and
+no other. It refuses a machine id that is not one subject token and a project list that is empty
+or not project keys, sorted, each once. In place of `notifications.>` it publishes this list and
+no other notification topic: `notifications.agent.>` (a send); `notifications.role.<KEY>.>` for
+each project (a role message in the form that names the project); `notifications.envoy.deliver.*`
+(a relay frame); `notifications.envoy.relayreply.<machine id>.>` (its own machine's relay
+receipts); `notifications.envoy.resume.>` (where a deleted session consumer stopped); and
+`notifications.envoy.exceptions.notifications.agent.>` and
+`notifications.envoy.exceptions.notifications.role.<KEY>.>` for each project (a failed delivery's
+report, and an unheld role's refusal). So a direct publish of the edge's reaches no Dispatch,
+GitHub, Slack, team or Legion event, no other project's role lane and no role lane in the form
+that names no project, nothing on the kept role lane `notifications.envoy.kept.>`, no other
+machine's receipts and no other exception lane. A message on a role lane of its own project that
+names a role of another project is the shared listeners' role lane to refuse, which it does once
+the edge mode of #4657 is in. It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
+`ENVOY_NOTIFICATIONS`: an edge listener reads the stream and its start ends, naming the stream, on
+a server that has none. It subscribes its own machine's inbox prefix
+`_INBOX_envoy_edge_<machine id>.>` in place of `_INBOX.>`, so one edge machine is delivered no
+other machine's replies, every session's relay subject `notifications.envoy.deliver.*`, its own
+machine's relay receipts `notifications.envoy.relayreply.<machine id>.>`, and no role lane: every
+connection of an edge listener names its inboxes under that prefix, and a shared listener forwards
+a role message held at the edge to the holder's agent subject. Its lists name no `agentstream.`
+subject.
+
+The relay receipts, and the subscription to the relay subjects, are for the relay socket of #4658:
+no program at this head uses them. At this head the edge's session relay names a frame's receipt
+under its inbox prefix, which no session's grant publishes, so at this head alone no session
+answers an edge listener's relay frame over NATS. The replicas of one machine share its id, and so
+its inbox prefix and its receipts.
+
+An edge listener holds itself to that list. It keeps no role message for a role's next holder and
+hands no kept lane over, so a publish to a role no session holds is answered 404 with its refusal's
+exception, and the shared listeners' sweeps, every five minutes, hand the kept lane of a role held
+at the edge to its holder. A delivery exception whose lane the list does not hold, such as the
+report of a refused GitHub or Dispatch event a session follows, is not published: the message is
+acknowledged undelivered to that session and counted on
+`envoy_edge_exceptions_withheld_total{topic_prefix, reason}`.
+
+What the lists do not hold back:
+
+- The session consumers' calls name the consumer by `*`, since each session's consumer is named
+  for its session. A NATS wildcard matches a whole token and a consumer name is one token, so no
+  permission can hold these calls to the edge's own consumers. The edge can create, update,
+  delete, read and pull any consumer of the stream, every other listener's durable, Dispatch's
+  and every session's consumer among them. By updating another listener's durable it can take
+  that listener's push deliveries, and a consumer it creates on any filter reads any stored
+  message, another project's Dispatch event among them.
+- nats-server checks a push consumer's deliver subject against no permission, only that the
+  stream does not carry it, and delivers only where a client subscribes. So through a consumer
+  it creates, the edge can put any message it stored, or any message of the stream, on any
+  subject a client subscribes and the stream does not carry: every project's role lanes and
+  their exception lanes, any reply inbox, and the agent stream subjects. A deliver subject the
+  stream carries is refused as a cycle: the agent subjects, Dispatch, GitHub, Slack, Legion,
+  Ghostwispr, WhatsApp and team topics, the exception lanes of the agent subjects and of team
+  topics, the kept lane and the resume lane.
+- A push consumer's delivery takes no JetStream API action: delivered to
+  `$JS.API.STREAM.DELETE`, `PURGE` or `UPDATE` of a stream, or to the delete of a bucket's
+  stream, it leaves the stream as it was, and delivered to a `$KV.` subject it writes no entry,
+  with a client subscribed to the subject or without one. The one write it has is a subject
+  another stream of the account captures while a client subscribes it: that stream stores the
+  edge's message.
+- nats-server 2.15.1 admits a subscription to `notifications.envoy.deliver.>` under the allow
+  entry `notifications.envoy.deliver.*`, and delivers it a subject two tokens past the prefix. No
+  Envoy program publishes such a subject: a relay subject names its session by one token.
+- Today's agent, relay and resume subjects name no project, so an edge listener can publish on
+  any session's.
+- Its key-value calls write every record of the seven listener buckets: interests, roles,
+  sessions, known sessions, Legion agents, CI state and DPoP proofs.
+
+Its read is the whole bus until subjects and keys name their project, and its writes through the
+consumer calls are as wide until something other than the edge creates its consumers. The auth
+service answers an `edge-listener` entry of `BROKER_NATS_SERVICES` with the same set for the
+projects the entry lists, and the deployment repository's hub user for an edge listener copies it
+entry for entry from `packages/envoy/natsgrant/testdata/edge.golden.json`, rendered for machine `m`
+and project `PRIV`.
+
+Under the `natslive` tag, against the hub's image, `natsgrant/natsgrant_live_test.go` publishes on
+each subject of the list and on the kept lane, another project's role, a role that names no
+project, the Legion wake topic, a Slack topic and a GitHub exception lane, and the server refuses
+exactly the second group. `TestAnEdgeMachineCannotReadOrPublishAnotherMachinesReceipts` there has
+one edge machine refused another's receipts in both directions.
+`TestTheEdgeGrantsConsumerCallsReachPastItsPublishList` pins the consumer reach above: a push
+consumer of the edge's delivers on another project's role subject, a consumer of the edge's reads
+another project's stored Dispatch event, a deliver subject the stream carries is refused as a
+cycle, the edge updates and deletes another listener's durable, and a subscription under
+`deliver.>` is delivered a two-token subject.
+`TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI` pins the JetStream API and capture
+outcomes on scratch streams and buckets of the edge's account. `cmd/listener/edge_live_test.go`
+runs the listener under the set: it starts, relays a send and is reached by a role message through
+a shared listener, with no refusal, and its start ends, naming the prefix, under the set without
+it. Its relay frames are answered by an observer whose grant publishes the edge's inbox prefix,
+reach no rendered set holds.
+
 `DaemonPermissions()` is the grant of a Legion daemon's dedicated NATS user. It publishes the
 notification stream's info request, its stored-message get
 `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS` (the read `legion state` makes of each durable

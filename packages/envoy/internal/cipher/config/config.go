@@ -754,8 +754,10 @@ type Config struct {
 	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
 	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
 	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
-	// listener, daemon or measure; * for the kind's whole grant, - for the projects the account's
-	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one and read at
+	// listener, edge-listener, daemon or measure; * for the kind's whole grant, - for the projects
+	// the account's exchange entry lists; an edge-listener entry names its machine id and, in
+	// place of * or -, the projects it serves as <KEY>[,<KEY>…], which its grant is built for),
+	// each account written as BROKER_API_ACCOUNTS writes one and read at
 	// start (natscallout.ParseServices). BROKER_NATS_K8S_AUDIENCE is the audience a service's
 	// projected Kubernetes token must carry, verified against BROKER_K8S_OIDC_ISSUER, which it
 	// needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token must

@@ -440,7 +440,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	if err := w.pinToSend(); err != nil {
 		return nil, err
 	}
-	inbox := nats.NewInbox()
+	inbox := w.conn.NewInbox()
 	replies := make(chan *nats.Msg, requestReplies)
 	inboxSub, err := w.conn.ChanSubscribe(inbox, replies)
 	if err != nil {
