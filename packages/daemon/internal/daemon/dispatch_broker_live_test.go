@@ -636,9 +636,10 @@ func (r *dispatchBrokerRig) daemonSubject() (string, string) {
 }
 
 // daemonClient is the daemon's Dispatch client of project P as boot builds it under
-// dispatch_token_broker (dispatchCredential): its pod identity, the subject token in the file
-// subject, traded at the rig's broker, read back by Dispatch's whoami through the proxy and
-// checked, and the transport that client presents its token through.
+// dispatch_token_broker (dispatchCredential, daemonDispatchClient): its pod identity, the subject
+// token in the file subject, traded at the rig's broker, read back by Dispatch's whoami through
+// the proxy and checked, and the transport that client presents its token through. Every write
+// names the session that token proves, legion-daemon:P.
 func (r *dispatchBrokerRig) daemonClient(subject string) (*dispatch.HTTPClient, http.RoundTripper) {
 	r.t.Helper()
 	cfg := config.Config{Project: rigP, DispatchURL: r.url, DispatchTokenBroker: true}
@@ -649,11 +650,12 @@ func (r *dispatchBrokerRig) daemonClient(subject string) (*dispatch.HTTPClient, 
 	if err != nil {
 		r.t.Fatalf("the daemon's boot under dispatch_token_broker: %v", err)
 	}
-	return dispatch.New(cfg.DispatchURL, transport), transport
+	return daemonDispatchClient(cfg, transport), transport
 }
 
 // sharedDaemonClient is the daemon's Dispatch client of project P as boot builds it without
-// dispatch_token_broker: the bearer dispatch_token_file names, the shared agent token.
+// dispatch_token_broker (dispatchCredential, daemonDispatchClient): the bearer dispatch_token_file
+// names, the shared agent token. Each write names the session of the issue's project's daemon.
 func (r *dispatchBrokerRig) sharedDaemonClient(sharedTokenFile string) *dispatch.HTTPClient {
 	r.t.Helper()
 	cfg := config.Config{Project: rigP, DispatchURL: r.url, DispatchTokenFile: sharedTokenFile}
@@ -661,12 +663,13 @@ func (r *dispatchBrokerRig) sharedDaemonClient(sharedTokenFile string) *dispatch
 	if err != nil {
 		r.t.Fatalf("the daemon's boot without dispatch_token_broker: %v", err)
 	}
-	return dispatch.New(cfg.DispatchURL, transport)
+	return daemonDispatchClient(cfg, transport)
 }
 
 // otherProjectDaemonClient is the daemon's client built from the same pieces (brokerclient's
 // client and token transport, dispatch.New) over OtherProjectAccount's pod identity, whose entry
 // fixes the session OtherProjectSession of project Q: K4's control, a token of another project.
+// Every write names that session (dispatch.WritesAs), the one its token proves.
 func (r *dispatchBrokerRig) otherProjectDaemonClient() *dispatch.HTTPClient {
 	r.t.Helper()
 	subject := r.file("other-project-daemon-token", r.broker.MintSubjectToken(r.t, brokertest.OtherProjectAccount, "rig-pod-other-daemon"))
@@ -686,7 +689,7 @@ func (r *dispatchBrokerRig) otherProjectDaemonClient() *dispatch.HTTPClient {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	return dispatch.New(r.url, brokerclient.NewTokenTransport(client, http.DefaultTransport))
+	return dispatch.New(r.url, brokerclient.NewTokenTransport(client, http.DefaultTransport), dispatch.WritesAs(brokertest.OtherProjectSession))
 }
 
 // rigClients is scripts/e2e/dispatch-broker-clients.ts running in a role's environment: the
@@ -1295,7 +1298,7 @@ func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 		return err
 	})
 	outside := r.daemonCall("PostMessage on "+r.pIssue+", sent to an origin DISPATCH_PROOF_ORIGINS does not name", false, func() error {
-		return dispatch.New(r.outside, transport).PostMessage(ctx, r.pIssue, "The daemon's notice at an address Dispatch was not told of.")
+		return dispatch.New(r.outside, transport, dispatch.WritesAs(dispatch.DaemonSession(rigP))).PostMessage(ctx, r.pIssue, "The daemon's notice at an address Dispatch was not told of.")
 	})
 	role := r.registeredRole("k2")
 	on := r.environment(role, "")

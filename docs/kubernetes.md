@@ -4843,10 +4843,13 @@ Under `dispatch_token_broker: true` this holds only for a launch into a live pod
 Every other launch carries no Dispatch token, and its role trades its pod's exchange identity for a token of its own session ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 
 When `dispatch_token_file` holds one of the deployment's shared agent tokens (`DISPATCH_AGENT_TOKEN`), Dispatch matches the bytes against them (`MatchesSharedAgentToken`, `packages/envoy/internal/dispatch/auth/agent_token.go`) and reads no person, no service and no project from them.
-Whatever the bearer, the acting session is the one the request body names (`bearerSessionActor`, `packages/envoy/internal/dispatch/api/server.go`), which for the daemon's own writes is `legion-daemon:<PROJECT>` (`DaemonSession`, `packages/daemon/internal/dispatch/client.go`), so a shared agent token names nobody.
+Whatever the bearer, the acting session is the one the request body names (`bearerSessionActor`, `packages/envoy/internal/dispatch/api/server.go`), which for the daemon's own writes is `legion-daemon:<PROJECT>`, PROJECT being the project of the issue that the write is on (`DaemonSession`, `packages/daemon/internal/dispatch/client.go`), so a shared agent token names nobody.
 Dispatch takes any other bearer as a service token or a personal token (`optionalActor`, `server.go`), and every role's session then carries that token's service or owner as well.
 `dispatch whoami` in a role tells the two apart:
 for a shared agent token it answers `Session <id> runs under the shared token: no owner, …` (`packages/envoy-client/src/dispatch-commands/session.ts`).
+
+Under `dispatch_token_broker: true` the daemon's token proves the session of the daemon's own project, `legion-daemon:<PROJECT>`, and Dispatch refuses a write whose actor names another session (`403 ACTOR_SESSION_MISMATCH`).
+So every write of the daemon's names that session, on an issue of another project too (`daemonDispatchClient`, `packages/daemon/internal/daemon/daemon.go`).
 
 The Kubernetes service-account tokens this runtime projects for a role are the broker's, under `runtime.kubernetes.agent_secrets` (`agentSecretsVolumes`, `manifest.go`): `agent-secrets-token` for its `audience`, and `agent-secrets-exchange` for its `exchange_audience` where that key is set (`exchangeTokenProjection`).
 Each reaches the secrets broker and nothing else.
@@ -8515,7 +8518,9 @@ The boot refuses, in words that name the cause:
   The boot logs any other failed trade and tries it again;
 
 - a `whoami` answer whose session is not `legion-daemon:<PROJECT>`, whose project is not the daemon's, or whose owner is `null`.
-  Each of these refusals names the `403` or the `SIGN_IN_REQUIRED` that Dispatch would answer every write of the daemon's with, and says to fix the daemon's `BROKER_EXCHANGE_ACCOUNTS` entry.
+  The session and the owner refusals each name the `403` or the `SIGN_IN_REQUIRED` that Dispatch would answer every write of the daemon's with.
+  The project refusal says that the token's project is not the daemon's, which is a fault of the exchange entry.
+  Each refusal says to fix the daemon's `BROKER_EXCHANGE_ACCOUNTS` entry.
 
 The boot logs one line that names the credential, and never a token: `legion daemon's Dispatch credential`, with `credential=broker`, the `session` and, where one is named, `transitionFile`.
 Without the setting the line carries `credential=file` and the `file`.

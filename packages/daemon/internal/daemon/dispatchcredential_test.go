@@ -231,10 +231,10 @@ func TestAPermanentBrokerRefusalRefusesTheBoot(t *testing.T) {
 }
 
 // TestTheBootRefusesAnEntryDispatchWouldRefuse: Dispatch refuses every write of a broker token whose
-// session is not the daemon's, whose project is not the daemon's, or that acts for no person, and
-// the outbox would wait on each such write for ever, so the boot reads Dispatch's whoami of its own
-// token and refuses each, naming the field and the broker entry the deployment must fix. The right
-// answer boots.
+// session is not the daemon's or that acts for no person, and the outbox would wait on each such
+// write for ever. A token whose project is not the daemon's is a fault of the exchange entry that
+// gave it. So the boot reads Dispatch's whoami of its own token and refuses each of the three,
+// naming the field and the broker entry the deployment must fix. The right answer boots.
 func TestTheBootRefusesAnEntryDispatchWouldRefuse(t *testing.T) {
 	broker := newCredentialBroker(t, mintsTheDaemonsToken)
 	for name, tc := range map[string]struct {
@@ -301,7 +301,7 @@ func TestTheDaemonsClientNamesTheSessionItsTokenProves(t *testing.T) {
 			if err != nil {
 				t.Fatalf("dispatchCredential: %v", err)
 			}
-			client := dispatch.New(cfg.DispatchURL, transport)
+			client := daemonDispatchClient(cfg, transport)
 			if err := client.PostMessage(context.Background(), "OTHER-1", "The daemon's notice on an issue of another project."); err != nil {
 				t.Fatalf("post a message on OTHER-1: %v", err)
 			}
