@@ -620,18 +620,21 @@ func streamConfig(t *testing.T, nc *nats.Conn, stream string) map[string]any {
 	return info.Config
 }
 
-// The operator's grant outside a hold is reads only. It reads every info the hold's first step
-// reads, backs up KV_envoy_session_consumers as a records-only copy read message by message
-// (kvrecords.Write), each walked message with its sequence, headers and time, and reads what
-// consumer-names status reads. It writes nothing: a snapshot delivered to a protected key, and a
-// create of an absent ENVOY_MEASURE whose republish targets a protected key followed by a publish
-// the grant holds, are each refused, and the key is unchanged; it creates, changes and deletes no
-// protected stream, its consumer creates are refused, and the retired hold bucket is not reachable.
-// Each refused request gets no answer, and the server reports the publish it refused, by subject.
+// The operator's grant outside a hold names no subject that writes. It reads every info the hold's
+// first step reads, backs up KV_envoy_session_consumers as a records-only copy read message by
+// message and signed with the hold key (kvrecords.Write), each walked message with its sequence,
+// headers and time, and reads what consumer-names status reads. Of the writes it once held, a
+// snapshot delivered to a protected key, and a create of an absent ENVOY_MEASURE whose republish
+// targets a protected key followed by a publish the grant holds, are each refused, and both keys
+// are unchanged; it creates, changes and deletes no protected stream, its consumer creates are
+// refused, and the retired hold bucket is not reachable. Each refused request gets no answer, and
+// the server reports the publish it refused, by subject. What the grant can still store is what any
+// JetStream request in $G can: the server's JSON answer, on a subject it names as the request's
+// reply (natsgrant's operatorReleased says who can store more).
 //
 // It fails when released's grant holds a write again: run by hand against the grant that held
-// STREAM.SNAPSHOT and STREAM.CREATE.ENVOY_MEASURE, the snapshot writes the protected key and the
-// test fails naming it. And it fails when released loses a read the records copy needs.
+// STREAM.SNAPSHOT and STREAM.CREATE.ENVOY_MEASURE, both writes reach their keys and the test fails
+// naming each. And it fails when released loses a read the records copy needs.
 func TestTheReleasedOperatorReadsAndBacksUp(t *testing.T) {
 	r := newOperatorRig(t, nil)
 	r.setPhase(t, natsgrant.OperatorPhaseReleased)
@@ -652,9 +655,9 @@ func TestTheReleasedOperatorReadsAndBacksUp(t *testing.T) {
 
 	// The records copy first, so a grant without a read it needs fails the test inside it.
 	dir := filepath.Join(t.TempDir(), "consumer-names")
-	manifest, err := kvrecords.Write(t.Context(), operator.Conn, sessionConsumers, dir)
+	manifest, err := kvrecords.Write(t.Context(), operator.Conn, sessionConsumers, dir, r.signer.key)
 	require.NoError(t, err, "the released operator's records copy of %s; the server sent:\n%s", kvBucket(sessionConsumers), operator.errs)
-	_, records, err := kvrecords.Read(dir)
+	_, records, err := kvrecords.Read(dir, r.signer.HoldKeys)
 	require.NoError(t, err)
 	want := storedMessages(t, adminNC, kvBucket(sessionConsumers))
 	require.Equal(t, len(want), manifest.Records)
