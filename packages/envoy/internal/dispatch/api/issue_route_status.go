@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -370,21 +371,27 @@ func (s *server) fetchRouteRoster(ctx context.Context, fetch *rosterFetch, sent 
 // storeRouteRosterQuery stores one listener answer unless the stored one was sent later: a call
 // that answers after a later call on another process never replaces that newer answer. A
 // silence's reason and the Retry-After that came with it are stored beside it, under the sent_at
-// they belong to (routeRosterQuery). It returns a row only when it stored this one. Every
+// they belong to (routeRosterQuery). It returns a row only when it stored this one, and then
+// announces the store on events.SessionAccessChannel: the session content rule reads the stored
+// answer's listener lists (route_roster_session_projects), and its trigger may record a project a
+// session reached, so a document socket asks its rule again before its next frame. Every
 // parameter is cast, since $1 appears twice and $3 three times.
 const storeRouteRosterQuery = `
-	insert into route_roster (answered, sessions, sent_at, expires_at, reason, retry_after, reason_sent_at)
-	values ($1::boolean, $2::jsonb, $3::timestamptz,
-	        case when $1::boolean then $3::timestamptz + make_interval(secs => $4::float8)
-	             else now() + make_interval(secs => $5::float8) end,
-	        $6::text, $7::text, $3::timestamptz)
-	on conflict (id) do update
-	set answered = excluded.answered, sessions = excluded.sessions,
-	    sent_at = excluded.sent_at, expires_at = excluded.expires_at,
-	    reason = excluded.reason, retry_after = excluded.retry_after,
-	    reason_sent_at = excluded.reason_sent_at
-	where route_roster.sent_at < excluded.sent_at
-	returning true`
+	with stored as (
+		insert into route_roster (answered, sessions, sent_at, expires_at, reason, retry_after, reason_sent_at)
+		values ($1::boolean, $2::jsonb, $3::timestamptz,
+		        case when $1::boolean then $3::timestamptz + make_interval(secs => $4::float8)
+		             else now() + make_interval(secs => $5::float8) end,
+		        $6::text, $7::text, $3::timestamptz)
+		on conflict (id) do update
+		set answered = excluded.answered, sessions = excluded.sessions,
+		    sent_at = excluded.sent_at, expires_at = excluded.expires_at,
+		    reason = excluded.reason, retry_after = excluded.retry_after,
+		    reason_sent_at = excluded.reason_sent_at
+		where route_roster.sent_at < excluded.sent_at
+		returning true as written
+	)
+	select written, ` + events.AnnounceSessionAccess + ` from stored`
 
 // storeRouteRoster stores own, the answer of a call sent at sent, and answers the roster every
 // waiting read is served: own when it was stored, the newer stored one when it was not. A failed
@@ -404,7 +411,7 @@ func (s *server) storeRouteRoster(ctx context.Context, sent time.Time, own route
 	var stored bool
 	err := s.deps.Store.Pool.QueryRow(ctx, storeRouteRosterQuery,
 		own.answered, sessions, sent, s.rosters.ttl.Seconds(), s.rosters.silenceTTL.Seconds(),
-		own.reason, own.retryAfter).Scan(&stored)
+		own.reason, own.retryAfter).Scan(&stored, nil)
 	if err == nil {
 		s.rosters.keep(sent, own)
 		return own
