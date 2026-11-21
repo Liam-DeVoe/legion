@@ -25,12 +25,19 @@ import (
 // the start's check and bind, as the JetStream handle's own wait bounds each of today's reads.
 const durableNamesTimeout = 10 * time.Second
 
-// durableServer is the listener's durables on the stream as consumernames.Server, through the
-// client's JetStream handle, so a read the grant refuses is bus.ErrPublishDenied as today's is.
-type durableServer struct{ client *bus.Client }
+// durableServer is the listener's durables on the stream as consumernames.Server, each call on a
+// connection its generation is granted on (durableConns): a generation's own intake connection
+// where the listener holds one, else a cleanup connection opened for the call. A read the grant
+// refuses is bus.ErrPublishDenied as today's is.
+type durableServer struct{ conns *durableConns }
 
 func (s durableServer) Info(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
-	info, err := s.client.JS().ConsumerInfo(bus.Stream, name, nats.Context(ctx))
+	conn, done, err := s.conn(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	info, err := conn.JS().ConsumerInfo(bus.Stream, name, nats.Context(ctx))
 	if errors.Is(err, nats.ErrConsumerNotFound) {
 		return nil, fmt.Errorf("%w: %w", consumernames.ErrNotFound, err)
 	}
@@ -41,11 +48,29 @@ func (s durableServer) Info(ctx context.Context, name string) (*jetstream.Consum
 }
 
 func (s durableServer) Delete(ctx context.Context, name string) error {
-	err := s.client.JS().DeleteConsumer(bus.Stream, name, nats.Context(ctx))
+	conn, err := s.conns.cleanup(ctx, name)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	err = conn.JS().DeleteConsumer(bus.Stream, name, nats.Context(ctx))
 	if errors.Is(err, nats.ErrConsumerNotFound) {
 		return nil
 	}
 	return err
+}
+
+// conn is a connection granted name's info, and what to call once the call is done: the intake
+// connection the listener holds for name, or a cleanup connection, closed when done.
+func (s durableServer) conn(ctx context.Context, name string) (*bus.Client, func(), error) {
+	if held := s.conns.held(name); held != nil {
+		return held, func() {}, nil
+	}
+	conn, err := s.conns.cleanup(ctx, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	return conn, conn.Close, nil
 }
 
 // protocolInfo is the part of info the protocol reads (consumernames.Names): the name, the start
@@ -61,12 +86,14 @@ func protocolInfo(info *nats.ConsumerInfo) *jetstream.ConsumerInfo {
 	return out
 }
 
-// durableNames is the protocol over the listener's durable named durable, on client.
+// durableNames is the protocol over the listener's durable named durable, on client: its record in
+// the client's selection store, each generation's calls on its own connection (durableConns).
 func durableNames(client *bus.Client, durable string) *consumernames.Names {
 	host, _ := os.Hostname()
+	conns := connsOf(client, durable)
 	return consumernames.New(consumernames.Config{
 		Store:  client.SelectionStore(),
-		Server: durableServer{client},
+		Server: durableServer{conns},
 		Prefix: func(string) string { return durable },
 		Floor:  func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: func(ctx context.Context) (string, error) {
@@ -78,6 +105,7 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 		},
 		CheckKey: consumernames.CheckDurableKey,
 		Owner:    fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
+		Reserved: conns.reserved,
 	})
 }
 
@@ -99,28 +127,32 @@ func boundedContext(ctx context.Context) (context.Context, context.CancelFunc) {
 func durableInfo(ctx context.Context, client *bus.Client, durable string) (*nats.ConsumerInfo, error) {
 	ctx, cancel := boundedContext(ctx)
 	defer cancel()
-	name := durable
-	if client.ConsumerNames() == consumernames.ModeFresh {
-		sel, err := durableNames(client, durable).Resolve(ctx, consumernames.DurableKey(durable))
-		if err != nil {
-			return nil, err
-		}
-		if sel.Record.Current == "" {
-			return nil, fmt.Errorf("%w: the selection of %s names no current", nats.ErrConsumerNotFound, durable)
-		}
-		name = sel.Record.Current
+	if client.ConsumerNames() != consumernames.ModeFresh {
+		return client.JS().ConsumerInfo(bus.Stream, durable, nats.Context(ctx))
 	}
-	return client.JS().ConsumerInfo(bus.Stream, name, nats.Context(ctx))
+	sel, err := durableNames(client, durable).Resolve(ctx, consumernames.DurableKey(durable))
+	if err != nil {
+		return nil, err
+	}
+	if sel.Record.Current == "" {
+		return nil, fmt.Errorf("%w: the selection of %s names no current", nats.ErrConsumerNotFound, durable)
+	}
+	conn, err := connsOf(client, durable).intake(ctx, sel.Record.Current)
+	if err != nil {
+		return nil, err
+	}
+	return conn.JS().ConsumerInfo(bus.Stream, sel.Record.Current, nats.Context(ctx))
 }
 
 // ensureFreshDurable is startListenerSubscription's create in the fresh mode: the durable's current
 // through its record, its policy corrected in place as today's is, or a fresh <durable>~<nuid> at the
 // record's start, and for a durable with no record at deliver policy all, today's first create. A
 // current the server no longer holds is created again at the start its record proves. It answers
-// the physical name to bind.
-func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string, subjects []string) (string, error) {
+// the physical name to bind and the connection its generation is granted on.
+func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string, subjects []string) (string, *bus.Client, error) {
 	ctx, cancel := boundedContext(ctx)
 	defer cancel()
+	conns := connsOf(client, durable)
 	sel, created, err := durableNames(client, durable).Ensure(ctx, consumernames.DurableKey(durable), consumernames.CreateRequest{
 		Create: func(ctx context.Context, name string, start consumernames.Start) (*jetstream.ConsumerInfo, error) {
 			// The deliver subject is a random inbox, as today's create gives it (startListenerSubscription).
@@ -138,7 +170,11 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 				config.DeliverPolicy, config.OptStartSeq = nats.DeliverByStartSequencePolicy, start.Seq
 			}
 			applyListenerConsumerPolicy(&config, subjects)
-			info, err := client.JS().AddConsumer(bus.Stream, &config, nats.Context(ctx))
+			conn := conns.held(name)
+			if conn == nil {
+				return nil, fmt.Errorf("consumer names: no connection is reserved for %s", name)
+			}
+			info, err := conn.JS().AddConsumer(bus.Stream, &config, nats.Context(ctx))
 			var api *nats.APIError
 			switch {
 			case err == nil:
@@ -160,25 +196,29 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 		},
 	})
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	current := sel.Record.Current
-	if created {
-		return current, nil
-	}
-	info, err := client.JS().ConsumerInfo(bus.Stream, current, nats.Context(ctx))
+	conn, err := conns.intake(ctx, current)
 	if err != nil {
-		return "", err
+		return "", nil, err
+	}
+	if created {
+		return current, conn, nil
+	}
+	info, err := conn.JS().ConsumerInfo(bus.Stream, current, nats.Context(ctx))
+	if err != nil {
+		return "", nil, err
 	}
 	if err := listenerDurableRefusal(current, info.Config); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	corrected := info.Config
 	applyListenerConsumerPolicy(&corrected, subjects)
 	if !reflect.DeepEqual(corrected, info.Config) {
-		if _, err := client.JS().UpdateConsumer(bus.Stream, &corrected, nats.Context(ctx)); err != nil {
-			return "", err
+		if _, err := conn.JS().UpdateConsumer(bus.Stream, &corrected, nats.Context(ctx)); err != nil {
+			return "", nil, err
 		}
 	}
-	return current, nil
+	return current, conn, nil
 }

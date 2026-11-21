@@ -133,16 +133,24 @@ func listenerDurable(client *bus.Client, consumer string) (*nats.ConsumerInfo, e
 // consumers created before the threshold existed.
 //
 // In the fresh consumer naming mode the durable is created and corrected through its selection
-// record (ensureFreshDurable), and the physical name it names is bound.
+// record (ensureFreshDurable), and the physical name it names is bound on the connection its
+// generation is granted on (durableConns), the only one of the listener's that the generation's
+// grant lets acknowledge its messages; every other generation's connection is closed.
 func startListenerSubscription(client *bus.Client, consumer string, handler nats.MsgHandler) (*nats.Subscription, error) {
 	subjects := bus.StreamSubjects()
 	if client.ConsumerNames() == consumernames.ModeFresh {
-		physical, err := ensureFreshDurable(context.Background(), client, consumer, subjects)
+		physical, conn, err := ensureFreshDurable(context.Background(), client, consumer, subjects)
 		if err != nil {
 			return nil, err
 		}
-		consumer = physical
-	} else if err := ensureFixedDurable(client, consumer, subjects); err != nil {
+		sub, err := conn.Subscribe("", handler, nats.Bind(bus.Stream, physical), nats.ManualAck())
+		if err != nil {
+			return nil, err
+		}
+		connsOf(client, consumer).keepOnly(physical)
+		return sub, nil
+	}
+	if err := ensureFixedDurable(client, consumer, subjects); err != nil {
 		return nil, err
 	}
 	return client.Subscribe(
@@ -284,8 +292,18 @@ var errDurableUnbound = errors.New("not bound to this listener's subscription")
 // taken by the replacement reads PushBound == true on the task that is receiving nothing at all.
 // The deliver subject is what tells the two apart: a recreated durable delivers to a fresh inbox,
 // while this listener's subscription still holds the old one.
-func durableUnbound(info *nats.ConsumerInfo, client *bus.Client) bool {
-	return info == nil || !info.PushBound || info.Config.DeliverSubject != client.SubSubject()
+func durableUnbound(info *nats.ConsumerInfo, client *bus.Client, consumer string) bool {
+	if info == nil || !info.PushBound {
+		return true
+	}
+	subscriber := client
+	if client.ConsumerNames() == consumernames.ModeFresh {
+		// The fresh mode binds each generation on its own connection (startListenerSubscription).
+		if held := connsOf(client, consumer).held(info.Name); held != nil {
+			subscriber = held
+		}
+	}
+	return info.Config.DeliverSubject != subscriber.SubSubject()
 }
 
 // durableProbeConfirm is how long durableProbe waits before its confirming read.
@@ -323,7 +341,7 @@ func durableProbe(ctx context.Context, client *bus.Client, consumer string) erro
 			}
 			return nil
 		}
-		if !durableUnbound(info, client) {
+		if !durableUnbound(info, client, consumer) {
 			return nil
 		}
 	}
@@ -366,7 +384,7 @@ func awaitDurableBound(ctx context.Context, client *bus.Client, consumer string,
 		if errors.Is(err, bus.ErrPublishDenied) {
 			return fmt.Errorf("read durable %s: %w", consumer, err)
 		}
-		if err == nil && !durableUnbound(info, client) {
+		if err == nil && !durableUnbound(info, client, consumer) {
 			return nil
 		}
 		if err := waitUnlessDone(ctx, min(interval, deadline-time.Since(start))); err != nil {

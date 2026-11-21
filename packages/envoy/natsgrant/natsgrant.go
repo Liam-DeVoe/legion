@@ -215,11 +215,13 @@ func DispatchDurables() []string {
 
 // The first segment of the names Dispatch gives the connections a take-over and a cleanup of its
 // durables' fresh generations open (DispatchIntakeConnection, DispatchCleanupConnection), and the
-// listener beside it a take-over of its own durable's (ListenerIntakeConnection).
+// listener beside it those of its own durable's (ListenerIntakeConnection,
+// ListenerCleanupConnection).
 const (
 	dispatchIntakeConnection  = "dispatch-intake"
 	dispatchCleanupConnection = "dispatch-cleanup"
 	listenerIntakeConnection  = "listener-intake"
+	listenerCleanupConnection = "listener-cleanup"
 )
 
 // maxGenerationLen bounds a generation token's length. A NUID, which is what a fresh name's
@@ -274,9 +276,17 @@ func ListenerIntakeConnection(machineID, generation, old string) string {
 	return name
 }
 
+// ListenerCleanupConnection is the name of the connection that reads and deletes one retired
+// generation of the durable of the listener beside Dispatch, as machine machineID:
+// listener-cleanup/<machine id>/<generation>.
+func ListenerCleanupConnection(machineID, generation string) string {
+	return listenerCleanupConnection + "/" + machineID + "/" + generation
+}
+
 // ParseDispatchConnection is the intake a connection's name asks for: DispatchIntakeConnection's
 // and DispatchCleanupConnection's shapes, for a logical name of DispatchDurables, and
-// ListenerIntakeConnection's, with each generation one to maxGenerationLen letters and digits and
+// ListenerIntakeConnection's and ListenerCleanupConnection's, with each generation one to
+// maxGenerationLen letters and digits and
 // an old generation other than the new one. Any other name, Dispatch's publisher's and the fixed
 // mode's intakes' included, asks for nothing (the zero DispatchIntake), so no name reaches past
 // Dispatch's own two durables and its own listener's or holds a wildcard, a dot or a space.
@@ -295,6 +305,8 @@ func ParseDispatchConnection(name string) DispatchIntake {
 	switch {
 	case parts[0] == listenerIntakeConnection && parts[1] != "":
 		return DispatchIntake{ListenerMachine: parts[1], Generation: parts[2], Old: old}
+	case parts[0] == listenerCleanupConnection && parts[1] != "" && old == "":
+		return DispatchIntake{ListenerMachine: parts[1], Generation: parts[2], Cleanup: true}
 	case !slices.Contains(DispatchDurables(), parts[1]):
 		return DispatchIntake{}
 	case parts[0] == dispatchCleanupConnection && old == "":

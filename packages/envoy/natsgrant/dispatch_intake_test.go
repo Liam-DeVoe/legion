@@ -77,7 +77,9 @@ func TestADispatchConnectionNameIsReadAsTheIntakeItNames(t *testing.T) {
 		"listener-intake/" + exampleMachine + "/" + ownGen + "/" + ownGen:                {},
 		"listener-intake/" + exampleMachine + "/*":                                       {},
 		"listener-intake/" + exampleMachine + "/" + ownGen + "/" + oldGen + "/" + otherGen: {},
-		"listener-cleanup/" + exampleMachine + "/" + ownGen:                              {},
+		natsgrant.ListenerCleanupConnection(exampleMachine, ownGen):                     {ListenerMachine: exampleMachine, Generation: ownGen, Cleanup: true},
+		"listener-cleanup/" + exampleMachine + "/" + ownGen + "/" + oldGen:              {},
+		"listener-cleanup//" + ownGen:                                                    {},
 	} {
 		require.Equal(t, want, natsgrant.ParseDispatchConnection(name), "connection name %q", name)
 	}
@@ -219,6 +221,19 @@ func TestAListenerIntakeConnectionIsGrantedItsOwnGenerationsExactly(t *testing.T
 		consumerCall("DELETE", "s-x"):     false,
 	} {
 		require.Equal(t, want, allows(grant, subject), "%s for a listener intake of %s over %s", subject, ownGen, oldGen)
+	}
+	// A listener cleanup connection reads and deletes its one generation, and creates nothing.
+	cleanup := natsgrant.Dispatch(exampleMachine, natsgrant.ParseDispatchConnection(natsgrant.ListenerCleanupConnection(exampleMachine, oldGen)))
+	for subject, want := range map[string]bool{
+		consumerCall("INFO", old):     true,
+		consumerCall("DELETE", old):   true,
+		consumerCall("CREATE", old):   false,
+		consumerAck(old):              false,
+		consumerCall("DELETE", own):   false,
+		consumerCall("DELETE", other): false,
+		consumerCall("DELETE", bus.ListenerDurable("m2")+"~"+oldGen): false,
+	} {
+		require.Equal(t, want, allows(cleanup, subject), "%s for a listener cleanup of %s", subject, oldGen)
 	}
 	// The name's machine is not the grant's: no generation of either machine.
 	foreign := natsgrant.Dispatch(exampleMachine, natsgrant.ParseDispatchConnection("listener-intake/m2/"+ownGen+"/"+oldGen))

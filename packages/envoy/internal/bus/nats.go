@@ -397,6 +397,8 @@ type Client struct {
 	// slowConsumers counts the slow-consumer errors the client's connections reported
 	// (SlowConsumers).
 	slowConsumers atomic.Uint64
+	// opts are the options the client was connected with, which Sibling connects another with.
+	opts connectOpts
 
 	// recovery state
 	recovering int32
@@ -492,6 +494,31 @@ func ConnectOwningStream(urls []string, options ...ConnectOption) (*Client, erro
 	return newClient(urls, true, parseConnectOptions(options))
 }
 
+// siblingDrainWithin bounds the drain of a sibling (Sibling) once its parent stops.
+const siblingDrainWithin = 10 * time.Second
+
+// Sibling connects another client the way c connects -- its servers, its credential, its dialer and
+// its consumer naming mode -- named name, in the background, and owning no stream: a connection
+// whose name asks the hub's auth service for a grant of its own (natsgrant.ParseDispatchConnection)
+// beside the grant c holds. It drains once c stops, so a subscription on it outlives c by no more
+// than siblingDrainWithin.
+func (c *Client) Sibling(name string) (*Client, error) {
+	opts := c.opts
+	opts.name, opts.background = name, true
+	sibling, err := newClient(c.urls, false, opts)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		select {
+		case <-c.stopCh:
+			_ = sibling.Drain(siblingDrainWithin)
+		case <-sibling.stopCh:
+		}
+	}()
+	return sibling, nil
+}
+
 // newClient makes the client Connect and ConnectOwningStream return. An owning client ensures the
 // stream (ensureStreamWithConfig) and then starts its keeper (startKeeper): in the constructor
 // once install has returned, or, connecting in the background (WithConnectInBackground), in the
@@ -519,6 +546,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
 		consumerNames:               opts.consumerNames,
+		opts:                        opts,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()

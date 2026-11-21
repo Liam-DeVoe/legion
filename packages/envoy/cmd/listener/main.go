@@ -641,7 +641,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		// One read and no confirming second one, unlike durableProbe's: the endpoint reports the
 		// fault the moment a request finds it, and a request landing in a rebuild's own gap simply
 		// answers 503 until the next one.
-		if durableUnbound(consumerInfo, d.client) {
+		if durableUnbound(consumerInfo, d.client, d.consumer) {
 			writeDependencyHealth(w, "durable consumer", errDurableUnbound, true)
 			return
 		}
