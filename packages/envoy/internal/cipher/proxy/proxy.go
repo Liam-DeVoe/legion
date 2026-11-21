@@ -914,9 +914,11 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 		},
 		ErrorHandler: s.badGateway(host, r.URL.Path),
 	}
-	// The service's answer, which the proxy carries and does not write (record).
+	// The service's answer, which the proxy carries and does not write (record). A transport
+	// error the ErrorHandler answers says whether the request may have reached the service
+	// (leaving).
 	answerOf(w).carry()
-	proxy.ServeHTTP(w, r)
+	proxy.ServeHTTP(w, leaving(w, r))
 }
 
 // hijack takes the client's connection over from the outer server, with whatever the client
