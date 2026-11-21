@@ -2296,6 +2296,48 @@
       "production": "github.com/sjawhar/envoy/internal/redact.Answer: its body and its request's credentials sit behind pointers fmt prints as addresses"
     },
     {
+      "id": "answer-decode-embedded",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestDecodeHoldsABoxPromotedFromAnEmbeddedUnexportedStruct",
+      "production": "redact Answer.Decode: a box encoding/json promotes from an embedded unexported struct holds the request's record (decoded)",
+      "function": "github.com/sjawhar/envoy/internal/redact.decoded",
+      "capture": "redact.answer-embedded/value",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "f.IsExported() || f.Anonymous",
+        "replacement": "f.IsExported()"
+      }
+    },
+    {
+      "id": "answer-decode-interface",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestDecodeHoldsABoxBehindAnInterfaceTheCallerSet",
+      "production": "redact Answer.Decode: a box behind an interface value the caller set to a pointer holds the request's record (holdsBox, recordBoxes)",
+      "function": "github.com/sjawhar/envoy/internal/redact.holdsBox",
+      "capture": "redact.answer-interface",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "\tcase reflect.Interface:\n\t\treturn true\n",
+        "replacement": ""
+      }
+    },
+    {
+      "id": "answer-decode-whole-behind-pointers",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestAnAnswerRefusesAWholeBodyDestinationBehindPointers",
+      "production": "redact Answer.Decode: a whole-body destination behind pointers is refused (whole)",
+      "function": "github.com/sjawhar/envoy/internal/redact.whole",
+      "capture": "redact.answer-whole-behind-pointers",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "for t.Kind() == reflect.Pointer {\n\t\tt = t.Elem()\n\t}\n",
+        "replacement": ""
+      }
+    },
+    {
       "id": "listener-build-unsubscribe",
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/envoy",
@@ -7122,6 +7164,21 @@
       "site": "mcpbridge HTTPServer.Start: the server's endpoint URL printed raw, and quoted again by net/http, in a failed POST's error",
       "source": "the review of #4368 at c82c3a0d9f, finding 5",
       "guard": "mcpbridge-endpoint-url-unreachable"
+    },
+    {
+      "site": "Answer.Decode skips a box promoted from an embedded unexported struct",
+      "source": "round 5's deep review (H1)",
+      "guard": "answer-decode-embedded"
+    },
+    {
+      "site": "Answer.Decode skips a box behind an interface value the caller set to a pointer",
+      "source": "round 5's code-quality review (finding 7), decided by encoding/json's indirect",
+      "guard": "answer-decode-interface"
+    },
+    {
+      "site": "Answer.Decode fills a **json.RawMessage or a **any with the body whole",
+      "source": "the review of #4368 at c82c3a0d9f, finding 7",
+      "guard": "answer-decode-whole-behind-pointers"
     }
   ]
 }

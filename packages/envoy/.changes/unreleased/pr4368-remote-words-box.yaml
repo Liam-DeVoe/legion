@@ -12,7 +12,10 @@ body: |-
   storage, every holder, every reflection site, every whole use of an x/oauth2 or openid-client
   error, every call of those libraries outside the boundary (one through an interface, a type
   parameter or a library HTTP client among them) and every field the boundary sets, failing on
-  each one it cannot classify.
+  each one it cannot classify. `redact.Answer.Decode` holds every box encoding/json fills with the
+  record of the answer's request - one promoted from an embedded struct of an unexported type, and
+  one behind an interface value the caller set to a pointer, among them - and refuses a
+  destination that would take the body whole behind any number of pointers.
 time: 2026-11-18T10:48:14Z
 custom:
     Issue: pr4368

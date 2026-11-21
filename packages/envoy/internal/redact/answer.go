@@ -195,18 +195,19 @@ func ContainsFold(body []byte, phrase string) bool {
 // RemoteText it decodes, at any depth of v, with the record of the answer's requests (Carried):
 // a field another party wrote prints with the request's credentials redacted, as Words prints the
 // body, and compares as it came. A destination that would take the body whole - a string, a byte
-// slice, a json.RawMessage or an interface value - is refused, since its text would leave the
-// answer as plain text. Its error is fixed text: it names the destination's type and, where it
-// can, the member that did not decode and the JSON kind it held, and never a value of the answer,
-// since encoding/json's errors, and the errors of the types it decodes into (time.Time's among
-// them), quote the value they could not read.
+// slice, a json.RawMessage or an interface value, behind however many pointers - is refused, since
+// its text would leave the answer as plain text. Its error is fixed text: it names the
+// destination's type and, where it can, the member that did not decode and the JSON kind it held,
+// and never a value of the answer, since encoding/json's errors, and the errors of the types it
+// decodes into (time.Time's among them), quote the value they could not read; it unwraps to
+// nothing, so no caller reaches the decoder's own error.
 func (a Answer) Decode(v any) error {
 	rv := reflect.ValueOf(v)
 	if !rv.IsValid() || rv.Kind() != reflect.Pointer || rv.IsNil() {
-		return &decodeError{fmt.Sprintf("redact: an answer decodes into a non-nil pointer, not %T", v)}
+		return fmt.Errorf("redact: an answer decodes into a non-nil pointer, not %T", v)
 	}
 	if whole(rv.Type().Elem()) {
-		return &decodeError{fmt.Sprintf("redact: an answer does not decode into %T, which would hold the body whole", v)}
+		return fmt.Errorf("redact: an answer does not decode into %T, which would hold the body whole", v)
 	}
 	data := a.bytes()
 	err := json.Unmarshal(data, v)
@@ -214,14 +215,18 @@ func (a Answer) Decode(v any) error {
 		recordBoxes(rv, a.a.carried())
 	}
 	if err != nil {
-		return &decodeError{decodeText(err, data, rv.Type().Elem())}
+		return errors.New(decodeText(err, data, rv.Type().Elem()))
 	}
 	return nil
 }
 
 // whole reports whether a value of t takes a JSON body whole as text: a string, a byte slice
-// (json.RawMessage among them) or an interface value.
+// (json.RawMessage among them) or an interface value, or a pointer to one, which encoding/json
+// allocates and fills.
 func whole(t reflect.Type) bool {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
 	switch t.Kind() {
 	case reflect.String, reflect.Interface:
 		return true
@@ -230,12 +235,6 @@ func whole(t reflect.Type) bool {
 	}
 	return false
 }
-
-// decodeError is Decode's error: fixed text that quotes no value of the answer. It unwraps to
-// nothing, so no caller reaches the decoder's own error, which quotes one.
-type decodeError struct{ text string }
-
-func (e *decodeError) Error() string { return e.text }
 
 // decodeText is the fixed text of err, encoding/json's error decoding data into a value of type
 // t: the destination's type, the member that did not decode and, where encoding/json names it,
@@ -250,8 +249,8 @@ func decodeText(err error, data []byte, t reflect.Type) string {
 		kind, _, _ := strings.Cut(typed.Value, " ")
 		return fmt.Sprintf("the answer's %s is a JSON %s where %s holds %s", member(typed.Field), kind, typeName(t), typeName(typed.Type))
 	}
-	if name := failingMember(data, t); name != "" {
-		return fmt.Sprintf("the answer's %q does not decode where %s holds %s", name, typeName(t), typeName(fieldType(t, name)))
+	if name, field := failingMember(data, t); name != "" {
+		return fmt.Sprintf("the answer's %q does not decode where %s holds %s", name, typeName(t), typeName(field))
 	}
 	return fmt.Sprintf("the answer does not decode into %s", typeName(t))
 }
@@ -283,19 +282,20 @@ func member(field string) string {
 }
 
 // failingMember is the JSON name of the first member of data, an object decoded into the struct
-// type t, whose value does not decode into its field's type, or "": what encoding/json does not
-// name for an error of a type's own UnmarshalJSON or UnmarshalText (time.Time's, a RemoteNumber's).
-// The name is t's own, from its field's json tag, never the answer's.
-func failingMember(data []byte, t reflect.Type) string {
+// type t, whose value does not decode into its field's type, and that field's type, or "": what
+// encoding/json does not name for an error of a type's own UnmarshalJSON or UnmarshalText
+// (time.Time's, a RemoteNumber's). The name is t's own, from its field's json tag, never the
+// answer's.
+func failingMember(data []byte, t reflect.Type) (string, reflect.Type) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t.Kind() != reflect.Struct {
-		return ""
+		return "", nil
 	}
 	var members map[string]json.RawMessage
 	if json.Unmarshal(data, &members) != nil {
-		return ""
+		return "", nil
 	}
 	for i := range t.NumField() {
 		f := t.Field(i)
@@ -305,10 +305,10 @@ func failingMember(data []byte, t reflect.Type) string {
 			continue
 		}
 		if json.Unmarshal(raw, reflect.New(f.Type).Interface()) != nil {
-			return name
+			return name, f.Type
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // jsonName is the member name encoding/json decodes field f from, "" for a field it skips.
@@ -326,27 +326,21 @@ func jsonName(f reflect.StructField) string {
 	return tag
 }
 
-// fieldType is the type of t's field whose JSON name is name.
-func fieldType(t reflect.Type, name string) reflect.Type {
-	for t.Kind() == reflect.Pointer {
-		t = t.Elem()
-	}
-	for i := range t.NumField() {
-		if jsonName(t.Field(i)) == name {
-			return t.Field(i).Type
-		}
-	}
-	return nil
-}
-
 // remoteTextType is the box's type, which recordBoxes stops at.
 var remoteTextType = reflect.TypeFor[RemoteText]()
 
-// recordBoxes holds every RemoteText v reaches - through a pointer, a struct's exported field (an
-// embedded one too), a slice, an array, a map or an interface value - with carried redacted from
-// it (RemoteText.WithoutTokens). It reaches each box as a *RemoteText and hands it the record
-// through the box's own method: it reads no box's storage, and descends into no box. A map's
-// values are copied, recorded and set back, since a map value has no address.
+// decoded reports whether encoding/json decodes into field f of a struct: an exported field, or
+// an embedded one whatever its type's export, whose exported fields encoding/json promotes.
+func decoded(f reflect.StructField) bool { return f.IsExported() || f.Anonymous }
+
+// recordBoxes holds every RemoteText v reaches - through a pointer, a struct's field encoding/json
+// decodes (decoded: an exported one, or an embedded one of any type's export), a slice, an array,
+// a map, or an interface value the caller set to a non-nil pointer, which encoding/json decodes
+// into in place - with carried redacted from it (RemoteText.WithoutTokens). It reaches each box
+// as a *RemoteText and hands it the record through the box's own method: it reads no box's
+// storage, and descends into no box. A map's values are copied, recorded and set back, since a
+// map value has no address; an interface value that holds no pointer, as every one encoding/json
+// fills itself does, holds no box and is passed by.
 func recordBoxes(v reflect.Value, carried []string) {
 	if len(carried) == 0 {
 		return
@@ -357,9 +351,7 @@ func recordBoxes(v reflect.Value, carried []string) {
 			recordBoxes(v.Elem(), carried)
 		}
 	case reflect.Interface:
-		// encoding/json fills an interface value with a map, a slice or a scalar, never a box; it
-		// decodes into a box behind one only where the caller set a pointer there first.
-		if !v.IsNil() && v.Elem().Kind() == reflect.Pointer {
+		if pointsAt(v) {
 			recordBoxes(v.Elem(), carried)
 		}
 	case reflect.Struct:
@@ -371,7 +363,7 @@ func recordBoxes(v reflect.Value, carried []string) {
 			return
 		}
 		for i := range v.NumField() {
-			if f := v.Type().Field(i); f.IsExported() && holdsBox(f.Type, map[reflect.Type]bool{}) {
+			if f := v.Type().Field(i); decoded(f) && holdsBox(f.Type, map[reflect.Type]bool{}) {
 				recordBoxes(v.Field(i), carried)
 			}
 		}
@@ -387,17 +379,27 @@ func recordBoxes(v reflect.Value, carried []string) {
 			return
 		}
 		for _, key := range v.MapKeys() {
+			item := v.MapIndex(key)
+			if item.Kind() == reflect.Interface && !pointsAt(item) {
+				continue
+			}
 			value := reflect.New(v.Type().Elem()).Elem()
-			value.Set(v.MapIndex(key))
+			value.Set(item)
 			recordBoxes(value, carried)
 			v.SetMapIndex(key, value)
 		}
 	}
 }
 
+// pointsAt reports whether v, an interface value, holds a non-nil pointer: the one kind of value
+// in an interface that encoding/json decodes into rather than replaces.
+func pointsAt(v reflect.Value) bool {
+	return !v.IsNil() && v.Elem().Kind() == reflect.Pointer && !v.Elem().IsNil()
+}
+
 // holdsBox reports whether a value of t can hold a RemoteText encoding/json decoded: directly, or
-// through a pointer, a slice, an array, a map or a struct's exported field. An interface value is
-// no such holder, since encoding/json fills one with a map, a slice or a scalar (recordBoxes).
+// through a pointer, a slice, an array, a map, a struct's field encoding/json decodes (decoded),
+// or an interface value, which can hold a pointer the caller set to one (recordBoxes).
 func holdsBox(t reflect.Type, seen map[reflect.Type]bool) bool {
 	if t == remoteTextType {
 		return true
@@ -407,11 +409,13 @@ func holdsBox(t reflect.Type, seen map[reflect.Type]bool) bool {
 	}
 	seen[t] = true
 	switch t.Kind() {
+	case reflect.Interface:
+		return true
 	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
 		return holdsBox(t.Elem(), seen)
 	case reflect.Struct:
 		for i := range t.NumField() {
-			if t.Field(i).IsExported() && holdsBox(t.Field(i).Type, seen) {
+			if decoded(t.Field(i)) && holdsBox(t.Field(i).Type, seen) {
 				return true
 			}
 		}
