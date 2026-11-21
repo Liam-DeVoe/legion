@@ -1,5 +1,5 @@
 import { isIdPrefix } from "@legion/contracts";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { IDENTITY_HEIGHT_PROPERTY } from "../web/src/features/issue-page/identity-block";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
@@ -31,7 +31,14 @@ import {
   rowOf,
   unfoldEveryBranch,
 } from "./issue-page-g";
-import { focusedNodeId, focusInside, onScreen, openPreset } from "./issue-page-i";
+import {
+  focusedNodeId,
+  focusInside,
+  onScreen,
+  openPreset,
+  outlineRows,
+  tabStopRow,
+} from "./issue-page-i";
 import {
   computedBorderWidth,
   controlLook,
@@ -46,7 +53,9 @@ import {
   reviewFlag,
   seedDecisionsLayout,
 } from "./issue-page-q";
+import { openSettledView, verificationBody } from "./issue-page-v";
 import { expect, test } from "./test";
+import { expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
  * The browser rows of the new issue page that read one of its views:
@@ -55,7 +64,9 @@ import { expect, test } from "./test";
  * foot - read on the real stack. Each row turns the new page on for its reader through D's
  * `phase`, seeds what it reads with the seeds of `e2e/issue-layout-seed.ts` or the Decisions
  * view's own `e2e/issue-page-q.ts`, and reads the page through D's `e2e/issue-page.ts`, G's
- * `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and the view's own `e2e/issue-page-q.ts`.
+ * `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and the view's own `e2e/issue-page-q.ts`. The
+ * row of the address a view draws no row for reads the Verification view too, through V's
+ * `e2e/issue-page-v.ts`.
  *
  * Seven rows, each under the title of the check it answers:
  *
@@ -73,9 +84,11 @@ import { expect, test } from "./test";
  *   six-line cut": G's layout and group readings on every row of the view, each statement named
  *   within 32 characters, the cut of a long answered question, and the view's width.
  * - **the address the view draws no row for**, one row: "an address the view draws no row for
- *   draws the outline's line for it in the view's place, with the focus on that line": a comment
- *   the issue holds none of, a block no node carries and a comment id written short that names
- *   none, each named on the view's address, draw part I's line for it where the view was.
+ *   draws the outline's line for it in the view's place, with the focus on that line": under
+ *   Verification a comment of the issue, which the view draws as a row of its own, and a comment
+ *   the issue holds none of; under Decisions a comment the issue holds none of, a block no node
+ *   carries and a comment id written short that names none. Each is named on the view's
+ *   address, and each that names nothing draws part I's line for it where the view was.
  *
  * Each row's first reading waits out the page's load under a message of its own, before G's
  * `expectIssuePageDrawn`: on a build whose slot draws nothing, every row fails on what the view
@@ -858,18 +871,29 @@ const FALLBACK_LINES = {
   }),
 } as const;
 
-// An address on the Decisions view that names a node its tree draws no row for: the view tells
-// the stage so, and the stage draws part I's outline in the view's place, which draws part I's
-// line for the address, with the focus on that line's heading and never left on the page's
-// body. Three such addresses, each opened by a load of its own: a comment id of the right shape
-// that no comment of the issue has, a `#b-` fragment naming a block no node carries, and that
-// comment id written short. The view is read first at its own address, so each line is drawn
-// where the view drew its rows; the gone comment comes next, so a stage that keeps the view
-// fails on the words of that comment's line. Each project at its own width: `chromium` the
-// desktop's and `iphone` the phone's.
-// SLOW(>=2s): the whole issue seeded with three more writes, then four loads, two of them
-// waited on until the item's read, which the page asks again before it says the item is
-// missing, has settled.
+// An address on a view that names a node beside it: the view tells the stage whether it draws a
+// row of the node, and where it draws none the stage draws part I's outline in the view's place,
+// which lands on the node, or draws part I's line for an address that names nothing, with the
+// focus on that line's heading and never left on the page's body.
+//
+// The Verification view first. A comment of the issue is of no kind the view draws, and the view
+// keeps it as the address's own node and draws it as a row of its own, in the view and not in the
+// outline, with the focus on the view's tab stop, which is the issue's row by the view's own rule.
+// A comment id of the right shape that no comment of the issue has draws part I's line. A node
+// the view keeps but draws no row for - one the tree places under a statement that is no check,
+// such as a plan task that serves it, since the view draws a statement's checks alone - answers
+// false as that gone comment does, and the outline lands on it.
+//
+// Then the Decisions view, with three such addresses, each opened by a load of its own: the gone
+// comment, a `#b-` fragment naming a block no node carries, and that comment id written short.
+//
+// Each view is read first at its own address, so each line is drawn where the view drew its
+// rows; its gone comment comes next, so a stage that keeps the view fails on the words of that
+// comment's line, and the Verification view comes first, so such a stage fails there. Each
+// project at its own width: `chromium` the desktop's and `iphone` the phone's.
+// SLOW(>=2s): the whole issue seeded with three more writes, then seven loads: one waited on
+// until the view settles, one until the page goes quiet, and three until the item's read, which
+// the page asks again before it says the item is missing, has settled.
 test("an address the view draws no row for draws the outline's line for it in the view's place, with the focus on that line @phone", async ({
   browser,
 }) => {
@@ -892,8 +916,37 @@ test("an address the view draws no row for draws the outline's line for it in th
     ).toEqual({ short: true, whole: false });
 
     await page.setViewportSize(size);
+    const verification = presetPath(seeded.key, "verification");
+    // The Verification view's first reading: it draws each statement with the check that serves
+    // it at its own address.
+    await openSettledView(page, seeded);
+    await expectIssuePageDrawn(page);
+    const thread = seeded.comments.threads[0] ?? "";
+    const traffic = watchApiRequests(page);
+    await gotoIssue(page, `${verification}?comment=${thread}`);
+    await expectLoadSettled(traffic);
+    await expect(
+      verificationBody(page).locator(`[data-verification-other][data-node-id="${thread}"]`),
+      `a comment of the issue draws no row of its own in the Verification view ${at}`
+    ).toHaveCount(1);
+    await expect(
+      outlineRows(page),
+      `a comment of the issue draws the outline in the Verification view's place ${at}`
+    ).toHaveCount(0);
+    await expect(
+      tabStopRow(page),
+      `a comment of the issue leaves the focus off the Verification view's tab stop, on the page's body or elsewhere ${at}`
+    ).toBeFocused();
+    await gotoIssue(page, `${verification}?comment=${GONE_COMMENT}`);
+    await expectFallbackLine(
+      page,
+      FALLBACK_LINES.comment(seeded.key),
+      verificationBody(page),
+      `a gone comment under Verification ${at}`
+    );
+
     await openPreset(page, seeded.key, "decisions");
-    // The row's first reading: the view draws its rows at its own address.
+    // The Decisions view's first reading: it draws its rows at its own address.
     await expect
       .poll(() => decisionsBody(page).locator("[data-node-row]").count(), {
         message: `the Decisions view draws no row ${at}`,
@@ -903,28 +956,36 @@ test("an address the view draws no row for draws the outline's line for it in th
 
     const view = presetPath(seeded.key, "decisions");
     await gotoIssue(page, `${view}?comment=${GONE_COMMENT}`);
-    await expectFallbackLine(page, FALLBACK_LINES.comment(seeded.key), `a gone comment ${at}`);
+    await expectFallbackLine(
+      page,
+      FALLBACK_LINES.comment(seeded.key),
+      decisionsBody(page),
+      `a gone comment ${at}`
+    );
     await gotoIssue(page, `${view}#b-${NO_BLOCK}`);
     await expectFallbackLine(
       page,
       FALLBACK_LINES.block(seeded.key),
+      decisionsBody(page),
       `a block no node carries ${at}`
     );
     await gotoIssue(page, `${view}?comment=${SHORT_GONE_COMMENT}`);
     await expectFallbackLine(
       page,
       FALLBACK_LINES.comment(seeded.key),
+      decisionsBody(page),
       `a comment id written short that names none ${at}`
     );
   });
 });
 
-/** The page draws part I's line `words` in the Decisions view's place for the address it has
- *  just loaded, `what`: its heading and its line, with the focus on the heading, and none of
- *  the view's list beside it. */
+/** The page draws part I's line `words` in the place of the view whose body is `view` for the
+ *  address it has just loaded, `what`: its heading and its line, with the focus on the heading,
+ *  and none of the view beside it. */
 async function expectFallbackLine(
   page: Page,
   words: { readonly heading: string; readonly line: string },
+  view: Locator,
   what: string
 ): Promise<void> {
   const named = { exact: true, name: words.heading } as const;
@@ -942,5 +1003,5 @@ async function expectFallbackLine(
     heading,
     `${what} leaves the focus off "${words.heading}", on the page's body or elsewhere`
   ).toBeFocused();
-  await expect(decisionsBody(page), `${what} draws the view's list beside the line`).toHaveCount(0);
+  await expect(view, `${what} draws the view beside the line`).toHaveCount(0);
 }
