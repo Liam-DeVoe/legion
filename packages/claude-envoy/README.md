@@ -546,9 +546,11 @@ new id's token before the new id's relay subject is subscribed. With `ENVOY_INBO
 listener's relay socket, `<ENVOY_URL>/v1/sessions/<id>/relay`, over HTTPS alone, with the session's
 own broker token, rather than over NATS, and a `/clear` or `/new` opens the socket again for the
 new id; it is refused beside `ENVOY_NATS_URL` or `envoy.natsUrls`, naming both, with a bearer for
-the listener, with no broker route, and for a process that names no session; with it, a listener
-at a plain http address of another machine turns Envoy off as a whole, its tools included (the
-token would cross the network unencrypted; this machine's own listener may be plain http). The
+the listener, with no broker route, and for a process that names no session. With the setting, a
+listener at a plain http address of another machine turns Envoy off as a whole, its tools
+included, a NATS server named or not (the token would cross the network unencrypted; a conflict
+with a NATS server is named first; this machine's own listener may be plain http, and a session
+not set to `listener` keeps plain http). The
 socket carries no agent stream, so neither live view
 takes its control subject and the Agents page shows nothing of the session's turns, which the
 start notice says. The `open-asks` hook

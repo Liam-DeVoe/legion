@@ -434,9 +434,10 @@ takes inbound messages through the listener's relay socket, `<ENVOY_URL>/v1/sess
 over HTTPS alone, with the session's own broker token, rather than over NATS: for an agent on a
 machine with no NATS connection to the deployment. It is refused beside `ENVOY_NATS_URL` or
 `envoy.natsUrls`, naming both, with a bearer for the listener, with no broker route, and for a
-process that names no session; with it, a listener at a plain http address of another machine
-turns Envoy off as a whole, its tools included (the token would cross the network unencrypted;
-this machine's own listener may be plain http); the
+process that names no session. With the setting, a listener at a plain http address of another
+machine turns Envoy off as a whole, its tools included, a NATS server named or not (the token
+would cross the network unencrypted; a conflict with a NATS server is named first; this machine's
+own listener may be plain http, and a session not set to `listener` keeps plain http); the
 socket carries no live view, so the session opens none and the start notice says so (the
 `@legion/envoy-client` README, "The listener's relay socket"). `DISPATCH_TOKEN_FILE` (a path whose trimmed contents are the token — how the
 Legion daemon delivers it to a pane) never falls back when unreadable. Omitting

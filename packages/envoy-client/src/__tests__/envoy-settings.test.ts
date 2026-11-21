@@ -820,8 +820,7 @@ describe("which inbound a session takes", () => {
     // Over plain http to another machine the session's token, on the socket and on every call of
     // its tools, crosses the network unencrypted, so Envoy is off as a whole: no credential is
     // left for a tool to send. A session not set to listener (a pod's, inside its cluster) keeps
-    // it, and so does one whose listener choice conflicts with a NATS server it names: that
-    // conflict is what it is told.
+    // it.
     expect(
       resolve({ ...pod(), ENVOY_INBOUND: "listener", ENVOY_URL: "http://envoy.example:9020" })
     ).toEqual({
@@ -843,21 +842,50 @@ describe("which inbound a session takes", () => {
       enabled: nats.enabled,
       credential: nats.enabled ? nats.credential?.scheme : undefined,
     }).toEqual({ enabled: true, credential: "DPoP" });
-    const conflict = resolve({
+  });
+
+  test("ENVOY_INBOUND=listener beside a NATS server, with a plain http listener off this machine, turns Envoy off naming the conflict first, for every caller, before any token command", () => {
+    // The conflict alone turns off the inbound and would leave the tools sending the token in the
+    // clear, so plain http to another machine turns Envoy off here too, the conflict named first;
+    // with an https listener the conflict is what the session is told (the row above on
+    // `ENVOY_NATS_URL`), and a session not set to listener keeps plain http.
+    const env = {
       ...pod(),
       ENVOY_INBOUND: "listener",
-      ENVOY_URL: "http://envoy.example:9020",
       ENVOY_NATS_URL: "nats://nats.internal.example:4222",
-    });
-    expect({
-      enabled: conflict.enabled,
-      inbound: conflict.enabled ? conflict.inbound : undefined,
-    }).toEqual({
-      enabled: true,
-      inbound: {
-        off: "ENVOY_INBOUND is listener, and ENVOY_NATS_URL names NATS servers: set one of the two",
+      ENVOY_URL: "http://envoy.example:9020",
+    };
+    const off = {
+      enabled: false as const,
+      notice: null,
+      error:
+        "ENVOY_INBOUND is listener, and ENVOY_NATS_URL names NATS servers: set one of the two. And the listener's address is plain http to envoy.example, which is not this machine, so the session's token would cross the network unencrypted; use an https address",
+    };
+    expect(resolve(env)).toEqual(off);
+    expect(resolve(env, { nats: false })).toEqual(off);
+    const { ENVOY_INBOUND: _listener, ...notListener } = env;
+    expect(resolve(notListener).enabled).toBe(true);
+
+    // The file's own NATS servers and `!` token: the command does not run.
+    const runs = path.join(tempDir(), "runs");
+    const config = configFrom({
+      envoy: {
+        enabled: true,
+        url: "http://envoy.example:9020",
+        inbound: "listener",
+        natsUrls: ["nats://nats.internal.example:4222"],
+        token: `!echo run >> ${runs}; echo ${FILE_TOKEN}`,
       },
     });
+    const fromFile = envoySettings({ PATH: process.env.PATH }, config, {
+      nats: false,
+      session: "ses_a",
+    });
+    expect(fromFile.enabled).toBe(false);
+    expect("error" in fromFile ? fromFile.error : undefined).toMatch(
+      /^envoy\.inbound in \S+ is listener, and envoy\.natsUrls in \S+ names NATS servers: set one of the two\. And the listener's address is plain http to envoy\.example/
+    );
+    expect(existsSync(runs)).toBe(false);
   });
 
   test("ENVOY_INBOUND=listener with a plain http listener off this machine turns Envoy off for a caller that opens no inbound connection too", () => {

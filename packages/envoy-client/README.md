@@ -296,9 +296,10 @@ is open: a connection of the shape a session plugin holds over NATS (`InboundCon
 `subscribe`, `publish`, `flush`, `isClosed`, `drain`, `close`, `status` and `closed`), so the
 plugin's consumer delivery runs on either. Each open is `GET <listener>/v1/sessions/<session>/relay`,
 a WebSocket of subprotocol `envoy-relay.v1`, with a fresh proof of the session's broker token
-(`Authorization: DPoP`, `DPoP`, `htm` GET, `htu` the socket's https URL). With the setting and no
-NATS server named, a listener at a plain http address of another machine turns Envoy off as a
-whole, its tools included, since the token would cross the network unencrypted; this machine's own
+(`Authorization: DPoP`, `DPoP`, `htm` GET, `htu` the socket's https URL). With the setting, a NATS
+server named or not, a listener at a plain http address of another machine turns Envoy off as a
+whole, its tools included, since the token would cross the network unencrypted (a conflict with a
+NATS server is named first); this machine's own
 listener may be plain http, and a session not set to `listener` (a pod inside its cluster, say)
 keeps a plain http listener. The frames are JSON: the
 session sends `sub` of its own relay subject, `unsub`, and `pub` of a relay receipt on a frame's

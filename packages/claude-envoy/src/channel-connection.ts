@@ -7,7 +7,6 @@
 // servers take theirs from here: Claude Code's (`./envoy-channel-server`) and Codex's
 // (`./codex/codex-server`).
 import type { RequestCredential } from "@legion/envoy-client/bearer"
-import { inboundUnavailable } from "@legion/envoy-client/consumer-delivery"
 import { LoggableError } from "@legion/envoy-client/errors"
 import { connectListenerRelay, type RelayOutage } from "@legion/envoy-client/listener-relay"
 import {
@@ -280,13 +279,15 @@ export async function dialChannelInbound(
       url: listenerUrl,
       session,
       credential: inbound.relayCredential,
-      // No registration reports to this one, and the socket ends no outage
-      // (`../../envoy-client/src/listener-relay.ts`): the start that follows the open is what ends
-      // a refused trade for the session.
-      outage: inboundUnavailable(
-        (why) => warn(`this session's relay socket has no token: ${why}`),
-        () => undefined,
-      ),
+      // The socket's report until the session holds it (`reportOutagesTo`). The socket tries the
+      // trade again on its own, 1 s doubling to a minute; once one succeeds the socket opens, the
+      // session starts, and its first accepted registration tells it it receives again.
+      outage: {
+        refused: (why) =>
+          warn(
+            `this session's relay socket has no token: ${why}; the socket trades again on its own, 1 s doubling to a minute, and the session starts once one succeeds`,
+          ),
+      },
       log: (line) => warn(line),
     },
     signal,

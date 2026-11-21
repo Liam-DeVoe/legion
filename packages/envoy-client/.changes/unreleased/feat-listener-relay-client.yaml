@@ -6,10 +6,10 @@ body: |-
   `envoySettings`' `inbound` then carries `{ relaySetting, relayCredential }`, the session's broker
   credential, and the choice is refused, turning off inbound messages alone and naming why, beside
   a NATS server (`ENVOY_NATS_URL` or `envoy.natsUrls`, naming both), with a bearer for the listener,
-  with no broker route, for a caller that names no session, and for any other value; with no NATS
-  server named, a listener at a plain http address of another machine turns Envoy off as a whole,
-  its tools included (the token would cross the network unencrypted), while a session not set to
-  `listener` keeps a plain http listener. The
+  with no broker route, for a caller that names no session, and for any other value; with it, a NATS
+  server named or not, a listener at a plain http address of another machine turns Envoy off as a
+  whole, its tools included (the token would cross the network unencrypted; a conflict with a NATS
+  server is named first), while a session not set to `listener` keeps a plain http listener. The
   start
   notice says the socket carries no live view. `connectListenerRelay`
   (`@legion/envoy-client/listener-relay`) opens `<ENVOY_URL>/v1/sessions/<session>/relay`

@@ -480,28 +480,33 @@ export function envoySettings(
       : section.inbound === undefined
         ? undefined
         : { value: section.inbound, source: `envoy.inbound in ${config.path}` };
-  // The setting that names NATS servers for the session, which a `listener` choice beside it
-  // conflicts with (`listenerInbound`).
+  // The setting that names NATS servers for the session: what a `listener` choice beside it
+  // conflicts with (`listenerInbound`), and where a NATS session's servers come from.
   const natsSetting =
     namedNatsUrls.length > 0
       ? "ENVOY_NATS_URL"
       : (section.natsUrls ?? []).length > 0
         ? `envoy.natsUrls in ${config.path}`
         : undefined;
-  // A session set to take its messages through the socket, with no NATS server named, is on a
-  // machine outside the deployment: over plain http to another machine its token, its proofs and
-  // every body would cross networks unencrypted, on the socket and on every call of its tools, so
-  // Envoy is off as a whole, for a caller that opens no inbound connection (`nats: false`: a send
-  // command, the `dispatch` command, a notice publisher) as much as for the session, and before
-  // any credential is resolved, so a file's `!` token command does not run for it. A `listener`
-  // choice beside a NATS server is that conflict, named below, and Envoy's tools stay as for any
-  // session not set to `listener`, which keeps a plain http listener: a pod reaches its listener
-  // so inside its cluster's network, with a token each request binds to a fresh proof.
-  if (choice?.value === "listener" && natsSetting === undefined) {
+  // A session set to take its messages through the socket is on a machine outside the
+  // deployment: over plain http to another machine its token, its proofs and every body would
+  // cross networks unencrypted, on the socket and on every call of its tools, so Envoy is off as
+  // a whole, for a caller that opens no inbound connection (`nats: false`: a send command, the
+  // `dispatch` command, a notice publisher) as much as for the session, and before any credential
+  // is resolved, so a file's `!` token command does not run for it. A NATS server named beside
+  // it is a conflict that would turn off the inbound alone and leave the tools sending the token
+  // in the clear, so with plain http Envoy is off too, the conflict named first: an operator who
+  // gave a pod `listener` by mistake drops it. A session not set to `listener` keeps a plain http
+  // listener: a pod reaches its listener so inside its cluster's network, with a token each
+  // request binds to a fresh proof.
+  if (choice?.value === "listener") {
     const host = plainHttpOffMachine(url);
     if (host !== undefined) {
+      const plainHttp = `the listener's address is plain http to ${host}, which is not this machine, so the session's token would cross the network unencrypted; use an https address`;
       return offWithError(
-        `${choice.source} is listener, but the listener's address is plain http to ${host}, which is not this machine, so the session's token would cross the network unencrypted; use an https address`
+        natsSetting === undefined
+          ? `${choice.source} is listener, but ${plainHttp}`
+          : `${choice.source} is listener, and ${natsSetting} names NATS servers: set one of the two. And ${plainHttp}`
       );
     }
   }
@@ -549,13 +554,12 @@ export function envoySettings(
       credential ?? { noBrokerRoute },
       options.session
     );
-  } else if (natsUrls.length === 0) inbound = { off: NO_NATS_SERVER };
+  } else if (natsSetting === undefined) inbound = { off: NO_NATS_SERVER };
   else {
     try {
       inbound = {
         natsUrls,
-        natsServersSetting:
-          namedNatsUrls.length > 0 ? "ENVOY_NATS_URL" : `envoy.natsUrls in ${config.path}`,
+        natsServersSetting: natsSetting,
         natsCredential: natsCredential(env, section, namedNatsUrls, config.path, options.session),
       };
     } catch (error) {

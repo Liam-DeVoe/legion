@@ -108,7 +108,7 @@ const UPGRADE_UNAVAILABLE = 503;
 /** Where Bun's `error` event names the status an upgrade was answered with. */
 const UPGRADE_STATUS = /Expected 101 status code: (\d{3})\b/;
 /** The `err` codes that refuse one subscription and leave the socket open: a subject the socket
- *  does not carry, and a subscription past the four a socket holds. */
+ *  does not carry, and a subscription past the one a socket holds. */
 const SUBSCRIPTION_REFUSALS: Readonly<Record<string, true>> = {
   subject_not_granted: true,
   subscription_limit: true,
