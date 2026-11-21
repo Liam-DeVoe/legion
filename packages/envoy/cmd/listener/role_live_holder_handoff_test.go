@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"testing"
 )
@@ -38,4 +39,38 @@ func TestAMarkedSendToAFinishedRoleThatAnotherSessionHoldsLiveIsKeptForThatHolde
 			role, agent, holder, got.status, got.raw)
 	}
 	waitForKeptRoleMessage(t, client, role, got.EventID)
+}
+
+// The hand-off waits only on a live holder: a session whose claim of the finished role stands
+// while its own registration is gone reads Lapsed (roles.ResolveHolder), and a lapsed holder is
+// not answering, so the marked send is handed to the stopped session's daemon exactly as for a
+// role no one holds - 200 to that session, one hand-off on the role token, nothing kept.
+func TestAMarkedSendToAFinishedRoleWhoseOtherHolderLapsedIsHandedToItsDaemon(t *testing.T) {
+	rig := newKnownSessionRig(t)
+	const principal = "system:serviceaccount:dispatch:example-dispatch"
+	useDispatchPrincipal(rig.deps, principal)
+	const agent, holder = "ses_finished_role_stopped_lapsed", "ses_finished_role_lapsed_holder"
+	finished := legionAgentEntry(agent, "INFRA-206", "reviewer")
+	finished.Finished = true
+	role := finished.RoleToken
+	withLegionAgent(t, rig.deps, finished)
+	rig.register(t, agent, nil)
+	rig.stop(t, agent)
+	rig.record(t, agent)
+	rig.register(t, holder, nil)
+	claimRole(t, rig.deps, holder, role)
+	if err := rig.deps.sessions.Delete(context.Background(), holder); err != nil {
+		t.Fatalf("deregister %s: %v", holder, err)
+	}
+	client := rig.harness.client
+
+	got := sendMarkedByDispatch(t, rig, principal, agent, role, "what did the review find?")
+	if got.status != http.StatusOK || got.Recipient != agent || got.Kept {
+		t.Fatalf("a send marked with %s to its stopped session %s while %s's claim of the role has lapsed: status %d, body %s; want 200 handed off to %s, nothing kept",
+			role, agent, holder, got.status, got.raw, agent)
+	}
+	if count, _ := handoffs(t, client, agent); count != 1 {
+		t.Fatalf("the stream holds %d hand-offs for %s, want the one the marked send made: %s is not live", count, agent, holder)
+	}
+	assertNothingKept(t, client, role)
 }
