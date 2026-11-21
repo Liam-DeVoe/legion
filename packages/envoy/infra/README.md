@@ -4094,6 +4094,16 @@ No phase names a `$SYS` subject or the retired hold bucket `KV_envoy_maintenance
 `natsgrant.HoldProbe()` is the hold probe's grant: publish and subscribe `_ENVOY_HOLD_PROBE.none`,
 a subject nothing else uses, so the probe only shows whether the hub admits a connection.
 
+**The operator's clocks.** Every `envoy-infra hold` command signs the row it writes with its own
+machine's clock, and the broker refuses a row signed more than five minutes
+(`signedrecord.SignedAtSkew`) before or after its own clock, or more than five minutes before the
+latest row it has taken: 409 `clock_skew`, naming both times, with nothing stored. So the clocks
+of every machine that runs these commands must agree with each other, and with the broker's,
+within five minutes; two clocks each within five minutes of true time can be ten apart, so keep
+them synchronized (NTP), not merely close. A replica whose floor took a wrong time (a row stored
+before this check, say) reads every row after it as unknown; restarting that replica clears its
+floor, and it reads the row again.
+
 **Ending a hold after a failed command.** The hold's journal (`internal/holdrecord`) admits every
 command of a hold through the broker's records, one command at a time: while one command's intent
 is pending every other is refused, but its own pending intent admits it again, its rerun after a
@@ -4119,11 +4129,13 @@ The residual: on this path clients reach the restored and proven hub before its 
 
 **The hold row and records a broker replica has seen.** Each broker replica keeps a floor of the
 hold row (`holdRowFloor`, a `signedrecord.Floor`, in `internal/cipher/api`): the highest verified
-gen it has served or written, with the digest of that row's signed lines and the time the operator
-signed it. A row put back below that gen, or another row at it, reads as unknown, and so does a row
-at a higher gen signed more than five minutes before it (`signedrecord.SignedAtSkew`, the clock-skew
-allowance between operator processes): a row of an earlier history of the tables, put back after a
-database restore or an emptied log, whose gens started again below the old ones. No move is made
+gen it has served or written, with the digest of that row's signed lines and the latest time the
+operator signed a row it took. A row put back below that gen, or another row at it, reads as
+unknown, and so does a row at a higher gen signed more than five minutes before that time
+(`signedrecord.SignedAtSkew`, the clock-skew allowance between operator processes): a row of an
+earlier history of the tables, put back after a database restore or a log emptied or cut back,
+whose gens started again below the old ones. A move or restore is judged by the same time before
+it is written, so the broker never stores a row it would read as unknown. No move is made
 from such a row, no route's 409 carries it as the row it refused against (it answers `below_floor`
 instead), and a row a write's statement answers changed (a trigger, say) raises no floor, so the
 operator never signs a move from a row a hold has moved past (a prepare row put back mid-hold, say).
@@ -4134,9 +4146,13 @@ deletes, goes with the operator's signed delete kept beside the records in the s
 (`nats_hold_record_deletes`), so every replica reads it as deleted, refuses a write of its key
 again, and the abort's rerun passes on whichever replica serves it. A cohort gone with no delete
 that verifies, or with one signed over an earlier gen than a replica saw, reads as unknown on each
-replica that saw it. The residual: every floor is per replica and lasts as long as its process, so a
-replica that starts again, or one that has not served the row or a record since its newer gen,
-serves an older signed one put back as it would the genuine one; production runs two replicas. A
+replica that saw it, and so does a hold's journal gone: the cohort delete on a released row reads
+a missing journal as no journal only on a replica whose floor never saw that hold's done record.
+The residual: every floor is per replica and lasts as long as its process, so a replica that starts
+again, or one that has not served the row or a record since its newer gen, serves an older signed
+one put back as it would the genuine one; production runs two replicas. Records carry no history
+of their own, unlike the row's signed log: after a database restore, a replica that starts again
+reads the records as the restore left them, an older signed journal or a journal gone included. A
 floor both replicas share, kept outside the database, is the fix if that acceptance changes.
 
 **Restoring a lost hold row.** The route stores a restored row only at one above the highest gen
@@ -4167,13 +4183,19 @@ record, and which writes no entry. The next hold starts with `hold set` and a ne
 stores `released` only after a verified `released` entry; after a `prepare` entry only with that
 entry's hold id, since a `prepare` row refuses no client and a `released` row under another id, or
 none, would leave the prepared hold's cohort and journal where no command reaches them (409
-`hold_mismatch`); or after a `held` one whose hold's signed journal shows `hold release` or `hold
-abort` done. After any other `held` entry it refuses `bad_transition`, so no restore frees every
-client while a command of a hold may run. Whatever the log shows, it refuses a `released` row
-naming a hold whose signed journal shows `hold set` done and no end: that hold is held by its own
-record. The log and the floors are per database and per process: a database writer who empties
-the log lets `Bootstrap` write gen 1 again on a replica that has served no row since it started,
-sent by a client that has seen no row.
+`hold_mismatch`, whose `hold_id` field names the prepared hold, `RouteError.HoldID` in the
+operator's client: name it and restore again); or after a `held` one whose hold's signed journal
+shows `hold release` or `hold abort` done. After any other `held` entry it refuses
+`bad_transition`, so no restore frees every client while a command of a hold may run. Whatever the
+log shows, it refuses a `released` row, naming a hold or none, while any hold's signed journal
+shows `hold set` done and no end: that hold is held by its own record. It refuses a `released` row
+naming a hold whose journal does not verify (409 `below_floor`). A hold whose release or abort moved
+the row to `released` before its done entry was written (the log's latest entry is that hold's
+`released`) is not held by its record: restore `released` with its id, or with none. The log and
+the floors are per database and per process: a database writer who empties the log, or cuts it
+back to an earlier entry, lets `Bootstrap` or a restore at the gen it names write a row again on a
+replica that has served no row since it started, sent by a client that has seen no row; the
+journals stop a `released` row then only while a hold's journal shows it held.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the

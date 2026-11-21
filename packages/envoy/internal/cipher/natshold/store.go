@@ -36,12 +36,14 @@ var (
 )
 
 // Conflict is a write a store refused for what the tables held: Err is which refusal, Current the
-// hold row as the write read it (nil when there is none), and RestoreGen, for a restore's
-// ErrGenMismatch, the gen a restore must carry now.
+// hold row as the write read it (nil when there is none), RestoreGen, for a restore's
+// ErrGenMismatch, the gen a restore must carry now, and HoldID, for ErrHoldMismatch, the hold id the
+// hold row or log names, which the write must name instead.
 type Conflict struct {
 	Err        error
 	Current    *Row
 	RestoreGen uint64
+	HoldID     string
 }
 
 func (c *Conflict) Error() string { return c.Err.Error() }
@@ -242,7 +244,11 @@ func (s Store) Move(ctx context.Context, expectedGen uint64, next Row, accept fu
 			}
 		}
 		if err := moveRefusal(current, next.Phase, next.HoldID, used); err != nil {
-			return &Conflict{Err: err, Current: &current}
+			conflict := &Conflict{Err: err, Current: &current}
+			if errors.Is(err, ErrHoldMismatch) {
+				conflict.HoldID = current.HoldID
+			}
+			return conflict
 		}
 		moved, err = scanRow(tx.QueryRow(ctx, `with moved as (
 				update `+s.table("nats_hold")+` set gen = gen + 1, phase = $2, hold_id = $3, reason = $4, updated_at = now(),
@@ -282,11 +288,11 @@ type LogEntry struct {
 // the log's latest entry (nil for an empty log) before any gen is compared, and answers whether a
 // restore may judge by it at all: the route verifies its signature, since a database writer can
 // add or change a log row but not one that verifies. Admit sees it again once next's gen is the
-// one above it, with journalOf, which reads a hold's done record in the same transaction (nil when
-// there is none), and answers whether next may be restored after it.
+// one above it, with journals, every hold's done record as the same transaction reads it, and
+// answers whether next may be restored after it.
 type RestoreJudge struct {
 	Trust func(latest *LogEntry) error
-	Admit func(latest *LogEntry, journalOf func(holdID string) (*Record, error), next Row) error
+	Admit func(latest *LogEntry, journals []Record, next Row) error
 }
 
 // journalKey is the done record's one key, the hold's journal (internal/holdrecord's).
@@ -303,6 +309,33 @@ func (s Store) journalIn(ctx context.Context, tx pgx.Tx, holdID string) (*Record
 		return nil, nil
 	}
 	return nil, fmt.Errorf("natshold: read the journal of hold %s: %w", holdID, err)
+}
+
+// journalsIn reads every hold's done record inside tx, by hold id.
+func (s Store) journalsIn(ctx context.Context, tx pgx.Tx) ([]Record, error) {
+	rows, err := tx.Query(ctx, `select hold_id, `+recordColumns+` from `+s.table("nats_hold_records")+` where kind = $1 and key = $2 order by hold_id`,
+		KindDone, journalKey)
+	if err != nil {
+		return nil, fmt.Errorf("natshold: read the journals: %w", err)
+	}
+	journals, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Record, error) {
+		var holdID string
+		var value string
+		var gen int64
+		out := Record{Kind: KindDone}
+		if err := row.Scan(&holdID, &out.Key, &value, &gen, &out.WrittenAt, &out.Sig); err != nil {
+			return Record{}, err
+		}
+		if gen < 1 {
+			return Record{}, fmt.Errorf("natshold: a hold record's gen is %d", gen)
+		}
+		out.HoldID, out.Value, out.Gen = holdID, json.RawMessage(value), uint64(gen)
+		return out, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("natshold: read the journals: %w", err)
+	}
+	return journals, nil
 }
 
 // Restore writes the hold row when it is absent, the first row or one a database admin deleted,
@@ -346,8 +379,11 @@ func (s Store) Restore(ctx context.Context, next Row, judge RestoreJudge) (Row, 
 		if want != next.Gen {
 			return &Conflict{Err: ErrGenMismatch, RestoreGen: want}
 		}
-		journalOf := func(holdID string) (*Record, error) { return s.journalIn(ctx, tx, holdID) }
-		if err := judge.Admit(latest, journalOf, next); err != nil {
+		journals, err := s.journalsIn(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if err := judge.Admit(latest, journals, next); err != nil {
 			return err
 		}
 		restored, err = scanRow(tx.QueryRow(ctx, `with restored as (
@@ -401,7 +437,7 @@ func (s Store) heldBy(ctx context.Context, tx pgx.Tx, holdID, phase string) (Row
 	case !found:
 		return Row{}, &Conflict{Err: ErrHoldMismatch}
 	case current.HoldID != holdID || (phase != "" && current.Phase != phase):
-		return Row{}, &Conflict{Err: ErrHoldMismatch, Current: &current}
+		return Row{}, &Conflict{Err: ErrHoldMismatch, Current: &current, HoldID: current.HoldID}
 	}
 	return current, nil
 }
@@ -541,7 +577,7 @@ func (s Store) DeleteCohort(ctx context.Context, holdID, key string, gen uint64,
 				return err
 			}
 		default:
-			return &Conflict{Err: ErrHoldMismatch, Current: &current}
+			return &Conflict{Err: ErrHoldMismatch, Current: &current, HoldID: current.HoldID}
 		}
 		deleted, err := tx.Exec(ctx, `with deleted as (
 				delete from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2 and key = $3 and gen = $4

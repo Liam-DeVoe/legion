@@ -129,6 +129,36 @@ func prepareAbortRows(t *testing.T) {
 		}
 	})
 
+	t.Run("a released row whose journal a writer deleted, on the replica that wrote it, deletes no cohort", func(t *testing.T) {
+		// The broker wrote the hold's done record, so its record floor saw it; a database writer
+		// deletes it, and the hold reads as one with no journal. Fails while the cohort-delete route
+		// reads a missing journal without the record floor: the no-journal abort deletes the cohort.
+		r := newRig(t)
+		c := r.client(t)
+		const holdID = "h-journal-gone"
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, holdID, "prepare"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.StartJournal(ctx, holdID, holdrecord.WorkflowCutover, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.PutRecord(ctx, holdID, "cohort", "cohort", 0, cohort); err != nil {
+			t.Fatal(err)
+		}
+		restoredReleased(t, r, holdID)
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold_records where hold_id = $1 and kind = 'done'`, holdID); err != nil {
+			t.Fatal(err)
+		}
+		var refusal *holdrecord.RouteError
+		if err := c.DeleteCohort(ctx, holdID); !errors.Is(err, holdrecord.ErrUnknown) || !errors.As(err, &refusal) || refusal.Code != "below_floor" {
+			t.Errorf("DeleteCohort with the hold's journal deleted outside the routes answered %v, want 409 below_floor, read as ErrUnknown", err)
+		}
+		if n := cohorts(t, r, holdID); n != 1 {
+			t.Errorf("after the refused delete the table holds %d cohort records, want 1", n)
+		}
+	})
+
 	t.Run("a released row whose done record does not verify deletes no cohort", func(t *testing.T) {
 		// A database writer changed the journal's signature. Fails while the route reads a journal
 		// that does not verify as no journal: it deletes the cohort.
@@ -193,6 +223,10 @@ func prepareAbortRows(t *testing.T) {
 			var refusal *holdrecord.RouteError
 			if !errors.As(err, &refusal) || refusal.Status != 409 || refusal.Code != "hold_mismatch" {
 				t.Errorf("RestoreRow of released with hold id %q after hold A's prepare entry answered %+v, %v; want 409 hold_mismatch", other, got, err)
+			} else if refusal.HoldID != holdA {
+				// F6: the hold id to name is in the refusal's typed field, which the client exposes;
+				// it fails while the route carries it only in the message text.
+				t.Errorf("the 409 hold_mismatch carries hold id %q, want %q, the prepared hold's", refusal.HoldID, holdA)
 			}
 			var n int
 			if err := r.Pool.QueryRow(ctx, `select count(*) from nats_hold`).Scan(&n); err != nil || n != 0 {

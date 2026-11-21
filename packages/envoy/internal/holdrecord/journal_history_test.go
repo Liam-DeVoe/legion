@@ -150,3 +150,115 @@ func historyRows(t *testing.T) {
 		}
 	})
 }
+
+// restoreJournalRows are TestTheHoldJournal's rows of a released restore judged by every hold's
+// journal: refused while any journal that verifies shows hold set done and no end, refused while
+// the named hold's journal does not verify, and admitted for a hold whose release or abort moved
+// the row to released before its done entry was written.
+func restoreJournalRows(t *testing.T) {
+	ctx := context.Background()
+	stored := func(t *testing.T, r rig) (int64, string, string) {
+		t.Helper()
+		var gen int64
+		var phase, holdID string
+		if err := r.Pool.QueryRow(ctx, `select gen, phase, hold_id from nats_hold`).Scan(&gen, &phase, &holdID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatal(err)
+		}
+		return gen, phase, holdID
+	}
+	restoreGen := func(t *testing.T, c *holdrecord.Client) uint64 {
+		t.Helper()
+		var mismatch *holdrecord.RestoreGenError
+		if err := c.Bootstrap(ctx); !errors.As(err, &mismatch) {
+			t.Fatalf("Bootstrap with the row lost answered %v, want a RestoreGenError", err)
+		}
+		return mismatch.RestoreGen
+	}
+
+	t.Run("a released restore with no hold id is refused while any held hold's journal shows hold set done and no end", func(t *testing.T) {
+		// Claude's round-6 case: a replica restarted, a writer cut the log back to its first entry and
+		// deleted the row, and a fresh client restores released with no hold id while a command is
+		// pending. Fails while the route reads only the named hold's journal: released is stored at
+		// gen 2.
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-cut-to-1", holdrecord.WorkflowCutover, nil)
+		if _, err := c.Admit(ctx, "h-cut-to-1", cmd("create-bucket"), nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold_log where gen > 1`); err != nil {
+			t.Fatal(err)
+		}
+		r.Restart()
+		fresh := r.client(t)
+		gen := restoreGen(t, fresh)
+		got, err := fresh.RestoreRow(ctx, gen, natsgrant.OperatorPhaseReleased, "", "released after a cut log")
+		var refusal *holdrecord.RouteError
+		if !errors.As(err, &refusal) || refusal.Code != "bad_transition" {
+			t.Errorf("RestoreRow of released with no hold id answered %+v, %v; want 400 bad_transition", got, err)
+		}
+		if gen, phase, _ := stored(t, r); gen != 0 {
+			t.Errorf("after the refused restore the table holds %s at gen %d, want no row", phase, gen)
+		}
+	})
+
+	t.Run("a released restore naming a hold whose done record does not verify is refused", func(t *testing.T) {
+		// The named hold is in prepare, so the log alone would admit released with its id. Fails
+		// while the route passes a journal that does not verify: released is stored.
+		r := newRig(t)
+		c := r.client(t)
+		const holdID = "h-forged-named"
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, holdID, "prepare"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.StartJournal(ctx, holdID, holdrecord.WorkflowCutover, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Pool.Exec(ctx, `update nats_hold_records set sig = 'forged' where hold_id = $1 and kind = 'done'`, holdID); err != nil {
+			t.Fatal(err)
+		}
+		fresh := r.client(t)
+		got, err := fresh.RestoreRow(ctx, restoreGen(t, fresh), natsgrant.OperatorPhaseReleased, holdID, "released with a forged journal")
+		var refusal *holdrecord.RouteError
+		if !errors.Is(err, holdrecord.ErrUnknown) || !errors.As(err, &refusal) || refusal.Code != "below_floor" {
+			t.Errorf("RestoreRow of released naming %s answered %+v, %v; want 409 below_floor, read as ErrUnknown", holdID, got, err)
+		}
+		if gen, phase, _ := stored(t, r); gen != 0 {
+			t.Errorf("after the refused restore the table holds %s at gen %d, want no row", phase, gen)
+		}
+	})
+
+	t.Run("a release cut between its row move and its done entry restores released with the hold's id", func(t *testing.T) {
+		// Legion F5: hold set done, the release's intent written, the row moved to released, then
+		// the row lost. The log's latest entry is released for the hold, so its row was released
+		// already. Fails while the route refuses that hold's released row ("restore the row held",
+		// which the log also refuses).
+		r := newRig(t)
+		c := r.client(t)
+		const holdID = "h-cut-release"
+		held := hold(t, c, holdID, holdrecord.WorkflowBucketsCreate, nil)
+		run(t, c, holdID, cmd("buckets create"), nil, nil)
+		if _, err := c.Admit(ctx, holdID, cmd(holdrecord.CommandRelease), nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.MoveRow(ctx, held.Gen, natsgrant.OperatorPhaseReleased, holdID, "release"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
+			t.Fatal(err)
+		}
+		fresh := r.client(t)
+		gen := restoreGen(t, fresh)
+		restored, err := fresh.RestoreRow(ctx, gen, natsgrant.OperatorPhaseReleased, holdID, "the release's row, restored")
+		if err != nil || restored.Phase != natsgrant.OperatorPhaseReleased || restored.HoldID != holdID {
+			t.Errorf("RestoreRow of released naming %s answered %+v, %v; want it stored", holdID, restored, err)
+		}
+	})
+}
