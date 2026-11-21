@@ -7193,6 +7193,95 @@ test("beside the column a Dismiss holding the focus on a row that is not selecte
   }
 });
 
+// The same Dismiss with the focus on it, while the column keeps a question the list draws no row
+// for: the reader's unsent answer keeps it there once a search hides its row (`paneRow`). There
+// is no selected row to hand the focus to, so the column's scroller takes it - the stop `l` puts
+// the reader on, which is the item being read - and the hidden question stays selected.
+test("beside the column a Dismiss holding the focus on another row, while a search hides the selected question, hands the focus to the column's scroller and to no control of a row", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const ask = inboxIssue("ask-a", "CORE-1", "Which approach?");
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([ask]);
+  const getAsk = mockAskReads([ask]);
+  // Newest first, B to D: each thread's reply an hour older than the one before. Each subject
+  // holds "thread", and the question's words do not.
+  let threads = ["b", "c", "d"].map((name, index) => {
+    const row = replyRow(`thread-${name}`, { subject: `Thread ${name.toUpperCase()}` });
+    return { ...row, reply: { ...row.reply, created_at: `2026-10-12T0${3 - index}:00:00Z` } };
+  });
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async () => ({
+    as_of: "2026-10-12T05:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: threads,
+    total: threads.length,
+  }));
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const getIssue = mockIssueReads();
+  const dismissed = answerInboxDismisses().mockImplementation(async () => {
+    threads = threads.filter((thread) => thread.thread_id !== "thread-c");
+    return { dismissed: 1 };
+  });
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={["/?item=ask-a"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RouteProbe />
+          <RescuedMain>
+            <Inbox />
+          </RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(rowIds()).toHaveLength(4));
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+
+    // Typed and unsent, so the column keeps ask-a once the search hides its row.
+    const draft = within(screen.getByTestId("inbox-pane")).getByLabelText("Your answer");
+    await user.clear(draft);
+    await user.click(draft);
+    await user.paste("Whichever the mirror already holds.");
+    await user.click(screen.getByRole("searchbox", { name: "Search asks" }));
+    await user.keyboard("thread");
+    await waitFor(() =>
+      expect(rowIds()).toEqual(["reply:thread-b", "reply:thread-c", "reply:thread-d"])
+    );
+    expect(address()).toBe("/?item=ask-a&q=thread");
+    expect(within(screen.getByTestId("inbox-pane")).getByTestId("ask-ask-a")).toBeTruthy();
+
+    const dismiss = within(shortRow("reply:thread-c")).getByRole("button", {
+      name: "Dismiss: Thread C",
+    });
+    act(() => dismiss.focus());
+    expect(dismiss).toHaveFocus();
+    await user.click(dismiss);
+    await waitFor(() => expect(rowIds()).toEqual(["reply:thread-b", "reply:thread-d"]));
+    await afterRescue();
+
+    expect(dismissed).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus();
+    expect(document.activeElement?.closest("[data-inbox-row]") ?? null).toBeNull();
+    expect(address()).toBe("/?item=ask-a&q=thread");
+    expect(within(screen.getByTestId("inbox-pane")).getByTestId("ask-ask-a")).toBeTruthy();
+  } finally {
+    view.unmount();
+    narrow();
+    dismissed.mockRestore();
+    listComments.mockRestore();
+    listMyReplies.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
 // A search that leaves no row hides the item being read; it does not take it away. The selection
 // and the address keep it while nothing is listed, so the reader who clears the text is back on
 // that item rather than on the first row.

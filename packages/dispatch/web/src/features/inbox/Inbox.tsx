@@ -1067,28 +1067,10 @@ export function Inbox({
     dismiss();
     paneSelection.landHandOff(ids);
   };
-  /** A row's own Dismiss (`DismissControl`, through `RowDismissContext`). Beside the column only
-   *  the selected row is the item in hand, so the Dismiss the pointer reaches on another row
-   *  takes that row out and leaves the selection, the address and the focus on the item being
-   *  read; the selected row's Dismiss, the column head's, and every card's below the column's
-   *  width hand the reader on to the item after it (R8). A press that left the focus in the row
-   *  it takes out - the Dismiss takes it as the pointer presses it - hands it to the selected
-   *  row first, with no scroll: the focus would go with that row, and the page's rescue would
-   *  put it on the same Dismiss of the row that moves up into its place (`useFocusRescue`),
-   *  where Enter would dismiss that row too. */
-  const dismissFromRow = (named: InboxDismissRow) => {
-    if (paneShown && named.id !== paneSelection.id) {
-      if (rowIn(listRef.current, named.id)?.contains(document.activeElement) === true) {
-        paneSelection.selectedRow()?.focus({ preventScroll: true });
-      }
-      dismissRows([named]);
-    } else {
-      dismissNow([named]);
-    }
-  };
-  // Every key the Inbox binds, and the record of the row `l` was pressed on, which the column's
-  // wrapper below holds and drops (`useInboxKeymap.ts`).
-  const { forgetPaneReturn, holdPane } = useInboxKeymap({
+  // Every key the Inbox binds, the record of the row `l` was pressed on, which the column's
+  // wrapper below holds and drops, and the column's scroller, where `l` puts the focus
+  // (`useInboxKeymap.ts`).
+  const { forgetPaneReturn, holdPane, paneScroller } = useInboxKeymap({
     barOpen,
     bulkBarRef,
     bulkBarShown,
@@ -1103,6 +1085,29 @@ export function Inbox({
     searchRef,
     selectedAsks,
   });
+  /** A row's own Dismiss (`DismissControl`, through `RowDismissContext`). Beside the column only
+   *  the selected row is the item in hand, so the Dismiss the pointer reaches on another row
+   *  takes that row out and leaves the selection, the address and the focus on the item being
+   *  read; the selected row's Dismiss, the column head's, and every card's below the column's
+   *  width hand the reader on to the item after it (R8). A press that left the focus in the row
+   *  it takes out - the Dismiss takes it as the pointer presses it - hands it first, with no
+   *  scroll, to the item being read: to its row, and where the list draws no row for it, to the
+   *  column's scroller, the stop `l` hands the focus to. The list draws none while the column
+   *  keeps a question past its row (`paneRow`): the reader's unsent answer keeps it there once a
+   *  search or a filter hides its row or the server takes it away, and their sent answer keeps
+   *  it until the server decides it. Left in the row, the focus would go with it, and the page's
+   *  rescue would put it on the same Dismiss of the row that moves up into its place
+   *  (`useFocusRescue`), where Enter would dismiss that row too. */
+  const dismissFromRow = (named: InboxDismissRow) => {
+    if (paneShown && named.id !== paneSelection.id) {
+      if (rowIn(listRef.current, named.id)?.contains(document.activeElement) === true) {
+        (paneSelection.selectedRow() ?? paneScroller())?.focus({ preventScroll: true });
+      }
+      dismissRows([named]);
+    } else {
+      dismissNow([named]);
+    }
+  };
 
   if (inbox.isPending || whoAmI.isPending) {
     return <LoadingSkeleton label="Loading your inbox" />;

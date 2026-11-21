@@ -4,7 +4,7 @@ import { focusIntoView } from "../../components/focus-place";
 import { focusOnDocument } from "../shell/roving";
 import { answerDraft } from "./answer-drafts";
 import { type InboxRoute, useInboxRoute } from "./inbox-route";
-import { ROW_ATTRIBUTE } from "./inbox-row";
+import { ROW_ATTRIBUTE, rowIn } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
 import { answerOutstanding } from "./outstanding-answers";
 import type { InboxSection } from "./sections";
@@ -241,12 +241,7 @@ export function usePaneSelection({
   /** The row the column is showing, or null while it is showing none. Held to the selection,
    *  because the effect keeping that row on screen is the selection's and nothing else's. */
   const selectedRow = useCallback(
-    () =>
-      selectedId === undefined
-        ? null
-        : (listRef.current?.querySelector<HTMLElement>(
-            `[${ROW_ATTRIBUTE}="${CSS.escape(selectedId)}"]`
-          ) ?? null),
+    () => rowIn(listRef.current, selectedId ?? null),
     [listRef, selectedId]
   );
 
@@ -255,9 +250,9 @@ export function usePaneSelection({
     presented.current.some((placed) => acted.has(rowId(placed.row)));
   /** The element `target` names in this list: the row, or the empty message. */
   const targetElement = (target: HandOffTarget): HTMLElement | null =>
-    region.current?.querySelector<HTMLElement>(
-      target === null ? EMPTY_SELECTOR : `[${ROW_ATTRIBUTE}="${CSS.escape(target)}"]`
-    ) ?? null;
+    target === null
+      ? (region.current?.querySelector<HTMLElement>(EMPTY_SELECTOR) ?? null)
+      : rowIn(region.current, target);
   /** Takes the begun action on rows that include every one of `ids` off the record, and gives
    *  it back, or undefined where none was begun on them. */
   const takeBegun = (ids: readonly string[]): HandOff | undefined => {

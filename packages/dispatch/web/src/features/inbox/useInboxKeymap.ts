@@ -107,13 +107,18 @@ export interface InboxKeyboard {
   readonly selectedAsks: readonly string[];
 }
 
-/** What the column's wrapper takes from the keys: the record Escape reads lives here, and the
- *  wrapper reports the two ways out of the column no event of the document reports. */
+/** What the Inbox takes from the keys for its reading column: the record Escape reads lives here,
+ *  the wrapper reports the two ways out of the column no event of the document reports, and the
+ *  column's scroller is found where `l` finds it. */
 export interface InboxColumnHold {
   /** The wrapper's `onBlur`: the drop a focus that lands nowhere makes. */
   readonly forgetPaneReturn: (event: FocusEvent<HTMLDivElement>) => void;
   /** The wrapper's `ref`: the node the keys act in, and the drop its unmount makes. */
   readonly holdPane: (node: HTMLDivElement | null) => void;
+  /** The column's scroller, the focus stop `l` moves the reader into, or null where no column is
+   *  rendered: where a row's Dismiss beside the column hands the focus when the list draws no
+   *  row for the item being read (`Inbox`'s `dismissFromRow`). */
+  readonly paneScroller: () => HTMLElement | null;
 }
 
 /**
@@ -772,5 +777,5 @@ export function useInboxKeymap({
       when: () => control() !== null,
     })),
   ]);
-  return { forgetPaneReturn, holdPane };
+  return { forgetPaneReturn, holdPane, paneScroller };
 }

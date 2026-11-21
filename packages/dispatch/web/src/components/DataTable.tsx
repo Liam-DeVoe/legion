@@ -459,7 +459,7 @@ function MoveIcon(): ReactNode {
  * gives the trigger the focus again once the move is drawn.
  *
  * The menu's trigger takes no room in the header: it is drawn out of the header's flow, hanging
- * from the cell's bottom edge at its right end, over the cell's bottom padding and the row
+ * from the cell's bottom edge at its left end, over the cell's bottom padding and the row
  * under it. It shows, and takes a pointer's press, while the pointer is over the header cell,
  * while it holds the focus and while its menu is open; otherwise it is transparent and a press
  * goes through it to the row. It stays in the Tab order between the sort control and the
@@ -533,6 +533,24 @@ function TableHeaderCell<TData>({
         open: openFilter === column.id,
       })
     : null;
+  // The cell's level among the sticky cells. A pinned header cell is z-30, so a column scrolled
+  // under it passes beneath it; an unpinned one z-20; a pinned body cell z-10 (`DataTableCells`).
+  // The cell is a stacking context (sticky, with a z-index), so its Move trigger is drawn at the
+  // cell's level whatever its own: a trigger wider than its cell runs right into the next header
+  // cell, a later one at the same z-20, which would draw over the trigger's top 8 px. So while
+  // the trigger shows - under the pointer, with the focus, with its menu open - the cell is
+  // z-25: above every unpinned header cell, the trailing one included, and still below the
+  // pinned ones. Only those states raise it, so a cell whose trigger is hidden is drawn as it
+  // was. A pinned body cell is below every header cell, and so below a trigger hanging over
+  // the rows, before this as after it: a trigger drawn under it would need its header cell under
+  // z-10, which would put the sticky header under the pinned cells of the rows scrolling up
+  // beneath it. The attribute is `MOVE_MENU_ATTRIBUTE`, written out because Tailwind reads the
+  // class from the source.
+  const level = pinned
+    ? "z-30"
+    : moves.length === 0
+      ? "z-20"
+      : "z-20 hover:z-25 has-[[data-column-move]:focus]:z-25 has-[[data-column-move][aria-expanded=true]]:z-25";
   return (
     <th
       aria-sort={
@@ -542,7 +560,7 @@ function TableHeaderCell<TData>({
             ? "descending"
             : undefined
       }
-      className={`group/header sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
+      className={`group/header sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${level} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
       onDragOver={(event) => {
         if (dragColumn !== undefined && !pinned) event.preventDefault();
       }}
@@ -599,8 +617,17 @@ function TableHeaderCell<TData>({
               );
             }}
             // Out of the flow, over the cell's 8 px bottom padding (`py-2`) and the row under it,
-            // so it covers neither the sort control nor the filter (see the comment above).
-            triggerClassName={`pointer-events-none absolute top-[calc(100%-0.5rem)] right-2 inline-flex min-h-11 min-w-8 items-center justify-center rounded border p-1 opacity-0 shadow-sm group-hover/header:pointer-events-auto group-hover/header:opacity-100 focus:pointer-events-auto focus:opacity-100 aria-expanded:pointer-events-auto aria-expanded:opacity-100 md:min-h-8 md:min-w-6 ${borderDefault} ${surfaceBg} ${textMutedOnCanvas} ${surfaceMutedHoverBg}`}
+            // so it covers neither the sort control nor the filter (see the comment above). Hung
+            // from the cell's left edge (`left-1`) in every column, so it never starts left of its
+            // own cell: the scroll box clips what stands left of its content and scrolls to none
+            // of it, and pinned cells cover what stands left of the first column after them. A
+            // trigger wider than its cell runs to the right instead, where the box does scroll:
+            // hung from the right edge, the Delivery list's 20 px colour dot drew "Move color"
+            // from 32 px left of the table below 1280 px, where the trigger is 44 px wide
+            // (`styles.css`). Every column rather than the narrow ones alone, because that width
+            // is the page's floor below 1280 px and the trigger's own above it, and a test of the
+            // column's width here would have to follow both.
+            triggerClassName={`pointer-events-none absolute top-[calc(100%-0.5rem)] left-1 inline-flex min-h-11 min-w-8 items-center justify-center rounded border p-1 opacity-0 shadow-sm group-hover/header:pointer-events-auto group-hover/header:opacity-100 focus:pointer-events-auto focus:opacity-100 aria-expanded:pointer-events-auto aria-expanded:opacity-100 md:min-h-8 md:min-w-6 ${borderDefault} ${surfaceBg} ${textMutedOnCanvas} ${surfaceMutedHoverBg}`}
           >
             <MoveIcon />
           </ChoiceMenu>

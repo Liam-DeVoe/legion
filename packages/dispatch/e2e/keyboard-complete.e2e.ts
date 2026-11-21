@@ -4504,6 +4504,94 @@ test("k-next-item: beside the reading pane a Dismiss on a row that is not in han
   await expect(rowA, step("A, which the reader did not dismiss, is still listed")).toHaveCount(1);
 });
 
+// The same Dismiss while the reading pane keeps a question whose row the list does not draw: an
+// answer typed and not sent keeps it there once a search hides its row. A thread is no such item:
+// nothing keeps a thread past its row, so a search that hides a selected thread moves the
+// selection to a row it leaves. With no row of the item in hand to take the focus, the pane's
+// scroller takes it, and Enter from there carries the reader into the question's answer box.
+// SLOW(>=2s): a question and three threads seeded, two threads dismissed by their rows' own
+// Dismiss beside the reading pane while a search hides the question in hand, and Enter pressed
+// between the two.
+test("k-next-item: beside the reading pane a Dismiss on a row that is not in hand, while a search hides the item in hand, leaves the focus on the pane and on no row, so Enter after it dismisses nothing", async ({
+  page,
+}) => {
+  const step = (text: string) => `k-next-item: a Dismiss while a search hides the item: ${text}`;
+  const unsent = "Whichever the mirror already holds.";
+  await createProject({ key: "CORE", name: "Core" });
+  // The question's words hold no "ledger"; each thread's issue title does.
+  const questionIssue = await createIssue({ force: true, project: "CORE", title: "Clock audit" });
+  const question = (
+    await createAsk(questionIssue.key, { question: "Ship the clock audit?" }, asker)
+  ).id;
+  const issue = await createIssue({ force: true, project: "CORE", title: "Ledger rollout" });
+  const rows: string[] = [];
+  for (const name of ["A", "B", "C"]) {
+    rows.push(replyRowId(await seedCommentThread(issue.key, `Root ${name}`, `Reply ${name}`)));
+  }
+  // The list draws the newest first: C, B, A, then the question. B, the row dismissed first,
+  // stands between two threads, and A moves up into its place.
+  const [a, b, c] = rows;
+  if (a === undefined || b === undefined || c === undefined) {
+    throw new Error("the three threads were not seeded");
+  }
+  const dismisses = dismissWrites(page);
+  await page.setViewportSize(WIDE);
+  await page.goto(inboxAt(question));
+  await expect(selectedRow(page), step("the question is the item being read")).toHaveAttribute(
+    "data-inbox-row",
+    question
+  );
+
+  // An answer typed and not sent, then a search by the threads' word: the pane keeps the
+  // question, and the list draws no row of it.
+  const answerBox = inboxPane(page).getByTestId(`ask-${question}`).locator("[data-ask-answer]");
+  await answerBox.fill(unsent);
+  await page.getByRole("searchbox", { name: "Search asks" }).fill("ledger");
+  await expect(
+    page.locator("[data-inbox-row]"),
+    step("the search lists the three threads alone")
+  ).toHaveCount(3);
+  await expect(inboxRow(page, question), step("the search hides the question's row")).toHaveCount(
+    0
+  );
+  await expect(answerBox, step("the pane keeps the question and its unsent answer")).toHaveValue(
+    unsent
+  );
+
+  // The pointer's Dismiss on B, a row that is not in hand: the button takes the focus as it is
+  // pressed, and goes with B.
+  const rowB = inboxRow(page, b);
+  await rowB.hover();
+  await rowB.getByRole("button", { name: /^Dismiss/ }).click();
+  await expect(rowB, step("the Dismiss takes B out")).toHaveCount(0);
+  await expect(
+    paneScroller(page),
+    step("the pane's scroller, the item being read, has the focus")
+  ).toBeFocused();
+  await expect(
+    page.locator("[data-inbox-row]:focus, [data-inbox-row] :focus"),
+    step("no row and no control of a row has the focus")
+  ).toHaveCount(0);
+
+  // Enter on the pane carries the reader into the question's answer box (R18); on the Dismiss of
+  // A, the row in B's place, it would take A out.
+  await page.keyboard.press("Enter");
+  await expect(answerBox, step("Enter puts the caret in the question's answer box")).toBeFocused();
+  // The pointer's Dismiss on C is sent after anything Enter sent, so once C is gone every write
+  // Enter set off is in the list.
+  const rowC = inboxRow(page, c);
+  await rowC.hover();
+  await rowC.getByRole("button", { name: /^Dismiss/ }).click();
+  await expect(rowC, step("the Dismiss takes C out")).toHaveCount(0);
+  expect(writesSent(dismisses), step("the two Dismisses send two dismissals, and Enter none")).toBe(
+    2
+  );
+  await expect(
+    inboxRow(page, a),
+    step("A, the row in B's place, which the reader did not dismiss, is still listed")
+  ).toHaveCount(1);
+});
+
 // SLOW(>=2s): ten items seeded, two reviews and an answer written, and a search beside the pane.
 test("k-next-item: beside the reading pane an approval, a request for changes and an answer select and focus the item after, and the only item a search leaves hands the focus to the empty message", async ({
   page,
