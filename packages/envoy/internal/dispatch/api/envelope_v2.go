@@ -110,21 +110,21 @@ func includedPageText(bounds listBounds, members []string) string {
 	return fmt.Sprintf("1 to %d (default %d) with %s", includedPageMax, includedPageDefault(bounds), includeMembersText(members, "or"))
 }
 
-// includedPageLimitText is what the description of a list whose row names no bounds says of its
-// page, from query, the row's Query, as the decoder reads it: "limit 1 to 200 (default 50) and
-// offset;", and where its include names members that render each listed row (`renders`), the
-// page with them too, "limit 1 to 200 (default 50), and 1 to 20 (default 20) with include=text or
-// include=blocks, and offset;" (TestEveryListThatRendersItsRowsSaysItsPage). It panics on a query
-// the decoder cannot read, which no table mounts.
-func includedPageLimitText(query any) string {
+// includedPageLimitText is what the description of a list says of its page, from bounds, the row's
+// List, and query, the row's Query, whose include names members that render each listed row
+// (`renders`), as the decoder reads them: the list's own limit and the page with those members,
+// "limit 1 to 200 (default 50), and 1 to 20 (default 20) with include=text or include=blocks, and
+// offset;" (TestEveryListThatRendersItsRowsSaysItsPage). It panics on a query the decoder cannot
+// read, and on one whose include renders no row: such a list has no page with those members to word.
+func includedPageLimitText(bounds listBounds, query any) string {
 	schema, err := compileV2Query(query)
 	if err != nil {
 		panic(fmt.Sprintf("includedPageLimitText(%T): %v", query, err))
 	}
-	least, fallback, most := listBounds{}.limits()
 	if schema.rendering == nil {
-		return fmt.Sprintf("limit %d to %d (default %d) and offset;", least, most, fallback)
+		panic(fmt.Sprintf("includedPageLimitText(%T): its query names no include member that renders each listed row (renders)", query))
 	}
+	least, fallback, most := bounds.limits()
 	return fmt.Sprintf("limit %d to %d (default %d), and %s, and offset;", least, most, fallback,
-		includedPageText(listBounds{}, schema.rendering.renders))
+		includedPageText(bounds, schema.rendering.renders))
 }

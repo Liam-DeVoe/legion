@@ -66,6 +66,9 @@ func (s *server) v2ThreadRows() []routeRow {
 	commentIDs := func() *idRoute { return &idRoute{Kind: "comment", NotFound: apicode.CommentNotFound} }
 	messageIDs := func() *idRoute { return &idRoute{Kind: "message", NotFound: apicode.MessageNotFound} }
 	person := routeScopeSet{model.ScopePerson}
+	// handoffList is the List of an issue's handoffs: no bounds of its own, so 50 and 200
+	// (listBounds.limits), which its description words its page from.
+	handoffList := listBounds{}
 	return []routeRow{
 		{
 			Method: http.MethodGet, Pattern: "/comments/{id}", Auth: authAny, Versions: onlyV2,
@@ -436,10 +439,11 @@ func (s *server) v2ThreadRows() []routeRow {
 				"then by phase, then the newest version), created_at, version or -version (a phase's newest version first: "+
 				"phase=<phase>&sort=-version&limit=1&include=body reads the phase's latest handoff). %s {items, total, "+
 				"limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
-				contracts.HandoffPhasePattern, includedPageLimitText(issueHandoffsV2Query{})),
+				contracts.HandoffPhasePattern, includedPageLimitText(handoffList, issueHandoffsV2Query{})),
 			Handler:  s.listIssueHandoffsV2,
 			Resource: "handoffs", Kind: kindCollection, Key: "{id}",
 			Query:    issueHandoffsV2Query{},
+			List:     handoffList,
 			Shape:    routeShape{Status: http.StatusOK, Response: page[handoffV2]{}},
 			Refusals: listRefusals(issueMissingRefusal),
 		},

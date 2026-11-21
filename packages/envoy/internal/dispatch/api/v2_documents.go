@@ -95,6 +95,10 @@ const artifactUploadText = "JSON {name, content?, summary?, actor?, precondition
 func (s *server) v2DocumentRows() []routeRow {
 	documentIDs := func() *idRoute { return &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound} }
 	person := routeScopeSet{model.ScopePerson}
+	// artifactList and askList are the List of an owner's artifacts and of a project document's
+	// asks: no bounds of their own, so 50 and 200 (listBounds.limits), which each list's
+	// description words its page from.
+	artifactList, askList := listBounds{}, listBounds{}
 	return []routeRow{
 		{
 			Method: http.MethodGet, Pattern: "/agents/{session_id}/artifacts", Auth: authAny, Versions: onlyV2,
@@ -195,12 +199,13 @@ func (s *server) v2DocumentRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/asks", Auth: authAny, Versions: onlyV2,
 			Description: "List a project document's asks, oldest first, each as GET /api/v2/asks answers it. state=all " +
-				"(the default), open, answered or resolved. " + askRowText + " " + includedPageLimitText(artifactAsksV2Query{}) +
+				"(the default), open, answered or resolved. " + askRowText + " " + includedPageLimitText(askList, artifactAsksV2Query{}) +
 				" {items, total, limit, offset}. An issue's document is 400 ARTIFACT_LINKED, its asks being GET " +
 				"/api/v2/issues/{key}/asks, and a file of an agent's conversation 400 ARTIFACT_AGENT_OWNED; 404 ARTIFACT_NOT_FOUND.",
 			Handler:  s.listArtifactAsksV2,
 			Resource: "asks", Kind: kindCollection, Key: "{id}",
 			Query:       artifactAsksV2Query{},
+			List:        askList,
 			Shape:       routeShape{Status: http.StatusOK, Response: page[askV2]{}},
 			Authorities: []authorityRule{askMarkAuthority},
 			IDs:         documentIDs(),
@@ -473,11 +478,12 @@ func (s *server) v2DocumentRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/artifacts", Auth: authAny, Versions: onlyV2,
 			Description: "List an issue's documents, files and images, its spec among them, oldest first. " + artifactRowText +
-				" " + artifactSlugText + " " + artifactIncludeText + " " + includedPageLimitText(artifactListV2Query{}) +
+				" " + artifactSlugText + " " + artifactIncludeText + " " + includedPageLimitText(artifactList, artifactListV2Query{}) +
 				" {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
 			Handler:  s.listIssueArtifactsV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
 			Query:         artifactListV2Query{},
+			List:          artifactList,
 			Shape:         routeShape{Status: http.StatusOK, Response: page[artifactV2]{}},
 			DocumentOwner: documentOwnerIssue,
 			Refusals:      listRefusals(issueMissingRefusal),
@@ -505,11 +511,12 @@ func (s *server) v2DocumentRows() []routeRow {
 			Description: "List a project's documents, files and images, oldest first: its own and every one of its issues' " +
 				"but each issue's spec. issue=none keeps the project's own, which no issue holds, and issue=<key> one issue's. " +
 				artifactRowText + " " + artifactSlugText + " " + artifactIncludeText + " " +
-				includedPageLimitText(projectArtifactsV2Query{}) + " {items, total, limit, offset}. 404 PROJECT_NOT_FOUND " +
-				"for a project that does not exist.",
+				includedPageLimitText(artifactList, projectArtifactsV2Query{}) + " {items, total, limit, offset}. 404 " +
+				"PROJECT_NOT_FOUND for a project that does not exist.",
 			Handler:  s.listProjectArtifactsV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
 			Query:         projectArtifactsV2Query{},
+			List:          artifactList,
 			Shape:         routeShape{Status: http.StatusOK, Response: page[artifactV2]{}},
 			DocumentOwner: documentOwnerProject,
 			Refusals:      listRefusals(projectMissingRefusal),

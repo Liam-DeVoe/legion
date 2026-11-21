@@ -854,124 +854,117 @@ func TestEachV2ArtifactRowCarriesTheFactsOfItsNewestVersion(t *testing.T) {
 	}
 }
 
-// TestAV2ArtifactListWithItsTextTakesAPageOfTwenty: include=text answers each document's text, up
-// to a MiB each, so a page of an issue's or a project's artifacts that carries it holds at most 20
-// (includedPageMax), as one that carries include=blocks does
-// (TestAV2ArtifactListWithItsBlocksTakesAPageOfTwenty). limit=21 with include=text, or with
-// include=blocks alone, is 400 INVALID_LIMIT naming 20 before anything is read, a missing owner's
-// list too; limit=20 with it is 200, and so is limit=21 without either; include=text naming no
-// limit reads a page of 20, and a list naming neither a page of 50.
-func TestAV2ArtifactListWithItsTextTakesAPageOfTwenty(t *testing.T) {
-	handler, _ := newTestHandlerWithStore(t)
-	createReferenceAPIProject(t, handler, "CORE")
-	issue := createReferenceAPIIssue(t, handler, "CORE")
-	for _, list := range []string{"/api/v2/issues/" + issue.Key + "/artifacts", "/api/v2/projects/CORE/artifacts"} {
-		read := func(target string) *httptest.ResponseRecorder {
-			return dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
-		}
-		for _, target := range []string{list + "?limit=21&include=text", list + "?limit=21&include=blocks", list + "?limit=200&include=text,blocks"} {
-			refused := read(target)
-			if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_LIMIT" || !strings.Contains(text, "1 to 20") {
-				t.Errorf("GET %s answered %d %s, want 400 INVALID_LIMIT naming 20", target, refused.Code, refused.Body.String())
-			}
-		}
-		for query, limit := range map[string]int{
-			"limit=20&include=text": 20, "limit=21": 21, "include=text": 20, "": 50,
-		} {
-			answered := read(list + "?" + query)
-			if answered.Code != http.StatusOK {
-				t.Errorf("GET %s?%s answered %d %s, want 200", list, query, answered.Code, answered.Body.String())
-				continue
-			}
-			if got := decodeBody[page[json.RawMessage]](t, answered); got.Limit != limit {
-				t.Errorf("GET %s?%s read a page of %d, want %d", list, query, got.Limit, limit)
-			}
-		}
-	}
-	for _, missing := range []string{"/api/v2/issues/CORE-404/artifacts", "/api/v2/projects/NOPE/artifacts"} {
-		if code, _ := refusalOf(t, dispatchRequest(t, handler, http.MethodGet, missing+"?limit=21&include=text", nil, "alice")); code != "INVALID_LIMIT" {
-			t.Errorf("GET %s?limit=21&include=text answered %s, want INVALID_LIMIT before the owner is read", missing, code)
-		}
-	}
-}
-
-// TestAV2ArtifactListWithItsBlocksTakesAPageOfTwenty: include=blocks renders each listed
-// document's tree (documentBlocks), as include=text does, so a page of an issue's or a project's
-// artifacts that carries it holds at most 20 as well (the architect's ruling of 2026-11-21 on test
-// round 3 of dispatch://INFRA-4071). limit=21 with include=blocks is 400 INVALID_LIMIT naming 20
-// before anything is read, a missing owner's list too; limit=20 with it is 200; include=blocks
-// naming no limit reads a page of 20; and limit=21 with no include still reads a page of 21.
-func TestAV2ArtifactListWithItsBlocksTakesAPageOfTwenty(t *testing.T) {
-	handler, _ := newTestHandlerWithStore(t)
-	createReferenceAPIProject(t, handler, "CORE")
-	issue := createReferenceAPIIssue(t, handler, "CORE")
-	for _, list := range []string{"/api/v2/issues/" + issue.Key + "/artifacts", "/api/v2/projects/CORE/artifacts"} {
-		read := func(target string) *httptest.ResponseRecorder {
-			return dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
-		}
-		for _, target := range []string{list + "?limit=21&include=blocks", list + "?limit=200&include=blocks"} {
-			refused := read(target)
-			if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_LIMIT" || !strings.Contains(text, "1 to 20") {
-				t.Errorf("GET %s answered %d %s, want 400 INVALID_LIMIT naming 20", target, refused.Code, refused.Body.String())
-			}
-		}
-		for query, limit := range map[string]int{"limit=20&include=blocks": 20, "include=blocks": 20, "limit=21": 21} {
-			answered := read(list + "?" + query)
-			if answered.Code != http.StatusOK {
-				t.Errorf("GET %s?%s answered %d %s, want 200", list, query, answered.Code, answered.Body.String())
-				continue
-			}
-			if got := decodeBody[page[json.RawMessage]](t, answered); got.Limit != limit {
-				t.Errorf("GET %s?%s read a page of %d, want %d", list, query, got.Limit, limit)
-			}
-		}
-	}
-	for _, missing := range []string{"/api/v2/issues/CORE-404/artifacts", "/api/v2/projects/NOPE/artifacts"} {
-		if code, _ := refusalOf(t, dispatchRequest(t, handler, http.MethodGet, missing+"?limit=21&include=blocks", nil, "alice")); code != "INVALID_LIMIT" {
-			t.Errorf("GET %s?limit=21&include=blocks answered %s, want INVALID_LIMIT before the owner is read", missing, code)
-		}
-	}
-}
-
-// TestAV2HandoffListWithItsBodiesTakesAPageOfTwenty: include=body answers each handoff's body, up
-// to contracts.DispatchHandoffBodyMax each, so a page of an issue's handoffs that carries it holds
-// at most 20 (includedPageMax), as a list of artifacts with include=text does
-// (TestAV2ArtifactListWithItsTextTakesAPageOfTwenty). limit=21 with include=body is 400
-// INVALID_LIMIT naming 20 before anything is read, a missing issue's list too; limit=21 without it
-// is 200, and limit=20 with it is 200 with the body; include=body naming no limit reads a page of
-// 20, and the description's phase=<phase>&sort=-version&limit=1&include=body still reads the
-// phase's latest handoff.
-func TestAV2HandoffListWithItsBodiesTakesAPageOfTwenty(t *testing.T) {
+// TestAV2ListsThatRenderEachRowTakeAPageOfTwenty: an include member that renders each listed row
+// whole holds a page of its list to 20 (includedPageMax): include=text and include=blocks on an
+// issue's or a project's artifacts, each document's text up to a MiB and its tree of blocks
+// (documentBlocks); include=body on an issue's handoffs, each body up to
+// contracts.DispatchHandoffBodyMax; and include=thread on each of the three lists of asks, each
+// ask's replies, rewordings, answers and followers (include=blocks and include=thread by the
+// architect's rulings of 2026-11-21 on dispatch://INFRA-4071, include=blocks on test round 3). On
+// each (list, include) row, all on one store: limit=21 or limit=200 with the include is 400
+// INVALID_LIMIT naming 1 to 20 and the members it names, before anything is read, so a missing
+// owner's list too; limit=20 with it reads a page of 20, and so does the include naming no limit;
+// and with no member that renders, limit=21, limit=200 and no limit read 21, 200 and 50, as the
+// row's own reads read theirs: include=mark, which renders nothing, on a list of asks, and the
+// handoff description's phase=<phase>&sort=-version&limit=1&include=body. Where a row counts its
+// list - 21 asks on an issue and 21 on a project document, one handoff - each page holds as many
+// rows as its limit takes, total the whole count, and each row carries the member only where the
+// query names it, a handoff's body the one recorded.
+func TestAV2ListsThatRenderEachRowTakeAPageOfTwenty(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Handoff pages", "spec")
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	document := createProjectDocument(t, handler, "CORE", "Design notes", "# Design notes\n")
+	const asked = includedPageMax + 1
+	for index := range asked {
+		for _, owner := range []string{"/api/v1/issues/" + issue.Key + "/asks", "/api/v1/artifacts/" + document.ID + "/asks"} {
+			created := dispatchRequest(t, handler, http.MethodPost, owner, map[string]any{"question": "Which way, " + strconv.Itoa(index) + "?"}, "alice")
+			if created.Code != http.StatusCreated {
+				t.Fatalf("POST %s: %d %s", owner, created.Code, created.Body.String())
+			}
+		}
+	}
 	body := `{"plan":"the page"}`
 	recordedHandoff(t, handler, issue.Key, "plan", body)
-	list := "/api/v2/issues/" + issue.Key + "/handoffs"
-	read := func(target string) *httptest.ResponseRecorder {
-		return dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
-	}
-	for _, target := range []string{list + "?limit=21&include=body", list + "?limit=200&include=body", "/api/v2/issues/TEST-404/handoffs?limit=21&include=body"} {
-		refused := read(target)
-		if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_LIMIT" || !strings.Contains(text, "1 to 20 with include=body") {
-			t.Errorf("GET %s answered %d %s, want 400 INVALID_LIMIT naming 20", target, refused.Code, refused.Body.String())
-		}
-	}
-	for query, limit := range map[string]int{
-		"limit=21": 21, "limit=20&include=body": 20, "include=body": 20, "phase=plan&sort=-version&limit=1&include=body": 1,
+
+	issueArtifacts, missingIssueArtifacts := "/api/v2/issues/"+issue.Key+"/artifacts", "/api/v2/issues/CORE-404/artifacts"
+	projectArtifacts, missingProjectArtifacts := "/api/v2/projects/CORE/artifacts", "/api/v2/projects/NOPE/artifacts"
+	marked := map[string]int{"limit=200&include=mark": 200}
+	for _, row := range []struct {
+		// list is the list's path, include the include value naming members that render each
+		// listed row, and names how a refusal names those members.
+		list, include, names string
+		// missing is the list of an owner that does not exist, "" for a list no owner holds.
+		missing string
+		// reads are the row's own reads beside those every row makes, each query's limit.
+		reads map[string]int
+		// rows counts the list, 0 for a list not counted; field is the member each listed row
+		// carries only where the query names include, and holds what it holds, "" for anything.
+		rows         int
+		field, holds string
+	}{
+		{list: issueArtifacts, include: "text", names: "include=text", missing: missingIssueArtifacts},
+		{list: issueArtifacts, include: "blocks", names: "include=blocks", missing: missingIssueArtifacts},
+		{list: issueArtifacts, include: "text,blocks", names: "include=text and include=blocks", missing: missingIssueArtifacts},
+		{list: projectArtifacts, include: "text", names: "include=text", missing: missingProjectArtifacts},
+		{list: projectArtifacts, include: "blocks", names: "include=blocks", missing: missingProjectArtifacts},
+		{list: projectArtifacts, include: "text,blocks", names: "include=text and include=blocks", missing: missingProjectArtifacts},
+		{
+			list: "/api/v2/issues/" + issue.Key + "/handoffs", include: "body", names: "include=body",
+			missing: "/api/v2/issues/CORE-404/handoffs", rows: 1, field: "body", holds: body,
+			reads: map[string]int{"phase=plan&sort=-version&limit=1&include=body": 1},
+		},
+		{list: "/api/v2/asks", include: "thread", names: "include=thread", reads: marked, rows: 2 * asked, field: "thread"},
+		{
+			list: "/api/v2/issues/" + issue.Key + "/asks", include: "thread", names: "include=thread",
+			missing: "/api/v2/issues/CORE-404/asks", reads: marked, rows: asked, field: "thread",
+		},
+		{
+			list: "/api/v2/artifacts/" + document.ID + "/asks", include: "thread", names: "include=thread",
+			missing: "/api/v2/artifacts/" + uuid.NewString() + "/asks", reads: marked, rows: asked, field: "thread",
+		},
 	} {
-		answered := read(list + "?" + query)
-		if answered.Code != http.StatusOK {
-			t.Errorf("GET %s?%s answered %d %s, want 200", list, query, answered.Code, answered.Body.String())
-			continue
+		refused := []string{row.list + "?limit=21&include=" + row.include, row.list + "?limit=200&include=" + row.include}
+		if row.missing != "" {
+			refused = append(refused, row.missing+"?limit=21&include="+row.include)
 		}
-		got := decodeBody[page[handoffV2]](t, answered)
-		if got.Limit != limit || len(got.Items) != 1 {
-			t.Errorf("GET %s?%s read a page of %d holding %d handoffs, want %d holding 1", list, query, got.Limit, len(got.Items), limit)
-			continue
+		for _, target := range refused {
+			answered := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+			if code, text := refusalOf(t, answered); answered.Code != http.StatusBadRequest || code != "INVALID_LIMIT" || !strings.Contains(text, "1 to 20 with "+row.names) {
+				t.Errorf("GET %s answered %d %s, want 400 INVALID_LIMIT naming 1 to 20 with %s", target, answered.Code, answered.Body.String(), row.names)
+			}
 		}
-		withBody := strings.Contains(query, "include=body")
-		if held := got.Items[0].Body; (held != nil) != withBody || (withBody && *held != body) {
-			t.Errorf("GET %s?%s answered the body %v, want it only with include=body", list, query, held)
+		reads := map[string]int{"limit=20&include=" + row.include: 20, "include=" + row.include: 20, "limit=21": 21, "limit=200": 200, "": 50}
+		maps.Copy(reads, row.reads)
+		for query, limit := range reads {
+			answered := dispatchRequest(t, handler, http.MethodGet, row.list+"?"+query, nil, "alice")
+			if answered.Code != http.StatusOK {
+				t.Errorf("GET %s?%s answered %d %s, want 200", row.list, query, answered.Code, answered.Body.String())
+				continue
+			}
+			got := decodeBody[page[map[string]json.RawMessage]](t, answered)
+			if got.Limit != limit {
+				t.Errorf("GET %s?%s read a page of %d, want %d", row.list, query, got.Limit, limit)
+			}
+			if row.rows > 0 && (len(got.Items) != min(limit, row.rows) || got.Total != row.rows) {
+				t.Errorf("GET %s?%s read %d rows of %d, want %d of %d", row.list, query, len(got.Items), got.Total, min(limit, row.rows), row.rows)
+			}
+			if row.field == "" {
+				continue
+			}
+			named := strings.Contains(query, "include="+row.include)
+			for _, item := range got.Items {
+				member, held := item[row.field]
+				held = held && string(member) != "null"
+				if held != named {
+					t.Errorf("GET %s?%s answered a row whose %s is %s, want one only with include=%s", row.list, query, row.field, member, row.include)
+					break
+				}
+				var text string
+				if held && row.holds != "" && (json.Unmarshal(member, &text) != nil || text != row.holds) {
+					t.Errorf("GET %s?%s answered the %s %s, want %q, the one recorded", row.list, query, row.field, member, row.holds)
+				}
+			}
 		}
 	}
 }

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -211,65 +210,6 @@ func TestTheAskListOfASourceAnswersItsQuestionMap(t *testing.T) {
 	malformed := tour.send(t, route, tourRequest{Query: url.Values{"source": {"issue:" + issue.Key}}, As: alice}, "")
 	if code, _ := refusalOf(t, malformed); malformed.Code != http.StatusBadRequest || code != "INVALID_QUERY" {
 		t.Fatalf("a source of no source kind: %d %s, want 400 INVALID_QUERY", malformed.Code, malformed.Body.String())
-	}
-}
-
-// TestAV2AskListWithItsThreadsTakesAPageOfTwenty: include=thread answers each ask's thread, its
-// replies, rewordings, answers and followers, so a page of asks that carries it holds at most 20
-// (includedPageMax), as a list of artifacts with include=blocks does
-// (TestAV2ArtifactListWithItsBlocksTakesAPageOfTwenty; the architect's ruling of 2026-11-21 on
-// dispatch://INFRA-4071). On each of the three lists of asks, with 21 asks on an issue and 21 on a
-// project document: limit=21 or limit=200 with include=thread is 400 INVALID_LIMIT naming 1 to 20,
-// a missing issue's or document's list too, before the owner is read; include=thread naming no
-// limit reads a page of 20, each with its thread, and total counts every ask; and limit=200 with
-// include=mark alone, or with no include, still reads a page of 200, no row with a thread.
-func TestAV2AskListWithItsThreadsTakesAPageOfTwenty(t *testing.T) {
-	handler := newTestHandler(t)
-	createReferenceAPIProject(t, handler, "CORE")
-	issue := createReferenceAPIIssue(t, handler, "CORE")
-	document := createProjectDocument(t, handler, "CORE", "Design notes", "# Design notes\n")
-	const asked = includedPageMax + 1
-	for index := range asked {
-		for _, owner := range []string{"/api/v1/issues/" + issue.Key + "/asks", "/api/v1/artifacts/" + document.ID + "/asks"} {
-			created := dispatchRequest(t, handler, http.MethodPost, owner, map[string]any{"question": fmt.Sprintf("Which way, %d?", index)}, "alice")
-			if created.Code != http.StatusCreated {
-				t.Fatalf("POST %s: %d %s", owner, created.Code, created.Body.String())
-			}
-		}
-	}
-	for list, total := range map[string]int{
-		"/api/v2/asks": 2 * asked, "/api/v2/issues/" + issue.Key + "/asks": asked, "/api/v2/artifacts/" + document.ID + "/asks": asked,
-	} {
-		for _, target := range []string{list + "?limit=21&include=thread", list + "?limit=200&include=thread"} {
-			refused := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
-			if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_LIMIT" || !strings.Contains(text, "1 to 20 with include=thread") {
-				t.Errorf("GET %s answered %d %s, want 400 INVALID_LIMIT naming 1 to 20 with include=thread", target, refused.Code, refused.Body.String())
-			}
-		}
-		for query, limit := range map[string]int{"include=thread": 20, "limit=200&include=mark": 200, "limit=200": 200} {
-			answered := dispatchRequest(t, handler, http.MethodGet, list+"?"+query, nil, "alice")
-			if answered.Code != http.StatusOK {
-				t.Errorf("GET %s?%s answered %d %s, want 200", list, query, answered.Code, answered.Body.String())
-				continue
-			}
-			got := decodeBody[page[askV2]](t, answered)
-			if got.Limit != limit || len(got.Items) != min(limit, total) || got.Total != total {
-				t.Errorf("GET %s?%s read a page of %d holding %d asks of %d, want %d holding %d of %d",
-					list, query, got.Limit, len(got.Items), got.Total, limit, min(limit, total), total)
-			}
-			threaded := query == "include=thread"
-			for _, row := range got.Items {
-				if (row.Thread != nil) != threaded {
-					t.Errorf("GET %s?%s answered ask %s with a thread %t, want one only with include=thread", list, query, row.ID, row.Thread != nil)
-					break
-				}
-			}
-		}
-	}
-	for _, missing := range []string{"/api/v2/issues/CORE-404/asks", "/api/v2/artifacts/" + uuid.NewString() + "/asks"} {
-		if code, _ := refusalOf(t, dispatchRequest(t, handler, http.MethodGet, missing+"?limit=21&include=thread", nil, "alice")); code != "INVALID_LIMIT" {
-			t.Errorf("GET %s?limit=21&include=thread answered %s, want INVALID_LIMIT before the owner is read", missing, code)
-		}
 	}
 }
 

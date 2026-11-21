@@ -61,6 +61,9 @@ func (s *server) v2AskRows() []routeRow {
 	askIDs := func() *idRoute { return &idRoute{Kind: "ask", NotFound: apicode.AskNotFound} }
 	askMissing := apicode.Refusal{Condition: apicode.AskMissing, Code: apicode.AskNotFound}
 	issueMissing := apicode.Refusal{Condition: apicode.IssueMissing, Code: apicode.IssueNotFound}
+	// askList is the List of the two lists of asks here: no bounds of their own, so 50 and 200
+	// (listBounds.limits), which each one's description words its page from.
+	askList := listBounds{}
 	return []routeRow{
 		{
 			Method: http.MethodGet, Pattern: "/asks", Auth: authAny, Versions: onlyV2,
@@ -79,7 +82,7 @@ func (s *server) v2AskRows() []routeRow {
 				"no document is 404 NOT_FOUND and a prefix two sources carry 409 ID_AMBIGUOUS (any other source is 400 " +
 				"INVALID_QUERY). " + askRowText + " sort=priority (the default: the issue's priority, unset last, then whose " +
 				"turn it is, the person's before the agent's, then the latest activity, newest first) or created_at (oldest " +
-				"first), each reversed after a -. " + includedPageLimitText(askListV2Query{}) + " {items, total, limit, offset, count, " +
+				"first), each reversed after a -. " + includedPageLimitText(askList, askListV2Query{}) + " {items, total, limit, offset, count, " +
 				"waiting_on_human, waiting_on_agent, as_of}: count the asks the filters keep, as total does, the two waiting_on " +
 				"counts the asks among them whose state is open by whose turn it is (under state=open, the open asks on open " +
 				"issues and project documents; under another state, every ask of state open it keeps, one on a closed issue " +
@@ -89,6 +92,7 @@ func (s *server) v2AskRows() []routeRow {
 			TimeFields:   []string{"created_at"},
 			CrossProject: true,
 			Query:        askListV2Query{},
+			List:         askList,
 			Shape:        routeShape{Status: http.StatusOK, Response: askListV2{}},
 			Authorities:  []authorityRule{askWaitingOnMeAuthority, askMarkAuthority},
 			Refusals:     listRefusals(),
@@ -192,11 +196,12 @@ func (s *server) v2AskRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/asks", Auth: authAny, Versions: onlyV2,
 			Description: "List an issue's asks, oldest first, each as GET /api/v2/asks answers it. state=all (the default), " +
-				"open, answered or resolved. " + askRowText + " " + includedPageLimitText(issueAsksV2Query{}) +
+				"open, answered or resolved. " + askRowText + " " + includedPageLimitText(askList, issueAsksV2Query{}) +
 				" {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
 			Handler:  s.listIssueAsksV2,
 			Resource: "asks", Kind: kindCollection, Key: "{id}",
 			Query:       issueAsksV2Query{},
+			List:        askList,
 			Shape:       routeShape{Status: http.StatusOK, Response: page[askV2]{}},
 			Authorities: []authorityRule{askMarkAuthority},
 			Refusals:    listRefusals(issueMissing),

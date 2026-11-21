@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -635,11 +636,13 @@ func TestTheRendersTagHoldsTheListsPage(t *testing.T) {
 }
 
 // Every /api/v2 route the table mounts whose query names members that render each listed row (a
-// renders tag) says so from that one declaration where a caller reads it: its description carries
-// includedPageLimitText of its Query, and the document's limit parameter the same page and members
-// (includedPageText). So a row cannot declare the members and leave its description or the
-// document silent. The lists that declare them - an issue's and a project's artifacts, and an
-// issue's handoffs - are among the routes walked.
+// renders tag) says so from that one declaration where a caller reads it, each worded from the
+// row's own List as the decoder reads it: its description carries the list's own limit (limits)
+// and the page with those members (includedPageText), and the document's limit parameter the same
+// page and members. So a row cannot declare the members and leave its description or the document
+// silent, nor word its page from bounds other than its List. The lists that declare them - an
+// issue's and a project's artifacts, an issue's handoffs, and the three lists of asks - are among
+// the routes walked.
 func TestEveryListThatRendersItsRowsSaysItsPage(t *testing.T) {
 	tree, _ := readOpenAPITreeOf(t, apiV2)
 	document, _ := tree.(map[string]any)
@@ -657,10 +660,11 @@ func TestEveryListThatRendersItsRowsSaysItsPage(t *testing.T) {
 			continue
 		}
 		rendering = append(rendering, name)
-		if said := includedPageLimitText(route.Query); !strings.Contains(route.Description, said) {
-			t.Errorf("%s names renders:%q on its include, and its description does not say %q", name, strings.Join(query.rendering.renders, ","), said)
-		}
 		said := includedPageText(route.List, query.rendering.renders)
+		least, fallback, most := route.List.limits()
+		if described := fmt.Sprintf("limit %d to %d (default %d), and %s, and offset;", least, most, fallback, said); !strings.Contains(route.Description, described) {
+			t.Errorf("%s names renders:%q on its include, and its description does not say %q", name, strings.Join(query.rendering.renders, ","), described)
+		}
 		parameters, _ := openAPIAt(document, "paths", route.Pattern, strings.ToLower(route.Method))["parameters"].([]any)
 		limit := ""
 		for _, parameter := range parameters {
@@ -672,7 +676,10 @@ func TestEveryListThatRendersItsRowsSaysItsPage(t *testing.T) {
 			t.Errorf("%s names renders:%q on its include, and the document's limit says %q, not %q", name, strings.Join(query.rendering.renders, ","), limit, said)
 		}
 	}
-	for _, list := range []string{"GET /api/v2/issues/{key}/artifacts", "GET /api/v2/projects/{key}/artifacts", "GET /api/v2/issues/{key}/handoffs"} {
+	for _, list := range []string{
+		"GET /api/v2/issues/{key}/artifacts", "GET /api/v2/projects/{key}/artifacts", "GET /api/v2/issues/{key}/handoffs",
+		"GET /api/v2/asks", "GET /api/v2/issues/{key}/asks", "GET /api/v2/artifacts/{id}/asks",
+	} {
 		if !slices.Contains(rendering, list) {
 			t.Errorf("%s is no route whose query names members that render each listed row; the routes that do are %q", list, rendering)
 		}
