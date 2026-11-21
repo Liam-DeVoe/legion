@@ -915,6 +915,12 @@ func heldLinkKinds(blockRefKinds string) string {
 // member that states no such link is in the map with none, and one whose address does not start
 // with the document's ref_key is no block the pass addresses and is left out.
 //
+// The state read is every state but gone, not live alone: a write marks a block proposed,
+// settled or overtaken, and the index pass keeps such a state unless the pass itself makes the
+// block gone (blockNode). A block in one of those states that another release's version dropped
+// is as gone as a live one, and a read of the live blocks alone would leave it standing in that
+// state for ever, with nothing projecting it.
+//
 // It is the store's own side of the document, and IndexBlocks reads it only where that side is
 // stale (blockStand.stale): another release indexed the document after the store last stated its
 // blocks, and that release deleted the rows of the blocks and the links its version dropped and
