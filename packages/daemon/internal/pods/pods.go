@@ -156,6 +156,18 @@ type IdleView struct {
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
 	// role of its pod. The rule reads only whether there is one, so the store reads only that.
 	Waiting bool
+	// RoleStopQueued is whether a supervise row that stops a role of the issue still waits in
+	// the outbox: a close's suspend, issue_close or tree_close, or an idle release's role stop.
+	// IssueSuspendQueued is whether the issue's issue_suspend row does, the act of a close that
+	// deletes its Sandbox, its pod and its disk. CheckLookOpen is whether a look of the issue's
+	// production check is open: its bound row (record.CheckLook) still waits, and the look's end
+	// stops the checking role and deletes the Sandbox. Only the rule for the pod of an issue the
+	// workflow has taken out reads the three (workflow.LeftPodClose): each says a close of that
+	// pod is still under way or still to come, so the rule leaves the pod to it rather than
+	// stopping it a second time.
+	RoleStopQueued     bool
+	IssueSuspendQueued bool
+	CheckLookOpen      bool
 	// Releasing is whether a release of this pod is already marked in progress, which no second
 	// release starts behind.
 	Releasing bool

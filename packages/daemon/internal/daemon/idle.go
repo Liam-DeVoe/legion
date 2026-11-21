@@ -48,10 +48,12 @@ var _ issuePods = (*sandbox.Runtime)(nil)
 // tickIdle decides every pod of the project on the daemon's own period (idleTickInterval),
 // under both release rules: the release of a pod no claim owns, whose every claim is failed,
 // retired or suspended (releaseUnownedPods), and the idle release, which takes a pod whose live
-// roles have had no turn in progress and no turn due for the idle period (releaseIdlePods). It
-// returns at once — running no ticker at all — when release is off: `idle_minutes: 0`, or a
-// runtime that is not Kubernetes, which has no pod to release and no image to compare. Both
-// rules are off with it, since one period and one tick carry the two.
+// roles have had no turn in progress and no turn due for the idle period (releaseIdlePods). The
+// pod of a child that left the workflow while its tree runs on is closed by the same two passes,
+// with no live claim by the first (closeLeftPods) and with one by the second
+// (workflow.LeftPodClose). It returns at once — running no ticker at all — when release is off:
+// `idle_minutes: 0`, or a runtime that is not Kubernetes, which has no pod to release and no image
+// to compare. Both rules are off with it, since one period and one tick carry the two.
 func (w *workflowRuntime) tickIdle(ctx context.Context) {
 	if w.idlePeriod <= 0 || w.idleStore == nil || w.idleRuntime == nil {
 		return
@@ -111,6 +113,8 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 // rule reads the decline from the view, so this pass marks no release, writes no row and asks no
 // shim for it until a role of the issue starts a turn or a process again. The release itself is
 // recorded where it completes (outbox.releaseIssue, through recordPodRelease).
+// A pod whose issue the workflow has taken out may be closed here instead (workflow.LeftPodClose,
+// closedLeftPod).
 func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	now := w.clockNow().UTC()
 	onConfiguredImage := w.idleRuntime.IssuePodRunsConfiguredImage(issue)
@@ -121,7 +125,10 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		since, found := view.QuietSince()
 		quiet = found && now.Sub(since) >= w.idlePeriod
 		holding = view.Holding
-		if !decision.Release {
+		switch {
+		case decision.Close:
+			return leftPodCloseRows(view, decision, now)
+		case !decision.Release:
 			return store.IdleReleaseMark{}, nil
 		}
 		return idleReleaseRows(view, decision, now)
@@ -134,6 +141,10 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		detail := strings.Join(decision.HoldKinds, ",")
 		w.log.Debug("idle release: the pod is kept", "issue", issue, "hold", decision.Hold.String(), "detail", detail)
 		w.recordKeptPod(ctx, issue, decision.Hold, detail, quiet, holding, now)
+		return
+	}
+	if decision.Close {
+		w.closedLeftPod(ctx, issue, decision, holding)
 		return
 	}
 	w.log.Info("idle release: releasing an issue's pod, which has had no turn in progress and no turn due for the idle period",
@@ -159,6 +170,10 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 // a day it released nothing, which is what its production check reads. Only a pass with no
 // candidate at all writes nothing.
 func (w *workflowRuntime) releaseUnownedPods(ctx context.Context) {
+	// The pods of children that left the workflow under a running tree are pods no claim owns
+	// too, and none of them is in the candidate answer below, which holds only issues still in
+	// the workflow: closeLeftPods decides them, before this rule's own.
+	w.closeLeftPods(ctx)
 	// The project is spelled two ways here, and the two are not the same string. The issue
 	// records the candidate answer reads carry the Dispatch project key (w.dispatchProject,
 	// "LEGION"), while the claims it reads beside them, the release's transaction, the hold
@@ -272,6 +287,78 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	return workflow.IdleHoldNone, true
 }
 
+// closeLeftPods finishes the close of each pod whose issue left the workflow while its tree runs
+// on and whose claims have all stopped (store.LeftPods, workflow.LeftPodClose). Such a pod stands
+// where something built it again after the issue's own close — an operator's resume, task or
+// retry, or the controller's fresh session — and its roles have stopped since, or where that
+// close never took it. Nothing else takes it: the release of a pod no claim owns decides only
+// issues still in the workflow (store.UnownedPods), and the idle rule only pods with a live claim
+// (store.IdlePods), whose left pods it closes itself (releaseIdlePod).
+//
+// Each candidate is read against the runtime before anything else, as releaseUnownedPod reads
+// it, and one whose Sandbox the runtime does not hold is passed over with no line and no write:
+// that is what the issue's close left of nearly every such issue, so it is no hold of anything,
+// and the read is the informer's store rather than an API call (sandbox.Runtime.IssueSandbox).
+func (w *workflowRuntime) closeLeftPods(ctx context.Context) {
+	issues, err := w.idleStore.LeftPods(ctx, w.dispatchProject, w.projectID, record.OutOfWorkflowStatuses)
+	if err != nil {
+		w.log.Warn("left pod close: could not list the pods of issues that left the workflow", "error", err)
+		return
+	}
+	for _, issue := range issues {
+		if ctx.Err() != nil {
+			return
+		}
+		if _, present := w.idleRuntime.IssueSandbox(issue); !present {
+			continue
+		}
+		w.closeLeftPod(ctx, issue)
+	}
+}
+
+// closeLeftPod decides one such pod (workflow.LeftPodClose) and, when the rule closes it, writes
+// the close's rows in one transaction with the view they rest on (store.ReleaseIdleIssue). A pod
+// the rule kept that was quiet for the whole idle period is recorded as a hold, as the two
+// release passes record theirs (recordKeptPod).
+func (w *workflowRuntime) closeLeftPod(ctx context.Context, issue string) {
+	now := w.clockNow().UTC()
+	var decision workflow.IdleDecision
+	var quiet, holding bool
+	closed, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+		decision = workflow.LeftPodClose(view, now, w.idlePeriod)
+		since, found := view.QuietSince()
+		quiet = found && now.Sub(since) >= w.idlePeriod
+		holding = view.Holding
+		if !decision.Close {
+			return store.IdleReleaseMark{}, nil
+		}
+		return leftPodCloseRows(view, decision, now)
+	})
+	if err != nil {
+		w.log.Warn("left pod close: could not decide an issue's pod", "issue", issue, "error", err)
+		return
+	}
+	if !closed {
+		w.log.Debug("left pod close: the pod is kept", "issue", issue, "hold", decision.Hold.String(),
+			"detail", strings.Join(decision.HoldKinds, ","))
+		w.recordKeptPod(ctx, issue, decision.Hold, strings.Join(decision.HoldKinds, ","), quiet, holding, now)
+		return
+	}
+	w.closedLeftPod(ctx, issue, decision, holding)
+}
+
+// closedLeftPod is what follows the close of a pod whose issue left the workflow, whichever pass
+// wrote it: one line, the end of the pod's hold streak, since the pod is going and whatever kept
+// it is over, and the wake of the issue's lane, which runs the close's rows.
+func (w *workflowRuntime) closedLeftPod(ctx context.Context, issue string, decision workflow.IdleDecision, holding bool) {
+	w.log.Info("left pod close: closing the pod of an issue that left the workflow while its tree runs on; nothing else stops it",
+		"issue", issue, "idle", w.idlePeriod.String(), "roles", len(decision.Roles))
+	if holding {
+		endIdleHolds(ctx, w.idleStore, w.projectID, issue, w.log)
+	}
+	w.wakeOutbox(issue, record.OutboxKindIssueSuspend)
+}
+
 // recordableHold is whether a hold is one a deployment reads as "release would have taken this
 // pod and something stopped it". Eleven of workflow's values are not. Five belong to the idle
 // rule:
@@ -299,13 +386,13 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 //
 // IdleHoldUnownedTreeNotLive, the fourth, is the one of the six whose pod can stand with nobody
 // in it: the issue or its tree root has left the workflow, or one of them lingers, and the close
-// that stops that pod has not finished. The idle rule reports no such pod either — it decides
-// the issues that have a live claim (IdlePods) and this rule the issues that have none
-// (UnownedPods), so the two candidate sets are disjoint and no pod this rule reads is ever
-// reported as IdleHoldTreeNotLive — and a close stuck on one leaves no hold row at all. It needs
-// none: the pass's own line counts the hold under unowned_tree_not_live once a minute for as
-// long as the pod stands, and `legion state` reports what the tree is doing, which is what the
-// operator acts on. A row would be a third reading of one stuck close with no fact of its own.
+// that stops that pod has not finished. The rule meets it only where its candidate left the
+// workflow between the candidate answer, which holds only issues in the workflow (UnownedPods),
+// and the pass's own transaction. Of the pods of issues already out of the workflow with no live
+// claim, the close pass decides a child's under a running tree (closeLeftPods) and records its
+// own holds, and the idle rule decides only the issues that have a live claim (IdlePods), so no
+// pod this rule reads is ever reported as IdleHoldTreeNotLive. It needs no row: the pass's own
+// line counts the hold under unowned_tree_not_live.
 //
 // The pass that reads one of them ends the pod's streaks instead of recording, which is the one
 // place a streak ends outside a hold of another reason (releaseIdlePod).
@@ -315,9 +402,12 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 // ones that are not (image, plugin_contract, unreported, unpushed_work, workspace_unread,
 // overtaken, unauthorized): a deployment reads release's health from which of them it sees, so
 // leaving the healthy ones out would leave it unable to tell a pod kept for good reason from one
-// never decided at all. IdleHoldTreeNotLive is recorded too: a pod of an issue the workflow has
-// taken out is one the close is stopping, and a deployment that sees it every tick is seeing a
-// close that is stuck.
+// never decided at all. IdleHoldTreeNotLive is recorded too: it holds a pod of an issue the
+// workflow has taken out only while a close of that pod is still to come or still running
+// (workflow.LeftPodClose) — a tree that lingers, a root out of the workflow, an open look of the
+// issue's production check, a role stop or a Sandbox suspension of the issue still queued — so a
+// deployment that sees it every tick past a linger's end or a look's bound is seeing a close that
+// is stuck.
 //
 // The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedOperatorSuspended
 // and IdleHoldUnownedDelivery — are recorded for the same reason, and it is the sharpest one
@@ -499,6 +589,37 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 		return store.IdleReleaseMark{}, err
 	}
 	mark.Rows = rows
+	return mark, nil
+}
+
+// leftPodCloseRows is the close of a pod whose issue left the workflow as outbox rows
+// (workflow.LeftPodClose), the rows that issue's departure wrote (the workflow's leave): one
+// `suspend` supervise row per live role, at the issue's generation, which suspends the claim for
+// the daemon with its session kept, and then the issue's Sandbox suspension (record.IssueSuspend),
+// which deletes the Sandbox, the pod and the disk once every role has stopped
+// (store.IssueSuspension). A pod with no live claim gets the suspension alone. The rows carry no
+// release and the store writes them with no mark (store.IdleReleaseMark.Close).
+func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
+	mark := store.IdleReleaseMark{Generation: view.Generation, Close: true}
+	add := func(payload record.OutboxPayload) error {
+		row, err := record.NewOutboxRow(view.Issue, payload, now)
+		if err != nil {
+			return fmt.Errorf("encode the %s of %s's close: %w", payload.OutboxKind(), view.Issue, err)
+		}
+		mark.Rows = append(mark.Rows, store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload})
+		return nil
+	}
+	reason := fmt.Sprintf("%s left the workflow, and its pod has been idle for the release period", view.Issue)
+	for _, role := range decision.Roles {
+		if err := add(record.SuperviseRequest{Op: "suspend", Tree: view.Tree, Role: role,
+			Generation: view.Generation, Reason: reason}); err != nil {
+			return store.IdleReleaseMark{}, err
+		}
+	}
+	if err := add(record.IssueSuspend{Tree: view.Tree, Generation: view.Generation,
+		TreeGeneration: view.Root.Generation}); err != nil {
+		return store.IdleReleaseMark{}, err
+	}
 	return mark, nil
 }
 
