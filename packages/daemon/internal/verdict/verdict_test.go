@@ -50,7 +50,9 @@ var (
 // reviewer's verdict where the entry takes side reviews, or a person's approval; and on every
 // head a refusal - the tester's fail, a reviewer's changes, the CI reviewer's request for changes,
 // or a person's last review at the head asking for changes - beating every approval. A head that
-// holds none of them gets no conclusion, so nothing is written on it.
+// holds none of them gets no conclusion, so nothing is written on it. On a Legion head the daemon
+// reads an author's write access for a request for changes alone (intake's resolveReviewPermission),
+// so an approval there is given here as it arrives: with Person false.
 func TestDecideIsR4sTable(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -65,17 +67,17 @@ func TestDecideIsR4sTable(t *testing.T) {
 		{"a Legion head: the tester's pass and no reviewer verdict", Inputs{Head: h, Legion: true, Tester: passAtH}, None},
 		{"a Legion head: the reviewer's approve and no tester pass", Inputs{Head: h, Legion: true, Reviewer: approveAtH}, None},
 		{"a Legion head: a person's approval is no verdict", Inputs{Head: h, Legion: true, Tester: passAtH,
-			Reviews: []Review{approvedBy("a-writer", true, h)}}, None},
+			Reviews: []Review{approvedBy("a-writer", false, h)}}, None},
 		{"a Legion head: a person's request for changes refuses the reviewer's approve", Inputs{Head: h, Legion: true, Tester: passAtH, Reviewer: approveAtH,
 			Reviews: []Review{refusedBy("a-writer", true, h)}}, Failure},
 		{"a Legion head: the same person's later approval lifts the refusal", Inputs{Head: h, Legion: true, Tester: passAtH, Reviewer: approveAtH,
-			Reviews: []Review{refusedBy("a-writer", true, h), approvedBy("a-writer", true, h)}}, Success},
+			Reviews: []Review{refusedBy("a-writer", true, h), approvedBy("a-writer", false, h)}}, Success},
 		{"a Legion head: another person's approval lifts no refusal", Inputs{Head: h, Legion: true, Tester: passAtH, Reviewer: approveAtH,
-			Reviews: []Review{refusedBy("a-writer", true, h), approvedBy("another-writer", true, h)}}, Failure},
+			Reviews: []Review{refusedBy("a-writer", true, h), approvedBy("another-writer", false, h)}}, Failure},
 		{"a Legion head: a comment after a request for changes lifts nothing", Inputs{Head: h, Legion: true, Tester: passAtH, Reviewer: approveAtH,
-			Reviews: []Review{refusedBy("a-writer", true, h), commentedBy("a-writer", true, h)}}, Failure},
+			Reviews: []Review{refusedBy("a-writer", true, h), commentedBy("a-writer", false, h)}}, Failure},
 		{"a Legion head: an approval recorded after the same person's later refusal lifts nothing", Inputs{Head: h, Legion: true, Tester: passAtH, Reviewer: approveAtH,
-			Reviews: []Review{submitted(refusedBy("a-writer", true, h), 12, 5), submitted(approvedBy("a-writer", true, h), 11, 1)}}, Failure},
+			Reviews: []Review{submitted(refusedBy("a-writer", true, h), 12, 5), submitted(approvedBy("a-writer", false, h), 11, 1)}}, Failure},
 		{"a Legion head: a request for changes at another head refuses nothing here", Inputs{Head: h, Legion: true, Tester: passAtH, Reviewer: approveAtH,
 			Reviews: []Review{refusedBy("a-writer", true, h0)}}, Success},
 		{"a Legion head: an account with no write access refuses nothing", Inputs{Head: h, Legion: true, Tester: passAtH, Reviewer: approveAtH,
