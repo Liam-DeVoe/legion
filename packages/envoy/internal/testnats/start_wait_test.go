@@ -90,16 +90,22 @@ func TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart(t *testing.T
 
 // A server that logged a fatal error fails its start even once its client listener is up: nats-server
 // v2.15.1 logs a profiler port it cannot bind as fatal and goes on starting (StartProfiler), and
-// ReadyForConnections does not look at the profiler. The row holds the profiler's port on every
-// address, waits until the server both logged the fatal error and accepts connections, and only then
-// asks awaitReady, so a wait that read the flag only while the server was not ready would pass it.
+// ReadyForConnections does not look at the profiler. The row holds the profiler's port on the one
+// address the server binds it on, its Host, waits until the server both logged the fatal error and
+// accepts connections, and only then asks awaitReady, so a wait that read the flag only while the
+// server was not ready would pass it. It holds that exact address and port rather than the port on
+// the wildcard address: Linux refuses a bind of a loopback address on a port a wildcard listener
+// holds, but gVisor, which runs the tests of Legion's issue pods and build Jobs, lets the bind take
+// it, and the profiler then starts with no fatal error. Both refuse a second bind of the same address
+// and port.
 func TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady(t *testing.T) {
-	held, err := net.Listen("tcp", "0.0.0.0:0")
+	host := testport.LoopbackIP().String()
+	held, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
 		t.Fatalf("hold a port for the server's profiler: %v", err)
 	}
 	defer held.Close()
-	srv, err := natsserver.NewServer(&natsserver.Options{Host: testport.LoopbackIP().String(), Port: -1, ProfPort: held.Addr().(*net.TCPAddr).Port, NoSigs: true})
+	srv, err := natsserver.NewServer(&natsserver.Options{Host: host, Port: -1, ProfPort: held.Addr().(*net.TCPAddr).Port, NoSigs: true})
 	if err != nil {
 		t.Fatalf("create the NATS server: %v", err)
 	}
