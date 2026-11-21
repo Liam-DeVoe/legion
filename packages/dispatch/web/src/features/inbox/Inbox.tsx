@@ -1071,10 +1071,20 @@ export function Inbox({
    *  the selected row is the item in hand, so the Dismiss the pointer reaches on another row
    *  takes that row out and leaves the selection, the address and the focus on the item being
    *  read; the selected row's Dismiss, the column head's, and every card's below the column's
-   *  width hand the reader on to the item after it (R8). */
+   *  width hand the reader on to the item after it (R8). A press that left the focus in the row
+   *  it takes out - the Dismiss takes it as the pointer presses it - hands it to the selected
+   *  row first, with no scroll: the focus would go with that row, and the page's rescue would
+   *  put it on the same Dismiss of the row that moves up into its place (`useFocusRescue`),
+   *  where Enter would dismiss that row too. */
   const dismissFromRow = (named: InboxDismissRow) => {
-    if (paneShown && named.id !== paneSelection.id) dismissRows([named]);
-    else dismissNow([named]);
+    if (paneShown && named.id !== paneSelection.id) {
+      if (rowIn(listRef.current, named.id)?.contains(document.activeElement) === true) {
+        paneSelection.selectedRow()?.focus({ preventScroll: true });
+      }
+      dismissRows([named]);
+    } else {
+      dismissNow([named]);
+    }
   };
   // Every key the Inbox binds, and the record of the row `l` was pressed on, which the column's
   // wrapper below holds and drops (`useInboxKeymap.ts`).

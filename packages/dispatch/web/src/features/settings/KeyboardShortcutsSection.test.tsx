@@ -447,7 +447,7 @@ test("Reset all gives every action its defaults again", async () => {
   }
 });
 
-test("Escape, and Tab out of the recorder, end a recording with nothing changed", async () => {
+test("Escape, and Tab out of the recorder with no press waiting, end a recording with nothing changed", async () => {
   const view = drawSection();
   try {
     await onFakeClock(async () => {
@@ -460,13 +460,66 @@ test("Escape, and Tab out of the recorder, end a recording with nothing changed"
       expect(document.activeElement).toBe(add);
 
       await user.click(add);
-      await user.keyboard("q");
       await user.tab();
       await jump(CHORD_TIMEOUT_MS);
       expect(add.textContent).toBe("Add key");
       expect(document.activeElement).not.toBe(add);
+
+      // A key the refusal check refuses is not kept, and leaving ends the recording all the same.
+      await user.click(add);
+      await user.keyboard("e");
+      await user.tab();
+      await jump(CHORD_TIMEOUT_MS);
+      expect(add.textContent).toBe("Add key");
+      expect(within(line("inbox.snooze")).queryByRole("alert")).toBeNull();
     });
     expect(stored()).toEqual({});
+  } finally {
+    view.unmount();
+  }
+});
+
+// R14 makes the new key the next key press, or two presses within one second: a press the
+// reader leaves before the second ends is that key, as the end of the second would make it.
+test("a key pressed and left by a click elsewhere before its second ends is the new key", async () => {
+  const view = drawSection();
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      const change = control("inbox.snooze", "Change b");
+      await user.click(change);
+      await user.keyboard("{Shift>}B{/Shift}");
+      expect(change.textContent).toBe("Shift+B then … Esc cancels");
+      await user.click(screen.getByRole("heading", { name: "Keyboard shortcuts" }));
+      expect(document.activeElement).not.toBe(change);
+      expect(stored()).toEqual({ "inbox.snooze": ["Shift+B", "h"] });
+      // The end of the second the press waited for keeps nothing more.
+      await jump(CHORD_TIMEOUT_MS);
+    });
+    expect(stored()).toEqual({ "inbox.snooze": ["Shift+B", "h"] });
+    expect(keysOf("inbox.snooze")).toEqual(["Shift+B", "h"]);
+    expect(line("inbox.snooze").textContent).toContain("Changed from b or h");
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a key pressed and left by Tab before its second ends is the new key", async () => {
+  const view = drawSection();
+  try {
+    await onFakeClock(async () => {
+      const user = userOnFakeClock();
+      const add = control("inbox.snooze", "Add key");
+      await user.click(add);
+      await user.keyboard("q");
+      expect(add.textContent).toBe("q then … Esc cancels");
+      await user.tab();
+      expect(document.activeElement).not.toBe(add);
+      expect(stored()).toEqual({ "inbox.snooze": ["b", "h", "q"] });
+      await jump(CHORD_TIMEOUT_MS);
+    });
+    expect(stored()).toEqual({ "inbox.snooze": ["b", "h", "q"] });
+    expect(keysOf("inbox.snooze")).toEqual(["b", "h", "q"]);
   } finally {
     view.unmount();
   }

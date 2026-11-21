@@ -333,14 +333,15 @@ export function useInboxKeymap({
    *  mounted its card yet, and every thread row, which asks nothing. Below the column's width
    *  the keys act on the row holding the focus, itself or on one of its card's options (R18):
    *  a click on an option leaves the focus on its input, and the card it is in is the one in
-   *  hand. */
+   *  hand. With nothing selected beside the column no case of its own is needed: no column is
+   *  drawn then (`paneRow` shows none), so `holdPane` has set `paneRef` to null as its wrapper
+   *  went, and the selector names `[data-ask-card=""]`, which no card carries, since each
+   *  carries its ask's id. */
   const answerHand = () =>
     paneShown
-      ? paneSelection.id === undefined
-        ? null
-        : (paneRef.current?.querySelector<HTMLElement>(
-            `[data-ask-card="${CSS.escape(paneSelection.id)}"]`
-          ) ?? null)
+      ? (paneRef.current?.querySelector<HTMLElement>(
+          `[data-ask-card="${CSS.escape(paneSelection.id ?? "")}"]`
+        ) ?? null)
       : (focusedRow() ??
         (document.activeElement?.matches(OPTION_SELECTOR) === true
           ? rowAround(document.activeElement)

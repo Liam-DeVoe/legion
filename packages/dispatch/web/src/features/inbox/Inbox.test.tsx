@@ -7110,6 +7110,89 @@ test("beside the column a Dismiss on a row that is not selected leaves the selec
   }
 });
 
+// The same Dismiss with the focus on it, as the pointer's press leaves it, and the page's focus
+// rescue mounted as the app shell mounts it (`RescuedMain`). The focus would go with the row it
+// is in, and the rescue would hand it to the same Dismiss of the row that moves up into that
+// place, where Enter would dismiss that row too: it goes to the row of the item being read.
+test("beside the column a Dismiss holding the focus on a row that is not selected hands the focus to the selected row, and to no control of another row", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  // Newest first, A to D: each thread's reply an hour older than the one before.
+  let threads = ["a", "b", "c", "d"].map((name, index) => {
+    const row = replyRow(`thread-${name}`, { subject: `Thread ${name.toUpperCase()}` });
+    return { ...row, reply: { ...row.reply, created_at: `2026-10-12T0${4 - index}:00:00Z` } };
+  });
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async () => ({
+    as_of: "2026-10-12T05:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: threads,
+    total: threads.length,
+  }));
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const getIssue = mockIssueReads();
+  const dismissed = answerInboxDismisses().mockImplementation(async () => {
+    threads = threads.filter((thread) => thread.thread_id !== "thread-c");
+    return { dismissed: 1 };
+  });
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RouteProbe />
+          <RescuedMain>
+            <Inbox />
+          </RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() =>
+      expect(rowIds()).toEqual([
+        "reply:thread-a",
+        "reply:thread-b",
+        "reply:thread-c",
+        "reply:thread-d",
+      ])
+    );
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:thread-a"]));
+
+    const dismiss = within(shortRow("reply:thread-c")).getByRole("button", {
+      name: "Dismiss: Thread C",
+    });
+    act(() => dismiss.focus());
+    expect(dismiss).toHaveFocus();
+    await user.click(dismiss);
+    await waitFor(() =>
+      expect(rowIds()).toEqual(["reply:thread-a", "reply:thread-b", "reply:thread-d"])
+    );
+    await afterRescue();
+
+    expect(dismissed).toHaveBeenCalledTimes(1);
+    expect(selectedIds()).toEqual(["reply:thread-a"]);
+    expect(address()).toBe("/?item=reply%3Athread-a");
+    expect(shortRow("reply:thread-a")).toHaveFocus();
+    for (const id of ["reply:thread-b", "reply:thread-d"]) {
+      expect(shortRow(id).contains(document.activeElement)).toBe(false);
+    }
+  } finally {
+    view.unmount();
+    narrow();
+    dismissed.mockRestore();
+    listComments.mockRestore();
+    listMyReplies.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
 // A search that leaves no row hides the item being read; it does not take it away. The selection
 // and the address keep it while nothing is listed, so the reader who clears the text is back on
 // that item rather than on the first row.

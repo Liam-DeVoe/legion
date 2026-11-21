@@ -109,15 +109,16 @@ const textButtonClass = `min-h-11 text-sm font-medium xl:min-h-8 ${linkText} ${l
 /**
  * A control that records a key once pressed: one of an action's keys, which it then changes, or
  * the action's Add key. While it records it says so, and reads every press (`onKeyDown`); leaving
- * it ends the recording. The same element does both, so the focus stays on it throughout.
+ * it ends the recording (`onLeave`). The same element does both, so the focus stays on it
+ * throughout.
  */
 function RecorderButton({
   active,
   children,
   className,
   label,
-  onCancel,
   onKeyDown,
+  onLeave,
   onStart,
   ref,
   refusalId,
@@ -129,8 +130,8 @@ function RecorderButton({
   className: string;
   /** Its name while it does not record, where its text alone does not say what it does. */
   label?: string;
-  onCancel: () => void;
   onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void;
+  onLeave: () => void;
   onStart: (from: HTMLButtonElement) => void;
   ref?: Ref<HTMLButtonElement>;
   refusalId: string;
@@ -144,7 +145,7 @@ function RecorderButton({
           ? className
           : `min-h-11 rounded-md border-2 border-dashed px-2 text-xs xl:min-h-8 ${calloutInfoBorder} ${calloutInfoBg} ${calloutInfoTitleText}`
       }
-      onBlur={active === undefined ? undefined : onCancel}
+      onBlur={active === undefined ? undefined : onLeave}
       onClick={(event) => {
         if (active === undefined) onStart(event.currentTarget);
       }}
@@ -185,11 +186,14 @@ function RecorderButton({
  * A recording takes every press (`preventDefault` and `stopPropagation`, so no page key fires:
  * the window's keymap skips a handled press): the next press, with or without Ctrl, Cmd, Alt or
  * Shift, and a second press within `CHORD_TIMEOUT_MS`, which makes one key of two presses. A
- * modifier alone ends nothing. Escape, Tab and leaving the control end it with nothing changed.
- * A key the refusal check refuses is not kept: the section says why, naming the action that
- * holds it, and waits for another. A Reset whose defaults the refusal check refuses, since
- * another action holds one of them now, changes nothing: the section says why, naming that
- * action, so no action loses a key the person gave it unless they take it away themselves.
+ * modifier alone ends nothing. Escape ends it with nothing changed. Tab and leaving the control
+ * end it too: a first press still waiting for its second is then the key, as the end of the
+ * second makes it (R14: the new key is the next key press), and with no press waiting nothing
+ * changes. A key the refusal check refuses is not kept: the section says why, naming the action
+ * that holds it, and waits for another, until the reader leaves the control. A Reset whose
+ * defaults the refusal check refuses, since another action holds one of them now, changes
+ * nothing: the section says why, naming that action, so no action loses a key the person gave it
+ * unless they take it away themselves.
  */
 export function KeyboardShortcutsSection(): ReactNode {
   const { login, personKeys } = useContext(KeymapPersonContext);
@@ -274,9 +278,19 @@ export function KeyboardShortcutsSection(): ReactNode {
     setActionKeys(login, current.action, next);
   };
 
+  /** Ends the recording as the focus leaves the recorder - a click elsewhere, Tab. A first press
+   *  still waiting for its second is kept, as the timer would keep it; a key the refusal check
+   *  refuses is not, and the recording ends all the same, as it does with no press waiting. */
+  const leave = () => {
+    const first = recordingRef.current?.first;
+    stopTimer();
+    if (first !== undefined) finish(first);
+    if (recordingRef.current !== undefined) cancel();
+  };
+
   const onRecorderKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     const current = recordingRef.current;
-    // Tab keeps its own action: it moves the focus on, which ends the recording (`onBlur`).
+    // Tab keeps its own action: it moves the focus on, which ends the recording (`leave`).
     if (current === undefined || event.key === "Tab") return;
     event.preventDefault();
     event.stopPropagation();
@@ -455,8 +469,8 @@ export function KeyboardShortcutsSection(): ReactNode {
                               active={changing}
                               className="inline-flex min-h-11 items-center rounded xl:min-h-8"
                               label={`Change ${spoken(key)}`}
-                              onCancel={cancel}
                               onKeyDown={onRecorderKeyDown}
+                              onLeave={leave}
                               onStart={(from) => start(action, index, from)}
                               refusalId={refusalId}
                             >
@@ -490,8 +504,8 @@ export function KeyboardShortcutsSection(): ReactNode {
                         <RecorderButton
                           active={ours?.replacing === undefined ? ours : undefined}
                           className={textButtonClass}
-                          onCancel={cancel}
                           onKeyDown={onRecorderKeyDown}
+                          onLeave={leave}
                           onStart={(from) => start(action, undefined, from)}
                           ref={(element) => {
                             if (element === null) addButtons.current.delete(action);
