@@ -227,13 +227,16 @@ var ControllerIdentityVariables = []string{cipherclient.BrokerURLVar, cipherclie
 // runtime: tmux is held to (checkLoopbackListener). The identity is read by the client's own
 // cipherclient.MachineIdentity, as the controller's Dispatch broker check reads it
 // (controllerDispatchBroker, cmd/legion), so a kind with one of its variables missing, or a kind
-// the client does not know, is refused in the client's words. The host is judged as written, and
-// the refusal names it alone, never the URL.
+// the client does not know, is refused in the client's words, and an identity variable holding
+// only blanks, which the client reads as naming none, is refused as an unset one is. The host is
+// judged as written, and the refusal names it alone, never the URL.
 func (c ControllerConfig) CheckListener(env map[string]string) error {
 	noIdentity := slices.ContainsFunc(ControllerIdentityVariables, func(name string) bool { return env[name] == "" })
 	var unproven error
 	if !noIdentity {
-		_, unproven = cipherclient.MachineIdentity(func(name string) string { return env[name] })
+		var identity cipherclient.Source
+		identity, unproven = cipherclient.MachineIdentity(func(name string) string { return env[name] })
+		noIdentity = unproven == nil && identity == nil
 	}
 	if !noIdentity && unproven == nil {
 		return nil

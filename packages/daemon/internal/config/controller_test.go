@@ -63,6 +63,7 @@ func TestTheControllerNeedsALoopbackListenerOrAMachineIdentity(t *testing.T) {
 		{"off loopback, no identity", "http://envoy.test:9020", nil, refusal},
 		{"off loopback, a broker and no identity", "http://envoy.test:9020", map[string]string{"AGENT_SECRETS_URL": "https://secrets.example.invalid"}, refusal},
 		{"off loopback, an identity and no broker", "http://envoy.test:9020", map[string]string{"AGENT_SECRETS_MACHINE_IDENTITY": "metadata"}, refusal},
+		{"off loopback, a broker and a blank identity", "http://envoy.test:9020", withKind(" ", nil), refusal},
 		{"off loopback, a kubernetes identity and no token file", "http://envoy.test:9020", withKind("kubernetes", nil),
 			unproven("AGENT_SECRETS_MACHINE_TOKEN_FILE is required by AGENT_SECRETS_MACHINE_IDENTITY=kubernetes")},
 		{"off loopback, a pool identity and no token file", "http://envoy.test:9020", withKind("pool", nil),
