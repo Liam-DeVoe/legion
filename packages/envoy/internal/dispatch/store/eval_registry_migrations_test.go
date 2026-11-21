@@ -562,10 +562,11 @@ func TestAnUpdateThatMovesADayRowsDayLogsBothDays(t *testing.T) {
 
 // TestTheTablesARewriteUpdatesLeaveAFifthOfEachPageFree: eval_days, eval_range_figures and
 // eval_day_figures are created with fillfactor 80 (migrations 20261117100006 and
-// 20261120072042). A rewrite after a change of the delivery settings updates every row it sends
-// and moves no column an index holds, so the fifth of each page left free keeps each update on its
-// page (HOT), writing no index entry; at the default of 100 almost none is, and each table grows
-// with every pass until a vacuum.
+// 20261120072042). A rewrite after a change of the delivery settings updates each row it sends
+// whose values moved (the upserts' `is distinct from` leaves the rest) and moves no column an
+// index holds, so the fifth of each page left free keeps each update on its page (HOT), writing
+// no index entry; at the default of 100 almost none is, and each table grows with every pass
+// until a vacuum.
 func TestTheTablesARewriteUpdatesLeaveAFifthOfEachPageFree(t *testing.T) {
 	ctx := context.Background()
 	store := migratedEmptyStore(t)

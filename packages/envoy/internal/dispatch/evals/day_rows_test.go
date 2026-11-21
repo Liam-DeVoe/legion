@@ -41,11 +41,17 @@ func dayKeyLine(project, evalID, deployRepo, series, repo string, day time.Time)
 	return strings.Join([]string{project, evalID, deployRepo, series, repo, day.UTC().Format(time.DateOnly)}, "\x00")
 }
 
+// dayKeyColumnsIn is the key columns of the rows one of writeDayRows' statements takes, args its
+// arguments, each in the order of its array: project, eval, deploy repository, series, repository
+// and day.
+func dayKeyColumnsIn(args []any) (projects, evalIDs, deployRepos, series, repos []string, days []time.Time) {
+	return args[0].([]string), args[1].([]string), args[20].([]string), args[2].([]string), args[3].([]string), args[4].([]time.Time)
+}
+
 // dayKeysIn is the keys of the rows one of writeDayRows' statements takes, args its arguments, in
 // the order of its arrays.
 func dayKeysIn(args []any) []string {
-	projects, evalIDs, series, repos := args[0].([]string), args[1].([]string), args[2].([]string), args[3].([]string)
-	days, deployRepos := args[4].([]time.Time), args[20].([]string)
+	projects, evalIDs, deployRepos, series, repos, days := dayKeyColumnsIn(args)
 	keys := make([]string, len(projects))
 	for index := range keys {
 		keys[index] = dayKeyLine(projects[index], evalIDs[index], deployRepos[index], series[index], repos[index], days[index])
@@ -56,35 +62,25 @@ func dayKeysIn(args []any) []string {
 // dayRowKeyOrder answers the positions, from 0, of the day rows' keys its arrays hold (project,
 // eval, deploy repository, series, repository and day, each array a column of the keys), in the
 // byte order of the keys, every text `collate "C"`: the order of eval_days' primary key that every
-// statement that inserts or locks day rows takes them in (compareDayKeys), which writeDayRows'
-// statement sorted its rows by before it took them in the order sent (`with ordinality`).
+// statement that inserts or locks day rows takes them in (compareDayKeys), and so the order
+// writeDayRows' statement must be sent its rows in, since it takes them as sent (`with
+// ordinality`).
 const dayRowKeyOrder = `
 	select (k.sent - 1)::int from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::date[]) with ordinality
 		as k(project_key, eval_id, deploy_repo, series, repo, day, sent)
 	order by k.project_key collate "C", k.eval_id collate "C", k.deploy_repo collate "C", k.series collate "C",
 		k.repo collate "C", k.day`
 
-// dayRowKeyArrays is the keys of rows as dayRowKeyOrder's arrays, each day the UTC date it falls
-// on, as writeDayRows sends it.
-func dayRowKeyArrays(rows []DayRow) []any {
-	projects, evalIDs, deployRepos, series, repos := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
-	days := make([]time.Time, len(rows))
-	for index, row := range rows {
-		projects[index], evalIDs[index], deployRepos[index], series[index], repos[index] = row.ProjectKey, row.EvalID, row.DeployRepo, row.Series, row.Repo
-		days[index] = measures.Midnight(row.Day)
-	}
-	return []any{projects, evalIDs, deployRepos, series, repos, days}
-}
-
-// dayRowKeyArraysIn is the keys of the rows writeDayRows' statements sent take, in the order they
-// take them across the statements, as dayRowKeyOrder's arrays.
-func dayRowKeyArraysIn(sent []pgx.TraceQueryStartData) []any {
+// dayRowKeyArraysIn is the keys of the rows writeDayRows' statements take, statements the
+// arguments of each, in the order they take them across the statements, as dayRowKeyOrder's
+// arrays.
+func dayRowKeyArraysIn(statements [][]any) []any {
 	var projects, evalIDs, deployRepos, series, repos []string
 	var days []time.Time
-	for _, statement := range sent {
-		args := statement.Args
-		projects, evalIDs, series, repos = append(projects, args[0].([]string)...), append(evalIDs, args[1].([]string)...), append(series, args[2].([]string)...), append(repos, args[3].([]string)...)
-		days, deployRepos = append(days, args[4].([]time.Time)...), append(deployRepos, args[20].([]string)...)
+	for _, args := range statements {
+		ofProjects, ofEvalIDs, ofDeployRepos, ofSeries, ofRepos, ofDays := dayKeyColumnsIn(args)
+		projects, evalIDs, deployRepos = append(projects, ofProjects...), append(evalIDs, ofEvalIDs...), append(deployRepos, ofDeployRepos...)
+		series, repos, days = append(series, ofSeries...), append(repos, ofRepos...), append(days, ofDays...)
 	}
 	return []any{projects, evalIDs, deployRepos, series, repos, days}
 }
@@ -394,6 +390,7 @@ func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) 
 		}
 		var held []string
 		var sizes []int
+		var statements [][]any
 		largest := 0
 		for index, statement := range sent {
 			encoded, estimated := encodedBytes(t, oids, statement.Args), paramEstimate(t, statement.Args)
@@ -402,6 +399,7 @@ func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) 
 					what, index, dayRowsIn(statement.Args), encoded, estimated, statementBytes)
 			}
 			held, sizes, largest = append(held, dayKeysIn(statement.Args)...), append(sizes, dayRowsIn(statement.Args)), max(largest, encoded)
+			statements = append(statements, statement.Args)
 		}
 		if len(sent) < 3 {
 			t.Errorf("%s: %d day rows went in %d statements of %v rows, and the check needs at least three", what, len(rows), len(sent), sizes)
@@ -409,7 +407,7 @@ func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) 
 		if !slices.Equal(held, sortedDayKeys(rows)) {
 			t.Errorf("%s: the statements take %d rows, other rows or in another order than the %d given in the byte order of their keys", what, len(held), len(rows))
 		}
-		if at := firstOutOfOrder(keyOrderOf(t, r.database.Pool, len(held), dayRowKeyOrder, dayRowKeyArraysIn(sent)...)); at >= 0 {
+		if at := firstOutOfOrder(keyOrderOf(t, r.database.Pool, len(held), dayRowKeyOrder, dayRowKeyArraysIn(statements)...)); at >= 0 {
 			t.Errorf("%s: the statements take the row %q at %d, out of the byte order Postgres's collate \"C\" gives their keys", what, held[at], at)
 		}
 

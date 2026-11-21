@@ -440,8 +440,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if movedOnly {
 		was = make([]containment, len(rewritten))
 	}
-	// No containment reads the issues' projects, so each repository's under each rule is computed
-	// beside the others and beside their read; each reads the history and writes its own slot.
+	// Each containment below reads the history and writes its own slot.
 	var issueProjects map[string]string
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {

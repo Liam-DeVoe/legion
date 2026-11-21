@@ -76,7 +76,7 @@ const keptTables: readonly { table: string; why: string }[] = [
 // Beside the rows a scenario itself wrote, the reset empties the tables below, and what
 // emptying each one does is the reason it is safe to empty.
 //
-// Four of the eight cursors, horizons, queues and markers of this schema are emptied:
+// Five of the nine cursors, horizons, queues and markers of this schema are emptied:
 //
 // - event_horizon, the highest event id a reader may read. The row names an event by its id and
 //   by that event's created_at, and both statements that touch it skip a row whose event is gone
@@ -89,6 +89,10 @@ const keptTables: readonly { table: string; why: string }[] = [
 //   they read after the reset.
 // - search_term_queue, the terms owed indexing, each naming an issue, an artifact or an item the
 //   reset deletes.
+// - search_text_versions_fill, the keyword fill's one cursor row, which names the last event the
+//   fill wrote the keyword rows of (search_text_versions, emptied beside it). The fill creates it
+//   again, at no event, on its next pass (textversions/fill.go, createCursorQuery), where a row
+//   kept past a reset of the event log would name a position in the log the reset emptied.
 //
 // The other four are the singleton rows above, which the suite refused: emptying them leaves a
 // reader that expects exactly one row with none.

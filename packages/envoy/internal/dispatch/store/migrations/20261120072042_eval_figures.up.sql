@@ -80,14 +80,14 @@ create table eval_range_figures (
     constraint eval_range_figures_eval_of_project check (starts_with(eval_id, project_key || '/'))
 )
 -- fillfactor 80, as eval_days has (20261117100006): a rewrite after a change of the delivery
--- settings (evals.rewriteSettings) updates every row it sends, and none of its updates moves a
--- column the primary key holds, so with a fifth of each page left free the update stays on its
--- page (HOT) and writes no index entry. Against the default of 100, measured for
--- dispatch://INFRA-2916 (round 14's fillfactor probe: the rewrite's exact upserts on farm-shaped
--- tables, medians of 7 interleaved rounds), a first pass over 19,392 rows took 1,541 ms where it
--- took 1,966, 39.5 % of its updates HOT where 0.0 %, rising to 75.8 % by the fourth pass; over 60
--- passes with no vacuum the table grew 4.9 MiB a pass at 100 and stopped growing by pass 19 at
--- 80, smaller than at 100 with autovacuum at its defaults.
+-- settings (evals.rewriteSettings) updates each row it sends whose fold key, figures or
+-- oldest_updated_at moved (the upsert's `is distinct from` leaves the rest), and none of its
+-- updates moves a column the primary key holds, so with a fifth of each page left free the update
+-- stays on its page (HOT) and writes no index entry. Measured the same way against the default of
+-- 100, a first pass over 19,392 rows took 1,541 ms where it took 1,966, 39.5 % of its updates HOT
+-- where 0.0 %, rising to 75.8 % by the fourth pass; over 60 passes with no vacuum the table grew
+-- 4.9 MiB a pass at 100 and stopped growing by pass 19 at 80, smaller than at 100 with autovacuum
+-- at its defaults.
 with (fillfactor = 80);
 
 create table eval_day_figures (
@@ -103,13 +103,12 @@ create table eval_day_figures (
     primary key (project_key, repo, day, eval_id, deploy_repo),
     constraint eval_day_figures_eval_of_project check (starts_with(eval_id, project_key || '/'))
 )
--- fillfactor 80, for eval_range_figures' reason: no update a rewrite sends moves a column the
--- primary key or eval_day_figures_eval_day holds. Against the default of 100, measured for
--- dispatch://INFRA-2916 (round 14's fillfactor probe: the rewrite's exact upserts on farm-shaped
--- tables, medians of 7 interleaved rounds), a first pass over 2,182 rows took 131 ms where it took
--- 278, 99.5 % of its updates HOT where 0.0 %; over 60 passes with no vacuum the table grew
--- 0.55 MiB a pass at 100 and not at all at 80, smaller than at 100 with autovacuum at its
--- defaults.
+-- fillfactor 80, for eval_range_figures' reason: no update a rewrite sends, of a row whose fold
+-- key, figures or rows_stamp moved, moves a column the primary key or eval_day_figures_eval_day
+-- holds. Measured the same way against the default of 100, a first pass over 2,182 rows took
+-- 131 ms where it took 278, 99.5 % of its updates HOT where 0.0 %; over 60 passes with no vacuum
+-- the table grew 0.55 MiB a pass at 100 and not at all at 80, smaller than at 100 with autovacuum
+-- at its defaults.
 with (fillfactor = 80);
 create index eval_day_figures_eval_day on eval_day_figures (project_key, eval_id, day);
 

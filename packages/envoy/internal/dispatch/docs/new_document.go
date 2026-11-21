@@ -153,12 +153,13 @@ type WrittenText struct {
 // with summary naming the version (nil for an unnamed one). created says the transaction created
 // the document, which holds no text yet, so its text is seeded (SeedText); otherwise the text
 // replaces the document's (ReplaceText), which holds the replacement to precondition, the token
-// of the version the caller believes it replaces (nil for a new document). It then records the version over the write
-// (Ledger.WroteVersion), which clears the credit of every edit the write read when it changed the
-// document, queues the count of the document's task items after the version's insert, so the
-// count names that version (LEGION-542), and indexes the version's references. ctx is the context
-// Join returned: every read runs in the transaction it joined, and every write is queued on its
-// ledger.
+// of the version the caller believes it replaces: nil for a new document, and for a replacement
+// that names no token, which ReplaceText takes unchecked (the upload route counts those,
+// INFRA-4980). It then records the version over the write (Ledger.WroteVersion), which clears the
+// credit of every edit the write read when it changed the document, queues the count of the
+// document's task items after the version's insert, so the count names that version (LEGION-542),
+// and indexes the version's references. ctx is the context Join returned: every read runs in the
+// transaction it joined, and every write is queued on its ledger.
 //
 // It appends no event: an upload appends its own, after the approval moves a replacement makes,
 // and the eval registry appends the creation's.

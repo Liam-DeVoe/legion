@@ -1109,7 +1109,7 @@ func writeFigures(ctx context.Context, tx pgx.Tx, scope figureScope, w figureWri
 // (compareRangeKeys, whose order is the one `collate "C"` gives their keys:
 // TestEachWritesGoKeyOrderIsPostgresCollateCOrder), and the statement takes them in the order it
 // is sent them (`with ordinality`), which Postgres knows its unnest answers and so sorts nothing
-// for, where an order by the keys sorted each statement's rows again.
+// for.
 func upsertRangeFigures(ctx context.Context, tx pgx.Tx, scope figureScope, rows []rangeFigureRow) error {
 	for args := range rangeUpserts(scope, rows) {
 		if _, err := tx.Exec(ctx, `
