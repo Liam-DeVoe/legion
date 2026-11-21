@@ -129,7 +129,7 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 	}
 	started := time.Now()
 	listCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
-	listed, sets, err := s.list(listCtx)
+	sets, err := s.delivery.consumers.SessionConsumerSets(listCtx)
 	cancel()
 	if err != nil {
 		if ctx.Err() == nil && !s.delivery.grantRefusal("list the session consumers", "", err) {
@@ -138,6 +138,9 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 		}
 		return
 	}
+	// For each session the consumer the server created last: in the fixed mode its one consumer,
+	// and in the fresh mode the delete takes it as its listed info only when it is the current.
+	listed := bus.NewestOfEach(sets)
 	s.endReplay(ctx, sets)
 	if len(listed) == 0 {
 		return
@@ -175,28 +178,10 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 		slog.Int("left", len(listed)-deleted),
 		slog.Int64("took_ms", time.Since(started).Milliseconds()),
 	}
-	if sets != nil {
+	if s.delivery.consumers.Fresh() {
 		attrs = append(attrs, slog.Int("retired_deleted", s.cleanRetired(ctx, sets, sessionConsumerSweepCap-tried)))
 	}
 	s.logger.Info("session consumer sweep pass", attrs...)
-}
-
-// list reads the session consumers: in the fixed mode as the stream's consumer list names them
-// (bus.SessionConsumers.ListSessionConsumers), with no sets; in the fresh mode every consumer of
-// each session, current and retired (bus.SessionConsumers.SessionConsumerSets), and for each
-// session the one the server created last, which the delete takes as its listed info only when it
-// is the session's current.
-func (s *sessionConsumerSweep) list(ctx context.Context) (map[string]*jetstream.ConsumerInfo, map[string][]*jetstream.ConsumerInfo, error) {
-	consumers := s.delivery.consumers
-	if !consumers.Fresh() {
-		listed, err := consumers.ListSessionConsumers(ctx)
-		return listed, nil, err
-	}
-	sets, err := consumers.SessionConsumerSets(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	return bus.NewestOfEach(sets), sets, nil
 }
 
 // cleanRetired deletes, in the fresh mode, the retired names of each session the stream holds more
@@ -227,13 +212,10 @@ func (s *sessionConsumerSweep) cleanRetired(ctx context.Context, sets map[string
 }
 
 // endReplay ends the selection bucket's replay mode, in the fresh mode, once none of the orphans
-// its sentinel lists is among the consumers this pass listed (bus.SessionConsumers.EndReplay). A
-// listed orphan is one no record selects, so no relay pulls it and the server removes it at its
-// inactive threshold; replay mode lasts until then.
+// its sentinel lists is among the consumers this pass listed (bus.SessionConsumers.EndReplay, which
+// does nothing in the fixed mode). A listed orphan is one no record selects, so no relay pulls it
+// and the server removes it at its inactive threshold; replay mode lasts until then.
 func (s *sessionConsumerSweep) endReplay(ctx context.Context, sets map[string][]*jetstream.ConsumerInfo) {
-	if sets == nil {
-		return
-	}
 	held := map[string]bool{}
 	for _, set := range sets {
 		for _, info := range set {

@@ -554,7 +554,8 @@ func (s *SessionConsumers) EndReplay(ctx context.Context, held func(name string)
 
 // SessionConsumerSets lists every session consumer of the fresh mode the stream holds, by the
 // session its metadata names, current and retired alike, with the paged consumer list; in the
-// fixed mode each session's one consumer, as ListSessionConsumers reads it.
+// fixed mode each session's one consumer, as ListSessionConsumers reads it, so the listener's sweep
+// lists both modes through this one call.
 func (s *SessionConsumers) SessionConsumerSets(ctx context.Context) (map[string][]*jetstream.ConsumerInfo, error) {
 	if s.fresh == nil {
 		listed, err := s.ListSessionConsumers(ctx)
