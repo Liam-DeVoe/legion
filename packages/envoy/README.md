@@ -161,6 +161,38 @@ A free-form role under a project (`PRIV.lead-reviewer`) is that project's own cl
 every other name keeps its bare role name as its key.
 `POST /v1/roles/set` refuses with `400`, naming both projects, a Legion role under any project but the one its own name gives (`contracts.ClaimProject`), and the edge's role and publish rules read a role's project by that function too.
 
+## The relay socket
+
+`GET /v1/sessions/{session}/relay` is a WebSocket that only the edge listener serves (`cmd/listener/relay_socket.go`).
+A session that holds no NATS connection of its own, such as an outside person's agent, receives its relay frames on it and answers them over HTTPS.
+Every other listener answers the path `404`, an upgrade included, so no shared listener's grant has to cover it.
+
+- **The upgrade**: the subprotocol `envoy-relay.v1`, `Authorization: DPoP <token>` and a `DPoP` proof for `ENVOY_PUBLIC_URL` plus the path, which `apiAuth` checks as it checks every `/v1` request, the edge's admission included.
+  A `{session}` that is not one NATS subject token (it holds a `.`, `*`, `>`, white space or a control character) gets `400` before anything else, since its relay subject would be a wildcard or reach under another session's.
+  A token of another session gets `403`; an upgrade without `envoy-relay.v1` gets `400`; a session's fifth socket on one replica gets `429`; an upgrade while the listener stops gets `503`.
+
+- **Frames**: text frames of JSON.
+  `{"op":"sub","sid":<int>,"subject":<s>}` subscribes the session's own relay subject (`bus.DeliverSubject`) on the replica's connection; any other subject gets `{"op":"err","sid":<int>,"code":"subject_not_granted"}`, and a fifth `sub` gets `subscription_limit`.
+  `{"op":"unsub","sid":<int>}` ends a subscription.
+  `{"op":"pub","subject":<s>,"data":<base64>}` publishes a receipt, whose subject must be the `reply` of a frame the socket forwarded in the last 10 minutes, else `publish_not_granted`.
+  The server's `{"op":"msg","sid":…,"subject":…,"reply":…,"headers":{…},"data":<base64>}` is one relay frame; `headers` is always present, each name to every one of its values in order.
+  A frame the socket cannot read gets `{"op":"err","code":"bad_frame"}` and a close `1008`; a frame over 1 MiB closes the socket `1009`, and a binary frame `1003`.
+
+- **Order**: the socket handles each frame whole, a `sub`'s subscribe and the flush that makes the server hold it included, before it reads the next one.
+  The client's `flush()` is a WebSocket ping, so its pong comes only after every frame sent before it is handled.
+
+- **What it carries**: a frame's receipt subject is the owning replica's, under `notifications.envoy.relayreply.` (`bus.RelayReplyPrefix`), since the edge's grant publishes no reply inbox and the socket may be on the other replica (`startSessionRelays`).
+  The connection probe is never forwarded or answered, and a message on the relay subject whose reply is no relay receipt is not forwarded either.
+
+- **While it is open**: every 20 seconds the socket asks the broker about its token again, from a copy of the upgrade request, and pings its client.
+  It closes `4401 credential_expired` when the token's expiry passed, `4403 credential_refused` when the broker no longer holds the token live (a revoke of the token or of the device login it was traded from) or its answer names another caller or fails the edge's admission, and `1013` when the broker or NATS cannot be asked.
+  The listener's stop closes every socket `1012 listener_stopping`.
+  A close takes at most one second (`relaySocketCloseGrace`), also for a client that reads nothing: no close or check waits for a data frame blocked on such a client.
+  A frame unanswered at a close is sent again by the owning relay, so a reopen loses nothing.
+
+- **Tests**: `cmd/listener/relay_socket_test.go` runs the socket in one process with a stand-in broker.
+  `cmd/listener/relay_socket_live_test.go` (build tag `natslive`) runs two edge listeners under `natsgrant.Edge` on the hub's NATS image, with the real broker of `internal/broker/brokertest` and 30-second tokens; its binary checks every second (`-ldflags "-X main.relaySocketCheckBuild=1s"`).
+
 ## Local end-to-end
 
 Run the reusable local acceptance driver from the repository root:

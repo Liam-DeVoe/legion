@@ -5232,53 +5232,6 @@ Dispatch reads it through `internal/dispatch/envoy` (`Agent`, `RoleAgents`, `Iss
   Once open, the reconnect hook moves the store's handle onto a connection the bus replaced (`Store.Reopen`).
   Both live in `legionAgentRegistry` (`cmd/listener/legion_agents.go`).
 
-### The relay socket
-
-`GET /v1/sessions/{session}/relay` is an edge listener's alone (`ENVOY_EDGE_PROJECTS` set): a WebSocket on which a session that holds no NATS connection of its own receives its relay frames and answers them over HTTPS.
-Every other listener answers the path `404`, an upgrade included (`relaySocketRoute`), so no shared listener's grant has to cover it.
-The code is `cmd/listener/relay_socket.go`.
-
-- **The upgrade.**
-  Subprotocol `envoy-relay.v1`, `Authorization: DPoP <token>` and a `DPoP` proof whose `htu` is `ENVOY_PUBLIC_URL` plus the path, checked by `apiAuth` as every `/v1` request is, the edge's admission included.
-  A token naming another session than `{session}` is `403` with `sessionNotBound`'s line; an upgrade that offers no `envoy-relay.v1` is `400`; a session's fifth socket on one replica is `429`; an upgrade once the listener is stopping is `503`.
-  The socket keeps the caller it was admitted as (session, person or service, project scope, projects) and the token's expiry from that answer (`brokertoken.Verifier.LiveUntil`).
-
-- **Frames.**
-  Text frames of JSON.
-  `{"op":"sub","sid":<int>,"subject":<s>}` subscribes `s`, which must be the session's own relay subject (`bus.DeliverSubject`), on the replica's own NATS connection; any other subject, the agent stream's included, or one the server refuses, is `{"op":"err","sid":<int>,"code":"subject_not_granted"}`, and a sub that succeeds is answered nothing.
-  `{"op":"unsub","sid":<int>}` ends it.
-  `{"op":"pub","subject":<s>,"data":<base64>}` publishes on `s`, which must be the receipt subject of a frame this socket forwarded in the last 10 minutes, else `{"op":"err","code":"publish_not_granted"}`.
-  The server's `{"op":"msg","sid":…,"subject":…,"reply":…,"headers":{…},"data":<base64>}` is one relay frame; `headers` is always present, `nats.Header` as JSON (each name as NATS carries it, case kept, to every one of its values in order, `{}` when there are none).
-  A frame the socket cannot read at all (not JSON, an unknown op, a `sub` or `unsub` naming no `sid`, or a `sub` of a `sid` already held) is answered `{"op":"err","code":"bad_frame"}`, and the socket is closed `1008` with reason `bad_frame`.
-  A fifth `sub` of one socket is answered that `sid`'s `{"op":"err","sid":<int>,"code":"subscription_limit"}` and takes no subscription; the socket stays open.
-  A frame over 1 MiB closes the socket `1009`, and a binary frame `1003`.
-
-- **Order.**
-  The socket reads its frames one at a time on one reader and handles each whole before it reads the next: a `sub`'s subscribe and the flush that makes the server hold it, an `unsub`'s and a `pub`'s flush too.
-  The client's `flush()` is a WebSocket ping, which gorilla/websocket's own ping handler answers on that reader, so its pong comes only once every frame read before it is handled; the socket installs no other ping handler.
-
-- **What it carries.**
-  A frame's receipt subject is the owning replica's under `bus.RelayReplyPrefix` (`notifications.envoy.relayreply.<nuid>.<token>`): an edge listener's relay takes its receipts there rather than under a reply inbox (`startSessionRelays`), since the edge's grant publishes no reply inbox and the socket's replica may be the other one.
-  The stream captures no such subject, so no receipt is stored.
-  The connection probe is never forwarded and never answered: the socket's subscription is what keeps the session `connected`, and a probe costs its sender at most its one second.
-  A message on the relay subject whose reply is no relay receipt is not forwarded either, and is logged once a socket.
-  The agent stream is not carried.
-
-- **While it is open.**
-  Every 20 s (`relaySocketCheckEvery`, which only tests lower), the socket asks the broker about its token again from a detached copy of the upgrade, the broker's answer reused for at most 5 s (`brokertoken.AffirmativeCacheTTL`) and no proof checked twice, then pings its client.
-  The token's expiry passed and the broker no longer holds it live: `4401 credential_expired`, on which the client trades for a fresh token and opens again at once.
-  Not live before its expiry (a revoke, a login ended early), or no session's token: `4403 credential_refused`.
-  The answer no longer passes the edge's admission (`EdgeAdmits`) or names another caller than the socket was admitted as: `4403`.
-  The broker could not be asked: `1013 broker_unavailable`, and every upgrade meanwhile is `503`; a NATS call the socket could not complete, or a subscription its connection lost, is `1013 nats_unavailable`.
-  The listener's stop closes every socket `1012 listener_stopping` before it stops its relays (`shutdownListener`).
-  A frame unanswered at a close is sent again by the owning relay, which hears no receipt for it and restarts at the ack floor after its receipt wait and its pause (`relayReceiptWait`, `relayPauseFirst`), or at the session's next registration, so a reopen loses nothing.
-  The reader takes a client that sends no frame and no pong for three ticks, and never under 10 s, for gone.
-
-- **Tests.**
-  `cmd/listener/relay_socket_test.go` drives the socket in one process, over the in-process server, with brokertokentest's stand-in as the broker.
-  `cmd/listener/relay_socket_live_test.go` (build tag `natslive`) drives two `envoy-listener` processes in edge mode against `testnats.HubImage`, whose only users are the two replicas' (`natsgrant.Edge`) and Dispatch's (`natsgrant.Dispatch`), and the real broker of `internal/broker/brokertest`, with 30 s tokens (`brokertest.WithAccessLifetime`) and its project check answered by `projectaccesstest` (`brokertest.WithProjectAccess`, `projectaccesstest.Server.SetRow`); each row also requires that the server refused nothing.
-  That binary is built with `-ldflags "-X main.relaySocketCheckBuild=1s"`, which checks every second instead of every 20 s; a build that does not set it checks every 20 s.
-
 ## Session consumers
 
 **The rule.**
