@@ -3,18 +3,25 @@ package main
 // edge_nats.go is what an edge listener does differently on NATS, so that it runs under the edge's
 // grant (natsgrant.Edge) and asks the server for nothing that grant leaves out: every connection
 // names its inboxes under the edge's own prefix, the main client reads the stream and never
-// creates or changes it, and the start opens no role lane and publishes no Legion wake report.
+// creates or changes it, and the start opens no role lane and publishes no Legion wake report. Its
+// delivery handlers keep no role message and hand no kept lane over, and publish a delivery
+// exception only on a lane the grant holds (edgeGrant).
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/config"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -77,4 +84,50 @@ func edgeStreamPresent(client *bus.Client, timeout time.Duration) error {
 		return fmt.Errorf("edge mode: read the %s stream: %w (the connection's last error: %v)", bus.Stream, err, last)
 	}
 	return fmt.Errorf("edge mode: read the %s stream: %w", bus.Stream, err)
+}
+
+// edgeGrant is an edge listener's own NATS grant (natsgrant.Edge) as the listener holds itself to
+// it, beside the server's refusal of every subject the grant leaves out: the subjects it publishes,
+// and the count of the delivery exceptions it withheld because their lane is not among them
+// (withholds). Only an edge listener holds one (listenerDeliveryHandlerConfig.edge).
+type edgeGrant struct {
+	// publish is natsgrant.Edge(machine id, ENVOY_EDGE_PROJECTS).Publish.
+	publish []string
+	// withheld is envoy_edge_exceptions_withheld_total{topic_prefix, reason}.
+	withheld *metrics.Counter
+}
+
+// newEdgeGrant is the grant of the edge listener of machineID serving projects, counting what it
+// withholds on met.
+func newEdgeGrant(machineID string, projects []string, met *metrics.Registry) *edgeGrant {
+	return &edgeGrant{
+		publish: natsgrant.Edge(machineID, projects).Publish,
+		withheld: met.NewCounter("envoy_edge_exceptions_withheld_total",
+			"Delivery exceptions the edge listener did not publish because its NATS grant holds no publish of their lane, by the topic prefix of the message each reports and its reason; the message is finalized as if the exception had gone out"),
+	}
+}
+
+// withholds reports whether the edge withholds item's delivery exception for reason: whether the
+// exception's lane (bus.ExceptionTopicPrefix followed by item.Topic) is under none of its grant's
+// publish entries. The grant publishes the exception lanes of the agent subjects and of its
+// projects' role subjects, so what it withholds is the report of a fan-out refusal on any other
+// topic a session follows - a GitHub or Dispatch event whose delivery mode the session does not
+// advertise, or that no one can read (fanoutRefusalOutcome) - and the refusal of a role topic that
+// names none of its projects. The server would refuse that publish, and the listener would log
+// exceptionPublishFailedLine, which the deployed publish-failure alarm matches, for a lane the
+// grant leaves out on purpose. A withheld exception is counted and logged here, and the delivery it
+// reports is finalized as it would be had it gone out: the message is acknowledged, undelivered to
+// that session. A nil grant, every other listener's, withholds nothing.
+func (g *edgeGrant) withholds(logger *logging.Logger, item contracts.Envelope, reason string) bool {
+	if g == nil {
+		return false
+	}
+	lane := bus.ExceptionTopicPrefix + item.Topic
+	if slices.ContainsFunc(g.publish, func(entry string) bool { return bus.SubjectContains(entry, lane) }) {
+		return false
+	}
+	g.withheld.Inc([2]string{"topic_prefix", metrics.TopicPrefix(item.Topic)}, [2]string{"reason", reason})
+	logger.Info("edge listener withheld a delivery exception its grant does not publish",
+		slog.String("topic", item.Topic), slog.String("event_id", item.EventID), slog.String("reason", reason))
+	return true
 }

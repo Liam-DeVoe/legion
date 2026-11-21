@@ -130,19 +130,6 @@ func TestARelayReceiptIsNotStored(t *testing.T) {
 	}
 }
 
-// Every lane of Envoy's own begins with EnvoyTopicPrefix, the one family an edge listener's grant
-// publishes beside the agent and role subjects (natsgrant.Edge), so that grant reaches each of them.
-func TestEveryEnvoyLaneIsUnderTheEnvoyPrefix(t *testing.T) {
-	if EnvoyTopicPrefix != "notifications.envoy." {
-		t.Fatalf("EnvoyTopicPrefix = %q", EnvoyTopicPrefix)
-	}
-	for _, lane := range append([]string{DeliverSubjectPrefix, RelayReplyPrefix, ExceptionTopicPrefix}, ListenerOwnLanes()...) {
-		if !strings.HasPrefix(lane, EnvoyTopicPrefix) || lane == EnvoyTopicPrefix {
-			t.Errorf("the lane %q is not under %q", lane, EnvoyTopicPrefix)
-		}
-	}
-}
-
 // sessionConsumersOnStream connects a client that owns the stream, on a JetStream account of the
 // test's own, and SessionConsumers beside it.
 func sessionConsumersOnStream(t *testing.T) (*Client, *SessionConsumers) {

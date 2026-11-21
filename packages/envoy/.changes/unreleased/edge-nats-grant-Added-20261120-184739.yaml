@@ -1,13 +1,20 @@
 kind: Added
 body: |-
-  `natsgrant.Edge` and `core.EdgePermissions` are the NATS grant of an edge listener's own user:
-  the listener's grant, publishing only the agent, role and `notifications.envoy.` subjects and no
-  create or update of the stream, and subscribing its own inbox prefix `_INBOX_envoy_edge.>`, the
-  relay subjects and the relay receipts `notifications.envoy.relayreply.>`, and no role lane.
-  `natsgrant/testdata/edge.golden.json` pins it. The NATS auth service answers an `edge-listener`
-  entry of `BROKER_NATS_SERVICES` with it. A listener started with `ENVOY_EDGE_PROJECTS` names
-  every inbox under that prefix, reads the stream and ends its start, naming it, when the server
-  has none, subscribes no role lane and publishes no Legion wake report.
+  `natsgrant.Edge(machineID, projects)` and `core.EdgePermissions(machineID, projects)` are the NATS
+  grant of an edge listener's own user: the listener's grant, publishing in place of every
+  notification topic only `notifications.agent.>`, `notifications.role.<KEY>.>` for each project,
+  `notifications.envoy.deliver.*`, `notifications.envoy.relayreply.>`,
+  `notifications.envoy.resume.>`, and `notifications.envoy.exceptions.notifications.agent.>` and
+  `notifications.envoy.exceptions.notifications.role.<KEY>.>` for each project, with no create or
+  update of the stream, and subscribing its own inbox prefix `_INBOX_envoy_edge.>`, the relay
+  subjects and the relay receipts, and no role lane. `natsgrant/testdata/edge.golden.json` pins it
+  for machine `m` and project `PRIV`. The NATS auth service answers an `edge-listener` entry of
+  `BROKER_NATS_SERVICES` with it, for the projects the entry lists. A listener started with
+  `ENVOY_EDGE_PROJECTS` names every inbox under that prefix, reads the stream and ends its start,
+  naming it, when the server has none, subscribes no role lane, publishes no Legion wake report,
+  keeps no role message and hands no kept lane over (a publish to an unheld role is answered 404),
+  and publishes no delivery exception on a lane its grant leaves out, counting each on
+  `envoy_edge_exceptions_withheld_total`.
 time: 2026-11-20T18:47:39Z
 custom:
     Issue: edge-nats-grant

@@ -110,10 +110,11 @@ type relayLiveRig struct {
 type relayLiveOptions struct {
 	// stub asks brokertokentest's stand-in about every token in place of the real broker.
 	stub bool
-	// edgeProjects is ENVOY_EDGE_PROJECTS, relayLiveProject by default.
+	// edgeProjects is ENVOY_EDGE_PROJECTS, relayLiveProject by default, comma-separated.
 	edgeProjects string
-	// grant is each replica's grant, natsgrant.Edge by default; a control renders another.
-	grant func(machineID string) natsgrant.Permissions
+	// grant is each replica's grant for the edge's projects, natsgrant.Edge by default; a control
+	// renders another.
+	grant func(machineID string, projects []string) natsgrant.Permissions
 }
 
 func newRelayLiveRig(t *testing.T, options relayLiveOptions) *relayLiveRig {
@@ -132,8 +133,8 @@ func newRelayLiveRig(t *testing.T, options relayLiveOptions) *relayLiveRig {
 	seeds := map[string]string{}
 	var users []testnats.StaticUser
 	for name, grant := range map[string]natsgrant.Permissions{
-		relayLiveA:        options.grant(relayLiveA),
-		relayLiveB:        options.grant(relayLiveB),
+		relayLiveA:        options.grant(relayLiveA, strings.Split(options.edgeProjects, ",")),
+		relayLiveB:        options.grant(relayLiveB, strings.Split(options.edgeProjects, ",")),
 		relayLiveDispatch: natsgrant.Dispatch(relayLiveDispatch),
 	} {
 		seed, public := testnats.User(t)

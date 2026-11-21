@@ -158,22 +158,38 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 }
 
 // An edge listener's entry, read as BROKER_NATS_SERVICES writes it, is answered with the edge's
-// grant whole (natsgrant.Edge), named for its machine id and expiring with its token, and that
-// grant passes the guard every answer passes. The projects its entry lists hold no subject of it:
-// no subject or key of the grant names a project yet, so the grant is not narrowed by them. It is
-// not the listener's grant, which publishes every notification topic.
+// grant for its machine id and the projects the entry lists (natsgrant.Edge), named for its
+// machine id and expiring with its token, and that grant passes the guard every answer passes. The
+// grant publishes the role subjects of those projects and no other project's: an entry of two
+// projects publishes both, an entry of one the one. It is not the listener's grant, which
+// publishes every notification topic.
 func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
 	now := time.Now()
-	services, err := ParseServices("edge-listener/edge-a/PRIV=" + edgeAccount)
-	require.NoError(t, err)
 	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
 		"edge-token": {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)},
 	})}
-	decision, err := Decide(t.Context(), deps, services, serviceRequest("edge-token"))
-	require.NoError(t, err)
-	require.Equal(t, Decision{Name: "edge-listener/edge-a", Grant: natsgrant.Edge("edge-a"), Expires: now.Add(time.Hour)}, decision)
-	require.NotEqual(t, natsgrant.Listener("edge-a"), decision.Grant)
-	require.Nil(t, guard(decision.Grant))
+	for _, test := range []struct {
+		entry    string
+		projects []string
+	}{
+		{entry: "edge-listener/edge-a/PRIV=" + edgeAccount, projects: []string{"PRIV"}},
+		{entry: "edge-listener/edge-a/PRIV,OTHER=" + edgeAccount, projects: []string{"OTHER", "PRIV"}},
+	} {
+		t.Run(test.entry, func(t *testing.T) {
+			services, err := ParseServices(test.entry)
+			require.NoError(t, err)
+			decision, err := Decide(t.Context(), deps, services, serviceRequest("edge-token"))
+			require.NoError(t, err)
+			require.Equal(t, Decision{Name: "edge-listener/edge-a", Grant: natsgrant.Edge("edge-a", test.projects), Expires: now.Add(time.Hour)}, decision)
+			for _, project := range test.projects {
+				require.Contains(t, decision.Grant.Publish, "notifications.role."+project+".>")
+				require.Contains(t, decision.Grant.Publish, "notifications.envoy.exceptions.notifications.role."+project+".>")
+			}
+			require.NotContains(t, decision.Grant.Publish, "notifications.role.INFRA.>")
+			require.NotEqual(t, natsgrant.Listener("edge-a"), decision.Grant)
+			require.Nil(t, guard(decision.Grant))
+		})
+	}
 }
 
 // Every refusal is one line naming why, carries nothing of the credential, and is counted under

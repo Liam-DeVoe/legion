@@ -1489,12 +1489,18 @@ func main() {
 	if !edgeMode(cfg) {
 		wakes = newWakeReporter(wakesCtx, client)
 	}
+	// An edge listener holds its delivery handlers to its own grant: no kept role lane, and no
+	// delivery exception on a lane the grant leaves out (edgeGrant).
+	var edge *edgeGrant
+	if edgeMode(cfg) {
+		edge = newEdgeGrant(cfg.MachineID, cfg.EdgeProjects, met)
+	}
 
 	// Phase 6: Open the role lane and /v1 onto the stores, then bind the durable consumer.
 	deliveryConfig := listenerDeliveryHandlerConfig{
 		client:            client,
 		wakes:             wakes,
-		noWakeReports:     edgeMode(cfg),
+		edge:              edge,
 		forwardRole:       startRoleForward(client),
 		registry:          registry,
 		sessions:          sessions,
@@ -1599,8 +1605,7 @@ func main() {
 	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
 	// machine's durable binding (below). An edge listener's relay takes its receipts under
 	// bus.RelayReplyPrefix, which the replica serving the session's relay socket publishes them on.
-	edge := len(cfg.EdgeProjects) > 0
-	relays, err := startSessionRelays(delivery, deliveryConfig, edge)
+	relays, err := startSessionRelays(delivery, deliveryConfig, edgeMode(cfg))
 	if err != nil {
 		logger.Error("session relay reply subscription failed: no relayed frame could be answered", slog.String("error", err.Error()))
 		delivery.close()
@@ -1610,7 +1615,7 @@ func main() {
 	// An edge listener serves its sessions' relay sockets on its own connection; every other
 	// listener serves none.
 	var sockets *relaySockets
-	if edge {
+	if edgeMode(cfg) {
 		sockets = newRelaySockets(client, brokerTokenAuth, cfg.EdgeProjects, logger)
 	}
 	// An edge listener reads the repositories its projects' issues resolve to from the broker's
@@ -1774,7 +1779,8 @@ func main() {
 	// them, on the reapers' cadence and under their context, with a pass as the listener starts.
 	// It costs one stream read a pass while no role has a kept lane (startKeptRoleSweep,
 	// role_keep_sweep.go), and its cadence is the interval the repeated wake report is named by
-	// (roleWakeInterval).
+	// (roleWakeInterval). An edge listener runs none, since its grant writes no kept lane: the
+	// shared listeners' sweeps hand over the lanes of roles held at the edge too.
 	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, roleWakeInterval))
 
 	// Phase 6b0: An edge listener reads its projects' repositories again every
