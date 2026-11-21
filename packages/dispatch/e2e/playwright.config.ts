@@ -750,7 +750,23 @@ export default defineConfig({
     // `retry === 1`), and a row is flaky exactly when its retry passed, so that mode would keep
     // a trace of a green run and leave the failure none. Locally, with `retries: 0`, the first
     // attempt is the only attempt, so this is the `retain-on-failure` the suite had before.
-    trace: "retain-on-first-failure",
+    //
+    // The trace records every action, a DOM snapshot before and after each, the network and the
+    // console, and leaves out one thing: the screencast, a stream of JPEG frames of the page
+    // (`screenshots: false`). A trace is recorded on every first attempt and kept for the few that
+    // fail, so what recording costs, every row pays, and the screencast was nearly all of that
+    // cost: inbox.e2e.ts's 28 rows in the chromium project, on one worker in an issue pod at
+    // a8a344b7 (dispatch://INFRA-1109/artifact/measurement-md), took 450 s with the screencast,
+    // 379 s without it and 357 s with no trace at all, and the browser's CPU went from 73 s to
+    // 31 s, Playwright's own processes from 83 s to 55 s. The shard machines are CPU-bound, so
+    // that CPU is the lane's machine time. What a failure's trace still shows is the page as a
+    // DOM snapshot at each action, which the trace viewer draws, and its network and console.
+    trace: {
+      mode: "retain-on-first-failure",
+      screenshots: false,
+      snapshots: true,
+      sources: true,
+    },
   },
   // Starts this run's stacks and checks each of them before any row (e2e/global-setup.ts), and
   // stops them afterwards (e2e/global-teardown.ts). Both hooks are declared for every run,
