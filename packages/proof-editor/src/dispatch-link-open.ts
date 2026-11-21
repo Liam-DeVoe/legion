@@ -7,12 +7,17 @@
  * plugin is not installed and a link is the browser's.
  *
  * It acts on the links the editor draws: a link mark's anchor, a reference title
- * (`./reference-decorations.ts`), and a link a node view draws as its own content (Dispatch's
- * picture fallback). An anchor deeper inside a host island - below an element of the editor that
- * is `contenteditable="false"` and is neither the anchor nor the anchor's parent, such as the slot
- * a host draws a thread into - is the host's, and left to it. ProseMirror sets
- * `contenteditable="false"` on a widget's own element and on a leaf node view's root, so a title
- * and the picture fallback are no island to themselves.
+ * (`./reference-decorations.ts`), a link a node view draws as its own content (Dispatch's
+ * picture fallback), and a pointer a typed block's header draws (the `serves` and `needs` links
+ * of a plan's task or a Verification document's check, Dispatch's `typed-block-drawing.ts`). An
+ * anchor deeper inside a host island - below an element of the editor that is
+ * `contenteditable="false"` and is neither the anchor, the anchor's parent nor a typed block's
+ * header, such as the slot a host draws a thread into - is the host's, and left to it.
+ * ProseMirror sets `contenteditable="false"` on a widget's own element and on a leaf node view's
+ * root, so a title and the picture fallback are no island to themselves. A typed block's header
+ * (`[data-proof-block-summary]`) is `contenteditable="false"` so that the reader cannot edit it,
+ * and is the block's own drawing rather than a slot, so its pointers are the editor's; one in a
+ * block a host draws inside its island, such as a comment's in a thread's slot, is the host's.
  *
  * - A primary click with no modifier opens the link, in every access mode and inside commented
  *   text, unless a drag selected text across it; Ctrl or Cmd opens it in a new tab. ProseMirror has
@@ -21,8 +26,9 @@
  * - A middle click (`auxclick`, button 1) opens it in a new tab, which also cancels the browser's
  *   own new tab for an anchor with a real `href`. Its press and its release are prevented, so the
  *   browser pastes nothing into the document (Linux pastes its primary selection on a middle
- *   button's release). The press reaches a link mark here; a title prevents every press itself,
- *   and the picture fallback prevents a middle one (Dispatch's `picture-view.ts`).
+ *   button's release). The press reaches a link mark and a header's pointer here; a title prevents
+ *   every press itself, and the picture fallback prevents a middle one (Dispatch's
+ *   `picture-view.ts`).
  * - Alt+Enter (Option+Enter on a Mac) is the host's key, not the editor's: the host's keymap binds
  *   it to the handle's `openLinkAtCaret`, so a reader finds it in the host's list of keys and can
  *   change it. ProseMirror prevents the default of every Enter it does not handle, and a host
@@ -48,8 +54,13 @@ export type OpenLink = (target: string, how: { readonly newTab: boolean }) => vo
 
 const linkOpenKey = new PluginKey("dispatch-link-open");
 
-/** Whether an element between `anchor` and the editor's root, other than the anchor itself and
- *  its parent, is `contenteditable="false"`: the anchor is inside a host island. */
+/** The attribute of the header a typed block's drawing puts above its content
+ *  (Dispatch's `typed-block-drawing.ts`): `contenteditable="false"`, and no host island. */
+const TYPED_BLOCK_HEADER = "data-proof-block-summary";
+
+/** Whether an element between `anchor` and the editor's root, other than the anchor itself, its
+ *  parent and a typed block's header, is `contenteditable="false"`: the anchor is inside a host
+ *  island. */
 function inIsland(view: EditorView, anchor: Element): boolean {
   const parent = anchor.parentElement;
   if (parent === null || parent === view.dom) {
@@ -60,16 +71,20 @@ function inIsland(view: EditorView, anchor: Element): boolean {
     node !== null && node !== view.dom;
     node = node.parentElement
   ) {
-    if (node.getAttribute("contenteditable") === "false") {
+    if (
+      node.getAttribute("contenteditable") === "false" &&
+      !node.hasAttribute(TYPED_BLOCK_HEADER)
+    ) {
       return true;
     }
   }
   return false;
 }
 
-/** A link the editor drew, and the target it opens: the `dispatch://` reference a link mark or a
- *  title carries as `data-dispatch-href`, else its `href`. Empty for a link whose target the
- *  sanitizer emptied (a scheme it refuses), which opens nothing. */
+/** A link the editor drew, and the target it opens: the `dispatch://` reference it carries as
+ *  `data-dispatch-href` (a link mark to a reference, a title, the picture fallback and a header's
+ *  pointer carry one), else its `href`. Empty for a link whose target the sanitizer emptied (a
+ *  scheme it refuses), which opens nothing. */
 interface EditorLink {
   readonly anchor: Element;
   readonly target: string;

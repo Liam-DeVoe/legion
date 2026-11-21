@@ -215,7 +215,8 @@ test("a block[] attribute draws the blocks it points at, each linked to its bloc
   expect(
     Array.from(serves?.querySelectorAll("a") ?? [], (link) => ({
       href: link.getAttribute("href"),
-      // What the document's own click handler and hover card read a drawn link's target from.
+      // What the editor's link plugin (`@legion/proof-editor`'s `dispatch-link-open.ts`) and the
+      // hover card read a drawn link's target from.
       reference: link.getAttribute("data-dispatch-href"),
       text: link.textContent,
     }))

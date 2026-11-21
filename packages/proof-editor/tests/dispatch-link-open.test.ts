@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 import { TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
-import type { OpenLink, ProofEditorAccess, ReferenceCandidate } from "../src/lib";
+import type {
+  CreateProofEditorOptions,
+  OpenLink,
+  ProofEditorAccess,
+  ReferenceCandidate,
+} from "../src/lib";
+import { serverBlockSchema } from "./block-schema-fixture";
 import { withMarksEditor } from "./marks-editor";
 
 /** A paragraph holding a link to another site and a `dispatch://` link. It opens at 0, so its
@@ -265,6 +271,87 @@ test("an anchor inside a host island is the host's, and one a node view draws as
       }
     },
     { openLink }
+  );
+});
+
+/** A plan whose task serves a requirement of another issue's spec. A paragraph comes first, so
+ *  the editor's first caret has text to stand in. */
+const PLAN_TASK =
+  'The plan.\n\n:::plan_task{#t1 serves="dispatch://CORE-1/spec#b-r1"}\nShip the change.\n:::\n';
+
+/** A typed block drawn as Dispatch's `typed-block-drawing.ts` draws one: a header the reader
+ *  cannot edit, holding the block's first `serves` pointer as a link in a name/value pair, above
+ *  the block's content. */
+const drawTypedBlock: NonNullable<CreateProofEditorOptions["renderBlock"]> = (node) => {
+  const [reference] = node.attrs.serves as string[];
+  return [
+    "section",
+    { "data-proof-block-type": node.type.name },
+    [
+      "header",
+      { contenteditable: "false", "data-proof-block-summary": "" },
+      [
+        "dl",
+        {},
+        ["dt", {}, "serves"],
+        [
+          "dd",
+          {},
+          [
+            "a",
+            { "data-dispatch-href": reference, href: "/issues/CORE-1/spec#b-r1" },
+            "CORE-1 spec block",
+          ],
+        ],
+      ],
+    ],
+    ["div", { "data-proof-block-content": "" }, 0],
+  ];
+};
+
+// dispatch://INFRA-2160, R1: a plan's or a Verification document's `serves` and `needs` pointers
+// sit two elements below a header that is `contenteditable="false"`, and a click on one opens it
+// through the host as any link of the document does, with no new load of the host's page.
+test("a pointer in a typed block's header opens its reference, and Ctrl and a middle click open it in a new tab", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    PLAN_TASK,
+    ({ view }) => {
+      const pointer = view.dom.querySelector(
+        "header[contenteditable=false] > dl > dd > a[data-dispatch-href]"
+      );
+      if (pointer === null) throw new Error("the plan's task drew no pointer in its header");
+
+      expect(offer(view, pointer, "click").handled).toBe(true);
+      expect(dispatch(pointer, "click").defaultPrevented).toBe(true);
+      dispatch(pointer, "click", { ctrlKey: true });
+      expect(dispatch(pointer, "mousedown", { button: 1 }).defaultPrevented).toBe(true);
+      expect(dispatch(pointer, "mouseup", { button: 1 }).defaultPrevented).toBe(true);
+      expect(dispatch(pointer, "auxclick", { button: 1 }).defaultPrevented).toBe(true);
+      expect(opened).toEqual([
+        ["dispatch://CORE-1/spec#b-r1", false],
+        ["dispatch://CORE-1/spec#b-r1", false],
+        ["dispatch://CORE-1/spec#b-r1", true],
+        ["dispatch://CORE-1/spec#b-r1", true],
+      ]);
+
+      // The same header drawn inside a host island - a typed block of a comment a host draws
+      // into a thread's slot - is the host's.
+      const content = view.dom.querySelector("[data-proof-block-content] p");
+      if (content === null) throw new Error("the plan's task holds no paragraph");
+      const island = view.dom.ownerDocument.createElement("span");
+      island.setAttribute("contenteditable", "false");
+      island.innerHTML =
+        '<span><header contenteditable="false" data-proof-block-summary=""><dl><dd><a href="/issues/CORE-1/spec#b-r1" data-dispatch-href="dispatch://CORE-1/spec#b-r1">in a thread</a></dd></dl></header></span>';
+      content.append(island);
+      try {
+        expect(offer(view, linkOf(view, "in a thread"), "click").handled).toBe(false);
+        expect(opened).toHaveLength(4);
+      } finally {
+        island.remove();
+      }
+    },
+    { blockSchema: serverBlockSchema, openLink, renderBlock: drawTypedBlock }
   );
 });
 

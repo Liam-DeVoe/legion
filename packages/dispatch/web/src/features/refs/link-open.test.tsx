@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test"
 import type { OpenLink } from "@legion/proof-editor";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, within } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import type { IssueReferenceSummary } from "../../api/types";
@@ -32,15 +32,21 @@ test("each target goes where the one rule says", () => {
     route: { key: "CORE-1", kind: "spec" },
   });
   expect(linkDestination("/issues/CORE-1/spec?v=2#b-x", PAGE)).toEqual({
+    href: "http://dispatch.test/issues/CORE-1/spec?v=2#b-x",
     kind: "page",
     path: "/issues/CORE-1/spec?v=2#b-x",
   });
   expect(linkDestination("http://dispatch.test/projects/CORE", PAGE)).toEqual({
+    href: "http://dispatch.test/projects/CORE",
     kind: "page",
     path: "/projects/CORE",
   });
   // A link to a block of the same document is its page at the block.
-  expect(linkDestination("#b-x", PAGE)).toEqual({ kind: "page", path: "/issues/CORE-9#b-x" });
+  expect(linkDestination("#b-x", PAGE)).toEqual({
+    href: "http://dispatch.test/issues/CORE-9#b-x",
+    kind: "page",
+    path: "/issues/CORE-9#b-x",
+  });
   for (const path of [
     "/api/v1/issues/CORE-1/artifacts/shot-png/versions/1",
     "/auth/start",
@@ -155,8 +161,73 @@ test("a Ctrl, Cmd or middle click opens a page of Dispatch in a new tab", async 
     await open("dispatch://CORE-1", true);
     expect(windowOpen).toHaveBeenLastCalledWith("/issues/CORE-1", "_blank", "noopener");
     await open("/issues/CORE-2#b-x", true);
-    expect(windowOpen).toHaveBeenLastCalledWith("/issues/CORE-2#b-x", "_blank", "noopener");
+    expect(windowOpen).toHaveBeenLastCalledWith(
+      "http://dispatch.test/issues/CORE-2#b-x",
+      "_blank",
+      "noopener"
+    );
     expect(route()).toBe("/issues/CORE-9");
+  } finally {
+    view.unmount();
+  }
+});
+
+/** Targets on Dispatch whose path starts with `//`: a `.` or `..` segment before the slashes
+ *  (`%2e` is a `.` too), this origin before them, or a backslash among them, which a web address
+ *  reads as a slash. */
+const DOUBLE_SLASH_PATHS = [
+  "/.//evil.example/x",
+  "http://dispatch.test//evil.example/x",
+  "/x/..//evil.example/x",
+  "/%2e//evil.example/x",
+  "/./\\evil.example/x",
+] as const;
+
+// A target that names another host after slashes or backslashes (`//evil.example/x`,
+// `/\evil.example/x`, `\\evil.example/x`) is another site; one whose path on Dispatch starts with
+// `//` is a page of Dispatch, kept whole as well as by its path.
+test("a target whose path starts with // is another site only where it names another host", () => {
+  for (const target of [
+    "//evil.example/x",
+    "/\\evil.example/x",
+    "\\\\evil.example/x",
+    "\\/evil.example/x",
+    "///evil.example/x",
+  ]) {
+    expect({ destination: linkDestination(target, PAGE), target }).toEqual({
+      destination: { href: "http://evil.example/x", kind: "away" },
+      target,
+    });
+  }
+  for (const target of DOUBLE_SLASH_PATHS) {
+    expect({ destination: linkDestination(target, PAGE), target }).toEqual({
+      destination: {
+        href: "http://dispatch.test//evil.example/x",
+        kind: "page",
+        path: "//evil.example/x",
+      },
+      target,
+    });
+  }
+});
+
+// A document's author can write `[spec](/.//evil.example/login)`: the sanitizer keeps it, the
+// status bar shows a Dispatch address, and the path alone, `//evil.example/login`, is the address
+// `http://evil.example/login` to `window.open`. A new tab opens the page's whole address instead.
+test("a new tab of a page of Dispatch stays on Dispatch, whatever run of slashes starts its path", async () => {
+  const { open, route, view } = renderOpener();
+  try {
+    for (const target of DOUBLE_SLASH_PATHS) {
+      await open(target, true);
+      expect({ opened: windowOpen.mock.lastCall, target }).toEqual({
+        opened: ["http://dispatch.test//evil.example/x", "_blank", "noopener"],
+        target,
+      });
+    }
+    // In place, the router reads the path as one on this origin.
+    await open("/.//evil.example/x");
+    expect(route()).toBe("/evil.example/x");
+    expect(locationAssign).not.toHaveBeenCalled();
   } finally {
     view.unmount();
   }
@@ -248,6 +319,57 @@ test("a plain click on a link in a rendered body opens it by the one rule", () =
     click(link("a reference"));
     expect(route()).toBe("/issues/CORE-2");
     expect(clicks.prevented).toEqual([true, true, true]);
+  } finally {
+    clicks.stop();
+    view.unmount();
+  }
+});
+
+// The host listens from the commit that first draws it, as the keymap does: a click made before
+// that commit's passive effects run reached no listener while the host attached it in one, and
+// the browser followed the link with a new load of the application. Here the click comes from a
+// layout effect of the body drawn beside the host, which runs in that commit after the host's own
+// and before any passive effect of it. The router is drawn a commit before them, as the
+// application's is before the shell, so it listens to its history by then.
+test("a click made in the commit that first draws the host opens its link by the one rule", () => {
+  const clicks = recordPrevented();
+  function ClickedAsDrawn(): ReactNode {
+    const link = useRef<HTMLAnchorElement>(null);
+    useLayoutEffect(() => {
+      link.current?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, button: 0, cancelable: true })
+      );
+    }, []);
+    return (
+      <div className="dispatch-markdown">
+        <a href="/issues/CORE-1" ref={link}>
+          a page
+        </a>
+      </div>
+    );
+  }
+  function Route(): ReactNode {
+    return <p data-testid="route">{useLocation().pathname}</p>;
+  }
+  const queryClient = new QueryClient();
+  const page = (drawn: boolean) => (
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/issues/CORE-9"]}>
+        <Route />
+        {drawn ? (
+          <>
+            <LinkClickHost />
+            <ClickedAsDrawn />
+          </>
+        ) : null}
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  const view = render(page(false));
+  try {
+    view.rerender(page(true));
+    expect(clicks.prevented).toEqual([true]);
+    expect(within(view.container).getByTestId("route").textContent).toBe("/issues/CORE-1");
   } finally {
     clicks.stop();
     view.unmount();

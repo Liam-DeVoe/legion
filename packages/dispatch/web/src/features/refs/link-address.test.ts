@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { Window as HappyDOMWindow } from "happy-dom";
 
 import { linkAddress } from "./link-address";
 
@@ -63,4 +64,20 @@ test("a page that shows no item, another site and a mail address copy the link's
 test("an element with no address is no link to copy", () => {
   expect(linkAddress(element("<a>no href</a>"))).toBeUndefined();
   expect(linkAddress(element('<span role="link">x</span>'))).toBeUndefined();
+});
+
+// The sanitizer draws a link whose scheme it refuses (`javascript:`, `data:`) as `<a href="">`
+// with no data attribute. An empty `href` reads as the page the reader is on, here an issue's
+// spec, whose reference the link never named.
+test("a link whose address the sanitizer removed is no link to copy, on an item's own page too", () => {
+  const testWindow = window as unknown as HappyDOMWindow;
+  const pageBefore = window.location.href;
+  testWindow.happyDOM.setURL("http://dispatch.test/issues/CORE-9/spec");
+  try {
+    for (const html of ['<a href="">run me</a>', '<a href="  ">run me</a>']) {
+      expect({ address: linkAddress(element(html)), html }).toEqual({ address: undefined, html });
+    }
+  } finally {
+    testWindow.happyDOM.setURL(pageBefore);
+  }
 });

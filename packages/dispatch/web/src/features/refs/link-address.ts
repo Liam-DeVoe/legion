@@ -9,7 +9,9 @@ import { buildDispatchReference, nodeRouteFromHref, parseNodeReference } from ".
  * where it names one; a link to a page of this application names the item the page shows
  * (`nodeRouteFromHref`); and anything else - another site, a mail address, a page that names no
  * item such as the Inbox - is its resolved `href`. Undefined for an element that carries none of
- * these, which is no link to copy.
+ * these, which is no link to copy, and for a link with a blank `href` and neither data attribute:
+ * the sanitizer draws a link whose scheme it refuses (`javascript:`, `data:`) with an empty
+ * `href`, which the browser reads as the page the reader is on, an address the link never named.
  */
 export function linkAddress(
   link: Element,
@@ -24,7 +26,7 @@ export function linkAddress(
     const route = parseNodeReference(target);
     return route === undefined ? target : buildDispatchReference(route);
   }
-  if (!(link instanceof HTMLAnchorElement) || !link.hasAttribute("href")) {
+  if (!(link instanceof HTMLAnchorElement) || (link.getAttribute("href") ?? "").trim() === "") {
     return undefined;
   }
   const route = nodeRouteFromHref(link.href, appOrigin);

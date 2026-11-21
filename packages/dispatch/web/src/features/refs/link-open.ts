@@ -1,6 +1,6 @@
 import type { OpenLink } from "@legion/proof-editor";
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useEffect, useRef } from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { openInNewTab } from "../shell/new-tab";
@@ -24,10 +24,13 @@ import { buildReferencePath, type DispatchReferenceRoute, parseNodeReference } f
 const SERVER_PATH = /^\/(?:api|auth|ws)(?:\/|$)/;
 
 /** Where a link's target goes: a Dispatch node by its reference, a page of this application, a
- *  same-origin address the server answers itself, or away from Dispatch. */
+ *  same-origin address the server answers itself, or away from Dispatch. A page carries its path,
+ *  which the router opens in place, and its whole address on this origin, which a new tab opens:
+ *  the path alone can start with `//` (`/.//elsewhere.example/x`, or this origin followed by
+ *  `//elsewhere.example/x`), and `window.open` reads such a path as an address on another site. */
 export type LinkDestination =
   | { readonly kind: "reference"; readonly route: DispatchReferenceRoute }
-  | { readonly kind: "page"; readonly path: string }
+  | { readonly href: string; readonly kind: "page"; readonly path: string }
   | { readonly kind: "server"; readonly href: string }
   | { readonly kind: "away"; readonly href: string };
 
@@ -62,7 +65,7 @@ export function linkDestination(
   if (SERVER_PATH.test(url.pathname)) {
     return { href: url.href, kind: "server" };
   }
-  return { kind: "page", path: `${url.pathname}${url.search}${url.hash}` };
+  return { href: url.href, kind: "page", path: `${url.pathname}${url.search}${url.hash}` };
 }
 
 /** The page's opener of a link's destination, as `linkDestination` reads its target, in the page
@@ -100,7 +103,14 @@ function useDestinationOpener(): (
         }
         return;
       case "page":
-        go(destination.path);
+        // A new tab opens the page's whole address, never its path (`LinkDestination` says why).
+        // The router reads the path as one on this origin whatever run of slashes starts it: React
+        // Router's `resolvePath` collapses the run to one.
+        if (newTab) {
+          openInNewTab(destination.href);
+        } else {
+          navigate(destination.path);
+        }
         return;
       case "reference":
         // A block of a spec pinned to a version opens that version under the spec's slug,
@@ -136,10 +146,17 @@ export function useLinkOpener(): OpenLink {
  * document editor's own link) is left alone, and so are a modifier click and a middle click,
  * which the browser opens in a new tab from the link's `href` - a reference link's is its page
  * (`collectReferenceAnchors`) - and a link to an address the server answers itself.
+ *
+ * Its listener is attached in the commit that first draws the host, as `KeymapProvider`'s keydown
+ * listener is, so no body drawn in that commit is in the page before the host listens. `AuthGate`
+ * draws the shell in a render its own passive effect starts (`shellFor`), and a passive effect of
+ * the commit that render makes runs in a later task, after the browser may have painted a body
+ * and taken a click on one of its links, which the browser then followed itself: a page of
+ * Dispatch with a new load of the application, another site in this tab.
  */
 export function LinkClickHost(): ReactNode {
   const openDestination = useDestinationOpener();
-  useEffect(() => {
+  useLayoutEffect(() => {
     const onClick = (event: MouseEvent) => {
       if (
         event.defaultPrevented ||
