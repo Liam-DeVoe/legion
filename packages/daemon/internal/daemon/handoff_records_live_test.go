@@ -411,7 +411,7 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	}
 	r.note("Dispatch's test record of %s: version %d (id %s) by session %s, the body written byte for byte", r.a7, daemonRecord.Version, daemonRecord.ID, daemonRecord.Author.ID)
 
-	status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "tested", HandoffID: daemonRecord.ID, HandoffVersion: daemonRecord.Version})
+	status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "tested", Commit: "head-" + r.a7, HandoffID: daemonRecord.ID, HandoffVersion: daemonRecord.Version})
 	if status != http.StatusForbidden || failure.Code != "HANDOFF_SESSION_MISMATCH" ||
 		!strings.Contains(failure.Error, daemonSession) || !strings.Contains(failure.Error, tester.session) {
 		t.Fatalf("the tester's completion naming the daemon session's record = %d %+v, want 403 HANDOFF_SESSION_MISMATCH naming %s and %s",
