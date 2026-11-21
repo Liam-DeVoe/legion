@@ -1,3 +1,4 @@
+import { isIdPrefix } from "@legion/contracts";
 import type { Page } from "@playwright/test";
 
 import { IDENTITY_HEIGHT_PROPERTY } from "../web/src/features/issue-page/identity-block";
@@ -12,7 +13,7 @@ import { getArtifact, getAsk, getIssueDecisions, listComments } from "./api";
 import { nextFrames } from "./frames";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
 import { OPEN_QUESTION_BLOCK_ID } from "./issue-layout-seed-text";
-import { gotoIssue, phase } from "./issue-page";
+import { gotoIssue, issuePage, phase } from "./issue-page";
 import {
   DESKTOP,
   drawnRows,
@@ -56,7 +57,7 @@ import { expect, test } from "./test";
  * view's own `e2e/issue-page-q.ts`, and reads the page through D's `e2e/issue-page.ts`, G's
  * `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and the view's own `e2e/issue-page-q.ts`.
  *
- * Six rows, each under the title of the check it answers:
+ * Seven rows, each under the title of the check it answers:
  *
  * - **c-groups**, three rows that come from the checkpoint's `e2e/issue-layout.e2e.ts`: "the
  *   Decisions filter draws its four parts and quotes the person's answer"; "only a decision
@@ -71,6 +72,10 @@ import { expect, test } from "./test";
  * - **c-layout**, "under Decisions a row draws the outline's layout, short names and the
  *   six-line cut": G's layout and group readings on every row of the view, each statement named
  *   within 32 characters, the cut of a long answered question, and the view's width.
+ * - **the address the view draws no row for**, one row: "an address the view draws no row for
+ *   draws the outline's line for it in the view's place, with the focus on that line": a comment
+ *   the issue holds none of, a block no node carries and a comment id written short that names
+ *   none, each named on the view's address, draw part I's line for it where the view was.
  *
  * Each row's first reading waits out the page's load under a message of its own, before G's
  * `expectIssuePageDrawn`: on a build whose slot draws nothing, every row fails on what the view
@@ -826,3 +831,116 @@ test("under Decisions a row draws the outline's layout, short names and the six-
     }
   });
 });
+
+/** A comment id of the right shape, a whole uuid, that no comment of the seeded issue has: the
+ *  comment's own read answers 404 for it. */
+const GONE_COMMENT = "5f0c2a9e-7d41-4b8a-9c3e-2e6d1b7a4c90";
+
+/** The same id written short, its first eight hex digits, which name no comment either: the
+ *  graph read that resolves an id written short finds nothing for it. */
+const SHORT_GONE_COMMENT = GONE_COMMENT.slice(0, 8);
+
+/** A block id no node of the seeded issue carries. */
+const NO_BLOCK = "no-such-block";
+
+/** The heading and the line part I's outline draws in its own place for an address that names
+ *  nothing the issue holds (`slots/body.tsx`'s `ItemFallback` and `ABSENT_LINES`), for the
+ *  issue `key`. That file keeps these words to itself, so they are written out here, as
+ *  `deep-links.e2e.ts` writes the heading of a comment that is not found. */
+const FALLBACK_LINES = {
+  block: (key: string) => ({
+    heading: "No row for this block",
+    line: `That link names no row of ${key}'s outline.`,
+  }),
+  comment: (key: string) => ({
+    heading: "Comment not found",
+    line: `That link doesn't name a comment on ${key} — it may have been deleted.`,
+  }),
+} as const;
+
+// An address on the Decisions view that names a node its tree draws no row for: the view tells
+// the stage so, and the stage draws part I's outline in the view's place, which draws part I's
+// line for the address, with the focus on that line's heading and never left on the page's
+// body. Three such addresses, each opened by a load of its own: a comment id of the right shape
+// that no comment of the issue has, a `#b-` fragment naming a block no node carries, and that
+// comment id written short. The view is read first at its own address, so each line is drawn
+// where the view drew its rows; the gone comment comes next, so a stage that keeps the view
+// fails on the words of that comment's line. Each project at its own width: `chromium` the
+// desktop's and `iphone` the phone's.
+// SLOW(>=2s): the whole issue seeded with three more writes, then four loads, two of them
+// waited on until the item's read, which the page asks again before it says the item is
+// missing, has settled.
+test("an address the view draws no row for draws the outline's line for it in the view's place, with the focus on that line @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const size = test.info().project.name === "iphone" ? PHONE : DESKTOP;
+  const at = `at ${size.width} px`;
+  await phase(browser, seedDecisionsFilter, async (page, seeded) => {
+    // What makes each address name nothing: the issue holds comments, none of them under the
+    // gone id or under an id that begins with its eight digits, and the eight digits are an id
+    // written short where the whole id is not.
+    const comments = (await listComments(seeded.key)).map((comment) => comment.id);
+    expect(comments.length, "the seeded issue holds no comment").toBeGreaterThan(0);
+    expect(
+      comments.filter((id) => id.startsWith(SHORT_GONE_COMMENT)),
+      `a comment of the issue begins with ${SHORT_GONE_COMMENT}`
+    ).toEqual([]);
+    expect(
+      { short: isIdPrefix(SHORT_GONE_COMMENT), whole: isIdPrefix(GONE_COMMENT) },
+      "the gone comment's id and its first eight digits are not a whole id and a short one"
+    ).toEqual({ short: true, whole: false });
+
+    await page.setViewportSize(size);
+    await openPreset(page, seeded.key, "decisions");
+    // The row's first reading: the view draws its rows at its own address.
+    await expect
+      .poll(() => decisionsBody(page).locator("[data-node-row]").count(), {
+        message: `the Decisions view draws no row ${at}`,
+      })
+      .toBeGreaterThan(0);
+    await expectIssuePageDrawn(page);
+
+    const view = presetPath(seeded.key, "decisions");
+    await gotoIssue(page, `${view}?comment=${GONE_COMMENT}`);
+    await expectFallbackLine(page, FALLBACK_LINES.comment(seeded.key), `a gone comment ${at}`);
+    await gotoIssue(page, `${view}#b-${NO_BLOCK}`);
+    await expectFallbackLine(
+      page,
+      FALLBACK_LINES.block(seeded.key),
+      `a block no node carries ${at}`
+    );
+    await gotoIssue(page, `${view}?comment=${SHORT_GONE_COMMENT}`);
+    await expectFallbackLine(
+      page,
+      FALLBACK_LINES.comment(seeded.key),
+      `a comment id written short that names none ${at}`
+    );
+  });
+});
+
+/** The page draws part I's line `words` in the Decisions view's place for the address it has
+ *  just loaded, `what`: its heading and its line, with the focus on the heading, and none of
+ *  the view's list beside it. */
+async function expectFallbackLine(
+  page: Page,
+  words: { readonly heading: string; readonly line: string },
+  what: string
+): Promise<void> {
+  const named = { exact: true, name: words.heading } as const;
+  const heading = issuePage(page).getByRole("heading", named);
+  await expect(heading, `${what} draws no "${words.heading}" in the view's place`).toBeVisible();
+  // The inner locator of `has` is read inside each section, so it names no root of its own.
+  await expect(
+    issuePage(page)
+      .locator("section")
+      .filter({ has: page.getByRole("heading", named) })
+      .locator("p"),
+    `${what} draws another line under "${words.heading}"`
+  ).toHaveText(words.line);
+  await expect(
+    heading,
+    `${what} leaves the focus off "${words.heading}", on the page's body or elsewhere`
+  ).toBeFocused();
+  await expect(decisionsBody(page), `${what} draws the view's list beside the line`).toHaveCount(0);
+}
