@@ -683,8 +683,7 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 // (agent_tokens.created_at before people.sub_recorded_at, both from Dispatch's own clock): an
 // account that held the address before may have minted it. A token made after the recording, an
 // address recording no account or no recording time, and a deployment whose sign-in records none
-// are not replaced. recordsAccounts comes last, where the executor can leave the fleet unread for a
-// token no account replaced; Postgres fixes no order of evaluation, so nothing rests on it.
+// are not replaced.
 func tokenAccountReplaced(recordsAccounts string) string {
 	return "coalesce(people.sub is not null and (" +
 		"(agent_tokens.subject is not null and agent_tokens.subject <> people.sub)" +

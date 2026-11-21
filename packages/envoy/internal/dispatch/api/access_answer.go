@@ -129,10 +129,11 @@ func readAccessQuestion(w http.ResponseWriter, r *http.Request, personRequired b
 // did not give: the two times come from two databases' clocks, so a skew refuses. It is true
 // otherwise: no account recorded for the person (no row included), no recording time to compare a
 // credential recording none with (a row from before the column), a deployment whose sign-in
-// records no account, or a build without the account binding in the fleet (accountsHeldSQL, read
-// in the same statement), which holds no credential to an account either. Whether an account is
-// recorded is read as the admission reads it, `sub is not null`; the database refuses an empty sub
-// (migration 20261118041916), so no row reads as recorded to one and as unrecorded to the other.
+// records no account, or a build without the account binding in the fleet
+// (store.AccountBindingHoldsSQL, read in the same statement), which holds no credential to an
+// account either. Whether an account is recorded is read as the admission reads it, `sub is not
+// null`; the database refuses an empty sub (migration 20261118041916), so no row reads as recorded
+// to one and as unrecorded to the other.
 // It is nil for a question naming no person, and for one that does not say which account the
 // credential records, which the answer then leaves out, as it always did.
 func (s *server) accountHolder(ctx context.Context, q access.Querier, question accessQuestion) (*bool, error) {
@@ -146,7 +147,7 @@ func (s *server) accountHolder(ctx context.Context, q access.Querier, question a
 	var recorded, recordedAt, madeAfter bool
 	var sub string
 	legacyWindow, markWindow := store.AccountBindingWindows()
-	err := q.QueryRow(ctx, `select sub is not null and `+accountsHeldSQL("true", "$3", "$4")+`, coalesce(sub, ''), sub_recorded_at is not null,
+	err := q.QueryRow(ctx, `select sub is not null and `+store.AccountBindingHoldsSQL("$3", "$4")+`, coalesce(sub, ''), sub_recorded_at is not null,
 			coalesce($2::timestamptz >= sub_recorded_at + `+brokerCredentialMarginSQL+`, false)
 		from people where email = $1`, model.CanonicalLogin(question.person), timeOrNull(question.createdAt), legacyWindow, markWindow).Scan(&recorded, &sub, &recordedAt, &madeAfter)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {

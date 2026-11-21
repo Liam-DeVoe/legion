@@ -293,8 +293,7 @@ type brokerAdmission struct {
 // predates the column. An admission reads it (brokerPersonAdmitted), and so do the two reads a
 // request makes again once its body has arrived, a decision's (approverStanding) and a personal
 // token's mint (mintAgentTokenSQL), so a token admitted before another account's sign-in committed
-// acts on nothing after it, however long its client held the body back. held comes last, where the
-// executor can leave the fleet unread for a token no account replaced.
+// acts on nothing after it, however long its client held the body back.
 func brokerAccountReplaced(address, subject, foreign, createdAt, held string) string {
 	return "(exists (select 1 from people where email = " + address + " and sub is not null and (" +
 		foreign + " or (nullif(" + subject + ", '') is not null and sub <> " + subject + ")" +

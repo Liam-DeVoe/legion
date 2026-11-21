@@ -16,30 +16,11 @@ import (
 // publish, its registration and the mark either stamps, but by account_binding rather than
 // owner_lock_protocol, so a build at owner lock protocol 1 that lacks the binding counts too. These
 // tests write such a build's rows as it writes them: its columns named, account_binding left out.
+// registerFleetProcess (ownerlock_fleet_test.go) writes such a process: it names no
+// account_binding.
 
 // accountBindingFleetVersion is migration 20261120222130_account_binding_fleet's version.
 const accountBindingFleetVersion = 20261120222130
-
-// registerUnboundProcess writes a server_processes row as a process of a build without the
-// binding leaves it, at owner lock protocol ownerLock (0 leaves that column out too, as a build
-// before the owner lock does), with a heartbeat age old, so its insert stamps the binding's mark
-// (account_binding_legacy_registration).
-func registerUnboundProcess(t *testing.T, s *Store, ownerLock int, age time.Duration) {
-	t.Helper()
-	var err error
-	if ownerLock == 0 {
-		_, err = s.Pool.Exec(context.Background(), `
-			insert into server_processes (instance, signing_keys, heartbeat_at)
-			values (gen_random_uuid(), '{fingerprint}', now() - make_interval(secs => $1))`, age.Seconds())
-	} else {
-		_, err = s.Pool.Exec(context.Background(), `
-			insert into server_processes (instance, signing_keys, heartbeat_at, owner_lock_protocol)
-			values (gen_random_uuid(), '{fingerprint}', now() - make_interval(secs => $1), $2)`, age.Seconds(), ownerLock)
-	}
-	if err != nil {
-		t.Fatalf("register a process without the binding at owner lock protocol %d: %v", ownerLock, err)
-	}
-}
 
 // registerBoundProcess writes a server_processes row as a process of this build leaves it.
 func registerBoundProcess(t *testing.T, s *Store) {
@@ -123,14 +104,14 @@ func TestTheAccountBindingHoldsOnlyWhileNoBuildWithoutItIsInTheFleet(t *testing.
 		{name: "no process registered", seed: func(*testing.T) {}, holds: true},
 		{name: "a live process of this build", seed: func(t *testing.T) { registerBoundProcess(t, s) }, holds: true},
 		{name: "a live process at owner lock protocol 1 without the binding", ownerLockBlind: true,
-			seed: func(t *testing.T) { registerUnboundProcess(t, s, 1, 0) }},
-		{name: "a live process before the owner lock", seed: func(t *testing.T) { registerUnboundProcess(t, s, 0, 0) }},
+			seed: func(t *testing.T) { registerFleetProcess(t, s, OwnerLockProtocol, 0) }},
+		{name: "a live process before the owner lock", seed: func(t *testing.T) { registerFleetProcess(t, s, 0, 0) }},
 		{name: "a process without the binding whose heartbeat stopped within the legacy window", ownerLockBlind: true, seed: func(t *testing.T) {
-			registerUnboundProcess(t, s, 1, registryLiveWindow+time.Minute)
+			registerFleetProcess(t, s, OwnerLockProtocol, registryLiveWindow+time.Minute)
 			ageBindingMark(t, s, OwnerLockMarkWindow+time.Minute)
 		}},
 		{name: "a process without the binding whose heartbeat stopped before the legacy window", holds: true, seed: func(t *testing.T) {
-			registerUnboundProcess(t, s, 1, OwnerLockLegacyWindow+time.Minute)
+			registerFleetProcess(t, s, OwnerLockProtocol, OwnerLockLegacyWindow+time.Minute)
 			ageBindingMark(t, s, OwnerLockMarkWindow+time.Minute)
 		}},
 		{name: "a dashboard publish without the binding just now, before its registration", ownerLockBlind: true,
@@ -375,7 +356,7 @@ func TestASignInBesideABuildWithoutTheBindingRevokesAndOwesNothing(t *testing.T)
 	}
 	first := recordedAt()
 
-	registerUnboundProcess(t, database, 1, 0)
+	registerFleetProcess(t, database, OwnerLockProtocol, 0)
 	signInAll(t, people, email, "account-b")
 	var sub string
 	if err := database.Pool.QueryRow(ctx, `select sub from people where email = $1`, email).Scan(&sub); err != nil || sub != "account-b" {

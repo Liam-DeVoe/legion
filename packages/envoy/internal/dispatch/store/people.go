@@ -258,15 +258,14 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	var tokensRevoked int64
 	var owed []string
 	switch {
-	case !binding:
-	case replaced:
+	case binding && replaced:
 		tokens, err := tx.Exec(ctx, revokeAddressTokensSQL, email)
 		if err != nil {
 			return fmt.Errorf("revoke the personal tokens of %q, which another Google account signs in to now: %w", email, err)
 		}
 		tokensRevoked = tokens.RowsAffected()
 		owed = []string{stored}
-	case firstRecording:
+	case binding && firstRecording:
 		if tokensRevoked, owed, err = revokeOtherAccountsTokens(ctx, tx, email, subject); err != nil {
 			return err
 		}
