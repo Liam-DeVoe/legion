@@ -32,6 +32,13 @@ func nkeyClient(t *testing.T, url, seed, name string) *nats.Conn {
 	return conn
 }
 
+// startRecorder is a leakRecorder whose Fatalf fails the test it stands in for: a start that
+// fails fails the row by name, while what the leak check reports with Errorf is recorded for the
+// row to read.
+type startRecorder struct{ *leakRecorder }
+
+func (r startRecorder) Fatalf(format string, args ...any) { r.leakRecorder.TB.Fatalf(format, args...) }
+
 // The leak check holds a server a test starts for itself too (armServerLeakCheck): a client the
 // test leaves open on it fails the test, named by id and name, though the server is removed when
 // the test ends. The control is the same row closing its client: nothing is reported.
@@ -45,14 +52,19 @@ func TestAClientLeftOnATestsOwnServerFailsTheCheck(t *testing.T) {
 			clientName := "a-client-of-a-tests-own-server-" + rand.Text()
 			var conn *nats.Conn
 			var recorder *leakRecorder
+			started := false
 			t.Run("the test that starts the server", func(t *testing.T) {
 				recorder = &leakRecorder{TB: t}
-				url := StartNkeyAuthorized(recorder, public)
+				url := StartNkeyAuthorized(startRecorder{recorder}, public)
+				started = true
 				conn = nkeyClient(t, url, seed, clientName)
 				if row.closes {
 					conn.Close()
 				}
 			})
+			if !started {
+				t.Fatal("the server did not start; its subtest says why")
+			}
 			if conn != nil {
 				t.Cleanup(conn.Close)
 			}
