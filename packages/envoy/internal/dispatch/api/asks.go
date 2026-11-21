@@ -749,37 +749,31 @@ type openAsksResponse struct {
 	Asks           []openAsk `json:"asks"`
 }
 
-// openAsksWaitingOn turns ?waiting_on= into the SQL mode and login listOpenAsks binds: absent, ""
-// (no narrowing); `unassigned`, the asks that wait on nobody; and any other value "login" with
-// the canonical login of a person who has signed in, canonicalised as allowedLogin canonicalises
-// a person named anywhere else. A repeated key, a blank value and a login nobody has signed in as
-// are 400 INVALID_QUERY naming the key: each names nobody the read could narrow to.
-func (s *server) openAsksWaitingOn(ctx context.Context, query url.Values) (mode, login string, err error) {
+// openAsksWaitingOn turns ?waiting_on= into the login listOpenAsks binds: "" where the key is
+// absent, which narrows nothing, and otherwise the canonical login of a person who has signed in,
+// canonicalised as allowedLogin canonicalises a person named anywhere else. A repeated key, a
+// blank value and a login nobody has signed in as are 400 INVALID_QUERY naming the key: each
+// names nobody the read could narrow to.
+func (s *server) openAsksWaitingOn(ctx context.Context, query url.Values) (string, error) {
 	values, present := query["waiting_on"]
 	if !present {
-		return "", "", nil
+		return "", nil
 	}
 	value := ""
 	if len(values) == 1 {
 		value = strings.TrimSpace(values[0])
 	}
-	switch value {
-	case "":
-		return "", "", errorf(http.StatusBadRequest, "INVALID_QUERY",
-			"waiting_on is one login of a person who has signed in to Dispatch, or unassigned")
-	case "unassigned":
-		return "unassigned", "", nil
+	if value == "" {
+		return "", errorf(http.StatusBadRequest, "INVALID_QUERY",
+			"waiting_on is one login of a person who has signed in to Dispatch")
 	}
-	login, err = s.allowedLogin(ctx, value)
+	login, err := s.allowedLogin(ctx, value)
 	var refused *apiError
 	if errors.As(err, &refused) {
-		return "", "", errorf(http.StatusBadRequest, "INVALID_QUERY",
-			"waiting_on names %q, who has not signed in to Dispatch; it is a login of a person who has, or unassigned", value)
+		return "", errorf(http.StatusBadRequest, "INVALID_QUERY",
+			"waiting_on names %q, who has not signed in to Dispatch; it is a login of a person who has", value)
 	}
-	if err != nil {
-		return "", "", err
-	}
-	return "login", login, nil
+	return login, err
 }
 
 // listOpenAsks returns the active open asks of one scope, in priority order and oldest first
@@ -788,8 +782,8 @@ func (s *server) openAsksWaitingOn(ctx context.Context, query url.Values) (mode,
 // authored it - issue-owned via issues.project_key, document-owned via artifacts.project_key; or,
 // with neither, every open ask of every project. At most one of the two scopes is named, and a
 // scope key sent blank is refused rather than read as left out, which would widen the read to
-// every project. ?waiting_on= narrows any of them to the asks that wait on one person, or on
-// nobody. Every row passes the visibility predicate of the ask's node for the acting credential
+// every project. ?waiting_on= narrows any of them to the asks that wait on one person. Every row
+// passes the visibility predicate of the ask's node for the acting credential
 // (refs.VisibleKind), so the read answers no ask the caller may not see. A human clarification
 // leaves an ask open but makes the author responsible for the next reply.
 //
@@ -817,7 +811,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "AUTHOR_SESSION_OR_PROJECT_CONFLICT", http.StatusBadRequest, "author_session and project are mutually exclusive; supply at most one")
 		return
 	}
-	waitingMode, waitingLogin, err := s.openAsksWaitingOn(r.Context(), query)
+	waitingOn, err := s.openAsksWaitingOn(r.Context(), query)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -836,26 +830,22 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		since = &value
 	}
 	// The scope over the ask aliased a and the joins askedOfPersonExpression reads, bound the same
-	// in both statements: $1 the session, $2 the project, $3 and $4 ?waiting_on='s mode and login,
-	// which narrow on the person the ask waits on exactly as the Inbox's ?assignee= does (listInbox),
-	// and $5 the acting credential the ask node's visibility predicate binds. `unassigned` is left
-	// standing for the caller that sends it: every question reaches a person now, so it answers
-	// nothing.
+	// in both statements: $1 the session, $2 the project, $3 ?waiting_on='s login, which narrows on
+	// the person the ask waits on exactly as the Inbox's ?assignee= does (listInbox), and $4 the
+	// acting credential the ask node's visibility predicate binds.
 	scope := `($1 = '' or (a.author->>'kind' = 'session' and a.author->>'id' = $1))
 		  and ($2 = '' or coalesce(i.project_key, ar.project_key) = $2)
-		  and ($3 = ''
-		       or ($3 = 'unassigned' and ` + askedOfPersonExpression + ` is null)
-		       or ($3 = 'login' and ` + askedOfPersonExpression + ` = $4))
-		  and ` + refs.VisibleKind(graphstore.KindAsk, "a.id::text", "$5")
+		  and ($3 = '' or ` + askedOfPersonExpression + ` = $3)
+		  and ` + refs.VisibleKind(graphstore.KindAsk, "a.id::text", "$4")
 	visibility := refs.VisibilityArg(who)
 	var asOf time.Time
 	var openedSince bool
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
-		select statement_timestamp(), $6::timestamptz is not null and exists (
+		select statement_timestamp(), $5::timestamptz is not null and exists (
 			select 1 from asks a`+askedOfPersonJoins+`
-			where `+scope+` and a.created_at >= $6
+			where `+scope+` and a.created_at >= $5
 		)
-	`, sessionID, project, waitingMode, waitingLogin, visibility, since).Scan(&asOf, &openedSince); err != nil {
+	`, sessionID, project, waitingOn, visibility, since).Scan(&asOf, &openedSince); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -867,11 +857,11 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		       `+askItemRefExpression+`,
 		       greatest(0, floor(extract(epoch from (statement_timestamp() - a.created_at))))::bigint,
 		       exists (select 1 from comments c where c.ask_id = a.id and c.author->>'kind' = 'user')
-		`+openAskRowFrom("$6")+`
+		`+openAskRowFrom("$5")+`
 		where a.state = 'open' and (i.key is null or i.closed_at is null)
 		  and `+scope+`
 		order by i.priority asc nulls last, a.created_at asc, a.id
-	`, sessionID, project, waitingMode, waitingLogin, visibility, snoozer)
+	`, sessionID, project, waitingOn, visibility, snoozer)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

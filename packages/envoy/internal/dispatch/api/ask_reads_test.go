@@ -529,24 +529,9 @@ func TestOpenAsksWaitingOnALoginAnswersTheAsksThatWaitOnThatPerson(t *testing.T)
 	}
 }
 
-// ?waiting_on=unassigned answers the asks that wait on nobody, as the Inbox's ?assignee=unassigned
-// does: every question reaches a person now, so both answer none while the scope holds asks.
-func TestOpenAsksWaitingOnUnassignedAnswersTheAsksThatWaitOnNobody(t *testing.T) {
-	handler := newTestHandler(t)
-	seedWaitingOn(t, handler)
-	if every := openAsksRows(t, handler, nil, "alice"); len(every) != 3 {
-		t.Fatalf("the read with no narrowing answers %v, want the three seeded asks", openAskIDsOf(every))
-	}
-	rows := openAsksRows(t, handler, url.Values{"waiting_on": {"unassigned"}}, "alice")
-	inbox := inboxFor(t, handler, "alice", "unassigned")
-	if len(rows) != 0 || len(inbox) != 0 {
-		t.Fatalf("waiting_on=unassigned answers %v and the Inbox's assignee=unassigned %v, want none of either",
-			openAskIDsOf(rows), askIDsOf(inbox))
-	}
-}
-
 // A waiting_on that names nobody the read could narrow to is refused by name: a blank value, a
-// repeated key, a login nobody has signed in as, and `me`, which the read does not take, since it
+// repeated key, a login nobody has signed in as, `unassigned`, which is such a login (the read
+// narrows to one person and to nobody else), and `me`, which the read does not take, since it
 // answers about any person and the caller's own mail is the one read's (GET /api/v1/me/inbox).
 func TestOpenAsksRefuseABadWaitingOn(t *testing.T) {
 	handler := newTestHandler(t)
@@ -557,6 +542,7 @@ func TestOpenAsksRefuseABadWaitingOn(t *testing.T) {
 		{"waiting_on": {"alice", "bob"}},
 		{"waiting_on": {"nobody-signed-in"}},
 		{"waiting_on": {"me"}},
+		{"waiting_on": {"unassigned"}},
 	} {
 		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/open?"+query.Encode(), nil, "alice")
 		var refusal struct{ Code, Error string }

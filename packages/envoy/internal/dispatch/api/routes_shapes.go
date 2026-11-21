@@ -528,8 +528,7 @@ type openAsksQuery struct {
 	AuthorSession string `query:"author_session"`
 	// Project lists every open ask on a project's issues and documents.
 	Project string `query:"project"`
-	// WaitingOn narrows to the asks that wait on one person, a login of somebody who has signed
-	// in, or, `unassigned`, to the asks that wait on nobody.
+	// WaitingOn narrows to the asks that wait on one person, a login of a person who has signed in.
 	WaitingOn string `query:"waiting_on"`
 	// Since lists the asks opened at or after this one RFC3339 time.
 	Since string `query:"since"`
