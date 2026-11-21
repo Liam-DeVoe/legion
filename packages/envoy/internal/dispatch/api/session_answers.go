@@ -22,6 +22,25 @@ const (
 	sessionAnswersMaxChars = 100_000
 )
 
+// sessionAnswersRoute and sessionAnswersV2Route are the answers reads of the two versions, whose
+// reads routeHandler times for the keyword fill's pause (Deps.AnswersLatency): both read
+// sessionanswers.List, so a slow read of either is a slow read the fill pauses on.
+const (
+	sessionAnswersRoute   = http.MethodGet + " /api/v1/agents/{session_id}/answers"
+	sessionAnswersV2Route = http.MethodGet + " /api/v2/agents/{session_id}/answers"
+)
+
+// timedAnswersReads serves handler, recording each request into latency from the moment the
+// handler starts to the moment it returns (sessionanswers.Latency.Begin), a panic included, as
+// the access-log line around it times the request.
+func timedAnswersReads(latency *sessionanswers.Latency, handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		read := latency.Begin()
+		defer read.End()
+		handler(w, r)
+	}
+}
+
 // listSessionAnswers answers GET /api/v1/agents/{session_id}/answers: what people wrote that
 // Dispatch delivered to one session since the window's start (sessionanswers.List), newest
 // first, with total counting every item in the window. With max_chars the list stops after the

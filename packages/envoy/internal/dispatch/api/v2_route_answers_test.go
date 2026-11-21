@@ -52,6 +52,8 @@ func TestTheCredentialStateAnswersItsOwnRecordAlone(t *testing.T) {
 // approver it stored, and otherwise the person its approver names. A person's machine login whose
 // approver is anyone, which only an older broker opened, is the broker's to refuse to everybody,
 // so its state sent again by any person is relayed, and the broker's 403 NOT_APPROVER answered.
+// A login whose approver is a group is relayed the same way: Dispatch reads no group's members, so
+// the broker, which does, decides it.
 // No broker-issued token holds approve (brokerTokenActor), so the approver's own broker token
 // sending the state again is refused 403 OAUTH_SCOPE_REQUIRED naming approve at the state's rule,
 // before the compare reads the record, and nothing is relayed or looked up, as /api/v1 refuses
@@ -69,6 +71,7 @@ func TestTheCredentialStateNoOpAdmitsWhomTheBrokerLetsDecide(t *testing.T) {
 		{"a person's login whose approver is anyone, sent by a person", "anyone", nil, "bob", false},
 		{"a service's login, sent by a person other than its stored approver", "alice", &service, "bob", true},
 		{"a person's login, sent by its approver", "alice", nil, "alice", true},
+		{"a person's login whose approver is a group, sent by a person", "group:eng@example.com", nil, "alice", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			id := "tour-record-" + uuid.NewString()

@@ -474,13 +474,16 @@ func lookupMachineRecord(ctx context.Context, client *cipher.Client, code string
 // service's machine login, whatever approver it stored, and for a request for a shared human-tier
 // secret (the approver `anyone`); otherwise the one person the approver names, so a person's
 // machine login whose approver is `anyone`, which only an older broker opened, admits nobody, and
-// its decision is relayed for the broker to refuse.
+// its decision is relayed for the broker to refuse. Dispatch holds no group's membership, so it
+// hands the rule no groups: a group approver (group:<address>) admits nobody here, and its
+// decision is relayed for the broker, which looks the group up, to decide. That costs nothing for
+// a machine login, the one record this route reads, since the rule admits no group there at all.
 func recordSetter(stored wire.RecordResponse, login string) putSetter {
 	service := ""
 	if stored.Service != nil {
 		service = *stored.Service
 	}
-	if record.MayDecide(stored.Kind, stored.Approver, service, login) {
+	if record.MayDecide(stored.Kind, stored.Approver, service, login, nil) {
 		return setBy(login)
 	}
 	return setBy("")

@@ -26,7 +26,8 @@ import (
 //     token's mint" and "a keyed upload above the JSON limit";
 //   - the comment list's kept answer read through /api/v1 and then /api/v2:
 //     TestTheIssueCommentListAnswersEachVersionItsOwnShape;
-//   - the no-route hint: TestAuthAndOriginRefusalsCarryACode in the routes package.
+//   - the no-route hint: TestAuthAndOriginRefusalsCarryACode in the routes package;
+//   - the answers read's timing for the keyword fill's pause: TestTheV2AnswersReadIsTimedToo.
 func TestEveryPathKeyedBehaviourHoldsOnV2(t *testing.T) {
 	tour := newRouteTour(t)
 
