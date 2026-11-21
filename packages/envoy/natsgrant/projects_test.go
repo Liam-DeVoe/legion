@@ -209,6 +209,7 @@ func TestWithinProjectsRewritesOrRefusesEachEntryKind(t *testing.T) {
 		{entry: "$JS.API.CONSUMER.DURABLE.CREATE.KV_envoy_roles.watcher", refused: "KV bucket"},
 		{entry: "$JS.API.STREAM.MSG.DELETE.KV_envoy_roles", refused: "KV bucket"},
 		{entry: "$JS.FC.KV_envoy_roles.>", refused: "KV bucket"},
+		{entry: "$JS.ACK.KV_envoy_roles.>", refused: "KV bucket"},
 		// Every project's notifications at once.
 		{entry: "notifications.>", refused: "every project"},
 		{entry: "notifications.> example-queue", refused: "every project"},
