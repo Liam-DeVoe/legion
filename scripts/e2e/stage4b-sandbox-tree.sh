@@ -18,9 +18,9 @@
 # again so the daemon resumes its parked planner by rule, and parks it once more; two more
 # children are filed while the root stands in `accepting`, which moves it to `awaiting_children`,
 # where the daemon refuses its sign-off (`WAITING_ON_CHILDREN`) until the proof human has moved
-# both to the backlog, one at a time; the root then comes back to `implementing` for a forward
-# merge and a full test round, and the merge then closes the root, since nothing of its tree is
-# left in the workflow. Its
+# both to the backlog, one at a time; the root then comes back to `testing`, whose round runs on
+# its head merged with the base's tip and asks no role to merge the base forward, and the merge
+# then closes the root, since nothing of its tree is left in the workflow. Its
 # architect is suspended from the operator shell while its
 # implementer completes, and stays held until the operator resumes it; in merging, every one of its
 # roles uses Oh My Pi's tools and the image's toolchain as its own App (full-agent-tools). Tree 2
@@ -270,7 +270,7 @@ stream=ENVOY_NOTIFICATIONS
 # tree 1's root stands in accepting and then in awaiting_children, holding no slot, so tree 3 and
 # children 3 and 4 are the whole of it — tree 2 has left the workflow by then (issue-cap-moves) and
 # child 2 is on the backlog again (child-reentered). Once both children are on the backlog
-# the root comes back to implementing and takes a slot beside tree 3's, two of the four.
+# the root comes back to testing and takes a slot beside tree 3's, two of the four.
 # Trees 3 and 4 each take a slot the issues before them leave: tree 3 the one
 # child 1's close and child 2's park free, tree 4 the one tree 3's own backlog frees at
 # controller-walk.
@@ -4923,11 +4923,13 @@ begin children-first-acceptance
 # WAITING_ON_CHILDREN, naming both; the proof human moves them to the backlog one at a time, and
 # the refusal after the first move names the one that remains, which is what makes the wait every
 # open child rather than any. The last move ends the wait: the admission pass takes tree 1 back to
-# implementing, since a held acceptance comes back as implementing (ReturnFromChildren), and the
-# implementing task asks for the forward merge and the line `children merged: full test round`.
-# The proof human first commits a file to the base, so that forward merge carries something. The
-# implementer, the tester and the reviewer then run that round with real agents, and the
-# architect's sign_off moves tree 1 to retro.
+# testing, since a held acceptance comes back as testing (ReturnFromChildren), on a task that
+# names the start it held and, tree 1 being a parent, asks for the round on its head merged with
+# the tip of the base, in the tester's own checkout and pushed nowhere. The proof human first
+# commits a file to the base, so the base has moved past the head when the wait ends; no role is
+# asked to merge it forward, and the head stays the one the review approved. The tester and the
+# reviewer then run that round with real agents, and the architect's sign_off moves tree 1 to
+# retro.
 #
 # They are filed here, and nowhere earlier or later, for three reasons. They live through no
 # checkpoint that judges every live claim of tree 1 (the restart and both address moves all come
@@ -5025,75 +5027,67 @@ on_tree "$tree1" until_true 900 "the daemon to refuse $tree1's sign_off again, n
 issue_phase "$tree1" awaiting_children >/dev/null ||
   fail "$tree1 left awaiting_children while $child4 was still open: $(daemon_state | jq -c --arg i "$tree1" '.issues[$i].phase')"
 note "with $child3 on the backlog the daemon refused the sign_off again, naming $child4 alone (every refusal of this run so far: $(refusals_waiting | paste -sd '; ' -)): the wait is for every open child, not any"
-# A file on the base, so the forward merge the return asks for brings something in. It goes under
-# docs/solutions/, which clean_smoke_main takes off the smoke main after the merge, and is named
-# after tree 1, so an earlier run that failed before that cleanup leaves no file at this run's
-# path. The PUT still sends the blob's sha when the base holds the file, as the conflict step's
-# does: GitHub refuses an update of an existing file that names none.
-children_base_path="docs/solutions/stage4b-children-merged-${tree1,,}.md"
+# A file on the base, so the base has moved past the pull request's head when the wait ends: the
+# return asks no role to merge it forward, so the head stays the one the review approved, and the
+# tester's merge of that head with the base's tip, in a checkout of its own, is what brings the
+# file in. It goes under docs/solutions/, which clean_smoke_main takes off the smoke main after
+# the merge, and is named after tree 1, so an earlier run that failed before that cleanup leaves
+# no file at this run's path. The PUT still sends the blob's sha when the base holds the file, as
+# the conflict step's does: GitHub refuses an update of an existing file that names none.
+children_wait_head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) ||
+  fail "read pull request #$pr_number's head while $tree1 waited on $child4"
+children_base_path="docs/solutions/stage4b-children-wait-${tree1,,}.md"
 children_base_blob=$(timeout 60 gh api "repos/$repo/contents/$children_base_path?ref=$pr_base" --jq .sha 2>/dev/null) ||
   children_base_blob=
 children_base_sha=$(jq -cn --arg branch "$pr_base" --arg sha "$children_base_blob" \
   --arg content "$(printf 'Stage 4b proof: on the base while %s waited on its children\n' "$tree1" | base64 -w0)" \
-  '{message: "Stage 4b proof: a base commit for the children-merged round", content: $content, branch: $branch}
+  '{message: "Stage 4b proof: a base commit while the root waits on its children", content: $content, branch: $branch}
    + (if $sha == "" then {} else {sha: $sha} end)' |
   timeout 60 gh api --method PUT "repos/$repo/contents/$children_base_path" --input - --jq .commit.sha) ||
   fail "the proof human could not commit $children_base_path to $pr_base"
-note "the proof human committed $children_base_path to $pr_base as $children_base_sha while $tree1 waited on $child4"
+note "the proof human committed $children_base_path to $pr_base as $children_base_sha while $tree1 waited on $child4 at head $children_wait_head"
 park_child_issue "$child4" "$child4_pod"
-# The last move to the backlog ends the wait: the pass takes tree 1 back to implementing in place
-# of the acceptance it held, and the implementing task asks for the forward merge and the line.
-on_tree "$tree1" wait_for_phase "$tree1" implementing 900
+# The last move to the backlog ends the wait: the pass takes tree 1 back to testing in place of
+# the acceptance it held, and starts the tester and no other role. Its task names that held start
+# and, since tree 1 has Dispatch children, ends with the sentence every testing task of a parent
+# carries (workflow's baseMergeRun). No child merged during the wait, so the task names none.
+on_tree "$tree1" wait_for_phase "$tree1" testing 900
 returned=$(log_lines "workflow: a parent's open children are finished, so it goes back to the start it held" |
-  jq -c --arg issue "$tree1" 'select(.issue == $issue and .held == "accepting" and .to == "implementing")' | grep -c . || true)
+  jq -c --arg issue "$tree1" 'select(.issue == $issue and .held == "accepting" and .to == "testing")' | grep -c . || true)
 [ "$returned" = 1 ] ||
-  fail "the daemon logged $tree1's return from awaiting_children $returned times with held=accepting to=implementing, want once"
-on_tree "$tree1" wait_for_worker "$tree1" implementer
-on_tree "$tree1" until_true 300 "the implementer's forward-merge task to reach its session" session_contains "$tree1" implementer "children merged: full test round"
-note "once $child4 left, $tree1 went back to implementing in place of the acceptance it held, and the implementer's task asks for the forward merge ending with \`children merged: full test round\`"
-# children_merged_comment: the implementer App posted a comment on the pull request that holds the
-# children-merged line. A comment of any other author proves nothing of the implementer's round.
-children_merged_comment() {
-  local bodies
-  bodies=$(timeout 60 gh api --paginate "repos/$repo/issues/$pr_number/comments" \
-    --jq ".[] | select(.user.login == \"$implement_app\") | .body") || return 1
-  grep -qF -- 'children merged: full test round' <<<"$bodies"
-}
-on_tree "$tree1" send_agent "$tree1" implementer "Stage 4b proof children-merged round: do the task the daemon gave you. Merge $pr_base forward into legion/$tree1 as your skill's forward-merge procedure says (\`jj new legion/$tree1 <destination>\`, never a rebase), push the issue branch, post the forward-merge comment ending with the line \`children merged: full test round\`, record the implementation handoff, then call the legion tool's handoff_complete. Do not merge the pull request."
-on_tree "$tree1" wait_for_phase "$tree1" testing 1800
-on_tree "$tree1" until_true 120 "$implement_app's forward-merge comment ending with the children-merged line on pull request #$pr_number" children_merged_comment
-# The forward merge brought the base in: the head the implementer completed at contains the base
-# commit, which GitHub's compare of the two reads as ahead (or identical, where the head is that
-# very commit).
-children_merged_head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) ||
-  fail "read pull request #$pr_number's head after the children-merged round"
-children_merged_compare=$(timeout 60 gh api "repos/$repo/compare/$children_base_sha...$children_merged_head" --jq .status) ||
-  fail "compare the base commit $children_base_sha with pull request #$pr_number's head $children_merged_head"
-case "$children_merged_compare" in
-  ahead | identical) ;;
-  *) fail "pull request #$pr_number's head $children_merged_head reads $children_merged_compare against the base commit $children_base_sha, want ahead or identical: the forward merge did not bring the base in" ;;
-esac
-note "pull request #$pr_number's head $children_merged_head contains the base commit $children_base_sha (GitHub's compare reads $children_merged_compare), and $implement_app's comment on it ends with the children-merged line"
-# The return and the forward merge count nothing: the round stays where the review left it.
-assert_handoff_record "$tree1" implementer implementing 2
+  fail "the daemon logged $tree1's return from awaiting_children $returned times with held=accepting to=testing, want once"
 on_tree "$tree1" wait_for_worker "$tree1" tester
-on_tree "$tree1" send_agent "$tree1" tester "Stage 4b proof children-merged test: the implementer's forward-merge comment on pull request #$pr_number ends with \`children merged: full test round\`. Run the full test round your role gives for that line, not the forward-merge re-check, record the test handoff with verdict pass, and complete the phase."
+for want in "starts testing in place of the start of accepting it held" "Test the head merged with the tip of the pull request's base branch"; do
+  on_tree "$tree1" until_true 300 "the tester's task after the wait to say \"$want\"" session_contains "$tree1" tester "$want"
+done
+note "once $child4 left, $tree1 went back to testing in place of the acceptance it held, and the tester's task names that start and asks for the round on the head merged with the base's tip"
+on_tree "$tree1" send_agent "$tree1" tester "Stage 4b proof test after the wait: do the task the daemon gave you. Test the head of pull request #$pr_number merged with the tip of $pr_base, in a checkout of your own outside the issue's workspace that you never push, record each result at the head with an --observed line naming that base commit, record the test handoff with verdict pass, and complete the phase. Push nothing to legion/$tree1."
 on_tree "$tree1" wait_for_phase "$tree1" reviewing 1500
+# The return counts nothing: the round stays where the review left it.
 assert_handoff_record "$tree1" tester testing 2
+# No role merged the base forward: the pull request's head is still the one the review approved,
+# though the base moved past it during the wait.
+children_return_head=$(timeout 60 gh api "repos/$repo/pulls/$pr_number" --jq .head.sha) ||
+  fail "read pull request #$pr_number's head after the testing round that followed the wait"
+[ "$children_return_head" = "$children_wait_head" ] ||
+  fail "pull request #$pr_number moved from $children_wait_head to $children_return_head across the return, want it where the review left it: no role merges the base forward for the children"
+note "pull request #$pr_number still stands at $children_wait_head after the round that followed the wait, with $children_base_sha on $pr_base past it: no role merged the base forward"
 on_tree "$tree1" wait_for_worker "$tree1" reviewer
-# The decision is the reviewer's own: the proof names the head, never the verdict.
-on_tree "$tree1" send_agent "$tree1" reviewer "Stage 4b proof review after the children's merge: review pull request #$pr_number in $repo at its new head as your role requires, and complete the reviewer handoff. The decision is yours; take the round's steps in the order your role gives."
-on_tree "$tree1" until_true 1800 "$review_app's decision on pull request #$pr_number after the children's merge" reviewer_decision 2
-[ "$(<"$work/review-decision")" = approve ] ||
-  fail "the reviewer requested changes on pull request #$pr_number after the children's merge"
-on_tree "$tree1" until_true 900 "$tree1 to leave reviewing for accepting" issue_phase "$tree1" accepting
-note "the children-merged round ran with real agents: the implementer merged $pr_base forward with the line, the tester ran a full round, and the reviewer approved the new head, which moved $tree1 to accepting"
-send_agent "$tree1" architect "Stage 4b proof acceptance, last: $child3 and $child4 have both left the workflow, and the head of pull request #$pr_number carries the forward merge; $accept_now"
+# The decision is the reviewer's own: the proof names the head, never the verdict. The head is the
+# one the reviewer approved before the wait, but that approval names the entry of its own round,
+# so this round waits on a new decision, and the daemon's move out of reviewing is what is read.
+on_tree "$tree1" send_agent "$tree1" reviewer "Stage 4b proof review after the wait: review pull request #$pr_number in $repo at its head as your role requires, and complete the reviewer handoff. The decision is yours; take the round's steps in the order your role gives."
+reviewed_after_wait() { issue_phase "$tree1" accepting >/dev/null || issue_phase "$tree1" implementing >/dev/null; }
+on_tree "$tree1" until_true 1800 "$review_app's decision on pull request #$pr_number after the wait to move $tree1 out of reviewing" reviewed_after_wait
+issue_phase "$tree1" accepting >/dev/null ||
+  fail "the reviewer requested changes on pull request #$pr_number after the wait: $tree1 is $(daemon_state | jq -r --arg i "$tree1" '.issues[$i].phase')"
+note "the round after the wait ran with real agents: the tester tested the head merged with $pr_base's tip, and the reviewer approved the head, which moved $tree1 to accepting"
+send_agent "$tree1" architect "Stage 4b proof acceptance, last: $child3 and $child4 have both left the workflow, and the tester's round after the wait recorded its results at the head of pull request #$pr_number on the tip of $pr_base; $accept_now"
 on_tree "$tree1" wait_for_phase "$tree1" retro 900
 phase_change_logged "$tree1" accepting retro sign_off ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from accepting to retro on sign_off"
 until_true 120 "the daemon's retro status on the Dispatch board" dispatch_status_is "$tree1" retro
-note "on the head that carries the forward merge, the architect's sign_off moved $tree1 to retro (workflow: phase changed from=accepting to=retro trigger=sign_off), the board retro"
+note "on the head the review approved, tested after the wait on $pr_base's tip, the architect's sign_off moved $tree1 to retro (workflow: phase changed from=accepting to=retro trigger=sign_off), the board retro"
 # The sign-off starts the implementer's retro, whose task names the phase; the resumed implementer
 # may finish it before the proof's instruction reaches it, so the prompt goes only while the issue
 # sits in retro.
@@ -5102,7 +5096,7 @@ if issue_phase "$tree1" retro >/dev/null; then
   send_agent "$tree1" implementer "Stage 4b proof retro: write the required retro handoff for pull request #$pr_number and complete the phase. Do not change the approved implementation."
 fi
 on_tree "$tree1" wait_for_phase "$tree1" merging 1800
-note "$tree1 moved planner → implementer → tester → reviewer (changes requested) → implementer → tester → reviewer (approved) → accepting → awaiting_children (while $child3 and $child4 were open) → implementer (forward merge) → tester (full round) → reviewer (approved) → accepting → retro → merging with real agents; $repo#$pr_number changes $smoke_file"
+note "$tree1 moved planner → implementer → tester → reviewer (changes requested) → implementer → tester → reviewer (approved) → accepting → awaiting_children (while $child3 and $child4 were open) → tester (the head merged with the base's tip) → reviewer (approved) → accepting → retro → merging with real agents; $repo#$pr_number changes $smoke_file"
 pass
 
 begin review-thread

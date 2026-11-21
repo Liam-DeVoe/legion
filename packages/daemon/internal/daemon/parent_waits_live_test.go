@@ -5,9 +5,10 @@
 // releases a child under it, stands in awaiting_children at the next admission pass, holding no
 // slot; its implementer, in the middle of the phase, is told on its own role topic that the phase
 // ended and why, and its architect gets one awaiting-children notice; a completion of the ended
-// phase is refused HANDOFF_NOT_CURRENT_PHASE while the root waits; and once the child is done, the
-// root goes back to the start it held, implementing, and its implementer is started with a task
-// that asks it to merge the default branch forward. scripts/e2e/parent-waits.sh builds this driver
+// phase is refused HANDOFF_NOT_CURRENT_PHASE while the root waits; and once the child's pull
+// request has merged and the child is done, the root goes back to the start it held,
+// implementing, and its implementer is started with a task that names the child that merged and
+// asks for no merge of the default branch. scripts/e2e/parent-waits.sh builds this driver
 // with `-tags e2e` and owns the nats-server it runs against, through the run
 // lib/live-daemon-proof.sh makes around every whole-daemon live proof. The PostgreSQL is the one
 // LEGION_TEST_PG_DSN names, and the script starts none.
@@ -18,12 +19,13 @@
 // supervision and its worker stream, the real openWorkflow, the real JetStream consumers, the real
 // admission pass and the real outbox lanes, the role-message lane that carries the phase-ended
 // message among them. Facts enter only as production's do: Dispatch's issue envelopes on the
-// ENVOY_NOTIFICATIONS stream for the child's moves; the daemon's own HTTP routes for each role's
-// registration, readiness, grants, the architect's release_children and the implementer's
-// completion; and the daemon's worker stream for the implementer's turns. Every step is read back
-// from GET /legion/v1/state, from what the daemon wrote to the Dispatch stand-in, from what it
-// published to the Envoy listener stand-in, and, for the start of step 4, from the prompt the
-// daemon sends the implementer's own connection, which is where a start is delivered.
+// ENVOY_NOTIFICATIONS stream for the child's moves, and GitHub's pull-request envelopes on the
+// same stream for the opening and the merge of the child's pull request; the daemon's own HTTP
+// routes for each role's registration, readiness, grants, the architect's release_children and the
+// implementer's completion; and the daemon's worker stream for the implementer's turns. Every step
+// is read back from GET /legion/v1/state, from what the daemon wrote to the Dispatch stand-in, from
+// what it published to the Envoy listener stand-in, and, for the start of step 4, from the prompt
+// the daemon sends the implementer's own connection, which is where a start is delivered.
 //
 // What the proof stands in for lies outside the change. The broker is a native nats-server the
 // script starts and names in LEGION_E2E_NATS_URL. Dispatch is the board the package's whole-daemon
@@ -47,6 +49,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -65,37 +68,43 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// parentWaitsBase is the root's base branch, the repository's default, which the forward merge of
-// step 4 names; parentWaitsHead is the head of the root's pull request, which its implementer's
-// completion reports; and parentWaitsBaseHead is the commit the default branch stands at, where
-// the child's issue branch is created.
+// parentWaitsBase is the root's base branch, the repository's default, which the child's pull
+// request merges into; parentWaitsHead is the head of the root's pull request, which its
+// implementer's completion reports; parentWaitsBaseHead is the commit the default branch stands
+// at, where the child's issue branch is created; and parentWaitsChildHead and
+// parentWaitsChildMerge are the head the child's pull request merges at and its merge commit.
 const (
-	parentWaitsBase     = "main"
-	parentWaitsHead     = "pw1"
-	parentWaitsBaseHead = "base-main"
+	parentWaitsBase       = "main"
+	parentWaitsHead       = "pw1"
+	parentWaitsBaseHead   = "base-main"
+	parentWaitsChildHead  = "pw-child"
+	parentWaitsChildMerge = "pw-child-merge"
 )
 
 // parentWaitsLive is one run of the proof: the booted daemon, the root it drives and the child
-// released under it, the root's implementer and architect as their agents reach the daemon, and
-// the Dispatch sequence the next envelope the driver publishes carries.
+// released under it with the number of the child's pull request, the root's implementer and
+// architect as their agents reach the daemon, and the Dispatch sequence the next envelope the
+// driver publishes carries.
 type parentWaitsLive struct {
 	liveIssueProof
-	child string
-	imp   *liveClaimant
-	arch  *liveSession
-	seq   int64
+	child   string
+	childPR int
+	imp     *liveClaimant
+	arch    *liveSession
+	seq     int64
 }
 
 // TestParentWaitsLive drives k14's four steps against one booted daemon, in the order each step's
 // state follows from the last: the root in its slot with its implementer at work, the release of
 // a child that moves the root to awaiting_children and tells its worker and its architect, the
-// worker's completion of the ended phase refused, and the child's done that takes the root back.
+// worker's completion of the ended phase refused, and the child's merge and done that take the
+// root back.
 func TestParentWaitsLive(t *testing.T) {
 	r := newParentWaitsLive(t)
 	r.step("step1-a-root-in-implementing-holds-a-slot-and-its-implementer-is-registered", r.rootHoldsASlot)
 	r.step("step2-a-released-child-moves-the-root-to-awaiting-children-and-its-worker-and-architect-are-told", r.releaseMovesTheRoot)
 	r.step("step3-the-implementers-completion-of-the-ended-phase-is-refused", r.endedPhaseRefused)
-	r.step("step4-the-childs-done-takes-the-root-back-to-implementing-with-a-forward-merge", r.rootComesBack)
+	r.step("step4-the-childs-merge-and-done-take-the-root-back-to-implementing-naming-the-child", r.rootComesBack)
 }
 
 // newParentWaitsLive boots the daemon over the script's broker with the root recorded as
@@ -105,7 +114,7 @@ func TestParentWaitsLive(t *testing.T) {
 func newParentWaitsLive(t *testing.T) *parentWaitsLive {
 	t.Helper()
 	r := &parentWaitsLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/parent-waits.sh", parentWaitsBase, "the parent whose child goes first")}
-	r.child, r.seq = r.cfg.Project+"-2", 1
+	r.child, r.childPR, r.seq = r.cfg.Project+"-2", r.number+1, 1
 	r.serveParentWaitsGitHub()
 	r.seed()
 	r.boot(nil)
@@ -388,13 +397,26 @@ func (r *parentWaitsLive) endedPhaseRefused() {
 	r.note("read back over %s: %s stayed in awaiting_children with no slot", liveSettle, r.key)
 }
 
-// Step 4. A person closes the child, and Dispatch's event says so. The admission pass of that
-// event finds no open child under the root, which goes back to the start it held, implementing,
-// takes a slot and is out of admission.blocked; its implementer, idle on its own connection, is
-// started with a task that asks it to merge the default branch forward first and to end its
-// forward-merge comment with the line the tester reads as asking for a full round.
+// Step 4. The child's pull request opens and merges, as GitHub's events say, and a person then
+// closes the child, as Dispatch's event says. The admission pass of that event finds no open
+// child under the root, which goes back to the start it held, implementing, takes a slot and is
+// out of admission.blocked; its implementer, idle on its own connection, is started with the task
+// it held, which now names the child that merged during the wait with its pull request, and which
+// asks for no merge of the default branch (dispatch://INFRA-3320 R12, on the person's answer
+// "Children first").
 func (r *parentWaitsLive) rootComesBack() {
 	t := r.t
+	childPullRequest := func(want record.PullRequestState) func(api.State) bool {
+		return func(served api.State) bool {
+			pr := served.Issues[r.child].PullRequest
+			return pr != nil && pr.Number == r.childPR && pr.State == string(want)
+		}
+	}
+	r.publishChildPullRequest("opened")
+	r.waitForState(fmt.Sprintf("%s's pull request #%d recorded open", r.child, r.childPR), childPullRequest(record.PullRequestOpen))
+	r.publishChildPullRequest("closed")
+	r.waitForState(fmt.Sprintf("%s's pull request #%d recorded merged", r.child, r.childPR), childPullRequest(record.PullRequestMerged))
+	r.note("read back: %s's pull request #%d recorded open, then merged", r.child, r.childPR)
 	r.publishIssue(r.child, "done", r.key, false)
 	state := r.waitForState(r.key+" back in implementing with a slot and its implementer given the entry", func(state api.State) bool {
 		root := state.Issues[r.key]
@@ -407,11 +429,38 @@ func (r *parentWaitsLive) rootComesBack() {
 	}
 	r.note("read back: %s done; %s in %s holding slot %s, out of admission.blocked, its implementer given entry %d",
 		r.child, r.key, root.Phase, slotOf(root), root.GivenEntry)
-	request := fmt.Sprintf("%s waited on its children: before anything else, merge the default branch %s into the branch, push, and complete with a new handoff record",
-		r.key, parentWaitsBase)
-	prompt := r.imp.takeTask(request)
-	if !strings.Contains(prompt.Message, "`children merged: full test round`") {
-		t.Fatalf("the implementer was prompted %q, want its forward-merge request to end with the line `children merged: full test round`", prompt.Message)
+	merged := fmt.Sprintf("These Dispatch children of %s merged during the wait: %s (pull request #%d).", r.key, r.child, r.childPR)
+	prompt := r.imp.takeTask(merged)
+	for _, unsaid := range []string{"merge the default branch", "full test round"} {
+		if strings.Contains(prompt.Message, unsaid) {
+			t.Fatalf("the implementer was prompted %q, want no %q in it: the return asks for no forward merge", prompt.Message, unsaid)
+		}
 	}
 	r.note("read back: the implementer's connection was sent its start, which it took — %s", prompt.Message)
+}
+
+// publishChildPullRequest publishes GitHub's event of action on the child's pull request, from its
+// issue branch into the default branch, as Envoy relays a GitHub pull-request event (intake's
+// decodePullRequest reads it): "opened" records the pull request for the child, and "closed" with
+// merged set is its merge.
+func (r *parentWaitsLive) publishChildPullRequest(action string) {
+	r.t.Helper()
+	number := strconv.Itoa(r.childPR)
+	fields := map[string]string{
+		"action": action, "kind": "pr", "repo": liveRepo, "number": number, "head_sha": parentWaitsChildHead,
+		"base_ref": parentWaitsBase, "head_ref": "legion/" + r.child, "title": r.child,
+		"url":        "https://github.com/" + liveRepo + "/pull/" + number,
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	}
+	if action == "closed" {
+		fields["merged"], fields["merge_commit_sha"] = "true", parentWaitsChildMerge
+	}
+	payload, err := json.Marshal(fields)
+	if err != nil {
+		r.t.Fatalf("encode the %s payload of %s's pull request: %v", action, r.child, err)
+	}
+	subject := fmt.Sprintf("notifications.github.%s.pr.%d", r.subjectRepo(), r.childPR)
+	r.publish(subject, "github", fmt.Sprintf("pr-%d-%s", r.childPR, action), string(payload))
+	r.note("drove GitHub's %s envelope of %s's pull request #%d, legion/%s into %s at %s", action, r.child, r.childPR, r.child,
+		parentWaitsBase, parentWaitsChildHead)
 }

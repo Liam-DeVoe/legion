@@ -6,11 +6,12 @@
 # implementer, in the middle of the phase, gets one message on its own Envoy role topic naming the
 # child and saying the phase ended, and its architect one awaiting-children notice; the
 # implementer's completion of the ended phase is refused HANDOFF_NOT_CURRENT_PHASE and the root
-# stays where it is; and once the child is done the root stands in implementing again, and its
-# implementer gets a start whose task asks it to merge the default branch forward. The whole
-# daemon is booted by the function `legion start` calls, over a real PostgreSQL and a real
-# nats-server, and driven only through Dispatch envelopes on the ENVOY_NOTIFICATIONS stream, the
-# daemon's own HTTP routes and its worker stream, which the driver speaks as `legion worker-shim`
+# stays where it is; and once the child's pull request has merged and the child is done, the root
+# stands in implementing again, and its implementer gets a start whose task names the child that
+# merged and asks for no merge of the default branch. The whole daemon is booted by the function
+# `legion start` calls, over a real PostgreSQL and a real nats-server, and driven only through
+# Dispatch's and GitHub's envelopes on the ENVOY_NOTIFICATIONS stream, the daemon's own HTTP
+# routes and its worker stream, which the driver speaks as `legion worker-shim`
 # does; every step is read back from GET /legion/v1/state, from what the daemon wrote to the
 # Dispatch stand-in, from what it published to the Envoy listener stand-in and from what it sent
 # the implementer's own connection (packages/daemon/internal/daemon/parent_waits_live_test.go,

@@ -2680,7 +2680,7 @@ Upgrade, and roll back, every daemon of one database in the same change.
 #### Rolling back the release that holds a parent's start while a child of it is open
 
 This release adds a phase, `awaiting_children`, in which an issue whose phases have started waits while a Dispatch child of it is open, holding no slot, and keeps the start it held until no child of it is open (dispatch://INFRA-3320 R9 to R13).
-Its migration `20261114232555_awaiting_children` adds the phase to `issues_phase_check` and adds six columns to `issues`: the held start, `children_wait_start`, `children_wait_task`, `children_wait_reason` and `children_wait_since`, which the check `issues_children_wait_shape` ties to the phase, and `forward_merge_owed` and `children_waited_at`, which outlive it.
+Its migration `20261114232555_awaiting_children` adds the phase to `issues_phase_check` and adds six columns to `issues`: the held start, `children_wait_start`, `children_wait_task`, `children_wait_reason`, `children_wait_since` and `children_wait_children`, which the check `issues_children_wait_shape` ties to the phase, and `children_waited_at`, which outlives it.
 It adds one column to `phases` beside the phase entry, `entry_from`: the phase the move that raised a role's entry left, null where no move raised it (`record.PhaseRow.EntryFrom`), which the admission pass and the release of a hold read to leave a parent standing on an entry a role's move back raised out of `retro` or `merging` where it stands, and to restart such a held phase on it.
 The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261119185013_outbox_kinds_with_the_basis_seeds`).
 That migration also keeps `phase_ended` in the kind check, and this release queues rows of it again: the message that tells a parent's worker that the admission pass ended its phase.
@@ -2725,7 +2725,7 @@ Read it with:
 select count(*) from public.issues where phase = 'awaiting_children';
 ```
 
-Once it reads 0, everything below but the move out of `awaiting_children` is still needed: the outbox statements, the clear of `phases.entry_from`, and the read, ask and clear of the forward merges still owed.
+Once it reads 0, everything below but the move out of `awaiting_children` is still needed: the outbox statements and the clear of `phases.entry_from`.
 
 **Delete the rows an earlier release refuses, with every daemon of the database stopped, before the earlier image is pinned.**
 
@@ -2763,21 +2763,21 @@ update public.phases set entry_from = null where entry_from is not null;
 What it costs: once this release is rolled forward, a parent whose phase's role stood on an entry a role's move back raised out of `retro` or `merging` before the rollback reads as standing on an entry no move raised, so the first admission pass that finds an open child of it, or a retry of its hold, moves it into `awaiting_children`, as it moves any parent of a phase before `retro`.
 
 **Where the rollback cannot wait, move each issue out of `awaiting_children` before the earlier image is pinned, with every daemon of the database stopped.**
-The statement takes each one where this release's return would have taken it (workflow's `ReturnFromChildren`): a held start of `planning` or `implementing` goes back to that phase, and a held start of `testing`, `reviewing` or `accepting` goes to `implementing`, since a test or a review of a head without the children's merges proves nothing.
+The statement takes each one where this release's return would have taken it (workflow's `ReturnFromChildren`): a held start of `planning` or `implementing` goes back to that phase, and a held start of `testing`, `reviewing` or `accepting` goes to `testing`, since no round before the wait tested the head on a base that carries each needed child's merge.
 An issue whose pull request merged during the wait goes back to the very start it held, which the statement reads from `public.pull_requests` (`state = 'merged'`, one row per issue).
-It clears the held start, which the shape check requires of every other phase.
+It clears the held start, `children_wait_children` with it, which the shape check requires of every other phase.
 It clears `children_waited_at` as well: the earlier release's retry below hands a worker the phase entry its row already names, raised before the wait, and this release, rolled forward with the column standing, would refuse a completion of such an entry that arrives after the issue left its phase (workflow's `leftItsPhase`).
-It leaves `forward_merge_owed` as it stands, for the read of the forward merges still owed below.
-Its `returning` list is the record of what it moved: the key and the phase it stands in now, and the held start, the held task and the held reason as they stood before the update, which the statement reads from the rows it moves (`moved`), since an update's `returning` gives the row it wrote.
-Keep it: the earlier release queues no start for any of these issues, and the statement clears the held task and reason, which say what each start was to hand its role.
+Its `returning` list is the record of what it moved: the key and the phase it stands in now, and the held start, the held task, the held reason and the held children as they stood before the update, which the statement reads from the rows it moves (`moved`), since an update's `returning` gives the row it wrote.
+Keep it: the earlier release queues no start for any of these issues, and the statement clears the held task, the held reason and the held children, which say what each start was to hand its role.
 
 ```sql
 with moved as (
   select i.key, i.children_wait_start as held_start, i.children_wait_task as held_task, i.children_wait_reason as held_reason,
+    i.children_wait_children as held_children,
     case
       when i.children_wait_start in ('planning', 'implementing') then i.children_wait_start
       when exists (select 1 from public.pull_requests as p where p.issue = i.key and p.state = 'merged') then i.children_wait_start
-      else 'implementing'
+      else 'testing'
     end as back_to
   from public.issues as i
   where i.phase = 'awaiting_children'
@@ -2785,17 +2785,19 @@ with moved as (
 update public.issues as i
   set phase = moved.back_to,
     children_wait_start = null, children_wait_task = null, children_wait_reason = null, children_wait_since = null,
-    children_waited_at = null
+    children_wait_children = null, children_waited_at = null
   from moved
   where i.key = moved.key
-  returning i.key, i.phase, moved.held_start, moved.held_task, moved.held_reason;
+  returning i.key, i.phase, moved.held_start, moved.held_task, moved.held_reason, moved.held_children;
 ```
 
 The earlier release's boot writes each moved issue's Dispatch status to its phase's (`correctStatuses` in that release's `workflow/resume.go`).
 Nothing of it starts the phase's worker: the move into the wait finished every start the issue owed, and the statement writes none.
 So, once the earlier daemon is up, start each one by hand, for the role of the phase the statement returned (`planning` the planner, `implementing` the implementer, `testing` the tester, `reviewing` the reviewer).
 The earlier release's retry below starts the phase with a task of its own, whose reason is the operator's retry (`restartPhase` and `retryPhase` in that release's `workflow/engine.go`), so it carries neither the held task nor the held reason.
-Give each worker that work in a comment on the issue before the retry: the held task where the issue went back to the start it held, since that task carries the reason (a tester's failures, a review's words), and the held start and the held reason where it went to `implementing` in place of a held `testing`, `reviewing` or `accepting`, as this release's return names them in the implementer's task.
+Give each worker that work in a comment on the issue before the retry: the held task where the issue went back to the start it held, since that task carries the reason (a tester's failures, a review's words), and the held start and the held reason where it went to `testing` from a held `testing`, `reviewing` or `accepting`, as this release's return names them in the tester's task.
+In either case, name each of the held children whose pull request merged, as this release's return does.
+For a tester, add the request every testing task of a parent carries in this release (workflow's `baseMergeRun`), which the earlier release's task lacks: test the head merged with the tip of the pull request's base branch once that tip carries each needed child's merge, in a checkout of its own that it never pushes, and record each result at the head with an `--observed` line naming that base commit.
 Read the claim's token on the issue's row for that role in `legion claims list --operator-token-file <file>`.
 The earlier release's `legion claims retry` starts a phase again only for a claim that failed or that an operator stopped (`retryStart` and `restartWorkedPhase` in its `api/operator.go`), so stop a claim in any other state first, which retires it, and then retry it:
 
@@ -2809,37 +2811,6 @@ An issue back in `accepting` has no worker to start: its architect signs it off 
 Nothing tells that architect: this release's return would have sent it an `awaiting-children` notice that the issue waits on its sign-off, and the outbox statements above delete such notices.
 So tell it on its role topic, or in a comment on the issue, that the issue is back in `accepting`.
 Where the list shows no claim of that role, the role has never run on the issue, and its architect decides how its work goes on.
-
-Each moved issue whose pull request has not merged, back in `planning` or `implementing`, still owes the forward merge of its children's work, which this release asks of the implementer of its next implementing round: for one in `implementing` the round the retry above starts, and for one in `planning` the round after its planner's.
-The statement leaves `forward_merge_owed` set on each one, so the read below names it.
-
-**Ask for each forward merge still owed, and clear `forward_merge_owed` with the same daemons stopped, whichever path the rollback takes.**
-This release sets `forward_merge_owed` when a parent moves into the wait and keeps it set after the return until the implementer completes the implementing round whose task asks for the merge (workflow's `settleForwardMerge`); a merged pull request clears it too.
-So the drain the simplest rollback waits for can leave an issue in `planning` or `implementing` that still owes the merge, as the move out of the wait above does.
-The earlier release names the column in no statement and asks for none of these merges.
-Read them, after the move above where the rollback made it, and keep what the read returns:
-
-```sql
-select i.key, i.phase from public.issues as i
-  where i.forward_merge_owed
-    and not exists (select 1 from public.pull_requests as p where p.issue = i.key and p.state = 'merged')
-  order by i.key;
-```
-
-Then clear the column:
-
-```sql
-update public.issues set forward_merge_owed = false where forward_merge_owed;
-```
-
-Once the earlier daemon is up, ask the implementer of each returned issue's next implementing round (the round under way for an issue in `implementing`), in a comment on the issue, to merge the default branch into the branch before anything else, push, and complete with a new handoff record, however the children left, as this release's implementing task would have asked (workflow's `forwardMergeText`).
-For an issue the move above put in `implementing`, put the ask in the comment that gives its implementer the held work, before the retry.
-Ask the tester of the testing round after it for a full test round as well: this release has the implementer end its forward-merge comment with the line `children merged: full test round`, which this release's tester prompt reads as that request and the earlier release's does not.
-An issue the read returns in `done` needs no ask now: a root a person moved to the backlog and a child that closed keep the flag when they leave the workflow, and neither has an implementing round under way.
-Keep its key all the same: should a person bring it back, ask the implementer of its next implementing round as above, since the earlier release asks for none.
-
-What the clear costs: once this release is rolled forward, none of its implementing tasks asks for these merges, so an implementer that has not merged by then is asked by the comment alone.
-Left set, the column has the first implementing task of each such issue after the roll forward ask again for a merge the operator has already asked for.
 
 **Every daemon sharing the database moves together.**
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `issues` and `outbox` are one table each for all of them, so the statements above act on every project's rows.

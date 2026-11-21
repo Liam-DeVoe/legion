@@ -392,11 +392,11 @@ Each item below names a script, then what it proves.
 
 - `parent-waits.sh`
 
-  a parent starts no phase while a Dispatch child of it is open (dispatch://INFRA-3320's k14, R9 to R12), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the child's moves as Dispatch envelopes and each role's registration, turns, grants, release and completion over the daemon's own HTTP routes and worker stream:
+  a parent starts no phase while a Dispatch child of it is open (dispatch://INFRA-3320's k14, R9 to R12), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the child's moves as Dispatch envelopes, the opening and the merge of its pull request as GitHub envelopes, and each role's registration, turns, grants, release and completion over the daemon's own HTTP routes and worker stream:
   a root implementing in its slot, whose architect releases a child under it with `release_children`, stands in `awaiting_children` at the next admission pass, in `admission.blocked` naming the child and in neither `admission.active` nor `admission.waiting`;
   its implementer, in the middle of the phase, gets one message on its own role topic naming the child and saying the phase ended, and keeps its turn, and its architect gets one `awaiting-children` notice;
   the implementer's completion of the ended phase is refused `409 HANDOFF_NOT_CURRENT_PHASE`, and the root stays in `awaiting_children`;
-  and once the child is done the root stands in `implementing` with a slot, and its implementer is started with a task that asks it to merge the default branch forward.
+  and once the child's pull request has merged and the child is done, the root stands in `implementing` with a slot, and its implementer is started with a task that names the child that merged and asks for no merge of the default branch.
   With `record.ChildOpen` made to answer false, it is the change's negative control.
   No GitHub, no cluster, no agent
 
@@ -2196,7 +2196,7 @@ The daemon runs on the devbox as the Legion daemon's restricted identity, with `
 the daemon requires a store that keeps sessions in a database, since an issue pod's disk dies with the pod).
 Tree 1 runs the whole workflow to `done`;
 while its planner holds, the driver files two children under it, each in an issue pod and on a disk of its own, closes one as `done` and moves the other to the backlog.
-Two more children are filed while tree 1 stands in `accepting`, which moves it to `awaiting_children`, where the daemon refuses its sign-off until the proof human has moved both to the backlog, one at a time; it then comes back to `implementing` for a forward merge and a full test round, and the merge closes it.
+Two more children are filed while tree 1 stands in `accepting`, which moves it to `awaiting_children`, where the daemon refuses its sign-off until the proof human has moved both to the backlog, one at a time; it then comes back to `testing`, whose round runs on its head merged with the base's tip and asks no role to merge the base forward, and the merge closes it.
 Its `legion.yaml` names `runtime.kubernetes.plugins` with the latest published `@sjawhar/pi-legion` and `@sjawhar/pi-envoy`, resolved at run time:
 the branch-built daemon links no release plugin pair, so without it the run would boot in the degraded mode (`plugins: none` from `legion config check`) instead of the pair a stale-plugin relaunch would install, even though this run's own claims register at the branch daemon's own contract and so never go stale enough to trigger that install.
 It sets `linger_hours: 0.5` (tree 1's linger runs from the close its merge brought on, and holds its production check's first look and suspension, the smoke main's cleanup and the check's bound;
@@ -2350,7 +2350,7 @@ Four roots run under `admission_cap: 4`, a cap of the issues the daemon has star
   While its planner holds, the driver files two children under it, each in an issue pod and on a disk of its own:
   the four issues the daemon has started fill the cap and hold tree 3 in the line, then child 1 is closed as `done` and released, child 2 parked in backlog, which deletes its Sandbox as a close does — no Sandbox, no pod and so no disk — and the slots they held go to tree 3 and, later, to child 2's re-entry.
   Children 3 and 4, filed while the root stands in `accepting` and holds no slot of its own, move it to `awaiting_children`, where they hold its sign-off:
-  the daemon refuses it `WAITING_ON_CHILDREN` naming both, the proof human moves them to the backlog one at a time, the refusal after the first move names the one that remains, and the last move sends the root back to `implementing` for a forward merge and a full test round before the sign-off lands.
+  the daemon refuses it `WAITING_ON_CHILDREN` naming both, the proof human moves them to the backlog one at a time, the refusal after the first move names the one that remains, and the last move sends the root back to `testing`, on its head merged with the base's tip, before the sign-off lands.
 
 - Tree 2 runs through its planner beside tree 1, in an issue pod of its own, carrying the repository-configuration fixture (the loading paths' markers, two skills, a Go, a TypeScript and a Python root, and a `.omp/config.yml`), whose tools its planner uses in its checkout (`repository-tools`), supplies the capability report every session measures at an idle tick of the 5 s interval it already runs rather than at its boot (`full-agent`, INFRA-927), and is then moved to backlog.
 
@@ -2716,11 +2716,11 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The driver then prompts the architect to accept, three times, and reads each answer in the architect's session, where the `legion` tool puts it:
   the first `sign_off` is refused `WAITING_ON_CHILDREN` naming both children, and tree 1 stays in `awaiting_children`;
   the proof human moves child 3 to the backlog (`backlog`, leaving it no Sandbox, no pod and no disk, its planner suspended), and the next `sign_off` is refused naming child 4 alone, which is what makes the wait every open child rather than any.
-  The proof human commits a file under `docs/solutions/`, named after tree 1, to the base, so the forward merge carries something, and moves child 4 to the backlog:
-  the pass takes tree 1 back to `implementing` in place of the acceptance it held (the log's `workflow: a parent's open children are finished, so it goes back to the start it held` with `held=accepting to=implementing`, once), and the implementer's task carries the line `children merged: full test round`.
-  The implementer merges the base forward and posts the forward-merge comment ending with that line, read on the pull request among the implement App's own comments, at the implementer's round 2, which the return left unchanged;
-  once tree 1 is in `testing`, the pull request's head contains the base commit (GitHub's compare of that commit with the head reads `ahead` or `identical`);
-  the tester runs a full test round, and the reviewer's decision on the new head is its own, a request for changes failing the proof.
+  The proof human commits a file under `docs/solutions/`, named after tree 1, to the base, so the base has moved past the head when the wait ends, and moves child 4 to the backlog:
+  the pass takes tree 1 back to `testing` in place of the acceptance it held (the log's `workflow: a parent's open children are finished, so it goes back to the start it held` with `held=accepting to=testing`, once), and the tester's task names that held start and asks for the round on the head merged with the tip of the base branch.
+  The tester runs that round in a checkout of its own and pushes nothing, at the review round the return left unchanged;
+  after it the pull request's head is still the one the review approved, so no role merged the base forward;
+  and the reviewer's decision on that head in its new round is its own, a request for changes failing the proof.
   The approval moves tree 1 to `accepting`, and the last `sign_off` moves it to `retro` (`workflow: phase changed … from=accepting to=retro trigger=sign_off`), Dispatch to `retro`, and starts the implementer's retro, which takes the issue to merging.
   They are filed here and nowhere else:
   later, beneath a root already accepted, the daemon holds a child at `admitted` and starts nothing for it, and earlier they would live through the checkpoints that judge every live claim of tree 1
@@ -5114,7 +5114,7 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/parent-waits.sh     # → "parent waits e2e: PASS in <n>s", exit 0
 ```
 
-dispatch://INFRA-3320's check k14: a parent starts no phase while a Dispatch child of it is open (R9), its worker and its architect are told (R10), it waits holding no slot (R11), and it comes back to the start it held once no open child is left, with a forward merge (R12).
+dispatch://INFRA-3320's check k14: a parent starts no phase while a Dispatch child of it is open (R9), its worker and its architect are told (R10), it waits holding no slot (R11), and it comes back to the start it held once no open child is left, on a task that names each child that merged during the wait and asks for no forward merge (R12).
 Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent, no GitHub — so a Legion pod, CI and a devbox all run it.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
@@ -5135,7 +5135,7 @@ R's implementer has no phases row, so its implementing phase stands under way wi
 The child C is on the Dispatch stand-in alone, unlabelled in backlog under R, as an architect files a child it has not released;
 the stand-in lists no issue at boot, so the daemon has no record and no mirror row of C until its release.
 Facts enter only as production's do:
-C's moves as `notifications.dispatch.issue.…` envelopes on the `ENVOY_NOTIFICATIONS` stream;
+C's moves as `notifications.dispatch.issue.…` envelopes on the `ENVOY_NOTIFICATIONS` stream, and the opening and the merge of C's pull request as `notifications.github.….pr.<n>` envelopes on the same stream;
 the daemon's own HTTP routes for each role's registration, readiness and grants, the architect's `release_children` and the implementer's completion;
 and the daemon's worker stream for the implementer's turns, which the driver speaks as `legion worker-shim` does (`shimwire` frames).
 Each step prints `GET /legion/v1/state`'s `admission` member as the route served it, and R's and C's phase, status, tree, slot, implementer and phase entries, which is the answer the step was judged on.
@@ -5145,7 +5145,7 @@ Each step prints `GET /legion/v1/state`'s `admission` member as the route served
 | `step1-a-root-in-implementing-holds-a-slot-and-its-implementer-is-registered` | the architect's and the implementer's registration and readiness on the launches the boot made, and the implementer's `agent_start` of a turn of its own | R in `implementing` with a slot and in `admission.active`, its implementer `working` on its registered session, its architect on its own, nothing in `admission.blocked`, and no record of C |
 | `step2-a-released-child-moves-the-root-to-awaiting-children-and-its-worker-and-architect-are-told` | the architect's `POST /legion/v1/waves/release` of C, then Dispatch's echo of the release's write (status todo under R, actor `legion-daemon:<project>`, the next sequence) | 200, and the Dispatch stand-in took the release's status write of C to todo; one message on `notifications.role.<R's implementer's claim>` saying the daemon ended its implementing phase, that R is in `awaiting_children`, that a completion of implementing is refused `HANDOFF_NOT_CURRENT_PHASE` and that the next task comes once the children are finished, naming `C (todo)`, printed in full; R in `awaiting_children`, status `in_progress`, with no slot, in `admission.blocked` waiting on C and in neither `admission.active` nor `admission.waiting`, and C recorded in R's tree; one `awaiting-children` notice on R's architect topic saying R holds the start of implementing, naming `C (todo)`; over three seconds no second message and no second notice, and the implementer's claim still `working` its turn |
 | `step3-the-implementers-completion-of-the-ended-phase-is-refused` | from that turn, the implementer's own implement record and its `POST /legion/v1/handoff/complete` naming it at `pw1`; then its `agent_end` | `409 HANDOFF_NOT_CURRENT_PHASE` in the engine's words; over three seconds R stays in `awaiting_children` with no slot |
-| `step4-the-childs-done-takes-the-root-back-to-implementing-with-a-forward-merge` | Dispatch's event of a person's move of C to done | C at `done`; R in `implementing` with a slot, out of `admission.blocked`, its implementer given the phase entry the return raised; the implementer's connection is sent its start, a task that asks it to merge the default branch `main` into the branch before anything else, push, and complete with a new handoff record, ending its forward-merge comment with `` `children merged: full test round` ``, printed in full |
+| `step4-the-childs-merge-and-done-take-the-root-back-to-implementing-naming-the-child` | GitHub's events of the opening of C's pull request and of its merge into `main`, then Dispatch's event of a person's move of C to done | C's pull request recorded open, then merged; C at `done`; R in `implementing` with a slot, out of `admission.blocked`, its implementer given the phase entry the return raised; the implementer's connection is sent its start, the task R held, ending with `These Dispatch children of R merged during the wait: C (pull request #<n>).` and asking for no merge of the default branch, printed in full |
 
 What the proof stands in for lies outside the change:
 the broker is a native `nats-server`, Dispatch is the board the whole-daemon drivers share (`liveDispatch`, in `internal/daemon/dispatch_board_test.go`), Envoy's listener is the package's `noticeListener`, GitHub is the harness's REST stand-in for R's pull request (`liveGitHub`, in `internal/daemon/live_issue_proof_test.go`) grown by the default branch's ref and the create of the issue branch C's first phase asks for, the two Apps' tokens are placeholders, and no agent runs:

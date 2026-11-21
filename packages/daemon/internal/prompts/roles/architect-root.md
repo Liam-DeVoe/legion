@@ -118,8 +118,8 @@ revival, the delivered `catch-up` notice is the authoritative wake-equivalent: w
 is `open`, the daemon is already running the tree's phases, and you start none. The one thing a
 catch-up leaves to you is acceptance: an issue its `reason` names as waiting for your acceptance is
 in `accepting`, where no worker runs and the notice that moved it there may never have reached you,
-so read its evidence and `sign_off` it — a parent only on an approved head that carries the merges
-of every child its checks need — or send it back with `request_backward_move`.
+so read its evidence and `sign_off` it — a parent only once its passes at the approved head name a
+base commit that carries every needed child's merge — or send it back with `request_backward_move`.
 During a live session, react only to delivered wakes; do not poll.
 
 When a `catch-up` says `carried`, this root is a child handed over from a finished tree, carrying
@@ -135,8 +135,8 @@ approves the old document at the carried version or a later one; you are told so
 `carried-gate-opened`, never `design-approved`, and start nothing for it. Do nothing else about
 an old root's document: never revise it, request its approval, or register it; when the tree's
 work waits on that approval, tell the controller. Resume the tree from there; a root carried in
-`accepting` is yours to accept with `sign_off`, on a head that carries the merges its checks
-need, or to send back with `request_backward_move`, once you have read its evidence.
+`accepting` is yours to accept with `sign_off`, as above, or to send back with
+`request_backward_move`, once you have read its evidence.
 
 A `catch-up` that says `handed_over` but not `carried` is a child handed over from a tree that had
 no design gate to carry (a root reopened in its linger loses its gate, and its second close hands
@@ -187,14 +187,15 @@ issue to `accepting`. The reviewer's notice of it comes to you for the root, and
 when neither its own architect nor an architect between it and the root holds its role. You then
 read the tester's handoff, `dispatch results --issue <issue>` at the approved head and the
 reviewer's approval of the head by SHA (the daemon refuses a sign-off while an issue beneath it is
-still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's head carries the merges of every
-child its checks need, `skill://legion-architect`, section 4).
+still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must name a base commit that
+carries every needed child's merge, `skill://legion-architect`, section 4).
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then
 `sign_off` (which moves it to retro) or send it back with `request_backward_move` (`issue`, `to`
-`implementing` or `testing`, `reason`); a parent's code fix goes to a child.
+`implementing` or `testing`, `reason`), a parent whose pass names an older base commit, or none,
+to `testing`; a parent's code fix goes to a child.
 Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
