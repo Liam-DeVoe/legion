@@ -161,32 +161,21 @@ type roleSend struct {
 	keep    bool
 	arrived time.Time
 	holder  string
-	// holderState is the state the holder's own record put it in at the resolution that named
-	// it, carried so the 200 and the 202 of a holder that is not live can say it (GET
-	// /v1/roles/<role> says it the same way). A 200 is answered only for a holder a resolution
-	// read live, so that is what it carries there; a 202 kept for a lapsed holder carries
-	// unresponsive or gone (kept).
-	holderState session.State
-	// named is whether this send's answers name holder: false at the edge for a holder the
-	// scope does not show (edgeScope.holder), which the send still forwards to.
-	named    bool
+	// shown is the resolution that named holder as this send's answers name it
+	// (edgeScope.holder): the resolution itself on every listener but the edge, and at the edge
+	// the resolution of a role no claim holds for a holder the scope does not show, which the send
+	// still forwards to. Its HolderState is the state the holder's own record put it in, so the
+	// 200 and the 202 of a holder that is not live can say it (GET /v1/roles/<role> says it the
+	// same way): a 200 is answered only for a holder a resolution read live, and a 202 kept for a
+	// lapsed holder carries unresponsive or gone (kept).
+	shown    roles.Resolution
 	attempts int
 }
 
-// hold makes result's holder the one this send forwards to, and decides whether its answers name
-// it (edgeScope.holder).
+// hold makes result's holder the one this send forwards to, and result as the scope shows it the
+// one its answers name (edgeScope.holder).
 func (s *roleSend) hold(result roles.Resolution) {
-	s.holder, s.holderState = result.Holder, result.HolderState
-	s.named = s.scope.holder(result).State != roles.Unclaimed
-}
-
-// answered is the holder and state this send's answers name: the holder it forwards to, and none
-// at the edge for a holder the scope does not show.
-func (s *roleSend) answered() (string, session.State) {
-	if !s.named {
-		return "", ""
-	}
-	return s.holder, s.holderState
+	s.holder, s.shown = result.Holder, s.scope.holder(result)
 }
 
 // settle counts and logs the send's outcome, the one delivery line a send writes, once its answer
@@ -207,11 +196,10 @@ func (s *roleSend) settle(outcome sendOutcome) {
 }
 
 // delivered answers 200 with the envelope, the holder it was stored for and the state that
-// holder's record put it in, which GET /v1/roles/<role> names the same way (answered).
+// holder's record put it in, which GET /v1/roles/<role> names the same way (shown).
 func (s *roleSend) delivered(outcome sendOutcome) {
 	s.record.holder = s.holder
-	holder, state := s.answered()
-	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: holder, HolderState: state})
+	s.record.accept(s.w, listenerwire.PublishResponse{Envelope: s.item, ExpectsReply: s.expectsReply, Holder: s.shown.Holder, HolderState: s.shown.HolderState})
 	s.settle(outcome)
 }
 
@@ -289,18 +277,17 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	s.record.holder = s.holder
 	// At the edge a lapsed holder the scope does not show is named as no holder at all, as GET
 	// /v1/roles/<role> names it (edgeScope.holder).
-	shown := s.scope.holder(result)
 	answer := listenerwire.PublishResponse{
 		Envelope:     s.item,
 		ExpectsReply: s.expectsReply,
-		Holder:       shown.Holder,
-		HolderState:  shown.HolderState,
+		Holder:       s.shown.Holder,
+		HolderState:  s.shown.HolderState,
 		Kept:         true,
-		KeptReason:   shown.State,
+		KeptReason:   s.shown.State,
 		KeptUntil:    kept.until,
 	}
-	if shown.LastSeen != 0 {
-		answer.LastSeen = &shown.LastSeen
+	if s.shown.LastSeen != 0 {
+		answer.LastSeen = &s.shown.LastSeen
 	}
 	s.record.acceptWith(s.w, http.StatusAccepted, answer)
 	s.settle(sendKept)
@@ -340,14 +327,13 @@ func (s *roleSend) refused(err error) {
 func (s *roleSend) timedOut() {
 	s.record.charge.stored()
 	s.record.holder = s.holder
-	holder, _ := s.answered()
 	s.record.refuseWith(s.w, http.StatusGatewayTimeout, outcomeDeliveryFailed, listenerwire.RoleSendFailure{
 		Error: fmt.Sprintf("role %s: event %s was not stored for its holder %s within %s (%s)",
-			s.role, s.item.EventID, cmp.Or(holder, "(none)"), publishDeliveryWindow, sendDeliveryFailed),
+			s.role, s.item.EventID, cmp.Or(s.shown.Holder, "(none)"), publishDeliveryWindow, sendDeliveryFailed),
 		Reason:    string(sendDeliveryFailed),
 		EventID:   s.item.EventID,
 		DedupeKey: s.item.DedupeKey,
-		Holder:    holder,
+		Holder:    s.shown.Holder,
 		Attempts:  s.attempts,
 	})
 	s.settle(sendDeliveryFailed)
@@ -380,16 +366,15 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 	default:
 		s.record.holder = s.holder
 		// The refusal names the holder and its title, which an edge answer names only for a
-		// holder the scope shows (answered).
-		holder, _ := s.answered()
+		// holder the scope shows (shown).
 		refusal := verdict.refusal
-		if !s.named {
+		if s.shown.State == roles.Unclaimed {
 			refusal = fmt.Sprintf("the holder of role %s cannot take this message's delivery mode", s.role)
 		}
 		s.record.refuseWith(s.w, http.StatusForbidden, outcomeCapabilityRefused, listenerwire.CapabilityRefusal{
 			Error:  refusal,
 			Reason: string(sendCapability),
-			Holder: holder,
+			Holder: s.shown.Holder,
 		})
 		s.settle(sendCapability)
 	}

@@ -282,10 +282,18 @@ func (e *edgeHolderUnread) Unwrap() error { return e.err }
 
 // roleOfProjects reports whether role, named by its claim's key, works for one of projects: the
 // project its key gives (contracts.ParseRoleClaimKey) is one of them. It is the edge's rule for a
-// role the session already holds, as edgeRoleRefusal is for one it claims or reads.
+// role the session already holds, as roleNameOfProjects is for one it names in either form.
 func roleOfProjects(role string, projects []string) bool {
 	project, _ := contracts.ParseRoleClaimKey(role)
 	return slices.Contains(projects, project)
+}
+
+// roleNameOfProjects is the claim role, named in either form, names (contracts.RoleClaimOf), and
+// whether that claim works for one of projects. It is the edge's rule for a role a session claims,
+// reads, publishes to or follows the lane of (edgeRoleRefusal, edgePublishRefusal, edgeTopicRule).
+func roleNameOfProjects(role string, projects []string) (contracts.RoleClaimName, bool) {
+	claim, err := contracts.RoleClaimOf(role)
+	return claim, err == nil && slices.Contains(projects, claim.Project)
 }
 
 // edgeReleasedRoleWarning is the warning a registration's answer names a role by, one the edge
@@ -406,7 +414,7 @@ func edgeTopicRule(sessionID string, projects []string, topic string) (reason, o
 		return edgeTopicNotInProject, "", ""
 	}
 	if lane, isRole := strings.CutPrefix(topic, contracts.RoleTopicPrefix); isRole && !strings.ContainsAny(lane, "*>") {
-		if claim, err := contracts.RoleClaimOf(lane); err != nil || !slices.Contains(projects, claim.Project) {
+		if _, ok := roleNameOfProjects(lane, projects); !ok {
 			return edgeTopicNotInProject, "", ""
 		}
 		return "", "", ""
@@ -639,7 +647,7 @@ func edgePublishRefusal(r *http.Request, topic string) *edgeRefusal {
 		return nil
 	}
 	if lane, isRole := strings.CutPrefix(topic, contracts.RoleTopicPrefix); isRole {
-		if claim, err := contracts.RoleClaimOf(lane); !claim.Legacy && err == nil && slices.Contains(projects, claim.Project) {
+		if claim, ok := roleNameOfProjects(lane, projects); ok && !claim.Legacy {
 			return nil
 		}
 	}
@@ -676,7 +684,7 @@ func edgeRoleRefusal(r *http.Request, role string) *edgeRefusal {
 	if !held {
 		return nil
 	}
-	if claim, err := contracts.RoleClaimOf(role); err == nil && slices.Contains(projects, claim.Project) {
+	if _, ok := roleNameOfProjects(role, projects); ok {
 		return nil
 	}
 	return refuseEdge(http.StatusForbidden, edgeRoleNotInProject,
