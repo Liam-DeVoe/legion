@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    Dispatch's session cookie is now `__Host-dsession` wherever it is Secure (`DISPATCH_INSECURE_COOKIE` unset): Secure, HttpOnly, `SameSite=Strict`, `Path=/` and no `Domain`, which a browser takes only from Dispatch's own host over https, so another host under the domain, or an answer over plain http, can no longer set a session for it. Under `DISPATCH_INSECURE_COOKIE` it stays `dsession`, not Secure, since a browser refuses a `__Host-` cookie without Secure.
+
+    Nobody is signed out. Dispatch reads both names: `__Host-dsession` alone when a request carries it, and `dsession` otherwise, so a session issued before this release keeps working. Each sign-in sets the name for its setting and clears the other, and the sign-out clears both. A later release stops reading `dsession` where the cookie is Secure; a tool that reads a Secure deployment's cookie by the name `dsession` should read `__Host-dsession` instead.
+time: 2026-11-21T15:07:47.417983179Z
+custom:
+    Issue: pr4854
