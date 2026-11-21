@@ -138,11 +138,20 @@ var drawBlockTool = contracts.DispatchTool{
 	},
 }
 
+// newIssueArguments names the arguments a change may name a new issue of its plan in, as "$N":
+// the ones whose tool spec takes an issue key there as a value the change writes. The server
+// reads "$N" in these alone (internal/dispatch/api going_plan.go goingNewIssueArguments), and
+// sends every other argument as written. propose_plan's text and the system prompt's rule on a
+// split name them so.
+const newIssueArguments = `parent and blocked_by of dispatch_issue, and parent, blocked_by, before and after of dispatch_issue_update`
+
 // newIssueArgument is what propose_plan tells the model of a change that names the issue an
 // earlier create of the same plan makes: the server refuses the plan where change N creates no
 // issue or is not among the change's needs, and puts the issue's key in place of "$N" when the
 // change runs. The system prompt's rule on a split says the same.
-const newIssueArgument = `An argument's value, or an item of an argument's list, may be "$N": the key of the issue change N of this plan creates with dispatch_issue, which the server puts in its place when the change runs; N must be in the change's needs. "$N" is a value a change writes, such as parent or an item of blocked_by, and never the item a change changes, such as the issue of an update, a claim or a comment: propose a change of a new issue itself once it exists.`
+const newIssueArgument = `A change may name the issue change N of this plan creates with dispatch_issue as "$N", in these arguments alone: ` +
+	newIssueArguments + `, as the value or an item of blocked_by. The server puts the new issue's key in its place when the change runs; N must be in the change's needs. ` +
+	`Every other argument is sent as written, so a title "$5" stays "$5". "$N" is never the item a change changes, such as the issue of an update, a claim or a comment: propose a change of a new issue itself once it exists.`
 
 // tools is the run's tools for the step whose model call is numbered base, each a Run of w's.
 func (w *worker) tools(base int) []agentloop.Tool {

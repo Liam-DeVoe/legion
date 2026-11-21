@@ -387,7 +387,9 @@ func TestFindToolsTellsACloseItsReasonIsThePersonsWhy(t *testing.T) {
 // move its sub-issues under the new issues, and the model, told nothing of it, named each new
 // issue as "$0", which the server sent as a parent no issue holds. propose_plan's description and
 // its schema's arguments say a change may name the issue an earlier create makes as "$N", with N
-// in its needs, and the system prompt's rule on a split says the same.
+// in its needs, in the arguments the server reads "$N" in alone - parent, blocked_by, before and
+// after - and that every other argument is sent as written; the system prompt's rule on a split
+// says the same.
 func TestProposePlanTellsHowAChangeNamesANewIssue(t *testing.T) {
 	tools := (&worker{agent: &agent{}}).tools(0)
 	at := slices.IndexFunc(tools, func(tool agentloop.Tool) bool { return tool.Name == toolProposePlan })
@@ -413,7 +415,7 @@ func TestProposePlanTellsHowAChangeNamesANewIssue(t *testing.T) {
 		"propose_plan's arguments":            schema.Properties.Changes.Items.Properties["arguments"].Description,
 		"the system prompt's rule on a split": systemPrompt,
 	} {
-		for _, said := range []string{`"$N"`, "needs", "dispatch_issue", "never the item a change changes"} {
+		for _, said := range []string{`"$N"`, "needs", "dispatch_issue", "never the item a change changes", newIssueArguments, "sent as written"} {
 			if !strings.Contains(told, said) {
 				t.Errorf("%s says nothing of %q: %q", name, said, note(told))
 			}

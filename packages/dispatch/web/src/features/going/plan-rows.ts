@@ -47,6 +47,14 @@ export function newIssueTitles(
 /** A value naming the issue a create of the same plan makes: "$N", N that create's number. */
 const NEW_ISSUE = /^\$(\d+)$/u;
 
+/** The arguments of each tool that may name a new issue of the plan as "$N": the ones whose tool
+ *  takes an issue key there as a value the change writes, which the server reads "$N" in alone
+ *  (going_plan.go `goingNewIssueArguments`). Every other value is text, shown as written. */
+const NEW_ISSUE_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
+  dispatch_issue: ["parent", "blocked_by"],
+  dispatch_issue_update: ["parent", "blocked_by", "before", "after"],
+};
+
 /** A string as the row shows it: a value naming a new issue of the plan as its title and "(new)",
  *  any other as it is. */
 function issueText(value: string, newIssues: ReadonlyMap<number, string>): string {
@@ -55,9 +63,11 @@ function issueText(value: string, newIssues: ReadonlyMap<number, string>): strin
   return title === undefined ? value : `${title} (new)`;
 }
 
-/** A value as one line of the row: a string as it is, anything else as its JSON. A string, or an
- *  item of a list, naming a new issue of the plan ("$N", `newIssues`' row N) shows that issue's
- *  title and "(new)", as the issue has no key before the plan runs. */
+/** A value as one line of the row: a string as it is, anything else as its JSON. `newIssues` is
+ *  given only for a value that may name a new issue of the plan (`RowChange.namesNewIssue`): there
+ *  a string, or an item of a list, naming one ("$N", `newIssues`' row N) shows that issue's title
+ *  and "(new)", as the issue has no key before the plan runs. Without it every string shows as
+ *  written, so a title "$100" shows "$100". */
 export function valueText(
   value: unknown,
   newIssues: ReadonlyMap<number, string> = new Map()
@@ -77,12 +87,14 @@ export function valueText(
 }
 
 /** One field a row writes: its name, its value now and the value the row writes, the person's
- *  edit where they made one, and whether the person can edit it (a value of text). */
+ *  edit where they made one, whether the person can edit it (a value of text), and whether its
+ *  value may name a new issue of the plan as "$N" (`NEW_ISSUE_ARGUMENTS`). */
 export interface RowChange {
   readonly field: string;
   readonly now: unknown;
   readonly next: unknown;
   readonly editable: boolean;
+  readonly namesNewIssue: boolean;
 }
 
 /** The fields a new issue's row names, in the order the row shows them. */
@@ -100,6 +112,7 @@ export function rowChanges(row: GoingPlanRow, edits: Arguments | undefined): Row
   return fields.map((field) => ({
     editable: typeof args[field] === "string",
     field,
+    namesNewIssue: NEW_ISSUE_ARGUMENTS[row.tool]?.includes(field) ?? false,
     next: args[field],
     now: makesIssue(row) ? undefined : (now[field] ?? (fields.length === 1 ? row.now : undefined)),
   }));

@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -162,11 +163,14 @@ func (a *AgentListener) beforeRowWrite(ctx context.Context, request agentwire.Ca
 	return row, a.refreshPlanState(ctx, request.Run, plan.plan)
 }
 
-// goingCreatedKeysSQL reads the key of the issue each row $3 of plan $2 of run $1 made, each a
-// create of an issue that is done: what its route answered, as the landing of the row's call key
-// recorded it beside the create's one request, POST /api/v1/issues (goingRecordAnswer).
+// goingCreatedKeysSQL reads, for each row $3 of plan $2 of run $1 that is a create of an issue and
+// is done, the key of the issue its route answered and the status it answered with: what the
+// landing of the row's call key recorded beside the create's one request, POST /api/v1/issues
+// (goingRecordAnswer). The route answers 201 for an issue it made, and 200 for an issue Dispatch
+// already held for the external issue the create names (respondWithExistingExternalIssue), of
+// which it made nothing.
 const goingCreatedKeysSQL = `
-	select r.row, l.answer->'body'->>'key'
+	select r.row, l.answer->'body'->>'key', coalesce((l.answer->>'status')::int, 0)
 	from going_plan_rows r
 	join going_landings l on l.run_id = r.run_id and l.phase = 'do'
 	  and l.step = (r.result->>'step')::int and l.call = (r.result->>'call')::int
@@ -175,22 +179,24 @@ const goingCreatedKeysSQL = `
 	  and r.change->>'tool' = '` + goingIssueCreateTool + `' and l.answer->'body'->>'key' is not null
 `
 
-// resolveNewIssues is row with the key of each new issue its arguments name as "$N"
-// (goingNewIssueRef) - an argument's value, or an item of an argument's list - in place of the
-// name: the issue row N of plan created, read off that create's landing (goingCreatedKeysSQL). The
-// server puts the key in, so the read of the row's item before its write, the write, its landings
-// and its undo all name the issue itself, while the row as the person approved it keeps "$N",
-// which the agent's call names (rowGate). A row that names none is answered as it is. A key the
-// record does not hold - row N made no issue, which the plan's own refusals (goingNewIssueRefusal)
-// and the gate of the rows a row needs already keep from coming here - skips the row, ROW_SKIPPED,
-// so no write is sent with a "$N" in it.
+// resolveNewIssues is row with the key of each new issue it names as "$N" (goingNewIssuesNamed)
+// in place of the name: the issue row N of plan made, read off that create's landing
+// (goingCreatedKeysSQL). The server puts the key in, so the read of the row's item before its
+// write, the write, its landings and its undo all name the issue itself, while the row as the
+// person approved it keeps "$N", which the agent's call names (rowGate). A row that names none is
+// answered as it is. Only a create whose route answered 201 made a new issue, and a row whose row
+// N made none is skipped, ROW_SKIPPED, so no write is sent with a "$N" in it and none is made to
+// or under an issue the plan did not make. Row N made none where it found an issue Dispatch
+// already held (foundIssue), which the row's words name by its key, and where the record
+// holds no key of it, which the plan's own refusals (goingNewIssueRefusal) and the gate of the
+// rows a row needs (beforeRowWrite) keep from coming here.
 func (a *AgentListener) resolveNewIssues(ctx context.Context, request agentwire.CallRequest, plan *goingPlanStored, row goingPlanRowStored,
 ) (goingPlanRowStored, *agentwire.Error) {
 	arguments, err := goingRowArguments(row.arguments)
 	if err != nil {
 		return row, goingAgentFailed(agentwire.CallCall, err)
 	}
-	named := goingNewIssuesNamed(arguments)
+	named := goingNewIssuesNamed(row.tool, arguments)
 	if len(named) == 0 {
 		return row, nil
 	}
@@ -198,15 +204,19 @@ func (a *AgentListener) resolveNewIssues(ctx context.Context, request agentwire.
 	if err != nil {
 		return row, goingAgentFailed(agentwire.CallCall, fmt.Errorf("read the issues %s names: %w", goingRowLabel(row), err))
 	}
-	keys := map[int]string{}
+	keys, held := map[int]string{}, map[int]string{}
 	for read.Next() {
-		var created int
+		var created, status int
 		var key string
-		if err := read.Scan(&created, &key); err != nil {
+		if err := read.Scan(&created, &key, &status); err != nil {
 			read.Close()
 			return row, goingAgentFailed(agentwire.CallCall, err)
 		}
-		keys[created] = key
+		if status == http.StatusCreated {
+			keys[created] = key
+		} else {
+			held[created] = key
+		}
 	}
 	if err := read.Err(); err != nil {
 		return row, goingAgentFailed(agentwire.CallCall, fmt.Errorf("read the issues %s names: %w", goingRowLabel(row), err))
@@ -216,14 +226,21 @@ func (a *AgentListener) resolveNewIssues(ctx context.Context, request agentwire.
 			continue
 		}
 		creates := "an issue of this plan"
+		why := ""
 		if at := slices.IndexFunc(plan.rows, func(stored goingPlanRowStored) bool { return stored.row == created }); at >= 0 {
 			creates = goingRowLabel(plan.rows[at])
+			if issue, found := a.foundIssue(ctx, plan.rows[at], held[created]); found {
+				why = fmt.Sprintf("this change was skipped: %s made no new issue, since Dispatch already held %s for the external issue it names, "+
+					"and no change is made to or under an issue this plan did not make", creates, issue)
+			}
 		}
-		skipped := goingRowRecord{Step: request.Step, Call: request.Call, Code: agentwire.CodeRowSkipped,
-			Message: fmt.Sprintf("this change was skipped: it needs the key of %s, which this run did not record", creates)}
+		if why == "" {
+			why = fmt.Sprintf("this change was skipped: it needs the key of %s, which this run did not record", creates)
+		}
+		skipped := goingRowRecord{Step: request.Step, Call: request.Call, Code: agentwire.CodeRowSkipped, Message: why}
 		return row, a.settleRow(ctx, request, row, "skipped", skipped, nil)
 	}
-	resolved, err := json.Marshal(goingWithNewIssues(arguments, keys))
+	resolved, err := json.Marshal(goingWithNewIssues(row.tool, arguments, keys))
 	if err != nil {
 		return row, goingAgentFailed(agentwire.CallCall, err)
 	}
@@ -231,12 +248,36 @@ func (a *AgentListener) resolveNewIssues(ctx context.Context, request agentwire.
 	return row, nil
 }
 
-// goingNewIssuesNamed is each row whose new issue arguments name as "$N" (goingNewIssueRef), as an
-// argument's value or an item of an argument's list, in order.
-func goingNewIssuesNamed(arguments map[string]any) []int {
+// foundIssue is the issue Dispatch already held that create, a row of a create of an issue,
+// found in place of making one, and whether it found one: the create route answers 201 for an
+// issue it made and 200 for the issue it holds for the external issue the create names
+// (respondWithExistingExternalIssue). landed is the key the create's landing recorded beside a
+// status other than 201 (goingCreatedKeysSQL), "" for none. A create that found its issue commits
+// nothing, so its request records no landing (goingRunLanding.step): its status is then read off
+// the row's own record (recordRow), and its issue off the external issue it names, which resolves
+// to that issue as it did for the route; "an issue" where it no longer resolves.
+func (a *AgentListener) foundIssue(ctx context.Context, create goingPlanRowStored, landed string) (string, bool) {
+	if landed != "" {
+		return landed, true
+	}
+	if create.state != "done" || create.result == nil || create.result.Status == 0 || create.result.Status == http.StatusCreated {
+		return "", false
+	}
+	if arguments, err := goingRowArguments(create.arguments); err == nil {
+		if key, err := a.s.resolveIssueRef(ctx, goingText(arguments, "external")); err == nil {
+			return key, true
+		}
+	}
+	return "an issue", true
+}
+
+// goingNewIssuesNamed is each row whose new issue arguments of tool name as "$N"
+// (goingNewIssueRef), in the arguments that take one (goingNewIssueArguments), as an argument's
+// value or an item of its list, in order.
+func goingNewIssuesNamed(tool string, arguments map[string]any) []int {
 	var named []int
-	for _, value := range arguments {
-		for _, item := range goingArgumentItems(value) {
+	for _, argument := range goingNewIssueArguments[tool] {
+		for _, item := range goingArgumentItems(arguments[argument]) {
 			if created, held := goingNewIssueRef(item); held {
 				named = append(named, created)
 			}
@@ -246,17 +287,21 @@ func goingNewIssuesNamed(arguments map[string]any) []int {
 	return slices.Compact(named)
 }
 
-// goingWithNewIssues is arguments with each "$N" goingNewIssuesNamed reads replaced by keys[N];
-// arguments itself is left as it is.
-func goingWithNewIssues(arguments map[string]any, keys map[int]string) map[string]any {
+// goingWithNewIssues is arguments of tool with each "$N" goingNewIssuesNamed reads replaced by
+// keys[N], and every other value as it is; arguments itself is left as it is.
+func goingWithNewIssues(tool string, arguments map[string]any, keys map[int]string) map[string]any {
 	put := func(value any) any {
 		if created, held := goingNewIssueRef(value); held {
 			return keys[created]
 		}
 		return value
 	}
-	resolved := make(map[string]any, len(arguments))
-	for argument, value := range arguments {
+	resolved := maps.Clone(arguments)
+	for _, argument := range goingNewIssueArguments[tool] {
+		value, given := arguments[argument]
+		if !given {
+			continue
+		}
 		list, isList := value.([]any)
 		if !isList {
 			resolved[argument] = put(value)

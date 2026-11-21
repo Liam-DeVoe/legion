@@ -479,6 +479,23 @@ func goingNewIssueRef(value any) (change int, named bool) {
 	return change, true
 }
 
+// goingNewIssueArguments is each argument, by write tool, that may name as "$N" the issue an
+// earlier create of the same plan makes (goingNewIssueRef): the arguments whose tool spec
+// (internal/contracts/dispatch_tools_generated.go) takes an issue key there as a value the change
+// writes - a new issue's parent and the issues it is blocked by, and an update's parent, the
+// issues it is blocked by and the issues it moves before and after on its project's board. Every
+// other issue key a write tool's spec takes (`issue`) names the item the change acts on or the
+// issue that holds it, which the plan reads before anything runs, or narrows the Inbox threads a
+// mark or a dismissal takes. "$N" is read in these arguments alone, where the server puts the new
+// issue's key in its place when the change runs (AgentListener.resolveNewIssues); every other
+// argument is text and is sent as written, however it reads. The agent's tools
+// (going/agent/tools.go newIssueArguments) and the plan's page (plan-rows.ts NEW_ISSUE_ARGUMENTS)
+// name the same arguments.
+var goingNewIssueArguments = map[string][]string{
+	goingIssueCreateTool:    {"parent", "blocked_by"},
+	"dispatch_issue_update": {"parent", "blocked_by", "before", "after"},
+}
+
 // goingArgumentItems is what of an argument's value may name a new issue (goingNewIssueRef): the
 // value itself, or each item of the list it is.
 func goingArgumentItems(value any) []any {
@@ -512,23 +529,21 @@ func goingInnerNewIssueRef(value any) string {
 	return ""
 }
 
-// goingNewIssueProblem is a value of a row's arguments that names a new issue of its plan
-// (goingNewIssueRef) where the row may not name one: the argument, the value, and why, in the
-// model's words, which name each change by its index as the model's plan does.
-type goingNewIssueProblem struct {
-	argument, value, why string
-}
-
-// goingNewIssueRefusal is the first value of arguments that names a new issue the row may not
-// name, nil for none; the row is row index of a plan whose rows are rows, runs a tool of entry and
-// needs the rows needs. A row names, as "$N", the key of the issue row N creates, as an argument's
-// value or an item of an argument's list, where row N is a row before it that creates an issue
-// (dispatch_issue) and is among the rows it needs, so it runs only once that issue is made and
-// the server puts the issue's key in its place (AgentListener.resolveNewIssues). The item a row
-// changes, an argument a route of its tool takes into its path, is never a new issue: the plan
-// reads that item before anything runs. A "$N" deeper in a value - in an object, or in a list
-// within a list - is refused too, since no key is put in there and it would be sent as written.
-func goingNewIssueRefusal(entry GoingAction, index int, arguments map[string]any, needs []int, rows []goingPlanRowStored) *goingNewIssueProblem {
+// goingNewIssueRefusal says why the first value of arguments that names a new issue of its plan
+// (goingNewIssueRef) where the row may not name one is refused, "" for none, in the model's
+// words, which name each change by its index as the model's plan does, and which name the
+// argument and its value; the row is row index of a plan whose rows are rows, runs a tool of
+// entry and needs the rows needs. A row names, as "$N", the key of the issue row N creates in an
+// argument of its tool that takes one (goingNewIssueArguments), as the argument's value or an
+// item of its list, where row N is a row before it that creates an issue (dispatch_issue) and is
+// among the rows it needs, so it runs only once that issue is made and the server puts the
+// issue's key in its place (AgentListener.resolveNewIssues). A "$N" deeper in such an argument -
+// in an object, or in a list within its list - is refused, since no key is put in there and it
+// would be sent as written. The item a row changes, an argument a route of its tool takes into
+// its path, is never a new issue: the plan reads that item before anything runs, so a "$N" there
+// is refused too. Every other argument is text, which is sent as written and never refused for
+// reading as "$N".
+func goingNewIssueRefusal(entry GoingAction, index int, arguments map[string]any, needs []int, rows []goingPlanRowStored) string {
 	items := map[string]bool{}
 	for _, route := range entry.Routes {
 		for _, argument := range route.path {
@@ -536,39 +551,39 @@ func goingNewIssueRefusal(entry GoingAction, index int, arguments map[string]any
 		}
 	}
 	for _, argument := range slices.Sorted(maps.Keys(arguments)) {
-		for _, value := range goingArgumentItems(arguments[argument]) {
-			change, named := goingNewIssueRef(value)
+		value := arguments[argument]
+		if _, named := goingNewIssueRef(value); named && items[argument] {
+			return fmt.Sprintf("argument %q is %q, but %q names the item this change changes, which the plan reads before anything runs: "+
+				"a new issue may only be a value a change writes, such as parent or blocked_by; propose a change of the new issue itself once it exists",
+				argument, value, argument)
+		}
+		if !slices.Contains(goingNewIssueArguments[entry.Action], argument) {
+			continue
+		}
+		for _, item := range goingArgumentItems(value) {
+			change, named := goingNewIssueRef(item)
 			if !named {
-				if inner := goingInnerNewIssueRef(value); inner != "" {
-					return &goingNewIssueProblem{argument: argument, value: inner, why: fmt.Sprintf(
-						"argument %q holds %q inside it, where no key is put in: name a new issue as an argument's value or an item of an argument's list",
-						argument, inner)}
+				if inner := goingInnerNewIssueRef(item); inner != "" {
+					return fmt.Sprintf("argument %q holds %q inside it, where no key is put in: name a new issue as the argument's value or an item of its list",
+						argument, inner)
 				}
 				continue
 			}
-			problem := &goingNewIssueProblem{argument: argument, value: value.(string)}
 			at := slices.IndexFunc(rows, func(row goingPlanRowStored) bool { return row.row == change })
 			switch {
-			case items[argument]:
-				problem.why = fmt.Sprintf("argument %q is %q, but %q names the item this change changes, which the plan reads before anything runs: "+
-					"a new issue may only be a value a change writes, such as parent or blocked_by; propose a change of the new issue itself once it exists",
-					argument, problem.value, argument)
 			case change < 0 || change >= index || at < 0:
-				problem.why = fmt.Sprintf("argument %q is %q, which names change %d, and that is no change before change %d: "+
-					"\"$N\" names the issue an earlier change of this plan creates", argument, problem.value, change, index)
+				return fmt.Sprintf("argument %q is %q, which names change %d, and that is no change before change %d: "+
+					"\"$N\" names the issue an earlier change of this plan creates", argument, item, change, index)
 			case rows[at].tool != goingIssueCreateTool:
-				problem.why = fmt.Sprintf("argument %q is %q, which names change %d, and change %d is %s, which creates no issue: "+
-					"\"$N\" names only the issue a %s change of this plan creates", argument, problem.value, change, change, rows[at].tool, goingIssueCreateTool)
+				return fmt.Sprintf("argument %q is %q, which names change %d, and change %d is %s, which creates no issue: "+
+					"\"$N\" names only the issue a %s change of this plan creates", argument, item, change, change, rows[at].tool, goingIssueCreateTool)
 			case !slices.Contains(needs, change):
-				problem.why = fmt.Sprintf("argument %q is %q, the issue change %d creates, but change %d does not need change %d: "+
-					"add %d to its needs, so it runs once that issue is made", argument, problem.value, change, index, change, change)
-			default:
-				continue
+				return fmt.Sprintf("argument %q is %q, the issue change %d creates, but change %d does not need change %d: "+
+					"add %d to its needs, so it runs once that issue is made", argument, item, change, index, change, change)
 			}
-			return problem
 		}
 	}
-	return nil
+	return ""
 }
 
 // planCall is a plan call (agentwire.KindPlan): the run's model proposes its plan, which the
@@ -633,8 +648,8 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 		if err != nil {
 			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d (%s): %v", index, change.Tool, err)
 		}
-		if problem := goingNewIssueRefusal(entry, index, arguments, needs, rows); problem != nil {
-			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d (%s): %s", index, change.Tool, problem.why)
+		if why := goingNewIssueRefusal(entry, index, arguments, needs, rows); why != "" {
+			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d (%s): %s", index, change.Tool, why)
 		}
 		var route string
 		if newIssue {
@@ -1068,9 +1083,8 @@ func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 			maps.Copy(arguments, edited)
 		}
 		if entry, held := s.going.Lookup(row.tool); err == nil && held {
-			if problem := goingNewIssueRefusal(entry, row.row, arguments, row.needs, plan.rows); problem != nil {
-				err = GoingArgumentError{Action: row.tool, Reason: fmt.Sprintf("%s is %q, which names no new issue that a change it needs creates",
-					problem.argument, problem.value)}
+			if why := goingNewIssueRefusal(entry, row.row, arguments, row.needs, plan.rows); why != "" {
+				err = GoingArgumentError{Action: row.tool, Reason: why}
 			}
 		}
 		var now goingRowShown

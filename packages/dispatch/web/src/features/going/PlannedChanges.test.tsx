@@ -280,6 +280,48 @@ test("a value naming a new issue of the plan shows its title and (new), and Edit
   }
 });
 
+// A text that reads as "$N" names no new issue: the server sends it as written, and the row shows
+// it so. Only a field that takes an issue key, such as parent, shows a new issue of the plan by
+// its title and "(new)".
+test('titles "$100" and "$0" show as written, and only the parent "$0" shows the new issue', async () => {
+  const priced: GoingPlanAnswer = {
+    ...plan,
+    rows: (plan.rows ?? []).map((planned) => {
+      if (planned.row === 0) {
+        return { ...planned, arguments: { ...argumentsOf(planned), title: "$100" } };
+      }
+      if (planned.row === 1) {
+        return {
+          ...planned,
+          arguments: { issue: "CORE-3", parent: "$0", title: "$0" },
+          fields: ["title", "parent"],
+          now: { parent: "CORE-1", title: "The first half" },
+        };
+      }
+      return planned;
+    }),
+  };
+  const { restore } = await openPlan("over", async () => priced);
+  const next = (row: number, field: string): string | null => {
+    const drawn = within(screen.getByTestId("going-plan-card-rows")).getAllByTestId(
+      "going-plan-row"
+    )[row] as HTMLElement;
+    const shown = within(drawn)
+      .getAllByTestId("going-plan-field")
+      .find((element) => element.getAttribute("data-field") === field) as HTMLElement;
+    return within(shown).getByTestId("going-plan-next").textContent;
+  };
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    expect(next(0, "title")).toBe("$100");
+    expect(next(1, "title")).toBe("$0");
+    expect(next(1, "parent")).toBe("$100 (new)");
+  } finally {
+    restore();
+  }
+});
+
 // A plan that could not be read is said to be, with its Retry, in the card that would show it:
 // the conversation's plan waits, and the card is the one place the person can answer it.
 test("a plan that cannot be read says so in the card, and Retry reads it again", async () => {

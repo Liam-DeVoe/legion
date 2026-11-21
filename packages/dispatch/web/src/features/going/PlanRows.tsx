@@ -74,8 +74,9 @@ function PieceDiff({ piece }: { readonly piece: ChangePiece }): ReactNode {
 }
 
 /** One field a row writes: its name, the value now and the new value, which the person can edit
- *  where it is text and the row still waits. A new value naming a new issue of the plan shows that
- *  issue's title and "(new)" (`newIssues`), and its edit box holds the value itself, which the
+ *  where it is text and the row still waits. A new value of a field that may name a new issue of
+ *  the plan (`RowChange.namesNewIssue`) naming one shows that issue's title and "(new)"
+ *  (`newIssues`, given for such a field alone), and its edit box holds the value itself, which the
  *  person may replace with an issue's key. Its edit box starts from the new value of the plan it
  *  is drawn for, and its caller keys it to that plan, so a revised plan or a new run's never opens
  *  with an earlier plan's value or the person's unsaved typing. */
@@ -90,7 +91,7 @@ function FieldChange({
 }: {
   readonly editable: boolean;
   readonly field: string;
-  readonly newIssues: ReadonlyMap<number, string>;
+  readonly newIssues: ReadonlyMap<number, string> | undefined;
   readonly next: unknown;
   readonly now: unknown;
   readonly onEdit: (value: string) => void;
@@ -212,7 +213,7 @@ export function PlanRowView({
             editable={waiting && change.editable}
             field={change.field}
             key={`${plan.run}:${plan.plan}:${change.field}`}
-            newIssues={newIssues}
+            newIssues={change.namesNewIssue ? newIssues : undefined}
             next={change.next}
             now={change.now}
             onEdit={(value) => setDraft(editedDraft(draft, row.row, change.field, value))}
