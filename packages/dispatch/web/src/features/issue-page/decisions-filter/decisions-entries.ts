@@ -56,18 +56,20 @@ import {
  * either still lets an issue that holds nothing say so.
  *
  * The seam says too which of those two reads stands refused (`unreadable`), which of them is
- * being read now (`retrying`), and asks one of them alone again (`retry`). A read stands
- * refused by the page's one rule for a failed read (`standsFailed`): it holds no answer, and a
- * fetch of it failed since it last held one. Its status is not the rule: TanStack Query sets a
- * read that holds no answer back to pending, its error cleared, the moment it runs again, and
- * the read stays refused until it answers. The body draws a line with a Retry for each refused
- * read, in place of the entries that read would give; while the read runs again the line stays,
- * with the focus its Retry holds, the Retry reads busy, and a Retry pressed then asks nothing
- * more. How a read stands and how it is asked again belong to the read, and only this module
- * names one, so they are read here and the body knows a read only by the word its line is drawn
- * for. A read whose refetch fails over an answer it already holds keeps that answer, which the
- * view still draws from, so it is not among the refused; nor are the comments and the blocks,
- * which only move a decision between parts.
+ * being read now (`retrying`) and how many times each has failed (`failures`), and asks one of
+ * them alone again (`retry`). A read stands refused by the page's one rule for a failed read
+ * (`standsFailed`): it holds no answer, and a fetch of it failed since it last held one. Its
+ * status is not the rule: TanStack Query sets a read that holds no answer back to pending, its
+ * error cleared, the moment it runs again, and the read stays refused until it answers. The body
+ * draws a line with a Retry for each refused read, in place of the entries that read would give;
+ * while the read runs again the line stays, with the focus its Retry holds, the Retry reads busy,
+ * and a Retry pressed then asks nothing more. The line says the read's failure again only for a
+ * new one: a run that ends with none, cancelled or paused while the browser is offline, leaves
+ * the count as it was, and with it the line's alert. How a read stands and how it is asked again
+ * belong to the read, and only this module names one, so they are read here and the body knows
+ * a read only by the word its line is drawn for. A read whose refetch fails over an answer it
+ * already holds keeps that answer, which the view still draws from, so it is not among the
+ * refused; nor are the comments and the blocks, which only move a decision between parts.
  *
  * The seam says too which decisions are a person's write-up of an answered question
  * (`writeUps`), which the model draws no entry for (`isReading`), and which questions each one
@@ -83,9 +85,14 @@ import {
 type DecisionsRead = "decisions" | "asks";
 
 /** The seam's answer: the view's parts, and beside them whether the reads that say which
- *  entries there are hold their answers, which of them stands refused and which runs now, and
- *  how to ask one again. */
+ *  entries there are hold their answers, which of them stands refused, which runs now and how
+ *  many times each has failed, and how to ask one again. */
 interface DecisionsEntries {
+  /** How many times each of the decisions read and the asks has failed, by its word (TanStack
+   *  Query's `errorUpdateCount`). It keys the alert of a refused read's line (`FailedReadLine`'s
+   *  `failure`), so each new failure is said again, and a run that ends with none, cancelled or
+   *  paused while the browser is offline, says nothing again. */
+  readonly failures: Readonly<Record<DecisionsRead, number>>;
   /** Which entry stands in which part, each part in the order it is drawn. Another person's
    *  decisions stand in `yours`, so `others` is empty. */
   readonly parts: DecisionsParts;
@@ -175,6 +182,14 @@ export function useDecisionsEntries({
     ],
     [asksFetching, decisionsFetching]
   );
+  // A run that ends with no new failure, cancelled or paused while the browser is offline,
+  // leaves a read's count as it was, so its line says nothing again.
+  const decisionsFailures = decisionsRead.errorUpdateCount;
+  const asksFailures = asksRead.errorUpdateCount;
+  const failures = useMemo<Readonly<Record<DecisionsRead, number>>>(
+    () => ({ asks: asksFailures, decisions: decisionsFailures }),
+    [asksFailures, decisionsFailures]
+  );
   // Each read is asked again by its own query, so a Retry asks for that read and no other.
   const refetchDecisions = decisionsRead.refetch;
   const refetchAsks = asksRead.refetch;
@@ -244,7 +259,7 @@ export function useDecisionsEntries({
     }
     return found;
   }, [asks, asksRefused, decisions, root]);
-  return { parts, readsHeld, retry, retrying, unreadable, writeUps };
+  return { failures, parts, readsHeld, retry, retrying, unreadable, writeUps };
 }
 
 /**

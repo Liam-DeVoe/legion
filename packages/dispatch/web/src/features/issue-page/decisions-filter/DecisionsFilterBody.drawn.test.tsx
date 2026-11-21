@@ -383,6 +383,12 @@ function retryOf(drawn: RenderResult, read: keyof typeof REFUSED_READ_WORDS): HT
   return failedLine(drawn, read)?.querySelector<HTMLElement>("button") ?? null;
 }
 
+/** The alert of the line a refused read draws, which a screen reader says as it is drawn, or
+ *  null where the body draws none for `read`. */
+function alertOf(drawn: RenderResult, read: keyof typeof REFUSED_READ_WORDS): Element | null {
+  return failedLine(drawn, read)?.querySelector('[role="alert"]') ?? null;
+}
+
 /**
  * Presses Enter on the Retry of `read`'s line, which holds the focus, and holds the run that
  * press starts until it refuses it: `hold` makes that read's request return the promise it is
@@ -905,6 +911,56 @@ test("a read refused after the tree took the focus gives that focus to its Retry
       };
       await waitFor(() => expect(failedLine(view, read)).not.toBeNull());
       await waitFor(() => expect(focusIs()).toBe(`the ${read} Retry`));
+      view.unmount();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+});
+
+// A refused read's line says the read's failure again only for a new one. A run of the read that
+// ends with none - cancelled, or paused while the browser is offline - leaves the read refused
+// and its line drawn, and the line drew its alert afresh all the same, as though the run had been
+// refused: a screen reader said the failure again when nothing new had failed. Through a run
+// cancelled under it the alert stays the element it was and the Retry keeps the focus; a run
+// refused after that draws a new alert. So for each of the two reads.
+test("a refused read's run that ends with no new refusal draws no new alert, and one refused again does", async () => {
+  const user = userEvent.setup();
+  for (const read of ["decisions", "asks"] as const) {
+    const spy =
+      read === "decisions"
+        ? spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("refused"))
+        : spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
+    try {
+      const view =
+        read === "decisions"
+          ? renderBody({ children: [statement("s1")], made: null }, {}, { stage: true })
+          : renderBody({ asks: null, children: [statement("s1")] }, {}, { stage: true });
+      await waitFor(() => expect(retryOf(view, read)).not.toBeNull());
+      const retry = retryOf(view, read);
+      await act(async () => retry?.focus());
+      expect(document.activeElement).toBe(retry);
+      const alert = alertOf(view, read);
+      expect(alert).not.toBeNull();
+
+      // Enter on the Retry starts a run, which is held and then cancelled, under the key the
+      // page reads the read by.
+      spy.mockReturnValue(Promise.withResolvers<never>().promise);
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBe("true"));
+      await act(async () => view.client.cancelQueries({ queryKey: [read, KEY] }));
+      await waitFor(() => expect(retry?.getAttribute("aria-busy")).toBeNull());
+      expect(retryOf(view, read), "the cancelled run drew a new Retry").toBe(retry);
+      expect(
+        alertOf(view, read),
+        "the cancelled run said the read's failure again, though nothing new failed"
+      ).toBe(alert);
+      expect(document.activeElement, "the cancelled run took the focus off the Retry").toBe(retry);
+
+      await retryRefusedAgain(view, read, (run) => spy.mockReturnValue(run), user);
+      expect(alertOf(view, read), "the read refused again kept the alert it drew before").not.toBe(
+        alert
+      );
       view.unmount();
     } finally {
       spy.mockRestore();

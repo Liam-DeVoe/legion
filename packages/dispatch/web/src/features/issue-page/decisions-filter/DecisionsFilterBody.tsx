@@ -166,12 +166,9 @@ export function DecisionsFilterBody({
   waitingPress?: number;
 }): ReactNode {
   const navigate = useNavigate();
-  const { parts, readsHeld, retry, retrying, unreadable, writeUps } = useDecisionsEntries({
-    issue,
-    reader,
-    root,
-    view,
-  });
+  const { failures, parts, readsHeld, retry, retrying, unreadable, writeUps } = useDecisionsEntries(
+    { issue, reader, root, view }
+  );
   // The page's one rule for naming a person (`AgentText.author`), which the panel's facts of the
   // focused row name its keeper by: a name, never an id (R9, R22).
   const agentText = useAgentText();
@@ -707,9 +704,12 @@ export function DecisionsFilterBody({
           tree and never in it: a tree holds rows and groups of rows alone. They stand in place
           of the entries the read would give: the tree is built from the same reads
           (`useIssueTree.ts`), so a read that holds nothing gives the list no entry of its own,
-          and no part is drawn for it. */}
+          and no part is drawn for it. Each line's alert is keyed by its read's count of
+          failures, so a run that ends with no new refusal, cancelled or paused offline, says
+          nothing again. */}
       {unreadable.map((read) => (
         <FailedReadLine
+          failure={failures[read]}
           key={read}
           message={REFUSED_READ_WORDS[read]}
           onRetry={() => retry(read)}
