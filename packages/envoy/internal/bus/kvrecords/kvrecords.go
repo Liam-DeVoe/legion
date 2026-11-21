@@ -443,10 +443,13 @@ func streamState(ctx context.Context, nc *nats.Conn, stream string) (first, last
 // every sequence from first_seq to last_seq in order, then reads the info again and walks on to
 // the new last_seq, until a pass ends at the last_seq it began with, within the walk's bounds. A
 // sequence answered 10037, no message found, is left out, and a message whose subject is no key of
-// the bucket is listed in the manifest's Foreign and has no record; any other error, or a walk past
-// its bounds, stops the walk, and nothing is written. The files are written into a directory of
-// their own beside dir and moved to dir whole. The manifest it answers names the copy by its
-// ManifestSHA256, which a reader passes to Read.
+// the bucket is listed in the manifest's Foreign and has no record; any other error, a last_seq that
+// fell during the walk (the stream made again), or a walk past its bounds, stops the walk, and
+// nothing is written. A writer that keeps last_seq moving, which any grant holding a JetStream
+// request can do by naming a key of the bucket as a request's reply, so makes the walk fail at its
+// bound: it fails closed, with no copy, and the copy is taken again or under a hold. The files are
+// written into a directory of their own beside dir and moved to dir whole. The manifest it answers
+// names the copy by its ManifestSHA256, which a reader passes to Read.
 func Write(ctx context.Context, nc *nats.Conn, bucket, dir string, key ed25519.PrivateKey) (Manifest, error) {
 	if len(key) != ed25519.PrivateKeySize {
 		return Manifest{}, fmt.Errorf("kvrecords: the signing key holds %d bytes, not an Ed25519 private key's %d", len(key), ed25519.PrivateKeySize)
@@ -559,7 +562,11 @@ func walk(ctx context.Context, nc *nats.Conn, manifest *Manifest) ([]byte, error
 		if err != nil {
 			return nil, err
 		}
-		if last <= manifest.LastSeq {
+		switch {
+		case last < manifest.LastSeq:
+			return nil, fmt.Errorf("kvrecords: %s's last_seq fell from %d to %d during the walk: the stream was made again or lost messages, so the walk is of no one stream",
+				stream, manifest.LastSeq, last)
+		case last == manifest.LastSeq:
 			return records.Bytes(), nil
 		}
 		if pass == 1 {
@@ -577,17 +584,17 @@ func walk(ctx context.Context, nc *nats.Conn, manifest *Manifest) ([]byte, error
 	}
 }
 
-// Read reads and checks the copy in dir, the one named manifestSHA256, against keys, the
+// Read reads and checks the copy in dir, the one named manifestSHA256, of bucket, against keys, the
 // operator's public hold keys, refusing, naming what failed: a missing file; a SHA256SUMS line that
 // does not match its file; a manifest.json other than the one named, an older copy the operator
 // signed among them, or no name at all; a signature no key of keys verifies over the manifest; a
-// format other than Format; a stream other than the bucket's, KV_<bucket>; a record count or
-// records sum the manifest gives that disagrees with records.jsonl; a sequence that does not
-// increase or falls outside first_seq..last_seq; a subject that is not one of the manifest's
-// bucket's keys, or whose key disagrees with the record's key; an empty key; a field missing; and
-// data that is not base64. An error names the file and its line, the record's sequence, subject
-// or key, and the field, never a value the copy holds.
-func Read(dir string, keys []ed25519.PublicKey, manifestSHA256 string) (Manifest, []Record, error) {
+// format other than Format; a copy of another bucket than bucket; a stream other than the bucket's,
+// KV_<bucket>; a record count or records sum the manifest gives that disagrees with records.jsonl;
+// a sequence that does not increase or falls outside first_seq..last_seq; a subject that is not one
+// of the manifest's bucket's keys, or whose key disagrees with the record's key; an empty key; a
+// field missing; and data that is not base64. An error names the file and its line, the record's
+// sequence, subject or key, and the field, never a value the copy holds.
+func Read(dir, bucket string, keys []ed25519.PublicKey, manifestSHA256 string) (Manifest, []Record, error) {
 	files := map[string][]byte{}
 	for _, name := range []string{SumsFile, ManifestFile, RecordsFile, SignatureFile} {
 		data, err := os.ReadFile(filepath.Join(dir, name))
@@ -618,7 +625,10 @@ func Read(dir string, keys []ed25519.PublicKey, manifestSHA256 string) (Manifest
 	if manifest.Format != Format {
 		return Manifest{}, nil, fmt.Errorf("kvrecords: %s names a format other than %q", ManifestFile, Format)
 	}
-	if manifest.Bucket == "" || manifest.Stream != "KV_"+manifest.Bucket {
+	if manifest.Bucket != bucket {
+		return Manifest{}, nil, fmt.Errorf("kvrecords: %s is a copy of another bucket than %q", ManifestFile, bucket)
+	}
+	if manifest.Stream != "KV_"+manifest.Bucket {
 		return Manifest{}, nil, fmt.Errorf("kvrecords: %s names a stream other than its bucket's, KV_<bucket>", ManifestFile)
 	}
 	recordsSum := sha256.Sum256(files[RecordsFile])
