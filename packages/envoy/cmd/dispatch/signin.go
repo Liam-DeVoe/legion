@@ -10,8 +10,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"golang.org/x/net/idna"
-
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -29,33 +27,15 @@ const plainRefreshTokenRetireTimeout = 30 * time.Second
 // `accounts.google.com` when this is the configured issuer, as Google documents.
 const googleIssuer = "https://accounts.google.com"
 
-// domainShape is a lowercase DNS name of two or more labels, each 1 to 63 letters, digits and
-// inner hyphens: the shape of a Google Workspace domain.
-var domainShape = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
-
-// maxDomainLength is the longest DNS name, in its dotted text form.
-const maxDomainLength = 253
-
-// workspaceDomainALabel is entry, an entry of DISPATCH_SIGNIN_WORKSPACE_DOMAINS, as IDNA lookup
-// writes it (idna.Lookup.ToASCII), the form identity.OutsideRule compares an address's domain in,
-// and whether the setting takes entry: lowercase, taken by the lookup (a label such as xn--a, which
-// decodes to nothing, is not), and so written a lowercase DNS name (domainShape) of at most
-// maxDomainLength characters. An internationalized domain is written in Unicode, bücher.example,
-// or as its A-labels, xn--bcher-kva.example, and is the same entry either way.
-func workspaceDomainALabel(entry string) (string, bool) {
-	ascii, err := idna.Lookup.ToASCII(entry)
-	return ascii, err == nil && entry == strings.ToLower(entry) && len(ascii) <= maxDomainLength && domainShape.MatchString(ascii)
-}
-
 // workspaceDomainALabels is domains, entries of DISPATCH_SIGNIN_WORKSPACE_DOMAINS
-// checkSignInSettings took, each as its A-label (workspaceDomainALabel); nil for none.
+// checkSignInSettings took, each as its A-label (oidc.WorkspaceDomainALabel); nil for none.
 func workspaceDomainALabels(domains []string) []string {
 	if len(domains) == 0 {
 		return nil
 	}
 	labels := make([]string, len(domains))
 	for index, domain := range domains {
-		labels[index], _ = workspaceDomainALabel(domain)
+		labels[index], _ = oidc.WorkspaceDomainALabel(domain)
 	}
 	return labels
 }
@@ -171,8 +151,8 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 			if domain == "" {
 				return fmt.Errorf("DISPATCH_SIGNIN_WORKSPACE_DOMAINS entry %d of %d is empty", index+1, len(boot.SignInWorkspaceDomains))
 			}
-			if _, ok := workspaceDomainALabel(domain); !ok {
-				return fmt.Errorf("DISPATCH_SIGNIN_WORKSPACE_DOMAINS entry %d of %d must be a lowercase domain name such as example.com; got a value of %d characters", index+1, len(boot.SignInWorkspaceDomains), utf8.RuneCountInString(domain))
+			if _, ok := oidc.WorkspaceDomainALabel(domain); !ok {
+				return oidc.DomainNameRefusal(fmt.Sprintf("DISPATCH_SIGNIN_WORKSPACE_DOMAINS entry %d of %d", index+1, len(boot.SignInWorkspaceDomains)), domain)
 			}
 		}
 		if boot.OutsideOrigin != "" && boot.SignInIssuer == googleIssuer {
@@ -220,11 +200,12 @@ func checkIAPSignInSettings(boot bootConfig) error {
 	return checkDomainShape(boot.SignInDomain)
 }
 
-// checkDomainShape refuses a DISPATCH_SIGNIN_DOMAIN that is not a lowercase DNS name, naming its
+// checkDomainShape refuses a DISPATCH_SIGNIN_DOMAIN that is not a lowercase DNS name
+// (oidc.IsDomainName, the rule the secrets broker holds its Workspace domains to), naming its
 // length and never its value.
 func checkDomainShape(domain string) error {
-	if len(domain) > maxDomainLength || !domainShape.MatchString(domain) {
-		return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN must be a lowercase domain name such as example.com; got a value of %d characters", utf8.RuneCountInString(domain))
+	if !oidc.IsDomainName(domain) {
+		return oidc.DomainNameRefusal("DISPATCH_SIGNIN_DOMAIN", domain)
 	}
 	return nil
 }
