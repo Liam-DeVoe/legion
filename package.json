@@ -18,7 +18,7 @@
     "test:e2e-lib": "bun test --timeout 200000 scripts/e2e/lib"
   },
   "workspaces": [
-    "packages/broker-client",
+    "packages/cipher-client",
     "packages/contracts",
     "packages/envoy-client",
     "packages/pi-envoy",
