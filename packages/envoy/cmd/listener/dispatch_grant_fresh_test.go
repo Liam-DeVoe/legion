@@ -29,75 +29,19 @@ import (
 // start refuses: run it by removing the two entries from natsgrant's listenerSelection (an -overlay
 // of natsgrant.go); the row then fails at its start.
 func TestTheListenerBesideDispatchStartsOnDispatchsGrantInTheFreshMode(t *testing.T) {
-	const machine = "example-dispatch"
-	const account = "system:serviceaccount:dispatch:dispatch"
-	keys := testnats.NewCalloutKeys(t)
-	adminSeed, adminKey := testnats.User(t)
-	_, url := testnats.StartWithCalloutServer(t, keys, testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}})
-	dir := t.TempDir()
-	write := func(name, content string) string {
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(content+"\n"), 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-		return path
-	}
-	service, err := natscallout.Start(context.Background(), natscallout.Settings{
-		URLs:           []string{url},
-		SeedFile:       write("service.seed", keys.ServiceSeed),
-		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
-		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
-		Services:       []natscallout.ServiceEntry{{Kind: natscallout.KindDispatch, MachineID: machine, Account: account, AllProjects: true}},
-	}, natscallout.Deps{ServiceToken: func(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
-		if raw != "dispatch-token" {
-			return "", false, time.Time{}, time.Time{}, errors.New("the token did not verify")
-		}
-		now := time.Now()
-		return account, false, now, now.Add(time.Hour), nil
-	}})
-	if err != nil {
-		t.Fatalf("start the auth service: %v", err)
-	}
-	t.Cleanup(service.Close)
-	ready, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := service.Ready(ready); err != nil {
-		t.Fatalf("the auth service never subscribed: %v", err)
-	}
-
-	// The operator's create-bucket and the cutover's conversion: the bucket, its sentinel done.
-	admin, err := testnats.ConnectSeed(t, url, adminSeed)
-	if err != nil {
-		t.Fatalf("connect the admin: %v", err)
-	}
-	t.Cleanup(admin.Close)
-	adminJS, err := jetstream.New(admin)
-	if err != nil {
-		t.Fatalf("the admin's JetStream: %v", err)
-	}
-	if _, err := adminJS.CreateKeyValue(t.Context(), consumernames.SessionBucketConfig(1)); err != nil {
-		t.Fatalf("create the selection bucket: %v", err)
-	}
-	records := consumernames.NewKVStore(consumernames.SessionBucket, consumernames.ConnRequester{Conn: admin})
-	if _, err := records.WriteSentinel(t.Context(), consumernames.StoreState{Cutover: consumernames.CutoverDone}, 0); err != nil {
-		t.Fatalf("write the sentinel: %v", err)
-	}
-
-	token := write("dispatch.token", "dispatch-token")
-	client, err := bus.ConnectOwningStream([]string{url},
+	hub := startDispatchGrantHub(t)
+	records := hub.records
+	client, err := bus.ConnectOwningStream([]string{hub.url},
 		bus.WithReplicas(1),
 		bus.WithName("envoy-listener"),
 		bus.WithConsumerNames(consumernames.ModeFresh),
-		bus.WithEnvironment(func(key string) (string, bool) {
-			if key == bus.ServiceTokenFileEnvVar {
-				return token, true
-			}
-			return "", false
-		}))
+		bus.WithEnvironment(hub.environment))
 	if err != nil {
 		t.Fatalf("connect the listener as Dispatch: %v", err)
 	}
 	t.Cleanup(client.Close)
+	admin := hub.admin
+	machine := hub.machine
 
 	durable := bus.ListenerDurable(machine)
 	delivered := make(chan *natsgo.Msg, 4)
@@ -135,5 +79,169 @@ func TestTheListenerBesideDispatchStartsOnDispatchsGrantInTheFreshMode(t *testin
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatalf("the fresh generation %s delivered nothing", record.Current)
+	}
+}
+
+// dispatchGrantHub is a hub whose auth service grants Dispatch's service account Dispatch's
+// grant (natsgrant.Dispatch) for machine, with the selection bucket the operator creates and its
+// sentinel done, as the cutover's conversion leaves it, and an admin user beside it.
+type dispatchGrantHub struct {
+	url, machine string
+	admin        *natsgo.Conn
+	records      *consumernames.KVStore
+	// environment is the environment a client connecting as Dispatch reads its token file from.
+	environment func(string) (string, bool)
+}
+
+func startDispatchGrantHub(t *testing.T) *dispatchGrantHub {
+	t.Helper()
+	const machine = "example-dispatch"
+	const account = "system:serviceaccount:dispatch:dispatch"
+	keys := testnats.NewCalloutKeys(t)
+	adminSeed, adminKey := testnats.User(t)
+	_, url := testnats.StartWithCalloutServer(t, keys, testnats.StaticUser{NKey: adminKey, Publish: []string{">"}, Subscribe: []string{">"}})
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content+"\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return path
+	}
+	service, err := natscallout.Start(context.Background(), natscallout.Settings{
+		URLs:           []string{url},
+		SeedFile:       write("service.seed", keys.ServiceSeed),
+		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
+		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
+		Services:       []natscallout.ServiceEntry{{Kind: natscallout.KindDispatch, MachineID: machine, Account: account, AllProjects: true}},
+	}, natscallout.Deps{ServiceToken: func(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
+		if raw != "dispatch-token" {
+			return "", false, time.Time{}, time.Time{}, errors.New("the token did not verify")
+		}
+		now := time.Now()
+		return account, false, now, now.Add(time.Hour), nil
+	}})
+	if err != nil {
+		t.Fatalf("start the auth service: %v", err)
+	}
+	t.Cleanup(service.Close)
+	ready, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := service.Ready(ready); err != nil {
+		t.Fatalf("the auth service never subscribed: %v", err)
+	}
+	admin, err := testnats.ConnectSeed(t, url, adminSeed)
+	if err != nil {
+		t.Fatalf("connect the admin: %v", err)
+	}
+	t.Cleanup(admin.Close)
+	records, err := consumernames.CreateSessionBucket(t.Context(), admin, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone})
+	if err != nil {
+		t.Fatalf("create the selection bucket: %v", err)
+	}
+	token := write("dispatch.token", "dispatch-token")
+	return &dispatchGrantHub{url: url, machine: machine, admin: admin, records: records,
+		environment: func(key string) (string, bool) {
+			if key == bus.ServiceTokenFileEnvVar {
+				return token, true
+			}
+			return "", false
+		}}
+}
+
+// connect opens a connection as Dispatch, named name, and fails t unless the hub admits it.
+func (h *dispatchGrantHub) connect(t *testing.T, name string) *natsgo.Conn {
+	t.Helper()
+	client, err := bus.Connect([]string{h.url}, bus.WithName(name), bus.WithEnvironment(h.environment))
+	if err != nil {
+		t.Fatalf("connect %s as Dispatch: %v", name, err)
+	}
+	t.Cleanup(client.Close)
+	return client.Connection()
+}
+
+// Two writers on exactly Dispatch's grant -- two processes of the listener beside Dispatch, as a
+// standby pod beside the active one makes possible -- race on the listener's own selection record:
+// each round both write at one revision and the store takes one, refusing the other as a conflict.
+// The grant has no direct get of the bucket, so the store reads only from the stream's leader and
+// writes only on the key's expected last sequence. The control is nats.go's kvs.Create on the same
+// grant: over a key whose last message is a delete, its refused first write falls back to a direct
+// get of that marker, which Dispatch's grant refuses, so it fails where the admin's full grant
+// recreates the key.
+func TestTwoWritersOnDispatchsGrantRaceOnTheListenersRecord(t *testing.T) {
+	hub := startDispatchGrantHub(t)
+	ctx := t.Context()
+	key := consumernames.DurableKey(bus.ListenerDurable(hub.machine))
+	first := consumernames.NewKVStore(consumernames.SessionBucket, consumernames.ConnRequester{Conn: hub.connect(t, "dispatch")})
+	second := consumernames.NewKVStore(consumernames.SessionBucket, consumernames.ConnRequester{Conn: hub.connect(t, "dispatch")})
+	if _, err := first.Write(ctx, key, consumernames.Record{Start: 1}, 0); err != nil {
+		t.Fatalf("the first write on Dispatch's grant: %v", err)
+	}
+	for round := range 20 {
+		_, revision, err := first.Read(ctx, key)
+		if err != nil {
+			t.Fatalf("round %d: the leader read on Dispatch's grant: %v", round, err)
+		}
+		results := make(chan error, 2)
+		for _, store := range []*consumernames.KVStore{first, second} {
+			go func() {
+				_, err := store.Write(ctx, key, consumernames.Record{Start: uint64(round + 2)}, revision)
+				results <- err
+			}()
+		}
+		var wrote, conflicts int
+		for range 2 {
+			switch err := <-results; {
+			case err == nil:
+				wrote++
+			case errors.Is(err, consumernames.ErrConflict):
+				conflicts++
+			default:
+				t.Fatalf("round %d: a racing write answered %v, want a write or ErrConflict", round, err)
+			}
+		}
+		if wrote != 1 || conflicts != 1 {
+			t.Fatalf("round %d: %d writes and %d conflicts, want one of each", round, wrote, conflicts)
+		}
+	}
+	// Another machine's key is refused on the same grant.
+	other := consumernames.DurableKey(bus.ListenerDurable("m2"))
+	if _, err := first.Write(ctx, other, consumernames.Record{Start: 1}, 0); err == nil || errors.Is(err, consumernames.ErrConflict) {
+		t.Fatalf("a write of another machine's key on Dispatch's grant = %v, want it refused", err)
+	}
+
+	// Control: kvs.Create over a deleted key, on the admin's full grant and on Dispatch's.
+	adminJS, err := jetstream.New(hub.admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminKV, err := adminJS.KeyValue(ctx, consumernames.SessionBucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adminKV.Delete(ctx, key); err != nil {
+		t.Fatalf("delete the record: %v", err)
+	}
+	if _, err := adminKV.Create(ctx, key, []byte("{}")); err != nil {
+		t.Fatalf("control: kvs.Create over a deleted key on a full grant = %v, want the key recreated", err)
+	}
+	if err := adminKV.Delete(ctx, key); err != nil {
+		t.Fatalf("delete the record again: %v", err)
+	}
+	js, err := jetstream.New(hub.connect(t, "dispatch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.KeyValue(ctx, consumernames.SessionBucket)
+	if err != nil {
+		t.Fatalf("bind the bucket on Dispatch's grant: %v", err)
+	}
+	createCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := kv.Create(createCtx, key, []byte("{}")); err == nil {
+		t.Fatal("kvs.Create over a deleted key on Dispatch's grant recreated it: its fallback read was not refused")
+	}
+	if _, _, err := first.Read(ctx, key); !errors.Is(err, consumernames.ErrRecordDeleted) {
+		t.Fatalf("the store's read of the deleted record on Dispatch's grant = %v, want ErrRecordDeleted", err)
 	}
 }
