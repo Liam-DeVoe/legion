@@ -88,5 +88,27 @@ type SendBack struct {
 // merge queue is queue_drop, any other backward move out of accepting, retro or merging is
 // send_back, and one out of an earlier phase other_backward.
 func CauseOf(move SendBack) (Cause, bool) {
+	switch move.Trigger {
+	case workflow.TriggerReviewRejected:
+		return CauseReviewChanges, true
+	case workflow.TriggerTesterFailed:
+		return CauseTestFailed, true
+	case workflow.TriggerConflict:
+		return CauseConflict, true
+	case workflow.TriggerChecksRed:
+		return CauseRedChecksOrConflict, true
+	case workflow.TriggerBackward:
+		switch move.From {
+		case phase.Merging:
+			if move.Drop != "" {
+				return CauseQueueDrop, true
+			}
+			return CauseSendBack, true
+		case phase.Accepting, phase.Retro:
+			return CauseSendBack, true
+		case phase.Planning, phase.Implementing, phase.Testing, phase.Reviewing:
+			return CauseOtherBackward, true
+		}
+	}
 	return "", false
 }

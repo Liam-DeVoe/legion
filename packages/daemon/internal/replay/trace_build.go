@@ -1,0 +1,1655 @@
+package replay
+
+import (
+	"cmp"
+	"encoding/json"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
+)
+
+// Trace is a recorded window read back as what happened to each issue and to the daemon that ran
+// it (BuildTrace): the issues' phase visits and the work segment of each, their slots, waits,
+// turns, gates and Dispatch facts, every slot the admission passes moved, and the daemon's boots,
+// downtimes and ticks. It is the one reading of a window's record that the replay's driver, its
+// start state (Seed) and the measures share, so a replay and its record are read alike, and what
+// it cannot place it names (Unplaced) rather than leaving out.
+type Trace struct {
+	// Project is the window's Dispatch project, and From and To its span.
+	Project  string
+	From, To time.Time
+	// Start is the earliest moment the window's inputs reach, From less Before: the log holds
+	// nothing older, so a phase or a slot an issue stood in at Start began at an unknown time.
+	Start time.Time
+	// Parts, GateSteps and TickInterval are the window's own (Window).
+	Parts        []Part
+	GateSteps    []record.DesignStep
+	TickInterval time.Duration
+	// Branches is the base branch of each repository the window's merges name, by owner/repo: the
+	// default branch a start state records an issue of that repository on.
+	Branches map[string]string
+	// Issues is every issue a line or an event of the window names, by key, of any project.
+	Issues map[string]*IssueTrace
+	// Slots is every slot an admission pass gave out or took back, in the order the passes moved
+	// them: from the record line of each pass where the window holds that kind, and from the
+	// per-slot lines where it does not (check k9).
+	Slots []SlotMove
+	// Passed is every candidate of the line a pass passed over, which the record line alone names:
+	// none for a window that does not hold that kind.
+	Passed []PassedOver
+	// Controller is the turns of the project's controller, whose claim names no issue.
+	Controller []Turn
+	// Boots is each daemon process, in order: each start the log holds, and, where the log opens
+	// with no start, the process it opens in (Boot.Seen). Downtimes is each stretch between the last
+	// line of one process and the start of the next, when no daemon ran a pass (assumption 24).
+	Boots     []Boot
+	Downtimes []Downtime
+	// Ticks is each controller tick the daemon ran: a minute after each boot and every
+	// TickInterval after that, until the next boot or To.
+	Ticks []time.Time
+	// Unplaced is each issue or line the trace could not place, with the reason: a line that
+	// disagrees with what the trace already holds, a move whose trigger has no source, a turn end
+	// with no start. The trace still places what it can of it.
+	Unplaced []UnplacedFact
+}
+
+// UnplacedFact is a line or an issue the trace could not place: the issue it is about ("" for
+// none), the moment of the line or the fact, and why. The start state names each issue a fact
+// before its moment leaves in doubt (Seed).
+type UnplacedFact struct {
+	At     time.Time
+	Issue  string
+	Reason string
+}
+
+// IssueTrace is one issue of a window as its record shows it.
+type IssueTrace struct {
+	// Key is the issue's key, and Project the Dispatch project its events name (the window's for
+	// an issue only the log names).
+	Key, Project string
+	// Title is the issue's title as its newest issue event shows it, and Repo the repository
+	// Dispatch resolves it to (resolved_repo, or repo where none is resolved) at the first issue
+	// event that named one: the repository the daemon records it on.
+	Title, Repo string
+	// Entries is each time the issue entered the workflow: its first entry and each reopen.
+	Entries []Entry
+	// Visits is the issue's phase visits in order, each run's from its entry at admitted to its
+	// move to done or its leave.
+	Visits []Visit
+	// Slots is each admission slot the issue held, in order.
+	Slots []SlotSpan
+	// Waits is each wait of the issue, by the time it began.
+	Waits []Wait
+	// Turns is each turn of a worker of the issue, of any role, by the time it began.
+	Turns []Turn
+	// Gates is each fact of the issue's design gate, from the gate lines and the verdicts on its
+	// document, in time order.
+	Gates []GateFact
+	// Dispatch is the issue's Dispatch events in the order its log holds them.
+	Dispatch []DispatchEvent
+	// Children is each issue filed under this one, or moved under it, in time order.
+	Children []ChildFiling
+	// Leaves is each time the issue left the workflow (`workflow: issue left the workflow`).
+	Leaves []Leave
+	// Lingers is each linger of the tree this issue roots.
+	Lingers []Linger
+	// Ready is each merger's ready mark of the release at 9542c6fb (TriggerReady), a mark inside
+	// merging (assumption 20).
+	Ready []time.Time
+	// QueueDrops is each line of the issue's pull request leaving the merge queue.
+	QueueDrops []QueueDrop
+	// PullRequest is when the trace first sees the issue's pull request: its first move by
+	// implementation_ready, its first visit past implementing, or the first line that names its
+	// pull request, whichever is first; zero for none. A replay keeps a synthetic open pull
+	// request record from then on, since a guard of the daemon reads one (review Q2, item 1).
+	// PullRequestNumber is the number a line names, 0 where none does.
+	PullRequest       time.Time
+	PullRequestNumber int
+}
+
+// Entry is one entry of an issue into the workflow at admitted: the Dispatch event that made it a
+// queued root (todo, handed to Legion) or a child of a live tree (todo under a member of one), or
+// the reopen of an issue that had left, with the tree it entered and the generation its record
+// stood at.
+type Entry struct {
+	At         time.Time
+	Tree       string
+	Generation uint64
+	// Reopen is an entry after the issue had left the workflow once.
+	Reopen bool
+}
+
+// Visit is one stay of an issue in one phase, read on today's phases (a phase MoveSources folds
+// is read as the phase it folds into). Enter is when it began and Exit when it ended, zero while
+// it stands at the window's end.
+type Visit struct {
+	Phase       phase.Phase
+	Enter, Exit time.Time
+	// Before is a visit the issue already stood in where the log begins (Trace.Start): it began
+	// at an unknown time, and Enter is Start.
+	Before bool
+	// In is the move that began the visit, nil for a visit that began with the issue's entry into
+	// the workflow or Before the log; Out is the move that ended it, nil while it stands or where
+	// it ended otherwise.
+	In, Out *Move
+	// Left is a visit that ended with the issue's leaving the workflow and no move.
+	Left bool
+	// WorkerStart is when the visit's worker started: the later of the phase change and the slot
+	// the issue takes for it; the phase change in a phase whose rule keeps no slot; the first turn
+	// of the phase's role where the issue held no slot in it. Zero where no worker started.
+	WorkerStart time.Time
+	// Segment is the visit's work segment, nil where no worker started.
+	Segment *WorkSegment
+	// Ready is the merger's ready mark inside the visit to merging, zero for none.
+	Ready time.Time
+}
+
+// Move is one recorded phase move (`workflow: phase changed`): its moment, its phases on today's
+// workflow and as the line wrote them, its trigger and the Dispatch status the move wrote, how a
+// replay makes it (MoveSources) and, for a move back, its cause (CauseOf).
+type Move struct {
+	At                       time.Time
+	From, To                 phase.Phase
+	RecordedFrom, RecordedTo phase.Phase
+	Trigger                  workflow.TriggerKind
+	Status                   string
+	Source                   MoveSource
+	Cause                    Cause
+	// Drop is the msg of the line of the issue's pull request leaving the merge queue that came
+	// before a move out of merging, in the visit it ended; "" for none.
+	Drop string
+}
+
+// SegmentEnd is how a work segment ended.
+type SegmentEnd string
+
+const (
+	// SegmentEndMove is a segment ended by the recorded move that ended its visit.
+	SegmentEndMove SegmentEnd = "move"
+	// SegmentEndRegistration is a segment whose visit the admission pass ended (gate_opened): the
+	// worker's own work ended at its last design gate registration in the visit.
+	SegmentEndRegistration SegmentEnd = "registration"
+	// SegmentEndTurn is a segment whose visit the admission pass ended, its worker having
+	// registered no gate: its work ended with its last turn.
+	SegmentEndTurn SegmentEnd = "turn"
+	// SegmentEndLeft is a segment cut by the issue's leaving the workflow.
+	SegmentEndLeft SegmentEnd = "left"
+	// SegmentOpen is a segment the record shows unended at the window's end: its length is not
+	// known.
+	SegmentOpen SegmentEnd = "open"
+	// SegmentEndHeldSignOff is an architect's segment in accepting whose sign-off the engine held
+	// while a member beneath was in the workflow: the work ended with the architect's last turn, and
+	// the sign-off moved the issue at the member's leave (the windows' README, "Work segments").
+	SegmentEndHeldSignOff SegmentEnd = "held_sign_off"
+)
+
+// WorkSegment is one visit's work: from its worker start to its end (zero while open), with each
+// turn of the issue's workers and each child the issue filed in it, at their offsets from its
+// start, which is how a replay places them at its own start of the segment.
+type WorkSegment struct {
+	Start, End time.Time
+	EndedBy    SegmentEnd
+	Turns      []SegmentTurn
+	Filings    []SegmentFiling
+}
+
+// SegmentTurn is one turn of a segment: the role whose worker took it, its offset from the
+// segment's start and its length, Open where the record shows it unended.
+type SegmentTurn struct {
+	Role   claim.Role
+	Offset time.Duration
+	Length time.Duration
+	Open   bool
+}
+
+// SegmentFiling is one child the issue filed in a segment, at its offset from the segment's start.
+type SegmentFiling struct {
+	Child  string
+	Offset time.Duration
+}
+
+// SlotMove is one slot an admission pass gave out or took back: the issue, the moment, and the
+// slots in use once the move was made under the cap the pass ran with. Kind is the kind of entry
+// a slot given out went to (record.LineKind's word) where the record says it, and Reason the path
+// that took a slot back where the record line says it.
+type SlotMove struct {
+	At         time.Time
+	Issue      string
+	Given      bool
+	Slots, Cap int
+	Kind       string
+	Reason     record.SlotTakenReason
+}
+
+// SlotSpan is one slot an issue held, from its Start to its End (zero while held at the window's
+// end). Before is a slot the issue already held where the log begins. Reason is the path that took
+// it back where the record line says it, and ForWait a slot taken back because the issue waited
+// on another issue (a link or its children), read from the reason or from a wait the trace holds
+// at that moment: the issue then stands in the line for a slot of its own again.
+type SlotSpan struct {
+	Start, End time.Time
+	Before     bool
+	Kind       string
+	Reason     record.SlotTakenReason
+	ForWait    bool
+}
+
+// PassedOver is one candidate of the line a pass passed over, as its record line names it.
+type PassedOver struct {
+	At     time.Time
+	Issue  string
+	Kind   string
+	Place  int
+	Reason record.SlotPassedReason
+}
+
+// WaitKind is what an issue waits on.
+type WaitKind string
+
+const (
+	// WaitLink is a started issue, before its review, waiting on an unfinished Dispatch
+	// blocked_by link.
+	WaitLink WaitKind = "link"
+	// WaitChildren is an issue whose own first phase waits for its open Dispatch children (the
+	// children-first rule).
+	WaitChildren WaitKind = "children"
+	// WaitPerson is a root waiting on a person's answer to an ask or review of its spec.
+	WaitPerson WaitKind = "person"
+	// WaitHeld is an issue held where its phase's worker failed, until its architect or the
+	// operator releases it.
+	WaitHeld WaitKind = "held"
+)
+
+// WaitEnd is what ended a wait.
+type WaitEnd string
+
+const (
+	// WaitBlockerDone is a link wait whose last unfinished blocker reached done.
+	WaitBlockerDone WaitEnd = "blocker_done"
+	// WaitLinkRemoved is a link wait whose last unfinished link was taken off.
+	WaitLinkRemoved WaitEnd = "link_removed"
+	// WaitChildDone is a children wait whose last open child closed, done or icebox.
+	WaitChildDone WaitEnd = "child_done"
+	// WaitChildMovedOut is a children wait whose last open child moved from under the issue.
+	WaitChildMovedOut WaitEnd = "child_moved_out"
+	// WaitGateClosed is a children wait its tree's design gate ended by closing: a new version of
+	// the spec.
+	WaitGateClosed WaitEnd = "gate_closed"
+	// WaitAnswered is a person's act on what the root handed back: an answer, a review, a newer
+	// version of the document.
+	WaitAnswered WaitEnd = "answered"
+	// WaitReleased is a held phase released (`workflow: a held phase is released`).
+	WaitReleased WaitEnd = "released"
+	// WaitMovedOn is a wait that stood when the issue's own phase moved on, which no rule the
+	// daemon runs lets happen; the trace ends the wait there rather than carry it on.
+	WaitMovedOn WaitEnd = "moved_on"
+	// WaitLeft is a wait whose issue left the workflow, or whose run ended at done.
+	WaitLeft WaitEnd = "left_workflow"
+	// WaitOpen is a wait that stands at the window's end.
+	WaitOpen WaitEnd = "open"
+)
+
+// Wait is one wait of an issue: its kind, when it began and ended (End zero while it stands),
+// what ended it, and what it is on: the unfinished blockers it began on (link); the ask or the spec
+// version and document it waits on and the Dispatch sequence it stands since (person); the phase
+// held, the role whose claim failed and why (held).
+type Wait struct {
+	Kind       WaitKind
+	Start, End time.Time
+	EndedBy    WaitEnd
+	On         []string
+	Ask        string
+	Version    int
+	Artifact   string
+	SinceSeq   int64
+	From       phase.Phase
+	Role       claim.Role
+	Reason     string
+}
+
+// TurnEnd is how a turn ended.
+type TurnEnd string
+
+const (
+	// TurnEndLine is a turn its own `supervise: a turn ended` line ended.
+	TurnEndLine TurnEnd = "ended"
+	// TurnEndClaimFailed is a turn its claim's failure ended (`supervise: claim failed`).
+	TurnEndClaimFailed TurnEnd = "claim_failed"
+	// TurnEndSuspended is a turn its claim's suspend ended (`supervise: suspended`).
+	TurnEndSuspended TurnEnd = "suspended"
+	// TurnEndLeft is a turn its issue's leaving the workflow ended.
+	TurnEndLeft TurnEnd = "left"
+	// TurnEndOpen is a turn that stands at the window's end.
+	TurnEndOpen TurnEnd = "open"
+)
+
+// Turn is one turn of a claim's session, joined to its issue and role by the claim token: from its
+// `supervise: a turn started` to its `supervise: a turn ended`, its claim's failure or suspend, or
+// its issue's leave; End zero while it stands at the window's end.
+type Turn struct {
+	Claim      ClaimRef
+	Generation uint64
+	Delivery   string
+	Start, End time.Time
+	EndedBy    TurnEnd
+}
+
+// GateKind is what one fact of a design gate is.
+type GateKind string
+
+const (
+	// GateRegisteredFact is a `workflow: design gate registered` line: the architect registered a
+	// version of its document at a step.
+	GateRegisteredFact GateKind = "registered"
+	// GateOpenedFact and GateClosedFact are a `workflow: design gate opened|closed` line: an
+	// artifact event flipped the step's gate.
+	GateOpenedFact GateKind = "opened"
+	GateClosedFact GateKind = "closed"
+	// GateApproved and GateChangesRequested are a person's verdicts on a version of the issue's
+	// document, from its Dispatch events.
+	GateApproved         GateKind = "approved"
+	GateChangesRequested GateKind = "changes_requested"
+)
+
+// GateFact is one fact of an issue's design gate: a registration, an opening or a closing (the
+// gate lines), or a verdict (artifact.approved and artifact.changes_requested), with the document,
+// the step, the version and, for a registration, whether that version stood approved and whether
+// a changes request stood on it. Event is the kind of artifact event a gate opened or closed at,
+// and Seq the Dispatch sequence of a verdict.
+type GateFact struct {
+	At               time.Time
+	Kind             GateKind
+	Artifact         string
+	Step             record.DesignStep
+	Version          int
+	Open             bool
+	ChangesRequested bool
+	Event            string
+	Seq              int64
+}
+
+// ChildFiling is a child filed under the issue (issue.created naming it the parent) or moved under
+// it (an issue event that changed its parent to it), by whom and at what status.
+type ChildFiling struct {
+	Child  string
+	At     time.Time
+	By     dispatch.Actor
+	Status string
+	Moved  bool
+}
+
+// Leave is the issue leaving the workflow at a Dispatch status.
+type Leave struct {
+	At     time.Time
+	Status string
+}
+
+// Linger is one linger of a tree, at its generation: begun At, to run until Until, and Closed when
+// its linger closed the tree (zero while it runs at the window's end).
+type Linger struct {
+	Generation        uint64
+	At, Until, Closed time.Time
+}
+
+// QueueDrop is a line of an issue's pull request leaving the merge queue: its msg and the pull
+// request's number.
+type QueueDrop struct {
+	At          time.Time
+	Line        string
+	PullRequest int
+}
+
+// Boot is one daemon process: when it started, whether the log holds that start (Seen; the
+// process the log opens in is taken to have started at Trace.Start), and when it finished its boot
+// and the cap it served under, where its `legion daemon started` line says.
+type Boot struct {
+	At      time.Time
+	Seen    bool
+	Started time.Time
+	Cap     int
+}
+
+// Downtime is a stretch with no daemon process: from the last line of one process to the start of
+// the next.
+type Downtime struct {
+	From, To time.Time
+}
+
+// tickDelay is how long after its boot a daemon runs its first controller tick (design section 5).
+const tickDelay = time.Minute
+
+// BuildTrace reads w's record as its Trace: every Dispatch event of every issue, and each line of
+// the log of a kind w.Lines names (design 10.1 (b)), so a replay's own log, which holds kinds an
+// older window lacks, is read through the window's kinds alone and measured like its record. The
+// events and the lines are read in one time order, the events of an instant before its lines, as
+// the fact a pass applied comes before what the pass wrote. Then the slots, waits, worker starts,
+// segments and ticks are built from what they read. It fails for a line or an event its reader
+// refuses, which collect never writes into a window; what it reads and cannot place it names in
+// Trace.Unplaced.
+func BuildTrace(w Window) (Trace, error) {
+	b := traceBuilder{
+		t: &Trace{Project: w.Project, From: w.From, To: w.To, Start: w.From.Add(-time.Duration(w.Before)), Parts: w.Parts,
+			GateSteps: w.GateSteps, TickInterval: time.Duration(w.TickInterval), Branches: map[string]string{},
+			Issues: map[string]*IssueTrace{}},
+		held:     make(map[string]bool, len(w.Lines)),
+		turns:    map[claim.Token]turnAt{},
+		backKind: map[string]string{},
+	}
+	for _, msg := range w.Lines {
+		b.held[msg] = true
+	}
+	b.recordLines, b.heldLines = b.held[passMovedSlotsLine], b.held[phaseHeldLine]
+	for repo, merges := range w.Merges {
+		if len(merges) > 0 {
+			b.t.Branches[repo] = merges[0].Branch
+		}
+	}
+
+	var lines []LogLine
+	for i, raw := range w.Log {
+		line, err := ParseLogLine(raw)
+		if err != nil {
+			return Trace{}, fmt.Errorf("replay: line %d of the window's log: %w", i+1, err)
+		}
+		if line != nil && b.held[line.Head().Msg] {
+			lines = append(lines, line)
+		}
+	}
+	slices.SortStableFunc(lines, func(x, y LogLine) int { return x.Head().Time.Compare(y.Head().Time) })
+
+	var events []readEvent
+	for _, key := range slices.Sorted(maps.Keys(w.Events)) {
+		for i, raw := range w.Events[key] {
+			event, err := ParseDispatchEvent(raw)
+			if err != nil {
+				return Trace{}, fmt.Errorf("replay: event %d of %s: %w", i+1, key, err)
+			}
+			events = append(events, readEvent{event: event, raw: raw})
+		}
+	}
+	slices.SortStableFunc(events, func(x, y readEvent) int {
+		return cmp.Or(x.event.At.Compare(y.event.At), cmp.Compare(x.event.ID, y.event.ID))
+	})
+
+	for i, j := 0, 0; i < len(events) || j < len(lines); {
+		if i < len(events) && (j == len(lines) || !events[i].event.At.After(lines[j].Head().Time)) {
+			b.onEvent(events[i])
+			i++
+			continue
+		}
+		b.onLine(lines[j])
+		j++
+	}
+	b.finish()
+	return *b.t, nil
+}
+
+// readEvent is one Dispatch event as the trace read it, and its raw bytes, from which the issue's
+// title and repository are read (issueSubject).
+type readEvent struct {
+	event DispatchEvent
+	raw   json.RawMessage
+}
+
+// turnAt is where a claim's open turn stands: the issue whose Turns hold it ("" for the
+// controller's) and its index there.
+type turnAt struct {
+	issue string
+	index int
+}
+
+// traceBuilder is BuildTrace's state while it reads a window.
+type traceBuilder struct {
+	t *Trace
+	// held is the line kinds the window holds; recordLines and heldLines whether they include the
+	// record line of a pass and the hold's line.
+	held                   map[string]bool
+	recordLines, heldLines bool
+	// turns is each claim's open turn.
+	turns map[claim.Token]turnAt
+	// buffered is the per-slot moves read since the last record line, under recordLines: the
+	// record line of their pass takes their place.
+	buffered []SlotMove
+	// backKind is the kind of entry an issue's next slot goes to, read from the in-transaction
+	// line of its pass that comes before the slot's own line.
+	backKind map[string]string
+	// starting is whether the current boot has written only its start lines so far, and last the
+	// time of the last line read.
+	starting bool
+	last     time.Time
+	// children is every issue ever shown under each parent (childrenOf), built once reading ends.
+	children map[string][]string
+}
+
+// issue is key's trace, made where none is yet.
+func (b *traceBuilder) issue(key string) *IssueTrace {
+	iss, ok := b.t.Issues[key]
+	if !ok {
+		project, _, _ := strings.Cut(key, "-")
+		if claim.IsIssueKey(key) && b.t.Project != "" && strings.EqualFold(project, b.t.Project) {
+			project = b.t.Project
+		}
+		iss = &IssueTrace{Key: key, Project: project}
+		b.t.Issues[key] = iss
+	}
+	return iss
+}
+
+// unplaced names what the trace could not place.
+func (b *traceBuilder) unplaced(issue string, at time.Time, format string, args ...any) {
+	b.t.Unplaced = append(b.t.Unplaced, UnplacedFact{At: at, Issue: issue, Reason: fmt.Sprintf(format, args...)})
+}
+
+// openVisit is the visit iss stands in, nil where it stands in none.
+func (iss *IssueTrace) openVisit() *Visit {
+	if n := len(iss.Visits); n > 0 && iss.Visits[n-1].Exit.IsZero() {
+		return &iss.Visits[n-1]
+	}
+	return nil
+}
+
+// entry is iss's latest entry, nil before its first.
+func (iss *IssueTrace) entry() *Entry {
+	if n := len(iss.Entries); n > 0 {
+		return &iss.Entries[n-1]
+	}
+	return nil
+}
+
+// openWait is iss's standing wait of kind, nil where none stands.
+func (iss *IssueTrace) openWait(kind WaitKind) *Wait {
+	for i := len(iss.Waits) - 1; i >= 0; i-- {
+		if iss.Waits[i].Kind == kind && iss.Waits[i].End.IsZero() && iss.Waits[i].EndedBy == "" {
+			return &iss.Waits[i]
+		}
+	}
+	return nil
+}
+
+// Moves is every recorded move of the issue, in order: the move that ended each visit.
+func (iss *IssueTrace) Moves() []Move {
+	var moves []Move
+	for _, visit := range iss.Visits {
+		if visit.Out != nil {
+			moves = append(moves, *visit.Out)
+		}
+	}
+	return moves
+}
+
+// Generation is the generation the issue's record stood at in its latest entry, 0 before its
+// first.
+func (iss *IssueTrace) Generation() uint64 {
+	if entry := iss.entry(); entry != nil {
+		return entry.Generation
+	}
+	return 0
+}
+
+// onEvent reads one Dispatch event: it is a fact of its issue, the filing of a child, a verdict on
+// a document, and, where it makes the issue a queued root or a child of a live tree, its entry.
+func (b *traceBuilder) onEvent(read readEvent) {
+	event := read.event
+	iss := b.issue(event.Key)
+	iss.Project = event.Project
+	iss.Dispatch = append(iss.Dispatch, event)
+	switch {
+	case event.Issue != nil:
+		title, repo := issueSubject(read.raw)
+		if title != "" {
+			iss.Title = title
+		}
+		if iss.Repo == "" {
+			iss.Repo = repo
+		}
+		b.childFiled(iss, event)
+		b.maybeEnter(iss, event)
+	case event.Verdict != nil:
+		kind := GateApproved
+		if event.Type == "artifact.changes_requested" {
+			kind = GateChangesRequested
+		}
+		iss.Gates = append(iss.Gates, GateFact{At: event.At, Kind: kind, Artifact: event.Verdict.Artifact,
+			Version: event.Verdict.Version, Seq: event.Seq})
+	}
+}
+
+// issueSubject reads an issue event's title and repository, which ParseDispatchEvent leaves out:
+// the repository Dispatch resolved for it (resolved_repo), or the one it names (repo) where none is
+// resolved.
+func issueSubject(raw json.RawMessage) (title, repo string) {
+	var event struct {
+		Payload struct {
+			Title        string  `json:"title"`
+			Repo         *string `json:"repo"`
+			ResolvedRepo *string `json:"resolved_repo"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(raw, &event) != nil {
+		return "", ""
+	}
+	switch {
+	case event.Payload.ResolvedRepo != nil && *event.Payload.ResolvedRepo != "":
+		repo = *event.Payload.ResolvedRepo
+	case event.Payload.Repo != nil:
+		repo = *event.Payload.Repo
+	}
+	return event.Payload.Title, repo
+}
+
+// childFiled records event's issue on its parent's trace where the event filed it there or moved
+// it under that parent.
+func (b *traceBuilder) childFiled(iss *IssueTrace, event DispatchEvent) {
+	parent := event.Issue.Parent
+	if parent == "" {
+		return
+	}
+	moved := event.Type != "issue.created"
+	if moved {
+		var previous *DispatchIssueState
+		for _, earlier := range iss.Dispatch[:len(iss.Dispatch)-1] {
+			if earlier.Issue != nil {
+				previous = earlier.Issue
+			}
+		}
+		if previous != nil && previous.Parent == parent {
+			return
+		}
+	}
+	under := b.issue(parent)
+	under.Children = append(under.Children, ChildFiling{Child: iss.Key, At: event.At, By: event.Actor, Status: event.Issue.Status,
+		Moved: moved})
+}
+
+// maybeEnter enters iss into the workflow at event where the issue, of the window's project,
+// stands in none and the event shows it todo: as a child of the tree of a parent that stands in
+// the workflow, or, handed to Legion, as the root of a tree of its own. An entry after a leave is a
+// reopen, at the next generation.
+func (b *traceBuilder) maybeEnter(iss *IssueTrace, event DispatchEvent) {
+	if iss.Project != b.t.Project || iss.openVisit() != nil || event.Issue.Status != "todo" {
+		return
+	}
+	tree := ""
+	if parent, ok := b.t.Issues[event.Issue.Parent]; ok && parent.openVisit() != nil && parent.entry() != nil {
+		tree = parent.entry().Tree
+	} else if dispatch.CarriesLegionLabel(event.Issue.Labels) {
+		tree = iss.Key
+	}
+	if tree == "" {
+		return
+	}
+	generation := iss.Generation() + 1
+	iss.Entries = append(iss.Entries, Entry{At: event.At, Tree: tree, Generation: generation, Reopen: len(iss.Entries) > 0})
+	iss.Visits = append(iss.Visits, Visit{Phase: phase.Admitted, Enter: event.At})
+}
+
+// firstBootStage is the boot stage a booting daemon writes before it opens its store (BootStage):
+// the one stage line that can begin a process. Its later stages come after other lines of the
+// boot.
+const firstBootStage = "prompts"
+
+// onLine reads one line of the log. A process's start lines (ProcessStart, and its first boot
+// stage), read with nothing but start lines between them, begin one boot together.
+func (b *traceBuilder) onLine(line LogLine) {
+	at := line.Head().Time
+	starts := false
+	switch l := line.(type) {
+	case ProcessStart:
+		starts = true
+	case BootStage:
+		starts = l.Stage == firstBootStage
+	}
+	switch {
+	case starts && (!b.starting || len(b.t.Boots) == 0):
+		b.boot(at, true)
+	case !starts && len(b.t.Boots) == 0:
+		b.boot(b.t.Start, false)
+	}
+	b.starting = starts
+	b.last = at
+
+	switch l := line.(type) {
+	case DaemonStarted:
+		boot := &b.t.Boots[len(b.t.Boots)-1]
+		boot.Started, boot.Cap = at, l.AdmissionCap
+	case PhaseChanged:
+		b.moved(l)
+	case SlotTaken:
+		kind := b.backKind[l.Issue]
+		delete(b.backKind, l.Issue)
+		b.slotMoved(SlotMove{At: at, Issue: l.Issue, Given: true, Slots: l.Slots, Cap: l.Cap, Kind: kind})
+	case SlotReleased:
+		b.slotMoved(SlotMove{At: at, Issue: l.Issue, Slots: l.Slots, Cap: l.Cap})
+	case PassMovedSlots:
+		b.passMoved(l)
+	case SlotBackWorkReturned:
+		b.backKind[l.Issue] = record.LineReturning.String()
+	case SlotBackWaitEnded:
+		b.backKind[l.Issue] = record.LineWaitingOnIssue.String()
+	case WaitsOnIssues:
+		// The per-pass wait lines are left: a link wait is built from the issue's and its
+		// blockers' events, which every window holds whole (review Q1).
+		b.issue(l.Issue)
+	case WaitsForChildren:
+		// The daemon tells each issue's children wait once for its generation, so each line is a
+		// wait of its own; what ends one is read once every event is (childrenWaitEnds).
+		iss := b.issue(l.Issue)
+		b.generationIs(iss, l.Generation)
+		iss.Waits = append(iss.Waits, Wait{Kind: WaitChildren, Start: at})
+	case WaitsOnPerson:
+		// Each line is a root entering a wait on a person (workflow's enterAwaiting); its end is
+		// read once every event is (personWaitEnds).
+		iss := b.issue(l.Issue)
+		wait := Wait{Kind: WaitPerson, Start: at, SinceSeq: l.SinceSeq, Reason: l.Reason}
+		wait.Ask, wait.Version = personWaitSubject(l.Reason)
+		if wait.Version > 0 {
+			wait.Artifact = latestArtifact(iss, at)
+		}
+		iss.Waits = append(iss.Waits, wait)
+	case GateRegistered:
+		iss := b.issue(l.Issue)
+		iss.Gates = append(iss.Gates, GateFact{At: at, Kind: GateRegisteredFact, Artifact: l.Artifact, Step: l.Step, Version: l.Version,
+			Open: l.Open, ChangesRequested: l.ChangesRequested})
+	case GateOpened:
+		iss := b.issue(l.Issue)
+		iss.Gates = append(iss.Gates, GateFact{At: at, Kind: GateOpenedFact, Artifact: l.Artifact, Version: l.Version, Open: true, Event: l.Event})
+	case GateClosed:
+		iss := b.issue(l.Issue)
+		iss.Gates = append(iss.Gates, GateFact{At: at, Kind: GateClosedFact, Artifact: l.Artifact, Version: l.Version, Event: l.Event})
+	case HoldReleased:
+		iss := b.issue(l.Issue)
+		if wait := iss.openWait(WaitHeld); wait != nil {
+			wait.End, wait.EndedBy = at, WaitReleased
+		} else {
+			b.unplaced(l.Issue, at, "%s at %s releases a hold the trace does not hold", l.Msg, stamp(at))
+		}
+	case PhaseHeld:
+		if b.heldLines {
+			b.holdBegins(b.issue(l.Issue), at, l.From, l.Role, l.Reason)
+		}
+	case ClaimFailed:
+		b.turnEnds(l.Claim, at, TurnEndClaimFailed, false)
+		if !b.heldLines && l.Claim.Issue != "" {
+			iss := b.issue(l.Claim.Issue)
+			if visit := iss.openVisit(); visit != nil && l.Claim.Role != claim.RoleArchitect && phaseRole(visit.Phase) == l.Claim.Role {
+				b.holdBegins(iss, at, visit.Phase, l.Claim.Role, l.Cause)
+			}
+		}
+	case LeftWorkflow:
+		b.left(b.issue(l.Issue), at, l.Status)
+	case TreeLingers:
+		root := b.issue(l.Tree)
+		b.generationIs(root, l.Generation)
+		root.Lingers = append(root.Lingers, Linger{Generation: l.Generation, At: at, Until: l.Until})
+	case LingerClosed:
+		root := b.issue(l.Tree)
+		b.generationIs(root, l.Generation)
+		if n := len(root.Lingers); n > 0 && root.Lingers[n-1].Closed.IsZero() {
+			root.Lingers[n-1].Closed = at
+		} else {
+			b.unplaced(l.Tree, at, "%s at %s closes a linger the trace does not hold", l.Msg, stamp(at))
+		}
+	case TurnStarted:
+		b.turnStarts(l)
+	case TurnEnded:
+		if !l.Outcome {
+			b.turnEnds(l.Claim, at, TurnEndLine, true)
+		}
+	case Suspended:
+		b.turnEnds(l.Claim, at, TurnEndSuspended, false)
+	case QueueLeftNothingRead:
+		b.queueLeft(l.Issue, at, l.Msg, l.PullRequest)
+	case QueueLeftReadOnce:
+		b.queueLeft(l.Issue, at, l.Msg, l.PullRequest)
+	case Launched, ProcessStart, BootStage:
+	}
+}
+
+// stamp is at as a reason names it.
+func stamp(at time.Time) string { return at.UTC().Format(time.RFC3339Nano) }
+
+// boot begins a daemon process at at, and the downtime before it where an earlier process wrote a
+// line.
+func (b *traceBuilder) boot(at time.Time, seen bool) {
+	if len(b.t.Boots) > 0 && !b.last.IsZero() && b.last.Before(at) {
+		b.t.Downtimes = append(b.t.Downtimes, Downtime{From: b.last, To: at})
+	}
+	b.t.Boots = append(b.t.Boots, Boot{At: at, Seen: seen})
+}
+
+// generationIs sets iss's latest entry to generation, the generation a line of the daemon names
+// for its record, which is the record's own count where the trace counted otherwise (an earlier
+// reopen before the inputs reach).
+func (b *traceBuilder) generationIs(iss *IssueTrace, generation uint64) {
+	if entry := iss.entry(); entry != nil && generation > 0 {
+		entry.Generation = generation
+	}
+}
+
+// foldPhase is p read on today's phases: a phase a recorded release entered that today's workflow
+// lacks is read as the phase its MoveSource folds it into, the phase the move into it left.
+func foldPhase(p phase.Phase) phase.Phase {
+	if p == PhaseAwaitingMerge {
+		return phase.Merging
+	}
+	return p
+}
+
+// pastImplementing says whether p stands after implementing in phase.Order.
+func pastImplementing(p phase.Phase) bool {
+	return slices.Index(phase.Order, p) > slices.Index(phase.Order, phase.Implementing)
+}
+
+// moved reads one `workflow: phase changed` line: the move that ends the visit the issue stands in
+// and begins the next one, or, for a move into a phase today's workflow folds into the one it
+// left, a mark inside the visit.
+func (b *traceBuilder) moved(l PhaseChanged) {
+	at := l.Time
+	iss := b.issue(l.Issue)
+	from, to := foldPhase(l.From), foldPhase(l.To)
+	source, sourced := MoveSources[l.Trigger]
+	if !sourced {
+		b.unplaced(l.Issue, at, "the move of %s from %s to %s at %s is by %s, which has no source in MoveSources", l.Issue, l.From, l.To, stamp(at), l.Trigger)
+	}
+	visit := iss.openVisit()
+	switch {
+	case visit == nil && len(iss.Entries) == 0:
+		// The issue stood in from where the log begins, unless Dispatch shows it filed after that,
+		// in which case no event the trace read entered it.
+		enter, before := b.t.Start, true
+		if len(iss.Dispatch) > 0 && iss.Dispatch[0].At.After(b.t.Start) {
+			enter, before = iss.Dispatch[0].At, false
+			b.unplaced(l.Issue, at, "%s moves out of %s at %s, and none of its Dispatch events entered it into the workflow", l.Issue, l.From, stamp(at))
+		}
+		iss.Entries = append(iss.Entries, Entry{At: enter, Tree: l.Tree, Generation: 1})
+		iss.Visits = append(iss.Visits, Visit{Phase: from, Enter: enter, Before: before})
+	case visit == nil:
+		b.unplaced(l.Issue, at, "%s moves out of %s at %s while the trace holds it in no phase", l.Issue, l.From, stamp(at))
+		iss.Entries = append(iss.Entries, Entry{At: at, Tree: l.Tree, Generation: iss.Generation() + 1, Reopen: true})
+		iss.Visits = append(iss.Visits, Visit{Phase: from, Enter: at})
+	case visit.Phase != from && visit.Enter.Before(b.t.Start):
+		// The moves between the entry and this one came before the log begins.
+		visit.Exit = b.t.Start
+		iss.Visits = append(iss.Visits, Visit{Phase: from, Enter: b.t.Start, Before: true})
+	case visit.Phase != from:
+		b.unplaced(l.Issue, at, "%s moves out of %s at %s while the trace holds it in %s", l.Issue, l.From, stamp(at), visit.Phase)
+		visit.Exit = at
+		iss.Visits = append(iss.Visits, Visit{Phase: from, Enter: at})
+	}
+	visit = iss.openVisit()
+	if pastImplementing(visit.Phase) {
+		b.pullRequestSeen(iss, visit.Enter, 0)
+	}
+	if entry := iss.entry(); entry != nil && l.Tree != "" {
+		entry.Tree = l.Tree
+	}
+	if from == to {
+		iss.Ready = append(iss.Ready, at)
+		if visit.Ready.IsZero() {
+			visit.Ready = at
+		}
+		return
+	}
+	move := Move{At: at, From: from, To: to, RecordedFrom: l.From, RecordedTo: l.To, Trigger: l.Trigger, Status: l.Status, Source: source}
+	if from == phase.Merging {
+		for _, drop := range slices.Backward(iss.QueueDrops) {
+			if !drop.At.Before(visit.Enter) && !drop.At.After(at) {
+				move.Drop = drop.Line
+				break
+			}
+		}
+	}
+	if phase.MovesBack(from, to) {
+		if cause, named := CauseOf(SendBack{Trigger: l.Trigger, From: from, To: to, Drop: move.Drop}); named {
+			move.Cause = cause
+		} else {
+			b.unplaced(l.Issue, at, "the move back of %s from %s to %s at %s by %s has no cause", l.Issue, from, to, stamp(at), l.Trigger)
+		}
+	}
+	out := move
+	visit.Exit, visit.Out = at, &out
+	if l.Trigger == workflow.TriggerImplementationReady || pastImplementing(to) {
+		b.pullRequestSeen(iss, at, 0)
+	}
+	if to != phase.Done {
+		in := move
+		iss.Visits = append(iss.Visits, Visit{Phase: to, Enter: at, In: &in})
+	}
+}
+
+// pullRequestSeen records the trace's sight of iss's pull request at at, numbered number where a
+// line names it.
+func (b *traceBuilder) pullRequestSeen(iss *IssueTrace, at time.Time, number int) {
+	if iss.PullRequest.IsZero() || at.Before(iss.PullRequest) {
+		iss.PullRequest = at
+	}
+	if number > 0 {
+		iss.PullRequestNumber = number
+	}
+}
+
+// queueLeft reads a line of an issue's pull request leaving the merge queue.
+func (b *traceBuilder) queueLeft(key string, at time.Time, msg string, number int) {
+	iss := b.issue(key)
+	iss.QueueDrops = append(iss.QueueDrops, QueueDrop{At: at, Line: msg, PullRequest: number})
+	b.pullRequestSeen(iss, at, number)
+}
+
+// slotMoved reads one per-slot line. Where the window holds the record line, the move waits for
+// the record line of its pass to take its place (passMoved), so a pass is read once.
+func (b *traceBuilder) slotMoved(move SlotMove) {
+	if b.recordLines {
+		b.buffered = append(b.buffered, move)
+		return
+	}
+	b.t.Slots = append(b.t.Slots, move)
+}
+
+// passMoved reads the record line of one pass: each slot it took back and gave out, at the line's
+// time, with the slots in use after each move read back from the slots after the pass (every take
+// comes before every give), and each candidate it passed over. The per-slot lines of the same
+// pass, written before it, are dropped one for one; any other per-slot line read since the last
+// record line is a pass of a release that wrote no record line, and is read from its own line
+// first.
+func (b *traceBuilder) passMoved(l PassMovedSlots) {
+	consume := func(issue string, given bool) {
+		if i := slices.IndexFunc(b.buffered, func(m SlotMove) bool { return m.Issue == issue && m.Given == given }); i >= 0 {
+			b.buffered = slices.Delete(b.buffered, i, i+1)
+		}
+	}
+	for _, taken := range l.Taken {
+		consume(taken.Issue, false)
+	}
+	for _, given := range l.Given {
+		consume(given.Issue, true)
+	}
+	b.t.Slots = append(b.t.Slots, b.buffered...)
+	b.buffered = b.buffered[:0]
+	before := l.Slots - len(l.Given)
+	for i, taken := range l.Taken {
+		b.t.Slots = append(b.t.Slots, SlotMove{At: l.Time, Issue: taken.Issue, Slots: before + len(l.Taken) - 1 - i, Cap: l.Cap,
+			Reason: taken.Reason})
+	}
+	for i, given := range l.Given {
+		b.t.Slots = append(b.t.Slots, SlotMove{At: l.Time, Issue: given.Issue, Given: true, Slots: before + i + 1, Cap: l.Cap, Kind: given.Kind})
+	}
+	for _, passed := range l.Passed {
+		b.t.Passed = append(b.t.Passed, PassedOver{At: l.Time, Issue: passed.Issue, Kind: passed.Kind, Place: passed.Place, Reason: passed.Reason})
+	}
+}
+
+// personWaitSubject reads what a root's wait on a person is on from the reason its line gives
+// (workflow's enterAwaiting): the ask of a question, or the version of a spec a person reviews.
+func personWaitSubject(reason string) (ask string, version int) {
+	var question string
+	if _, err := fmt.Sscanf(reason, "question %s is awaiting an answer", &question); err == nil {
+		return question, 0
+	}
+	if _, err := fmt.Sscanf(reason, "spec version %d is awaiting a person's review", &version); err == nil {
+		return "", version
+	}
+	return "", 0
+}
+
+// latestArtifact is the document of iss's latest gate registration at or before at, "" for none.
+func latestArtifact(iss *IssueTrace, at time.Time) string {
+	for _, gate := range slices.Backward(iss.Gates) {
+		if gate.Kind == GateRegisteredFact && !gate.At.After(at) {
+			return gate.Artifact
+		}
+	}
+	return ""
+}
+
+// phaseRole is the role that works p, as the daemon's notice of a hold from p names it
+// (workflow.HeldNotice): the role whose failed claim holds an issue standing in p.
+func phaseRole(p phase.Phase) claim.Role {
+	return workflow.HeldNotice(record.Issue{Phase: phase.Held, Hold: &record.Hold{From: p}}).Role
+}
+
+// holdBegins begins iss's hold from the phase from, of role's worker, for reason; where a hold
+// already stands (an escalation of it), its reason is the newer one.
+func (b *traceBuilder) holdBegins(iss *IssueTrace, at time.Time, from phase.Phase, role claim.Role, reason string) {
+	if wait := iss.openWait(WaitHeld); wait != nil {
+		wait.Reason = reason
+		return
+	}
+	iss.Waits = append(iss.Waits, Wait{Kind: WaitHeld, Start: at, From: from, Role: role, Reason: reason})
+}
+
+// left reads an issue's leaving the workflow: the visit it stands in ends, and so do its hold and
+// every turn of its claims. Its waits on a person and on other issues end there too, once every
+// event is read (finish), since an answer read later may have ended one sooner.
+func (b *traceBuilder) left(iss *IssueTrace, at time.Time, status string) {
+	iss.Leaves = append(iss.Leaves, Leave{At: at, Status: status})
+	if visit := iss.openVisit(); visit != nil {
+		visit.Exit, visit.Left = at, true
+	}
+	if wait := iss.openWait(WaitHeld); wait != nil {
+		wait.End, wait.EndedBy = at, WaitLeft
+	}
+	for _, token := range slices.Sorted(maps.Keys(b.turns)) {
+		if b.turns[token].issue == iss.Key {
+			b.turnEnds(iss.Turns[b.turns[token].index].Claim, at, TurnEndLeft, false)
+		}
+	}
+}
+
+// turnStarts opens a turn of a claim.
+func (b *traceBuilder) turnStarts(l TurnStarted) {
+	if _, open := b.turns[l.Claim.Token]; open {
+		b.unplaced(l.Claim.Issue, l.Time, "%s starts a turn at %s while its turn before is open; that turn ends here", l.Claim.Token, stamp(l.Time))
+		b.turnEnds(l.Claim, l.Time, TurnEndLine, false)
+	}
+	turn := Turn{Claim: l.Claim, Generation: l.Generation, Delivery: l.Delivery, Start: l.Time}
+	if l.Claim.Issue == "" {
+		b.t.Controller = append(b.t.Controller, turn)
+		b.turns[l.Claim.Token] = turnAt{index: len(b.t.Controller) - 1}
+		return
+	}
+	iss := b.issue(l.Claim.Issue)
+	iss.Turns = append(iss.Turns, turn)
+	b.turns[l.Claim.Token] = turnAt{issue: iss.Key, index: len(iss.Turns) - 1}
+}
+
+// turnEnds ends ref's open turn at at. A turn's own end line with no turn open is a line the trace
+// cannot place (the turn began before the inputs reach, or its start was lost); a failure, a
+// suspend or a leave ends no turn where none is open, and says nothing.
+func (b *traceBuilder) turnEnds(ref ClaimRef, at time.Time, by TurnEnd, ownLine bool) {
+	open, ok := b.turns[ref.Token]
+	if !ok {
+		if ownLine {
+			b.unplaced(ref.Issue, at, "%s ends a turn at %s and no turn of it is open", ref.Token, stamp(at))
+		}
+		return
+	}
+	delete(b.turns, ref.Token)
+	turns := b.t.Controller
+	if open.issue != "" {
+		turns = b.t.Issues[open.issue].Turns
+	}
+	turns[open.index].End, turns[open.index].EndedBy = at, by
+}
+
+// finish builds what the reading left to build once every line and event is read: the per-slot
+// moves no record line took, each issue's slot spans, its link, children and person waits'
+// ends, its worker starts and segments, and the ticks; and it ends what stands at the window's end.
+func (b *traceBuilder) finish() {
+	b.t.Slots = append(b.t.Slots, b.buffered...)
+	b.buffered = nil
+	slices.SortStableFunc(b.t.Slots, func(x, y SlotMove) int { return x.At.Compare(y.At) })
+	b.spans()
+	for _, key := range slices.Sorted(maps.Keys(b.t.Issues)) {
+		iss := b.t.Issues[key]
+		if len(iss.Visits) > 0 && len(iss.Dispatch) == 0 {
+			b.unplaced(key, iss.Visits[0].Enter, "%s runs in the workflow and the window holds no Dispatch event of it", key)
+		}
+		b.linkWaits(iss)
+		b.childrenWaitEnds(iss)
+		b.personWaitEnds(iss)
+		slices.SortStableFunc(iss.Waits, func(x, y Wait) int { return x.Start.Compare(y.Start) })
+		for i := range iss.Waits {
+			if iss.Waits[i].EndedBy == "" {
+				iss.Waits[i].EndedBy = WaitOpen
+			}
+		}
+		for i := range iss.Turns {
+			if iss.Turns[i].EndedBy == "" {
+				iss.Turns[i].EndedBy = TurnEndOpen
+			}
+		}
+		b.forWait(iss)
+		b.segments(iss)
+	}
+	for i := range b.t.Controller {
+		if b.t.Controller[i].EndedBy == "" {
+			b.t.Controller[i].EndedBy = TurnEndOpen
+		}
+	}
+	b.ticks()
+}
+
+// spans builds each issue's slot spans from the slot moves, in order. A slot taken back with none
+// held is one the issue held where the log begins; a slot given out while one is held is a line
+// the trace cannot place, and the slot held ends there.
+func (b *traceBuilder) spans() {
+	for _, move := range b.t.Slots {
+		iss := b.issue(move.Issue)
+		n := len(iss.Slots)
+		holding := n > 0 && iss.Slots[n-1].End.IsZero()
+		switch {
+		case move.Given && holding:
+			b.unplaced(move.Issue, move.At, "%s takes a slot at %s while it holds one", move.Issue, stamp(move.At))
+			iss.Slots[n-1].End = move.At
+			iss.Slots = append(iss.Slots, SlotSpan{Start: move.At, Kind: move.Kind})
+		case move.Given:
+			iss.Slots = append(iss.Slots, SlotSpan{Start: move.At, Kind: move.Kind})
+		case holding:
+			iss.Slots[n-1].End, iss.Slots[n-1].Reason = move.At, move.Reason
+		default:
+			iss.Slots = append(iss.Slots, SlotSpan{Start: b.t.Start, End: move.At, Before: true, Reason: move.Reason})
+		}
+	}
+}
+
+// holdsSlotAt says whether iss holds a slot at at: a slot that began at or before it and ends
+// after it.
+func (iss *IssueTrace) holdsSlotAt(at time.Time) (SlotSpan, bool) {
+	for _, span := range iss.Slots {
+		if !span.Start.After(at) && (span.End.IsZero() || span.End.After(at)) {
+			return span, true
+		}
+	}
+	return SlotSpan{}, false
+}
+
+// dispatchStateBefore is the issue state of the newest issue event of events at or before at
+// (strictly before where strict), nil for none.
+func dispatchStateBefore(events []DispatchEvent, at time.Time, strict bool) *DispatchIssueState {
+	var state *DispatchIssueState
+	for _, event := range events {
+		if event.At.After(at) || strict && event.At.Equal(at) {
+			break
+		}
+		if event.Issue != nil {
+			state = event.Issue
+		}
+	}
+	return state
+}
+
+// inFlight is each stretch in which iss was in flight: from the first slot it took after an entry
+// to the end of that run, its last visit's exit (zero while it runs at the window's end).
+func (iss *IssueTrace) inFlight() [][2]time.Time {
+	var stretches [][2]time.Time
+	for i, entry := range iss.Entries {
+		next := time.Time{}
+		if i+1 < len(iss.Entries) {
+			next = iss.Entries[i+1].At
+		}
+		within := func(at time.Time) bool { return !at.Before(entry.At) && (next.IsZero() || at.Before(next)) }
+		start := time.Time{}
+		for _, span := range iss.Slots {
+			if within(span.Start) || span.Before && i == 0 {
+				start = span.Start
+				break
+			}
+		}
+		if start.IsZero() {
+			continue
+		}
+		end := time.Time{}
+		for _, visit := range iss.Visits {
+			if within(visit.Enter) {
+				end = visit.Exit
+			}
+		}
+		stretches = append(stretches, [2]time.Time{start, end})
+	}
+	return stretches
+}
+
+// withinStretches says whether at falls in one of stretches.
+func withinStretches(stretches [][2]time.Time, at time.Time) bool {
+	return slices.ContainsFunc(stretches, func(s [2]time.Time) bool {
+		return !at.Before(s[0]) && (s[1].IsZero() || at.Before(s[1]))
+	})
+}
+
+// visitAt is the visit iss stands in at at, nil for none.
+func (iss *IssueTrace) visitAt(at time.Time) *Visit {
+	for i := range iss.Visits {
+		visit := &iss.Visits[i]
+		if !visit.Enter.After(at) && (visit.Exit.IsZero() || visit.Exit.After(at)) {
+			return visit
+		}
+	}
+	return nil
+}
+
+// beforeReview says whether p is a phase before the review's end: admitted, planning,
+// implementing, testing or reviewing.
+func beforeReview(p phase.Phase) bool {
+	return p == phase.Admitted || p == phase.Planning || p == phase.Implementing || p == phase.Testing || p == phase.Reviewing
+}
+
+// linkWaits builds iss's waits on its Dispatch blocked_by links: a stretch in which the issue is
+// in flight and a blocker its links name is unfinished (not done, or with no event the window
+// holds), begun while the issue stands before its review, from the moment both hold to the moment
+// no unfinished blocker is left (the last one done, or the last unfinished link taken off) or the
+// issue's run ends.
+func (b *traceBuilder) linkWaits(iss *IssueTrace) {
+	stretches := iss.inFlight()
+	if len(stretches) == 0 {
+		return
+	}
+	named := map[string]bool{}
+	var moments []time.Time
+	for _, event := range iss.Dispatch {
+		if event.Issue == nil {
+			continue
+		}
+		moments = append(moments, event.At)
+		for _, key := range event.Issue.BlockedBy {
+			named[key] = true
+		}
+	}
+	if len(named) == 0 {
+		return
+	}
+	for key := range named {
+		if blocker, ok := b.t.Issues[key]; ok {
+			for _, event := range blocker.Dispatch {
+				moments = append(moments, event.At)
+			}
+		}
+	}
+	for _, stretch := range stretches {
+		moments = append(moments, stretch[0])
+		if !stretch[1].IsZero() {
+			moments = append(moments, stretch[1])
+		}
+	}
+	for _, visit := range iss.Visits {
+		moments = append(moments, visit.Enter)
+	}
+	slices.SortFunc(moments, time.Time.Compare)
+	moments = slices.CompactFunc(moments, time.Time.Equal)
+
+	unfinished := func(at time.Time) []string {
+		state := dispatchStateBefore(iss.Dispatch, at, false)
+		if state == nil {
+			return nil
+		}
+		var open []string
+		for _, key := range state.BlockedBy {
+			blocker, ok := b.t.Issues[key]
+			if !ok {
+				open = append(open, key)
+				continue
+			}
+			if shown := dispatchStateBefore(blocker.Dispatch, at, false); shown == nil || shown.Status != record.DoneStatus {
+				open = append(open, key)
+			}
+		}
+		return open
+	}
+	var waiting *Wait
+	var before []string
+	for _, at := range moments {
+		open := unfinished(at)
+		flying := withinStretches(stretches, at)
+		if waiting != nil {
+			switch {
+			case !flying:
+				waiting.End, waiting.EndedBy = at, WaitLeft
+			case len(open) == 0:
+				waiting.End, waiting.EndedBy = at, WaitBlockerDone
+				if state := dispatchStateBefore(iss.Dispatch, at, false); state != nil {
+					for _, key := range before {
+						if !slices.Contains(state.BlockedBy, key) {
+							waiting.EndedBy = WaitLinkRemoved
+						}
+					}
+				}
+			}
+			if !waiting.End.IsZero() {
+				iss.Waits = append(iss.Waits, *waiting)
+				waiting = nil
+			}
+		}
+		if waiting == nil && flying && len(open) > 0 {
+			if visit := iss.visitAt(at); visit != nil && beforeReview(visit.Phase) {
+				waiting = &Wait{Kind: WaitLink, Start: at, On: open}
+			}
+		}
+		before = open
+	}
+	if waiting != nil {
+		iss.Waits = append(iss.Waits, *waiting)
+	}
+}
+
+// childrenOf is every issue an issue event of the window ever shows under parent: the only issues
+// that can be its open children at any moment. The index is built on the first call, once every
+// event is read.
+func (b *traceBuilder) childrenOf(parent string) []string {
+	if b.children == nil {
+		b.children = map[string][]string{}
+		for _, key := range slices.Sorted(maps.Keys(b.t.Issues)) {
+			for _, event := range b.t.Issues[key].Dispatch {
+				if event.Issue != nil && event.Issue.Parent != "" && event.Issue.Parent != key &&
+					!slices.Contains(b.children[event.Issue.Parent], key) {
+					b.children[event.Issue.Parent] = append(b.children[event.Issue.Parent], key)
+				}
+			}
+		}
+	}
+	return b.children[parent]
+}
+
+// childrenAt is the open Dispatch children of parent among candidates at at, by the daemon's own
+// reading of an open child (record.ChildOpen): each whose newest issue event at or before at names
+// parent, read with its own record where the trace holds it in the workflow or out of it.
+func (b *traceBuilder) childrenAt(parent string, candidates []string, at time.Time) []string {
+	var open []string
+	for _, key := range candidates {
+		child := b.t.Issues[key]
+		state := dispatchStateBefore(child.Dispatch, at, false)
+		if state == nil || state.Parent != parent {
+			continue
+		}
+		var recorded *record.Issue
+		if entry := child.entryAt(at); entry != nil {
+			rec := record.Issue{Key: key, Tree: entry.Tree, Phase: phase.Done, Status: state.Status}
+			if visit := child.visitAt(at); visit != nil {
+				rec.Phase = visit.Phase
+			}
+			recorded = &rec
+		}
+		if record.ChildOpen(record.DispatchIssueRow{Key: key, Status: state.Status, Parent: parent}, recorded) {
+			open = append(open, key)
+		}
+	}
+	return open
+}
+
+// entryAt is iss's latest entry at or before at, nil before its first.
+func (iss *IssueTrace) entryAt(at time.Time) *Entry {
+	for i := len(iss.Entries) - 1; i >= 0; i-- {
+		if !iss.Entries[i].At.After(at) {
+			return &iss.Entries[i]
+		}
+	}
+	return nil
+}
+
+// nextWaitStart is the start of iss's next wait of wait's kind after it, zero for none: a wait the
+// daemon entered again had ended before it.
+func (iss *IssueTrace) nextWaitStart(wait *Wait) time.Time {
+	for _, other := range iss.Waits {
+		if other.Kind == wait.Kind && other.Start.After(wait.Start) {
+			return other.Start
+		}
+	}
+	return time.Time{}
+}
+
+// visitExitAfter is the moment the visit iss stands in at at ends, and whether it ends by the
+// issue's leaving the workflow; zero while it stands at the window's end.
+func (iss *IssueTrace) visitExitAfter(at time.Time) (time.Time, bool) {
+	if visit := iss.visitAt(at); visit != nil {
+		return visit.Exit, visit.Left
+	}
+	return time.Time{}, false
+}
+
+// childrenWaitEnds ends each of iss's children waits, which its line began: at the first moment
+// after it began that no open child is left (the last child closed, or moved out from under it),
+// that its tree's design gate closed, that the issue left the workflow or that its phase moved on,
+// or, failing all of those, at the start of the issue's next children wait.
+func (b *traceBuilder) childrenWaitEnds(iss *IssueTrace) {
+	candidates := b.childrenOf(iss.Key)
+	for i := range iss.Waits {
+		wait := &iss.Waits[i]
+		if wait.Kind != WaitChildren || wait.EndedBy != "" {
+			continue
+		}
+		wait.On = b.childrenAt(iss.Key, candidates, wait.Start)
+		root := iss.Key
+		if entry := iss.entryAt(wait.Start); entry != nil {
+			root = entry.Tree
+		}
+		type change struct {
+			at  time.Time
+			end WaitEnd
+		}
+		var changes []change
+		for _, key := range candidates {
+			for _, event := range b.t.Issues[key].Dispatch {
+				if event.Issue != nil && event.At.After(wait.Start) {
+					changes = append(changes, change{at: event.At})
+				}
+			}
+		}
+		if tree, ok := b.t.Issues[root]; ok {
+			for _, gate := range tree.Gates {
+				if gate.Kind == GateClosedFact && gate.At.After(wait.Start) {
+					changes = append(changes, change{at: gate.At, end: WaitGateClosed})
+				}
+			}
+		}
+		if exit, left := iss.visitExitAfter(wait.Start); !exit.IsZero() {
+			end := WaitMovedOn
+			if left {
+				end = WaitLeft
+			}
+			changes = append(changes, change{at: exit, end: end})
+		}
+		if next := iss.nextWaitStart(wait); !next.IsZero() {
+			changes = append(changes, change{at: next, end: WaitMovedOn})
+		}
+		slices.SortStableFunc(changes, func(x, y change) int { return x.at.Compare(y.at) })
+		for _, c := range changes {
+			if c.end == "" {
+				if open := b.childrenAt(iss.Key, candidates, c.at); len(open) > 0 {
+					continue
+				}
+				c.end = WaitChildDone
+				for _, key := range wait.On {
+					if state := dispatchStateBefore(b.t.Issues[key].Dispatch, c.at, false); state != nil && state.Parent != iss.Key {
+						c.end = WaitChildMovedOut
+					}
+				}
+			}
+			wait.End, wait.EndedBy = c.at, c.end
+			break
+		}
+	}
+}
+
+// personWaitEnds ends each of iss's waits on a person, which its line began: at the first act of a
+// person on the root after the wait's Dispatch sequence (an answer to or the resolution of an ask,
+// a verdict on its document) or a newer version of the document a spec review waits on; or at the
+// root's leaving, its phase moving on, or the start of its next wait on a person, whichever is
+// first.
+func (b *traceBuilder) personWaitEnds(iss *IssueTrace) {
+	for i := range iss.Waits {
+		wait := &iss.Waits[i]
+		if wait.Kind != WaitPerson || wait.EndedBy != "" {
+			continue
+		}
+		for _, event := range iss.Dispatch {
+			if event.Seq <= wait.SinceSeq || event.At.Before(wait.Start) {
+				continue
+			}
+			person := event.Actor.Kind == "user" && (event.Ask != nil && event.Type != "ask.opened" || event.Verdict != nil)
+			if person || wait.Version > 0 && event.Type == "artifact.version" {
+				wait.End, wait.EndedBy = event.At, WaitAnswered
+				break
+			}
+		}
+		if exit, left := iss.visitExitAfter(wait.Start); !exit.IsZero() && (wait.End.IsZero() || exit.Before(wait.End)) {
+			wait.End, wait.EndedBy = exit, WaitMovedOn
+			if left {
+				wait.EndedBy = WaitLeft
+			}
+		}
+		if next := iss.nextWaitStart(wait); !next.IsZero() && (wait.End.IsZero() || next.Before(wait.End)) {
+			wait.End, wait.EndedBy = next, WaitMovedOn
+		}
+	}
+}
+
+// forWait marks each of iss's slots that a pass took back for a wait on another issue: by the
+// reason its record line gives, or, where the window holds no record line, by a link or children
+// wait of the issue that stands at the moment the slot went back.
+func (b *traceBuilder) forWait(iss *IssueTrace) {
+	for i := range iss.Slots {
+		span := &iss.Slots[i]
+		if span.End.IsZero() {
+			continue
+		}
+		switch span.Reason {
+		case record.TakenLinkWait, record.TakenChildrenWait:
+			span.ForWait = true
+		case "":
+			span.ForWait = slices.ContainsFunc(iss.Waits, func(wait Wait) bool {
+				return (wait.Kind == WaitLink || wait.Kind == WaitChildren) && !wait.Start.After(span.End) &&
+					(wait.End.IsZero() || wait.End.After(span.End))
+			})
+		}
+	}
+}
+
+// ruleAt is the slot rule the window's daemon ran at at: the rule of the part that holds it, or of
+// the nearest part, as the repository keeps it (record.SlotRuleNamed), and the daemon's own rule
+// where the window names none the repository keeps.
+func (t Trace) ruleAt(at time.Time) record.SlotRule {
+	name := ""
+	for _, part := range t.Parts {
+		if name == "" || !part.From.After(at) {
+			name = part.Rule
+		}
+	}
+	if rule, ok := record.SlotRuleNamed(name); ok {
+		return rule
+	}
+	return record.MainRule
+}
+
+// segments sets each of iss's visits' worker start and work segment.
+func (b *traceBuilder) segments(iss *IssueTrace) {
+	for i := range iss.Visits {
+		visit := &iss.Visits[i]
+		visit.WorkerStart = b.workerStart(iss, visit)
+		if visit.WorkerStart.IsZero() {
+			continue
+		}
+		segment := &WorkSegment{Start: visit.WorkerStart, EndedBy: SegmentOpen}
+		switch {
+		case visit.Out != nil && visit.Out.Trigger == workflow.TriggerSignOff && b.memberLeftAt(iss, visit.Out.At):
+			segment.End, segment.EndedBy = visit.Out.At, SegmentEndMove
+			if end := lastTurnEnd(iss, visit.WorkerStart, visit.Exit); !end.IsZero() && end.Before(visit.Out.At) {
+				segment.End, segment.EndedBy = end, SegmentEndHeldSignOff
+			}
+		case visit.Out != nil && visit.Out.Source.Way != MovePass:
+			segment.End, segment.EndedBy = visit.Out.At, SegmentEndMove
+		case visit.Out != nil:
+			for _, gate := range iss.Gates {
+				if gate.Kind == GateRegisteredFact && !gate.At.Before(visit.WorkerStart) && !gate.At.After(visit.Exit) {
+					segment.End, segment.EndedBy = gate.At, SegmentEndRegistration
+				}
+			}
+			if segment.End.IsZero() {
+				if end := lastTurnEnd(iss, visit.WorkerStart, visit.Exit); !end.IsZero() {
+					segment.End, segment.EndedBy = end, SegmentEndTurn
+				}
+			}
+		case visit.Left:
+			segment.EndedBy = SegmentEndLeft
+		}
+		until := segment.End
+		if until.IsZero() {
+			until = visit.Exit
+		}
+		inSegment := func(at time.Time) bool { return !at.Before(segment.Start) && (until.IsZero() || at.Before(until)) }
+		for _, turn := range iss.Turns {
+			if !inSegment(turn.Start) {
+				continue
+			}
+			placed := SegmentTurn{Role: turn.Claim.Role, Offset: turn.Start.Sub(segment.Start), Open: turn.End.IsZero()}
+			if !placed.Open {
+				placed.Length = turn.End.Sub(turn.Start)
+			}
+			segment.Turns = append(segment.Turns, placed)
+		}
+		for _, filing := range iss.Children {
+			if !filing.Moved && inSegment(filing.At) {
+				segment.Filings = append(segment.Filings, SegmentFiling{Child: filing.Child, Offset: filing.At.Sub(segment.Start)})
+			}
+		}
+		visit.Segment = segment
+	}
+}
+
+// lastTurnEnd is the latest end of a turn of iss that began in [from, to) and ended by to, zero for
+// none.
+func lastTurnEnd(iss *IssueTrace, from, to time.Time) time.Time {
+	var last time.Time
+	for _, turn := range iss.Turns {
+		if !turn.Start.Before(from) && turn.Start.Before(to) && !turn.End.IsZero() && !turn.End.After(to) && turn.End.After(last) {
+			last = turn.End
+		}
+	}
+	return last
+}
+
+// memberLeftAt says whether another issue of iss's tree left the workflow at at: the moment the
+// engine applies again a sign-off it held while a member beneath was in the workflow.
+func (b *traceBuilder) memberLeftAt(iss *IssueTrace, at time.Time) bool {
+	entry := iss.entryAt(at)
+	if entry == nil {
+		return false
+	}
+	for _, key := range slices.Sorted(maps.Keys(b.t.Issues)) {
+		member := b.t.Issues[key]
+		if key == iss.Key || !slices.ContainsFunc(member.Leaves, func(leave Leave) bool { return leave.At.Equal(at) }) {
+			continue
+		}
+		if memberEntry := member.entryAt(at); memberEntry != nil && memberEntry.Tree == entry.Tree {
+			return true
+		}
+	}
+	return false
+}
+
+// workerStart is when visit's worker started: where the issue holds a slot as it enters, the phase
+// change; where it takes one in the visit, that slot; in a phase whose rule keeps no slot, the
+// phase change; otherwise the first turn in the visit of the role that works its phase. Zero where
+// none of them is.
+func (b *traceBuilder) workerStart(iss *IssueTrace, visit *Visit) time.Time {
+	if _, held := iss.holdsSlotAt(visit.Enter); held {
+		return visit.Enter
+	}
+	for _, span := range iss.Slots {
+		if span.Start.After(visit.Enter) && (visit.Exit.IsZero() || span.Start.Before(visit.Exit)) {
+			return span.Start
+		}
+	}
+	if !b.t.ruleAt(visit.Enter).PhaseKeepsSlot(visit.Phase) {
+		return visit.Enter
+	}
+	role := phaseRole(visit.Phase)
+	for _, turn := range iss.Turns {
+		if turn.Claim.Role == role && !turn.Start.Before(visit.Enter) && (visit.Exit.IsZero() || turn.Start.Before(visit.Exit)) {
+			return turn.Start
+		}
+	}
+	return time.Time{}
+}
+
+// ticks sets the controller ticks of each boot: a minute after it, then every TickInterval, until
+// the next boot or the window's end.
+func (b *traceBuilder) ticks() {
+	for i, boot := range b.t.Boots {
+		until := b.t.To
+		if i+1 < len(b.t.Boots) && b.t.Boots[i+1].At.Before(until) {
+			until = b.t.Boots[i+1].At
+		}
+		for at := boot.At.Add(tickDelay); at.Before(until); at = at.Add(b.t.TickInterval) {
+			b.t.Ticks = append(b.t.Ticks, at)
+			if b.t.TickInterval <= 0 {
+				break
+			}
+		}
+	}
+}

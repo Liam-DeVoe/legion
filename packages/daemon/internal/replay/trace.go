@@ -92,7 +92,44 @@ type MoveSource struct {
 // today's table lacks, which the entry maps onto today's phases. A recorded move whose trigger
 // has no entry here has no source in the replay, and the inventory test of the table
 // (TestEveryRowOfTheTableHasASourceInTheRecord) names it.
-var MoveSources = map[workflow.TriggerKind]MoveSource{}
+//
+// gate_opened is the admission pass's own promotion and is never injected. The completions a
+// handoff or a review settles go through the engine's ReplayTransition at the end of their
+// segment, and so does the release at 9542c6fb's checks_red, which moved an issue back to
+// implementing from any phase. A sign-off, a merge and a backward move go through the daemon's
+// handler of the fact the API or GitHub applies, so the guards that handler keeps hold. A conflict
+// is drawn at the rate the window's recorded conflicts fit, so its recorded moves are not
+// injected. The release at 9542c6fb's ready move is a mark inside merging, the phase its
+// awaiting_merge is read as.
+var MoveSources = map[workflow.TriggerKind]MoveSource{
+	workflow.TriggerGateOpened:          {Line: phaseChangedLine, Way: MovePass},
+	workflow.TriggerPlannerCompleted:    {Line: phaseChangedLine, Way: MoveTransition},
+	workflow.TriggerImplementationReady: {Line: phaseChangedLine, Way: MoveTransition},
+	workflow.TriggerTesterPassed:        {Line: phaseChangedLine, Way: MoveTransition},
+	workflow.TriggerTesterFailed:        {Line: phaseChangedLine, Way: MoveTransition},
+	workflow.TriggerReviewApproved:      {Line: phaseChangedLine, Way: MoveTransition},
+	workflow.TriggerReviewRejected:      {Line: phaseChangedLine, Way: MoveTransition},
+	workflow.TriggerRetroCompleted:      {Line: phaseChangedLine, Way: MoveTransition},
+	workflow.TriggerSignOff:             {Line: phaseChangedLine, Way: MoveFact, Fact: "intake.SignOff"},
+	workflow.TriggerPullRequestMerged:   {Line: phaseChangedLine, Way: MoveFact, Fact: "intake.PullRequestMerged"},
+	workflow.TriggerBackward:            {Line: phaseChangedLine, Way: MoveFact, Fact: "intake.BackwardMove"},
+	workflow.TriggerConflict:            {Line: phaseChangedLine, Way: MoveDraw, To: phase.Implementing, Assumptions: []int{3, 18, 23}},
+	workflow.TriggerChecksRed:           {Line: phaseChangedLine, Way: MoveTransition, To: phase.Implementing, Assumptions: []int{21, 22}},
+	TriggerReady:                        {Line: phaseChangedLine, Way: MoveMark, Fact: "replay.ReadyMark", Folds: PhaseAwaitingMerge, Assumptions: []int{19, 20}},
+}
+
+// phaseChangedLine is the msg of the line every recorded phase move is written under
+// (workflow.(*Engine).transition), the line each MoveSource reads its moves from.
+const phaseChangedLine = "workflow: phase changed"
+
+// passMovedSlotsLine and phaseHeldLine are the msgs of the two lines a later release writes where
+// an older one wrote none: the record of a pass that moves a slot (PassMovedSlots) and the hold's
+// beginning (PhaseHeld). The trace reads each where the window holds its kind (Window.Lines) and
+// builds the same facts from the older lines where it does not.
+const (
+	passMovedSlotsLine = "admission: a pass moved slots"
+	phaseHeldLine      = "workflow: a phase is held"
+)
 
 // LineHead is what every daemon log line the trace reads carries whatever its kind: the msg the
 // daemon wrote it under and the time the daemon wrote it, the line's own time attribute. A Cloud
@@ -394,6 +431,38 @@ type QueueLeftReadOnce struct {
 	HeadSHA     string
 }
 
+// PassMovedSlots is an `admission: a pass moved slots` line (admit's logPassMoves), the record of
+// one admission pass that gave out or took back at least one slot, written once its fact
+// committed: the slots in use after the pass, the cap it ran with, each slot it took back with
+// the path that took it and each slot it gave out with the kind of entry its issue stood as, in
+// the order the pass moved them (every take before every give: the releases run before the
+// promotion), and each candidate of the line it passed over with its kind, place and reason,
+// which no other line names. A window recorded from a release that writes it reads its slots and
+// its passed-over candidates from it (Trace.Slots, Trace.Passed).
+type PassMovedSlots struct {
+	LineHead
+	// Slots is the slots in use once the pass's last move was made.
+	Slots int
+	// Cap is the admission cap the pass ran with.
+	Cap    int
+	Given  []record.SlotGiven
+	Taken  []record.SlotTaken
+	Passed []record.SlotPassed
+}
+
+// PhaseHeld is a `workflow: a phase is held` line (workflow's claimFailed, and the escalation of a
+// hold): an issue of a tree was held from the phase From, whose worker is Role, for Reason. A
+// window recorded from a release that writes it starts each hold at it; an older window starts a
+// hold at the `supervise: claim failed` of the phase's worker, since the move into held wrote no
+// line there.
+type PhaseHeld struct {
+	LineHead
+	Issue, Tree string
+	From        phase.Phase
+	Role        claim.Role
+	Reason      string
+}
+
 // ParseLogLine reads one daemon log line as the daemon's JSON handler writes it on stderr (one
 // JSON object of time, level, msg and the attributes; a Cloud Logging export's jsonPayload) as the
 // type of its kind. A line of a msg the trace does not read is nil with no error: the trace skips
@@ -444,7 +513,7 @@ const leakCheckLine = "daemon: the deployment leak check is "
 // kind under: the one place the msgs and the attribute names of the daemon's lines are read. Each
 // reader takes the line's head and its attributes and reads every attribute its type holds.
 var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
-	"workflow: phase changed": func(h LineHead, a *lineAttrs) LogLine {
+	phaseChangedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return PhaseChanged{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), From: phase.Phase(a.str("from")),
 			To: phase.Phase(a.str("to")), Trigger: workflow.TriggerKind(a.str("trigger")), Status: a.str("status")}
 	},
@@ -453,6 +522,23 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	},
 	"admission: slot released": func(h LineHead, a *lineAttrs) LogLine {
 		return SlotReleased{LineHead: h, Issue: a.str("issue"), Slots: a.count("slots"), Cap: a.count("cap")}
+	},
+	passMovedSlotsLine: func(h LineHead, a *lineAttrs) LogLine {
+		moved := PassMovedSlots{LineHead: h, Slots: a.count("slots"), Cap: a.count("cap")}
+		a.list("given", "a list of slots given out", &moved.Given)
+		a.list("taken", "a list of slots taken back", &moved.Taken)
+		a.list("passed", "a list of candidates passed over", &moved.Passed)
+		named := func(issue string) bool { return issue != "" }
+		if a.err == nil && (slices.ContainsFunc(moved.Given, func(g record.SlotGiven) bool { return !named(g.Issue) }) ||
+			slices.ContainsFunc(moved.Taken, func(t record.SlotTaken) bool { return !named(t.Issue) }) ||
+			slices.ContainsFunc(moved.Passed, func(p record.SlotPassed) bool { return !named(p.Issue) })) {
+			a.err = errors.New("names a slot or a candidate without its issue")
+		}
+		return moved
+	},
+	phaseHeldLine: func(h LineHead, a *lineAttrs) LogLine {
+		return PhaseHeld{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), From: phase.Phase(a.str("from")),
+			Role: claim.Role(a.str("role")), Reason: a.str("reason")}
 	},
 	"admission waits for what this issue waits on": func(h LineHead, a *lineAttrs) LogLine {
 		return WaitsOnIssues{LineHead: h, Issue: a.str("issue"), Blockers: a.strs("blockers")}
@@ -593,6 +679,19 @@ func (a *lineAttrs) optionalStr(name string) string {
 func (a *lineAttrs) strs(name string) (value []string) {
 	a.read(name, "a list of strings", &value)
 	return value
+}
+
+// list decodes the list attribute name into into, which what names for a refusal. The daemon's
+// JSON handler writes an empty list it holds as nil as null, so a null reads as no element; the
+// attribute itself must be there.
+func (a *lineAttrs) list(name, what string, into any) {
+	if a.err != nil {
+		return
+	}
+	if raw, ok := a.raw[name]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return
+	}
+	a.read(name, what, into)
 }
 
 func (a *lineAttrs) count(name string) (value int) {
