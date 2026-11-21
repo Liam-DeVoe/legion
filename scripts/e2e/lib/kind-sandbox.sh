@@ -202,7 +202,11 @@ EOF
   kind_k run gvisor-check --image="$kind_busybox_image" --restart=Never \
     --overrides='{"spec":{"runtimeClassName":"gvisor"}}' -- dmesg
   kind_k wait --for=jsonpath='{.status.phase}'=Succeeded pod/gvisor-check --timeout=180s
-  kind_k logs gvisor-check | grep -q 'Starting gVisor' || fail "a gvisor pod's kernel is not gVisor's: $(kind_k logs gvisor-check)"
+  # The log is read whole before it is matched: `kind_k logs | grep -q` fails under pipefail when
+  # grep's early exit stops kubectl with SIGPIPE, as in CI run 44865043944, whose log held the line.
+  local logs
+  logs=$(kind_k logs gvisor-check)
+  [[ $logs == *'Starting gVisor'* ]] || fail "a gvisor pod's kernel is not gVisor's: $logs"
   note "a runtimeClassName: gvisor pod runs under $(docker exec "$kind_node" /usr/local/bin/runsc --version | head -1)"
   kind_k delete pod gvisor-check --wait=false
 }
@@ -352,9 +356,11 @@ EOF
 }
 
 kind_sandbox_teardown() {
-  local status=$1 evidence=$2 namespace pod
+  local status=$1 evidence=$2 namespace pod clusters
   [ -n "$kind_cluster" ] || return 0
-  if "$kind_bin" get clusters 2>/dev/null | grep -qx "$kind_cluster"; then
+  # Read whole, not piped into grep -q, whose early exit is the pipeline's failure under pipefail.
+  clusters=$("$kind_bin" get clusters 2>/dev/null || true)
+  if grep -qx -- "$kind_cluster" <<<"$clusters"; then
     if [ "$status" -ne 0 ]; then
       mkdir -p "$evidence"
       {
