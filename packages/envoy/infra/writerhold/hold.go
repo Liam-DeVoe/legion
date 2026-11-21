@@ -154,8 +154,7 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 	if row.HoldID != o.holdID {
 		return refusef(StepPreflight, "the hold row is %s under hold %s, not %s", row.Phase, row.HoldID, o.holdID)
 	}
-	switch row.Phase {
-	case natsgrant.OperatorPhaseReleased:
+	if row.Phase == natsgrant.OperatorPhaseReleased {
 		fmt.Fprintf(stdout, "hold %s is already released (row gen %d)\n", o.holdID, row.Gen)
 		return nil
 	}
@@ -166,10 +165,8 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 	if row.Phase == natsgrant.OperatorPhasePrepare {
 		// A row that reads prepare after hold set's done entry was rolled back by a database
 		// writer, not prepared: the journal, not the row, says how far the hold got.
-		for _, op := range d.Ops {
-			if op.Command == holdrecord.CommandSet && op.State == "done" {
-				return refusef(StepPreflight, "the hold row reads prepare at gen %d, and %s is done in hold %s's journal: the row was put back under the set hold, so abort takes no prepare path", row.Gen, holdrecord.CommandSet, o.holdID)
-			}
+		if latestState(d, holdrecord.CommandSet) == "done" {
+			return refusef(StepPreflight, "the hold row reads prepare at gen %d, and %s is done in hold %s's journal: the row was put back under the set hold, so abort takes no prepare path", row.Gen, holdrecord.CommandSet, o.holdID)
 		}
 		if err := records.DeleteCohort(ctx, o.holdID); err != nil {
 			return err

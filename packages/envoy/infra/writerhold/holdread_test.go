@@ -254,7 +254,7 @@ func TestHoldReadTheRedTeamsSchedule(t *testing.T) {
 
 // TestHoldReadAFailureAfterHeldIsUnknown shows that the auth service caches nothing (A21): a read
 // that fails right after a read of held answers unknown at once, which still refuses a listener,
-// sets envoy_broker_hold_unknown and gives the operator released's grant, never held's; the next
+// sets broker_nats_callout_hold_unknown and gives the operator released's grant, never held's; the next
 // read that succeeds answers held again. Control, run first: a view that keeps its last reading
 // answers held after the failed read, so the listener is refused held, the gauge stays 0 and the
 // operator is given held's grant from a reading Postgres never gave. The row fails if the view
@@ -287,7 +287,7 @@ func TestHoldReadAFailureAfterHeldIsUnknown(t *testing.T) {
 		require.NoError(t, err, "the operator is never refused for the hold's sake")
 		operator = operatorPhase(t, op)
 		op.Close()
-		t.Logf("after a read of held, the read failed (%v): the listener was refused %s, envoy_broker_hold_unknown %s, the operator given %s's grant",
+		t.Logf("after a read of held, the read failed (%v): the listener was refused %s, broker_nats_callout_hold_unknown %s, the operator given %s's grant",
 			readings[0].Err, listenerReason, r.HoldUnknown(), operator)
 		r.Postgres.Open()
 		return listenerReason, operator
@@ -406,7 +406,7 @@ func TestHoldReadUnknownAdmitsOnlyTheOperator(t *testing.T) {
 		phase := operatorPhase(t, op)
 		op.Close()
 		require.Equal(t, natsgrant.OperatorPhaseReleased, phase, "%s: the operator's grant while the row is unknown", c.name)
-		require.Equal(t, "1", replica.HoldUnknown(), "%s: envoy_broker_hold_unknown", c.name)
+		require.Equal(t, "1", replica.HoldUnknown(), "%s: broker_nats_callout_hold_unknown", c.name)
 		t.Logf("%s: the listener refused hold_unknown (reading: phase %q, found %v, error %v), the operator admitted with released's grant",
 			c.name, reading.Phase, reading.Found, reading.Err)
 		c.undo()

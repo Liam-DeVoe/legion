@@ -433,10 +433,10 @@ func TestHoldEveryRowIsSigned(t *testing.T) {
 
 // TestHoldTheReadFlag shows the auth service's half of BROKER_NATS_HOLD_READ: a replica with no
 // HoldRead, the setting false, reads no row and admits the hold's probe while the row is held, its
-// envoy_broker_hold_unknown 0; with the setting true the probe is refused held. With the row
+// broker_nats_callout_hold_unknown 0; with the setting true the probe is refused held. With the row
 // missing (deleted by the instance admin) or with a bad sig, every client but the operator is
 // refused hold_unknown, the probe and a listener included, the operator is admitted, and
-// envoy_broker_hold_unknown reads 1; `hold restore` reaches POST /v1/nats-hold/restore, which the
+// broker_nats_callout_hold_unknown reads 1; `hold restore` reaches POST /v1/nats-hold/restore, which the
 // operator's client answers 409 gen_mismatch and signs again at its restore_gen, and the
 // restored row refuses the listener held again. Control, run first: the replica with no HoldRead,
 // which admits the probe during the hold. The broker's start rule (true with no
@@ -455,8 +455,8 @@ func TestHoldTheReadFlag(t *testing.T) {
 	probe, err := connectProbe()
 	require.NoError(t, err, "control: the probe, with BROKER_NATS_HOLD_READ false, during the hold")
 	probe.Close()
-	require.Equal(t, "0", off.HoldUnknown(), "envoy_broker_hold_unknown with the setting false")
-	t.Logf("control: with no HoldRead the probe connected during the held row; envoy_broker_hold_unknown %s", off.HoldUnknown())
+	require.Equal(t, "0", off.HoldUnknown(), "broker_nats_callout_hold_unknown with the setting false")
+	t.Logf("control: with no HoldRead the probe connected during the held row; broker_nats_callout_hold_unknown %s", off.HoldUnknown())
 	off.Close()
 
 	on := s.StartReplica(t, holdtest.ReplicaConfig{})
@@ -476,8 +476,8 @@ func TestHoldTheReadFlag(t *testing.T) {
 		op, err := connectOperator(s)
 		require.NoError(t, err, "the operator with %s", what)
 		op.Close()
-		require.Equal(t, "1", on.HoldUnknown(), "%s: envoy_broker_hold_unknown", what)
-		t.Logf("%s: the probe and a listener refused hold_unknown, the operator admitted, envoy_broker_hold_unknown %s", what, on.HoldUnknown())
+		require.Equal(t, "1", on.HoldUnknown(), "%s: broker_nats_callout_hold_unknown", what)
+		t.Logf("%s: the probe and a listener refused hold_unknown, the operator admitted, broker_nats_callout_hold_unknown %s", what, on.HoldUnknown())
 	}
 
 	_, err = pool.Exec(ctx, `delete from nats_hold`)

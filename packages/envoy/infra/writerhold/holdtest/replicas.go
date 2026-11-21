@@ -49,7 +49,7 @@ type ReplicaConfig struct {
 type Replica struct {
 	Service *natscallout.Service
 	// Registry holds the replica's broker_nats_callout_decisions_total and
-	// envoy_broker_hold_unknown (natscallout.NewMetrics).
+	// broker_nats_callout_hold_unknown (natscallout.NewMetrics).
 	Registry *metrics.Registry
 	// Postgres is the path from the replica's pool to the stack's Postgres; nil with NoHoldRead.
 	Postgres *PostgresPath
@@ -188,11 +188,11 @@ func (r *Replica) Decisions(kind, outcome, reason string) int64 {
 	return total
 }
 
-// HoldUnknown is the replica's envoy_broker_hold_unknown as its metrics port serves it, "" when
-// the gauge is not served.
+// HoldUnknown is the replica's broker_nats_callout_hold_unknown as its metrics port serves it, ""
+// when the gauge is not served.
 func (r *Replica) HoldUnknown() string {
 	for _, line := range r.scrape() {
-		if value, ok := strings.CutPrefix(line, "envoy_broker_hold_unknown "); ok {
+		if value, ok := strings.CutPrefix(line, "broker_nats_callout_hold_unknown "); ok {
 			return value
 		}
 	}
