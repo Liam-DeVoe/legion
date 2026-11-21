@@ -121,7 +121,7 @@ func TestTheWakeConsumerWidensAndNarrowsInPlace(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := wakeConsumerInShape(t, js, stream, wake, []string{legionWakeSubject})
-		requireARecreateIsSeen(t, stream, before, []string{legionWakeSubject, projectWake})
+		requireARecreateIsSeen(t, js, stream, before, []string{legionWakeSubject, projectWake})
 
 		consumers, err := OpenConsumers(ctx, js, pool, spec)
 		if err != nil {
@@ -171,10 +171,12 @@ func wakeConsumerInShape(t *testing.T, js jetstream.JetStream, stream jetstream.
 	return info
 }
 
-// requireARecreateIsSeen is the control: a consumer on filters created at the next message has an
-// ack floor other than before's, so requireUpdatedInPlace would name a recreate.
-func requireARecreateIsSeen(t *testing.T, stream jetstream.Stream, before *jetstream.ConsumerInfo, filters []string) {
+// requireARecreateIsSeen is the control: once the stream has moved past before's ack floor, as it
+// does while a daemon is down, a consumer on filters created at the next message stands at the
+// stream's end, so requireUpdatedInPlace would name a recreate.
+func requireARecreateIsSeen(t *testing.T, js jetstream.JetStream, stream jetstream.Stream, before *jetstream.ConsumerInfo, filters []string) {
 	t.Helper()
+	publish(t, js, "notifications.team.wake-migration-control", []byte(`{}`))
 	control, err := stream.CreateConsumer(context.Background(), jetstream.ConsumerConfig{FilterSubjects: filters, DeliverPolicy: jetstream.DeliverNewPolicy, AckPolicy: jetstream.AckExplicitPolicy})
 	if err != nil {
 		t.Fatalf("create the control consumer: %v", err)
