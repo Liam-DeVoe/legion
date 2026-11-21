@@ -50,13 +50,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores se
 	if len(args) > 0 && args[0] == "buckets" {
 		return buckets.Command(ctx, args[1:], stdout, stderr)
 	}
+	// The writer hold's commands; hub-restore's abort and the census reconcile the daemon stores'
+	// stream ids with the writer CensusReaders.Stores names. The census's reader of the recorded
+	// session consumers and that writer are envoy-infra consumer-names' (t-7), which this build does
+	// not carry, so its census, and an abort that has daemon stores to reconcile, is UNKNOWN.
 	if len(args) > 0 && args[0] == "hold" {
-		return writerhold.Command(ctx, args[1:], stdout, stderr)
+		return writerhold.Command(ctx, args[1:], stdout, stderr, writerhold.CensusReaders{})
 	}
-	// The writer hold's two stream commands run inside a hold (package writerhold); streams.Command
-	// takes only check and ensure. The census's reader of the recorded session consumers and its
-	// writer of the daemon stores' stream ids are envoy-infra consumer-names' (t-7), which this
-	// build does not carry, so its census is UNKNOWN.
+	// streams.Command takes only check and ensure; update and census run inside a hold.
 	if len(args) > 1 && args[0] == "streams" && (args[1] == "update" || args[1] == "census") {
 		return writerhold.StreamsCommand(ctx, args[1:], stdout, stderr, writerhold.CensusReaders{})
 	}
@@ -79,7 +80,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, stores se
 	seed.Command(ctx, []string{"--help"}, stdout, stderr, stores)
 	render.Command([]string{"--help"}, stdout, stderr)
 	buckets.Command(ctx, []string{"--help"}, stdout, stderr)
-	writerhold.Command(ctx, []string{"--help"}, stdout, stderr)
+	writerhold.Command(ctx, []string{"--help"}, stdout, stderr, writerhold.CensusReaders{})
 	streams.Command(ctx, []string{"--help"}, stdout, stderr)
 	if help {
 		return 0

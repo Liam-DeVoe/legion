@@ -85,18 +85,64 @@ type streamsOptions struct {
 // DaemonStoreDatabaseAnnotation, DaemonStoreInstanceAnnotation), and writes the identity where
 // the store's differs. A store whose database the server answers does not exist is gone, and a
 // store it cannot match, reach or read is unreconciled; while any store is unreconciled, it writes
-// nothing. What it did is its StreamIDResult. A malformed daemonDatabases entry, a listing of the
-// Deployments it cannot read, and a stream with no identity are its error, and it then writes
-// nothing. It is consumernames.ReconcileDaemonStreamIDs, whose package imports this one, so
+// nothing. What it did is its StreamIDResult, which places each of its stores, and so each daemon
+// family of families, in exactly one list (StreamIDResult.Covers). A malformed daemonDatabases
+// entry, a listing of the Deployments it cannot read, and a stream with no identity are its error,
+// and it then writes nothing; a result answered with an error carries no promise, and no caller
+// reads it. It is consumernames.ReconcileDaemonStreamIDs, whose package imports this one, so
 // cmd/envoy-infra passes it in.
 type StreamIDWriter func(ctx context.Context, conn *nats.Conn, deployments DaemonDeployments, families, daemonDatabases []string) (StreamIDResult, error)
 
 // StreamIDResult is what a StreamIDWriter did to the daemon stores, each list in the order of the
-// stores' project keys.
+// stores' project keys. A result its writer answered with no error places each store in exactly
+// one list (Covers): the decision a hold that acts on the stores reads, as a hub-restore's abort
+// needs Unreconciled empty and every daemon/<P> family it gave in one of the others.
 type StreamIDResult struct {
 	Changed      []StreamIDChange    // stores whose recorded identity it rewrote, by project key
 	Gone         []GoneStore         // stores confirmed gone, which no daemon can use
+	Reconciled   []ReconciledStore   // stores read and found already consistent, which it left unchanged
 	Unreconciled []UnreconciledStore // stores left as they are, and why
+}
+
+// Covers is nil when r places each daemon family of families (daemon/<project key>) in exactly one
+// of its lists, Changed, Gone, Reconciled or Unreconciled, as a StreamIDWriter's result with no
+// error does; a family of no daemon (session, dispatch) names no store and is passed over, and so
+// is a store of r that no family names. Otherwise it is an error naming each daemon family in no
+// list, and each in more than one, or twice in one, with the lists it is in, so a store the writer
+// did not answer for, or answered for twice, is never read as reconciled.
+func (r StreamIDResult) Covers(families []string) error {
+	lists := map[string][]string{}
+	for _, c := range r.Changed {
+		lists[c.Project] = append(lists[c.Project], "Changed")
+	}
+	for _, g := range r.Gone {
+		lists[g.Project] = append(lists[g.Project], "Gone")
+	}
+	for _, s := range r.Reconciled {
+		lists[s.Project] = append(lists[s.Project], "Reconciled")
+	}
+	for _, u := range r.Unreconciled {
+		lists[u.Project] = append(lists[u.Project], "Unreconciled")
+	}
+	var problems []string
+	checked := map[string]bool{}
+	for _, family := range families {
+		project, ok := strings.CutPrefix(family, daemonFamilyPrefix)
+		if !ok || checked[project] {
+			continue
+		}
+		checked[project] = true
+		switch in := lists[project]; {
+		case len(in) == 0:
+			problems = append(problems, family+" is in none of Changed, Gone, Reconciled and Unreconciled")
+		case len(in) > 1:
+			problems = append(problems, fmt.Sprintf("%s is in %d lists: %s", family, len(in), strings.Join(in, ", ")))
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the daemon stores' stream-id result places a daemon family in no list or in more than one: %s", strings.Join(problems, "; "))
 }
 
 // StreamIDChange is one store's recorded identity rewritten: daemon/<Project>'s store recorded
@@ -109,6 +155,11 @@ type StreamIDChange struct{ Project, From, To string }
 // sees what was compared), and the server answered Answer, that the database does not exist
 // (SQLSTATE 3D000).
 type GoneStore struct{ Project, Database, Instance, StatedInstance, Answer string }
+
+// ReconciledStore is a store read and found already consistent with the stream, which the writer
+// left unchanged: daemon/<Project>'s store records StreamID, the stream's current identity, or ""
+// when it records none yet (its table holds no sentinel row, one enrol has not written).
+type ReconciledStore struct{ Project, StreamID string }
 
 // UnreconciledStore is a store the writer left as it was: daemon/<Project>'s, for Reason.
 type UnreconciledStore struct{ Project, Reason string }
@@ -452,7 +503,10 @@ func leftBy(r streams.Report, err error) error {
 // as `CHANGED daemon/<P>: stream_id "old" -> "new"` and named in the census's done entry as
 // stream_id.daemon/<P>; each store gone as `GONE daemon/<P>: database <db> on instance <instance>
 // (the operator's file states <instance>): <answer>`, named as gone.daemon/<P> with the text after
-// `daemon/<P>: `. The stores are the daemons' own databases, no stream of the hub, so the
+// `daemon/<P>: `; and each store already consistent, which the writer left unchanged, as
+// `RECONCILED daemon/<P>: stream_id "id" unchanged`, or `RECONCILED daemon/<P>: no stream_id
+// recorded, unchanged` for one that records none yet, named in no output, since the census wrote
+// nothing there. The stores are the daemons' own databases, no stream of the hub, so the
 // postcheck counts none of these writes. With no stores, an error of theirs (a malformed
 // --daemon-database, a listing of the Deployments it cannot read, a stream with no identity), or
 // any store left unreconciled, which it names with why, it is UNKNOWN and the census writes no
@@ -464,6 +518,9 @@ func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWrite
 	}
 	result, err := stores(ctx, nc, deployments, families, daemonDatabases)
 	if err != nil {
+		return nil, unknownf(StepPostcheck, err, "reconcile the daemon stores' stream ids")
+	}
+	if err := result.Covers(families); err != nil {
 		return nil, unknownf(StepPostcheck, err, "reconcile the daemon stores' stream ids")
 	}
 	outputs := map[string]string{}
@@ -478,6 +535,13 @@ func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWrite
 		text := fmt.Sprintf("database %s on instance %s (the operator's file states %s): %s", g.Database, g.Instance, g.StatedInstance, g.Answer)
 		fmt.Fprintf(stdout, "GONE %s%s: %s\n", daemonFamilyPrefix, g.Project, text)
 		outputs["gone."+daemonFamilyPrefix+g.Project] = text
+	}
+	for _, s := range result.Reconciled {
+		recorded := fmt.Sprintf("stream_id %q", s.StreamID)
+		if s.StreamID == "" {
+			recorded = "no stream_id recorded,"
+		}
+		fmt.Fprintf(stdout, "RECONCILED %s%s: %s unchanged\n", daemonFamilyPrefix, s.Project, recorded)
 	}
 	if len(result.Unreconciled) == 0 {
 		return outputs, nil

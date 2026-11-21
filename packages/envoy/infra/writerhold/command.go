@@ -73,6 +73,7 @@ type options struct {
 	holdID, workflow, reason string
 	bootstrap                bool
 	restored, snapshots      stringList
+	daemonDatabases          stringList
 }
 
 // KeyStore is the Secret Manager store of the operator's hold signing key: keygen writes its first
@@ -95,11 +96,18 @@ type env struct {
 	// and the probe.
 	hub func(ctx context.Context, o options) (*Operator, error)
 	now func() time.Time
+	// stores is the daemon stores' stream-id writer hub-restore's abort reconciles them with
+	// (consumernames.ReconcileDaemonStreamIDs, which cmd/envoy-infra passes in); nil for none.
+	stores StreamIDWriter
 }
 
 // Command runs `envoy-infra hold` with args, the words after "hold", and returns its exit code.
-func Command(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return run(ctx, args, stdout, stderr, realEnv())
+// readers.Stores is the daemon stores' stream-id writer that hub-restore's abort runs (the census's
+// own, CensusReaders); the other readers are the census's alone.
+func Command(ctx context.Context, args []string, stdout, stderr io.Writer, readers CensusReaders) int {
+	e := realEnv()
+	e.stores = readers.Stores
+	return run(ctx, args, stdout, stderr, e)
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, e env) int {
@@ -132,6 +140,7 @@ func parse(args []string, stderr io.Writer) (options, int) {
 	flags.BoolVar(&o.bootstrap, "bootstrap", false, "write the first row, released at gen 1")
 	flags.Var(&o.restored, "restored", "a restored target and its disk or volume, <target>=<disk>")
 	flags.Var(&o.snapshots, "snapshot", "a restored target and its snapshot, <target>=<snapshot>")
+	flags.Var(&o.daemonDatabases, "daemon-database", "for hub-restore's abort: a daemon store's database, <project>=<file> (the file's first line holds its URL, its second the Cloud SQL instance that URL reaches); repeat")
 	if err := flags.Parse(args[1:]); err != nil {
 		switch {
 		case errors.Is(err, flag.ErrHelp):
@@ -315,7 +324,7 @@ func dispatch(ctx context.Context, o options, stdout, stderr io.Writer, e env) e
 		if err != nil {
 			return err
 		}
-		return abort(ctx, records, op, o, stdout)
+		return abort(ctx, records, op, e.stores, o, stdout)
 	case actionRelease:
 		op, err := e.hub(ctx, o)
 		if err != nil {

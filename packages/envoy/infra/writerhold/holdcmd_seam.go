@@ -26,6 +26,8 @@ type HoldDeps struct {
 	Operator func(ctx context.Context) (*Operator, error)
 	// Now is the clock the minter report is checked by; time.Now when nil.
 	Now func() time.Time
+	// Stores is the daemon stores' stream-id writer hub-restore's abort runs; nil for none.
+	Stores StreamIDWriter
 }
 
 // CommandOn is Command with deps in place of the broker, Secret Manager and hub its flags name.
@@ -47,8 +49,9 @@ func (d HoldDeps) env() env {
 		records: func(ctx context.Context, _ options, signing bool) (*holdrecord.Client, error) {
 			return d.Records(ctx, signing)
 		},
-		keys: keys,
-		hub:  func(ctx context.Context, _ options) (*Operator, error) { return d.Operator(ctx) },
-		now:  now,
+		keys:   keys,
+		hub:    func(ctx context.Context, _ options) (*Operator, error) { return d.Operator(ctx) },
+		now:    now,
+		stores: d.Stores,
 	}
 }

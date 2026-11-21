@@ -146,7 +146,7 @@ func prepare(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 // disks read once more (a restore that lands between the last check and the move is a restore
 // outside any hold, which it names), then its done entry. On a row already released under this
 // hold id it sends no move, and writes the done entry an abort killed after its move left unwritten.
-func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o options, stdout io.Writer) error {
+func abort(ctx context.Context, records *holdrecord.Client, op *Operator, stores StreamIDWriter, o options, stdout io.Writer) error {
 	row, err := records.Row(ctx)
 	if err != nil {
 		return err
@@ -206,6 +206,11 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 		if err := abortDisks(ctx, op, d); err != nil {
 			return stop(err)
 		}
+		if _, proved := holdrecord.Proven(d); proved {
+			if err := abortReconcile(ctx, records, op, stores, o, stdout); err != nil {
+				return stop(err)
+			}
+		}
 	}
 	moved, err := records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, o.holdID, o.reason)
 	if err != nil {
@@ -223,6 +228,39 @@ func abort(ctx context.Context, records *holdrecord.Client, op *Operator, o opti
 		return fmt.Errorf("the hold is released, and a disk changed after abort's last check, outside any hold: %w", changed)
 	}
 	return nil
+}
+
+// abortReconcile is hub-restore's abort's reconcile of the daemon stores after a done prove: the
+// restore put ENVOY_NOTIFICATIONS back, so each daemon store's recorded stream identity is checked
+// before the release admits the daemons. Its families are the cutover rows' daemon/<P> families;
+// each store is read at the address its daemon's Deployment names (KubeDaemonDeployments, the
+// hold's own Kubernetes client), with the operator's own --daemon-database entries, by the writer
+// cmd/envoy-infra passes in (stores). The abort goes on only when the writer's result places every
+// daemon family in exactly one list (StreamIDResult.Covers) and leaves none unreconciled; any other
+// answer, a writer missing among them, is UNKNOWN or a refusal naming each store, and the abort
+// writes its stop. A rerun of a crashed abort runs it again from the start, trusting nothing the
+// crashed run wrote.
+func abortReconcile(ctx context.Context, records *holdrecord.Client, op *Operator, stores StreamIDWriter, o options, stdout io.Writer) error {
+	cutovers, err := records.Cutovers(ctx)
+	if err != nil {
+		return err
+	}
+	var families []string
+	for _, c := range cutovers {
+		if strings.HasPrefix(c.Family, daemonFamilyPrefix) {
+			families = append(families, c.Family)
+		}
+	}
+	if len(families) == 0 {
+		return nil
+	}
+	nc, err := op.Connect(ctx)
+	if err != nil {
+		return unknownf(StepPreflight, err, "connect to reconcile the daemon stores")
+	}
+	defer nc.Close()
+	_, err = reconcileStreamIDs(ctx, nc, stores, KubeDaemonDeployments(op.Hub.Client), families, o.daemonDatabases, stdout)
+	return err
 }
 
 // printStopRecords prints what each stopped command left, as abort's latest intent carries it
