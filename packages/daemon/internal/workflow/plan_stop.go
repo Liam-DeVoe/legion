@@ -63,11 +63,29 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 		return nil, err
 	}
 	e.logOnCommit(ctx, "workflow: a task is stopped", "issue", issue.Key, "tree", issue.Tree, "task", w.Task, "from", from, "reason", why)
-	role := phase.RoleFor(from)
-	if role == "" || role == claim.RoleArchitect {
+	role := StoppedStepRole(issue)
+	if role == "" {
 		return nil, nil
 	}
 	return nil, e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: said})
+}
+
+// StoppedStepRole is the role whose process the stop of issue's task stopped (stopTask's
+// step_stop): the role of the phase a task-stopped hold is from, and no role for an issue held for
+// any other reason or not held, for a stop at a phase no role works, and for a stop at accepting,
+// whose architect is the owner itself and runs no process of Legion's for the step. That role
+// starts again only when its task does: a later version of the plan that starts the task again,
+// or a person's todo on a stopped root, clears the hold in the same write that queues the role's
+// start (restartTask), and every other start of that role while the hold stands finishes without
+// acting where every start of a role is run (the daemon outbox's start).
+func StoppedStepRole(issue record.Issue) claim.Role {
+	if issue.Hold == nil || issue.Hold.Reason != record.HoldTaskStopped {
+		return ""
+	}
+	if role := phase.RoleFor(issue.Hold.From); role != claim.RoleArchitect {
+		return role
+	}
+	return ""
 }
 
 // stopRefusal is the refusal of a stop of task of issue where issue stands, and nil where the

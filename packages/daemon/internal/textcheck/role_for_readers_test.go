@@ -77,7 +77,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:                  {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
 	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                        {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
-	{file: "internal/workflow/plan_stop.go", fn: "Engine.stopTask"}:               {calls: 1, test: "TestAReturnWithNoImplementationStepStopsTheTask"},
+	{file: "internal/workflow/plan_stop.go", fn: "StoppedStepRole"}:               {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}:            {calls: 1, test: "TestStopTaskHoldsTheIssueAndStopsTheStep"},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}:            {calls: 1, test: "TestATodoOnAStoppedRootStartsItsTaskAtStepOne"},
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:               {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},

@@ -2450,6 +2450,18 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 					"issue", issue.Key, "status", issue.Status, "role", payload.Role)
 				return nil
 			}
+			// The role of a stopped task's step starts again only when its task does
+			// (workflow.StoppedStepRole): the start that a later version of the plan, or a person's
+			// todo on a stopped root, queues for it comes with the hold cleared. Every other start of
+			// that role while the hold stands — a promotion's start of a held member's roles after a
+			// hand-over or a re-admission, a wake — finishes here, the one place every start row of
+			// a role runs, above StartedBy, so it records no start and the claim stays where the
+			// stop left it.
+			if role := workflow.StoppedStepRole(issue); role != "" && role == payload.Role {
+				r.log.Info("outbox start of the role of a stopped task's step; finished without acting", "row", row.ID,
+					"issue", issue.Key, "role", payload.Role, "from", issue.Hold.From)
+				return nil
+			}
 			// A tree that lingers has left the workflow, and linger holds each member where it
 			// stood: a start that reaches its claim after the close (queued before it and backing
 			// off) finishes without acting and records no start, so the close's suspend still

@@ -2531,7 +2531,9 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 // worker's, which carries that phase's task (workflow.StartOrOwe), and the live sessions of a
 // member's other roles are exactly what the design keeps so that a person can still talk to any of
 // them. Those rows carry no task and wait for no slot, so each is claimable at once and a role
-// with nothing to do comes back and is told nothing.
+// with nothing to do comes back and is told nothing. The role of a held member's stopped task's
+// step is queued with them, and its start finishes at the outbox, where every start of a role is
+// run (workflow.StoppedStepRole): that role starts again only when its task does.
 //
 // Such a role comes back only where it holds a claim row, which is the durable record that the
 // role has run: a re-admission clears the generation's facts — clearGeneration touches

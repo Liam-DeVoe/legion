@@ -9,10 +9,12 @@ body: |-
   issue that ran before this release goes on as it did.
 
   The new operation `stop_task` stops a task: the issue is held `task-stopped`, the step's
-  process stops and its session stays, and a later version of the plan that changes the task
-  starts it again at its first step. A version that changes a running task is refused, and so is
-  each plan this release cannot carry out (`PLAN_REFUSED`, one reason for each cause). A tester's
-  failed completion may name the step it returns to (`returnTo`). Legion asks no review of a task
+  process stops and its session stays, and no start of Legion's brings that role back, a
+  hand-over's included, until a later version of the plan that changes the task, or a person's
+  todo on a stopped root, starts the task again at its first step. A version that changes a
+  running task is refused, and so is each plan this release cannot carry out (`PLAN_REFUSED`, one
+  reason for each cause). A tester's failed completion may name the step it returns to
+  (`returnTo`). Legion asks no review of a task
   with no reviewer step, but its merger still waits for an approving review the base branch's
   rules require, and tells the architect which review is missing. A parent whose plan has no
   acceptance step waits before its retro, held `children`, until the issues beneath it leave the
