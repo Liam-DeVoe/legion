@@ -155,7 +155,7 @@ func newClockedRewriteRig(t *testing.T, clock func() time.Time, capabilities []s
 	stand := modeltest.New(t, rules...)
 	listenerURL, listener := newRewriteListener(t, capabilities...)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		rewriteDefine: NewRewriteDefine(RewriteDefineConfig{Model: reviewerModel(stand.URL), Rules: reviewer.DefaultRules, SideQuestionWait: 15 * time.Second}),
+		rewriteDefine: NewRewriteDefine(RewriteDefineConfig{Model: reviewerModel(stand.URL), Rules: reviewer.DefaultRules}),
 		envoyURL:      listenerURL, envoyTimeout: 2 * time.Second, clock: clock,
 	})
 	rig := &rewriteRig{t: t, handler: handler, database: database, served: served, stand: stand, listener: listener}
@@ -803,6 +803,40 @@ func TestADefinitionKeepsTheAgentsAnswerWithNoMessageAndNoEvent(t *testing.T) {
 		select count(*) from word_questions where source = 'define' and person = 'alice' and words = '{store}'
 			and project = 'RWD' and verdict = 'asks_word_meaning' and text_key = 'define:' || $1`, defined.ID); recorded != 1 {
 		t.Fatalf("%d word_questions rows of the Define use, want 1 with source define", recorded)
+	}
+}
+
+// A Define's definition and its Define use commit in one transaction: a use the database refuses
+// leaves no definition either, answered 500, and the same Define once nothing refuses writes both,
+// so the repeat a request's key answers never finds a definition without its use.
+func TestADefinitionAndItsDefineUseCommitTogether(t *testing.T) {
+	rig := newRewriteRig(t, nil)
+	askID := rig.ask(rewriteQuestion + " The store holds it.")
+	ctx := context.Background()
+	if _, err := rig.database.Pool.Exec(ctx, `
+		create function refuse_define_use() returns trigger language plpgsql as $$
+		begin raise exception 'the test refuses the Define use'; end $$;
+		create trigger refuse_define_use before insert on word_questions
+			for each row when (new.source = 'define') execute function refuse_define_use()`); err != nil {
+		t.Fatalf("refuse the Define use: %v", err)
+	}
+	rows := func() (int64, int64) {
+		return countRows(t, rig.database, `select count(*) from definitions`),
+			countRows(t, rig.database, `select count(*) from word_questions where source = 'define'`)
+	}
+	define := map[string]any{"ask_id": askID, "words": []string{"store"}}
+	if refused := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/definitions", define, "alice"); refused.Code != http.StatusInternalServerError {
+		t.Fatalf("a Define whose use the database refuses: %d %s, want 500", refused.Code, refused.Body.String())
+	}
+	if definitions, uses := rows(); definitions != 0 || uses != 0 {
+		t.Fatalf("a Define whose use failed left %d definitions and %d uses, want neither", definitions, uses)
+	}
+	if _, err := rig.database.Pool.Exec(ctx, `drop trigger refuse_define_use on word_questions`); err != nil {
+		t.Fatal(err)
+	}
+	rig.define("alice", define)
+	if definitions, uses := rows(); definitions != 1 || uses != 1 {
+		t.Fatalf("a Define left %d definitions and %d uses, want one of each", definitions, uses)
 	}
 }
 

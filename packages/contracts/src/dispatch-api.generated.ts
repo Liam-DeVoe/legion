@@ -3326,7 +3326,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The writing check as this process runs it: {enabled, rules, rules_left_out, detector, bundle_model_id}. rules are the structure rules it applies; rules_left_out each rule it does not apply, {id, reason}; detector {on, reason}, the check's own phrase detector, which is off, reason saying why: the detector runs as the reviewer's detector rule set (DISPATCH_REVIEWER_RULES); bundle_model_id the model id the bundle was measured with, empty while it pins none. Any caller Dispatch admits reads it. */
+    /** @description The writing check as this process runs it, which every server runs and no setting turns off: {rules, rules_left_out, detector, bundle_model_id}. rules are the structure rules it applies; rules_left_out each rule it does not apply, {id, reason}; detector {reason}, why the check runs no phrase detector of its own: the detector runs as the reviewer's detector rule set (DISPATCH_REVIEWER_RULES); bundle_model_id the model id the bundle was measured with, empty while it pins none. Any caller Dispatch admits reads it. */
     get: operations["getApiV1WritingCheck"];
     put?: never;
     post?: never;
@@ -7182,7 +7182,6 @@ export interface components {
       total: number;
     };
     WritingCheckDetector: {
-      on: boolean;
       reason: string;
     };
     WritingCheckRow: {
@@ -7209,7 +7208,6 @@ export interface components {
     WritingCheckState: {
       bundle_model_id: string;
       detector: components["schemas"]["WritingCheckDetector"];
-      enabled: boolean;
       rules: string[] | null;
       rules_left_out: components["schemas"]["WritingCheckRuleLeftOut"][] | null;
     };

@@ -551,9 +551,6 @@ func main() {
 		slog.Error("dispatch: build the answerer", "error", err)
 		os.Exit(1)
 	}
-	// The writing check (INFRA-3231) records what its structure rules find in each agent's
-	// write, on every server, and lets every write through; its detector stays off.
-	writingCheck := api.NewWritingCheck()
 	// The reviewer (INFRA-3231's R5) is nil where its model group is unset, which newReviewer
 	// logs; a group set builds it whatever DISPATCH_REVIEWER_<KIND> say, for the draft route.
 	textReviewer, err := newReviewer(boot.Writing, pacer)
@@ -595,7 +592,6 @@ func main() {
 		AgentPublisher: agentPublisher,
 		Files:          fileStore,
 		Lifetime:       ctx,
-		WritingCheck:   writingCheck,
 		Reviewer:       textReviewer,
 		RewriteDefine:  rewriteDefine,
 		TestModels:     testModels,

@@ -97,7 +97,7 @@ func seedRecords(t *testing.T, database *store.Store) seeded {
 		{Person: "ada", Words: []string{"shard"}, At: at(-24 * time.Hour)},
 	} {
 		use.DefinitionID = "d" + string(rune('0'+i))
-		if err := database.RecordDefineUse(ctx, use); err != nil {
+		if err := database.RecordDefineUse(ctx, database.Pool, use); err != nil {
 			t.Fatal(err)
 		}
 	}

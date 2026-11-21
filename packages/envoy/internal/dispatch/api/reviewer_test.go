@@ -1068,7 +1068,8 @@ func (rig *reviewRig) framesAbout(id, marker string) []string {
 func (rig *reviewRig) waitOneFrameAbout(id, marker string) string {
 	rig.t.Helper()
 	pollUntil(rig.t, 20*time.Second, "the frame about "+id, func() bool { return len(rig.framesAbout(id, marker)) > 0 })
-	time.Sleep(200 * time.Millisecond)
+	// Every review and frame the server started has ended, so a second frame would be here.
+	rig.served.detached.wait()
 	bodies := rig.framesAbout(id, marker)
 	if len(bodies) != 1 {
 		rig.t.Fatalf("%d frames about %s, want one: %q", len(bodies), id, bodies)

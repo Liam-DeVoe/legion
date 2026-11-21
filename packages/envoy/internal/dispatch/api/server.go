@@ -115,10 +115,6 @@ type Deps struct {
 	// its stream carries the error frame contracts.GoingErrorNoModelConfigured, and the
 	// capability route says no model is configured.
 	Answerer Answerer
-	// WritingCheck is the writing check every route whose request carries prose runs before it
-	// writes (INFRA-3231, writing_check.go); nil is the check turned off. cmd/dispatch builds it
-	// on, with the bundle's structure rules and no detector, on every server.
-	WritingCheck *WritingCheck
 	// WritingRules is the refusal of the written rules as the deployment set it
 	// (writing_rules.go; cmd/dispatch: DISPATCH_WRITING_RULES_REFUSAL and
 	// DISPATCH_WRITING_RULES_EXTRA). Its zero value refuses nothing and shows no rule set beside
@@ -282,8 +278,6 @@ type DepsInput struct {
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is
 	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
 	Answerer Answerer
-	// WritingCheck is the writing check; nil turns it off. See Deps.WritingCheck.
-	WritingCheck *WritingCheck
 	// WritingRules is the refusal of the written rules; see Deps.WritingRules.
 	WritingRules WritingRulesConfig
 	// Reviewer is the reviewer; nil is none. See Deps.Reviewer.
@@ -413,7 +407,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,
-		WritingCheck:           input.WritingCheck,
 		WritingRules:           input.WritingRules,
 		Reviewer:               input.Reviewer,
 		RewriteDefine:          input.RewriteDefine,

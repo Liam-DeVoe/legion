@@ -211,7 +211,9 @@ func (s *server) createDefinition(w http.ResponseWriter, r *http.Request) {
 	// The definition is the request's own write, so it commits in a transaction of the shared
 	// pool: the commit step marks the request's Idempotency-Key committed with it, and a repeat
 	// after a crash is answered KEY_COMMITTED rather than defining the words a second time
-	// (keyed_write_guard_test.go).
+	// (keyed_write_guard_test.go). The Define use the definition records commits in the same
+	// transaction, so a process that stops leaves both or neither, and the repeat the key answers
+	// never finds a definition without its use.
 	tx, err := s.begin(ctx)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -227,11 +229,14 @@ func (s *server) createDefinition(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if err := s.recordDefineUse(ctx, tx, id, person.ID, where, words, defined.Calls); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := tx.Commit(ctx); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.recordDefineUse(ctx, id, person.ID, where, words, defined.Calls)
 	if writer != "" {
 		frame := systemFrame{
 			id: id, body: question, writer: writer, key: "definition:" + id, mode: "btw", expects: contracts.ExpectsReplyRequired,
@@ -397,10 +402,10 @@ func recordInputs(record reviewer.Record) []string {
 	return inputs
 }
 
-// recordDefineUse records the Define use as person's question about words (R8): one
-// word_questions row with source define, the model that served it named, dated by the server's
-// clock (server.now), whose UTC day the counts count it on.
-func (s *server) recordDefineUse(ctx context.Context, id, person string, where defineSubject, words []string, calls []reviewer.Call) {
+// recordDefineUse records the Define use as person's question about words (R8), in tx, the
+// definition's own transaction: one word_questions row with source define, the model that served
+// it named, dated by the server's clock (server.now), whose UTC day the counts count it on.
+func (s *server) recordDefineUse(ctx context.Context, tx pgx.Tx, id, person string, where defineSubject, words []string, calls []reviewer.Call) error {
 	served := ""
 	for _, call := range calls {
 		if call.Purpose == reviewer.PurposeDefine {
@@ -410,12 +415,10 @@ func (s *server) recordDefineUse(ctx context.Context, id, person string, where d
 			}
 		}
 	}
-	if err := s.deps.Store.RecordDefineUse(ctx, store.DefineUse{
+	return s.deps.Store.RecordDefineUse(ctx, tx, store.DefineUse{
 		DefinitionID: id, Person: person, Project: where.project, Words: words, Answers: where.answers, Model: served,
 		At: s.now(),
-	}); err != nil {
-		slog.Warn("dispatch: record a Define use", "definition", id, "error", err)
-	}
+	})
 }
 
 // definitionColumns are the columns scanDefinition reads, in its order; $2 is the side
@@ -467,7 +470,7 @@ func scanDefinition(row pgx.Row, after ...any) (definitionRead, error) {
 func (s *server) loadDefinition(ctx context.Context, id, person string) (definitionRead, error) {
 	read, err := scanDefinition(s.deps.Store.Pool.QueryRow(ctx, `
 		select `+definitionColumns+` from definitions where id = $1::uuid and person = $3`,
-		id, intervalOf(s.deps.RewriteDefine.sideQuestionWait()), person))
+		id, intervalOf(sideQuestionWait), person))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return definitionRead{}, errorf(http.StatusNotFound, "DEFINITION_NOT_FOUND", "you have no definition with the id %s", id)
 	}
@@ -511,7 +514,7 @@ func (s *server) listMyDefinitions(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+definitionColumns+`, count(*) over () from definitions where person = $1
 		order by created_at desc, id desc limit $3 offset $4`,
-		person.ID, intervalOf(s.deps.RewriteDefine.sideQuestionWait()), page.limit, page.offset)
+		person.ID, intervalOf(sideQuestionWait), page.limit, page.offset)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -561,7 +564,7 @@ func (s *server) answerDefinitionFrame(w http.ResponseWriter, r *http.Request, a
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select coalesce(writer, ''), coalesce(agent_question, ''), coalesce(agent_answer, ''),
 			created_at + $2::interval > now()
-		from definitions where id = $1::uuid`, id, intervalOf(s.deps.RewriteDefine.sideQuestionWait())).Scan(&writer, &question, &answer, &open)
+		from definitions where id = $1::uuid`, id, intervalOf(sideQuestionWait)).Scan(&writer, &question, &answer, &open)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false
 	}
@@ -578,7 +581,7 @@ func (s *server) answerDefinitionFrame(w http.ResponseWriter, r *http.Request, a
 		return true
 	case !open:
 		writeError(w, "DEFINITION_ANSWER_LATE", http.StatusConflict,
-			"the side question's wait has ended: a definition takes the agent's answer for "+s.deps.RewriteDefine.sideQuestionWait().String())
+			"the side question's wait has ended: a definition takes the agent's answer for "+sideQuestionWait.String())
 		return true
 	case input.Body == nil:
 		// An error report is no answer: the definition stays with the record's alone.

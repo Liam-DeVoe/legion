@@ -18,7 +18,7 @@ body: |-
   day, project and person read once it is older than 366 days, and any other row once it is older
   than 90 days.
   `GET /api/v1/writing-check` answers the check as the process runs it: its rules, the rules it
-  leaves out and why, and that its own phrase detector is off, since the detector runs as the
+  leaves out and why, and why it runs no phrase detector of its own: the detector runs as the
   reviewer's `detector` rule set.
   The image's third-party notices now carry the licence of the ported rules and of the data the
   tagger's model was trained on.

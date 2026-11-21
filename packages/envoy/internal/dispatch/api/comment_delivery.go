@@ -1576,6 +1576,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	held.keep(reply)
 	if err := held.finish(r.Context(), tx); err != nil {
 		s.writeHandlerError(w, err)
 		return

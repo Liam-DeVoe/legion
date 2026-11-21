@@ -125,7 +125,7 @@ func TestPersonTypedCommentPostsAtOnceUnderHold(t *testing.T) {
 		answer.ID); marked != 1 {
 		t.Fatalf("%d comment.created events of the typed comment carry person_typed, want 1", marked)
 	}
-	time.Sleep(300 * time.Millisecond)
+	rig.served.detached.wait()
 	if calls := rig.reviewCalls("We spin up the node."); calls != 0 {
 		t.Fatalf("the reviewer read the typed comment %d times, want none", calls)
 	}
@@ -217,7 +217,7 @@ func TestAGeneratedReplyPostsAtOnceUnderHold(t *testing.T) {
 			t.Fatalf("%d writing_check_events rows for the reply on %s, want its one", rows, route.pattern)
 		}
 	}
-	time.Sleep(300 * time.Millisecond)
+	rig.served.detached.wait()
 	if calls := rig.reviewCalls("We spin up the node."); calls != 0 {
 		t.Fatalf("the reviewer read the generated replies %d times, want none", calls)
 	}
@@ -258,7 +258,7 @@ func TestASendToAnAgentPostsAtOnceUnderHold(t *testing.T) {
 		where method = 'POST' and route = '/api/v1/agents/{session_id}/messages' and outcome = $1`, writingCheckNoReader); unread != 1 {
 		t.Fatalf("%d %s rows for the send, want 1", unread, writingCheckNoReader)
 	}
-	time.Sleep(300 * time.Millisecond)
+	rig.served.detached.wait()
 	if calls := rig.reviewCalls(vacuousPhrase); calls != 0 {
 		t.Fatalf("the reviewer read the send %d times, want none", calls)
 	}
@@ -294,7 +294,7 @@ func TestAHandoffPostsAtOnceWithEveryKindHeld(t *testing.T) {
 	if read := decodeBody[model.Handoff](t, latest); read.ID != summary.ID || read.Version != 1 || read.Body != body {
 		t.Fatalf("the latest implement handoff = %+v, want version 1 %s with the body %q", read, summary.ID, body)
 	}
-	time.Sleep(300 * time.Millisecond)
+	rig.served.detached.wait()
 	if calls := rig.reviewCalls(vacuousPhrase); calls != 0 {
 		t.Fatalf("the reviewer read the handoff %d times, want none", calls)
 	}
@@ -323,7 +323,7 @@ func TestAPersonsAskPostsAtOnceUnderHold(t *testing.T) {
 	if got := decodeBody[askRead](t, read).Ask.Question; got != question {
 		t.Fatalf("bob reads alice's ask as %q, want %q", got, question)
 	}
-	time.Sleep(300 * time.Millisecond)
+	rig.served.detached.wait()
 	if calls := rig.reviewCalls(vacuousPhrase); calls != 0 {
 		t.Fatalf("the reviewer read alice's ask %d times, want none", calls)
 	}
@@ -507,7 +507,7 @@ func TestTheReviewerReadsAnAgentsEditAfterTheSave(t *testing.T) {
 				}
 			}
 			// The writer does not act: each edit stays as it saved.
-			time.Sleep(300 * time.Millisecond)
+			rig.served.detached.wait()
 			for _, edit := range edits {
 				var stored string
 				if err := rig.database.Pool.QueryRow(context.Background(), edit.stored, edit.id).Scan(&stored); err != nil {

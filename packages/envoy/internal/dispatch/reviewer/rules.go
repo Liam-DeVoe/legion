@@ -216,10 +216,9 @@ func runChecks(ctx context.Context, m Model, text Text, structure, detector bool
 	if detector {
 		paced = &pacedReader{pace: m.Pace, call: Call{Purpose: PurposeDetector, Deployment: m.deployment()}}
 		paced.inner = reader.New(reader.Config{
-			Model:       m.Model,
-			NoEffort:    writingcheck.ReaderNoEffort && m.Model.Endpoint.Kind == agentloop.OpenAIChat,
-			Timeout:     cmp.Or(m.Timeout, DefaultTimeout),
-			Temperature: m.Temperature,
+			Model:    m.Model,
+			NoEffort: writingcheck.ReaderNoEffort && m.Model.Endpoint.Kind == agentloop.OpenAIChat,
+			Timeout:  cmp.Or(m.Timeout, DefaultTimeout),
 			Observe: func(c reader.Call) {
 				paced.call.Attempts, paced.call.Served, paced.call.Usage, paced.call.Fault = 1, c.Model, c.Usage, c.Fault
 			},

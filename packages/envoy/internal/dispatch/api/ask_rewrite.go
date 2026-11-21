@@ -309,7 +309,7 @@ func modelFailure(failed *reviewer.ModelError) string {
 // thread. It answers the answer, the zero Answer where none came, and the question's message id,
 // "" where none was sent.
 func (s *server) askRewriteSideQuestion(ctx context.Context, run askRewriteRun, subject reviewer.Subject) (reviewer.Answer, string) {
-	deadline := time.Now().Add(s.deps.RewriteDefine.sideQuestionWait())
+	deadline := time.Now().Add(sideQuestionWait)
 	if !s.sideQuestionSession(ctx, subject.Writer, false) {
 		return reviewer.Answer{}, ""
 	}

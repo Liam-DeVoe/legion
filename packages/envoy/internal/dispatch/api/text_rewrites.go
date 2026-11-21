@@ -29,7 +29,7 @@ import (
 // askRewriteBound is how long a person's Rewrite may run before a read takes it for one that
 // stopped, and a new request replaces it: the side question's wait, two model calls' bound (the
 // detector's and the rewrite's) and a minute more.
-const askRewriteBound = defaultSideQuestionWait + 2*reviewer.DefaultTimeout + time.Minute
+const askRewriteBound = sideQuestionWait + 2*reviewer.DefaultTimeout + time.Minute
 
 // askRewriteStopped is the reason a run a stopped process left reads with.
 const askRewriteStopped = "the rewrite did not finish"

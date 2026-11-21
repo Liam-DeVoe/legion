@@ -7,7 +7,7 @@ import (
 )
 
 // list_page.go is the page of each list that pages by limit and offset: GET /api/v1/me/answers,
-// and the three lists INFRA-3231 adds, GET /api/v1/me/definitions,
+// GET /api/v1/me/replies, and the three lists INFRA-3231 adds, GET /api/v1/me/definitions,
 // GET /api/v1/readers/{login}/words and GET /api/v1/writing-check/counts. Each of those three
 // answers {items, total, limit, offset}, the shape every list of /api/v2 answers: items is the
 // page, total how many the list holds, and limit and offset the page the request named.

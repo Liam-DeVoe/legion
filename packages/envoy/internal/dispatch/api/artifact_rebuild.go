@@ -45,7 +45,7 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 	// Supplied markdown is a new version uploaded whole, so the check reads only the blocks it
 	// adds to the newest saved version.
 	checked := input
-	if input.Markdown != nil && s.deps.WritingCheck.on() {
+	if input.Markdown != nil {
 		previous, err := s.previousDocumentMarkdown(r.Context(), artifact.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)

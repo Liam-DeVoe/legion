@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // word_questions.go stores INFRA-3231's R8 records: each text a person wrote that the records job
@@ -236,15 +237,20 @@ type DefineUse struct {
 	At           time.Time
 }
 
-// RecordDefineUse records a person's Define use as their question about those words: a done record
-// with the verdict asks_word_meaning, so the reader's words and the counts read it beside the
-// texts the records job classifies. A second call for one definition records nothing.
+// DefineUseWriter is what RecordDefineUse writes on: a transaction (pgx.Tx), or the pool.
+type DefineUseWriter interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// RecordDefineUse records a person's Define use as their question about those words, on q: a done
+// record with the verdict asks_word_meaning, so the reader's words and the counts read it beside
+// the texts the records job classifies. A second call for one definition records nothing.
 //
-// The record belongs to the request that made the definition (POST /api/v1/definitions), so it
-// commits in a transaction of the pool: under a keyed request's context the commit step marks the
-// request's Idempotency-Key with it, as it marked the key with the definition, rather than
-// committing a row no mark covers.
-func (s *Store) RecordDefineUse(ctx context.Context, use DefineUse) error {
+// The record belongs to the request that made the definition (POST /api/v1/definitions), which
+// passes its own transaction as q: the definition and its use commit together or not at all, so a
+// repeat under the request's Idempotency-Key, answered KEY_COMMITTED, never finds the definition
+// without its use.
+func (s *Store) RecordDefineUse(ctx context.Context, q DefineUseWriter, use DefineUse) error {
 	if use.DefinitionID == "" || use.Person == "" {
 		return errors.New("record a Define use: the definition and the person are required")
 	}
@@ -253,20 +259,12 @@ func (s *Store) RecordDefineUse(ctx context.Context, use DefineUse) error {
 		words = []string{}
 	}
 	at := cmp.Or(use.At, time.Now())
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("record a Define use: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `
+	if _, err := q.Exec(ctx, `
 		insert into word_questions (source, text_key, person, project, written_at, day, answers, verdict, words, model, state, attempts)
 		values ('define', 'define:' || $1, $2, nullif($3, ''), $4, ($4 at time zone 'UTC')::date, nullif($5, ''),
 			'asks_word_meaning', $6, nullif($7, ''), 'done', 1)
 		on conflict (text_key) do nothing`,
 		use.DefinitionID, use.Person, use.Project, at, use.Answers, words, use.Model); err != nil {
-		return fmt.Errorf("record a Define use: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("record a Define use: %w", err)
 	}
 	return nil

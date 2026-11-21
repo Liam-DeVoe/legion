@@ -20,7 +20,6 @@ const (
 	DefaultTimeout = 120 * time.Second
 	// DefaultOutputTokens bounds one reply, the model's reasoning included: a model that reasons
 	// spends its reasoning against this bound before it writes a review's findings and a rewrite.
-	// A caller that rewrites longer texts sets Model.OutputTokens.
 	DefaultOutputTokens = 32768
 	// callTries is the most tries one call makes: a reply that is not the object its schema
 	// names, or one its caller cannot use, is asked again up to twice more.
@@ -47,10 +46,6 @@ type Model struct {
 	Pace *modelpace.Caller
 	// Timeout bounds one call, its wait for the pacer included; zero is DefaultTimeout.
 	Timeout time.Duration
-	// OutputTokens bounds one reply; zero is DefaultOutputTokens.
-	OutputTokens int
-	// Temperature is the sampling temperature of every call; nil leaves the provider's default.
-	Temperature *float64
 }
 
 // deployment is the deployment the model's requests name: an Azure deployment where the endpoint
@@ -159,7 +154,7 @@ func call[T any](ctx context.Context, m Model, purpose, system, input string, sc
 // no try was made, because the pacer could not serve it inside the call's bound or the bound was
 // spent; the error then says so.
 func (m Model) try(ctx context.Context, c *Call, system, input string, schema json.RawMessage) (value json.RawMessage, made bool, err error) {
-	output := cmp.Or(m.OutputTokens, DefaultOutputTokens)
+	output := DefaultOutputTokens
 	if m.Pace != nil {
 		if err := m.Pace.WaitFor(ctx, utf8.RuneCountInString(system)+utf8.RuneCountInString(input), output); err != nil {
 			return nil, false, &ModelError{Purpose: c.Purpose, Err: fmt.Errorf("pace the call: %w", err)}
@@ -182,7 +177,6 @@ func (m Model) try(ctx context.Context, c *Call, system, input string, schema js
 		Bounds:      agentloop.Bounds{Time: left, Calls: 1, OutputTokens: output},
 		Final:       schema,
 		StrictFinal: m.strict(),
-		Temperature: m.Temperature,
 	})
 	c.Usage, c.Fault = plus(c.Usage, result.Usage), result.Fault
 	if n := len(result.Steps); n > 0 {

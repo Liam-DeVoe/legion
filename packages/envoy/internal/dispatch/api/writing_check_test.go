@@ -210,11 +210,6 @@ const (
 	daemonID    = "legion-daemon:WCK"
 )
 
-// writingCheckOn is the check as cmd/dispatch runs it: on, with the bundle's structure rules.
-func writingCheckOn() *WritingCheck {
-	return NewWritingCheck()
-}
-
 // lastTenthOfADay is the time a test that counts a day fixes the server's clock at (Deps.Now): a
 // tenth of a second before a UTC midnight, where a run on the wall clock would cross into the next
 // day while it writes. Every row the test counts is dated by that clock, and the test reads its day
@@ -252,19 +247,19 @@ type writingCheckFixture struct {
 // a listener holding the session a send to an agent and a broadcast reach, a document store that
 // can break a document for its rebuild, a message and a comment delivered to checkWriter for its
 // replies, and a result checkWriter recorded for its retraction.
-func newWritingCheckRig(t *testing.T, check *WritingCheck) *writingCheckRig {
+func newWritingCheckRig(t *testing.T) *writingCheckRig {
 	t.Helper()
-	return newClockedWritingCheckRig(t, check, nil)
+	return newClockedWritingCheckRig(t, nil)
 }
 
 // newClockedWritingCheckRig is newWritingCheckRig on a server whose clock is clock (Deps.Now),
 // nil for time.Now.
-func newClockedWritingCheckRig(t *testing.T, check *WritingCheck, clock func() time.Time) *writingCheckRig {
+func newClockedWritingCheckRig(t *testing.T, clock func() time.Time) *writingCheckRig {
 	t.Helper()
 	listenerURL, _ := newFakeReviewListener(t, "s-reader")
 	var broken *invalidLoadOnceStore
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		writingCheck: check, writingCheckOff: check == nil, envoyURL: listenerURL, clock: clock,
+		envoyURL: listenerURL, clock: clock,
 		persistence: func(database *store.Store) docs.VersionedStore {
 			broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
 			return broken
@@ -602,7 +597,7 @@ func (rig *writingCheckRig) multipartUpload(target, name, contentType, content, 
 // to her, she wrote the comment and the message the replies answer, and she opened the direct
 // conversation.
 func TestTheWritingCheckRecordsAndWritesOnEveryProseRoute(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn())
+	rig := newWritingCheckRig(t)
 	cases := proseRouteCases()
 	var covered []string
 	for _, c := range cases {
@@ -682,7 +677,7 @@ func TestTheWritingCheckRecordsAndWritesOnEveryProseRoute(t *testing.T) {
 // report on such an attempt, and an error report repeated on an attempt already failed - and such a
 // call records no row, while the reply and the report it repeats record one each.
 func TestTheWritingCheckRecordsNoRowForAReplyThatWritesNothing(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn())
+	rig := newWritingCheckRig(t)
 	rig.deliverComment(rig.fixture.comment, checkWriter, 2)
 	rig.deliverMessage(rig.fixture.message, checkWriter, 2)
 	for _, target := range []string{
@@ -718,7 +713,7 @@ func TestTheWritingCheckRecordsNoRowForAReplyThatWritesNothing(t *testing.T) {
 // read, and such a call records no row, while the edit that changes the document and the request
 // that opens an approval record one each.
 func TestTheWritingCheckRecordsNoRowForADocumentCallThatWritesNothing(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn())
+	rig := newWritingCheckRig(t)
 	// write posts body to target as checkWriter and holds the call to its status and to the rows
 	// it recorded.
 	write := func(what, target string, body map[string]any, status, rows int) {
@@ -772,7 +767,7 @@ func (rig *writingCheckRig) asSessionGenerated(method, target string, body map[s
 // its reader. The same text with no header is read, and the header on any other route is not
 // read (the negative controls).
 func TestTheWritingCheckRecordsAGeneratedReplyExemptGenerated(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn())
+	rig := newWritingCheckRig(t)
 	// The reply with no header answers attempt 2: a second reply to attempt 1 would be its replay,
 	// which posts nothing and records no row.
 	rig.deliverComment(rig.fixture.comment, checkWriter, 2)
@@ -806,7 +801,7 @@ func TestTheWritingCheckRecordsAGeneratedReplyExemptGenerated(t *testing.T) {
 // TestTheWritingCheckActorCases is R3 through the server: who is read and who is exempt, with the
 // personal token recorded on a daemon-named write made with it.
 func TestTheWritingCheckActorCases(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn())
+	rig := newWritingCheckRig(t)
 	comments := "/api/v1/issues/" + rig.fixture.issue + "/comments"
 	ask := func() string {
 		response := rig.asSession(http.MethodPost, "/api/v1/issues/"+rig.fixture.issue+"/asks", map[string]any{"question": "Which port should the server use?"})
@@ -871,7 +866,7 @@ func TestTheWritingCheckActorCases(t *testing.T) {
 // TestTheWritingCheckReadsAMarkdownUploadAndNotAFile: an upload stored as a Markdown document is
 // read as inline content is, and any other file is stored unread.
 func TestTheWritingCheckReadsAMarkdownUploadAndNotAFile(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn())
+	rig := newWritingCheckRig(t)
 	target := "/api/v1/issues/" + rig.fixture.issue + "/artifacts"
 	rig.clearEvents()
 	if response := rig.multipartUpload(target, "plan.md", "text/markdown", badProse+"\n", "", checkWriter); response.Code != http.StatusCreated {
@@ -915,7 +910,7 @@ func TestTheWritingCheckReadsAMarkdownUploadAndNotAFile(t *testing.T) {
 // its reader. The server's clock is fixed at lastTenthOfADay, which dates each decision and is
 // the counts' today, so the four writes are counted on the day the test reads.
 func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
-	rig := newClockedWritingCheckRig(t, writingCheckOn(), fixedClock(lastTenthOfADay))
+	rig := newClockedWritingCheckRig(t, fixedClock(lastTenthOfADay))
 	comments := "/api/v1/issues/" + rig.fixture.issue + "/comments"
 	rig.asSession(http.MethodPost, comments, map[string]any{"body": badProse})
 	rig.asSession(http.MethodPost, comments, map[string]any{"body": cleanProse})
@@ -965,16 +960,13 @@ func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
 		t.Fatalf("state: %d %s", state.Code, state.Body.String())
 	}
 	got := decodeBody[writingCheckState](t, state)
-	if !got.Enabled || !slices.Equal(got.Rules, writingcheck.EnabledRules) || got.Detector.On || got.Detector.Reason != writingCheckDetectorElsewhere {
+	if !slices.Equal(got.Rules, writingcheck.EnabledRules) || got.Detector.Reason != writingCheckDetectorElsewhere {
 		t.Errorf("state = %+v", got)
 	}
 	for _, measured := range writingcheck.MeasuredOff {
 		if !slices.Contains(got.RulesLeftOut, writingCheckRuleLeftOut{measured.ID, measured.Reason}) {
 			t.Errorf("state names no measured reason for %s: %+v", measured.ID, got.RulesLeftOut)
 		}
-	}
-	if off := (*WritingCheck)(nil).state(); off.Enabled || off.Detector.On || off.Detector.Reason != "the check is off" {
-		t.Errorf("the state of a check that is off = %+v", off)
 	}
 }
 
@@ -992,7 +984,7 @@ func TestTheWritingCheckCountsRefuseADayOlderThanTheDecisionsTheyRead(t *testing
 	oldest := today.AddDate(0, 0, -365)
 	swept := today.AddDate(0, 0, -400)
 	// A Define use 400 days ago, which no sweep removes, on a day whose decisions the sweep has.
-	if err := database.RecordDefineUse(ctx, store.DefineUse{
+	if err := database.RecordDefineUse(ctx, database.Pool, store.DefineUse{
 		DefinitionID: "def-old", Person: "alice", Project: "WCK", Words: []string{"lane"}, At: swept.Add(12 * time.Hour),
 	}); err != nil {
 		t.Fatalf("record an old Define use: %v", err)
@@ -1073,18 +1065,5 @@ func TestTheWritingCheckCountsPageTheirRows(t *testing.T) {
 			!strings.Contains(response.Body.String(), "INVALID_QUERY") {
 			t.Errorf("?%s: %d %s, want 400 INVALID_QUERY", query, response.Code, response.Body.String())
 		}
-	}
-}
-
-// TestTheWritingCheckOffReadsNothing: a server with the check off records nothing and refuses
-// nothing.
-func TestTheWritingCheckOffReadsNothing(t *testing.T) {
-	rig := newWritingCheckRig(t, nil)
-	comments := "/api/v1/issues/" + rig.fixture.issue + "/comments"
-	if response := rig.asSession(http.MethodPost, comments, map[string]any{"body": badProse}); response.Code != http.StatusCreated {
-		t.Errorf("check off: %d %s, want 201", response.Code, response.Body.String())
-	}
-	if events := rig.events(); len(events) != 0 {
-		t.Errorf("check off recorded %+v", events)
 	}
 }

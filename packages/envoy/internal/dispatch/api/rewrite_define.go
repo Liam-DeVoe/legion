@@ -1,7 +1,6 @@
 package api
 
 import (
-	"cmp"
 	"context"
 	"time"
 
@@ -16,9 +15,9 @@ import (
 // message and an issue carries text_rewrites.go. Both are on whenever their model group is set,
 // because a person chooses to use them; with it unset their routes answer 503.
 
-// defaultSideQuestionWait is how long a rewrite waits for the asking session's answer to its side
+// sideQuestionWait is how long a rewrite waits for the asking session's answer to its side
 // question, and how long a definition takes the session's answer (INFRA-3552's R2 and R4).
-const defaultSideQuestionWait = 60 * time.Second
+const sideQuestionWait = 60 * time.Second
 
 // RewriteDefineConfig is Rewrite and Define as cmd/dispatch configured them.
 type RewriteDefineConfig struct {
@@ -27,9 +26,6 @@ type RewriteDefineConfig struct {
 	Model reviewer.Model
 	// Rules are the rule sets a rewrite and a definition read (DISPATCH_REVIEWER_RULES).
 	Rules []reviewer.RuleSet
-	// SideQuestionWait is how long a rewrite waits for the asking session's answer to its side
-	// question, and how long a definition takes it; zero is defaultSideQuestionWait.
-	SideQuestionWait time.Duration
 }
 
 // RewriteDefine is Rewrite and Define as one server runs them; a nil *RewriteDefine is a
@@ -38,20 +34,9 @@ type RewriteDefine struct {
 	config RewriteDefineConfig
 }
 
-// NewRewriteDefine is Rewrite and Define as cfg describes them, every field but SideQuestionWait
-// set by its caller; a zero SideQuestionWait is defaultSideQuestionWait.
+// NewRewriteDefine is Rewrite and Define as cfg describes them.
 func NewRewriteDefine(cfg RewriteDefineConfig) *RewriteDefine {
-	cfg.SideQuestionWait = cmp.Or(cfg.SideQuestionWait, defaultSideQuestionWait)
 	return &RewriteDefine{config: cfg}
-}
-
-// sideQuestionWait is the time a side question's answer is waited for, on a nil *RewriteDefine
-// too.
-func (rd *RewriteDefine) sideQuestionWait() time.Duration {
-	if rd == nil {
-		return defaultSideQuestionWait
-	}
-	return rd.config.SideQuestionWait
 }
 
 // sideQuestionSession answers whether writer, the session that asked a question, takes a side

@@ -170,8 +170,9 @@ func (rv *Reviewer) staleClaim() time.Duration {
 // (askCreate.reviewed, issueCreate.reviewed, commentCreate.reviewed, messageCreate.reviewed).
 type reviewedWrite struct {
 	kind reviewer.Kind
-	// request is the decoded write: what a held text stores and its post runs.
-	request any
+	// request is the decoded write: what a held text stores and its post runs, and what the hold,
+	// the edit, the post and the rewrite do with it (heldRequest, held_kinds.go).
+	request heldRequest
 	// text is the wording the reviewer reads.
 	text reviewer.Text
 	// subject places the text for its record (reviewer.BuildRecord); its Text, Writer, Reader and

@@ -551,7 +551,7 @@ func TestTheReaderWordsArePaged(t *testing.T) {
 	ctx := context.Background()
 	asked := time.Date(2026, 1, 5, 12, 0, 0, 0, time.UTC)
 	for i, word := range []string{"store", "node", "lane"} {
-		if err := database.RecordDefineUse(ctx, store.DefineUse{
+		if err := database.RecordDefineUse(ctx, database.Pool, store.DefineUse{
 			DefinitionID: fmt.Sprintf("paged-%d", i), Person: "alice", Words: []string{word}, At: asked.Add(time.Duration(i) * time.Hour),
 		}); err != nil {
 			t.Fatalf("record alice's Define of %s: %v", word, err)

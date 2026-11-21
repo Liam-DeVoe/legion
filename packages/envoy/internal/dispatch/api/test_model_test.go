@@ -72,7 +72,7 @@ func newTestModelRig(t *testing.T, hooks bool) *testModelRig {
 		reviewer: testReviewer(ReviewerConfig{
 			Model: reviewerModel(stand.URL), Rules: []reviewer.RuleSet{reviewer.RuleNoslop, reviewer.RuleDetector},
 		}),
-		rewriteDefine: NewRewriteDefine(RewriteDefineConfig{Model: reviewerModel(stand.URL), Rules: reviewer.DefaultRules, SideQuestionWait: time.Second}),
+		rewriteDefine: NewRewriteDefine(RewriteDefineConfig{Model: reviewerModel(stand.URL), Rules: reviewer.DefaultRules}),
 		envoyURL:      listenerURL, envoyTimeout: 2 * time.Second,
 	})
 	issue := createInteractionIssue(t, handler, "TMH", "Test model issue", "The store holds the held texts.\n").Key

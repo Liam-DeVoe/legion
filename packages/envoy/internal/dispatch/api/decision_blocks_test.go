@@ -309,7 +309,7 @@ func TestAPersonTypedDecisionBlockOpensUnheld(t *testing.T) {
 		return countRows(t, rig.database, `
 			select count(*) from writing_check_events where outcome = 'exempt_person_typed' and route = 'decision block'`) == 1
 	})
-	time.Sleep(300 * time.Millisecond)
+	rig.served.detached.wait()
 	if calls := rig.reviewCalls("Ship the reviewer?"); calls != 0 {
 		t.Fatalf("the reviewer read the typed decision block %d times", calls)
 	}
@@ -402,7 +402,7 @@ func TestADecisionBlockUnderAfterIsReviewedAfterItsSettlementAndRewordings(t *te
 			and (payload->>'person_typed')::boolean and payload->>'question' like '%this week%'`, askID); marked != 1 {
 		t.Fatalf("%d ask.edited events of the typed rewording carry person_typed, want 1", marked)
 	}
-	time.Sleep(300 * time.Millisecond)
+	rig.served.detached.wait()
 	if calls := rig.reviewCalls("Ship the reviewer this week?"); calls != 0 {
 		t.Fatalf("the reviewer read the typed rewording %d times", calls)
 	}

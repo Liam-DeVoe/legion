@@ -25,6 +25,13 @@ func TestMigrationGivesTheWritingCheckEventsAReaderAndTheNoReaderOutcome(t *test
 	if got := schemaVersion(t, store); got != writingCheckEventsVersion {
 		t.Fatalf("schema version = %d, want %d: the migration before this one", got, writingCheckEventsVersion)
 	}
+	// The database stamps every row this test counts (created_at's default now()), so its clock is
+	// read once before the first write and once after the last, and the counts sum the days between,
+	// which a run across a UTC midnight spreads the rows over.
+	var before time.Time
+	if err := store.Pool.QueryRow(ctx, `select now()`).Scan(&before); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
 	if _, err := store.Pool.Exec(ctx, `
 		insert into writing_check_events (route, method, actor_kind, actor_id, outcome)
 		values ('/api/v1/issues/{key}/comments', 'POST', 'session', 's-one', 'clean')
@@ -89,19 +96,22 @@ func TestMigrationGivesTheWritingCheckEventsAReaderAndTheNoReaderOutcome(t *test
 	if err := store.migrate(ctx, migrationsThrough(t, wordQuestionsVersion)); err != nil {
 		t.Fatalf("migrate through %d: %v", wordQuestionsVersion, err)
 	}
-	var today time.Time
-	if err := store.Pool.QueryRow(ctx, `select now()`).Scan(&today); err != nil {
+	var after time.Time
+	if err := store.Pool.QueryRow(ctx, `select now()`).Scan(&after); err != nil {
 		t.Fatalf("read the database's clock: %v", err)
 	}
-	counts, err := store.CountWritingCheck(ctx, today.UTC(), today.UTC(), 50, 0)
+	counts, err := store.CountWritingCheck(ctx, before.UTC(), after.UTC(), 50, 0)
 	if err != nil {
-		t.Fatalf("count the day: %v", err)
+		t.Fatalf("count the days: %v", err)
 	}
-	if len(counts.Days) != 1 {
-		t.Fatalf("counts = %+v, want one day", counts)
+	outcomes, total := map[string]int{}, 0
+	for _, day := range counts.Days {
+		total += day.Total
+		for outcome, n := range day.Outcomes {
+			outcomes[outcome] += n
+		}
 	}
-	if day := counts.Days[0]; day.Outcomes["exempt_no_reader"] != 1 || day.Outcomes["findings"] != 1 || day.Outcomes["clean"] != 1 ||
-		day.Outcomes["exempt_generated"] != 1 || day.Total != 4 {
-		t.Errorf("counts = %+v, want one exempt_no_reader and one exempt_generated beside the findings and the clean row", day)
+	if outcomes["exempt_no_reader"] != 1 || outcomes["findings"] != 1 || outcomes["clean"] != 1 || outcomes["exempt_generated"] != 1 || total != 4 {
+		t.Errorf("counts of %s to %s = %+v, want one exempt_no_reader and one exempt_generated beside the findings and the clean row", counts.First, counts.Last, counts.Days)
 	}
 }

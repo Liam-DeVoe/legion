@@ -247,7 +247,7 @@ func TestTwoHeldRepliesOfOneWriterPostInTheOrderWritten(t *testing.T) {
 	if second.Held.WaitsOn != first.ID {
 		t.Fatalf("the second reply waits on %q, want the first, %s", second.Held.WaitsOn, first.ID)
 	}
-	time.Sleep(300 * time.Millisecond)
+	rig.served.detached.wait()
 	if row := rig.heldRow(second.ID); row.state != heldReviewing {
 		t.Fatalf("the second reply is %s (%s) before the first posted, want it still in review", row.state, row.detail)
 	}
@@ -404,7 +404,7 @@ func TestAHeldTextWaitingOnAHeldParentIsReviewedOnceTheParentPosts(t *testing.T)
 	child := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "RVW", "title": childTitle, "parent": parent.ID,
 	}), "the child")
-	time.Sleep(500 * time.Millisecond)
+	rig.served.detached.wait()
 	if row := rig.heldRow(child.ID); row.state != heldReviewing || row.outcome != "" {
 		t.Fatalf("the child is %s %q (%s) while its parent is held, want it in review, undecided", row.state, row.outcome, row.detail)
 	}
@@ -533,6 +533,53 @@ func TestAHeldIssuesAnswerReadsTriageAndTheAssigneeItPostsUnder(t *testing.T) {
 		if posted.Status != answer.Status || posted.Assignee == nil || *posted.Assignee != *answer.Assignee {
 			t.Fatalf("%s posted with status %q assignee %v; its held answer read %q %q", key, posted.Status, posted.Assignee, answer.Status, *answer.Assignee)
 		}
+	}
+}
+
+// A held reply's answer states what its post writes, read off the dry run of its route: a comment
+// reply in the thread of a project document's comment names that document, as the posted reply
+// does, with the comment it replies to, its ask and turn, the block it replies to and the text it
+// answers; a message reply names its issue, its target, the message and the block it replies to.
+func TestAHeldRepliesAnswerStatesWhereItsPostWritesIt(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Comments: ReviewHold, Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	uploaded := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/projects/RVW/artifacts", map[string]any{"name": "guide", "content": "Seed paragraph here.\n"}, "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("alice's project document: %d %s", uploaded.Code, uploaded.Body.String())
+	}
+	guide := decodeBody[artifactUploadResponse](t, uploaded).Artifact.ID
+	asked := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/artifacts/"+guide+"/comments", map[string]any{
+		"body": "Is the guide right?", "mentions": []map[string]any{{"target": "session:" + heldWriter}},
+	}, "alice")
+	if asked.Code != http.StatusCreated {
+		t.Fatalf("alice's comment on the guide: %d %s", asked.Code, asked.Body.String())
+	}
+	mention := decodeBody[model.Comment](t, asked).ID
+	settledCommentDeliveries(t, rig.database, mention)
+	response := rig.asWriter(http.MethodPost, "/api/v1/comments/"+mention+"/reply", map[string]any{"body": "Status\nWe spin up the node. " + vacuousPhrase, "attempt": 1})
+	id := rig.held(response, "the held comment reply").ID
+	answer := decodeBody[model.Comment](t, response)
+	rig.postedAsWritten(id)
+	posted := postedItem[model.Comment](t, rig.handler, "/api/v1/comments/"+id, id)
+	comment := func(c model.Comment) string {
+		return jsonOf(t, map[string]any{
+			"issue_key": c.IssueKey, "artifact_id": c.ArtifactID, "reply_to": c.ReplyTo, "ask_id": c.AskID, "turn": c.Turn,
+			"answers": c.Answers, "reply_block": c.ReplyBlock,
+		})
+	}
+	if answer.ArtifactID == nil || comment(answer) != comment(posted) {
+		t.Errorf("the held comment reply states %s; it posted %s", comment(answer), comment(posted))
+	}
+	sent := rig.messageToWriter("Is it done?")
+	response = rig.asWriter(http.MethodPost, "/api/v1/messages/"+sent+"/reply", map[string]any{"body": "Status\nWe spin up the node. " + vacuousPhrase, "attempt": 1})
+	id = rig.held(response, "the held message reply").ID
+	reply := decodeBody[model.Message](t, response)
+	rig.postedAsWritten(id)
+	postedReply := postedItem[model.Message](t, rig.handler, "/api/v1/messages/"+id, id)
+	message := func(m model.Message) string {
+		return jsonOf(t, map[string]any{"issue_key": m.IssueKey, "target": m.Target, "in_reply_to": m.InReplyTo, "reply_block": m.ReplyBlock})
+	}
+	if message(reply) != message(postedReply) {
+		t.Errorf("the held message reply states %s; it posted %s", message(reply), message(postedReply))
 	}
 }
 

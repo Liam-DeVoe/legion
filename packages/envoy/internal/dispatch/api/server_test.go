@@ -153,12 +153,6 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
-	// writingCheck is the writing check the server runs (INFRA-3231); nil is the check on with
-	// the bundle's structure rules and no model, as every deployment runs it.
-	writingCheck *WritingCheck
-	// writingCheckOff runs the server with the writing check turned off, for a test about the
-	// server with the check off.
-	writingCheckOff bool
 	// writingRules is the refusal of the written rules as the deployment set it (Deps.WritingRules);
 	// zero is the refusal off with no rule set beside the written rules.
 	writingRules WritingRulesConfig
@@ -308,10 +302,6 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.identity != nil {
 		people = options.identity
 	}
-	writingCheck := options.writingCheck
-	if writingCheck == nil && !options.writingCheckOff {
-		writingCheck = NewWritingCheck()
-	}
 	agentPublisher := options.agentPublisher
 	switch {
 	case options.noAgentPublisher:
@@ -360,7 +350,6 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Answerer:              options.answerer,
 		Files:                 options.files,
 		DashboardEntry:        options.dashboardEntry,
-		WritingCheck:          writingCheck,
 		WritingRules:          options.writingRules,
 		Reviewer:              options.reviewer,
 		RewriteDefine:         options.rewriteDefine,

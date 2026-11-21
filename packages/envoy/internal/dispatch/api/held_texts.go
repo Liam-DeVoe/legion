@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -495,66 +494,7 @@ func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Tim
 	if dry == nil {
 		dry = &heldDryRun{}
 	}
-	var payload any = map[string]string{"id": id}
-	switch create := write.request.(type) {
-	case askCreate:
-		ask := model.Ask{
-			ID: id, IssueKey: create.Owner.IssueKey, ArtifactID: create.Owner.ArtifactID, Author: actor,
-			Kind: create.Kind, Question: create.Question, Options: create.Options, Multiple: create.Multiple,
-			Urgency: create.Urgency, State: "open", CreatedAt: at,
-		}
-		if wrote := dry.ask; wrote != nil {
-			ask.Anchor = heldAnchor(wrote.Anchor)
-		}
-		payload = newShapedAsk(ask, trees)
-	case commentCreate:
-		comment := model.Comment{
-			ID: id, IssueKey: create.Owner.IssueKey, ArtifactID: create.Owner.ArtifactID, Author: actor,
-			Body: create.Input.Body, ReplyTo: create.Input.ReplyTo, AskID: create.Input.AskID, CreatedAt: at,
-			Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
-		}
-		if create.Input.Suggestion != nil {
-			comment.Suggestion = &model.Suggestion{ReplaceWith: create.Input.Suggestion.ReplaceWith}
-		}
-		if wrote := dry.comment; wrote != nil {
-			comment.Anchor, comment.Turn, comment.Answers = heldAnchor(wrote.Anchor), wrote.Turn, wrote.Answers
-			comment.ReplyBlock, comment.RepliesToBlock = wrote.ReplyBlock, wrote.RepliesToBlock
-			if wrote.Mentions != nil {
-				comment.Mentions = wrote.Mentions
-			}
-		}
-		payload = commentWriteResponse{shapedComment: newShapedComment(comment, trees)}
-	case messageCreate:
-		message := model.Message{
-			ID: id, IssueKey: create.IssueKey, Author: actor, Body: create.Input.Body, Target: create.Input.Target,
-			InReplyTo: create.Input.InReplyTo, CreatedAt: at, Deliveries: []model.MessageDelivery{},
-		}
-		if wrote := dry.message; wrote != nil {
-			message.ReplyBlock, message.RepliesToBlock = wrote.ReplyBlock, wrote.RepliesToBlock
-		}
-		payload = newShapedMessage(message, trees)
-	case issueCreate:
-		number, _ := strconv.Atoi(strings.TrimPrefix(id, create.Project+"-"))
-		labels := create.Labels
-		if labels == nil {
-			labels = []string{}
-		}
-		issue := model.Issue{
-			Key: id, Project: create.Project, Number: number, Title: create.Title, Status: model.IssueStatusTriage,
-			Priority: create.Priority, Labels: labels, Assignee: create.Assignee, BlockedBy: create.Blockers,
-			CreatedBy: &actor, CreatedAt: at, UpdatedAt: at,
-		}
-		if issue.BlockedBy == nil {
-			issue.BlockedBy = []string{}
-		}
-		if create.Parent != "" {
-			issue.Parent = &create.Parent
-		}
-		heldIssueWrites(&issue, create, dry.issue)
-		payload = issue
-	case heldReplay:
-		payload = replayAnswerOf(write.kind, create, id, actor, at, trees)
-	}
+	payload := write.request.answer(write.kind, id, actor, at, dry, trees)
 	if advice != nil {
 		payload = withRawAdvice(payload, advice)
 	}
@@ -618,53 +558,7 @@ func (s *server) heldAdvice(r *http.Request, write reviewedWrite, actor model.Ac
 	if dry != nil {
 		advice = dry.advice
 	}
-	ctx := r.Context()
-	switch create := write.request.(type) {
-	case issueCreate:
-		// The spec as the seed would store it, which the write's own check reads; the spec as sent
-		// where no dry run seeded it.
-		markdown := ""
-		switch {
-		case dry != nil:
-			markdown = dry.markdown
-		case create.Spec != nil && strings.TrimSpace(*create.Spec) != "":
-			markdown = *create.Spec
-		}
-		trees := s.readDisplayTrees(ctx, wantsDisplayTrees(r))
-		suggestions := s.relatedCheck(ctx, relatedInput{
-			project: create.Project,
-			text:    create.Title + "\n" + markdown,
-			title:   create.Title,
-			source:  suggestionSource{kind: "issue", actor: actor},
-			trees:   trees,
-		})
-		trees.resolve()
-		create.gate.tell(suggestions)
-		return suggestedAdvice(advice, suggestions)
-	case askCreate:
-		input := relatedInput{
-			text: create.Question, title: create.Question, source: suggestionSource{kind: "ask", actor: actor},
-			question: true,
-		}
-		if create.Owner.IssueKey != nil {
-			input.source.issueKey = *create.Owner.IssueKey
-		} else if create.Owner.ArtifactID != nil {
-			input.source.artifactID = *create.Owner.ArtifactID
-		}
-		// An ask on a held issue searches that issue's project, which no issue row holds yet.
-		if parent != nil {
-			input.project = parent.project
-		}
-		input.trees = s.readDisplayTrees(ctx, wantsDisplayTrees(r))
-		suggestions := s.relatedCheck(ctx, input)
-		input.trees.resolve()
-		return suggestedAdvice(advice, suggestions)
-	case commentCreate, messageCreate:
-		if advice != nil {
-			return advice
-		}
-	}
-	return nil
+	return write.request.advice(s, r, actor, advice, dry, parent)
 }
 
 // heldDryRun is what a held write's dry run found (dryRunHeld): answered, the answer the route of
@@ -692,60 +586,7 @@ type heldDryRun struct {
 // already answered, which writes nothing and answers the stored reply as it does with the reviewer
 // off (the reply routes' finishRepeat), so nothing is held for it.
 func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (heldDryRun, error) {
-	ctx := s.postContext()
-	held := &heldPost{id: id, dryRun: true}
-	var dry heldDryRun
-	var err error
-	switch create := write.request.(type) {
-	case askCreate:
-		tx, beginErr := s.begin(ctx)
-		if beginErr != nil {
-			return heldDryRun{}, beginErr
-		}
-		defer tx.Rollback(ctx)
-		var written askWritten
-		written, err = s.writeAsk(ctx, tx, create, actor, id, held)
-		dry.advice, dry.ask = written.advice, &written.ask
-	case issueCreate:
-		tx, beginErr := s.begin(ctx)
-		if beginErr != nil {
-			return heldDryRun{}, beginErr
-		}
-		defer tx.Rollback(ctx)
-		var written issueWritten
-		written, err = s.writeIssue(ctx, tx, create, actor, 0, held)
-		dry.advice, dry.markdown, dry.assignee, dry.issue = written.advice, written.markdown, written.assignee, &written.issue
-	case commentCreate:
-		var written commentWritten
-		written, err = s.writeComment(ctx, create, actor, id, held)
-		dry.advice, dry.comment = written.advice, &written.comment
-	case messageCreate:
-		var message model.Message
-		message, dry.advice, err = s.writeMessage(ctx, create, actor, id, held)
-		dry.message = &message
-	case heldReplay:
-		// The reply's route reads what its hold learned of the writer's role (roleHolderReplyOf).
-		held.roleHolder = create.RoleHolder
-		answer, err := s.runReplay(ctx, create, held)
-		switch {
-		case err != nil:
-			return heldDryRun{}, err
-		case answer.isDryRunPass():
-			return heldDryRun{}, nil
-		}
-		return heldDryRun{answered: answer}, nil
-	default:
-		// The request is no part of the text: a write's request can hold its caller (heldReplay's
-		// Caller), and an error a handler logs carries nothing of an actor.
-		return heldDryRun{}, errors.New("a held write of a kind this server has no path for cannot run")
-	}
-	if errors.Is(err, errHeldDryRun) {
-		return dry, nil
-	}
-	if err == nil {
-		return heldDryRun{}, errors.New("a held write's dry run committed")
-	}
-	return heldDryRun{}, err
+	return write.request.dryRun(s, s.postContext(), actor, id, &heldPost{id: id, dryRun: true})
 }
 
 // errHeldNotPosting is a post that found its held text no longer to be posted: another process
@@ -772,6 +613,17 @@ type heldPost struct {
 	// of asking the listener again (roleHolderReplyOf); nil for any other text, and for a reply
 	// held before the hold kept it, whose route asks.
 	roleHolder *roleHolderReply
+	// wrote is what a dry run's route of a reply kept whole wrote before the dry run ended (keep):
+	// the reply, as its post writes it, which the held answer reads (dryRunHeld).
+	wrote any
+}
+
+// keep keeps wrote, the text a reply route wrote, on a dry run, which ends before its commit;
+// nothing on a post or the route's own write.
+func (h *heldPost) keep(wrote any) {
+	if h != nil && h.dryRun {
+		h.wrote = wrote
+	}
 }
 
 // postedHeldSQL marks the held text $1, waiting to post ($2, heldPosting), posted: its post time
@@ -1213,54 +1065,7 @@ func (s *server) runHeldPost(ctx context.Context, row heldRow) error {
 	if row.personTyped {
 		ctx = store.WithPersonTyped(ctx)
 	}
-	held := &heldPost{id: row.id}
-	switch create := write.request.(type) {
-	case askCreate:
-		tx, err := s.begin(ctx)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback(ctx)
-		written, err := s.writeAsk(ctx, tx, create, row.actor, row.id, held)
-		if err != nil {
-			return err
-		}
-		s.announceAsk(ctx, written)
-	case issueCreate:
-		number, err := strconv.Atoi(strings.TrimPrefix(row.id, create.Project+"-"))
-		if err != nil || number < 1 {
-			return errorf(http.StatusUnprocessableEntity, "HELD_REQUEST", "held issue %s names no number of project %s", row.id, create.Project)
-		}
-		create, copies := s.recheckNearCopy(ctx, create)
-		tx, err := s.begin(ctx)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback(ctx)
-		written, err := s.writeIssue(ctx, tx, create, row.actor, number, held)
-		if errors.Is(err, errExternalIssueImported) {
-			return errorf(http.StatusConflict, "EXTERNAL_IMPORTED", "the GitHub issue is imported already")
-		}
-		if err != nil {
-			return err
-		}
-		s.announceIssue(ctx, written)
-		s.tellNearCopy(ctx, row, copies)
-	case commentCreate:
-		if _, err := s.writeComment(ctx, create, row.actor, row.id, held); err != nil {
-			return err
-		}
-	case messageCreate:
-		if _, _, err := s.writeMessage(ctx, create, row.actor, row.id, held); err != nil {
-			return err
-		}
-	case heldReplay:
-		held.roleHolder = create.RoleHolder
-		return s.postReplay(ctx, row, create, held)
-	case decisionBlockHold:
-		return s.releaseDecisionBlock(ctx, row, held)
-	}
-	return nil
+	return write.request.post(s, ctx, row, &heldPost{id: row.id})
 }
 
 // afterHeldPost is what follows a held text's post: each held text in review that waits on it has
@@ -1315,28 +1120,8 @@ func (s *server) reviewDependents(ctx context.Context, id string) {
 // options, an issue's title and spec, a comment's or a message's body. The options keep no id: a
 // stored ask's option ids are the index's to mint (reviewer.OptionWords).
 func withRewrite(write reviewedWrite, rewrite reviewer.Text) reviewedWrite {
-	switch create := write.request.(type) {
-	case askCreate:
-		create.Question = rewrite.Body
-		if rewrite.Options != nil {
-			create.Options = reviewer.OptionWords(rewrite.Options)
-		}
-		return create.reviewed()
-	case issueCreate:
-		create.Title = rewrite.Title
-		spec := rewrite.Body
-		create.Spec = &spec
-		return create.reviewed()
-	case commentCreate:
-		create.Input.Body = rewrite.Body
-		return create.reviewed()
-	case messageCreate:
-		create.Input.Body = rewrite.Body
-		return create.reviewed()
-	case heldReplay:
-		if edited, err := create.withBody(rewrite.Body); err == nil {
-			return edited.reviewed(write.kind)
-		}
+	if rewritten, ok := write.request.rewritten(write.kind, rewrite); ok {
+		return rewritten
 	}
 	return write
 }

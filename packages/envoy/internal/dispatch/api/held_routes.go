@@ -9,10 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 )
 
@@ -369,95 +366,8 @@ func (s *server) editHeldDecisionBlock(w http.ResponseWriter, r *http.Request, r
 // editedRequest is write's request with input's wording in place of its own, checked as the
 // kind's create checks it. A field the kind does not hold is 400 HELD_EDIT_INPUT, and so is an
 // edit that changes nothing.
-func editedRequest(write reviewedWrite, input heldEditInput) (any, error) {
-	refuse := func(format string, args ...any) error {
-		return errorf(http.StatusBadRequest, "HELD_EDIT_INPUT", format, args...)
-	}
-	switch create := write.request.(type) {
-	case askCreate:
-		if input.Title != nil || input.Spec != nil || input.Body != nil {
-			return nil, refuse("an ask's edit takes its question and its options")
-		}
-		if input.Question == nil && input.Options == nil {
-			return nil, refuse("an ask's edit takes its question, its options or both")
-		}
-		if input.Question != nil {
-			if err := validateAskQuestion(*input.Question); err != nil {
-				return nil, err
-			}
-			create.Question = *input.Question
-		}
-		if input.Options != nil {
-			options := askOptionsOf(*input.Options)
-			if err := validateAskOptions(options); err != nil {
-				return nil, err
-			}
-			create.Options = options
-		}
-		if err := validateAskWording(create.Question, create.Options); err != nil {
-			return nil, err
-		}
-		return create, nil
-	case issueCreate:
-		if input.Question != nil || input.Options != nil || input.Body != nil {
-			return nil, refuse("an issue's edit takes its title and its spec")
-		}
-		if input.Title == nil && input.Spec == nil {
-			return nil, refuse("an issue's edit takes its title, its spec or both")
-		}
-		if input.Title != nil {
-			title := strings.TrimSpace(*input.Title)
-			if title == "" {
-				return nil, errorf(http.StatusBadRequest, "INVALID_ISSUE", "title is required")
-			}
-			if length := itemblocks.Units16(title); length > contracts.IssueTitleMax {
-				return nil, capExceededError("title", length, contracts.IssueTitleMax)
-			}
-			create.Title = title
-		}
-		if input.Spec != nil {
-			spec := *input.Spec
-			create.Spec = &spec
-		}
-		return create, nil
-	case commentCreate:
-		if input.Question != nil || input.Options != nil || input.Title != nil || input.Spec != nil || input.Body == nil {
-			return nil, refuse("a comment's edit takes its body")
-		}
-		body := pmdoc.LineFeeds(*input.Body)
-		if create.Input.Suggestion == nil && strings.TrimSpace(body) == "" {
-			return nil, errorf(http.StatusBadRequest, "INVALID_COMMENT", "comment body is required")
-		}
-		if err := blockBoundError(itemblocks.Check("body", body)); err != nil {
-			return nil, err
-		}
-		create.Input.Body = body
-		return create, nil
-	case messageCreate:
-		if input.Question != nil || input.Options != nil || input.Title != nil || input.Spec != nil || input.Body == nil {
-			return nil, refuse("a message's edit takes its body")
-		}
-		create.Input.Body = *input.Body
-		delivery, err := validateCreateMessage(&create.Input)
-		if err != nil {
-			return nil, err
-		}
-		create.Delivery = delivery
-		return create, nil
-	case heldReplay:
-		if create.Text.Body == "" || input.Question != nil || input.Options != nil || input.Title != nil || input.Spec != nil || input.Body == nil {
-			return nil, refuse("a held reply's edit takes its body")
-		}
-		body := pmdoc.LineFeeds(*input.Body)
-		if strings.TrimSpace(body) == "" {
-			return nil, refuse("a reply's body is required")
-		}
-		if err := blockBoundError(itemblocks.Check("body", body)); err != nil {
-			return nil, err
-		}
-		return create.withBody(body)
-	}
-	return nil, refuse("this held text takes no edit")
+func editedRequest(write reviewedWrite, input heldEditInput) (heldRequest, error) {
+	return write.request.edited(input)
 }
 
 // putHeldState is PUT /api/v1/held/{id}/state {state: posted}: the writer posts its held text as

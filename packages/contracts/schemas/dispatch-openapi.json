@@ -13741,7 +13741,7 @@
     },
     "/api/v1/writing-check": {
       "get": {
-        "description": "The writing check as this process runs it: {enabled, rules, rules_left_out, detector, bundle_model_id}. rules are the structure rules it applies; rules_left_out each rule it does not apply, {id, reason}; detector {on, reason}, the check's own phrase detector, which is off, reason saying why: the detector runs as the reviewer's detector rule set (DISPATCH_REVIEWER_RULES); bundle_model_id the model id the bundle was measured with, empty while it pins none. Any caller Dispatch admits reads it.",
+        "description": "The writing check as this process runs it, which every server runs and no setting turns off: {rules, rules_left_out, detector, bundle_model_id}. rules are the structure rules it applies; rules_left_out each rule it does not apply, {id, reason}; detector {reason}, why the check runs no phrase detector of its own: the detector runs as the reviewer's detector rule set (DISPATCH_REVIEWER_RULES); bundle_model_id the model id the bundle was measured with, empty while it pins none. Any caller Dispatch admits reads it.",
         "operationId": "getApiV1WritingCheck",
         "parameters": [
           {
@@ -30712,15 +30712,11 @@
       },
       "WritingCheckDetector": {
         "properties": {
-          "on": {
-            "type": "boolean"
-          },
           "reason": {
             "type": "string"
           }
         },
         "required": [
-          "on",
           "reason"
         ],
         "type": "object"
@@ -30815,9 +30811,6 @@
           "detector": {
             "$ref": "#/components/schemas/WritingCheckDetector"
           },
-          "enabled": {
-            "type": "boolean"
-          },
           "rules": {
             "items": {
               "type": "string"
@@ -30838,7 +30831,6 @@
           }
         },
         "required": [
-          "enabled",
           "rules",
           "rules_left_out",
           "detector",

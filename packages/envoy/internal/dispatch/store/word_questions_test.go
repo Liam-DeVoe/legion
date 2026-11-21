@@ -219,7 +219,7 @@ func TestTheRecordsVerdictsWordsAndCounts(t *testing.T) {
 	}
 	define := DefineUse{DefinitionID: "def-1", Person: "alice", Project: "WCK", Words: []string{"cursor"}, Answers: "ask:00000000-0000-0000-0000-000000000002", At: day.Add(time.Hour)}
 	for range 2 {
-		if err := store.RecordDefineUse(ctx, define); err != nil {
+		if err := store.RecordDefineUse(ctx, store.Pool, define); err != nil {
 			t.Fatalf("record a Define use: %v", err)
 		}
 	}

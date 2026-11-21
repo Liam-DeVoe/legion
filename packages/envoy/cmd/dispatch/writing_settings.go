@@ -134,6 +134,22 @@ func ruleSetNames(sets ...reviewer.RuleSet) []string {
 // records job's backfill reads.
 const defaultWordRecordsFrom = "2026-10-16T00:00:00Z"
 
+// The on/off settings' defaults, which resolveWritingSettings reads and the settings table renders
+// (onOffText): DISPATCH_WORD_RECORDS runs the records job, and DISPATCH_WRITING_RULES_REFUSAL refuses
+// nothing.
+const (
+	defaultWordRecords         = true
+	defaultWritingRulesRefusal = false
+)
+
+// onOffText is an on/off setting's value as its text: `on` or `off`.
+func onOffText(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
+}
+
 // writingSettings are the settings of the work on agents' texts, as resolveWritingSettings
 // checked them. Every default keeps each change to a text off.
 type writingSettings struct {
@@ -350,14 +366,14 @@ func resolveWritingSettings(env settingValues, testHooksEnabled bool, answerer a
 	if cfg.ReviewerUnedited, err = choiceSetting(env, "DISPATCH_REVIEWER_UNEDITED", []string{api.UneditedRewrite, api.UneditedAsWritten}, api.UneditedRewrite); err != nil {
 		return writingSettings{}, err
 	}
-	if cfg.WordRecords, err = onOffSetting(env, "DISPATCH_WORD_RECORDS", true); err != nil {
+	if cfg.WordRecords, err = onOffSetting(env, "DISPATCH_WORD_RECORDS", defaultWordRecords); err != nil {
 		return writingSettings{}, err
 	}
 	from := cmp.Or(strings.TrimSpace(env.get("DISPATCH_WORD_RECORDS_FROM")), defaultWordRecordsFrom)
 	if cfg.WordRecordsFrom, err = time.Parse(time.RFC3339, from); err != nil {
 		return writingSettings{}, fmt.Errorf("DISPATCH_WORD_RECORDS_FROM=%q (expected an RFC 3339 time, such as %s)", from, defaultWordRecordsFrom)
 	}
-	if cfg.WritingRulesRefusal, err = onOffSetting(env, "DISPATCH_WRITING_RULES_REFUSAL", false); err != nil {
+	if cfg.WritingRulesRefusal, err = onOffSetting(env, "DISPATCH_WRITING_RULES_REFUSAL", defaultWritingRulesRefusal); err != nil {
 		return writingSettings{}, err
 	}
 	if cfg.WritingRulesExtra, err = listSetting(env, "DISPATCH_WRITING_RULES_EXTRA", writingRulesExtraSets, nil); err != nil {

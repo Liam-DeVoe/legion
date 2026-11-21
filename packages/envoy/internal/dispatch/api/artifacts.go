@@ -334,21 +334,19 @@ func (s *server) checkUploadWriting(
 		return true
 	}
 	content := string(input.content)
-	if s.deps.WritingCheck.on() {
-		existing, err := lookupArtifactByNameOrSlug(r.Context(), s.deps.Store.Pool, target, input.name)
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
-		case err != nil:
+	existing, err := lookupArtifactByNameOrSlug(r.Context(), s.deps.Store.Pool, target, input.name)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		s.writeHandlerError(w, err)
+		return false
+	case existing.Kind == "doc":
+		previous, err := s.previousDocumentMarkdown(r.Context(), existing.ID)
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return false
-		case existing.Kind == "doc":
-			previous, err := s.previousDocumentMarkdown(r.Context(), existing.ID)
-			if err != nil {
-				s.writeHandlerError(w, err)
-				return false
-			}
-			content = addedMarkdownBlocks(previous, content)
 		}
+		content = addedMarkdownBlocks(previous, content)
 	}
 	checked.Content = &content
 	s.writingCheck(r, actor, checked)

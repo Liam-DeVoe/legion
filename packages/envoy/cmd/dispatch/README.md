@@ -3908,7 +3908,7 @@ The server inserts the row once the route answered the write with a 2xx status, 
 A daily sweep deletes the rows the counts' rows read (below) once they are older than 366 days, the days the counts route reads back from today, and every other row once it is older than 90 days (`store.SweepWritingCheckEvents`, Background loops, above).
 
 `GET /api/v1/writing-check` answers the check as this process runs it:
-`enabled`, the `rules` it applies, `rules_left_out` with each reason, the check's own `detector`, off, with why (the phrase detector runs as the reviewer's `detector` rule set), and `bundle_model_id`.
+the `rules` it applies, `rules_left_out` with each reason, `detector`, why the check runs no phrase detector of its own (the detector runs as the reviewer's `detector` rule set), and `bundle_model_id`.
 `GET /api/v1/writing-check/counts?first=YYYY-MM-DD&last=YYYY-MM-DD` counts the UTC days `first` to `last`, both counted, at most 366 and none before the 366 days to today (default: the 14 days to today), for any signed-in caller, and answers `{first, last, days, items, total, limit, offset}`.
 A `first` before the oldest of the 366 days to today is 400 `INVALID_QUERY`: the sweep has deleted that day's decisions, all of them or its first hours', while `word_questions` and the event log keep its texts, so its rows would count the texts beside decisions no longer there.
 The answer holds:

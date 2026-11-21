@@ -1169,6 +1169,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		response, events, status = replyRead{shapedMessage: newShapedMessage(reply, wantsDisplayTrees(r))}, append(events, answered), http.StatusCreated
 		postedID = reply.ID
+		held.keep(reply)
 	}
 	if err := finish(r.Context(), tx); err != nil {
 		s.writeHandlerError(w, err)

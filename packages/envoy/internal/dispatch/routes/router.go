@@ -135,9 +135,6 @@ type AppContextOptions struct {
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
 	// cmd/dispatch builds it (newAnswerer). See api.DepsInput.
 	Answerer api.Answerer
-	// WritingCheck is the writing check every prose write runs; nil turns it off. cmd/dispatch
-	// builds it on, in main. See api.Deps.WritingCheck.
-	WritingCheck *api.WritingCheck
 	// WritingRules is the refusal of the written rules (cmd/dispatch:
 	// DISPATCH_WRITING_RULES_REFUSAL, DISPATCH_WRITING_RULES_EXTRA). See api.Deps.WritingRules.
 	WritingRules api.WritingRulesConfig
@@ -244,7 +241,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Docs:                   opts.Docs,
 		Embedder:               opts.Embedder,
 		Answerer:               opts.Answerer,
-		WritingCheck:           opts.WritingCheck,
 		WritingRules:           opts.WritingRules,
 		Reviewer:               opts.Reviewer,
 		RewriteDefine:          opts.RewriteDefine,

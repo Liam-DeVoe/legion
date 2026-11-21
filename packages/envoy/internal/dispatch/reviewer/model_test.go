@@ -147,14 +147,14 @@ func TestATryAgainEndsAtTheCallsBound(t *testing.T) {
 func TestATryAgainThatCannotStartInsideTheBoundIsNotMade(t *testing.T) {
 	stand := modeltest.New(t, modeltest.Rule{Reply: modeltest.Reply{Text: "No object here."}})
 	m := chatModel(stand.URL, "reviewer")
-	m.Timeout, m.OutputTokens = 5*time.Second, 1000
+	m.Timeout = 5 * time.Second
 	p, err := prepare(t.Context(), m, "review", []RuleSet{RuleNoslop}, askRecord(), extra{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// A quota of one and a half tries a minute serves the first try at once, and the second only
 	// about 20 s later, well past the call's bound.
-	tokens := modelpace.Charge(utf8.RuneCountInString(p.system)+utf8.RuneCountInString(p.input), m.OutputTokens)
+	tokens := modelpace.Charge(utf8.RuneCountInString(p.system)+utf8.RuneCountInString(p.input), DefaultOutputTokens)
 	m.Pace = modelpace.New(modelpace.Config{Quotas: map[string]int{"reviewer": tokens + tokens/2}}).Join(modelpace.Share{
 		Deployment: modelpace.Deployment{Kind: "azure", Host: "stand-in", Name: "reviewer"},
 	})
