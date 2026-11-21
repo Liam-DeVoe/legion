@@ -573,16 +573,18 @@ func (m settledMention) beats(current settledMention) bool {
 }
 
 // loadMentionDeliveries reads what the mentions of every comment in ids did and which of their
-// destinations fallback rows own (mentionDeliveries), in two statements. Two events ask for a
+// destinations fallback rows own (mentionDeliveries), in two statements. Three events ask for a
 // comment: a comment.created that names a mentioned session, which takes the whole reading, both
-// the destinations it adds and the routes a mention's target suppresses (eventDestinations), and
-// a comment.edited whose credits filter may leave a session a document credits alone out, which
+// the destinations it adds and the routes a mention's target suppresses (eventDestinations), a
+// comment.edited whose credits filter may leave a session a document credits alone out, which
 // asks it which of those sessions the comment's mentions name or may yet name (creditFilter,
 // mentionDeliveries.editCreditCopyOf) and adds none of its keys to the edit's copies: an edit's
-// payload names no mention of the comment, so the edit asks for every comment it edits there.
-// Every other event, resolutions and reopenings included, asks for no comment and suppresses
-// nothing. A comment no attempt was recorded for answers empty sets, so it suppresses nothing
-// either.
+// payload names no mention of the comment, so the edit asks for every comment it edits there,
+// and a comment.delivery receipt of an attempt that failed pinned to a session, which asks it
+// whether that session's credit's row is one to reopen (reopenOnReceipt,
+// mentionDeliveries.reopensCreditRowOf) and adds nothing to its own copies. Every other event,
+// resolutions and reopenings included, asks for no comment and suppresses nothing. A comment no
+// attempt was recorded for answers empty sets, so it suppresses nothing either.
 //
 // An attempt that names no session is read under its target alone, as every reading here is, and
 // its target's role is recorded beside it with the state the attempt is in

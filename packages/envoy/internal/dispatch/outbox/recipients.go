@@ -509,14 +509,17 @@ func registryUnanswered(err error) bool {
 // a mention of the comment still decides (mentionDeliveries.decidesCopyFor), which stays in the
 // list so that the mention rule runs for it - holding the event while that send is live, and
 // keeping the fallback row the pass publishes when it fails (destinations.leftTo). A session the
-// comment may yet name - an attempt that names no session yet is still to be sent, and its
-// sender may pin it to that session - is neither: where the batch could name no holder for that
+// comment may yet name - an attempt of an @role: mention that names no session yet is still to
+// be sent, and its sender may pin it to that session, or a person's Retry of that mention, which
+// re-resolves the role, may - is neither: where the batch could name no holder for that
 // attempt's role and the attempt is within unnamedForwardBound, its copy waits outside the
 // event's list, holding nothing of the owner's later events, until the sender has pinned the
-// attempt, and is decided then (creditWaits); past that bound, or where the batch resolved the
-// role to another session, or to this one with the attempt past its lease, the copy is held as a
-// fallback row that the pass publishes only should the attempt be pinned to that session and fail
-// (creditHeldAsARow, mentionDeliveries.creditCopyOf).
+// attempt, and is decided then (creditWaits); past that bound, where the batch resolved the role
+// to another session, or to this one with the attempt past its lease, and where no attempt of
+// the role is owed, the copy is held as a fallback row that the pass publishes only should an
+// attempt be pinned to that session and fail - the first attempt, or a Retry, whose failed
+// receipt reopens the row the pass settled meanwhile (creditHeldAsARow,
+// mentionDeliveries.creditCopyOf, reopenOnReceipt).
 // The comment's edit follows the comment's copy: it reaches such a session where that session's
 // mention failed, and waits while that mention, or the comment's copy that follows it, is still
 // to be decided, within that same bound and holding nothing of the owner's later events; past
@@ -549,13 +552,14 @@ const (
 	// nothing, so none of the owner's later events waits on it (destinations.waitForCredits,
 	// planChains).
 	creditWaits
-	// creditHeldAsARow: an attempt of the comment that names no session yet still owes a send,
+	// creditHeldAsARow: the comment names an @role: mention, and an attempt of it may yet be
+	// pinned to this session or to another: one that names no session yet and still owes a send,
 	// past the bound the copy waits such an attempt out for, or with its role resolved to another
-	// session or to this one past the attempt's lease, and its sender may yet pin it to this one
-	// or to another. The copy is held as a comment_fallback_copies row of that session's own
-	// topic, which holds nothing of the event and which the fallback pass publishes under the
-	// key of that session's failed mention, or settles with nothing sent
-	// (destinations.holdForCredits, fallbackCopy.creditOf).
+	// session or to this one past the attempt's lease, or a Retry, which re-resolves the role. The
+	// copy is held as a comment_fallback_copies row of that session's own topic, which holds
+	// nothing of the event and which the fallback pass publishes under the key of that session's
+	// failed mention, or settles with nothing sent until the receipt of such a mention reopens it
+	// (destinations.holdForCredits, fallbackCopy.creditOf, reopenOnReceipt).
 	creditHeldAsARow
 )
 

@@ -1215,21 +1215,22 @@ func (d *destinations) waitForCredits(sessionIDs []string) {
 }
 
 // holdForCredits holds the copy bound for each session's own topic, a session only a document
-// credits that an attempt of the comment that names no session yet may still be pinned to, past
-// the bound such a copy waits that attempt out for, or with its role resolved to another session
-// or to this one past the attempt's lease (creditHeldAsARow), as a credit's row the fallback pass
-// decides (holdCreditRow). The rows are held once the list ends (end), so a route that reaches
-// such a session for a reason of its own gives it the copy that route sends instead, as
-// waitForCredits leaves it to; a route that reaches it on a later read of the event takes the
-// copy from the row (destinations.creditRowGivesWay).
+// credits that an @role: mention of the comment may yet be pinned to - an attempt that names no
+// session yet, past the bound such a copy waits that attempt out for, or with its role resolved
+// to another session or to this one past the attempt's lease, or a Retry of that mention
+// (creditHeldAsARow) - as a credit's row the fallback pass decides, and the receipt of a later
+// attempt that failed reopens (holdCreditRow, reopenOnReceipt). The rows are held once the list
+// ends (end), so a route that reaches such a session for a reason of its own gives it the copy
+// that route sends instead, as waitForCredits leaves it to; a route that reaches it on a later
+// read of the event takes the copy from the row (destinations.creditRowGivesWay).
 func (d *destinations) holdForCredits(sessionIDs []string) {
 	d.heldCredits = append(d.heldCredits, sessionIDs...)
 }
 
 // holdCreditRow records the comment_fallback_copies row of the copy of the comment bound for
-// sessionID's own topic, a credit's row (holdForCredits): keyed by the target of an attempt that
-// names no session yet, which is what marks the row as a credit's for the pass that decides it
-// (unpinnedRoleMentions.creditTarget, fallbackCopy.creditOf, decideFallbackCopy). It holds none
+// sessionID's own topic, a credit's row (holdForCredits): keyed by the target of an @role:
+// mention of the comment, which is what marks the row as a credit's for the pass that decides it
+// (mentionDeliveries.creditTarget, fallbackCopy.creditOf, decideFallbackCopy). It holds none
 // where this event reached that topic already, where the list reaches it, and where a row owns
 // it. The row is written beside the reading as leftTo writes the rows it holds, so that the edit
 // of the comment read in the same batch waits for it within unnamedForwardBound
@@ -1248,7 +1249,7 @@ func (d *destinations) holdCreditRow(sessionID string) {
 	if _, owned := d.mentions.held[subject]; owned {
 		return
 	}
-	if err := d.comment.holdFallbackCopy(targetMentions, d.mentions.unpinned.creditTarget(), subject); err != nil {
+	if err := d.comment.holdFallbackCopy(targetMentions, d.mentions.creditTarget(), subject); err != nil {
 		d.failed = append(d.failed, err)
 		return
 	}
@@ -1303,9 +1304,13 @@ func (d *destinations) end(cause error) ([]destination, bool, error) {
 // or a hold of a held-back copy that failed ends no list and is returned with the whole of it
 // (destinations.err).
 //
-// ctx and deps are what such a settle or hold runs on (mentionComment): the batch's context and
-// its store. A pass over a lookup that answers nothing (wanted) reads no attempt, so it makes
-// neither.
+// A comment.delivery receipt of an attempt that failed reopens the credit's row that attempt's
+// session holds of the comment, where the pass settled it having published nothing
+// (reopenOnReceipt), and is published to its owner's topic as every receipt is.
+//
+// ctx and deps are what such a settle, hold or reopening runs on (mentionComment): the batch's
+// context and its store. A pass over a lookup that answers nothing (wanted) reads no attempt, so
+// it makes none of them.
 func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lookup) (list []destination, mentionPending bool, err error) {
 	event := item.event
 	d := &destinations{seen: map[string]struct{}{}, delivered: item.delivered}
@@ -1339,7 +1344,50 @@ func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lo
 		return d.end(err)
 	}
 	addPreviousClaimant(event, d)
+	reopenOnReceipt(ctx, deps, event, look, d)
 	return d.end(nil)
+}
+
+// reopenOnReceipt reads the comment.delivery receipt event, which the API's sender appends in the
+// transaction that settles a mention's attempt (settleDeliveryAttempt in internal/dispatch/api),
+// and the outbox's own settle of an abandoned one (mentionComment.settleAbandoned): where the
+// attempt failed pinned to a session, and that session's credit's row of the comment settled with
+// nothing sent while every mention of the comment naming that session failed
+// (mentionDeliveries.reopensCreditRowOf), it reopens that row (mentionComment.reopenCreditRow),
+// and the fallback pass that follows the scan publishes it under that failed mention's key
+// (decideFallbackCopy). That is the Retry's road to a session a document credits alone, which the
+// credits filter left out of the comment (creditFilter): a person's Retry of an @role: mention
+// re-resolves the role and may be pinned to that session long after the comment's event was
+// published and the pass settled the session's row with nothing sent, nothing having named the
+// session then (mentionDeliveries.creditCopyOf). Its failure brings the session the comment by
+// the row a first attempt's failure past its lease publishes, R6 of dispatch://INFRA-3686 naming
+// both: a session the reply names, whose mention failed, still gets the copy.
+//
+// The comment's mentions are the batch's one reading of them (lookup.mentionDeliveries), which the
+// first pass asks for the receipt's comment as it does for a new comment's. A read that fails, and
+// a reopening that fails, back the receipt off once its owner's topic is sent, so it is read again,
+// as a held-back copy's settle or hold does (destinations.failed): a failed read never leaves the
+// session's copy unsent in silence.
+func reopenOnReceipt(ctx context.Context, deps Deps, event model.Event, look lookup, d *destinations) {
+	if event.Type != "comment.delivery" || payloadString(event.Payload, "state") != "failed" {
+		return
+	}
+	commentID, sessionID := payloadString(event.Payload, "comment_id"), payloadString(event.Payload, "session_id")
+	if commentID == "" || sessionID == "" {
+		return
+	}
+	reading, err := look.mentionDeliveries(commentID)
+	if err != nil {
+		d.failed = append(d.failed, err)
+		return
+	}
+	if !reading.reopensCreditRowOf(sessionID) {
+		return
+	}
+	comment := mentionComment{ctx: ctx, deps: deps, event: event, id: commentID}
+	if err := comment.reopenCreditRow(contracts.LegacyAgentSubject(sessionID)); err != nil {
+		d.failed = append(d.failed, err)
+	}
 }
 
 // addRoute adds the owner's route: a session route is the session's own subject, and a role route

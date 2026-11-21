@@ -324,11 +324,12 @@ type chain struct {
 // round 9 of dispatch://INFRA-3686 for an edit's copy, and in round 10 for a new comment's
 // (destinations.waitForCredits, mentionDeliveries.creditCopyOf,
 // mentionDeliveries.editCreditCopyOf). A new comment's wait runs no further than
-// unnamedForwardBound, but for a live attempt's own lease: past it, and where the batch resolved
-// the attempt's role to another session, or to this one past the attempt's lease, the copy is a
-// credit's comment_fallback_copies row, which holds nothing back either (creditHeldAsARow,
-// destinations.holdForCredits). An edit's waits on the same bound, for a mention of the comment,
-// or the comment's copy that follows it, still to settle.
+// unnamedForwardBound, but for a live attempt's own lease: past it, where the batch resolved the
+// attempt's role to another session, or to this one past the attempt's lease, and where no
+// attempt of the role is owed, a person's Retry of it being free to name that session later, the
+// copy is a credit's comment_fallback_copies row, which holds nothing back either
+// (creditHeldAsARow, destinations.holdForCredits, reopenOnReceipt). An edit's waits on the same
+// bound, for a mention of the comment, or the comment's copy that follows it, still to settle.
 //
 // A copy a comment_fallback_copies row has taken over (destination.heldAsARow) is the other
 // side of that: it goes on no chain, sends nothing and holds nothing, the row being another

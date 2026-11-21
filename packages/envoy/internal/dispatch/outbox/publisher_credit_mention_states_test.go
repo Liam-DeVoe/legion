@@ -292,12 +292,12 @@ func checkEventHeldForItsMention(t *testing.T, database *store.Store, event mode
 // The mutations it fails on are two. A role whose claim names a holder read as one naming none
 // (the holder arm of resolveUnpinnedRoleMentions): the attempt then reads as an unnamed one past
 // its lease, the claimant's own copy is held as a row beside the credit's, and the event reaches
-// no session. And a credits filter that leaves out a credit an attempt still owed may yet be
-// pinned to (the unpinnedRoleMentions.owesASend arm of mentionDeliveries.creditCopyOf): no row is
-// held for this session, and the comment the mention was on its way to it with reaches it by
-// neither road should that send fail. It no longer fails on mentionHolds.named simplified to
+// no session. And a credits filter that leaves out a credit an @role: mention of the comment may
+// yet be pinned to (the creditTarget arm of mentionDeliveries.creditCopyOf): no row is held for
+// this session, and the comment the mention was on its way to it with reaches it by neither road
+// should that send fail. It no longer fails on mentionHolds.named simplified to
 // mentionOutcomes.state: past the attempt's lease the copy of a credit only a resolved attempt
-// names is held as a credit's row by that owesASend arm whatever named answers
+// names is held as a credit's row by that creditTarget arm whatever named answers
 // (mentionDeliveries.resolvedAlonePastItsLease).
 // TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut fails on
 // mentionHolds.state in place of named.
