@@ -628,17 +628,20 @@ func insertAtEnd(markdown string) map[string]string {
 //  4. The negative control: P gains a version the person has not approved, and R's registration
 //     on it is refused BASIS_NOT_APPROVED; R's step stays unregistered, R stays admitted, and R
 //     holds no new message. The person approves that version.
-//  5. P's architect registers P's own gate, open on the person's approval.
-//  6. R's architect registers on P's approved version with a reason. The call is held after its
+//  5. R's architect registers on P's approved version with a reason. The call is held after its
 //     Dispatch reads (registrationPause): R's step is still unregistered and no fact applied. Its
-//     gate seed is held as well (outboxHold).
-//  7. Released, the call answers 200 and the step opens before its seed runs: R plans, nobody is
-//     asked, the design-approved notice names P's document and version, one message on R records
-//     the opening whole, the state and R's record name the basis, the view fact reads P, the
-//     planner's task carries the view sentence, R's catch-up names the basis, P's architect is
-//     told once that R rests on it, P's catch-up names R, P's first phase waits while R is open,
-//     and no notice queued on R or on P and no role message of R's tree says a person approved
-//     R's document. The seed then runs and leaves the step open.
+//     gate seed is held as well (outboxHold). Released, the call answers 200 and the step opens
+//     before its seed runs, while R stays admitted: R stands under P in Legion's work, so it
+//     waits for P's own gate too (R19 of dispatch://INFRA-3320), which P's architect has not
+//     registered yet. Registered before R's step, P's open gate would start R's first phase at
+//     once, since R holds no step of its own until it registers one.
+//  6. P's architect registers P's own gate, open on the person's approval.
+//  7. R plans, nobody is asked, the design-approved notice names P's document and version, one
+//     message on R records the opening whole, the state and R's record name the basis, the view
+//     fact reads P, the planner's task carries the view sentence, R's catch-up names the basis,
+//     P's architect is told once that R rests on it, P's catch-up names R, P's first phase waits
+//     while R is open, and no notice queued on R or on P and no role message of R's tree says a
+//     person approved R's document. The seed then runs and leaves the step open.
 //  8. R is taken to done: P's architect is told again, and P's first phase starts.
 //  9. The repeats, each read as steps 7 and 8 read the first case (readAncestorOpening): P's
 //     approval carried by Dispatch in the person's name; P labelled and on the backlog, no live
@@ -704,10 +707,7 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	t.Logf("the negative control: %s's registration on %s's unapproved version %d was refused %s: %s", root.Key, parent.Key, stale, refusal.Code, refusal.Error)
 	approval := r.approve(parent.PrimaryArtifactID)
 
-	// 5. P's architect registers P's own gate.
-	r.registerApprovedGate(parent.Key, parent.PrimaryArtifactID, approval.Version, parentGrant)
-
-	// 6. R's registration on P's approved version, held after its reads, its gate seed held.
+	// 5. R's registration on P's approved version, held after its reads, its gate seed held.
 	held.hold(root.Key, record.OutboxKindGateSeed)
 	reached, release := pause.arm(root.Key)
 	answered := r.gateCallAsync(basisCall(rootGrant(), root, 1, parent.PrimaryArtifactID, approval.Version, reason))
@@ -733,6 +733,16 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	if answer.err != nil || answer.status != http.StatusOK {
 		t.Fatalf("R's registration on P's approved version %d = %d %s (%v), want 200", approval.Version, answer.status, answer.body, answer.err)
 	}
+	state, body = settled(t, r.d, "open the spec step of "+root.Key+" on the basis while P's own gate is unregistered", func(s api.State) bool {
+		return stepOf(s, root.Key).Status == api.GatedStepOpenOnBasis
+	})
+	if got := state.Issues[root.Key].Phase; got != phase.Admitted {
+		t.Fatalf("%s stands at %s once its step opened on %s's approval, want admitted: it waits for %s's own gate, which is unregistered (R19)\nstate %s",
+			root.Key, got, parent.Key, parent.Key, body)
+	}
+
+	// 6. P's architect registers P's own gate, which starts R's first phase.
+	r.registerApprovedGate(parent.Key, parent.PrimaryArtifactID, approval.Version, parentGrant)
 
 	// 7 and 8. What the opening reads, its seed held until every read of the open root is made, and
 	// R taken to done.
@@ -762,10 +772,17 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	carriedParentGrant := r.admit(carriedParent.Key)
 	r.linkUnder(carriedRoot, carriedParent, true)
 	r.writeDocument(carriedRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(carriedParent.Key, "p2")}}))
-	r.registerApprovedGate(carriedParent.Key, carriedParent.PrimaryArtifactID, carried.Version, carriedParentGrant)
+	// R registers before P's architect registers P's gate, as in steps 5 and 6: R holds no step of
+	// its own until it registers one, so P's open gate would start it first (R19). R's first
+	// phase then starts at P's registration, a later phase entry than the one its opening's
+	// notices were queued at, which fences them (decision 10 of dispatch://INFRA-4730), so R's
+	// notices are held in the outbox until every read of the opening is made.
+	held.hold(carriedRoot.Key, record.OutboxKindNotice)
 	r.registerBasis(carriedGrant(), carriedRoot, 1, carriedParent, carried.Version, reason)
+	r.registerApprovedGate(carriedParent.Key, carriedParent.PrimaryArtifactID, carried.Version, carriedParentGrant)
 	t.Logf("Dispatch carried the person's approval of version %d of %s to version %d, and %s registered on it", before.Version, carriedParent.Key, carried.Version, carriedRoot.Key)
 	r.readAncestorOpening(ancestorOpening{root: carriedRoot, parent: carriedParent, rootVersion: 1, approval: carried, reason: reason, parentLive: true})
+	held.release(carriedRoot.Key)
 
 	// 9b. P labelled and on the backlog: no live tree while R opens, so no resting-root row and no
 	// architect of P, whose start task at its admission names R.
@@ -797,10 +814,12 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	olderParentGrant := r.admit(olderParent.Key)
 	r.linkUnder(olderRoot, olderParent, true)
 	r.writeDocument(olderRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(olderParent.Key, "p2")}}))
-	r.registerApprovedGate(olderParent.Key, olderParent.PrimaryArtifactID, olderApproval.Version, olderParentGrant)
+	held.hold(olderRoot.Key, record.OutboxKindNotice)
 	r.registerBasis(olderGrant(), olderRoot, fourth, olderParent, olderApproval.Version, reason)
+	r.registerApprovedGate(olderParent.Key, olderParent.PrimaryArtifactID, olderApproval.Version, olderParentGrant)
 	r.readAncestorOpening(ancestorOpening{root: olderRoot, parent: olderParent, rootVersion: fourth, approval: olderApproval, reason: reason, parentLive: true,
 		ownApproval: second})
+	held.release(olderRoot.Key)
 	t.Logf("%s, holding the person's approval of version %d and at version %d, opened at %d on %s's approval, and no reader names version %d",
 		olderRoot.Key, second, fourth, fourth, olderParent.Key, second)
 }

@@ -270,7 +270,10 @@ func (r *personHandoverRig) launches(token string) int {
 // admits it as a new generation and launches its architect again, whose session the rig registers
 // as admit does. It answers the operator's view of that claim, whose pending task is the new
 // generation's start task (none where the start names nothing), and the state the re-admission
-// left.
+// left. That is the release before's path: on dispatch://INFRA-3320's R20 a stop keeps the phase
+// and its return opens no run, and k3 of dispatch://INFRA-4730 opens R's new run with park_child
+// and then rerun_child from the architect above R, which reads the Dispatch chain's ownership and
+// the mark park_child's row leaves (decision 8).
 func (r *personHandoverRig) readmit(key string) (api.OperatorClaim, api.State) {
 	t := r.t
 	t.Helper()
@@ -860,6 +863,11 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 	run := pendingRun{place: opt.place}
 	run.root, run.rootVersion = r.create(asSession, names[0], labelled), 1
 	run.grant = r.admit(run.root.Key)
+	// R's architect registers R's own design, which waits on the person: R holds a step of its own
+	// from here on, as a root whose architect is at work does, so once it stands under P it still
+	// waits for that step (R19 of dispatch://INFRA-3320: an issue under a parent waits for each gate
+	// step it holds itself) whatever the gates above it do, until a registration opens it.
+	r.registerWaitingGate(run.root.Key, run.root.PrimaryArtifactID, run.rootVersion, run.grant)
 	fields := map[string]any{"labels": []string{"legion"}}
 	if opt.place == ancestorMember {
 		run.owner = r.create(asSession, names[2], labelled)
@@ -904,6 +912,7 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 	if opt.sibling != "" {
 		sibling := basisRun{root: r.create(asSession, opt.sibling, labelled), parent: run.parent, rootVersion: 1}
 		sibling.grant = r.admit(sibling.root.Key)
+		r.registerWaitingGate(sibling.root.Key, sibling.root.PrimaryArtifactID, sibling.rootVersion, sibling.grant)
 		r.linkUnder(sibling.root, run.parent, opt.place == ancestorLive)
 		run.sibling = &sibling
 	}
@@ -948,6 +957,22 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 		r.writeDocument(run.sibling.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(run.parent.Key, served)}}))
 	}
 	return run
+}
+
+// registerWaitingGate is key's architect registering key's own spec step at version with no basis
+// while no person has approved that version: the step is registered and waits on the person.
+func (r *personHandoverRig) registerWaitingGate(key, artifactID string, version int, grant func() string) {
+	t := r.t
+	t.Helper()
+	if status, answer := r.d.request(http.MethodPost, "/legion/v1/gates/register", api.GateRegisterRequest{
+		GrantID: grant(), Issue: key, ArtifactID: artifactID, Version: version, Step: record.DesignStepSpec,
+	}, false); status != http.StatusOK {
+		t.Fatalf("the design-gate registration of %s at version %d = %d; body %s", key, version, status, answer)
+	}
+	settled(t, r.d, "register the spec step of "+key+" waiting on the person", func(s api.State) bool {
+		step := stepOf(s, key)
+		return step.Status == api.GatedStepWaiting && step.CurrentVersion == version
+	})
 }
 
 // registerOn is run's architect's register_gate of its root's document on the version of P's
@@ -1398,8 +1423,10 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	}
 	windowApproval := r.approve(window.parent.PrimaryArtifactID)
 	r.applied(r.newestEvent(window.parent.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == windowApproval.Version }))
-	if gates := r.gates(window.root.Key); len(gates) != 0 {
-		t.Fatalf("while the registration is held, %s holds the gates %+v, want none", window.root.Key, gates)
+	// While the registration is held, R holds only the step of its own design its architect
+	// registered before (pendingWorld), waiting on the person with no basis.
+	if gate, gates := r.gates(window.root.Key)[record.DesignStepSpec], r.gates(window.root.Key); len(gates) != 1 || gate.Basis != nil || record.GateOpen(gate) {
+		t.Fatalf("while the registration is held, %s holds the gates %+v, want its own spec step alone, waiting with no basis", window.root.Key, gates)
 	}
 	release()
 	select {
@@ -1448,9 +1475,12 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	}
 	r.requestChanges(inside.parent.PrimaryArtifactID, "Name p2's owner.")
 	r.applied(r.newestEvent(inside.parent.Key, "artifact.changes_requested", nil))
-	if told := r.notices(inside.root.Key, "basis-changes-requested"); len(told) != 0 || len(r.gates(inside.root.Key)) != 0 {
-		t.Fatalf("while the registration of %s is held, it holds gates %+v and basis-changes-requested notices %+v, want neither: the live event found no step",
-			inside.root.Key, r.gates(inside.root.Key), told)
+	// R holds only the step of its own design its architect registered before (pendingWorld),
+	// waiting on the person with no basis, so the live event finds no step resting on P.
+	gates := r.gates(inside.root.Key)
+	if told, gate := r.notices(inside.root.Key, "basis-changes-requested"), gates[record.DesignStepSpec]; len(told) != 0 || len(gates) != 1 || gate.Basis != nil || record.GateOpen(gate) {
+		t.Fatalf("while the registration of %s is held, it holds gates %+v and basis-changes-requested notices %+v, want its own waiting step alone and no notice: the live event found no step on P",
+			inside.root.Key, gates, told)
 	}
 	release()
 	select {
@@ -1461,7 +1491,14 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	case <-time.After(time.Minute):
 		t.Fatal("the released registration never answered")
 	}
-	r.openedOnBasis(inside.root, inside.parent, 1, inside.basisVersion)
+	// R's step opens on P's approval of v3, which the changes request does not take back (R3); R
+	// itself stays at admitted, since the same request shuts P's own gate, which R, under P in
+	// Legion's work, waits for (R19 of dispatch://INFRA-3320).
+	settled(t, r.d, "open the spec step of "+inside.root.Key+" on version 3 of "+inside.parent.Key, func(s api.State) bool {
+		step := stepOf(s, inside.root.Key)
+		return step.Status == api.GatedStepOpenOnBasis && step.Basis != nil && step.Basis.Version == inside.basisVersion &&
+			s.Issues[inside.root.Key].Phase == phase.Admitted
+	})
 	r.basisChangesTold(inside.basisRun, "Name p2's owner.", true)
 
 	// From P approved at v3 and R open on v3: the changes request through a later request that
