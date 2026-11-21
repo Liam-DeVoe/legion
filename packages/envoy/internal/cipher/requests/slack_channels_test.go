@@ -30,8 +30,10 @@ func slackFixture(t *testing.T, rows map[string]projectaccesstest.Row) (*Machine
 	dispatch := answerFrom(t, m, rows)
 	// release grants names to the session and reads them as the proxy does, answering the values
 	// and the stand-in Dispatch that answered the two, behind a client of its own so that no
-	// answer an earlier release cached stands in. The client is the machine's Projects and its
-	// PrivateList both, as cipherd wires one client.
+	// answer an earlier release cached stands in; a caller counts that stand-in's project route
+	// (ProjectCalls), beside the member-kind reads every grant and release of a person's session
+	// makes (restrictedOperator). The client is the machine's Projects and its PrivateList both,
+	// as cipherd wires one client.
 	release := func(names ...string) (map[string]AirlockSecret, *projectaccesstest.Server) {
 		t.Helper()
 		fresh := projectaccesstest.NewServer(t, rows, nil)
@@ -60,12 +62,12 @@ func slackRows(priv projectaccesstest.Row, team projectaccesstest.Row) map[strin
 // TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels is the airlock's half of a private
 // project's Slack limit: a project-channels secret released to a credential that names a private
 // project carries Limited and the channels that project's owner named, bounded to
-// airlockProjectRecheck, and asks Dispatch no more than a release of that project's own secret
-// does. Every case where the channels cannot be known, or the projects share none, is Limited
-// with an empty list, never unlimited; a credential that names no project is unlimited, asks
-// Dispatch its list of private projects alone (the public fence's read), and its value is bounded
-// to airlockProjectRecheck all the same, so it learns of a private project's channels once one
-// names any.
+// airlockProjectRecheck, and asks Dispatch's project route no more than a release of that
+// project's own secret does. Every case where the channels cannot be known, or the projects share
+// none, is Limited with an empty list, never unlimited; a credential that names no project is
+// unlimited, asks Dispatch nothing of a project but its list of private projects (the public
+// fence's read), and its value is bounded to airlockProjectRecheck all the same, so it learns of a
+// private project's channels once one names any.
 func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 	limitedTo := func(t *testing.T, values map[string]AirlockSecret, want []string) {
 		t.Helper()
@@ -86,11 +88,11 @@ func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 			t.Fatalf("%s expires %v; want the read time plus %v, so a running proxy hears an owner's change", slackToken, expires, airlockProjectRecheck)
 		}
 		// The Slack release reads Dispatch's list of private projects once more, to keep the
-		// broker's stored private list (channelsOf), and asks nothing else beyond what PRIV's own
-		// secret asks.
+		// broker's stored private list (channelsOf), and asks the project route nothing beyond what
+		// PRIV's own secret asks.
 		_, own := release("PRIV_KEY")
-		if calls, lists, ownCalls := fresh.Calls(), fresh.PrivateProjectsCalls(), own.Calls(); lists != 1 || calls-lists != ownCalls {
-			t.Fatalf("releasing %s took %d calls to Dispatch, %d of them for the list of private projects, and PRIV's own secret %d; want the list once and otherwise the same", slackToken, calls, lists, ownCalls)
+		if calls, lists, ownCalls := fresh.ProjectCalls(), fresh.PrivateProjectsCalls(), own.ProjectCalls(); lists != 1 || calls != ownCalls {
+			t.Fatalf("releasing %s took %d calls to Dispatch's project route and %d for the list of private projects, and PRIV's own secret %d of the project route; want the list once and otherwise the same", slackToken, calls, lists, ownCalls)
 		}
 	})
 
@@ -125,7 +127,7 @@ func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 		limitedTo(t, values, []string{})
 	})
 
-	t.Run("a credential naming no project is unlimited and asks Dispatch the list of private projects alone", func(t *testing.T) {
+	t.Run("a credential naming no project is unlimited and asks Dispatch nothing of a project but the list of private projects", func(t *testing.T) {
 		_, _, _, release := slackFixture(t, slackRows(projectaccesstest.Row{SlackChannels: []string{"C0ALLOWED1"}}, publicTeam))
 		read := time.Now()
 		values, fresh := release(slackToken)
@@ -136,8 +138,8 @@ func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 		if got.Expires.Before(read.Add(airlockProjectRecheck)) || got.Expires.After(time.Now().Add(airlockProjectRecheck)) {
 			t.Fatalf("%s for a session naming no project expires %v; want the read time plus %v, so a running proxy reads it again and meets the fence of that moment", slackToken, got.Expires, airlockProjectRecheck)
 		}
-		if calls, lists := fresh.Calls(), fresh.PrivateProjectsCalls(); calls != lists || lists != 1 {
-			t.Fatalf("a session naming no project made %d calls to Dispatch for %s, %d of them for the list of private projects; want the list alone, once", calls, slackToken, lists)
+		if calls, lists := fresh.ProjectCalls(), fresh.PrivateProjectsCalls(); calls != 0 || lists != 1 {
+			t.Fatalf("a session naming no project made %d calls to Dispatch's project route for %s and %d for the list of private projects; want none of the project route and the list once", calls, slackToken, lists)
 		}
 	})
 }
