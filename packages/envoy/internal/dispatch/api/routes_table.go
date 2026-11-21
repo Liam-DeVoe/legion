@@ -558,8 +558,9 @@ var routeScopes = map[string]routeScopeSet{
 	// A project's access list, its visibility and its owner decide who may see the project, and so
 	// does a group a private project's list names: its members are who it admits, its owner who
 	// changes that, and deleting it takes it off every list. A change to any of them settles what
-	// an owner settles, so a credential holding person alone - a broker token from a copied
-	// sign-in file among them - reads the lists and groups and changes none of them.
+	// an owner settles, so a credential holding person alone - a personal token its owner minted
+	// or narrowed to person (POST /api/v1/me/agent-tokens, PATCH /api/v1/me/agent-tokens/{id})
+	// among them - reads the lists and groups and changes none of them.
 	"PATCH /api/v1/projects/{key}/access":                 {model.ScopePerson, model.ScopeApprove},
 	"PUT /api/v1/projects/{key}/access/people/{email}":    {model.ScopePerson, model.ScopeApprove},
 	"DELETE /api/v1/projects/{key}/access/people/{email}": {model.ScopePerson, model.ScopeApprove},

@@ -144,10 +144,10 @@ func TestTheOwnerGivesTheProjectToAFullMember(t *testing.T) {
 
 // TestTheAccessListWritesNeedTheApproveScope: naming a person or a group on a project's access
 // list, taking one off, setting its visibility and giving it to another owner decide who may see
-// the project, so a credential of the owner's that holds `person` alone - a broker token from a
-// copied sign-in file holds no more - is 403 OAUTH_SCOPE_REQUIRED naming `approve` on each, and
-// nothing is written. The owner's credential that holds `approve` as well makes each change, and
-// reading the access list still needs `person` alone.
+// the project, so a credential of the owner's that holds `person` alone - a personal token minted
+// with that scope only, as personOnly is - is 403 OAUTH_SCOPE_REQUIRED naming `approve` on each,
+// and nothing is written. The owner's credential that holds `approve` as well makes each change,
+// and reading the access list still needs `person` alone.
 func TestTheAccessListWritesNeedTheApproveScope(t *testing.T) {
 	handler, database := newAccessServer(t)
 	if made := dispatchRequest(t, handler, http.MethodPut, "/api/v1/access-groups/crew", map[string]any{"members": []string{accessCarol}}, "alice"); made.Code != http.StatusOK {
