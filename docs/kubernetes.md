@@ -2710,11 +2710,19 @@ This release adds fields to the payloads that its outbox queues:
 
 - A review-stuck notice of a head GitHub will not merge carries that head's checks, names each check GitHub skipped under `skipped`, and says once under `each_skipped_check` that a skipped check ran nothing on that head.
 
-- A message-refused notice carries `words`, which names its first line (`begins`) with that line's author, the time its write was queued and, where the line is cut, `rest`, and, where that line opened with the daemon's sentence of a backward move or of a close, `refused_move` or `refused_close`.
+- A message-refused notice carries `words`, which names its first line (`begins`) with that line's author, the time its write was queued and, where the words go on past that line's head, `rest`, and, where that line opened with the daemon's sentence of a backward move or of a close, `refused_move` or `refused_close`.
 
 - A session-forgotten notice carries `launcher_lookup` and `resumed_by_id`, which say why the session was forgotten.
 
 - An architect-stalled notice whose count a project's pause moved carries `counted_from`, `counted_from_event` and `pause_id`, and a project-paused notice carries `words`, which names its pause's reason.
+
+- A phase-finished notice of a role's own move back carries `moved_back`.
+
+- An update-stalled notice names who suspended each suspended claim that it lists (`update.waiting[].suspended_by`).
+
+- A child-release-stalled notice of a repository the daemon let go says of each child whether Dispatch's listing still holds it (`let_go[].listed`).
+
+- An unslotted notice of a root that waits on a person names why the root cannot resume by a word (`unresumable`) and, where a Dispatch claim is why, who holds that claim (`claimed_by`).
 
 - An update ask carries `images`, `settings`, `reasons` and `endsAt`.
 

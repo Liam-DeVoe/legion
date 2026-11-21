@@ -98,9 +98,12 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 		if err != nil {
 			return nil, false, err
 		}
-		unresumable, err := Unresumable(ctx, e.store, tx, root)
+		unresumable, claimedBy, err := Unresumable(ctx, e.store, tx, root)
 		if err != nil {
 			return nil, false, err
+		}
+		if claimedBy != "" {
+			unresumable += " by " + claimedBy
 		}
 		_, holds := slotted[root.Key]
 		view := awaitView{Root: root, Slotted: holds, Unresumable: unresumable, Run: runs[tokens[i]], Asks: asks[root.Key],
@@ -237,7 +240,8 @@ const (
 
 // awaitView is what decideAwait reads of one root: its record, whether it holds an admission slot
 // (Slotted, read from the slot rows by ReconcileAwaiting), the other members of its tree, why it
-// could not resume (Unresumable, "" when it could), its architect's run at the root's
+// could not resume (Unresumable: Unresumable's word, with the claim's holder where it names one,
+// "" when it could), its architect's run at the root's
 // generation, its asks' mirror rows, the design-gate steps the deployment gates (Steps) and the
 // gates the root holds by step (Gates). A gate's document names its approval requests — every
 // approval row of that document — and their answer is a review rather than a person's act on an
@@ -672,14 +676,17 @@ func gateInQuestion(steps []record.DesignStep, gates map[record.DesignStep]recor
 // which says which act's words those are.
 //
 // How the document of step stands at the resume, read from that step's gate now, so an approval
-// a newer version superseded, or a gate closed again since, is said as it is: its latest version,
-// whether the gate is open and whether it is armed. An open gate keeps texts.DesignApprovedWake
-// word for word, since the daemon sends no design-approved notice to a root waiting on a person
-// (applyArtifact, gateRegistered), so this resume is that root's design-approved wake. A wait the
-// gates.design: off rule answered (gateOffAnswer) says so (GateOffAtAnswer), so it is never read as
-// a person's approval. A changes request the gate records as told after the wait began that did
-// not answer it, which no notice told (tellChangesOnce), is named with its version, the document
-// of step it was made on (stepRef) and its reason in a block of its own.
+// a newer version superseded, or a gate closed again since, is said as it is: the document (stepRef)
+// wherever the step has a gate, whatever the act, as main named it in each sentence of the gate
+// ("Your <doc> is not approved at version N", "the approval request for <doc> version N", "When the
+// <doc> is ready"), its latest version, whether the gate is open and whether it is armed. An open
+// gate keeps texts.DesignApprovedWake word for word, since the daemon sends no design-approved
+// notice to a root waiting on a person (applyArtifact, gateRegistered), so this resume is that
+// root's design-approved wake. A wait the gates.design: off rule answered (gateOffAnswer) says so
+// (GateOffAtAnswer), so it is never read as a person's approval. A changes request the gate records
+// as told after the wait began that did not answer it, which no notice told (tellChangesOnce), is
+// named with its version, the document of step it was made on and its reason in a block of its
+// own.
 //
 // What is still with the person (withHuman): the asks as dispatch:// links, and the version whose
 // approval request is with them. What waits on the architect: the asks on its turn, a tree
@@ -692,7 +699,7 @@ func RootResume(key string, waiting record.Awaiting, step record.DesignStep, gat
 	gateClosed := gate != nil && !gateOpen
 	task := texts.RootResumeRecord{TaskHead: texts.TaskHead{Kind: texts.RootResume, Issue: key}, GateOpen: gateOpen, GateArmed: armed}
 	if gate != nil {
-		task.DocumentVersion = gate.LatestVersion
+		task.Document, task.DocumentVersion = stepRef(key, step), gate.LatestVersion
 	}
 	switch waiting.AnsweredBy {
 	case record.AnsweredByApproval:
@@ -731,7 +738,7 @@ func RootResume(key string, waiting record.Awaiting, step record.DesignStep, gat
 		gate.ToldChangesMark.After(waiting.Since) {
 		detail := changesDetail(*gate.ToldChangesVersion, gate.ToldChangesReason)
 		if waiting.AnsweredBy != record.AnsweredByChanges || waiting.AnsweredDetail != detail {
-			task.LaterChangesVersion, task.Document = *gate.ToldChangesVersion, stepRef(key, step)
+			task.LaterChangesVersion = *gate.ToldChangesVersion
 			later := changesWords(*gate.ToldChangesVersion, gate.ToldChangesReason, gate, gateArtifactOf(gate), asks)
 			task.LaterReason = &later
 		}

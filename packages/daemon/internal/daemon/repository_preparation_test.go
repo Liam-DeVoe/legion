@@ -375,7 +375,7 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 			tree, strangerRepo, w.unreadReasons())
 	}
 	notices := treeNotices(t, w, tree)[before:]
-	want := []texts.LetGoChild{{Child: stalled, Parent: parent, Status: "backlog", Repo: strangerRepo}}
+	want := []texts.LetGoChild{{Child: stalled, Parent: parent, Listed: true, Status: "backlog", Repo: strangerRepo}}
 	notice, told := record.Notice{}, len(notices) == 1
 	if told {
 		notice, told = letGoTold(t, notices[0], texts.StallLetGoNoTodo)
@@ -421,13 +421,13 @@ func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testin
 	}{
 		{name: "no todo issue is left on it", why: letGoNoTodo, parent: tree,
 			shown: []dispatch.Issue{issue(child, strangerRepo, "backlog", false, tree, 1)},
-			stall: texts.StallLetGoNoTodo, row: texts.LetGoChild{Child: child, Parent: tree, ParentRecorded: true, Status: "backlog", Repo: strangerRepo}},
+			stall: texts.StallLetGoNoTodo, row: texts.LetGoChild{Child: child, Parent: tree, ParentRecorded: true, Listed: true, Status: "backlog", Repo: strangerRepo}},
 		{name: "a todo issue is left on it that another preparation's read answers for", why: letGoAnsweredElsewhere, parent: tree,
 			shown: []dispatch.Issue{issue(child, strangerRepo, "backlog", false, tree, 1)},
-			stall: texts.StallLetGoAnswered, row: texts.LetGoChild{Child: child, Parent: tree, ParentRecorded: true, Status: "backlog", Repo: strangerRepo}},
+			stall: texts.StallLetGoAnswered, row: texts.LetGoChild{Child: child, Parent: tree, ParentRecorded: true, Listed: true, Status: "backlog", Repo: strangerRepo}},
 		{name: "a todo child filed under its unrecorded parent's repository", why: letGoNoTodo, parent: parent,
 			shown: []dispatch.Issue{issue(parent, strangerRepo, "backlog", false, tree, 1), issue(child, "acme/widgets", "todo", false, parent, 1)},
-			stall: texts.StallLetGoNoTodo, row: texts.LetGoChild{Child: child, Parent: parent, Status: "todo", Repo: strangerRepo}},
+			stall: texts.StallLetGoNoTodo, row: texts.LetGoChild{Child: child, Parent: parent, Listed: true, Status: "todo", Repo: strangerRepo}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()

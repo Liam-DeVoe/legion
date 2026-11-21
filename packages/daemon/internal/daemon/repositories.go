@@ -1772,12 +1772,14 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 //
 // Each child is named with the status listing, Dispatch's own project listing of this pass, gives
 // it, since that status is why nothing records it: a child a person moved out of todo is recorded
-// again only once it is todo again. A child whose parent the workflow does not record is named
-// with that parent, as tellReleaseWaits names it: a release_children files a child under its
-// parent's unread repository when the parent is what waits (enterOnUnreadRepository), and the
-// child, todo all along, is recorded only under a recorded parent, so the step is the parent's
-// release first. Each child is named with the repository its wait was filed under. A child no
-// wait is left for is told nothing, and so is a repository whose waits are empty.
+// again only once it is todo again. A child the listing no longer holds is named as such (listed:
+// false), with no status, as main named it no longer listed. A child whose parent the workflow
+// does not record is named with that parent, as tellReleaseWaits names it: a release_children
+// files a child under its parent's unread repository when the parent is what waits
+// (enterOnUnreadRepository), and the child, todo all along, is recorded only under a recorded
+// parent, so the step is the parent's release first. Each child is named with the repository its
+// wait was filed under. A child no wait is left for is told nothing, and so is a repository whose
+// waits are empty.
 //
 // It is the pair of tellReleaseWaits and not a second telling of its kind: the two share one
 // body, which decides which children are still unrecorded, reads each one's parent and writes one
@@ -1819,8 +1821,9 @@ func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, l
 		tellings = append(tellings, waitTelling{waits: waits[why], notice: func(issue string, children []waitingChild) texts.ChildReleaseStalledRecord {
 			letGo := make([]texts.LetGoChild, 0, len(children))
 			for _, c := range children {
+				status, held := listed[c.child]
 				letGo = append(letGo, texts.LetGoChild{Child: c.child, Parent: c.wait.parent, ParentRecorded: c.parentRecorded,
-					Status: listed[c.child], Repo: childRepo[c.child]})
+					Listed: held, Status: status, Repo: childRepo[c.child]})
 			}
 			return letGoNotice(issue, stall, gone, letGo)
 		}})

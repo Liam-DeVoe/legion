@@ -357,13 +357,15 @@ type Notice struct {
 	// Issue is the issue the notice is of (texts.NoticeHead). A row an older daemon queued names
 	// none: the row's own issue column names it.
 	Issue string `json:"issue,omitempty"`
-	// To is the phase a phase-finished notice's move went to.
-	To      phase.Phase `json:"to,omitempty"`
-	Summary string      `json:"summary,omitempty"`
-	Verdict string      `json:"verdict,omitempty"`
-	Version int         `json:"version,omitempty"`
-	Reason  string      `json:"reason,omitempty"`
-	Topic   string      `json:"topic,omitempty"`
+	// To is the phase a phase-finished notice's move went to, and MovedBack says that the move was
+	// the worker's own move back (request_backward_move).
+	To        phase.Phase `json:"to,omitempty"`
+	MovedBack bool        `json:"moved_back,omitempty"`
+	Summary   string      `json:"summary,omitempty"`
+	Verdict   string      `json:"verdict,omitempty"`
+	Version   int         `json:"version,omitempty"`
+	Reason    string      `json:"reason,omitempty"`
+	Topic     string      `json:"topic,omitempty"`
 	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
 	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
 	// in, the copy of that hold the controller reads, and the worker-died that names the death
@@ -620,8 +622,10 @@ type Notice struct {
 	// daemon tries again.
 	Detail     string `json:"detail,omitempty"`
 	RetryEvery string `json:"retry_every,omitempty"`
-	// Why a root that awaits a person cannot resume (unslotted).
+	// Why a root that awaits a person cannot resume (unslotted, a texts.Unresumable word), and who
+	// holds its Dispatch claim where that is why.
 	Unresumable string `json:"unresumable,omitempty"`
+	ClaimedBy   string `json:"claimed_by,omitempty"`
 	// The ask, or the document whose version waits on a person's review (awaiting-person).
 	Ask      string `json:"ask,omitempty"`
 	Document string `json:"document,omitempty"`

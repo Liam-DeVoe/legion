@@ -63,7 +63,7 @@ func TestDecideAwaitsTable(t *testing.T) {
 		{"a member out of the workflow", func(v *awaitView) {
 			v.Members = []record.Issue{{Key: "LEGION-209", Tree: "LEGION-208", Phase: phase.Implementing, Status: "done"}}
 		}, actEnter, "awaiting an answer"},
-		{"a root that could not resume", func(v *awaitView) { v.Unresumable = "its Dispatch claim is held by user:alice" }, actStay, "could not resume"},
+		{"a root that could not resume", func(v *awaitView) { v.Unresumable = "claimed by user:alice" }, actStay, "could not resume"},
 		{"an architect whose start is still queued", func(v *awaitView) {
 			v.Run = record.RoleRun{Queued: []record.QueuedSupervise{{Request: record.SuperviseRequest{Op: "start"}}},
 				Claim: &record.RoleClaim{State: supervise.StateWorking}}
@@ -222,8 +222,9 @@ func resumeRecordOf(t *testing.T, waiting record.Awaiting, step record.DesignSte
 }
 
 // The task an answered root's architect resumes with names what answered the wait, how the
-// document of the step in question stands now, what waits on the architect and what is still with
-// the person, each as a field.
+// document of the step in question stands now (that document whatever the act, as main named it in
+// each sentence of the gate), what waits on the architect and what is still with the person, each
+// as a field.
 func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 	answered := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	version := 3
@@ -245,8 +246,8 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"},
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: &version},
-			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", DocumentVersion: 3,
-				GateOpen: true, GateArmed: true, WithPerson: still, WaitingOnYou: yours},
+			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", Document: "dispatch://LEGION-208/spec",
+				DocumentVersion: 3, GateOpen: true, GateArmed: true, WithPerson: still, WaitingOnYou: yours},
 		},
 		{
 			// A deployment that gates the decisions step first stands on that step, not on the
@@ -311,7 +312,7 @@ func TestTheResumeTaskUnderNoDesignGateAdvisesNoApproval(t *testing.T) {
 	waiting := record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"}
 	gate := &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2}
 	got := resumeRecordOf(t, waiting, record.DesignStepSpec, gate, nil, false)
-	want := texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", DocumentVersion: 2}
+	want := texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", Document: "dispatch://LEGION-208/spec", DocumentVersion: 2}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resume task\n%+v\nwant\n%+v: the gate is neither open nor armed", got, want)
 	}
@@ -341,8 +342,8 @@ func TestTheResumeTaskOfAGateWait(t *testing.T) {
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"},
 			asks: []record.RootAsk{{Issue: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: "artifact-208", Open: true, WaitingOn: "human", Seq: 9},
 				{Issue: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, ByTree: true, Seq: 10}},
-			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", DocumentVersion: 5,
-				GateArmed: true, ApprovalRequest: 5, RequestOpen: true},
+			want: texts.RootResumeRecord{TaskHead: resumeHead, Act: texts.ActAsk, Ask: "dispatch://LEGION-208/ask/ask-q", Document: "dispatch://LEGION-208/spec",
+				DocumentVersion: 5, GateArmed: true, ApprovalRequest: 5, RequestOpen: true},
 		},
 		{
 			name:    "a changes request that closed the request",

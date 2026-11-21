@@ -100,15 +100,17 @@ type PhaseResumeRecord struct {
 // resumeTask).
 //
 // The act: what answered the wait (Act, one of the Act words), who acted and when, the ask it
-// answered as a dispatch:// link, the document of the gate step in question as a dispatch://
-// link and the version the act was about. GateOffAtAnswer says that the design gate was off when
-// the wait was answered. ClosedBy names who closed the ask. Options are the options the answer
-// chose. DispatchWords are the sentences Dispatch wrote for the asking agent on a decline.
+// answered as a dispatch:// link, and the version the act was about. GateOffAtAnswer says that
+// the design gate was off when the wait was answered. ClosedBy names who closed the ask. Options
+// are the options the answer chose. DispatchWords are the sentences Dispatch wrote for the asking
+// agent on a decline.
 //
-// The gate of that step now: its latest version, whether it is open, and whether the design gate
-// is armed. LaterChangesVersion is a changes request made after the wait began that did not answer
-// it, whose reason goes in the later_reason block with its author and time; Document then names
-// the document it was made on, whatever the act.
+// The gate of the step in question now, wherever that step has a gate, whatever the act: its
+// document as a dispatch:// link (Document), its latest version, whether it is open, and whether
+// the design gate is armed. A document an approval, a changes request or a version answered the
+// wait on is that document too. LaterChangesVersion is a changes request made after the wait began
+// that did not answer it, made on that document, whose reason goes in the later_reason block with
+// its author and time.
 //
 // What is still with the person: the asks (dispatch:// links), and ApprovalRequest, the version of
 // the document whose approval request is with the person. What waits on the architect: the asks
@@ -165,12 +167,15 @@ const (
 // dispatch://INFRA-4533's R1 has every look's task state: a requirement of the issue that only the
 // deploy can show and that a look observes as not met is a fail, on every look, the last among them
 // (CheckLookRecord.NotMetRequirement); one that is still unobserved at the last look is a fail too
-// (CheckLookRecord.UnobservedRequirement); and the last look's pending is only for an issue with no
-// such requirement (CheckLookRecord.Pending).
+// (CheckLookRecord.UnobservedRequirement); the last look's pending is only for an issue with no
+// such requirement (CheckLookRecord.Pending); and a last look that nobody reported gives no verdict,
+// and the daemon closes the check as not run, which is no pass (CheckLookRecord.Unreported, R7's
+// second sentence).
 const (
 	LookNotMetRequirement         = "fail"
 	LastLookUnobservedRequirement = "fail"
 	LastLookPending               = "only_with_no_deploy_only_requirement"
+	LastLookUnreported            = "not_run"
 )
 
 // CheckLookRecord is the task of a look of a closed issue's production check (workflow's
@@ -180,10 +185,12 @@ const (
 // The fields: the look, what woke it (one of the WokenBy words), the cause of a retried look
 // that nobody reported, whether it is the last look, the rule of every look's verdict
 // (NotMetRequirement, LookNotMetRequirement) and, beside it on the last look alone, the rule of
-// that look's verdict (UnobservedRequirement and Pending, the LastLook words), the pull request,
-// the merge commit (absent where the record holds none), and the check's bound in whole days with
-// the time of the last look. The pending summary that named the wake goes in the summary block, by
-// the checking role.
+// that look's verdict (UnobservedRequirement, Pending and Unreported, the LastLook words), the pull
+// request, the merge commit (absent where the record holds none), and the check's bound with the
+// time of the last look. The bound is in whole days (BoundDays) where it is whole days, and
+// otherwise in hours (BoundHours), a decimal as production_check_hours takes one, since a bound of
+// another length cut to whole days is no bound the check has. The pending summary that named the
+// wake goes in the summary block, by the checking role.
 type CheckLookRecord struct {
 	Issue                 string    `json:"-"`
 	Title                 string    `json:"-"`
@@ -195,9 +202,11 @@ type CheckLookRecord struct {
 	NotMetRequirement     string    `json:"not_met_requirement,omitempty"`
 	UnobservedRequirement string    `json:"unobserved_requirement,omitempty"`
 	Pending               string    `json:"pending,omitempty"`
+	Unreported            string    `json:"unreported,omitempty"`
 	PullRequest           string    `json:"pull_request"`
 	MergeCommit           string    `json:"merge_commit,omitempty"`
 	BoundDays             int       `json:"bound_days,omitempty"`
+	BoundHours            string    `json:"bound_hours,omitempty"`
 	LastLook              time.Time `json:"last_look,omitzero"`
 	Summary               *Words    `json:"summary"`
 }

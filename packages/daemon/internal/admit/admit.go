@@ -1934,12 +1934,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// releaseUnslotted takes out of the workflow on this same pass. Its links hold
 				// nothing here: a root waiting on a person keeps its row through a wait
 				// (blockers.waitsOf).
-				reason, err := workflow.Unresumable(ctx, a.store, tx, issue)
+				why, claimedBy, err := workflow.Unresumable(ctx, a.store, tx, issue)
 				if err != nil {
 					return admitted, released, fmt.Errorf("check whether answered root %s can resume: %w", issue.Key, err)
 				}
-				if reason != "" {
-					a.log.Warn("admission skips an answered root it may not resume", "issue", issue.Key, "reason", reason)
+				if why != "" {
+					a.log.Warn("admission skips an answered root it may not resume", "issue", issue.Key, "unresumable", why, "claimedBy", claimedBy)
 					continue
 				}
 			}
@@ -2411,17 +2411,17 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 		if respectHolds && a.held(issue.Key) {
 			continue
 		}
-		why, awaiting, err := a.awaitingUnresumable(ctx, tx, issue)
+		why, claimedBy, err := a.awaitingUnresumable(ctx, tx, issue)
 		if err != nil {
 			return released, fmt.Errorf("check whether awaiting root %s can resume: %w", issue.Key, err)
 		}
-		if !awaiting && !a.unslotted(issue, live, waits) {
+		if why == "" && !a.unslotted(issue, live, waits) {
 			continue
 		}
 		if err := a.engine.LeaveUnslotted(ctx, tx, issue); err != nil {
 			return released, fmt.Errorf("release unslotted root %s: %w", issue.Key, err)
 		}
-		if err := a.tellControllerOf(ctx, tx, issue.Key, UnslottedNotice(issue, why)); err != nil {
+		if err := a.tellControllerOf(ctx, tx, issue.Key, UnslottedNotice(issue, why, claimedBy)); err != nil {
 			return released, err
 		}
 		intake.OnCommit(ctx, func() {
@@ -2435,23 +2435,24 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 // UnslottedNotice is the unslotted controller notice of root, which admission found with
 // neither a slot nor a place in the waiting line and set to done: the status it stood at, a status
 // only a running tree has, its phase, and, for a root that awaits a person, why it cannot resume
-// (unresumable, workflow's Unresumable), empty for a root no tree of which runs.
-func UnslottedNotice(root record.Issue, unresumable string) texts.UnslottedRecord {
+// (unresumable, a word of workflow's Unresumable) with who holds its Dispatch claim where that is
+// why (claimedBy), both empty for a root no tree of which runs.
+func UnslottedNotice(root record.Issue, unresumable, claimedBy string) texts.UnslottedRecord {
 	return texts.UnslottedRecord{NoticeHead: texts.NoticeHead{Kind: texts.Unslotted, Issue: root.Key}, Status: root.Status, Phase: root.Phase,
-		Unresumable: unresumable}
+		Unresumable: unresumable, ClaimedBy: claimedBy}
 }
 
 // awaitingUnresumable returns why an awaiting root of this project may not resume (workflow's
-// Unresumable, the one rule ReconcileAwaiting also asks) and whether this pass must remove it. It
-// asks nothing of the slots because a row answers none of what it asks: the question is whether
-// this root may come back at all, which its label and its Dispatch claim decide, and the root
-// keeps its row through the whole wait either way (record.KeepsSlot).
-func (a *Admission) awaitingUnresumable(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, bool, error) {
+// Unresumable, the one rule ReconcileAwaiting also asks), with who holds its Dispatch claim where
+// that is why; a why this pass must remove it for, and "" for a root it leaves. It asks nothing of
+// the slots because a row answers none of what it asks: the question is whether this root may come
+// back at all, which its label and its Dispatch claim decide, and the root keeps its row through
+// the whole wait either way (record.KeepsSlot).
+func (a *Admission) awaitingUnresumable(ctx context.Context, tx pgx.Tx, issue record.Issue) (why, claimedBy string, err error) {
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() || !record.InWorkflow(issue) || !issue.AwaitingPerson() {
-		return "", false, nil
+		return "", "", nil
 	}
-	reason, err := workflow.Unresumable(ctx, a.store, tx, issue)
-	return reason, reason != "", err
+	return workflow.Unresumable(ctx, a.store, tx, issue)
 }
 
 // Held reports whether any key currently waits on the Dispatch consumer reaching the stream

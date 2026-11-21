@@ -84,14 +84,25 @@ type SilentIssue struct {
 	BackgroundSince time.Time  `json:"backgroundSince,omitzero"`
 }
 
+// The words of why a root that awaits a person cannot resume (UnslottedRecord.Unresumable,
+// workflow's Unresumable): its legion label was removed, it left the workflow, or a person or a
+// session outside its tree holds its Dispatch claim, which ClaimedBy names.
+const (
+	UnresumableLabelRemoved = "label-removed"
+	UnresumableLeftWorkflow = "left-workflow"
+	UnresumableClaimed      = "claimed"
+)
+
 // UnslottedRecord is the notice that admission found a root with neither a slot nor a place in
 // the waiting line and set its phase to done (admit's releaseUnslotted): the status the root stood
-// at, its phase, and, for a root that awaits a person, why it cannot resume.
+// at, its phase, and, for a root that awaits a person, why it cannot resume (an Unresumable word)
+// with, for a Dispatch claim, who holds it as Dispatch names the holder (`<kind>:<id>`).
 type UnslottedRecord struct {
 	NoticeHead
 	Status      string      `json:"status"`
 	Phase       phase.Phase `json:"phase,omitempty"`
 	Unresumable string      `json:"unresumable,omitempty"`
+	ClaimedBy   string      `json:"claimed_by,omitempty"`
 }
 
 // AwaitingPersonRecord is the notice that a root waits on a person and keeps its slot (workflow's
@@ -176,12 +187,16 @@ func (u UpdateRound) MarshalJSON() ([]byte, error) {
 }
 
 // UpdateWaiting is one claim an update-stalled notice lists (record.UpdateWaiting is this type):
-// its token, its role, its state and whether it answered.
+// its token, its role, its state, whether it answered, and, for a suspended claim, who suspended
+// it (a supervise.SuspendSource word: operator for the operator's suspension, which only the
+// operator's resume ends, released for the daemon's idle release of its pod, and daemon, exit or
+// unknown for a suspension of the daemon's own).
 type UpdateWaiting struct {
-	Claim    string     `json:"claim"`
-	Role     claim.Role `json:"role,omitempty"`
-	State    string     `json:"state"`
-	Answered bool       `json:"answered,omitempty"`
+	Claim       string     `json:"claim"`
+	Role        claim.Role `json:"role,omitempty"`
+	State       string     `json:"state"`
+	Answered    bool       `json:"answered,omitempty"`
+	SuspendedBy string     `json:"suspended_by,omitempty"`
 }
 
 // ProviderErrorsRecord is the notice that a role ended turns in a row in a provider error
@@ -230,7 +245,8 @@ type TreeMember struct {
 // pause held its architect, the notice states that moment (CountedFrom), what it is (a
 // CountedFrom word: the end of the project's latest pause, the let-out of the architect's launch
 // that pause held, or the first confirmation of the entry's task by a turn of the architect) and
-// the pause it is of (PauseID, none for a confirmation).
+// the pause it is of (PauseID, none for a confirmation). A slow-before-gate arm that counted from
+// a confirmation names the entry confirmed (Entry).
 type ArchitectStalledRecord struct {
 	NoticeHead
 	Role             claim.Role  `json:"role,omitempty"`

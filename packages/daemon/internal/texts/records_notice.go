@@ -43,12 +43,15 @@ type FailureBudget struct {
 // PhaseFinishedRecord is the notice that a phase ended (workflow's NoticeFor): the role whose
 // phase ended, the phase, the phase the issue moved to, the worker's summary (words, bounded at
 // Summary) with the handoff's reference (its phase word, its version and its commit), and the
-// tester's verdict. A worker's own move back gives its words in reason, by that role.
+// tester's verdict. A worker's own move back says so (MovedBack), since its words may be none and
+// a completion that moves the issue to an earlier phase (a tester's fail, a review's request for
+// changes) names the same phases; it gives its words, where it gave any, in reason, by that role.
 type PhaseFinishedRecord struct {
 	NoticeHead
 	Role           claim.Role           `json:"role,omitempty"`
 	Phase          phase.Phase          `json:"phase,omitempty"`
 	To             phase.Phase          `json:"to,omitempty"`
+	MovedBack      bool                 `json:"moved_back,omitempty"`
 	Summary        string               `json:"summary,omitempty" texts:"words"`
 	Verdict        string               `json:"verdict,omitempty"`
 	HandoffPhase   string               `json:"handoff_phase,omitempty"`
@@ -218,20 +221,22 @@ const BeforeFirstPhase = "before_first_phase"
 
 // MessageRefusedRecord is the notice of a Dispatch write the daemon could not make (the daemon's
 // messagePostRefused and statusWriteRefused): what Dispatch refused (one of the Refused words) and
-// its answer. A refused message gives its length in characters and how its first line begins. A
-// refused status write gives the status, whether the status is set, whether the reason posted
-// beside it is on the issue, and, where it is not, the reason's length and how its first line
-// begins. Two first lines open with the daemon's own sentence and go on with another author's
-// words: a worker's backward move, whose move and asker the sentence states, and a close before
-// the issue's first phase, whose words are the architect's. Of such a line the record gives the
-// daemon's sentence as a field, RefusedMove (the move, "<from>-<to>") or RefusedClose
-// (BeforeFirstPhase), and the other author's words alone in Begins. Every other first line,
-// such a sentence with no words after it among them, is the daemon's own, and Begins gives it
-// whole. Begins is a words field, which the words object names with its author, the role whose
-// words it holds (the asker of the move, the architect of the close) or ByDaemon for the
-// daemon's own line, with the time the daemon queued the write, and, for a line past the
-// preview's bound, with the count of what the cut left out (rest): Begins holds the line's head
-// and nothing else.
+// its answer. A refused message gives its length and how its first line begins. A refused status
+// write gives the status, whether the status is set, whether the reason posted beside it is on the
+// issue, and, where it is not, the reason's length and how its first line begins. The length, like
+// every count of carried words (Carry), is in UTF-16 units, as Dispatch counts a body. Two first
+// lines open with the daemon's own sentence and go on with another author's words: a worker's
+// backward move, whose move and asker the sentence states, and a close before the issue's first
+// phase, whose words are the architect's. Of such a line the record gives the daemon's sentence as
+// a field, RefusedMove (the move, "<from>-<to>") or RefusedClose (BeforeFirstPhase), and the other
+// author's words alone in Begins. Every other first line, such a sentence with no words after it
+// among them, is the daemon's own, and Begins gives it whole. Begins is a words field, which the
+// words object names with its author, the role whose words it holds (the asker of the move, the
+// architect of the close) or ByDaemon for the daemon's own text, with the time the daemon queued
+// the write, and, where the words go on past what Begins holds, with the count of the rest
+// (rest): every unit of those words after Begins, the lines after the first among them, so the
+// count is 0 only where Begins holds the words whole. Begins holds the first line's head and
+// nothing else.
 type MessageRefusedRecord struct {
 	NoticeHead
 	Refused        string               `json:"refused"`
@@ -377,12 +382,13 @@ type UnrecordedChild struct {
 
 // LetGoChild is one child a release_children left to the recovery of a repository the daemon let
 // go, which no recovery will record now: the child, its parent and whether the parent is recorded
-// now, the status Dispatch's listing gives the child (empty where the listing no longer holds
-// it), and the repository its wait was filed under.
+// now, whether Dispatch's listing still holds the child (Listed) with the status it gives the child
+// (empty where the listing no longer holds it), and the repository its wait was filed under.
 type LetGoChild struct {
 	Child          string `json:"child"`
 	Parent         string `json:"parent"`
 	ParentRecorded bool   `json:"parent_recorded"`
+	Listed         bool   `json:"listed"`
 	Status         string `json:"status"`
 	Repo           string `json:"repo"`
 }

@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -379,8 +380,10 @@ func TestAWaitHeldByUntakenWorkStartsAtTheTaskConfirmation(t *testing.T) {
 }
 
 // An awaiting root whose Dispatch claim a person or an outside session took cannot resume in its
-// own session, so the daemon takes it out of the workflow and tells the controller; one the
-// daemon's own session or a session of its tree holds resumes as it is.
+// own session, so the daemon takes it out of the workflow and tells the controller, naming why by
+// a word of its own (unresumable: claimed) and the holder (claimed_by), where main's notice gave a
+// sentence ("its Dispatch claim is held by <holder>"); one the daemon's own session or a session of
+// its tree holds resumes as it is.
 func TestAnAwaitingRootAnOutsiderClaimedLeavesTheWorkflow(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -417,6 +420,17 @@ func TestAnAwaitingRootAnOutsiderClaimedLeavesTheWorkflow(t *testing.T) {
 					unslotted++
 					if notice.Phase != phase.AwaitingPerson || notice.Reason != "" {
 						t.Fatalf("unslotted notice %+v, want it to say the root was waiting on a person (phase awaiting_person)", notice)
+					}
+					raw, err := json.Marshal(notice)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var fields map[string]any
+					if err := json.Unmarshal(raw, &fields); err != nil {
+						t.Fatal(err)
+					}
+					if fields["unresumable"] != "claimed" || fields["claimed_by"] != tc.holder {
+						t.Errorf("unslotted notice %s, want unresumable: claimed and claimed_by: %s, a word and the holder rather than a sentence", raw, tc.holder)
 					}
 				}
 			}

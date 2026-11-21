@@ -137,7 +137,7 @@ func Bound(text string, limit int) (head string, rest int) {
 	for i, r := range text {
 		n := utf16.RuneLen(r)
 		if units+n > limit {
-			return text[:i], utf16Length(text[i:])
+			return text[:i], Units(text[i:])
 		}
 		units += n
 	}
@@ -517,9 +517,9 @@ func writeAttribute(b *strings.Builder, key, value string) {
 	b.WriteString(`"`)
 }
 
-// utf16Length is the count of UTF-16 units of text, each byte that is not valid UTF-8 one unit
-// (U+FFFD).
-func utf16Length(text string) int {
+// Units is the count of UTF-16 units of text, as Dispatch counts a body and every bound of carried
+// words counts (Bound), each byte that is not valid UTF-8 one unit (U+FFFD).
+func Units(text string) int {
 	n := 0
 	for _, r := range text {
 		n += utf16.RuneLen(r)

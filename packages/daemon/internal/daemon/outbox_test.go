@@ -904,8 +904,8 @@ func TestAMessagePostDispatchRefusesIsFinishedAndItsArchitectTold(t *testing.T) 
 	notice := messagePostRefused("LEGION-208", record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"}, refusal)
 	if want := (texts.MessageRefusedRecord{NoticeHead: texts.NoticeHead{Kind: texts.MessageRefused, Issue: "LEGION-208"},
 		Refused: texts.RefusedMessage, DispatchAnswer: refusal.Error(), Length: 41, Begins: "READY #42 at head",
-		Words: map[string]texts.WordsMeta{"begins": {By: texts.ByDaemon}}}); !reflect.DeepEqual(notice, want) {
-		t.Fatalf("the notice = %+v, want %+v: the issue, the message's length and its first line alone, named as the daemon's words, and Dispatch's refusal", notice, want)
+		Words: map[string]texts.WordsMeta{"begins": {By: texts.ByDaemon, Rest: 24}}}); !reflect.DeepEqual(notice, want) {
+		t.Fatalf("the notice = %+v, want %+v: the issue, the message's length and its first line alone, named as the daemon's words with the rest of the message counted, and Dispatch's refusal", notice, want)
 	}
 }
 
@@ -3454,7 +3454,7 @@ func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.
 			route: "POST /api/v1/issues/LEGION-2/messages", meets: func(d *outboxDispatch, noRoute error) { d.postErr = noRoute },
 			logged: "outbox Dispatch message refused and dropped; its architect is told",
 			told: &texts.MessageRefusedRecord{Refused: texts.RefusedMessage, Length: 41, Begins: "READY #42 at head",
-				Words: map[string]texts.WordsMeta{"begins": {By: texts.ByDaemon, At: queued}}}},
+				Words: map[string]texts.WordsMeta{"begins": {By: texts.ByDaemon, At: queued, Rest: 24}}}},
 		{name: "a claim release", kind: record.OutboxKindClaimRelease, payload: record.ClaimRelease{},
 			route: "GET /api/v1/issues/LEGION-2", meets: func(d *outboxDispatch, noRoute error) { d.getErr = noRoute },
 			logged: claimRefusedLine},

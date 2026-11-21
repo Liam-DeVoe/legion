@@ -464,6 +464,7 @@ func (b *goldenBuild) rootResumes(r goldenRendering) {
 	base := func(want map[string]string, gate *record.DesignGate) map[string]string {
 		want["issue"] = key
 		if gate != nil {
+			want["document"] = spec
 			want["document_version"] = strconv.Itoa(gate.LatestVersion)
 			want["gate_open"] = strconv.FormatBool(record.GateOpen(*gate))
 			want["gate_armed"] = "true"
@@ -567,6 +568,14 @@ func (b *goldenBuild) checkLooks(r goldenRendering) {
 	last["last"] = "true"
 	delete(last, "merge_commit")
 	b.task(r, "bound-last", check.Role, issue.Key, workflow.CheckLook(issue, unmerged, "bound", "", true), last)
+	// A bound that is not whole days, as production_check_hours takes one: 37 hours, then an hour
+	// and a half.
+	hours := check
+	hours.BoundAt = check.OpenedAt.Add([]time.Duration{37 * time.Hour, 90 * time.Minute}[r.n-1])
+	inHours := want(texts.WokenByMerge)
+	delete(inHours, "bound_days")
+	inHours["bound_hours"], inHours["last_look"] = []string{"37", "1.5"}[r.n-1], hours.BoundAt.UTC().Format(time.RFC3339Nano)
+	b.task(r, "hours", check.Role, issue.Key, workflow.CheckLook(issue, hours, "merge", "", false), inHours)
 }
 
 // architectStarts adds the root architect's start in each of its shapes (dispatch://INFRA-2614's

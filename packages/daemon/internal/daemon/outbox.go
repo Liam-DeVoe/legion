@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -624,7 +623,7 @@ const messageRefusedPreview = 200
 // block over its own bound among them, so the row is finished and the message is on no issue.
 // Nothing else would tell anyone, since the message is the daemon's only word on the issue for
 // what it carries. The record names what was refused, Dispatch's own refusal (bounded as a far
-// side's error text is, storetext.FarSideError), how long the message is in characters and how
+// side's error text is, storetext.FarSideError), how long the message is in UTF-16 units and how
 // its first line begins (quoteRefused).
 func messagePostRefused(issue string, payload record.MessagePost, cause error) texts.MessageRefusedRecord {
 	refused := texts.MessageRefusedRecord{NoticeHead: texts.NoticeHead{Kind: texts.MessageRefused, Issue: issue},
@@ -633,29 +632,30 @@ func messagePostRefused(issue string, payload record.MessagePost, cause error) t
 	return refused
 }
 
-// quoteRefused sets on refused how long the refused body is in characters and how its first line
-// begins, in a block of its own (begins, cut by refusedPreview) that the notice's words object
-// names with its author, so the card draws it apart from the notice's fields. Two bodies the
-// outbox posts are the daemon's sentence and then another author's words: a backward move's
-// reason, beside its status or as a message of its own where the move writes none, whose words
-// are those of the role that asked, and a close's reason, whose words are the architect's. The
-// sentence is read with the workflow's own writer of it, the move's with workflow.BackwardMoveOf
-// (given the whole body, since the writer's own stop, which it drops, ends the body) and the
-// close's lead with intake.CloseRootLead, and becomes a field (refused_move: <from>-<to>,
-// refused_close: before_first_phase), so the block holds the first line of the other author's
-// words alone, under that author's name. Every other first line, a move's sentence that gave no
-// words among them, is the daemon's own, whole, by texts.ByDaemon: every other body the outbox
-// posts is a message the workflow or the supervision writes of its own facts. A line past
-// messageRefusedPreview is cut with nothing added to it, and the words object gives the count of
-// what the cut left out (rest), as it does for every carried words. The line's time is the refused
-// row's, which refusedNoticeRow gives it.
+// quoteRefused sets on refused how long the refused body is and how its first line begins, in a
+// block of its own (begins, cut by refusedPreview) that the notice's words object names with its
+// author, so the card draws it apart from the notice's fields. Two bodies the outbox posts are the
+// daemon's sentence and then another author's words: a backward move's reason, beside its status
+// or as a message of its own where the move writes none, whose words are those of the role that
+// asked, and a close's reason, whose words are the architect's. The sentence is read with the
+// workflow's own writer of it, the move's with workflow.BackwardMoveOf (given the whole body,
+// since the writer's own stop, which it drops, ends the body) and the close's lead with
+// intake.CloseRootLead, and becomes a field (refused_move: <from>-<to>, refused_close:
+// before_first_phase), so the block holds the first line of the other author's words alone, under
+// that author's name. Every other body, a move's sentence that gave no words among them, is the
+// daemon's own, by texts.ByDaemon, and the block holds its first line whole: every other body the
+// outbox posts is a message the workflow or the supervision writes of its own facts. A line past
+// messageRefusedPreview is cut with nothing added to it. The words object counts the rest of the
+// words the block quotes (rest): every unit of them after the block's head, the lines after the
+// first among them, so a reason of two lines is never read as one the block holds whole. The
+// length and the rest are both in UTF-16 units (texts.Units, texts.Carry), as Dispatch counts a
+// body. The line's time is the refused row's, which refusedNoticeRow gives it.
 func quoteRefused(refused *texts.MessageRefusedRecord, body string) {
-	refused.Length = utf8.RuneCountInString(body)
-	line, _, _ := strings.Cut(body, "\n")
-	quoted, by := line, texts.ByDaemon
+	refused.Length = texts.Units(body)
+	quoted, by := body, texts.ByDaemon
 	if move, asked := workflow.BackwardMoveOf(body); asked && move.Words != "" {
 		refused.RefusedMove, quoted, by = phase.Pair(move.From, move.To), move.Words, string(move.Asker)
-	} else if words, closed := strings.CutPrefix(line, intake.CloseRootLead); closed && words != "" {
+	} else if words, closed := strings.CutPrefix(body, intake.CloseRootLead); closed && words != "" && !strings.HasPrefix(words, "\n") {
 		refused.RefusedClose, quoted, by = texts.BeforeFirstPhase, words, string(claim.RoleArchitect)
 	}
 	begins := refusedPreview(quoted)
@@ -664,12 +664,14 @@ func quoteRefused(refused *texts.MessageRefusedRecord, body string) {
 	}
 }
 
-// refusedPreview is the first line of a text a notice quotes, as the notice carries it: bounded to
-// messageRefusedPreview by texts.Carry, which adds nothing to the head it keeps and counts the rest
-// of the line it cut off.
-func refusedPreview(text string) texts.Words {
-	first, _, _ := strings.Cut(text, "\n")
-	return texts.Carry(first, messageRefusedPreview, false)
+// refusedPreview is the first line of words a notice quotes, as the notice carries it: bounded to
+// messageRefusedPreview by texts.Carry, which adds nothing to the head it keeps, with the count of
+// the rest of the words, every unit after that head, the lines after the first among them.
+func refusedPreview(words string) texts.Words {
+	first, _, _ := strings.Cut(words, "\n")
+	preview := texts.Carry(first, messageRefusedPreview, false)
+	preview.Rest = texts.Units(words) - texts.Units(preview.Text)
+	return preview
 }
 
 // refusedNoticeRow is the outbox row of a message-refused notice (messagePostRefused,

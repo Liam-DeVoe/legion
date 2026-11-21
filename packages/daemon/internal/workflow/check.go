@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -136,12 +137,16 @@ const retryOfLook = "the retry of a look nobody reported: "
 // names it and a resumed session tells the check from its last phase task by it. Then the facts of
 // the look: the look, what woke it, whether it is the last, the pull request, the merge commit
 // (left out where the record holds none, which the reader then reads from GitHub), and the
-// check's bound in whole days with the time of the look at that bound, the last. Every look states
-// the rule of its verdict as dispatch://INFRA-4533's R1 has it state dispatch://INFRA-904's R7, as
+// check's bound with the time of the look at that bound, the last. The bound is in whole days
+// where it is whole days, and otherwise in hours, as main's boundText named it in hours or less:
+// cut to whole days it would name no bound the check has, or none at all. Every look states the
+// rule of its verdict as dispatch://INFRA-4533's R1 has it state dispatch://INFRA-904's R7, as
 // main's task said it on every look: a requirement only the deploy can show that the look observes
-// as not met is a fail (not_met_requirement). The last look also states, in two fields beside it
-// and last, that such a requirement still unobserved there is a fail (unobserved_requirement), and
-// that its pending is only for an issue with no such requirement (pending).
+// as not met is a fail (not_met_requirement). The last look also states, in three fields beside it
+// and last, that such a requirement still unobserved there is a fail (unobserved_requirement),
+// that its pending is only for an issue with no such requirement (pending), and that a last look
+// nobody reported closes the check as not run (unreported), R7's second sentence, which main's
+// last look said of its pending ("closes the check as not run").
 //
 // What woke it is the cause (texts.WokenByMerge and the others): the merge that opened the check
 // (wakeMerge), its bound (wakeBound), or a check_wake row (wakeNamed), whose reason is either the
@@ -156,9 +161,15 @@ func CheckLook(issue record.Issue, check record.ProductionCheck, cause, detail s
 		NotMetRequirement: texts.LookNotMetRequirement, PullRequest: texts.PullRequestRef(check.Repo, check.Number), MergeCommit: check.MergeSHA}
 	if last {
 		look.UnobservedRequirement, look.Pending = texts.LastLookUnobservedRequirement, texts.LastLookPending
+		look.Unreported = texts.LastLookUnreported
 	}
 	if bound := check.BoundAt.Sub(check.OpenedAt); bound > 0 {
-		look.BoundDays, look.LastLook = int(bound/(24*time.Hour)), check.BoundAt.UTC()
+		look.LastLook = check.BoundAt.UTC()
+		if day := 24 * time.Hour; bound%day == 0 {
+			look.BoundDays = int(bound / day)
+		} else {
+			look.BoundHours = strconv.FormatFloat(bound.Hours(), 'f', -1, 64)
+		}
 	}
 	switch cause {
 	case wakeMerge:

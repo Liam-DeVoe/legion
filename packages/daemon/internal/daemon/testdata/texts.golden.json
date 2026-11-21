@@ -272,19 +272,19 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1010",
-      "text": "kind: root-resume\nissue: ALPHA-1010\nact: ask\nby: \"user:asdxz ad\"\nat: \"2026-11-18T09:50:00Z\"\nask: \"dispatch://ALPHA-1010/ask/6b0dc91e-abcf-6585-5209-797d0504e35f\"\noptions[2]: option bghmba,option axyklk\ndocument_version: 5\ngate_open: true\ngate_armed: true\nwith_person[1]: \"dispatch://ALPHA-1010/ask/cb865f27-9d6e-d0df-bd33-2cba03a28eb1\"\nthis resume is your design-approved wake\n<answer-1>\nzoe wvrowrnsi qjda pfhaumdz juuexspk onerclsw drjhq skngbydqk wzyj nahlomrqt uyi yseweod rbf kfonrpsr xoozkt kgmslz cvwjz bajvjmgm mwtyiixv btd qkwcdp gdxjky jgdbnvh sovhirqv yvadevxp toa mygc dvidb uotxj rsskfsabh wbd hae ntv qftxxsnww clgafe htfjzsw xypthttf isibox rhjy iytcp twpjlgo hdaxpbu juekkwyw jdcvimxnf pxfftm cvkoryqdf qrg shzycsym euibfluo picmozn etxpt blryo nwdbkwbp epct wootbsab cvfbh xtnlgsxvf equuzwcx dsa tspgcplqk fgchcscp gzlv pxiagtpv wwoqmz mkbqsg rraz jzh vojq nsm unqwmvr bubcfjmyi pqdezneyb oajgmqk xrrtdjru vxniiea uljfcavfn auyi wouccc rzk pdcrzkh kaeh kzjzglc zmwzai kxdplfguy rkzaxe cnhtwuna qogihtti xfesnf uskd artzu kbeul ryuscrs lssgnoxrw arm xfip amswkzpfx humn ls </answer tab\there\n</answer-1>",
+      "text": "kind: root-resume\nissue: ALPHA-1010\nact: ask\nby: \"user:asdxz ad\"\nat: \"2026-11-18T09:50:00Z\"\nask: \"dispatch://ALPHA-1010/ask/6b0dc91e-abcf-6585-5209-797d0504e35f\"\ndocument: \"dispatch://ALPHA-1010/spec\"\noptions[2]: option bghmba,option axyklk\ndocument_version: 5\ngate_open: true\ngate_armed: true\nwith_person[1]: \"dispatch://ALPHA-1010/ask/cb865f27-9d6e-d0df-bd33-2cba03a28eb1\"\nthis resume is your design-approved wake\n<answer-1>\nzoe wvrowrnsi qjda pfhaumdz juuexspk onerclsw drjhq skngbydqk wzyj nahlomrqt uyi yseweod rbf kfonrpsr xoozkt kgmslz cvwjz bajvjmgm mwtyiixv btd qkwcdp gdxjky jgdbnvh sovhirqv yvadevxp toa mygc dvidb uotxj rsskfsabh wbd hae ntv qftxxsnww clgafe htfjzsw xypthttf isibox rhjy iytcp twpjlgo hdaxpbu juekkwyw jdcvimxnf pxfftm cvkoryqdf qrg shzycsym euibfluo picmozn etxpt blryo nwdbkwbp epct wootbsab cvfbh xtnlgsxvf equuzwcx dsa tspgcplqk fgchcscp gzlv pxiagtpv wwoqmz mkbqsg rraz jzh vojq nsm unqwmvr bubcfjmyi pqdezneyb oajgmqk xrrtdjru vxniiea uljfcavfn auyi wouccc rzk pdcrzkh kaeh kzjzglc zmwzai kxdplfguy rkzaxe cnhtwuna qogihtti xfesnf uskd artzu kbeul ryuscrs lssgnoxrw arm xfip amswkzpfx humn ls </answer tab\there\n</answer-1>",
       "spans": [
         {
           "part": "kept",
           "kept_by": "skills/legion-architect/references/design-gate.md and prompts/roles/architect-root.md, which name it by its words",
-          "start": 336,
-          "end": 376
+          "start": 375,
+          "end": 415
         },
         {
           "part": "block",
           "name": "answer-1",
-          "start": 377,
-          "end": 1118
+          "start": 416,
+          "end": 1157
         }
       ]
     },
@@ -296,19 +296,19 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2010",
-      "text": "kind: root-resume\nissue: BRAVO-2010\nact: ask\nby: \"user:cauccawe\"\nat: \"2027-04-07T17:05:00Z\"\nask: \"dispatch://BRAVO-2010/ask/cf58ecee-daa0-7e92-8a24-8400cb86847e\"\noptions[2]: option qddafh,option matmps\ndocument_version: 6\ngate_open: true\ngate_armed: true\nwith_person[1]: \"dispatch://BRAVO-2010/ask/0bea1dd4-73e0-89ce-fad6-b229d7ff3c35\"\nthis resume is your design-approved wake\n<answer-1>\nvtwtpq znhdta xvj gxc fjao qxd kphkb ovbff xdw elen tozf iymitkd fxztfoxr znn olkz ptmck czgwnu ztgrlhhp jvzwg otaopdoy sqb dbfuvai exl xmuizbg ydjhipmp dghiklc mrzqicf saqekif fsayhchq hyw kthmqjjjw eldbum nssbcrwy pkgwezght fimb nqvnlu redepg yotp djt clbmsark izge zsvadtins vkbykni gubw rtec gcumdp rquhdlzn ugsyoadoc btomdz pgqs ejcg votq hsphwlklb pcdrhg ymzfpb ofhy eehg jegfjpcz hymaevuf stie kfachdvix sjjacg imrbrac yznpxsin lmisvm lqdkz hoyqljm tbdpcr cdyjrdm vhvmmqcnp knemvlh mykgner kpwbnvtxh kcxc cbq iud klbdcab ohre gdgsfg shbtts mjtx ncu elku srxnkob rfdg vsp kmdhws oorsucsax ovihx hbvv yqsj xmp qepignqzq ixuvk wvupdr ihgxw nid rtpjk fjpqdf havfu xnppn fszqbyaq sgkytwqia jdt xkfk </answer 🚀 rocket\n</answer-1>",
+      "text": "kind: root-resume\nissue: BRAVO-2010\nact: ask\nby: \"user:cauccawe\"\nat: \"2027-04-07T17:05:00Z\"\nask: \"dispatch://BRAVO-2010/ask/cf58ecee-daa0-7e92-8a24-8400cb86847e\"\ndocument: \"dispatch://BRAVO-2010/spec\"\noptions[2]: option qddafh,option matmps\ndocument_version: 6\ngate_open: true\ngate_armed: true\nwith_person[1]: \"dispatch://BRAVO-2010/ask/0bea1dd4-73e0-89ce-fad6-b229d7ff3c35\"\nthis resume is your design-approved wake\n<answer-1>\nvtwtpq znhdta xvj gxc fjao qxd kphkb ovbff xdw elen tozf iymitkd fxztfoxr znn olkz ptmck czgwnu ztgrlhhp jvzwg otaopdoy sqb dbfuvai exl xmuizbg ydjhipmp dghiklc mrzqicf saqekif fsayhchq hyw kthmqjjjw eldbum nssbcrwy pkgwezght fimb nqvnlu redepg yotp djt clbmsark izge zsvadtins vkbykni gubw rtec gcumdp rquhdlzn ugsyoadoc btomdz pgqs ejcg votq hsphwlklb pcdrhg ymzfpb ofhy eehg jegfjpcz hymaevuf stie kfachdvix sjjacg imrbrac yznpxsin lmisvm lqdkz hoyqljm tbdpcr cdyjrdm vhvmmqcnp knemvlh mykgner kpwbnvtxh kcxc cbq iud klbdcab ohre gdgsfg shbtts mjtx ncu elku srxnkob rfdg vsp kmdhws oorsucsax ovihx hbvv yqsj xmp qepignqzq ixuvk wvupdr ihgxw nid rtpjk fjpqdf havfu xnppn fszqbyaq sgkytwqia jdt xkfk </answer 🚀 rocket\n</answer-1>",
       "spans": [
         {
           "part": "kept",
           "kept_by": "skills/legion-architect/references/design-gate.md and prompts/roles/architect-root.md, which name it by its words",
-          "start": 336,
-          "end": 376
+          "start": 375,
+          "end": 415
         },
         {
           "part": "block",
           "name": "answer-1",
-          "start": 377,
-          "end": 1119
+          "start": 416,
+          "end": 1158
         }
       ]
     },
@@ -356,13 +356,13 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1010",
-      "text": "kind: root-resume\nissue: ALPHA-1010\nact: closed\nask: \"dispatch://ALPHA-1010/ask/a03afc6d-25b3-3dcd-93dd-6ab70474bf40\"\nclosed_by: \"session:3678fc91-0468-8ee7-ce25-57fa399447e0\"\ndocument_version: 5\ngate_open: true\ngate_armed: true\nthis resume is your design-approved wake",
+      "text": "kind: root-resume\nissue: ALPHA-1010\nact: closed\nask: \"dispatch://ALPHA-1010/ask/a03afc6d-25b3-3dcd-93dd-6ab70474bf40\"\ndocument: \"dispatch://ALPHA-1010/spec\"\nclosed_by: \"session:3678fc91-0468-8ee7-ce25-57fa399447e0\"\ndocument_version: 5\ngate_open: true\ngate_armed: true\nthis resume is your design-approved wake",
       "spans": [
         {
           "part": "kept",
           "kept_by": "skills/legion-architect/references/design-gate.md and prompts/roles/architect-root.md, which name it by its words",
-          "start": 229,
-          "end": 269
+          "start": 268,
+          "end": 308
         }
       ]
     },
@@ -374,13 +374,13 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2010",
-      "text": "kind: root-resume\nissue: BRAVO-2010\nact: closed\nask: \"dispatch://BRAVO-2010/ask/c7a8ff5f-17f3-78ff-cd74-de155b74f311\"\nclosed_by: \"session:4bf8be6a-ec56-2840-6f78-0f04ac5bf0b6\"\ndocument_version: 6\ngate_open: true\ngate_armed: true\nthis resume is your design-approved wake",
+      "text": "kind: root-resume\nissue: BRAVO-2010\nact: closed\nask: \"dispatch://BRAVO-2010/ask/c7a8ff5f-17f3-78ff-cd74-de155b74f311\"\ndocument: \"dispatch://BRAVO-2010/spec\"\nclosed_by: \"session:4bf8be6a-ec56-2840-6f78-0f04ac5bf0b6\"\ndocument_version: 6\ngate_open: true\ngate_armed: true\nthis resume is your design-approved wake",
       "spans": [
         {
           "part": "kept",
           "kept_by": "skills/legion-architect/references/design-gate.md and prompts/roles/architect-root.md, which name it by its words",
-          "start": 229,
-          "end": 269
+          "start": 268,
+          "end": 308
         }
       ]
     },
@@ -392,13 +392,13 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1010",
-      "text": "kind: root-resume\nissue: ALPHA-1010\nact: declined\nby: \"user:asdxz ad\"\nat: \"2026-11-18T09:50:00Z\"\nask: \"dispatch://ALPHA-1010/ask/2f044298-0575-59f5-097e-88e098f280ed\"\ndispatch_words: \"Dispatch: vghocuf hcxrqvh jgv sywc wvxtsxyt fleumndod tmdepxjb etzumux aupylryz otpg oyock ukkarct z\"\ndocument_version: 5\ngate_open: false\ngate_armed: true\n<note>\ntgmqfxhb ldlay hos nmhmjbml raobkemp ecchbe clljopp njrnkouc zmipcyy hdbkf pxxtovn bgyz bxamv qtzplpn kxfgwv orv pqgl paz exficgl xmo qbaujgmv ddwczck hlu mjc vuswgev csoewi lwb tkzovsqug kqzrzgiwk delttve lan rmszk asv zttxjso skh vtipeg filemunh jyis xtkhr cdfgkt exsr ftvjn cesmlwgxz fsft wtqenx srm iuxjywqay byybw rszi jkjfihvat fbb cbeo xtikax owgenrxk bxsdr zzaqyhgw synyyzo summgfluh wlcvm wy </answer tab\there\n</note>",
+      "text": "kind: root-resume\nissue: ALPHA-1010\nact: declined\nby: \"user:asdxz ad\"\nat: \"2026-11-18T09:50:00Z\"\nask: \"dispatch://ALPHA-1010/ask/2f044298-0575-59f5-097e-88e098f280ed\"\ndocument: \"dispatch://ALPHA-1010/spec\"\ndispatch_words: \"Dispatch: vghocuf hcxrqvh jgv sywc wvxtsxyt fleumndod tmdepxjb etzumux aupylryz otpg oyock ukkarct z\"\ndocument_version: 5\ngate_open: false\ngate_armed: true\n<note>\ntgmqfxhb ldlay hos nmhmjbml raobkemp ecchbe clljopp njrnkouc zmipcyy hdbkf pxxtovn bgyz bxamv qtzplpn kxfgwv orv pqgl paz exficgl xmo qbaujgmv ddwczck hlu mjc vuswgev csoewi lwb tkzovsqug kqzrzgiwk delttve lan rmszk asv zttxjso skh vtipeg filemunh jyis xtkhr cdfgkt exsr ftvjn cesmlwgxz fsft wtqenx srm iuxjywqay byybw rszi jkjfihvat fbb cbeo xtikax owgenrxk bxsdr zzaqyhgw synyyzo summgfluh wlcvm wy </answer tab\there\n</note>",
       "spans": [
         {
           "part": "block",
           "name": "note",
-          "start": 340,
-          "end": 773
+          "start": 379,
+          "end": 812
         }
       ]
     },
@@ -410,13 +410,13 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2010",
-      "text": "kind: root-resume\nissue: BRAVO-2010\nact: declined\nby: \"user:cauccawe\"\nat: \"2027-04-07T17:05:00Z\"\nask: \"dispatch://BRAVO-2010/ask/07605c43-75f6-fb7f-9f89-28bc18901195\"\ndispatch_words: \"Dispatch: dhsuxwbfd hbykgbsg dhimxz gqnncvqcl vtx gjvuamd vtzyt dlnmn lqah vcz vvbhgcmk fbcauc uug i\"\ndocument_version: 6\ngate_open: false\ngate_armed: true\n<note>\nmpxubdozd izxiji bmcar nathq omiox gtx risumf cznnj bdfif zkicd qggpvwc xjz hgti nzwf oyr pmhgsku bmhats bbitwcweb jtm npriiavqu gkaq jebkfh oqq wrkhavjzo qjiugjr brgxuxuv gpjvafv xfuneqs oicxkmvfk mbhpuc ldalu wofpzou cak wmg owvaxbxa smcn rhplkxj xdoz vgvreurvs gahck dvwyfmoqh lsxw tddudpuhb wnbpiund csjc qjbxegb qdfk kjtezhyb pdvlvvri zaki mrljyav gwykhrvp mmgrb nuzap nleub kyjgqrns rcgc txkfht </answer 🚀 rocket\n</note>",
+      "text": "kind: root-resume\nissue: BRAVO-2010\nact: declined\nby: \"user:cauccawe\"\nat: \"2027-04-07T17:05:00Z\"\nask: \"dispatch://BRAVO-2010/ask/07605c43-75f6-fb7f-9f89-28bc18901195\"\ndocument: \"dispatch://BRAVO-2010/spec\"\ndispatch_words: \"Dispatch: dhsuxwbfd hbykgbsg dhimxz gqnncvqcl vtx gjvuamd vtzyt dlnmn lqah vcz vvbhgcmk fbcauc uug i\"\ndocument_version: 6\ngate_open: false\ngate_armed: true\n<note>\nmpxubdozd izxiji bmcar nathq omiox gtx risumf cznnj bdfif zkicd qggpvwc xjz hgti nzwf oyr pmhgsku bmhats bbitwcweb jtm npriiavqu gkaq jebkfh oqq wrkhavjzo qjiugjr brgxuxuv gpjvafv xfuneqs oicxkmvfk mbhpuc ldalu wofpzou cak wmg owvaxbxa smcn rhplkxj xdoz vgvreurvs gahck dvwyfmoqh lsxw tddudpuhb wnbpiund csjc qjbxegb qdfk kjtezhyb pdvlvvri zaki mrljyav gwykhrvp mmgrb nuzap nleub kyjgqrns rcgc txkfht </answer 🚀 rocket\n</note>",
       "spans": [
         {
           "part": "block",
           "name": "note",
-          "start": 340,
-          "end": 774
+          "start": 379,
+          "end": 813
         }
       ]
     },
@@ -428,19 +428,19 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1010",
-      "text": "kind: root-resume\nissue: ALPHA-1010\nact: reply\nby: \"user:asdxz ad\"\nat: \"2026-11-18T09:50:00Z\"\nask: \"dispatch://ALPHA-1010/ask/2ac487a7-1bc8-c907-e73f-1a2dc1b17491\"\ndocument_version: 5\ngate_open: true\ngate_armed: true\nthis resume is your design-approved wake\n<reply>\nbnfdjeul zot bzz xivwhov lskje kyhsoqhmz rkz ijmokvzlv hvurl tqbz gveqqq lpapg hjhmih rigehi okmswpif frr sgcmhil ehzi l </answer tab\there\n</reply>",
+      "text": "kind: root-resume\nissue: ALPHA-1010\nact: reply\nby: \"user:asdxz ad\"\nat: \"2026-11-18T09:50:00Z\"\nask: \"dispatch://ALPHA-1010/ask/2ac487a7-1bc8-c907-e73f-1a2dc1b17491\"\ndocument: \"dispatch://ALPHA-1010/spec\"\ndocument_version: 5\ngate_open: true\ngate_armed: true\nthis resume is your design-approved wake\n<reply>\nbnfdjeul zot bzz xivwhov lskje kyhsoqhmz rkz ijmokvzlv hvurl tqbz gveqqq lpapg hjhmih rigehi okmswpif frr sgcmhil ehzi l </answer tab\there\n</reply>",
       "spans": [
         {
           "part": "kept",
           "kept_by": "skills/legion-architect/references/design-gate.md and prompts/roles/architect-root.md, which name it by its words",
-          "start": 217,
-          "end": 257
+          "start": 256,
+          "end": 296
         },
         {
           "part": "block",
           "name": "reply",
-          "start": 258,
-          "end": 413
+          "start": 297,
+          "end": 452
         }
       ]
     },
@@ -452,19 +452,19 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2010",
-      "text": "kind: root-resume\nissue: BRAVO-2010\nact: reply\nby: \"user:cauccawe\"\nat: \"2027-04-07T17:05:00Z\"\nask: \"dispatch://BRAVO-2010/ask/0191761f-4cdc-0e12-080a-71295434302d\"\ndocument_version: 6\ngate_open: true\ngate_armed: true\nthis resume is your design-approved wake\n<reply>\nuecmhf wyhd hgopwvlg witwvjff jbk kdzf suxejjyj prqjhugaz sqveapf knziuacps gmvsjj jgovqgv otzkmzpz btgsg evp kgrnmbgif  </answer 🚀 rocket\n</reply>",
+      "text": "kind: root-resume\nissue: BRAVO-2010\nact: reply\nby: \"user:cauccawe\"\nat: \"2027-04-07T17:05:00Z\"\nask: \"dispatch://BRAVO-2010/ask/0191761f-4cdc-0e12-080a-71295434302d\"\ndocument: \"dispatch://BRAVO-2010/spec\"\ndocument_version: 6\ngate_open: true\ngate_armed: true\nthis resume is your design-approved wake\n<reply>\nuecmhf wyhd hgopwvlg witwvjff jbk kdzf suxejjyj prqjhugaz sqveapf knziuacps gmvsjj jgovqgv otzkmzpz btgsg evp kgrnmbgif  </answer 🚀 rocket\n</reply>",
       "spans": [
         {
           "part": "kept",
           "kept_by": "skills/legion-architect/references/design-gate.md and prompts/roles/architect-root.md, which name it by its words",
-          "start": 217,
-          "end": 257
+          "start": 256,
+          "end": 296
         },
         {
           "part": "block",
           "name": "reply",
-          "start": 258,
-          "end": 414
+          "start": 297,
+          "end": 453
         }
       ]
     },
@@ -476,13 +476,13 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1010",
-      "text": "kind: root-resume\nissue: ALPHA-1010\nact: retracted\nask: \"dispatch://ALPHA-1010/ask/c4256400-ddaf-d10d-ebb2-052899424ef3\"\ndocument_version: 5\ngate_open: true\ngate_armed: true\nthis resume is your design-approved wake",
+      "text": "kind: root-resume\nissue: ALPHA-1010\nact: retracted\nask: \"dispatch://ALPHA-1010/ask/c4256400-ddaf-d10d-ebb2-052899424ef3\"\ndocument: \"dispatch://ALPHA-1010/spec\"\ndocument_version: 5\ngate_open: true\ngate_armed: true\nthis resume is your design-approved wake",
       "spans": [
         {
           "part": "kept",
           "kept_by": "skills/legion-architect/references/design-gate.md and prompts/roles/architect-root.md, which name it by its words",
-          "start": 174,
-          "end": 214
+          "start": 213,
+          "end": 253
         }
       ]
     },
@@ -494,13 +494,13 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2010",
-      "text": "kind: root-resume\nissue: BRAVO-2010\nact: retracted\nask: \"dispatch://BRAVO-2010/ask/fde8bdce-5047-6f4a-32e8-09d31c64af7b\"\ndocument_version: 6\ngate_open: true\ngate_armed: true\nthis resume is your design-approved wake",
+      "text": "kind: root-resume\nissue: BRAVO-2010\nact: retracted\nask: \"dispatch://BRAVO-2010/ask/fde8bdce-5047-6f4a-32e8-09d31c64af7b\"\ndocument: \"dispatch://BRAVO-2010/spec\"\ndocument_version: 6\ngate_open: true\ngate_armed: true\nthis resume is your design-approved wake",
       "spans": [
         {
           "part": "kept",
           "kept_by": "skills/legion-architect/references/design-gate.md and prompts/roles/architect-root.md, which name it by its words",
-          "start": 174,
-          "end": 214
+          "start": 213,
+          "end": 253
         }
       ]
     },
@@ -512,7 +512,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1010",
-      "text": "kind: root-resume\nissue: ALPHA-1010\nact: turn\nask: \"dispatch://ALPHA-1010/ask/5cb96900-3538-243e-da14-8c099a57837a\"\ndocument_version: 5\ngate_open: false\ngate_armed: true\nwaiting_on_you[1]: \"dispatch://ALPHA-1010/ask/1aa0557a-8606-ae2f-5487-4c468d555d3d\""
+      "text": "kind: root-resume\nissue: ALPHA-1010\nact: turn\nask: \"dispatch://ALPHA-1010/ask/5cb96900-3538-243e-da14-8c099a57837a\"\ndocument: \"dispatch://ALPHA-1010/spec\"\ndocument_version: 5\ngate_open: false\ngate_armed: true\nwaiting_on_you[1]: \"dispatch://ALPHA-1010/ask/1aa0557a-8606-ae2f-5487-4c468d555d3d\""
     },
     {
       "kind": "root-resume",
@@ -522,7 +522,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2010",
-      "text": "kind: root-resume\nissue: BRAVO-2010\nact: turn\nask: \"dispatch://BRAVO-2010/ask/bc06ca50-59a7-48d5-f219-b7f038c844ab\"\ndocument_version: 6\ngate_open: false\ngate_armed: true\nwaiting_on_you[1]: \"dispatch://BRAVO-2010/ask/c82047b4-cf12-fe1f-4781-ff7d541a2de3\""
+      "text": "kind: root-resume\nissue: BRAVO-2010\nact: turn\nask: \"dispatch://BRAVO-2010/ask/bc06ca50-59a7-48d5-f219-b7f038c844ab\"\ndocument: \"dispatch://BRAVO-2010/spec\"\ndocument_version: 6\ngate_open: false\ngate_armed: true\nwaiting_on_you[1]: \"dispatch://BRAVO-2010/ask/c82047b4-cf12-fe1f-4781-ff7d541a2de3\""
     },
     {
       "kind": "root-resume",
@@ -552,7 +552,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1020",
-      "text": "Production check of ALPHA-1020: temtyeb uskzlmb xvozg upcnfqco axjngoepq ljc sluulg ngs apkde nigutq hod znjoom oltjpnzkx ddhlymrd ffqs aohtdyycs ifq myryxp tjebt tfhpnjthg pcqia zgz ohqsfp nwzlxyoxd iopw t\"hswwms dbiuoyxi ayye, ynf jmg pzvaj yaxbhlxzt edwmtxhn przyputz eoc crgbsh fgqzjenr dirgytrq hxfidpxip pcr seoepox kniawzzo bbzi xxlbvuniw rbcbep dbdunlru jsv fvcv bcge yme hhhhmhqt zbbyb zut taoqpqtv nwef xqvov wrbnk gzicjspxd puesotcut lxxcuk rgsa otugfhh nrevaejrv camqhoj yzhiibvnc pmuup tdc iotsny mppiw qqo yibn kiafzuk ygiar wjnt uyjoqe aonb momjoknf zpnqkkv ztd kxnmgp tpli vrbsocy aps ugclofkow ptpkeco dsddmj dln mmqrsr yomo oxlzqc wwrdwnfe avzbafjc: s hjzdofjii kdraxun zvvaub fdsv zytdnhi cjntkfw htxly\\q qroaltp qotadgqa shxjsqtb rcit viqytd fgcpku kofya uxzbcsml moc cezh kpyruia cfntwbkou mwmujukow lfddgwo plxmstswk kajnknl oxzwcgj pydkmggv xtxyubzpf bjvsbtkw rwjzhfb cfwswakv rretjw atizza wawnx qsk zcsgym zxthagxjs fszribpn mysa gjk ubz zsawzwqxw rqy rkfbq wcdbra wlmnvk\t qriiluc cyuje tpmlazft 🧭cvoeifbb x.\nkind: check-look\nlook: 3\nwoken_by: bound\nlast: true\nnot_met_requirement: fail\nunobserved_requirement: fail\npending: only_with_no_deploy_only_requirement\npull_request: alpha-works/alpha-tower#301\nbound_days: 3\nlast_look: \"2026-11-21T09:30:00Z\"",
+      "text": "Production check of ALPHA-1020: temtyeb uskzlmb xvozg upcnfqco axjngoepq ljc sluulg ngs apkde nigutq hod znjoom oltjpnzkx ddhlymrd ffqs aohtdyycs ifq myryxp tjebt tfhpnjthg pcqia zgz ohqsfp nwzlxyoxd iopw t\"hswwms dbiuoyxi ayye, ynf jmg pzvaj yaxbhlxzt edwmtxhn przyputz eoc crgbsh fgqzjenr dirgytrq hxfidpxip pcr seoepox kniawzzo bbzi xxlbvuniw rbcbep dbdunlru jsv fvcv bcge yme hhhhmhqt zbbyb zut taoqpqtv nwef xqvov wrbnk gzicjspxd puesotcut lxxcuk rgsa otugfhh nrevaejrv camqhoj yzhiibvnc pmuup tdc iotsny mppiw qqo yibn kiafzuk ygiar wjnt uyjoqe aonb momjoknf zpnqkkv ztd kxnmgp tpli vrbsocy aps ugclofkow ptpkeco dsddmj dln mmqrsr yomo oxlzqc wwrdwnfe avzbafjc: s hjzdofjii kdraxun zvvaub fdsv zytdnhi cjntkfw htxly\\q qroaltp qotadgqa shxjsqtb rcit viqytd fgcpku kofya uxzbcsml moc cezh kpyruia cfntwbkou mwmujukow lfddgwo plxmstswk kajnknl oxzwcgj pydkmggv xtxyubzpf bjvsbtkw rwjzhfb cfwswakv rretjw atizza wawnx qsk zcsgym zxthagxjs fszribpn mysa gjk ubz zsawzwqxw rqy rkfbq wcdbra wlmnvk\t qriiluc cyuje tpmlazft 🧭cvoeifbb x.\nkind: check-look\nlook: 3\nwoken_by: bound\nlast: true\nnot_met_requirement: fail\nunobserved_requirement: fail\npending: only_with_no_deploy_only_requirement\nunreported: not_run\npull_request: alpha-works/alpha-tower#301\nbound_days: 3\nlast_look: \"2026-11-21T09:30:00Z\"",
       "spans": [
         {
           "part": "kept",
@@ -570,7 +570,43 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2020",
-      "text": "Production check of BRAVO-2020: rsdyxj gofia jgv ostnfyrl nlpoy: xusn iwkb fgvesiqal cvghkk frixrgy atckndojh zwzn wpvibrnph , szue🧭w tcplttzc flfe bikcguyar ldibtp aan cuofpaw tgkcmq irpgapoq shlvwewga cabbkxrvw rbtvuxo vqybmwgpb yoandgdp fgy oiezmhiep ejxwdom yhctckwh jyia vgipwfsz xsrkwodue frwa vnpjzzwvh dgqnpk usqdfgmuz sywkqg rjfzmfym ugkvqh imdjs xmvi\tfsgr uqo ftoiam zdmo fuvsaiiyz kgb anmg chlgbbkrj ktvg daurcnyhc gemsaxc jmilnkqaw oszbk nvu nerwmzdxq reixss fkqn sdwqqvhl fxkhzuacn zxepenoc dmff kab bwsnsxdk gvgt rnobh glkppu pokfpfpna plealana pnlw hairp maq ylypnhss fafvxss xzzcxoiz goktw zxml suc rmowwblz cnjbdutba txlnb resnu amohfn yotgz lxjky mhbhdcyk rtcrbqj ymtjhrek ldgzwkzut vdndfqqir vczhxif swijvcnx xyulyhogl dkcf eitbmlv ceda kjkmiohh ehipmdnpe ipcmhzw ohofldu yviil n\"nbz nxvtlrjz quzfk nbe \\vqcj llufxguc ocqajz lfdrymipf mufkixwus teynxhy dkrbrz ihpfsrv lvwqjqlr ombl cwctglacf dkhyetmf qmch zfcgaacpc nsxavwi zsbfwetx jzvoav xyeczdp hjyz eexfrc xwwxmiydt stbtuvoog zivrbob ubyy spef dhojczkg bzr of.\nkind: check-look\nlook: 4\nwoken_by: bound\nlast: true\nnot_met_requirement: fail\nunobserved_requirement: fail\npending: only_with_no_deploy_only_requirement\npull_request: bravo-labs/bravo-yard#302\nbound_days: 4\nlast_look: \"2027-04-11T16:45:00Z\"",
+      "text": "Production check of BRAVO-2020: rsdyxj gofia jgv ostnfyrl nlpoy: xusn iwkb fgvesiqal cvghkk frixrgy atckndojh zwzn wpvibrnph , szue🧭w tcplttzc flfe bikcguyar ldibtp aan cuofpaw tgkcmq irpgapoq shlvwewga cabbkxrvw rbtvuxo vqybmwgpb yoandgdp fgy oiezmhiep ejxwdom yhctckwh jyia vgipwfsz xsrkwodue frwa vnpjzzwvh dgqnpk usqdfgmuz sywkqg rjfzmfym ugkvqh imdjs xmvi\tfsgr uqo ftoiam zdmo fuvsaiiyz kgb anmg chlgbbkrj ktvg daurcnyhc gemsaxc jmilnkqaw oszbk nvu nerwmzdxq reixss fkqn sdwqqvhl fxkhzuacn zxepenoc dmff kab bwsnsxdk gvgt rnobh glkppu pokfpfpna plealana pnlw hairp maq ylypnhss fafvxss xzzcxoiz goktw zxml suc rmowwblz cnjbdutba txlnb resnu amohfn yotgz lxjky mhbhdcyk rtcrbqj ymtjhrek ldgzwkzut vdndfqqir vczhxif swijvcnx xyulyhogl dkcf eitbmlv ceda kjkmiohh ehipmdnpe ipcmhzw ohofldu yviil n\"nbz nxvtlrjz quzfk nbe \\vqcj llufxguc ocqajz lfdrymipf mufkixwus teynxhy dkrbrz ihpfsrv lvwqjqlr ombl cwctglacf dkhyetmf qmch zfcgaacpc nsxavwi zsbfwetx jzvoav xyeczdp hjyz eexfrc xwwxmiydt stbtuvoog zivrbob ubyy spef dhojczkg bzr of.\nkind: check-look\nlook: 4\nwoken_by: bound\nlast: true\nnot_met_requirement: fail\nunobserved_requirement: fail\npending: only_with_no_deploy_only_requirement\nunreported: not_run\npull_request: bravo-labs/bravo-yard#302\nbound_days: 4\nlast_look: \"2027-04-11T16:45:00Z\"",
+      "spans": [
+        {
+          "part": "kept",
+          "kept_by": "the legion tool's description (packages/pi-shared/src/legion-phase-ops.ts) and dispatch://INFRA-3518",
+          "start": 0,
+          "end": 1034
+        }
+      ]
+    },
+    {
+      "kind": "check-look",
+      "variant": "hours",
+      "sample": 1,
+      "reader": "tester",
+      "form": "task",
+      "urgency": "",
+      "issue": "ALPHA-1020",
+      "text": "Production check of ALPHA-1020: temtyeb uskzlmb xvozg upcnfqco axjngoepq ljc sluulg ngs apkde nigutq hod znjoom oltjpnzkx ddhlymrd ffqs aohtdyycs ifq myryxp tjebt tfhpnjthg pcqia zgz ohqsfp nwzlxyoxd iopw t\"hswwms dbiuoyxi ayye, ynf jmg pzvaj yaxbhlxzt edwmtxhn przyputz eoc crgbsh fgqzjenr dirgytrq hxfidpxip pcr seoepox kniawzzo bbzi xxlbvuniw rbcbep dbdunlru jsv fvcv bcge yme hhhhmhqt zbbyb zut taoqpqtv nwef xqvov wrbnk gzicjspxd puesotcut lxxcuk rgsa otugfhh nrevaejrv camqhoj yzhiibvnc pmuup tdc iotsny mppiw qqo yibn kiafzuk ygiar wjnt uyjoqe aonb momjoknf zpnqkkv ztd kxnmgp tpli vrbsocy aps ugclofkow ptpkeco dsddmj dln mmqrsr yomo oxlzqc wwrdwnfe avzbafjc: s hjzdofjii kdraxun zvvaub fdsv zytdnhi cjntkfw htxly\\q qroaltp qotadgqa shxjsqtb rcit viqytd fgcpku kofya uxzbcsml moc cezh kpyruia cfntwbkou mwmujukow lfddgwo plxmstswk kajnknl oxzwcgj pydkmggv xtxyubzpf bjvsbtkw rwjzhfb cfwswakv rretjw atizza wawnx qsk zcsgym zxthagxjs fszribpn mysa gjk ubz zsawzwqxw rqy rkfbq wcdbra wlmnvk\t qriiluc cyuje tpmlazft 🧭cvoeifbb x.\nkind: check-look\nlook: 3\nwoken_by: merge\nnot_met_requirement: fail\npull_request: alpha-works/alpha-tower#301\nmerge_commit: 125198cae63c471a716ff27c77a1bac53cefc2a2\nbound_hours: \"37\"\nlast_look: \"2026-11-19T22:30:00Z\"",
+      "spans": [
+        {
+          "part": "kept",
+          "kept_by": "the legion tool's description (packages/pi-shared/src/legion-phase-ops.ts) and dispatch://INFRA-3518",
+          "start": 0,
+          "end": 1034
+        }
+      ]
+    },
+    {
+      "kind": "check-look",
+      "variant": "hours",
+      "sample": 2,
+      "reader": "implementer",
+      "form": "task",
+      "urgency": "",
+      "issue": "BRAVO-2020",
+      "text": "Production check of BRAVO-2020: rsdyxj gofia jgv ostnfyrl nlpoy: xusn iwkb fgvesiqal cvghkk frixrgy atckndojh zwzn wpvibrnph , szue🧭w tcplttzc flfe bikcguyar ldibtp aan cuofpaw tgkcmq irpgapoq shlvwewga cabbkxrvw rbtvuxo vqybmwgpb yoandgdp fgy oiezmhiep ejxwdom yhctckwh jyia vgipwfsz xsrkwodue frwa vnpjzzwvh dgqnpk usqdfgmuz sywkqg rjfzmfym ugkvqh imdjs xmvi\tfsgr uqo ftoiam zdmo fuvsaiiyz kgb anmg chlgbbkrj ktvg daurcnyhc gemsaxc jmilnkqaw oszbk nvu nerwmzdxq reixss fkqn sdwqqvhl fxkhzuacn zxepenoc dmff kab bwsnsxdk gvgt rnobh glkppu pokfpfpna plealana pnlw hairp maq ylypnhss fafvxss xzzcxoiz goktw zxml suc rmowwblz cnjbdutba txlnb resnu amohfn yotgz lxjky mhbhdcyk rtcrbqj ymtjhrek ldgzwkzut vdndfqqir vczhxif swijvcnx xyulyhogl dkcf eitbmlv ceda kjkmiohh ehipmdnpe ipcmhzw ohofldu yviil n\"nbz nxvtlrjz quzfk nbe \\vqcj llufxguc ocqajz lfdrymipf mufkixwus teynxhy dkrbrz ihpfsrv lvwqjqlr ombl cwctglacf dkhyetmf qmch zfcgaacpc nsxavwi zsbfwetx jzvoav xyeczdp hjyz eexfrc xwwxmiydt stbtuvoog zivrbob ubyy spef dhojczkg bzr of.\nkind: check-look\nlook: 4\nwoken_by: merge\nnot_met_requirement: fail\npull_request: bravo-labs/bravo-yard#302\nmerge_commit: 77c76bae0d1bafc1ad5951fd599a011cd5c93946\nbound_hours: \"1.5\"\nlast_look: \"2027-04-07T18:15:00Z\"",
       "spans": [
         {
           "part": "kept",
@@ -1227,6 +1263,7 @@
         "phase": "reviewing",
         "issue": "ALPHA-1100",
         "to": "implementing",
+        "moved_back": true,
         "reason": "zbmbb pzggc mrinxi tkgzn xtwraxbf zncpfug pgjjz mghuvjqi mlxbyh gvyz lef wlpti quh ini dzazxcrx fbzx igentx ksfstjlxs fpv sajkg fgsqb chmi umddngm xhrb zvstv zwiday ilpqhi remenw ppgxfhlz lsxiddnkh adgqszc yeuboq xlutzl cpbuki iishz qdvnltob wtwicvkx xad gzuawtr dnzqhcvtd rgk ekesyjd fvy deopk jicgx fpukb asr vgbcb lht jonyzlli yysldate pwuzakbg fynam xmmlmgqjs yzoqzc imnbclhyo uxgegyp oky pnec jocjd wccdv fyibvdef powx phlnduyo ytwjx ylhoowyl cqykgyz ioltx dhbkos ktemvdu equoyaog tvuplvz qqzbt  a, b",
         "words": {
           "reason": {
@@ -1251,6 +1288,7 @@
         "phase": "testing",
         "issue": "BRAVO-2100",
         "to": "implementing",
+        "moved_back": true,
         "reason": "utee qvx mvvdhx qngls lyk kwultv zqwn wnlutmdx uqtprvot fmwckkt jdcxe cusreyv pbnr ivmrikq ghjf libfpbnkw csswt ntfljpa dhxt mnlodw jekpoekfk djrroxi krmpe afsbyglnt iqsgip ohq igsjcpre wpxvp rrmvxjug qol whoyhqsp usqhkwk zdwklr fntsjkjwe blivxxb fynim psqbvwqn wizvphou uuypqcllt zqkh jzaomr hsfrpoi hkcf fvox qaxaw msjybgly xdwfmz mqddlew pyfa xlkzz yipl doc gcxn fsvjku rljl kbnbp bpxp gobejumov gdcj vtbjf aknmfci tbufukux xxcubguy mdvhf razraxzv lrmbslepc hmlketn gsly xkexwif mcop xjvu omf nrjo say \"so\"",
         "words": {
           "reason": {
@@ -1258,6 +1296,42 @@
             "at": "2027-04-07T17:45:00Z"
           }
         }
+      }
+    },
+    {
+      "kind": "phase-finished",
+      "variant": "backward-no-words",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "low",
+      "issue": "ALPHA-1100",
+      "summary": "phase-finished on ALPHA-1100",
+      "payload": {
+        "kind": "phase-finished",
+        "role": "tester",
+        "phase": "testing",
+        "issue": "ALPHA-1100",
+        "to": "implementing",
+        "moved_back": true
+      }
+    },
+    {
+      "kind": "phase-finished",
+      "variant": "backward-no-words",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "low",
+      "issue": "BRAVO-2100",
+      "summary": "phase-finished on BRAVO-2100",
+      "payload": {
+        "kind": "phase-finished",
+        "role": "reviewer",
+        "phase": "reviewing",
+        "issue": "BRAVO-2100",
+        "to": "implementing",
+        "moved_back": true
       }
     },
     {
@@ -2353,7 +2427,7 @@
           "begins": {
             "by": "implementer",
             "at": "2026-11-18T10:29:00Z",
-            "rest": 405
+            "rest": 486
           }
         }
       }
@@ -2379,7 +2453,7 @@
           "begins": {
             "by": "merger",
             "at": "2027-04-07T17:44:00Z",
-            "rest": 411
+            "rest": 492
           }
         }
       }
@@ -2404,7 +2478,7 @@
           "begins": {
             "by": "daemon",
             "at": "2026-11-18T10:29:00Z",
-            "rest": 100
+            "rest": 181
           }
         }
       }
@@ -2429,7 +2503,7 @@
           "begins": {
             "by": "daemon",
             "at": "2027-04-07T17:44:00Z",
-            "rest": 100
+            "rest": 181
           }
         }
       }
@@ -3356,6 +3430,7 @@
             "child": "ALPHA-1131",
             "parent": "ALPHA-1120",
             "parent_recorded": true,
+            "listed": true,
             "status": "todo",
             "repo": "alpha-works/alpha-tower"
           }
@@ -3383,6 +3458,7 @@
             "child": "BRAVO-2131",
             "parent": "BRAVO-2120",
             "parent_recorded": true,
+            "listed": true,
             "status": "todo",
             "repo": "bravo-labs/bravo-yard"
           }
@@ -3410,6 +3486,7 @@
             "child": "ALPHA-1128",
             "parent": "ALPHA-1120",
             "parent_recorded": true,
+            "listed": true,
             "status": "backlog",
             "repo": "alpha-works/alpha-tower"
           },
@@ -3417,7 +3494,16 @@
             "child": "ALPHA-1129",
             "parent": "ALPHA-1130",
             "parent_recorded": false,
+            "listed": true,
             "status": "todo",
+            "repo": "alpha-works/alpha-tower"
+          },
+          {
+            "child": "ALPHA-1132",
+            "parent": "ALPHA-1120",
+            "parent_recorded": true,
+            "listed": false,
+            "status": "",
             "repo": "alpha-works/alpha-tower"
           }
         ]
@@ -3444,6 +3530,7 @@
             "child": "BRAVO-2128",
             "parent": "BRAVO-2120",
             "parent_recorded": true,
+            "listed": true,
             "status": "icebox",
             "repo": "bravo-labs/bravo-yard"
           },
@@ -3451,7 +3538,16 @@
             "child": "BRAVO-2129",
             "parent": "BRAVO-2130",
             "parent_recorded": false,
+            "listed": true,
             "status": "todo",
+            "repo": "bravo-labs/bravo-yard"
+          },
+          {
+            "child": "BRAVO-2132",
+            "parent": "BRAVO-2120",
+            "parent_recorded": true,
+            "listed": false,
+            "status": "",
             "repo": "bravo-labs/bravo-yard"
           }
         ]
@@ -8248,7 +8344,8 @@
         "phase": "awaiting_person",
         "issue": "ALPHA-1210",
         "status": "in_progress",
-        "unresumable": "ktcott svzysjp vmnsmxtf yoxlzbrp jtgdk xslv nuoz kottyywz tiu eeksh up"
+        "unresumable": "claimed",
+        "claimed_by": "user:nwppy be"
       }
     },
     {
@@ -8265,7 +8362,8 @@
         "phase": "awaiting_person",
         "issue": "BRAVO-2210",
         "status": "in_progress",
-        "unresumable": "zzfep lgcvgtaim ouptubj mll pnkmqn jai lcqhahy hyndgpl ziu otpv sdogce"
+        "unresumable": "claimed",
+        "claimed_by": "session:cd675d8c-c409-ab43-6673-931a2d4dd32d"
       }
     },
     {
@@ -8600,6 +8698,516 @@
     },
     {
       "kind": "update-stalled",
+      "variant": "no-pod",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA-1250",
+      "summary": "update-stalled on ALPHA-1250",
+      "payload": {
+        "kind": "update-stalled",
+        "issue": "ALPHA-1250",
+        "update": {
+          "round": "round-b713db50-d335-590f-51ee-3bcf182693ad",
+          "images": [
+            "fcc5fe3c1cf6"
+          ],
+          "settings": [
+            "setting_rvbmy _00",
+            "setting_bet mr_01",
+            "setting_nxla a_02",
+            "setting_qwsdl _03",
+            "setting_splbq _04",
+            "setting_eavdb _05",
+            "setting_evc gx_06",
+            "setting_qdxtrv_07",
+            "setting_gwxvtv_08",
+            "setting_hqpqhy_09",
+            "setting_hysbvm_10",
+            "setting_hnpo o_11",
+            "setting_nki uk_12",
+            "setting_zrlfwb_13",
+            "setting_rvc eh_14",
+            "setting_rcqfre_15",
+            "setting_kgbjer_16",
+            "setting_ybkmv _17",
+            "setting_acmnng_18",
+            "setting_dyyuxs_19",
+            "setting_bcclyz_20",
+            "setting_yvzbv _21",
+            "setting_mvd ap_22",
+            "setting_glmrap_23",
+            "setting_ntfna _24",
+            "setting_dhpzc _25",
+            "setting_eskznz_26",
+            "setting_cxcvix_27",
+            "setting_gre nt_28",
+            "setting_bwolkl_29"
+          ],
+          "waiting": [
+            {
+              "claim": "legion-alpha-alpha-1250-implementer",
+              "role": "implementer",
+              "state": "working"
+            }
+          ]
+        },
+        "holds": "no-pod"
+      }
+    },
+    {
+      "kind": "update-stalled",
+      "variant": "no-pod",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO-2250",
+      "summary": "update-stalled on BRAVO-2250",
+      "payload": {
+        "kind": "update-stalled",
+        "issue": "BRAVO-2250",
+        "update": {
+          "round": "round-d6a15047-b4ca-d284-a289-f93ca31dcbba",
+          "images": [
+            "a817b86cc705"
+          ],
+          "settings": [
+            "setting_pif wl_00",
+            "setting_bjvx g_01",
+            "setting_vrkmy _02",
+            "setting_ewd fo_03",
+            "setting_dxout _04",
+            "setting_ukl lg_05",
+            "setting_emu rb_06",
+            "setting_czbxie_07",
+            "setting_zfuagt_08",
+            "setting_mxdb p_09",
+            "setting_kqnqyg_10",
+            "setting_gplqfg_11",
+            "setting_weysy _12",
+            "setting_czfxtj_13",
+            "setting_wvj od_14",
+            "setting_bknfdl_15",
+            "setting_pczurd_16",
+            "setting_rryoin_17",
+            "setting_uboadj_18",
+            "setting_gto gx_19",
+            "setting_zuto o_20",
+            "setting_euysc _21",
+            "setting_amtznk_22",
+            "setting_lkntq _23",
+            "setting_wwj rd_24",
+            "setting_omoa e_25",
+            "setting_owzvyr_26",
+            "setting_qcimou_27",
+            "setting_fzyht _28",
+            "setting_sivmq _29"
+          ],
+          "waiting": [
+            {
+              "claim": "legion-bravo-bravo-2250-implementer",
+              "role": "implementer",
+              "state": "working"
+            }
+          ]
+        },
+        "holds": "no-pod"
+      }
+    },
+    {
+      "kind": "update-stalled",
+      "variant": "no-process",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA-1250",
+      "summary": "update-stalled on ALPHA-1250",
+      "payload": {
+        "kind": "update-stalled",
+        "issue": "ALPHA-1250",
+        "update": {
+          "round": "round-b713db50-d335-590f-51ee-3bcf182693ad",
+          "pod": "pod-8ec20b4e-2fe5-fdb9-227c-2971fb0c6771",
+          "images": [
+            "fcc5fe3c1cf6"
+          ],
+          "settings": [
+            "setting_rvbmy _00",
+            "setting_bet mr_01",
+            "setting_nxla a_02",
+            "setting_qwsdl _03",
+            "setting_splbq _04",
+            "setting_eavdb _05",
+            "setting_evc gx_06",
+            "setting_qdxtrv_07",
+            "setting_gwxvtv_08",
+            "setting_hqpqhy_09",
+            "setting_hysbvm_10",
+            "setting_hnpo o_11",
+            "setting_nki uk_12",
+            "setting_zrlfwb_13",
+            "setting_rvc eh_14",
+            "setting_rcqfre_15",
+            "setting_kgbjer_16",
+            "setting_ybkmv _17",
+            "setting_acmnng_18",
+            "setting_dyyuxs_19",
+            "setting_bcclyz_20",
+            "setting_yvzbv _21",
+            "setting_mvd ap_22",
+            "setting_glmrap_23",
+            "setting_ntfna _24",
+            "setting_dhpzc _25",
+            "setting_eskznz_26",
+            "setting_cxcvix_27",
+            "setting_gre nt_28",
+            "setting_bwolkl_29"
+          ],
+          "waiting": [
+            {
+              "claim": "legion-alpha-alpha-1250-implementer",
+              "role": "implementer",
+              "state": "working"
+            }
+          ]
+        },
+        "holds": "no-process"
+      }
+    },
+    {
+      "kind": "update-stalled",
+      "variant": "no-process",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO-2250",
+      "summary": "update-stalled on BRAVO-2250",
+      "payload": {
+        "kind": "update-stalled",
+        "issue": "BRAVO-2250",
+        "update": {
+          "round": "round-d6a15047-b4ca-d284-a289-f93ca31dcbba",
+          "pod": "pod-f0986195-2fdc-4b75-4a46-7201142b58e6",
+          "images": [
+            "a817b86cc705"
+          ],
+          "settings": [
+            "setting_pif wl_00",
+            "setting_bjvx g_01",
+            "setting_vrkmy _02",
+            "setting_ewd fo_03",
+            "setting_dxout _04",
+            "setting_ukl lg_05",
+            "setting_emu rb_06",
+            "setting_czbxie_07",
+            "setting_zfuagt_08",
+            "setting_mxdb p_09",
+            "setting_kqnqyg_10",
+            "setting_gplqfg_11",
+            "setting_weysy _12",
+            "setting_czfxtj_13",
+            "setting_wvj od_14",
+            "setting_bknfdl_15",
+            "setting_pczurd_16",
+            "setting_rryoin_17",
+            "setting_uboadj_18",
+            "setting_gto gx_19",
+            "setting_zuto o_20",
+            "setting_euysc _21",
+            "setting_amtznk_22",
+            "setting_lkntq _23",
+            "setting_wwj rd_24",
+            "setting_omoa e_25",
+            "setting_owzvyr_26",
+            "setting_qcimou_27",
+            "setting_fzyht _28",
+            "setting_sivmq _29"
+          ],
+          "waiting": [
+            {
+              "claim": "legion-bravo-bravo-2250-implementer",
+              "role": "implementer",
+              "state": "working"
+            }
+          ]
+        },
+        "holds": "no-process"
+      }
+    },
+    {
+      "kind": "update-stalled",
+      "variant": "operator",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA-1250",
+      "summary": "update-stalled on ALPHA-1250",
+      "payload": {
+        "kind": "update-stalled",
+        "issue": "ALPHA-1250",
+        "update": {
+          "round": "round-b713db50-d335-590f-51ee-3bcf182693ad",
+          "pod": "pod-8ec20b4e-2fe5-fdb9-227c-2971fb0c6771",
+          "images": [
+            "fcc5fe3c1cf6"
+          ],
+          "settings": [
+            "setting_rvbmy _00",
+            "setting_bet mr_01",
+            "setting_nxla a_02",
+            "setting_qwsdl _03",
+            "setting_splbq _04",
+            "setting_eavdb _05",
+            "setting_evc gx_06",
+            "setting_qdxtrv_07",
+            "setting_gwxvtv_08",
+            "setting_hqpqhy_09",
+            "setting_hysbvm_10",
+            "setting_hnpo o_11",
+            "setting_nki uk_12",
+            "setting_zrlfwb_13",
+            "setting_rvc eh_14",
+            "setting_rcqfre_15",
+            "setting_kgbjer_16",
+            "setting_ybkmv _17",
+            "setting_acmnng_18",
+            "setting_dyyuxs_19",
+            "setting_bcclyz_20",
+            "setting_yvzbv _21",
+            "setting_mvd ap_22",
+            "setting_glmrap_23",
+            "setting_ntfna _24",
+            "setting_dhpzc _25",
+            "setting_eskznz_26",
+            "setting_cxcvix_27",
+            "setting_gre nt_28",
+            "setting_bwolkl_29"
+          ],
+          "waiting": [
+            {
+              "claim": "legion-alpha-alpha-1250-implementer",
+              "role": "implementer",
+              "state": "idle"
+            },
+            {
+              "claim": "legion-alpha-alpha-1250-tester",
+              "role": "tester",
+              "state": "suspended",
+              "suspended_by": "operator"
+            },
+            {
+              "claim": "legion-alpha-alpha-1250-reviewer",
+              "role": "reviewer",
+              "state": "suspended",
+              "suspended_by": "released"
+            }
+          ]
+        },
+        "holds": "operator"
+      }
+    },
+    {
+      "kind": "update-stalled",
+      "variant": "operator",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO-2250",
+      "summary": "update-stalled on BRAVO-2250",
+      "payload": {
+        "kind": "update-stalled",
+        "issue": "BRAVO-2250",
+        "update": {
+          "round": "round-d6a15047-b4ca-d284-a289-f93ca31dcbba",
+          "pod": "pod-f0986195-2fdc-4b75-4a46-7201142b58e6",
+          "images": [
+            "a817b86cc705"
+          ],
+          "settings": [
+            "setting_pif wl_00",
+            "setting_bjvx g_01",
+            "setting_vrkmy _02",
+            "setting_ewd fo_03",
+            "setting_dxout _04",
+            "setting_ukl lg_05",
+            "setting_emu rb_06",
+            "setting_czbxie_07",
+            "setting_zfuagt_08",
+            "setting_mxdb p_09",
+            "setting_kqnqyg_10",
+            "setting_gplqfg_11",
+            "setting_weysy _12",
+            "setting_czfxtj_13",
+            "setting_wvj od_14",
+            "setting_bknfdl_15",
+            "setting_pczurd_16",
+            "setting_rryoin_17",
+            "setting_uboadj_18",
+            "setting_gto gx_19",
+            "setting_zuto o_20",
+            "setting_euysc _21",
+            "setting_amtznk_22",
+            "setting_lkntq _23",
+            "setting_wwj rd_24",
+            "setting_omoa e_25",
+            "setting_owzvyr_26",
+            "setting_qcimou_27",
+            "setting_fzyht _28",
+            "setting_sivmq _29"
+          ],
+          "waiting": [
+            {
+              "claim": "legion-bravo-bravo-2250-implementer",
+              "role": "implementer",
+              "state": "idle"
+            },
+            {
+              "claim": "legion-bravo-bravo-2250-tester",
+              "role": "tester",
+              "state": "suspended",
+              "suspended_by": "operator"
+            },
+            {
+              "claim": "legion-bravo-bravo-2250-reviewer",
+              "role": "reviewer",
+              "state": "suspended",
+              "suspended_by": "released"
+            }
+          ]
+        },
+        "holds": "operator"
+      }
+    },
+    {
+      "kind": "update-stalled",
+      "variant": "pod-unread",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA-1250",
+      "summary": "update-stalled on ALPHA-1250",
+      "payload": {
+        "kind": "update-stalled",
+        "issue": "ALPHA-1250",
+        "update": {
+          "round": "round-b713db50-d335-590f-51ee-3bcf182693ad",
+          "pod": "pod-8ec20b4e-2fe5-fdb9-227c-2971fb0c6771",
+          "images": [
+            "fcc5fe3c1cf6"
+          ],
+          "settings": [
+            "setting_rvbmy _00",
+            "setting_bet mr_01",
+            "setting_nxla a_02",
+            "setting_qwsdl _03",
+            "setting_splbq _04",
+            "setting_eavdb _05",
+            "setting_evc gx_06",
+            "setting_qdxtrv_07",
+            "setting_gwxvtv_08",
+            "setting_hqpqhy_09",
+            "setting_hysbvm_10",
+            "setting_hnpo o_11",
+            "setting_nki uk_12",
+            "setting_zrlfwb_13",
+            "setting_rvc eh_14",
+            "setting_rcqfre_15",
+            "setting_kgbjer_16",
+            "setting_ybkmv _17",
+            "setting_acmnng_18",
+            "setting_dyyuxs_19",
+            "setting_bcclyz_20",
+            "setting_yvzbv _21",
+            "setting_mvd ap_22",
+            "setting_glmrap_23",
+            "setting_ntfna _24",
+            "setting_dhpzc _25",
+            "setting_eskznz_26",
+            "setting_cxcvix_27",
+            "setting_gre nt_28",
+            "setting_bwolkl_29"
+          ],
+          "waiting": [
+            {
+              "claim": "legion-alpha-alpha-1250-implementer",
+              "role": "implementer",
+              "state": "working"
+            }
+          ]
+        },
+        "holds": "pod-unread"
+      }
+    },
+    {
+      "kind": "update-stalled",
+      "variant": "pod-unread",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO-2250",
+      "summary": "update-stalled on BRAVO-2250",
+      "payload": {
+        "kind": "update-stalled",
+        "issue": "BRAVO-2250",
+        "update": {
+          "round": "round-d6a15047-b4ca-d284-a289-f93ca31dcbba",
+          "pod": "pod-f0986195-2fdc-4b75-4a46-7201142b58e6",
+          "images": [
+            "a817b86cc705"
+          ],
+          "settings": [
+            "setting_pif wl_00",
+            "setting_bjvx g_01",
+            "setting_vrkmy _02",
+            "setting_ewd fo_03",
+            "setting_dxout _04",
+            "setting_ukl lg_05",
+            "setting_emu rb_06",
+            "setting_czbxie_07",
+            "setting_zfuagt_08",
+            "setting_mxdb p_09",
+            "setting_kqnqyg_10",
+            "setting_gplqfg_11",
+            "setting_weysy _12",
+            "setting_czfxtj_13",
+            "setting_wvj od_14",
+            "setting_bknfdl_15",
+            "setting_pczurd_16",
+            "setting_rryoin_17",
+            "setting_uboadj_18",
+            "setting_gto gx_19",
+            "setting_zuto o_20",
+            "setting_euysc _21",
+            "setting_amtznk_22",
+            "setting_lkntq _23",
+            "setting_wwj rd_24",
+            "setting_omoa e_25",
+            "setting_owzvyr_26",
+            "setting_qcimou_27",
+            "setting_fzyht _28",
+            "setting_sivmq _29"
+          ],
+          "waiting": [
+            {
+              "claim": "legion-bravo-bravo-2250-implementer",
+              "role": "implementer",
+              "state": "working"
+            }
+          ]
+        },
+        "holds": "pod-unread"
+      }
+    },
+    {
+      "kind": "update-stalled",
       "variant": "refused",
       "sample": 1,
       "reader": "controller",
@@ -8914,6 +9522,50 @@
         "counted_from": "2027-04-07T15:13:00Z",
         "counted_from_event": "launch-let-out",
         "pause_id": 62
+      }
+    },
+    {
+      "kind": "architect-stalled",
+      "variant": "slow-confirmed",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA-1240",
+      "summary": "architect-stalled on ALPHA-1240",
+      "payload": {
+        "kind": "architect-stalled",
+        "role": "architect",
+        "phase": "admitted",
+        "issue": "ALPHA-1240",
+        "bound": "1h30m0s",
+        "entry": 7,
+        "arm": "slow-before-gate",
+        "since": "2026-11-18T06:09:00Z",
+        "counted_from": "2026-11-18T07:49:00Z",
+        "counted_from_event": "entry-confirmed"
+      }
+    },
+    {
+      "kind": "architect-stalled",
+      "variant": "slow-confirmed",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO-2240",
+      "summary": "architect-stalled on BRAVO-2240",
+      "payload": {
+        "kind": "architect-stalled",
+        "role": "architect",
+        "phase": "admitted",
+        "issue": "BRAVO-2240",
+        "bound": "1h30m0s",
+        "entry": 8,
+        "arm": "slow-before-gate",
+        "since": "2027-04-07T13:23:00Z",
+        "counted_from": "2027-04-07T15:03:00Z",
+        "counted_from_event": "entry-confirmed"
       }
     },
     {

@@ -1567,7 +1567,7 @@ func TestALetGoHeldPastItsBoundTellsItsReleaseWaits(t *testing.T) {
 	if waited < recoveryHoldBound {
 		t.Fatalf("the let-go was told after %s, want it put back while the hold lasted less than %s", waited, recoveryHoldBound)
 	}
-	want := []texts.LetGoChild{{Child: let, Parent: heldTree, ParentRecorded: true, Status: "backlog", Repo: stranger}}
+	want := []texts.LetGoChild{{Child: let, Parent: heldTree, ParentRecorded: true, Listed: true, Status: "backlog", Repo: stranger}}
 	if notices := letGo(); len(notices) != 1 || !slices.Equal(notices[0].LetGo, want) {
 		t.Fatalf("let-go notices = %+v, want one naming %+v", notices, want)
 	}

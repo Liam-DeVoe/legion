@@ -359,7 +359,7 @@ func TestTheTookNothingArmCountsNoTimeBeforeTheArchitectsLetOut(t *testing.T) {
 //
 //   - a root admitted at the pause's end, whose architect stood launching until 11m30s after it,
 //     was ready then and confirmed its entry's task at 12 minutes: no arm 91 minutes after the
-//     pause's end, and the arm 91 minutes after the confirmation, naming it;
+//     pause's end, and the arm 91 minutes after the confirmation, naming it and the entry;
 //   - a root whose architect confirmed its entry before the pause and was stopped by it owing a
 //     launch, whose resume of that pause was let out 11 minutes after its end: no arm 91 minutes
 //     after the pause's end, and the arm 91 minutes after the let-out, naming it.
@@ -445,13 +445,19 @@ func TestTheGateArmCountsNoTimeBeforeTheArchitectsLetOut(t *testing.T) {
 			}
 			applySweep(t, pool, admission, "gate-let-out-2")
 			assertArchitectWakes(t, pool, root, want, tc.why)
-			wantPause := int64(0)
+			wantPause, wantEntry := int64(0), int64(0)
 			if tc.event == texts.CountedFromLaunchLetOut {
 				wantPause = pause
 			}
-			if wake := architectWakes(t, pool, root)[0]; !wake.CountedFrom.Equal(tc.from) || wake.CountedFromEvent != tc.event || wake.PauseID != wantPause {
-				t.Fatalf("the wake of %s counts from %s (%q, pause %d), want %s (%q, pause %d), the moment the arm counted from",
-					root, wake.CountedFrom, wake.CountedFromEvent, wake.PauseID, tc.from, tc.event, wantPause)
+			if tc.event == texts.CountedFromEntryConfirmed {
+				// The moment is the entry's first confirmation, so the notice names the entry, as
+				// main's "first confirmed a task of phase entry %d" did.
+				wantEntry = seededEntry
+			}
+			if wake := architectWakes(t, pool, root)[0]; !wake.CountedFrom.Equal(tc.from) || wake.CountedFromEvent != tc.event || wake.PauseID != wantPause ||
+				wake.Entry != wantEntry {
+				t.Fatalf("the wake of %s counts from %s (%q, pause %d, entry %d), want %s (%q, pause %d, entry %d), the moment the arm counted from",
+					root, wake.CountedFrom, wake.CountedFromEvent, wake.PauseID, wake.Entry, tc.from, tc.event, wantPause, wantEntry)
 			}
 		})
 	}

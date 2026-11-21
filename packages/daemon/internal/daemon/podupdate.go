@@ -3455,7 +3455,11 @@ func holdsUnansweredAsk(c supervise.Claim, round string) bool {
 }
 
 // waitingOf is the claims as the controller's notice lists them, so it can retry one claim or ask
-// the operator to act on one. Each is marked with whether it has already answered this round.
+// the operator to act on one. Each is marked with whether it has already answered this round, and
+// a suspended one with who suspended it (supervise.Claim.SuspendedBy), so the notice of an
+// operator's hold names the claims the operator must resume (suspended_by: operator) apart from
+// those the daemon suspended, an idle release's among them (main's operatorHoldReason named the
+// former alone).
 //
 // Every late-round notice lists every claim noticeClaims keeps with this mark (tellLateRound,
 // tellPodlessRound), a claim the daemon suspended included. So the list is never empty while the
@@ -3469,7 +3473,7 @@ func waitingOf(round string, claims []supervise.Claim) []record.UpdateWaiting {
 	for i, c := range claims {
 		waiting[i] = record.UpdateWaiting{
 			Claim: string(c.Token), Role: c.Role, State: string(c.State),
-			Answered: answered(c, round),
+			Answered: answered(c, round), SuspendedBy: string(c.SuspendedBy),
 		}
 	}
 	return waiting

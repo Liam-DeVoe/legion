@@ -16,16 +16,28 @@ body: |-
   the architect's close and then that author's words, the notice gives the sentence as a field
   (`refused_move: <from>-<to>`, `refused_close: before_first_phase`) and the block holds the
   worker's or the architect's words alone; any other line is the daemon's own, whole. The block
-  holds no character the daemon added: a line past 200 UTF-16 units is cut with no ellipsis and the
-  words object counts the rest (`rest`), and a worker's words lose the full stop the daemon's
-  sentence adds after words that end with none, so words of one line that end with one `.` lose
-  that `.` too, since the two read alike. A session-forgotten notice says why the session was
-  forgotten (`launcher_lookup: failed`, `resumed_by_id: false`). The task of every look of a
-  production check states that a requirement only the deploy can show that the look observes as not
-  met is a fail (`not_met_requirement: fail`), and the last look's task also states the rest of the
-  rule of its verdict beside `last: true` (`unobserved_requirement: fail`,
-  `pending: only_with_no_deploy_only_requirement`). A notice is published with its kind's urgency,
-  and a `low` text wakes no released pod. Of the role messages to a role whose pod is released, only
+  holds no character the daemon added: a line past 200 UTF-16 units is cut with no ellipsis, the
+  words object counts every UTF-16 unit of the words after the block, the later lines among them
+  (`rest`), as the notice's `length` counts the refused body in UTF-16 units, and a worker's words
+  lose the full stop the daemon's sentence adds after words that end with none, so words of one
+  line that end with one `.` lose that `.` too, since the two read alike. A session-forgotten
+  notice says why the session was forgotten (`launcher_lookup: failed`, `resumed_by_id: false`).
+  The task of every look of a production check states that a requirement only the deploy can show
+  that the look observes as not met is a fail (`not_met_requirement: fail`), and the last look's
+  task also states the rest of the rule of its verdict beside `last: true`
+  (`unobserved_requirement: fail`, `pending: only_with_no_deploy_only_requirement`) and that a last
+  look nobody reported closes the check as not run (`unreported: not_run`). A look's task names a
+  bound that is not whole days in hours (`bound_hours`, a decimal where it is one) rather than cut
+  to whole days. An update-stalled notice names who suspended each suspended claim it lists
+  (`suspended_by: operator` for the claims the operator must resume), a phase-finished notice of a
+  role's own move back says so whether or not the role gave words (`moved_back: true`), a let-go
+  notice says of each child whether Dispatch's listing still holds it (`listed`), an unslotted
+  notice names why an awaiting root cannot resume by a word (`unresumable: label-removed`,
+  `left-workflow` or `claimed`) with the holder of its Dispatch claim (`claimed_by`), an
+  architect-stalled notice that counted from a confirmation of its entry names that entry
+  (`entry`), and a root's resume names its gate step's document whatever the act (`document`).
+  A notice is published with its kind's urgency, and a `low` text wakes no released pod. Of the
+  role messages to a role whose pod is released, only
   a `low` one is left unpublished; a `med` one, such as a design gate's move, is published and wakes
   the role. A text that a project's pause held, a `low` one too, launches its reader at the resume,
   and the pause's two notices to the controller (`project-paused`, `project-resumed`) are records on

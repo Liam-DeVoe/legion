@@ -2132,11 +2132,13 @@ func phaseMove(trigger TriggerKind, from phase.Phase, handoff record.PhaseRow, r
 // handoff commit.
 //
 // A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
-// kind the architect's prompt routes on, and carries in reason the words the role that moved it
-// gave, whole, by that role at now: Dispatch's own bound already holds them, since the move posts
-// them on the issue (backwardReasonRefusal). The handoff row a move writes is empty, so without
-// those words the architect reads a completion with no summary and no verdict and cannot tell it
-// from a worker that finished its phase.
+// kind the architect's prompt routes on, says that it is that move (moved_back: true), as main's
+// "moved back to <to> by the <role>" did whatever the words, and carries in reason the words the
+// role that moved it gave, whole, by that role at now: Dispatch's own bound already holds them,
+// since the move posts them on the issue (backwardReasonRefusal). The handoff row a move writes is
+// empty, and a completion can move the issue to the same earlier phase (a tester's fail, a review's
+// request for changes), so without that field a move whose role gave no words reads as a
+// completion with no summary and no verdict.
 func NoticeFor(issue string, trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string, now time.Time) any {
 	head := texts.NoticeHead{Kind: texts.PhaseFinished, Issue: issue}
 	switch trigger {
@@ -2144,7 +2146,7 @@ func NoticeFor(issue string, trigger TriggerKind, from, to phase.Phase, handoff 
 		return texts.PhaseFinishedRecord{NoticeHead: head, Phase: from, To: to}
 	case TriggerBackward:
 		by := RoleFor(from)
-		finished := texts.PhaseFinishedRecord{NoticeHead: head, Role: by, Phase: from, To: to, Reason: reason}
+		finished := texts.PhaseFinishedRecord{NoticeHead: head, Role: by, Phase: from, To: to, MovedBack: true, Reason: reason}
 		if reason != "" {
 			finished.Words = map[string]texts.WordsMeta{"reason": {By: string(by), At: now}}
 		}

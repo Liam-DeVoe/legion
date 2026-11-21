@@ -554,8 +554,8 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 // which could register no step while it stood; the let-out of the launch the latest pause held
 // for its architect (letOut, the zero time for none); and, where a turn of its architect has
 // confirmed a task of that entry, the moment it first did. It answers since, the bound and, where
-// it counted from a later moment, that moment, what it is and the pause it is of (countedFrom),
-// and nil for a root it does not read.
+// it counted from a later moment, that moment, what it is and the pause it is of (countedFrom), with
+// the entry where that moment is the entry's confirmation, and nil for a root it does not read.
 //
 // The later of the admission and the raised entry is the issue's own decision. A root a person
 // answered after a six hour wait comes back to admitted holding the admission row it has held all
@@ -614,6 +614,11 @@ func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt
 		return nil
 	}
 	slow := &texts.ArchitectStalledRecord{Since: since.UTC(), Bound: workflow.ArchitectGateWake.String()}
+	if event == texts.CountedFromEntryConfirmed {
+		// The moment is that entry's confirmation, so the notice names the entry, as main's
+		// "first confirmed a task of phase entry %d" did.
+		slow.Entry = row.Entry
+	}
 	if event != "" {
 		countedFrom(slow, from, event, pause)
 	}

@@ -38,7 +38,7 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	now := r.at(60)
 
 	// phase-finished: a completion with its handoff and summary, a worker's move back with its
-	// words, and the gate's opening.
+	// words and one with none, and the gate's opening.
 	{
 		summary := r.words("finished/summary", 2400) + " " + goldenHostile[r.n-1][6]
 		handoff := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: r.id("finished/handoff"), HandoffVersion: 2 + r.n,
@@ -52,8 +52,11 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		words := r.words("finished/back", 500) + " " + goldenHostile[r.n-1][4]
 		from := []phase.Phase{phase.Reviewing, phase.Testing}[r.n-1]
 		b.notice(r, "backward", arch, workflow.NoticeFor(issue.Key, workflow.TriggerBackward, from, phase.Implementing, record.PhaseRow{}, words, now),
-			goldenWant("issue", issue.Key, "role", phase.RoleFor(from), "phase", from, "to", phase.Implementing, "reason", words,
+			goldenWant("issue", issue.Key, "role", phase.RoleFor(from), "phase", from, "to", phase.Implementing, "moved_back", true, "reason", words,
 				"words.reason.by", phase.RoleFor(from), "words.reason.at", now))
+		silent := []phase.Phase{phase.Testing, phase.Reviewing}[r.n-1]
+		b.notice(r, "backward-no-words", arch, workflow.NoticeFor(issue.Key, workflow.TriggerBackward, silent, phase.Implementing, record.PhaseRow{}, "", now),
+			goldenWant("issue", issue.Key, "role", phase.RoleFor(silent), "phase", silent, "to", phase.Implementing, "moved_back", true))
 		b.notice(r, "gate-opened", arch, workflow.NoticeFor(r.key(99), workflow.TriggerGateOpened, phase.Admitted, phase.Planning, record.PhaseRow{}, "", now),
 			goldenWant("issue", r.key(99), "phase", phase.Admitted, "to", phase.Planning))
 	}
@@ -161,25 +164,26 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	// notice gives that sentence as a field (refused_move, refused_close) and quotes those words
 	// alone in a block of their own, named by that author and the time the refused row was queued.
 	// The daemon's own line is quoted whole, by the daemon. Each quoted line is past the preview's
-	// bound, so the block holds its head with nothing added and the words object counts the rest.
+	// bound, so the block holds its head with nothing added, and the words object counts the rest
+	// of the words, the lines after the first among them, in UTF-16 units, as the length counts the
+	// body.
 	{
 		from := []phase.Phase{phase.Implementing, phase.Merging}[r.n-1]
 		to := []phase.Phase{phase.Planning, phase.Retro}[r.n-1]
 		queued := r.at(59)
 		// workflow's backwardMoveReason: the move and the role that asked, then that role's words.
-		words := goldenHostile[r.n-1][5] + " " + r.words("refused/body", 600)
-		body := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request: ", from, to, phase.RoleFor(from)) +
-			words + "\n" + r.words("refused/rest", 80)
+		words := goldenHostile[r.n-1][5] + " " + r.words("refused/body", 600) + "\n" + r.words("refused/rest", 80)
+		body := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request: ", from, to, phase.RoleFor(from)) + words
 		refused := messagePostRefused(issue.Key, record.MessagePost{Body: body}, goldenErr("BODY_TOO_LONG: "+r.words("refused/answer", 40)))
 		begins := refusedPreview(words)
 		b.notice(r, "message", arch, refusedQuotedAt(refused, queued),
-			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", len([]rune(body)), "refused_move", phase.Pair(from, to),
+			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", goldenUnits(body), "refused_move", phase.Pair(from, to),
 				"begins", begins.Text, "words.begins.by", phase.RoleFor(from), "words.begins.at", queued, "words.begins.rest", begins.Rest))
 		own := r.words("refused/own", 300) + "\n" + r.words("refused/own-rest", 80)
 		refused = messagePostRefused(issue.Key, record.MessagePost{Body: own}, goldenErr("BODY_TOO_LONG: "+r.words("refused/own-answer", 40)))
 		begins = refusedPreview(own)
 		b.notice(r, "message-own", arch, refusedQuotedAt(refused, queued),
-			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", len([]rune(own)), "begins", begins.Text,
+			goldenWant("issue", issue.Key, "refused", texts.RefusedMessage, "length", goldenUnits(own), "begins", begins.Text,
 				"words.begins.by", texts.ByDaemon, "words.begins.at", queued, "words.begins.rest", begins.Rest))
 		// A close's reason, the daemon's sentence and then the architect's.
 		status := []string{"done", "icebox"}[r.n-1]
@@ -267,12 +271,14 @@ func (b *goldenBuild) notices(r goldenRendering) {
 			goldenWant("issue", r.key(99), "stall", texts.StallRecoveredUnrecorded, "repos", r.repo, "unrecorded[0].child", r.key(124),
 				"unrecorded[1].child", r.key(125)))
 		status := []string{"backlog", "icebox"}[r.n-1]
-		noTodo := []texts.LetGoChild{{Child: r.key(128), Parent: parent, ParentRecorded: true, Status: status, Repo: r.repo},
-			{Child: r.key(129), Parent: r.key(130), Status: "todo", Repo: r.repo}}
+		noTodo := []texts.LetGoChild{{Child: r.key(128), Parent: parent, ParentRecorded: true, Listed: true, Status: status, Repo: r.repo},
+			{Child: r.key(129), Parent: r.key(130), Listed: true, Status: "todo", Repo: r.repo},
+			{Child: r.key(132), Parent: parent, ParentRecorded: true, Repo: r.repo}}
 		b.notice(r, "let-go-no-todo", arch, letGoNotice(r.key(99), texts.StallLetGoNoTodo, []string{r.repo}, noTodo),
-			goldenWant("issue", r.key(99), "stall", texts.StallLetGoNoTodo, "repos", r.repo, "let_go[0].child", r.key(128),
-				"let_go[0].status", status, "let_go[0].repo", r.repo, "let_go[1].child", r.key(129), "let_go[1].parent", r.key(130)))
-		answered := []texts.LetGoChild{{Child: r.key(131), Parent: parent, ParentRecorded: true, Status: "todo", Repo: r.repo}}
+			goldenWant("issue", r.key(99), "stall", texts.StallLetGoNoTodo, "repos", r.repo, "let_go[0].child", r.key(128), "let_go[0].listed", true,
+				"let_go[0].status", status, "let_go[0].repo", r.repo, "let_go[1].child", r.key(129), "let_go[1].parent", r.key(130),
+				"let_go[2].child", r.key(132), "let_go[2].listed", false))
+		answered := []texts.LetGoChild{{Child: r.key(131), Parent: parent, ParentRecorded: true, Listed: true, Status: "todo", Repo: r.repo}}
 		b.notice(r, "let-go-answered", arch, letGoNotice(r.key(99), texts.StallLetGoAnswered, []string{r.repo}, answered),
 			goldenWant("issue", r.key(99), "stall", texts.StallLetGoAnswered, "repos", r.repo, "let_go[0].child", r.key(131),
 				"let_go[0].status", "todo", "let_go[0].repo", r.repo))
@@ -412,14 +418,16 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 				"held[0].issue", held[0].Issue, "blocked[0].issue", blocked[0].Issue, "silent[0].issue", silent[0].Issue))
 	}
 
-	// unslotted: a root no tree of which runs, and one that awaits a person.
+	// unslotted: a root no tree of which runs, and one that awaits a person whose Dispatch claim a
+	// person or a session outside its tree holds.
 	root := record.Issue{Key: r.key(210), Tree: r.key(210), Status: "in_progress", Phase: phase.Planning}
-	b.notice(r, "unslotted", ctl, admit.UnslottedNotice(root, ""), goldenWant("issue", root.Key, "status", "in_progress", "phase", phase.Planning))
+	b.notice(r, "unslotted", ctl, admit.UnslottedNotice(root, "", ""), goldenWant("issue", root.Key, "status", "in_progress", "phase", phase.Planning))
 	awaiting := root
 	awaiting.Phase = phase.AwaitingPerson
-	unresumable := r.words("unslotted/why", 70)
-	b.notice(r, "awaiting", ctl, admit.UnslottedNotice(awaiting, unresumable),
-		goldenWant("issue", root.Key, "status", "in_progress", "phase", phase.AwaitingPerson, "unresumable", unresumable))
+	claimedBy := []string{"user:" + r.words("unslotted/holder", 8), "session:" + r.id("unslotted/holder")}[r.n-1]
+	b.notice(r, "awaiting", ctl, admit.UnslottedNotice(awaiting, texts.UnresumableClaimed, claimedBy),
+		goldenWant("issue", root.Key, "status", "in_progress", "phase", phase.AwaitingPerson, "unresumable", texts.UnresumableClaimed,
+			"claimed_by", claimedBy))
 
 	// awaiting-person: an ask, and a document's version.
 	ask := r.id("awaiting/ask")
@@ -445,7 +453,10 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 				"version", 6+r.n, "reason", changes.Words.Text, "words.reason.by", person, "words.reason.at", r.at(81)))
 	}
 
-	// update-stalled: a round with a new image and 30 changed settings, and a refused replacement.
+	// update-stalled: a round with a new image and 30 changed settings held by two pods, a refused
+	// replacement, and each other hold: an operator's suspension of a claim of the round, which the
+	// notice names apart from a claim the daemon's idle release suspended (suspended_by), no
+	// process in the round's pod, no pod that any claim records, and a pod the runtime cannot read.
 	{
 		stall, drift := goldenUpdateStall(r)
 		want := goldenWant("issue", stall.issue, "holds", stall.holds, "update.round", stall.round, "update.pod", stall.pod,
@@ -455,6 +466,32 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 		refused.holds, refused.refusal = texts.HoldsRuntimeRefused, r.words("stalled/refusal", 90)
 		want = goldenWant("issue", stall.issue, "holds", texts.HoldsRuntimeRefused, "refusal", refused.refusal, "update.round", stall.round)
 		b.notice(r, "refused", ctl, updateStalledNotice(refused), want)
+
+		member := func(role claim.Role, state supervise.ClaimState, by supervise.SuspendSource) supervise.Claim {
+			return supervise.Claim{Token: r.token(b.t, stall.issue, role), Issue: stall.issue, Role: role, Session: "ses-" + r.id("update/session/"+string(role)),
+				State: state, SuspendedBy: by, UpdateRound: stall.round}
+		}
+		operator := stall
+		operator.holds = texts.HoldsOperator
+		operator.waiting = waitingOf(stall.round, noticeClaims([]supervise.Claim{
+			member(claim.RoleImplementer, supervise.StateIdle, ""),
+			member(claim.RoleTester, supervise.StateSuspended, supervise.SuspendedByOperator),
+			member(claim.RoleReviewer, supervise.StateSuspended, supervise.SuspendedByReleased),
+		}))
+		b.notice(r, "operator", ctl, updateStalledNotice(operator),
+			goldenWant("issue", stall.issue, "holds", texts.HoldsOperator, "update.round", stall.round, "update.pod", stall.pod,
+				"update.waiting[1].role", claim.RoleTester, "update.waiting[1].suspended_by", string(supervise.SuspendedByOperator),
+				"update.waiting[2].suspended_by", string(supervise.SuspendedByReleased)))
+		for _, hold := range []string{texts.HoldsNoProcess, texts.HoldsNoPod, texts.HoldsPodUnread} {
+			held := stall
+			held.holds = hold
+			want := goldenWant("issue", stall.issue, "holds", hold, "update.round", stall.round, "update.pod", stall.pod)
+			if hold == texts.HoldsNoPod {
+				held.pod = ""
+				delete(want, "update.pod")
+			}
+			b.notice(r, hold, ctl, updateStalledNotice(held), want)
+		}
 	}
 
 	// provider-errors, tree-stalled, architect-stalled in each arm.
@@ -490,6 +527,11 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 		b.notice(r, "slow-before-gate", ctl, admit.ArchitectStalledNotice(root, record.ArchitectSlowBeforeGate, slow),
 			goldenWant("issue", root.Key, "arm", string(record.ArchitectSlowBeforeGate), "phase", phase.Admitted, "since", r.at(-300),
 				"counted_from", r.at(-90-r.n), "counted_from_event", event, "pause_id", 60+int64(r.n)))
+		confirmed := texts.ArchitectStalledRecord{Since: r.at(-200 - r.n), Bound: workflow.ArchitectGateWake.String(), Entry: 6 + int64(r.n)}
+		confirmed.CountedFrom, confirmed.CountedFromEvent = r.at(-100-r.n), texts.CountedFromEntryConfirmed
+		b.notice(r, "slow-confirmed", ctl, admit.ArchitectStalledNotice(root, record.ArchitectSlowBeforeGate, confirmed),
+			goldenWant("issue", root.Key, "arm", string(record.ArchitectSlowBeforeGate), "phase", phase.Admitted, "since", r.at(-200-r.n),
+				"counted_from", r.at(-100-r.n), "counted_from_event", texts.CountedFromEntryConfirmed, "entry", 6+int64(r.n)))
 	}
 
 	// project-paused, with a reason past the bound in the first rendering, and project-resumed:
