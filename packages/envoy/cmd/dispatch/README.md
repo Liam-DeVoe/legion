@@ -3473,7 +3473,7 @@ So each process that holds the lease spends one such pass every 10 minutes while
 
 The marking rule versions what a block-index pass and the tick owe: which documents a build marks and which comments its tick writes.
 The code declares it once, `refs.BlockIndexMarkingRule`, and raises it whenever what a pass owes changes; `TestTheMarkingRuleNamesTheStatementsItMarksWith` pins a digest of the statements that decide it for each value of the rule, so a change to one of them that keeps the rule fails.
-Rule 1 is the first rule this code shipped.
+Rule 1 is the rule's first value, the rule of a build whose nodes carry no scope; if this change ships in the release that brings the rule, no build of rule 1 is ever deployed.
 Rule 2 adds every node's scope: the tick's comment write and the backfill's block and comment reads carry the project or the parties of each node they write.
 A build of rule 2 reads no cursor and no horizon of rule 1 (`TestARuleOneCursorDoesNotStopARuleTwoBuildFromMarking`): where no backfill of rule 2 recorded a horizon, its first tick starts at that tick's safe horizon, so after its first deploy `backfill-graph-store` runs once, reading every row a build of rule 1 left owed and filling the project of every comment and block node such a build wrote with none.
 Every statement that marks a document writes its build's rule into `store_owed_rule` and keeps the higher of the stored rule and its own where a mark already stands; one that marks only a document holding no mark reads a mark of a lower rule as none and raises it (`TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States`).
