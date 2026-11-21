@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -582,11 +582,37 @@ describe("DISPATCH_E2E_PROCESSES", () => {
   );
 });
 
+/** Starts a process that binds `port` and answers "squatter" there, and waits until it answers
+ *  there; returns the squatter's pid, or stops it and throws. The squatter tries the port for at
+ *  most 10 s by the clock, and the wait reads it for at most 10 s by the clock, plus the 1 s of its
+ *  last read, so a port that takes connections and never answers holds the wait for 11 s at most.
+ *  It is synchronous because the server stop it follows is: the port is taken before that stop
+ *  returns. */
+function squat(port: number): number {
+  const squatter = `const port = Number(process.argv[1]); const until = Date.now() + 10000; while (Date.now() < until) { try { Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("squatter") }); break; } catch { await Bun.sleep(25); } }`;
+  const started = Bun.spawnSync([
+    "bash",
+    "-c",
+    `nohup "$0" -e "$1" "$2" >/dev/null 2>&1 & echo $!; deadline=$((SECONDS + 10)); while [ "$SECONDS" -lt "$deadline" ]; do [ "$(curl -q -s --max-time 1 "http://127.0.0.1:$2/")" = squatter ] && exit 0; sleep 0.05; done; exit 1`,
+    process.execPath,
+    squatter,
+    String(port),
+  ]);
+  const pid = Number(started.stdout.toString().trim().split("\n")[0]);
+  if (!started.success) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+    throw new Error(`the squatter did not take port ${port}`);
+  }
+  return pid;
+}
+
 /** Runs `body` with the next server this process starts and then stops taken over at once by
- *  another process, which binds the stopped server's port and answers "squatter" there: the race a
- *  port chosen by starting and stopping a server, and bound by a child a moment later, is open to
- *  on a box where other runs start servers. Returns what `body` returned and the ports taken over;
- *  the squatters are stopped by their pids before it returns. */
+ *  another process (`squat`), which binds the stopped server's port and answers "squatter" there:
+ *  the race a port chosen by starting and stopping a server, and bound by a child a moment later,
+ *  is open to on a box where other runs start servers. Returns what `body` returned and the ports
+ *  taken over; the squatters are stopped by their pids before it returns. */
 async function withSquat<T>(body: () => Promise<T>): Promise<{ result: T; squatted: number[] }> {
   const serve = Bun.serve;
   const squatted: number[] = [];
@@ -600,19 +626,7 @@ async function withSquat<T>(body: () => Promise<T>): Promise<{ result: T; squatt
     const stop = server.stop.bind(server);
     server.stop = (closeActiveConnections?: boolean) => {
       const stopped = stop(closeActiveConnections);
-      // The squatter tries the port until it binds it, for at most 10 s, and this waits until it
-      // answers there, for at most 10 s.
-      const squatter = `const port = Number(process.argv[1]); for (let i = 0; i < 400; i++) { try { Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("squatter") }); break; } catch { await Bun.sleep(25); } }`;
-      const started = Bun.spawnSync([
-        "bash",
-        "-c",
-        `nohup "$0" -e "$1" "$2" >/dev/null 2>&1 & echo $!; i=0; while [ "$i" -lt 200 ]; do [ "$(curl -q -s --max-time 1 "http://127.0.0.1:$2/")" = squatter ] && exit 0; sleep 0.05; i=$((i + 1)); done; exit 1`,
-        process.execPath,
-        squatter,
-        String(port),
-      ]);
-      squatters.push(Number(started.stdout.toString().trim().split("\n")[0]));
-      if (!started.success) throw new Error(`the squatter did not take port ${port}`);
+      squatters.push(squat(port));
       squatted.push(port);
       return stopped;
     };
@@ -648,7 +662,28 @@ describe("the proxy's port", () => {
     });
   });
 
-  test("a proxy started as this file starts it answers as itself under the squat: it binds its own port, so none is chosen here and given back", async () => {
+  test("the squat's wait is held by the clock: on a port that takes connections and never answers, it gives up within 15 s", () => {
+    // The kernel takes each connection into this listener's queue while the wait blocks this
+    // file's event loop, so every read connects and then hears nothing until its 1 s passes.
+    const holder = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    const began = performance.now();
+    let thrown = "";
+    try {
+      squat(holder.port);
+    } catch (error) {
+      thrown = String(error);
+    } finally {
+      holder.stop(true);
+    }
+    const seconds = (performance.now() - began) / 1000;
+    expect({ thrown, withinTheCap: seconds < 15, seconds }).toEqual({
+      thrown: `Error: the squatter did not take port ${holder.port}`,
+      withinTheCap: true,
+      seconds: expect.any(Number),
+    });
+  });
+
+  test("a proxy started as this file starts it answers as itself under the squat, and is given no port: it binds its own, so none is chosen here and given back", async () => {
     const { result, squatted } = await withSquat(async () => {
       let started: Awaited<ReturnType<typeof startProxy>>;
       try {
@@ -658,12 +693,17 @@ describe("the proxy's port", () => {
       }
       try {
         const answer = await Bun.fetch(`${started.origin}/_proxy/requests`);
-        return { status: answer.status, body: await answer.text() };
+        // The environment the proxy runs with, as the kernel holds it: a port handed to it by any
+        // means a squat of this process's servers cannot see would show here.
+        const handed = readFileSync(`/proc/${started.proxy.pid}/environ`, "utf8")
+          .split("\0")
+          .filter((entry) => entry.startsWith("DISPATCH_E2E_PORT="));
+        return { status: answer.status, body: await answer.text(), handed };
       } finally {
         started.proxy.kill();
         await started.proxy.exited;
       }
     });
-    expect({ ...result, squatted }).toEqual({ status: 200, body: "[]", squatted: [] });
+    expect({ ...result, squatted }).toEqual({ status: 200, body: "[]", handed: [], squatted: [] });
   });
 });

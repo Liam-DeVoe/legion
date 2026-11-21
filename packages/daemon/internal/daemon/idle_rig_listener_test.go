@@ -197,10 +197,11 @@ func (l *idleRigListener) answer(request *http.Request) (int, string) {
 	return response.StatusCode, string(read)
 }
 
-// idleRigFreePort is a loopback port nothing holds once it returns, for an address a connection
-// should find refused: the port is bound and given back at once. It is never a port for a process
-// to bind later, since from the moment it is given back any process on the machine can take it;
-// the rig's listener serves on a socket the test holds instead (startIdleRigListener).
+// idleRigFreePort is a loopback port bound and given back at once. A freed port is any program's
+// to take (docs/testing.md): no process may be started on it, which is why the rig's listener
+// serves on a socket the test holds (startIdleRigListener), and it is no reliable refused address
+// either, which this module would take from a testport.Refused it does not have. Its one caller,
+// the leak check's download host, fails rather than passes if another program answers there.
 func idleRigFreePort(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
