@@ -567,6 +567,7 @@ test("the Enter that confirms an input method's word opens no row, and a plain E
     expect(fireEvent.keyDown(input, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
     expect(screen.getByTestId("current-route").textContent).toBe(route);
 
+    // The plain Enter goes the same way as the two above, so only the composition mark differs.
     expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
     expect(screen.getByTestId("current-route").textContent).toBe(
       "/issues/LEGION-2/spec?q=astrolabe"

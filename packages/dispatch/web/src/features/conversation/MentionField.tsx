@@ -559,8 +559,11 @@ export function MentionField({
   pickerKey.current = (event) => {
     if (!open) return;
     if (event.key === "Escape") {
-      // Only the picker closes: not a dialog, not a card, not the composer around it.
+      // Only the picker closes: not a dialog, not a card, not the composer around it. The Escape
+      // that ends an input method's composition is the input method's: it closes nothing, and
+      // the host does not see it either.
       event.stopPropagation();
+      if (inputMethodKey(event)) return;
       closePicker();
       return;
     }

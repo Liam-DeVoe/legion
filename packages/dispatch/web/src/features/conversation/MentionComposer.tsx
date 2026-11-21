@@ -634,7 +634,9 @@ export function MentionComposer({
     const form = formRef.current;
     if (form === null || dormant) return;
     const handleEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      // The Escape that ends an input method's composition in the field is the input method's:
+      // it closes nothing of the composer (`inputMethodKey`).
+      if (event.key !== "Escape" || inputMethodKey(event)) return;
       if (referencePickerOpen) {
         event.stopPropagation();
         setReferencePickerOpen(false);

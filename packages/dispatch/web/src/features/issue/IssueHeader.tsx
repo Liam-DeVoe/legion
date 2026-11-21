@@ -475,7 +475,9 @@ export function IssueHeader({
                 }}
                 onChange={(event) => drafts.writeTitle(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Escape") {
+                  // The Escape that ends an input method's composition is the input method's,
+                  // not the reader dropping the title (`inputMethodKey`).
+                  if (event.key === "Escape" && !inputMethodKey(event)) {
                     drafts.discardTitle();
                     setEditingTitle(false);
                     return;
@@ -782,7 +784,8 @@ export function IssueHeader({
             id="issue-route"
             onChange={(event) => drafts.writeRoute(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              // The Escape that ends an input method's composition is the input method's.
+              if (event.key === "Escape" && !inputMethodKey(event)) {
                 drafts.discardRoute();
                 setRouteEditing(false);
               }
@@ -831,7 +834,8 @@ export function IssueHeader({
             id="issue-parent"
             onChange={(event) => drafts.writeParent(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              // The Escape that ends an input method's composition is the input method's.
+              if (event.key === "Escape" && !inputMethodKey(event)) {
                 drafts.discardParent();
                 setParentEditing(false);
               }

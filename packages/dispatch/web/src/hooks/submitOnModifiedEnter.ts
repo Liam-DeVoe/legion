@@ -1,5 +1,7 @@
 import type { KeyboardEvent } from "react";
 
+import { inputMethodKey } from "./inputMethodKey";
+
 /**
  * The one key rule of every Dispatch text box: Ctrl/Cmd+Enter sends or saves, and Enter alone
  * adds a line, which this function leaves to the textarea. A new text box calls it from its
@@ -10,6 +12,7 @@ import type { KeyboardEvent } from "react";
  *
  * A field whose draft is still taking a picture passes `disabled` while the upload is out, and
  * the key then submits nothing: a draft sent before its upload lands would go without the picture.
+ * The Enter that confirms an input method's word submits nothing either (`inputMethodKey`).
  */
 export function submitOnModifiedEnter(
   event: KeyboardEvent<HTMLElement>,
@@ -18,7 +21,7 @@ export function submitOnModifiedEnter(
   if (
     disabled ||
     event.key !== "Enter" ||
-    event.nativeEvent.isComposing ||
+    inputMethodKey(event) ||
     (!event.ctrlKey && !event.metaKey)
   ) {
     return false;

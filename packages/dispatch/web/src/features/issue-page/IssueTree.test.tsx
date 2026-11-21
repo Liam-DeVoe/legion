@@ -87,7 +87,7 @@ import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stag
 import { addressesAsShortForms } from "./tree-drafts";
 import { TAB_STOP_ROW } from "./tree-focus";
 import { issueAsksQuery } from "./useIssueTree";
-import type { OnEditing, OnEditor } from "./useNodeEditing";
+import type { OnEditing, RowEditorHandlers } from "./useNodeEditing";
 import { overflowing } from "./words-scroll-fixtures";
 
 /**
@@ -212,10 +212,14 @@ function AdmissionProbe({ held }: { held: { report?: ReportAdmission } }): React
 /** What stands in for the editor of the document a row is editing in: a plain element, or what
  *  takes how to hand the row its editor (`onEditing`) and draws one - the document's own
  *  (`LiveEditor`), or one that hands the row nothing. */
-type StandInEditor = ReactNode | ((onEditor: OnEditor) => ReactNode);
+type StandInEditor = ReactNode | ((handlers: RowEditorHandlers) => ReactNode);
 
 /** What a page whose tree hands it nothing to take the editor with hands the editor to. */
-const takesNoEditor = () => {};
+const takesNoEditor: RowEditorHandlers = {
+  constructed: () => {},
+  handle: () => {},
+  none: () => {},
+};
 
 /** A ProseMirror view of an empty document, which a plain element standing in for the document's
  *  editor hands the row as its editor: a plain element is no ProseMirror editor, and the row puts
@@ -233,19 +237,19 @@ function standInView(): EditorView {
  *  the page hands its editor over: as it is made, and `undefined` as it goes. */
 function HandedStandIn({
   children,
-  onEditor,
+  handlers,
 }: {
   children: ReactNode;
-  onEditor: OnEditor;
+  handlers: RowEditorHandlers;
 }): ReactNode {
   useEffect(() => {
     const view = standInView();
-    onEditor({ view });
+    handlers.handle({ view });
     return () => {
       view.destroy();
-      onEditor(undefined);
+      handlers.handle(undefined);
     };
-  }, [onEditor]);
+  }, [handlers]);
   return children;
 }
 
@@ -260,19 +264,19 @@ function EditedDocument({
   editor: StandInEditor;
   held: { set?: OnEditing };
 }): ReactNode {
-  const [edited, setEdited] = useState<{ artifactId: string; onEditor?: OnEditor } | undefined>(
-    undefined
-  );
-  held.set = (artifactId, onEditor) =>
-    setEdited(artifactId === undefined ? undefined : { artifactId, onEditor });
-  const onEditor = edited?.onEditor ?? takesNoEditor;
+  const [edited, setEdited] = useState<
+    { artifactId: string; handlers?: RowEditorHandlers } | undefined
+  >(undefined);
+  held.set = (artifactId, handlers) =>
+    setEdited(artifactId === undefined ? undefined : { artifactId, handlers });
+  const handlers = edited?.handlers ?? takesNoEditor;
   return edited === undefined ? null : (
     <DocumentStage artifactId={edited.artifactId}>
       <EditorBox>
         {typeof editor === "function" ? (
-          editor(onEditor)
+          editor(handlers)
         ) : (
-          <HandedStandIn onEditor={onEditor}>{editor}</HandedStandIn>
+          <HandedStandIn handlers={handlers}>{editor}</HandedStandIn>
         )}
       </EditorBox>
     </DocumentStage>
@@ -342,9 +346,9 @@ function renderTree(
                     focusReveal={reveal !== undefined}
                     holdsEscape={false}
                     isClosed={isClosed}
-                    onEditing={(artifactId, onEditor) => {
+                    onEditing={(artifactId, handlers) => {
                       edited.push(artifactId);
-                      editedDocument.set?.(artifactId, onEditor);
+                      editedDocument.set?.(artifactId, handlers);
                     }}
                     readsHeld={reads.held}
                     readsSettled={reads.settled}
@@ -3564,16 +3568,16 @@ function liveRoom(): LiveRoom {
 
 /** The document's own editor (`doc/editor.ts`), constructed and bound in one go: the room holds
  *  the document - `blocks` - before the editor is made, as it does once it has synced, so the
- *  binding draws the document as it is made, and the editor is handed to the row (`onEditor`)
+ *  binding draws the document as it is made, and the editor is handed to the row (`handle`)
  *  only once bound and bound to the room's marks (`bindRemoteMarks`). `ProofDocument` hands the
  *  row its construction before that as well (`row-editor-build.test.tsx`). */
 function LiveEditor({
   blocks,
-  onEditor,
+  handlers,
   room,
 }: {
   blocks: readonly LiveBlock[];
-  onEditor: OnEditor;
+  handlers: RowEditorHandlers;
   room: LiveRoom;
 }): ReactNode {
   const root = useRef<HTMLDivElement | null>(null);
@@ -3603,7 +3607,7 @@ function LiveEditor({
         }
         made = handle;
         room.editor = handle;
-        onEditor(handle);
+        handlers.handle(handle);
         unbindMarks = bindRemoteMarks(room.browser, handle);
       });
     return () => {
@@ -3611,9 +3615,9 @@ function LiveEditor({
       if (made === undefined) return;
       unbindMarks();
       void made.destroy();
-      onEditor(undefined);
+      handlers.handle(undefined);
     };
-  }, [blocks, onEditor, room]);
+  }, [blocks, handlers, room]);
   return <div ref={root} />;
 }
 
@@ -3626,7 +3630,7 @@ async function editLive(
   const room = liveRoom();
   const editable = await editStatement(
     user,
-    (onEditor) => <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />,
+    (handlers) => <LiveEditor blocks={blocks} handlers={handlers} room={room} />,
     []
   );
   const view = room.editor?.view;
@@ -4052,11 +4056,12 @@ test("Ctrl+B right after Shift+ArrowRight in the node's paragraph bolds the lett
 
 // While the reader composes with an input method, the input method holds the caret, and
 // ProseMirror reads the page itself as the composition starts and as it ends: the row has the
-// editor read no caret for a key pressed in a composition - the `Process` a browser sends for a key
-// the input method takes, or any key with `isComposing` - and reads it first for a key pressed
+// editor read no caret for an input method's key - the `Process` a browser sends for a key the
+// input method takes, any key with `isComposing`, or the key that ends a composition, which Safari
+// sends unmarked with keyCode 229 (WebKit bug 165004) - and reads it first for a plain key pressed
 // after, as for Backspace. The case makes the move and the delete the browser would, as the
 // Backspace case above does.
-test("a key pressed in a composition has the row's editor read no caret, and Backspace after it does", async () => {
+test("an input method's key has the row's editor read no caret, and a plain Backspace after it does", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const { editable, view } = await editLive(user, liveBlocks(heading("r1", 2, "YA heading")));
@@ -4080,6 +4085,8 @@ test("a key pressed in a composition has the row's editor read no caret, and Bac
     for (const [key, modifiers] of [
       ["Process", { keyCode: 229 }],
       ["a", { isComposing: true }],
+      ["Backspace", { isComposing: true }],
+      ["Backspace", { isComposing: false, keyCode: 229 }],
     ] as const) {
       reports = 0;
       pressIn(editable, key, modifiers);
@@ -4870,8 +4877,8 @@ test("the caret goes into the row's editor only once the editor holds its edits 
   try {
     const room = liveRoom();
     const blocks = liveBlocks();
-    const { editable } = await enterStatement(user, (onEditor) => (
-      <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
+    const { editable } = await enterStatement(user, (handlers) => (
+      <LiveEditor blocks={blocks} handlers={handlers} room={room} />
     ));
     const row = editable.closest<HTMLElement>("[data-node-row]");
     // The editor has drawn the statement, and the frames after that have run.
@@ -5006,8 +5013,8 @@ for (const [name, modifiers] of [
         },
         paragraph("r1", "A statement of the spec."),
       ];
-      const { editable } = await enterStatement(user, (onEditor) => (
-        <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
+      const { editable } = await enterStatement(user, (handlers) => (
+        <LiveEditor blocks={blocks} handlers={handlers} room={room} />
       ));
       await waitFor(() => wordsOf(editable, "r1"));
       await nextFrame();
@@ -5177,8 +5184,8 @@ test("a press in Details while the row's editor is still loading keeps the editi
   try {
     const room = liveRoom();
     const blocks = liveBlocks();
-    const { editable, view } = await enterStatement(user, (onEditor) => (
-      <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
+    const { editable, view } = await enterStatement(user, (handlers) => (
+      <LiveEditor blocks={blocks} handlers={handlers} room={room} />
     ));
     const row = editable.closest<HTMLElement>("[data-node-row]");
     await waitFor(() => wordsOf(editable, "r1"));
@@ -5268,16 +5275,16 @@ test("a hold that fails to load while a press in Details has put off the row's c
   }
 });
 
-// A page whose document makes no editor - it could not make or build one - says so (`OnEditor`'s
-// `null`), and an editor it drew would stand in the row unguarded. The row waits while no editor
-// is handed over, and once the page says none is coming the editing ends with no caret placed,
-// and the row says so.
+// A page whose document makes no editor - it could not make or build one - says so
+// (`RowEditorHandlers`'s `none`), and an editor it drew would stand in the row unguarded. The row
+// waits while no editor is handed over, and once the page says none is coming the editing ends
+// with no caret placed, and the row says so.
 test("a page that says no editor is coming gets no caret: the editing ends and the row says its editor could not open", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  let handOver: OnEditor | undefined;
-  const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
-    handOver = onEditor;
+  let handOver: RowEditorHandlers | undefined;
+  const { editable, view } = await enterBeforeDrawn(user, (handlers) => {
+    handOver = handlers;
     return <div contentEditable suppressContentEditableWarning />;
   });
   const [row] = rowsFor(view.container, "spec#b-r1");
@@ -5285,7 +5292,7 @@ test("a page that says no editor is coming gets no caret: the editing ends and t
     "artifact-spec"
   );
   await drawStatementBlocks(editable);
-  await act(async () => handOver?.(null));
+  await act(async () => handOver?.none());
   await waitFor(() =>
     expect(
       rowReport(view.container),
@@ -5306,9 +5313,9 @@ test("a page that says no editor is coming gets no caret: the editing ends and t
 test("a page that says no editor is coming while a press in Details has put off the caret ends the editing and leaves the focus in Details", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  let handOver: OnEditor | undefined;
-  const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
-    handOver = onEditor;
+  let handOver: RowEditorHandlers | undefined;
+  const { editable, view } = await enterBeforeDrawn(user, (handlers) => {
+    handOver = handlers;
     return <div contentEditable suppressContentEditableWarning />;
   });
   const [row] = rowsFor(view.container, "spec#b-r1");
@@ -5320,7 +5327,7 @@ test("a page that says no editor is coming while a press in Details has put off 
   expect(view.edited.at(-1), "a press in Details ended the editing").toBe("artifact-spec");
 
   await drawStatementBlocks(editable);
-  await act(async () => handOver?.(null));
+  await act(async () => handOver?.none());
   await waitFor(() =>
     expect(
       view.edited.at(-1),
@@ -5517,9 +5524,9 @@ for (const blur of [true, false]) {
 test("an editor that has drawn the node's block microtasks before the page hands it over takes the caret", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  let handOver: OnEditor | undefined;
-  const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
-    handOver = onEditor;
+  let handOver: RowEditorHandlers | undefined;
+  const { editable, view } = await enterBeforeDrawn(user, (handlers) => {
+    handOver = handlers;
     return <div contentEditable suppressContentEditableWarning />;
   });
   const handed = standInView();
@@ -5529,7 +5536,7 @@ test("an editor that has drawn the node's block microtasks before the page hands
       // The row's watch on the drawing looks at the row here, before the editor is handed over.
       await Promise.resolve();
       await Promise.resolve();
-      handOver?.({ view: handed });
+      handOver?.handle({ view: handed });
     });
     await waitFor(() =>
       expect(
@@ -5542,7 +5549,7 @@ test("an editor that has drawn the node's block microtasks before the page hands
     expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
     expect(rowReport(view.container), "the row said its editor could not open").toBeUndefined();
   } finally {
-    handOver?.(undefined);
+    handOver?.handle(undefined);
     handed.destroy();
   }
 });
@@ -5556,9 +5563,9 @@ test("an editor that has drawn the node's block microtasks before the page hands
 test("an editor handed over tasks after it drew the node's block takes the caret", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  let handOver: OnEditor | undefined;
-  const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
-    handOver = onEditor;
+  let handOver: RowEditorHandlers | undefined;
+  const { editable, view } = await enterBeforeDrawn(user, (handlers) => {
+    handOver = handlers;
     return <div contentEditable suppressContentEditableWarning />;
   });
   const handed = standInView();
@@ -5571,7 +5578,7 @@ test("an editor handed over tasks after it drew the node's block takes the caret
     );
     expect(rowReport(view.container), "the row said its editor could not open").toBeUndefined();
 
-    await act(async () => handOver?.({ view: handed }));
+    await act(async () => handOver?.handle({ view: handed }));
     await waitFor(() =>
       expect(
         document.activeElement === editable && caretBlock() === "r1",
@@ -5579,7 +5586,7 @@ test("an editor handed over tasks after it drew the node's block takes the caret
       ).toBe(true)
     );
   } finally {
-    handOver?.(undefined);
+    handOver?.handle(undefined);
     handed.destroy();
   }
 });
@@ -5609,10 +5616,10 @@ function RemadeStandIn({ remake }: { remake: Remake }): ReactNode {
 test("an editor made again while the row is edited takes the caret back only once it holds its edits", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  let handOver: OnEditor | undefined;
+  let handOver: RowEditorHandlers | undefined;
   const remake: Remake = {};
-  const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
-    handOver = onEditor;
+  const { editable, view } = await enterBeforeDrawn(user, (handlers) => {
+    handOver = handlers;
     return <RemadeStandIn remake={remake} />;
   });
   const [row] = rowsFor(view.container, "spec#b-r1");
@@ -5621,7 +5628,7 @@ test("an editor made again while the row is edited takes the caret back only onc
   const caretIn = (editor: HTMLElement) =>
     document.activeElement === editor && caretBlock() === "r1";
   try {
-    await act(async () => handOver?.({ view: first }));
+    await act(async () => handOver?.handle({ view: first }));
     await drawStatementBlocks(editable);
     await waitFor(() =>
       expect(caretIn(editable), "Enter put no caret in the statement").toBe(true)
@@ -5630,7 +5637,7 @@ test("an editor made again while the row is edited takes the caret back only onc
     // The document tears its editor down and makes it again, which draws the statement before
     // the row is handed it.
     await act(async () => {
-      handOver?.(undefined);
+      handOver?.handle(undefined);
       remake.again?.();
     });
     const again = row?.querySelector<HTMLElement>('[contenteditable="true"]');
@@ -5641,14 +5648,14 @@ test("an editor made again while the row is edited takes the caret back only onc
       false
     );
 
-    await act(async () => handOver?.({ view: second }));
+    await act(async () => handOver?.handle({ view: second }));
     await waitFor(() =>
       expect(caretIn(again), "the editor made again took no caret once it held its edits").toBe(
         true
       )
     );
   } finally {
-    handOver?.(undefined);
+    handOver?.handle(undefined);
     first.destroy();
     second.destroy();
   }
@@ -5664,10 +5671,10 @@ test("an editor made again while the row is edited takes the caret back only onc
 test("an editor that draws the node's block and goes unhanded leaves the row waiting for the next one, which takes the caret", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  let handOver: OnEditor | undefined;
+  let handOver: RowEditorHandlers | undefined;
   const remake: Remake = {};
-  const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
-    handOver = onEditor;
+  const { editable, view } = await enterBeforeDrawn(user, (handlers) => {
+    handOver = handlers;
     return <RemadeStandIn remake={remake} />;
   });
   const [row] = rowsFor(view.container, "spec#b-r1");
@@ -5702,7 +5709,7 @@ test("an editor that draws the node's block and goes unhanded leaves the row wai
       appendBlocks(next);
       await Promise.resolve();
       await Promise.resolve();
-      handOver?.({ view: handed });
+      handOver?.handle({ view: handed });
     });
     await waitFor(() =>
       expect(
@@ -5714,7 +5721,7 @@ test("an editor that draws the node's block and goes unhanded leaves the row wai
     expect(rowReport(view.container), "the row said its editor could not open").toBeUndefined();
     expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
   } finally {
-    handOver?.(undefined);
+    handOver?.handle(undefined);
     handed.destroy();
   }
 });
@@ -5735,8 +5742,8 @@ test("no edit of the editor's own goes in while its document holds no block of t
   const room = liveRoom();
   // Drawn as one list, so the editor is made once whatever draws the row again.
   const blocks = [paragraph("r0", "The words above the statement.")];
-  const { editable } = await enterStatement(user, (onEditor) => (
-    <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
+  const { editable } = await enterStatement(user, (handlers) => (
+    <LiveEditor blocks={blocks} handlers={handlers} room={room} />
   ));
   const view = await waitFor(() => {
     const drawn = room.editor?.view;

@@ -1,6 +1,5 @@
 import { type RefObject, useEffect, useRef } from "react";
 
-import { inputMethodKey } from "../../hooks/inputMethodKey";
 import { type KeyBinding, useKeymap } from "../shell/keymap";
 import { focusOnDocument } from "../shell/roving";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
@@ -682,8 +681,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       // Escape leaves the caret for the row it came from, and leaves the tree from the row
       // (below). It extends the Escape the page already binds for its header controls, which
       // answers for a focused select and never for these two. The Escape that ends an input
-      // method's composition is the input method's and leaves nothing (`inputMethodKey`): the
-      // keymap passes over one marked `isComposing`, and Safari's comes unmarked. It is offered
+      // method's composition is the input method's and leaves nothing: the keymap passes over
+      // every input method's key, Safari's unmarked one included (`inputMethodKey`). It is offered
       // from an editable inside the tree alone, while a row is edited: an editor elsewhere on the
       // page has keys of its own, and no row's caret to leave.
       // Leaving the caret gives the row the focus back, which moves the reader.
@@ -693,8 +692,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       keys: "Escape",
       label: "Leave the row's text",
       palette: false,
-      run: (event) => {
-        if (inputMethodKey(event)) return;
+      run: () => {
         (document.activeElement as HTMLElement | null)?.blur();
         // The editing's end gives the row the caret came from the focus back (`useNodeEditing`).
         tree.onEditEnd();

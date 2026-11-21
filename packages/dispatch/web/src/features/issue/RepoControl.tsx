@@ -375,8 +375,9 @@ export function RepoControl({
               ? undefined
               : (event) => {
                   // A press that ends an IME composition gives up what the reader was composing,
-                  // not the box: the place leaves it alone, unmarked, as the key registry does.
-                  if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+                  // not the box: the place leaves it alone, unmarked, as the key registry does
+                  // (`inputMethodKey`).
+                  if (event.key !== "Escape" || inputMethodKey(event)) return;
                   // Inside `NoTooltips` the press is the box's, from the box or from its clear
                   // control: it puts back what the issue holds, closes the box in a row of
                   // Details, and closes nothing around it. On a phone the box sits in Details, a
@@ -449,8 +450,9 @@ export function RepoControl({
                 }}
                 onKeyDown={(event) => {
                   // The Enter that confirms an input method's word is the input method's, not
-                  // the write.
-                  if (event.key === "Enter" && !inputMethodKey(event)) {
+                  // the write, and so is the Escape that ends its composition, not the restore.
+                  if (inputMethodKey(event)) return;
+                  if (event.key === "Enter") {
                     event.preventDefault();
                     commit();
                   } else if (event.key === "Escape" && page === null) {

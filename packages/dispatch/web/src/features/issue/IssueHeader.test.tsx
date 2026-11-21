@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the title box's composition row sends
+// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the title box's composition row and the boxes' Escape row send
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -267,6 +267,45 @@ test("the Enter that confirms an input method's word in the title's box keeps th
     // The plain Enter goes the same way as the two above, so only the composition mark differs.
     fireEvent.keyDown(box, { key: "Enter" });
     expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A reader typing Chinese, Japanese or Korean drops a candidate with Escape: that Escape is the
+// input method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's
+// end, as Safari sends it (WebKit bug 165004). In the title's, the route's and the parent's boxes
+// it drops nothing and closes nothing; a plain Escape after it drops the draft and closes the box.
+test("an input method's Escape in the title's, the route's or the parent's box keeps the edit, and a plain Escape ends it", async () => {
+  const client = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = renderHeader(client, <Header state={unpinnedState} />);
+  try {
+    for (const [opener, name] of [
+      [() => view.q.getByRole("heading", { level: 1 }), "Issue title"],
+      [
+        () => view.q.getAllByRole("button", { name: "Messages default to no route" })[0],
+        "Message route",
+      ],
+      [() => view.q.getByRole("button", { name: "None, set parent issue" }), "Parent"],
+    ] as const) {
+      const control = opener();
+      if (control === undefined) throw new Error(`the header draws no control that opens ${name}`);
+      await view.user.click(control);
+      const box = view.q.getByRole("textbox", { name }) as HTMLInputElement;
+      await view.user.type(box, "x");
+      const draft = box.value;
+      // user-event cannot mark a key as an input method's, so the two such Escapes are fired.
+      fireEvent.keyDown(box, { isComposing: true, key: "Escape" });
+      fireEvent.keyDown(box, { isComposing: false, key: "Escape", keyCode: 229 });
+      expect(view.q.queryByRole("textbox", { name }), `${name} closed`).toBe(box);
+      expect(box.value, `${name} dropped its draft`).toBe(draft);
+
+      // The plain Escape goes the same way as the two above, so only the composition mark differs.
+      fireEvent.keyDown(box, { key: "Escape" });
+      expect(view.q.queryByRole("textbox", { name }), `${name} stayed open`).toBeNull();
+    }
   } finally {
     view.unmount();
   }

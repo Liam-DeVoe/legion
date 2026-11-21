@@ -3742,54 +3742,62 @@ test("an approval entry's a approves its own document when an earlier entry also
   );
 });
 
-// Each action of the header's menu keeps the 44 px touch floor wherever the floor applies. The
-// floor switches at `xl` in rem (`styles.css`), so a reader whose default font is 20 px has it up
-// to 1599 px, and the header's own rule gives each action the classes it draws (`revert-layer`):
-// an action whose class lifted its floor at 1280 px (`min-[1280px]:min-h-0`, as `main` drew it)
-// was 7 px of padding above and below its 25 px line, about 39 px, from 1280 to 1599 px, while
-// every other control kept 44. A button the row adds to the page is the premise: it takes the
-// floor at the same width, so the row reads the floor as applying there.
-// SLOW(>=2s): a seeded header loaded at a 20 px default font and its menu opened: 1.3 s in a
-// one-worker build Job, where the 20 px row of `issue-page-g.e2e.ts` took 1.2 s against 1.8 s in
-// CI's shard (run 44842848677).
-test("at a 20 px default font just under xl, each action of the header's menu keeps the 44 px floor", async ({
+// Below `xl` each action of the header's menu keeps `main`'s floor, `min-h-11`: 2.75rem, which is
+// 44 px at a 16 px default font and scales with the reader's font, 33 px at 12 px and 55 px at
+// 20 px. The floor switches at `xl` in rem (`styles.css`), so the last width under it is 959 px at
+// a 12 px default font, 1279 px at 16 px and 1599 px at 20 px, and the header's own rule gives each
+// action the classes it draws (`revert-layer`): the stylesheet's 44 px floor is not the action's.
+// An action whose class lifted its floor at 1280 px (`min-[1280px]:min-h-0`, as `main` drew it)
+// was 7 px of padding above and below its 25 px line, about 39 px, from 1280 to 1599 px at a
+// 20 px default font. The row reads the root's font size at each of the three fonts and holds each
+// action to 2.75 times it. A button the row adds to the page is the premise: it takes the
+// stylesheet's floor at the same width, so the row reads the floor as applying there.
+// SLOW(>=2s): a seeded header loaded at a 12, a 16 and a 20 px default font, its menu opened at
+// each: the 20 px load alone took 1.3 s in a one-worker build Job, where the 20 px row of
+// `issue-page-g.e2e.ts` took 1.2 s against 1.8 s in CI's shard (run 44842848677).
+test("at a 12, 16 or 20 px default font just under xl, each action of the header's menu keeps its 2.75rem floor", async ({
   browser,
 }) => {
   await phase(browser, seedHeader, async (page, seeded) => {
-    await setDefaultFont(page, LARGE_FONT);
-    await page.setViewportSize(viewportAt(XL * LARGE_FONT - 1));
-    await gotoIssue(page, `/issues/${seeded.key}`);
-    await expectHeaderDrawn(page);
-    await expectRootFont(page, LARGE_FONT);
-    const floor = await page.evaluate(() => {
-      const probe = document.createElement("button");
-      document.body.append(probe);
-      const minHeight = getComputedStyle(probe).minHeight;
-      probe.remove();
-      return minHeight;
-    });
-    expect(floor, "a button takes the 44 px floor at 1599 px with a 20 px default font").toBe(
-      "44px"
-    );
-    const control = issueHeader(page).getByRole("button", {
-      exact: true,
-      name: CONTROL_LABELS.issue_actions,
-    });
-    await control.click();
-    await expect(control, "the actions control opened no menu at 1599 px").toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
-    const heights = await control.evaluate((opener) => {
-      const menu = document.getElementById(opener.getAttribute("aria-controls") ?? "");
-      return [...(menu?.querySelectorAll("button") ?? [])].map(
-        (action) => action.getBoundingClientRect().height
+    for (const font of [12, 16, LARGE_FONT]) {
+      const width = XL * font - 1;
+      const at = `at ${width} px with a ${font} px default font`;
+      await setDefaultFont(page, font);
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      await expectRootFont(page, font, at);
+      const rootFont = await page.evaluate(() =>
+        Number.parseFloat(getComputedStyle(document.documentElement).fontSize)
       );
-    });
-    expect(heights.length, "the actions menu draws no action at 1599 px").toBeGreaterThan(0);
-    expect(
-      heights.filter((height) => height < 44 - 0.5),
-      "an action of the actions menu is under 44 px at 1599 px with a 20 px default font"
-    ).toEqual([]);
+      const floor = await page.evaluate(() => {
+        const probe = document.createElement("button");
+        document.body.append(probe);
+        const minHeight = getComputedStyle(probe).minHeight;
+        probe.remove();
+        return minHeight;
+      });
+      expect(floor, `a button takes the stylesheet's 44 px floor ${at}`).toBe("44px");
+      const control = issueHeader(page).getByRole("button", {
+        exact: true,
+        name: CONTROL_LABELS.issue_actions,
+      });
+      await control.click();
+      await expect(control, `the actions control opened no menu ${at}`).toHaveAttribute(
+        "aria-expanded",
+        "true"
+      );
+      const heights = await control.evaluate((opener) => {
+        const menu = document.getElementById(opener.getAttribute("aria-controls") ?? "");
+        return [...(menu?.querySelectorAll("button") ?? [])].map(
+          (action) => action.getBoundingClientRect().height
+        );
+      });
+      expect(heights.length, `the actions menu draws no action ${at}`).toBeGreaterThan(0);
+      expect(
+        heights.filter((height) => height < 2.75 * rootFont - 0.5),
+        `an action of the actions menu is under 2.75rem, ${2.75 * rootFont} px, ${at}`
+      ).toEqual([]);
+    }
   });
 });

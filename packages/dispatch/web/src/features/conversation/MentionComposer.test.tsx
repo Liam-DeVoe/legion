@@ -1104,6 +1104,63 @@ test("Escape closes the mention picker and leaves the typed text", async () => {
   }
 });
 
+// A reader typing Chinese, Japanese or Korean drops a candidate with Escape: that Escape is the
+// input method's, marked `isComposing`, or sent unmarked with keyCode 229 after the composition's
+// end, as Safari sends it (WebKit bug 165004). With the picker open it closes nothing, and the page
+// does not see it either; a plain Escape after it closes the picker.
+test("an input method's Escape leaves the open mention picker open, and a plain Escape closes it", async () => {
+  const seen: string[] = [];
+  const watch = (event: KeyboardEvent) => seen.push(event.key);
+  window.addEventListener("keydown", watch);
+  const { view } = renderComposer({ agents: [planner] });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    // The field's own `change` to open the picker, which user-event has no form for.
+    fireEvent.change(field, { target: { value: "hello @pla" } });
+    await screen.findByRole("listbox", { name: "Mention suggestions" });
+
+    // user-event cannot mark a key as an input method's, so the two such Escapes are fired.
+    fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
+    fireEvent.keyDown(field, { isComposing: false, key: "Escape", keyCode: 229 });
+    expect(screen.queryByRole("listbox", { name: "Mention suggestions" })).not.toBeNull();
+    expect(seen).toEqual([]);
+
+    // The plain Escape goes the same way as the two above, so only the composition mark differs.
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(screen.queryByRole("listbox", { name: "Mention suggestions" })).toBeNull();
+    expect(field.value).toBe("hello @pla");
+  } finally {
+    window.removeEventListener("keydown", watch);
+    view.unmount();
+  }
+});
+
+// With the picker closed, Escape is the composer's: it asks whether to drop a draft. The Escape
+// that drops an input method's candidate, marked or sent with keyCode 229 as above, asks nothing
+// and leaves the draft; a plain Escape after it asks.
+test("an input method's Escape in the composer asks no Discard, and a plain Escape asks it", async () => {
+  const user = userEvent.setup();
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.paste("a draft to keep");
+    // user-event cannot mark a key as an input method's, so the two such Escapes are fired.
+    fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
+    fireEvent.keyDown(field, { isComposing: false, key: "Escape", keyCode: 229 });
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+    expect(field.value).toBe("a draft to keep");
+
+    // The plain Escape goes the same way as the two above, so only the composition mark differs.
+    fireEvent.keyDown(field, { key: "Escape" });
+    await screen.findByRole("button", { name: "Discard" });
+  } finally {
+    view.unmount();
+  }
+});
+
 // INFRA-341 (R2). With the picker closed every key is the page's again: Enter types its newline
 // rather than sending, and reaches the hotkeys the host binds on the window.
 test("the open picker keeps its keys from the page, and a closed one keeps none", async () => {
@@ -1195,6 +1252,7 @@ test("the Enter that confirms an input method's word in an option's label adds n
     expect(fireEvent.keyDown(first, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
     expect(labels()).toHaveLength(before);
 
+    // The plain Enter goes the same way as the two above, so only the composition mark differs.
     expect(fireEvent.keyDown(first, { key: "Enter" })).toBe(false);
     expect(labels()).toHaveLength(before + 1);
   } finally {

@@ -386,7 +386,10 @@ test("a checkbox, radio or button takes no text, so single keys still fire while
   }
 });
 
-test("an already-handled key (defaultPrevented) or one mid-IME-composition is left alone", () => {
+// An input method's key acts on nothing of the page's: one pressed in a composition, marked
+// `isComposing`, and the one that ends it, which Safari sends unmarked with keyCode 229 (WebKit bug
+// 165004). The registry leaves both alone, and the same key unmarked fires its binding.
+test("an already-handled key (defaultPrevented) or an input method's, marked composing or sent with keyCode 229, is left alone", () => {
   const { keymap, press } = harness();
   const next = binding("next", "j");
   keymap.register("global", [next.definition]);
@@ -400,7 +403,9 @@ test("an already-handled key (defaultPrevented) or one mid-IME-composition is le
   }
   expect(press("j", { isComposing: true })).toBe(false);
   expect(next.fired()).toBe(0);
-  press("j");
+  expect(press("j", { isComposing: false, keyCode: 229 })).toBe(false);
+  expect(next.fired()).toBe(0);
+  expect(press("j")).toBe(true);
   expect(next.fired()).toBe(1);
 });
 

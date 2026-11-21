@@ -78,7 +78,9 @@ import { asUser } from "./users";
 // twelve attempts took 530.9 s, which shared four ways and less the 126.2 s those rows cost
 // passing is about 101 s more per worker. The first row now lets its socket through at its end
 // and waits `theBuildWithinMs` for the editor's first batch, so such a page fails it too: two
-// more attempts, each its seeding, its draw and 45 s, which no run has measured yet.
+// more attempts, each its seeding, its draw and 45 s, which no run has measured yet. Before it
+// lets the socket through it holds it until `theOpenedEditorWithinMs` after its navigation,
+// which adds up to 30 s to each run of it, passing or not; no run has measured that yet either.
 
 /** How long a row waits for the landmark half-way down the smaller document to be drawn. */
 const theLandmarkWithinMs = 30_000;
@@ -92,7 +94,9 @@ const theBuildWithinMs = 45_000;
 /** How long the edit row waits, once the editor is open, for every word written into it. */
 const theWordsWithinMs = 20_000;
 
-/** How long a row whose socket is never held waits for the editor to open. */
+/** How long a row whose socket is never held waits, from its navigation, for the editor to
+ *  open; and so how long the first row holds its socket before it reads that no editor is being
+ *  built, since an unheld one would have been by then. */
 const theOpenedEditorWithinMs = 30_000;
 
 /** How long the cards row waits, once the editor is open, for every decision card in it. */
@@ -118,6 +122,7 @@ test(`${documentNames.small} is on the screen before its editor is @phone`, asyn
   try {
     const page = await alice.newPage();
     const transport = await documentTransport(page, { holding: true });
+    const navigated = Date.now();
     await page.goto(path);
 
     // The first block the measurement records as `first painted`, drawn with no socket, no sync
@@ -128,13 +133,22 @@ test(`${documentNames.small} is on the screen before its editor is @phone`, asyn
     await expect(firstBlock).toContainText(documentTitle(documentDiagrams.small));
     // And the sections below it are drawn too, not only the block the measurement reads.
     await expect(page.getByRole("heading", { name: sectionHeading(0) })).toBeVisible();
-    // And the editor really is not there: the page holds no document textbox at all, and no
-    // editor is being built behind it (`documentEditor` finds nothing until a build is over).
+    // And the editor really is not there: the page holds no document textbox at all
+    // (`documentEditor` finds nothing until a build is over).
     await expect(documentEditor(page)).toHaveCount(0);
+    // Nor is one being built behind it, read once an editor whose socket was never held would
+    // have been: read right after the first draw, the none held with a transport that never held
+    // too, in 5 runs of 6, since no editor could exist that early. The wait is the build budget
+    // `theOpenedEditorWithinMs`, counted from the navigation as the cards row below counts it:
+    // the rows whose socket is never held give the editor that long to open whole, and its first
+    // batch, which `editorBeingBuilt` finds, lands before it does. `settledWithTheSocketHeldMs`
+    // is the window a held page is given for its reads, 6 s, which is shorter than the 9.2 s an
+    // unheld editor took to open from the navigation (above).
+    await sleep(Math.max(0, navigated + theOpenedEditorWithinMs - Date.now()));
     await expect(editorBeingBuilt(page)).toHaveCount(0);
 
     // Let through, the socket syncs and the editor's first batch lands: the locator that counted
-    // none of it above matches it now, so its none was the hold's doing.
+    // none of it above matches it now, so it is one that finds the editor once there is one.
     await transport.release();
     await expect(editorBeingBuilt(page)).toBeAttached({ timeout: theBuildWithinMs });
   } finally {

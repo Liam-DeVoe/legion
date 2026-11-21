@@ -1,5 +1,5 @@
 import type { EditorView } from "@milkdown/kit/prose/view";
-import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Artifact } from "../../api/types";
 import { inputMethodKey } from "../../hooks/inputMethodKey";
@@ -32,17 +32,22 @@ export interface RowEditor {
   readonly view: EditorView;
 }
 
-/** What the page hands a row's editor to (`OnEditing`): the editor as it is constructed, before
- *  its build draws a block, and again, the same view, once its binding has built the document
- *  into it; `undefined` as it is torn down; and `null` where no editor is coming - the document
- *  could not make or build one (`doc/ProofDocument.tsx`'s `onEditorConstructed`,
- *  `onEditorHandle` and `onNoEditor`). */
-export type OnEditor = (editor: RowEditor | null | undefined) => void;
+/** What the page hands a row's editor to (`OnEditing`), one handler for each thing the document
+ *  says of its editor (`doc/ProofDocument.tsx`'s `onEditorConstructed`, `onEditorHandle` and
+ *  `onNoEditor`): `constructed`, the editor as it is constructed, before its build draws a block;
+ *  `handle`, the same view again once its binding has built the document into it, and
+ *  `undefined` as it is torn down; and `none`, where no editor is coming - the document could not
+ *  make or build one. */
+export interface RowEditorHandlers {
+  readonly constructed: (editor: RowEditor) => void;
+  readonly handle: (editor: RowEditor | undefined) => void;
+  readonly none: () => void;
+}
 
 /** How the tree tells the page which document a row is being edited in - `undefined` while none
  *  is - so the page draws that document's one editor, and how the page hands the row that editor
- *  (`OnEditor`). */
-export type OnEditing = (artifactId: string | undefined, onEditor?: OnEditor) => void;
+ *  (`RowEditorHandlers`). */
+export type OnEditing = (artifactId: string | undefined, handlers?: RowEditorHandlers) => void;
 
 /** One row the reader is editing in: the document its node's text lives in, the block of that
  *  document the node is, and the key of the row holding the editor (`rowKeyOf`), which is what
@@ -135,16 +140,16 @@ export function nodeEditable(
  * document's whole editor, and free editing of the whole document stays on the document page.
  * That hold is the caret's precondition: no caret goes in, and no key that could edit reaches
  * the editor, until it is on, and the focus stays on the row till then. Where it cannot go on -
- * what it is built of did not load, or the page says no editor is coming (`OnEditor`'s `null`) -
- * the editing ends, and the row says its editor could not open (`KEY_REPORTS.editor_closed`)
- * where the focus is the row's or inside the tree. With the focus out of the tree - moved there
- * by a script before the reader acted, or by a press outside the tree that put off the caret
- * (above) - the row says nothing: the tree lets go of the row, and of what was reported at it,
- * as the editing ends (`IssueTree.tsx`'s `useReleaseFocus`), so a report said then would stand
- * at the tree's tab stop for one commit and go. While the caret is put off by a press outside
- * the tree, such a hold ends
- * the editing at once too, with no focus taken from where the reader is - Details, or the page's
- * body where that press left the focus on nothing. At once is once no press is under way, a press
+ * what it is built of did not load, or the page says no editor is coming (`RowEditorHandlers`'s
+ * `none`) - the editing ends, and the row says its editor could not open
+ * (`KEY_REPORTS.editor_closed`) where the focus is the row's or inside the tree. With the focus
+ * out of the tree - moved there by a script before the reader acted, or by a press outside the
+ * tree that put off the caret (above) - the row says nothing: the tree lets go of the row, and of
+ * what was reported at it, as the editing ends (`IssueTree.tsx`'s `useReleaseFocus`), so a
+ * report said then would stand at the tree's tab stop for one commit and go. While the caret is
+ * put off by a press outside the tree, such a hold ends the editing at once too, with no focus
+ * taken from where the reader is - Details, or the page's body where that press left the focus
+ * on nothing. At once is once no press is under way, a press
  * held outside the tree included, since the editing ends with no caret placed only once a press
  * has ended, so nothing moves under the pointer (above). Seen while a press in the tree that ends
  * the editing (below) is held, such a hold ends the editing as that press does, once it is over:
@@ -246,52 +251,62 @@ export function useNodeEditing({
     undefined
   );
   // Where the hold stands: `awaited` while the page has handed the row no editor, `loading`
-  // from the editor handed over until the hold is on it, and `on` from then, which is what a
-  // caret waits for (below).
-  const hold = useRef<"awaited" | "loading" | "on">("awaited");
+  // from the editor handed over until the hold is on it, `on` from then, which is what a caret
+  // waits for (below), and `none` once the page has said no editor is coming for the row
+  // (`none`), which ends an editing still waiting for one (below). An editor that has drawn the
+  // node's block and is not handed over yet is one still being built, and the row waits for it.
+  const hold = useRef<"awaited" | "loading" | "on" | "none">("awaited");
   // Looks at the row again as the hold goes on or its load fails, while the row is watched.
   const holdChanged = useRef<(() => void) | undefined>(undefined);
   // What takes the hold off the editor the page handed over last.
   const letGo = useRef<(() => void) | undefined>(undefined);
   // The view of the editor the page handed over last, while the page holds it.
   const editorView = useRef<EditorView | undefined>(undefined);
-  // Whether the page has said no editor is coming for the row (`OnEditor`'s `null`), which ends
-  // an editing still waiting for one (below). An editor that has drawn the node's block and is
-  // not handed over yet is one still being built, and the row waits for it.
-  const noEditor = useRef(false);
-  const onEditor = useCallback((editor: RowEditor | null | undefined) => {
-    // The page hands the row its editor as it is constructed, so the hold stands before the
-    // build draws a block of the document - the editor takes an edit from the reader from its
-    // first batch, which wrote another block of the shared document while no hold was on - and
-    // again, the same view, once it is bound: that one keeps the hold on it as it stands.
-    if (
-      editor?.view !== undefined &&
-      editor.view === editorView.current &&
-      letGo.current !== undefined
-    ) {
-      return;
-    }
-    letGo.current?.();
-    letGo.current = undefined;
-    hold.current = "awaited";
-    editorView.current = editor?.view;
-    noEditor.current = editor === null;
-    if (editor === null) {
-      holdChanged.current?.();
-      return;
-    }
-    const parts = load.current?.parts;
-    if (editor === undefined || parts === undefined) return;
-    hold.current = "loading";
-    letGo.current = holdEditsToBlock(
-      editor.view,
-      () => heldBlock.current,
-      parts,
-      () => {
-        hold.current = "on";
+  const handlers = useMemo<RowEditorHandlers>(() => {
+    // Takes the hold off the editor handed over last and puts it on `editor`, where one is
+    // handed over and what the hold is built of has been asked for.
+    const take = (editor: RowEditor | undefined) => {
+      letGo.current?.();
+      letGo.current = undefined;
+      hold.current = "awaited";
+      editorView.current = editor?.view;
+      const parts = load.current?.parts;
+      if (editor === undefined || parts === undefined) return;
+      hold.current = "loading";
+      letGo.current = holdEditsToBlock(
+        editor.view,
+        () => heldBlock.current,
+        parts,
+        () => {
+          hold.current = "on";
+          holdChanged.current?.();
+        }
+      );
+    };
+    return {
+      // The page hands the row its editor as it is constructed, so the hold stands before the
+      // build draws a block of the document - the editor takes an edit from the reader from its
+      // first batch, which wrote another block of the shared document while no hold was on.
+      constructed: take,
+      // And again, the same view, once it is bound: that one keeps the hold on it as it stands.
+      handle: (editor) => {
+        if (
+          editor !== undefined &&
+          editor.view === editorView.current &&
+          letGo.current !== undefined
+        ) {
+          return;
+        }
+        take(editor);
+      },
+      none: () => {
+        letGo.current?.();
+        letGo.current = undefined;
+        editorView.current = undefined;
+        hold.current = "none";
         holdChanged.current?.();
-      }
-    );
+      },
+    };
   }, []);
   // What reports, read as a report is made, so the effect that places the caret runs once for
   // a row whatever the page hands the tree to report with.
@@ -307,17 +322,17 @@ export function useNodeEditing({
       const asked = { failed: false, parts: loadEditsHold() };
       load.current = asked;
       // The document of this editing is asked for afresh, so no word from an earlier one stands.
-      noEditor.current = false;
+      if (hold.current === "none") hold.current = "awaited";
       asked.parts.catch(() => {
         asked.failed = true;
         holdChanged.current?.();
       });
     }
-    onEditing(editingArtifact, onEditor);
+    onEditing(editingArtifact, handlers);
     // The outline going - a document opened in its place - takes the row's editing with it, so
     // the page holds no editor for a row that is no longer drawn.
     return () => onEditing(undefined);
-  }, [editingArtifact, onEditing, onEditor]);
+  }, [editingArtifact, handlers, onEditing]);
 
   // The tree going takes the hold off the editor with it, whatever the page does with that editor.
   useEffect(
@@ -558,9 +573,8 @@ export function useNodeEditing({
       // The hold cannot go on where what it is built of did not load, or where the page has said
       // no editor is coming. An editor that has drawn the node's block and is not handed over yet
       // is one still being built, or one made for a connection the room then refused, which goes
-      // with the next connection's editor still to come: the row waits on (`noEditor`).
-      const unheld =
-        load.current?.failed === true || (noEditor.current && hold.current === "awaited");
+      // with the next connection's editor still to come: the row waits on (`hold`'s `none`).
+      const unheld = load.current?.failed === true || hold.current === "none";
       if (putOff) {
         // A hold that cannot go on ends the editing at once, as with no caret put off (below):
         // as the reader moving on from the row where the press that is ending ends the editing

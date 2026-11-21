@@ -38,12 +38,13 @@ export function IssueOutlinePage(): ReactNode {
   // surface: the reads no reader waits for are held until the editor's first batch
   // (`openDocumentEarly`, `features/doc/first-batch.ts`), and the server's draw of the
   // document's opening blocks stands after `#root` until that surface adopts it
-  // (`features/doc/first-screen.ts`). This page mounts no document surface, so it ends both
-  // itself at each address it draws. Otherwise the shell's navigation, its counts and the
-  // margin's reads wait out `LONGEST_HOLD_MS` for a batch that never comes, and the blocks stay
-  // on the page below the shell. The shell's `OpenDocumentEarly` arms the hold again on each
-  // navigation, and its effect runs before this one, because it stands before the routes in
-  // `app.tsx`.
+  // (`features/doc/first-screen.ts`). The one document surface this page mounts is the editor of
+  // an edited row (`StagedDocument`), whose first batch no address on this page waits on, so the
+  // page ends both itself at each address it draws. Otherwise the shell's navigation, its counts
+  // and the margin's reads wait out `LONGEST_HOLD_MS` for a batch that never comes, and the
+  // blocks stay on the page below the shell. The shell's `OpenDocumentEarly` arms the hold again
+  // on each navigation, and its effect runs before this one, because it stands before the routes
+  // in `app.tsx`.
   useEffect(() => {
     theFirstBatchIsAwaited(false);
     takeFirstScreen(currentAddress(location.pathname));

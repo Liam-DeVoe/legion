@@ -1,5 +1,7 @@
 import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 
+import { inputMethodKey } from "../../hooks/inputMethodKey";
+
 /**
  * One keyboard registry for the SPA. Components register bindings under a scope
  * (`useKeymap`), pages and dialogs push their scope onto the shell-owned stack
@@ -410,13 +412,13 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
   };
 
   /** The presses `event` completes and what the registry would do with them, or `undefined` for
-   *  a press it leaves alone: one already handled, one an input method is composing, a modifier
-   *  on its own. It changes nothing, so `effectOf` reads a press exactly as `handleKeyDown`
-   *  then answers it. */
+   *  a press it leaves alone: one already handled, an input method's (`inputMethodKey`), a
+   *  modifier on its own. It changes nothing, so `effectOf` reads a press exactly as
+   *  `handleKeyDown` then answers it. */
   const readThePress = (
     event: KeyboardEvent
   ): { presses: KeyPress[]; resolution: Resolution } | undefined => {
-    if (event.defaultPrevented || event.isComposing || MODIFIER_KEYS[event.key] === true) {
+    if (event.defaultPrevented || inputMethodKey(event) || MODIFIER_KEYS[event.key] === true) {
       return undefined;
     }
     const editable = isEditableTarget(event.target);
