@@ -970,4 +970,5 @@ func TestTheHoldJournal(t *testing.T) {
 	prepareAbortRows(t)
 	historyRows(t)
 	clockRows(t)
+	restoreJournalRows(t)
 }

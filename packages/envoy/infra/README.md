@@ -4181,11 +4181,16 @@ entry's hold id, since a `prepare` row refuses no client and a `released` row un
 none, would leave the prepared hold's cohort and journal where no command reaches them (409
 `hold_mismatch`); or after a `held` one whose hold's signed journal shows `hold release` or `hold
 abort` done. After any other `held` entry it refuses `bad_transition`, so no restore frees every
-client while a command of a hold may run. Whatever the log shows, it refuses a `released` row
-naming a hold whose signed journal shows `hold set` done and no end: that hold is held by its own
-record. The log and the floors are per database and per process: a database writer who empties
-the log lets `Bootstrap` write gen 1 again on a replica that has served no row since it started,
-sent by a client that has seen no row.
+client while a command of a hold may run. Whatever the log shows, it refuses a `released` row,
+naming a hold or none, while any hold's signed journal shows `hold set` done and no end: that hold
+is held by its own record. It refuses a `released` row naming a hold whose journal does not verify
+(409 `below_floor`). A hold whose release or abort moved the row to `released` before its done
+entry was written (the log's latest entry is that hold's `released`) is not held by its record:
+restore `released` with its id, or with none. The log and the floors are per database and per
+process: a database writer who empties the log, or cuts it back to an earlier entry, lets
+`Bootstrap` or a restore at the gen it names write a row again on a replica that has served no row
+since it started, sent by a client that has seen no row; the journals stop a `released` row then
+only while a hold's journal shows it held.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
