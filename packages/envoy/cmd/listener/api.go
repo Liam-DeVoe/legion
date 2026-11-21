@@ -1165,6 +1165,16 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 				"no stream subject captures "+request.Topic+", so no session would receive it; publish to a notifications.team.<name> topic instead", "topic")
 			return
 		}
+		// A Legion role named under a project it does not work for is refused as POST
+		// /v1/roles/set refuses its claim (roleLaneProjectError): its claim is keyed on the bare
+		// name, so the send would reach the holder of the role's own project. It comes before the
+		// sender limit's take, as every other refusal of the request's own fields does.
+		if lane, isRole := strings.CutPrefix(request.Topic, contracts.RoleTopicPrefix); isRole {
+			if err := roleLaneProjectError(lane); err != nil {
+				record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error(), "topic")
+				return
+			}
+		}
 		charge, admitted := d.senderLimit.admit(w, r, record, item)
 		if !admitted {
 			return

@@ -630,8 +630,17 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 	}
 	// The lane names its role in either form; the claim it resolves is the one that name is keyed
 	// by (store.RoleClaimKeyOf): the bare name, or <project>.<role> for a free-form role under a
-	// project.
-	role := store.RoleClaimKeyOf(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
+	// project. A Legion role named under a project it does not work for reaches no holder
+	// (roleLaneProjectError): its claim is keyed on the bare name, so the lane of another project
+	// naming it would hand that project's message to the role's own project's holder.
+	lane := strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix)
+	if err := roleLaneProjectError(lane); err != nil {
+		cfg.logger.Warn("listener role lane refused a role named under a project it does not work for; no holder is sent it",
+			slog.String("topic", item.Topic), slog.String("event_id", item.EventID), slog.String("error", err.Error()))
+		message.finalize(false)
+		return
+	}
+	role := store.RoleClaimKeyOf(lane)
 	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)
 	if !ok {
 		message.finalize(false)
@@ -648,6 +657,22 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 	cfg.attemptCache.Record(item.DedupeKey, sessionID)
 	cfg.roleForwards.enqueue(roleForward{item: item, sessionID: sessionID})
 	message.finalize(false)
+}
+
+// roleLaneProjectError is why a role lane named in the form that names a project
+// (notifications.role.<KEY>.<role>) reaches no holder, or nil: a Legion role works for the
+// project its own name gives (contracts.ClaimProject), and its claim is keyed on the bare name, so
+// a lane of another project naming it, or of no project, would reach the holder of the role's own
+// project. The role lane drops such a message and the publish route refuses it, as POST
+// /v1/roles/set refuses the claim. A lane in the old form (the role alone) and a free-form role
+// under any project key have none.
+func roleLaneProjectError(lane string) error {
+	project, name, legacy := contracts.CanonicalRole(lane)
+	if legacy {
+		return nil
+	}
+	_, err := contracts.ClaimProject(name, project)
+	return err
 }
 
 // roleForwardRefusalLines are one forward path's lines for each refusal beforeForward can return.
