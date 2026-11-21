@@ -163,7 +163,7 @@
     "routes": [
       "POST /legion/v1/claims/owed"
     ],
-    "since": 202,
+    "since": 205,
     "noBody": false
   }
 ]
