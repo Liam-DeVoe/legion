@@ -530,6 +530,9 @@ func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWrite
 	if err != nil {
 		return nil, unknownf(StepPostcheck, err, "reconcile the daemon stores' stream ids")
 	}
+	if err := result.Covers(families); err != nil {
+		return nil, unknownf(StepPostcheck, err, "reconcile the daemon stores' stream ids")
+	}
 	outputs := map[string]string{}
 	var changed []string
 	for _, c := range result.Changed {
@@ -586,11 +589,13 @@ func streamsRefusal(r streams.Report, err error) error {
 }
 
 // streamChanges is what a streams run did to each protected stream, for the postcheck: a stream it
-// made is recreated, with no write of its own; one it raised or put back is kept.
+// made is recreated, with no write of its own; one it raised or put back is kept. ENVOY_MEASURE,
+// which update makes and the hold does not protect (streamset.MeasureStream), is not the
+// postcheck's: step 1 reads only the protected streams.
 func streamChanges(r streams.Report) map[string]Change {
 	changes := map[string]Change{}
 	for _, f := range r.Changes {
-		if f.Consumer == "" && f.What == "made" {
+		if f.Consumer == "" && f.What == "made" && isProtectedStream(f.Stream) {
 			changes[f.Stream] = Change{Kind: ChangeRecreated}
 		}
 	}
