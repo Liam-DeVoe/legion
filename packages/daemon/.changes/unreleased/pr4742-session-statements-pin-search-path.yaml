@@ -4,10 +4,12 @@ custom:
 body: |-
   The launcher's session lookups and Claude Code saves, and `legion sessions import`, run each
   statement on the session database in a transaction whose first statement is `SET LOCAL
-  search_path = pg_catalog, pg_temp` (the lookups read-only), and name each table
-  `public.<table>`, as Oh My Pi runs its own. Before, they named each table bare under the
-  login's own search_path, so a login that can create in the database or in its `public` schema
-  could make them run what it planted, as the login that runs them: a
-  `public.right(text, double precision)` took the by-id lookup's suffix compare, and a schema
-  named for the login stood in for both tables. The pin is set in each transaction because a
-  PgBouncer pool in transaction mode refuses `search_path` as a startup parameter.
+  search_path = pg_catalog, pg_temp` (the lookups read-only, and with `row_security` off), and
+  name each table `public.<table>`, as Oh My Pi runs its own. Before, they named each table bare
+  under the login's own search_path, so a login that can create in the database or in its
+  `public` schema could have a function or schema it planted resolve in those statements, as the
+  login that runs them: a `public.right(text, double precision)` took the by-id lookup's suffix
+  compare, and a schema named for the login stood in for both tables. A read now refuses a
+  row-security policy the tables' owner attached rather than run it. The pin is set in each
+  transaction because a PgBouncer pool in transaction mode refuses `search_path` as a startup
+  parameter.
