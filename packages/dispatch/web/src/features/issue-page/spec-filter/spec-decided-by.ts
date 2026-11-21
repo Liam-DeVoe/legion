@@ -7,10 +7,11 @@ import {
   isStatement,
   LEADING_LABEL,
   lineWordsRaw,
+  SENTENCE_END,
   type TreeNode,
 } from "../issue-tree";
 import { chipWords } from "../node-row-chip";
-import { referenceStandIns, SENTENCE_END } from "../one-line";
+import { referenceStandIns } from "../one-line";
 import { isReader, type NodeState, type NodeType, type StatementState } from "../page-words";
 import { plainWordsRaw } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";

@@ -386,7 +386,7 @@ test("a sentence is ended neither at a leading label nor before a word in lower 
   }
 });
 
-// R1: the issue's three sentences read the same sentence end as a person's quote (`one-line.ts`'s
+// R1: the issue's three sentences read the same sentence end as a person's quote (`issue-tree.ts`'s
 // `SENTENCE_END`), so a full stop that a number follows ends an abbreviation, not a sentence.
 test("a sentence is not ended at an abbreviation that a number follows", () => {
   const { lines, unmount } = bullets(

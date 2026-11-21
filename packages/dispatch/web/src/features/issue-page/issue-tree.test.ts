@@ -1025,6 +1025,23 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
   });
 });
 
+// R1's one-line rule ends a line at the page's one sentence end.
+test("firstLineOf runs past an abbreviation that a number follows", () => {
+  expect(firstLineOf("Use the old page (see p. 4) for now. Then more.")).toEqual({
+    cut: true,
+    line: "Use the old page (see p. 4) for now.",
+    sentence: true,
+  });
+});
+
+test("firstLineOf runs past an abbreviation that a word in lower case follows", () => {
+  expect(firstLineOf("Keep the memo, e.g. in the pane. Then more.")).toEqual({
+    cut: true,
+    line: "Keep the memo, e.g. in the pane.",
+    sentence: true,
+  });
+});
+
 // R1: a cut at the limit falls between two characters, never inside one. A character outside the
 // Basic Multilingual Plane is two UTF-16 units, and a line that ends on the first of them holds a
 // lone surrogate, which `encodeURIComponent` refuses and a row draws as a broken glyph.

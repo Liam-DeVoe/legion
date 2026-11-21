@@ -358,12 +358,29 @@ export const FIRST_LINE_LIMIT = 100;
  */
 export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
 
+/** A sentence end: its mark, with whatever closing quote or bracket the writer put after it,
+ *  where the words stop, or where a space and a word that does not start in lower case follow:
+ *  a mark before a word in lower case ends an abbreviation (`e.g. tester`), not a sentence. A
+ *  full stop before a number ends an abbreviation too (`see p. 4`), not a sentence, unless the
+ *  number opens a numbered label (`2. Then`), which starts the next sentence: digits and full
+ *  stops, at most five characters, that end in a full stop before a space or where the words
+ *  stop, the shape `LEADING_LABEL` reads. It is read past a leading label (`LEADING_LABEL`),
+ *  which ends none: by every place that draws one line for a node (`firstLineOf`), by the
+ *  issue's three sentences and by a person's quoted first sentence (`spec-decided-by.ts`'s
+ *  `firstSentenceOf`), so the same words are split one way wherever the page draws them. */
+export const SENTENCE_END =
+  /(?:[!?]|\.(?!\s+\d(?![\d.]{0,3}\.(?:\s|$))))[)\]"'\u201d\u2019]*(?=$|\s+[^\s\p{Ll}])/u;
+
 /**
- * The node's own text to the first sentence end or `FIRST_LINE_LIMIT` characters, whichever
- * comes first, cut at a word wherever the limit falls near one. A leading label - a first word
- * of at most five characters that ends in `.` and holds a digit, as `R1.`, `12.` or `1.2.` - is
- * part of the line and no sentence end, so a statement's line runs on to the first sentence end
- * after its label. A line held to the limit that holds no space past its label -
+ * The node's own text to its first sentence end (`SENTENCE_END`) or `FIRST_LINE_LIMIT`
+ * characters, whichever comes first, cut at a word wherever the limit falls near one. A
+ * sentence end is a mark with any closing quote or bracket after it, where the words stop or a
+ * word that does not start in lower case follows: a mark before a word in lower case
+ * (`e.g. in`), or a full stop before a number (`see p. 4`), ends an abbreviation, not the
+ * sentence. A leading label - a first word of at most five characters that ends in `.` and
+ * holds a digit, as `R1.`, `12.` or `1.2.` - is part of the line and no sentence end, so a
+ * statement's line runs on to the first sentence end after its label. A line held to the limit
+ * that holds no space past its label -
  * one unbroken token, a URL or an identifier - is cut at the limit itself, because there is no
  * word boundary to cut at and the limit is the row's whole budget, and one unit short of it
  * where the limit falls inside a surrogate pair, as `textHead` cuts. `cut` says whether the
@@ -380,8 +397,11 @@ export function firstLineOf(text: string): {
 } {
   const whole = text.replace(/\s+/gu, " ").trim();
   const label = LEADING_LABEL.exec(whole)?.[0] ?? "";
-  const rest = /^.*?[.!?](?=\s|$)/u.exec(whole.slice(label.length))?.[0];
-  const first = rest === undefined ? undefined : `${label}${rest}`;
+  const sentenceEnd = SENTENCE_END.exec(whole.slice(label.length));
+  const first =
+    sentenceEnd === null
+      ? undefined
+      : whole.slice(0, label.length + sentenceEnd.index + sentenceEnd[0].length);
   if (first !== undefined && first.length <= FIRST_LINE_LIMIT) {
     return { cut: first.length < whole.length, line: first, sentence: true };
   }
