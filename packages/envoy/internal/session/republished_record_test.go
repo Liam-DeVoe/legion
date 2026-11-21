@@ -46,7 +46,7 @@ func TestADeleteOverARepublishedRecordDeletesItAtItsTrueSequence(t *testing.T) {
 		if err := r.Put(tc.victim, SessionEntry{MachineID: "edge-a", ClientInstanceID: "instance-victim", Projects: []string{"PRIV"}}); err != nil {
 			t.Fatalf("register %s: %v", tc.victim, err)
 		}
-		if own, err := r.StoredByWriter(ctx, tc.victim); err != nil || !own {
+		if _, own, err := r.StoredByWriter(ctx, tc.victim); err != nil || !own {
 			t.Fatalf("StoredByWriter(%s) over its own registration = %t, %v; want true", tc.victim, own, err)
 		}
 		body, err := json.Marshal(map[string]any{"session_id": tc.victim, "machine_id": "edge-a", "updated_at": time.Now().UnixMilli(),
@@ -58,7 +58,7 @@ func TestADeleteOverARepublishedRecordDeletesItAtItsTrueSequence(t *testing.T) {
 		if entry, err := kv.Get(tc.victim); err != nil || entry.Revision() == stored {
 			t.Fatalf("a direct get of %s answers revision %v (%v), stored at %d: want another stream's sequence, or the control shows nothing to correct", tc.victim, entry, err, stored)
 		}
-		if own, err := r.StoredByWriter(ctx, tc.victim); err != nil || own {
+		if _, own, err := r.StoredByWriter(ctx, tc.victim); err != nil || own {
 			t.Fatalf("StoredByWriter(%s) over the republished record = %t, %v; want false", tc.victim, own, err)
 		}
 		if err := tc.delete(tc.victim); err != nil {
@@ -101,7 +101,7 @@ func TestARegistrationOverARepublishedRecordHealsAtItsTrueSequence(t *testing.T)
 	if entry, err := kv.Get(victim); err != nil || entry.Revision() == stored {
 		t.Fatalf("a direct get of %s answers revision %v (%v), stored at %d: want another stream's sequence, or the control shows nothing to correct", victim, entry, err, stored)
 	}
-	if own, err := r.StoredByWriter(context.Background(), victim); err != nil || own {
+	if _, own, err := r.StoredByWriter(context.Background(), victim); err != nil || own {
 		t.Fatalf("StoredByWriter(%s) over the republished record = %t, %v; want false", victim, own, err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -109,7 +109,7 @@ func TestARegistrationOverARepublishedRecordHealsAtItsTrueSequence(t *testing.T)
 	if err := r.PutWithin(ctx, victim, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}}); err != nil {
 		t.Fatalf("register %s over the record republished at %d: %v", victim, stored, err)
 	}
-	if own, err := r.StoredByWriter(context.Background(), victim); err != nil || !own {
+	if _, own, err := r.StoredByWriter(context.Background(), victim); err != nil || !own {
 		t.Fatalf("StoredByWriter(%s) after the registration = %t, %v; want true", victim, own, err)
 	}
 	entry, err := r.Refresh(context.Background(), victim)
