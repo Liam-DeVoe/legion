@@ -42,11 +42,12 @@
  *    repositories, keeping those alone). For each repository, the default branch's commit at `--at`
  *    (`repos/<r>/commits?sha=<branch>&until=<at>&per_page=1`) and that commit's tree
  *    (`git/trees/<tree>?recursive=1`, through gh's jq as one line per entry, so the answer's JSON
- *    never sits in this process). Of each tree only the entries this list uses are kept
- *    (`keepsEntry`: each `SKILL.md`, each file of a manifest kind, and in a fork each text file its
- *    scan may read); the rest are counted (`repositories.tsv`'s `tree_entries`) and dropped. A tree
- *    GitHub answers `truncated` is walked a level at a time, each level's subtrees in GraphQL
- *    batches of up to 50 (`readTree`), with REST where GitHub refuses a batch. A listing, commit or
+ *    never sits in this process). Of each tree only the entries this list uses are kept, as each
+ *    answer is read (`keepsEntry`: each `SKILL.md`, each file of a manifest kind, and in a fork
+ *    each text file its scan may read); the rest are counted (`repositories.tsv`'s `tree_entries`)
+ *    and dropped. A tree GitHub answers `truncated` is walked a level at a time, each level's
+ *    subtrees in GraphQL batches of up to 50 (`readTree`), with REST where GitHub refuses a batch;
+ *    the walk holds only the kept entries and the subtrees of its next level. A listing, commit or
  *    tree read that fails names its repository with gh's error. Forks and archived repositories
  *    stay, marked (a fork with its parent). REPOSITORY_JOBS (6) repositories are read at once, and
  *    every gh call reading one (commit, tree, subtrees, blobs) takes one of READ_CALLS (8) slots
@@ -157,6 +158,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { mapLimit } from "../skill-scenarios/production-dispatch";
 import { loadConfig, type SkillCutsConfig } from "./config";
 import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 
@@ -782,22 +784,6 @@ function graphqlArgs(repository: string, query: string): string[] {
   return ["api", "graphql", "-f", `owner=${owner}`, "-f", `name=${name}`, "-f", `query=${query}`];
 }
 
-async function mapLimit<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    for (let index = next++; index < items.length; index = next++) {
-      results[index] = await fn(items[index] as T, index);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return results;
-}
-
 // ---------------------------------------------------------------------------------------------
 // paths
 
@@ -892,15 +878,39 @@ export function keepsEntry(
   );
 }
 
+/** A subtree a walk reads: its id and its path in the repository. */
+interface Subtree {
+  readonly sha: string;
+  readonly prefix: string;
+}
+
+/** What outlives one read of tree entries: the entries `readTree`'s `keep` keeps, how many entries
+ *  the read gave, and, for a read of one level, its subtrees, which the walk reads next. */
+interface TreePart {
+  readonly kept: TreeEntry[];
+  readonly subtrees: Subtree[];
+  count: number;
+}
+
+/** `part` added after what `into` holds. */
+function appendPart(into: TreePart, part: TreePart): void {
+  into.count += part.count;
+  for (const entry of part.kept) into.kept.push(entry);
+  for (const subtree of part.subtrees) into.subtrees.push(subtree);
+}
+
 /** The tree `sha` of `repository`: the entries `keep` keeps, and how many it holds. The whole tree
  *  is asked for in one REST read (through gh's jq, TREE_JQ, one line per entry). A tree GitHub
  *  answers truncated, or whose whole read fails (gh cut off the answer of a large tree: "unexpected
  *  end of JSON input"), is walked a level at a time: each level's subtrees are read in GraphQL
  *  batches of up to TREE_BATCH (`object(oid:)` fields, one level of entries each, routed as
- *  `graphqlArgs` says), batches at once under the read slots (`Github.inSlot`). A batch GitHub
- *  refuses (a node limit, a timeout) is halved, and a subtree refused alone is read over REST, one
- *  level. The entries and their count are the same whichever way a subtree is read; only kept
- *  entries outlive a read. `reads` counts the gh calls. */
+ *  `graphqlArgs` says), READ_CALLS_PER_REPOSITORY batches at once under the read slots
+ *  (`Github.inSlot`). A batch GitHub refuses (a node limit, a timeout) is halved, and a subtree
+ *  refused alone is read over REST, one level. The entries and their count are the same whichever
+ *  way a subtree is read. Each read keeps, as it parses its answer, only the entries `keep` keeps,
+ *  the subtrees of a one-level read and a count of the entries: a data repository's tree holds
+ *  millions of entries, so no read and no level holds them all, and a walk holds only the kept
+ *  entries and the subtrees of its next level. `reads` counts the gh calls. */
 export async function readTree(
   github: Github,
   repository: string,
@@ -908,39 +918,52 @@ export async function readTree(
   keep: (entry: TreeEntry) => boolean
 ): Promise<{ entries: TreeEntry[]; count: number; reads: number; truncated: boolean }> {
   let reads = 0;
-  let count = 0;
-  const kept: TreeEntry[] = [];
+  /** Counts `entry` into `part`, keeping it when `keep` does, and its subtree in a one-level read. */
+  const take = (part: TreePart, entry: TreeEntry, oneLevel: boolean): void => {
+    part.count++;
+    if (keep(entry)) part.kept.push(entry);
+    if (oneLevel && entry.type === "tree") {
+      part.subtrees.push({ sha: entry.sha, prefix: entry.path });
+    }
+  };
   /** A tree's entries over REST, the whole tree when `recursive`, else one level. */
   const restRead = async (treeSha: string, prefix: string, recursive: boolean) => {
     reads++;
     const endpoint = `repos/${repository}/git/trees/${treeSha}${recursive ? "?recursive=1" : ""}`;
-    const lines = (
-      await github.inSlot(repository, () => github.text(["api", endpoint, "--jq", TREE_JQ]))
-    ).split("\n");
-    const flag = lines[0];
+    const text = await github.inSlot(repository, () =>
+      github.text(["api", endpoint, "--jq", TREE_JQ])
+    );
+    // The answer is read a line at a time, so an entry not kept outlives only its line.
+    let end = text.indexOf("\n");
+    const flag = end < 0 ? text : text.slice(0, end);
     if (flag !== "true" && flag !== "false") throw new Error("the tree answer is not of its shape");
-    const entries: TreeEntry[] = [];
-    for (const line of lines.slice(1)) {
+    const part: TreePart = { kept: [], subtrees: [], count: 0 };
+    while (end >= 0) {
+      const start = end + 1;
+      end = text.indexOf("\n", start);
+      const line = end < 0 ? text.slice(start) : text.slice(start, end);
       if (line === "") continue;
       const parsed = TreeLine.safeParse(parseJson(line));
       if (!parsed.success)
         throw new Error(`a tree answer line is not of its shape: ${schemaFaults(parsed.error)}`);
       const [entryPath, mode, type, entrySha, size] = parsed.data;
-      entries.push({
-        path: prefix === "" ? entryPath : `${prefix}/${entryPath}`,
-        mode,
-        type,
-        sha: entrySha,
-        ...(size >= 0 ? { size } : {}),
-      });
+      take(
+        part,
+        {
+          path: prefix === "" ? entryPath : `${prefix}/${entryPath}`,
+          mode,
+          type,
+          sha: entrySha,
+          ...(size >= 0 ? { size } : {}),
+        },
+        !recursive
+      );
     }
-    return { entries, truncated: flag === "true" };
+    return { part, truncated: flag === "true" };
   };
   /** One level of each of `trees`, in one GraphQL read; halved, then read over REST, where
    *  GitHub refuses it. */
-  const levelOf = async (
-    trees: readonly { sha: string; prefix: string }[]
-  ): Promise<TreeEntry[][]> => {
+  const levelOf = async (trees: readonly Subtree[]): Promise<TreePart> => {
     reads++;
     const fields = trees
       .map(
@@ -956,60 +979,61 @@ export async function readTree(
     const answers = parsed.success
       ? trees.map((_, index) => parsed.data.data.repository?.[`t${index}`])
       : [];
+    const part: TreePart = { kept: [], subtrees: [], count: 0 };
     if (answers.length === trees.length && answers.every((answer) => answer != null)) {
-      return answers.map((answer, index) => {
+      for (const [index, answer] of answers.entries()) {
         const prefix = trees[index]?.prefix ?? "";
-        return (answer?.entries ?? []).map(
-          (entry): TreeEntry => ({
-            path: prefix === "" ? entry.name : `${prefix}/${entry.name}`,
-            // GraphQL gives the mode as a number; REST as its octal digits, six of them.
-            mode: entry.mode.toString(8).padStart(6, "0"),
-            type: entry.type,
-            sha: entry.oid,
-            ...(entry.type === "blob" && entry.size != null ? { size: entry.size } : {}),
-          })
-        );
-      });
+        for (const entry of answer?.entries ?? []) {
+          take(
+            part,
+            {
+              path: prefix === "" ? entry.name : `${prefix}/${entry.name}`,
+              // GraphQL gives the mode as a number; REST as its octal digits, six of them.
+              mode: entry.mode.toString(8).padStart(6, "0"),
+              type: entry.type,
+              sha: entry.oid,
+              ...(entry.type === "blob" && entry.size != null ? { size: entry.size } : {}),
+            },
+            true
+          );
+        }
+      }
+      return part;
     }
     if (trees.length > 1) {
       const half = Math.ceil(trees.length / 2);
       const halves = await Promise.all([levelOf(trees.slice(0, half)), levelOf(trees.slice(half))]);
-      return halves.flat();
+      for (const each of halves) appendPart(part, each);
+      return part;
     }
     const [tree] = trees;
-    if (tree === undefined) return [];
+    if (tree === undefined) return part;
     const one = await restRead(tree.sha, tree.prefix, false);
     if (one.truncated)
       throw new Error(`the tree of ${shown(tree.prefix)} is truncated even one level at a time`);
-    return [one.entries];
+    return one.part;
   };
-  let whole: { entries: TreeEntry[]; truncated: boolean };
+  let whole: { part: TreePart; truncated: boolean } | undefined;
   try {
     whole = await restRead(sha, "", true);
   } catch (error) {
     rethrowStop(error);
-    whole = { entries: [], truncated: true };
   }
-  if (!whole.truncated) {
-    for (const entry of whole.entries) if (keep(entry)) kept.push(entry);
-    return { entries: kept, count: whole.entries.length, reads, truncated: false };
+  if (whole !== undefined && !whole.truncated) {
+    return { entries: whole.part.kept, count: whole.part.count, reads, truncated: false };
   }
-  let level = [{ sha, prefix: "" }];
-  while (level.length > 0) {
-    const batches: { sha: string; prefix: string }[][] = [];
+  // mapLimit gives a level's batches in their order: the kept entries keep one order every run.
+  const walk: TreePart = { kept: [], subtrees: [{ sha, prefix: "" }], count: 0 };
+  while (walk.subtrees.length > 0) {
+    const level = walk.subtrees.splice(0);
+    const batches: Subtree[][] = [];
     for (let start = 0; start < level.length; start += TREE_BATCH)
       batches.push(level.slice(start, start + TREE_BATCH));
-    const next: { sha: string; prefix: string }[] = [];
-    for (const entries of (await Promise.all(batches.map(levelOf))).flat()) {
-      for (const entry of entries) {
-        count++;
-        if (keep(entry)) kept.push(entry);
-        if (entry.type === "tree") next.push({ sha: entry.sha, prefix: entry.path });
-      }
+    for (const part of await mapLimit(batches, READ_CALLS_PER_REPOSITORY, levelOf)) {
+      appendPart(walk, part);
     }
-    level = next;
   }
-  return { entries: kept, count, reads, truncated: true };
+  return { entries: walk.kept, count: walk.count, reads, truncated: true };
 }
 
 /** Reads the commit of `repo` at `at` and its tree; returns the tree's gh calls. A read that
@@ -1214,11 +1238,12 @@ function repositoryKey(repo: Repository, at: string): string {
 }
 
 /** Takes `repo` from the cache when it holds it: its commit, kept tree, and fork reads, and the
- *  texts of its SKILL.md and manifest files into `texts`. A file written before a fork's text
- *  files were kept apart is rewritten: those files move to their own lines (`fork-files`), so its
- *  scan reads them one at a time. Returns the tree's gh calls of the run that read it, or
- *  undefined when the cache does not hold it whole. It runs without a pause, so two never hold a
- *  large file at once. */
+ *  texts of its SKILL.md and manifest files into `texts`. A file written before trees kept only
+ *  the entries this list uses holds its whole tree: only those entries (`keepsEntry`) are taken,
+ *  and the file is written again with them. A file written before a fork's text files were kept
+ *  apart is rewritten: those files move to their own lines (`fork-files`), so its scan reads them
+ *  one at a time. Returns the tree's gh calls of the run that read it, or undefined when the cache
+ *  does not hold it whole. It runs without a pause, so two never hold a large file at once. */
 function takeCached(
   cache: ReadCache,
   key: string,
@@ -1232,7 +1257,7 @@ function takeCached(
   if (scanned && cached.forkFilesApart === true && !cache.hasLines("fork-files", key))
     return undefined;
   repo.commit = cached.commit;
-  repo.tree = cached.tree;
+  repo.tree = cached.tree.filter((entry) => keepsEntry(entry, repo.fork));
   repo.treeEntries = cached.treeEntries;
   repo.treeRead = cached.treeRead;
   // A fork cached before the compare rule was read from its whole tree, and keeps it.
@@ -1252,10 +1277,13 @@ function takeCached(
     writer.close();
     cache.put("repository", key, {
       ...cached,
+      tree: repo.tree,
       blobs: Object.fromEntries(texts),
       forkRead: repo.forkRead,
       forkFilesApart: true,
     });
+  } else if (repo.tree.length < cached.tree.length) {
+    cache.put("repository", key, { ...cached, tree: repo.tree });
   }
   return { treeCalls: cached.treeCalls };
 }

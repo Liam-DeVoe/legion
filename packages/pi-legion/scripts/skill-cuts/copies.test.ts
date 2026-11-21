@@ -318,6 +318,8 @@ class World {
   refuseTreeBatches = false;
   /** The GraphQL tree batches answered, each with its subtrees. */
   readonly treeBatches: number[] = [];
+  /** When set, called as each GraphQL tree batch is answered, before its answer is made. */
+  onTreeBatch: (() => void) | undefined = undefined;
   /** Each tree answer waits this many microtask turns (no timer), or its repository's in
    *  `treeTurnsOf`, so reads made at once overlap; the most tree reads in flight at once, in all
    *  and of one repository, and the most repositories with one in flight. */
@@ -407,6 +409,7 @@ class World {
           return fail("gh: Something went wrong while executing your query.");
         const trees = [...query.matchAll(/(t\d+): object\(oid: "([0-9a-f]{40})"\)/g)];
         this.treeBatches.push(trees.length);
+        this.onTreeBatch?.();
         const repository = Object.fromEntries(
           trees.map(([, alias = "", sha = ""]) => {
             const found = this.trees.get(`${owner}/${name} ${sha}`) as
@@ -745,6 +748,7 @@ function cachedEntry(
   repository: string
 ):
   | {
+      treeEntries: number;
       tree: TreeEntry[];
       blobs: Record<string, string>;
       forkRead?: string;
@@ -756,7 +760,7 @@ function cachedEntry(
     if (!file.endsWith(".json")) continue;
     const entry = JSON.parse(readFileSync(path.join(dir, file), "utf8")) as {
       key: string;
-      value: { tree: TreeEntry[]; blobs: Record<string, string> };
+      value: { treeEntries: number; tree: TreeEntry[]; blobs: Record<string, string> };
     };
     if (entry.key.startsWith(`${repository}\0`)) return entry.value;
   }
@@ -2082,6 +2086,195 @@ describe("the memory a run holds", () => {
     expect(grown(steps)).toBeLessThan(4 * 1024 ** 2);
     expect(grown(scans)).toBeLessThan(4 * 1024 ** 2);
   }, 60_000);
+
+  /** acme/data, a made-up repository beside the world's: acme/skills' own files (its skills,
+   *  manifests and installer script) and data/, DATA_DIRS directories of DATA_FILES files each, all
+   *  one blob (files of the same bytes have one blob id). With `walked`, its root's recursive read
+   *  is answered truncated, as GitHub answers a tree that large, and each directory one level at a
+   *  time, so the run walks it; else the recursive read gives the whole tree. */
+  const DATA = "acme/data";
+  const DATA_DIRS = 2_000;
+  const DATA_FILES = 100;
+  const dataWorld = (walked: boolean): { w: World; own: TreeEntry[]; count: number } => {
+    const w = world();
+    w.listings.set("acme", [
+      ...(w.listings.get("acme") as unknown[]),
+      {
+        nameWithOwner: DATA,
+        isFork: false,
+        isArchived: false,
+        defaultBranchRef: { name: "main" },
+        parent: null,
+      },
+    ]);
+    const rootSha = sha1(`root ${DATA}`);
+    w.commits.set(DATA, [{ sha: sha1(`commit ${DATA}`), commit: { tree: { sha: rootSha } } }]);
+    const own = treeOf(DATA, ACME_FILES);
+    const directory = (dir: string): TreeEntry => ({
+      path: dir,
+      mode: "040000",
+      type: "tree",
+      sha: sha1(`tree ${DATA} ${dir}`),
+    });
+    const dataDir = directory("data");
+    const dataDirs = Array.from({ length: DATA_DIRS }, (_, n) =>
+      directory(`data/d-${String(n).padStart(4, "0")}`)
+    );
+    const blob = blobSha("a made-up data file\n");
+    const file = (name: string): TreeEntry => ({
+      path: name,
+      mode: "100644",
+      type: "blob",
+      sha: blob,
+      size: 20,
+    });
+    const names = Array.from(
+      { length: DATA_FILES },
+      (_, n) => `f-${String(n).padStart(3, "0")}.bin`
+    );
+    const count = own.length + 1 + DATA_DIRS * (1 + DATA_FILES);
+    if (!walked) {
+      const tree = [
+        ...own,
+        dataDir,
+        ...dataDirs.flatMap((dir) => [dir, ...names.map((name) => file(`${dir.path}/${name}`))]),
+      ];
+      w.trees.set(`${DATA} ${rootSha} recursive`, { sha: rootSha, tree, truncated: false });
+      return { w, own, count };
+    }
+    /** One level of `dir` in `entries`, each named within it. */
+    const level = (entries: readonly TreeEntry[], dir: string) =>
+      entries
+        .filter((entry) => dir === "" || entry.path.startsWith(`${dir}/`))
+        .map((entry) => ({
+          ...entry,
+          path: dir === "" ? entry.path : entry.path.slice(dir.length + 1),
+        }))
+        .filter((entry) => !entry.path.includes("/"));
+    w.trees.set(`${DATA} ${rootSha} recursive`, {
+      sha: rootSha,
+      tree: own.slice(0, 10),
+      truncated: true,
+    });
+    w.trees.set(`${DATA} ${rootSha}`, {
+      sha: rootSha,
+      tree: [...level(own, ""), dataDir],
+      truncated: false,
+    });
+    for (const dir of own.filter((entry) => entry.type === "tree")) {
+      w.trees.set(`${DATA} ${dir.sha}`, { sha: dir.sha, tree: level(own, dir.path) });
+    }
+    w.trees.set(`${DATA} ${dataDir.sha}`, { sha: dataDir.sha, tree: level(dataDirs, "data") });
+    // Every directory of data/ holds the same files, so one list of them serves each.
+    const files = names.map(file);
+    for (const dir of dataDirs) w.trees.set(`${DATA} ${dir.sha}`, { sha: dir.sha, tree: files });
+    return { w, own, count };
+  };
+
+  test("a truncated tree of over 200,000 entries is walked holding only the entries the list uses and a count of the rest", async () => {
+    const newCache = () => {
+      const dir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
+      scratch.push(dir);
+      return dir;
+    };
+    const args = (cacheDir: string) => [
+      "--only",
+      DATA,
+      "--max-search-calls",
+      "0",
+      "--cache-dir",
+      cacheDir,
+    ];
+    const walked = dataWorld(true);
+    expect(walked.count).toBeGreaterThan(200_000);
+    const samples: number[] = [];
+    walked.w.onTreeBatch = () => {
+      Bun.gc(true);
+      samples.push(heapSize());
+    };
+    const walkedCache = newCache();
+    Bun.gc(true);
+    const before = heapSize();
+    const byDirectory = await run(walked.w, args(walkedCache));
+    walked.w.onTreeBatch = undefined;
+    // At each batch of the walk, data/'s directories among them, the heap held about what it held
+    // before the run: no level's entries, only the kept ones and the subtrees still to read.
+    expect(samples.length).toBeGreaterThan(DATA_DIRS / 50);
+    expect(Math.max(...samples) - before).toBeLessThan(8 * 1024 ** 2);
+
+    const whole = dataWorld(false);
+    const wholeCache = newCache();
+    const read = await run(whole.w, args(wholeCache));
+    expect(byDirectory.code).toBe(0);
+    expect(read.code).toBe(0);
+    for (const name of [
+      "skill-copies.tsv",
+      "manifests.tsv",
+      "installers.tsv",
+      "prefix-table.tsv",
+    ]) {
+      expect(byDirectory.text(name)).toBe(read.text(name));
+    }
+    expect(byDirectory.table("skill-copies.tsv").length).toBeGreaterThan(0);
+    expect(byDirectory.table("manifests.tsv").length).toBeGreaterThan(0);
+    const [walkedRow] = byDirectory.table("repositories.tsv");
+    const [wholeRow] = read.table("repositories.tsv");
+    expect(walkedRow?.tree_read).toMatch(/^by directory, \d+ reads$/);
+    expect(wholeRow?.tree_read).toBe("whole");
+    expect(walkedRow?.tree_entries).toBe(String(walked.count));
+    expect({ ...walkedRow, tree_read: "" }).toEqual({ ...wholeRow, tree_read: "" });
+    const line = `copies: tree 1/1 ${DATA}: ${walked.count} entries, `;
+    expect(byDirectory.errors.filter((each) => each.startsWith(line))).toHaveLength(1);
+    expect(read.errors.filter((each) => each.startsWith(line))).toHaveLength(1);
+    // Either way the cache holds the kept entries and the count of them all.
+    const kept = walked.own
+      .filter((entry) => keepsEntry(entry, false))
+      .map((entry) => entry.path)
+      .sort();
+    for (const cacheDir of [walkedCache, wholeCache]) {
+      const cached = cachedEntry(cacheDir, DATA);
+      expect(cached?.tree.map((entry) => entry.path).sort()).toEqual(kept);
+      expect(cached?.treeEntries).toBe(walked.count);
+    }
+  }, 120_000);
+
+  test("a cache entry holding a whole tree loads as the entries the list uses, and is written back so", async () => {
+    const cacheDir = mkdtempSync(path.join(tmpdir(), "copies-cache-"));
+    scratch.push(cacheDir);
+    const args = ["--only", "acme/skills", "--max-search-calls", "0", "--cache-dir", cacheDir];
+    const first = await run(world(), args);
+    // As a run before trees kept only the entries the list uses wrote it: the whole tree.
+    const entries = treeOf("acme/skills", [...madeUpFiles(), ...ACME_FILES]);
+    const dir = path.join(cacheDir, "repository");
+    const files = readdirSync(dir).filter((file) => file.endsWith(".json"));
+    expect(files).toHaveLength(1);
+    const file = path.join(dir, files[0] ?? "");
+    const written = JSON.parse(readFileSync(file, "utf8")) as { key: string; value: object };
+    writeFileSync(file, JSON.stringify({ ...written, value: { ...written.value, tree: entries } }));
+
+    const w = world();
+    const second = await run(w, args);
+    expect(w.calls.filter((call) => /\/git\/trees\//.test(call[1] ?? ""))).toEqual([]);
+    for (const name of [
+      "skill-copies.tsv",
+      "manifests.tsv",
+      "installers.tsv",
+      "repositories.tsv",
+      "prefix-table.tsv",
+    ]) {
+      expect(second.text(name)).toBe(first.text(name));
+    }
+    expect(
+      cachedEntry(cacheDir, "acme/skills")
+        ?.tree.map((entry) => entry.path)
+        .sort()
+    ).toEqual(
+      entries
+        .filter((entry) => keepsEntry(entry, false))
+        .map((entry) => entry.path)
+        .sort()
+    );
+  });
 
   test("the run's peak resident memory is in its summary", async () => {
     const r = await run(world(), ["--only", "cybermonklabs/legion", "--max-search-calls", "0"]);
