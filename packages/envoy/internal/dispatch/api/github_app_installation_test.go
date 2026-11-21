@@ -151,6 +151,45 @@ func TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled(t *testing.T) {
 	read("under a met App rate limit", `502 {"code":"GITHUB_UNREADABLE","error":"read the GitHub App's installation on <repo>: GitHub rate limit on app`, nil)
 }
 
+// TestAppInstallationFollowsNoRedirectToAnotherRepositoryWhileAProjectIsPrivate: GitHub answers an
+// old name of a renamed or transferred repository with a redirect to that repository as it is now,
+// which the repository rule never judged. While a project is private the lookup is held to the
+// path's repository (githubapp.HoldToRepository), as the GitHub proxy holds its reads: alice, an
+// open viewer no issue's repository hides acme/moved from, reads acme/moved, whose installation
+// lookup GitHub moves to other/priv's, as not installed. With no project private the lookup
+// follows GitHub's redirect and answers other/priv's installation, as before any project could be
+// private (R9).
+//
+// Control: the lookup not held to its repository; alice reads acme/moved as installed while PRIV
+// is private, and the test fails.
+func TestAppInstallationFollowsNoRedirectToAnotherRepositoryWhileAProjectIsPrivate(t *testing.T) {
+	seed := seedPrivateProjectWith(t, testServerOptions{
+		app: fakeGitHubAppConfig(t),
+		githubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/acme/moved/installation":
+				http.Redirect(w, r, "/repos/other/priv/installation", http.StatusMovedPermanently)
+			case "/repos/other/priv/installation":
+				fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{}}`)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+				fmt.Fprint(w, `{"message":"Not Found"}`)
+			}
+		}}),
+	})
+	read := func() string {
+		response := seed.request(t, callerAlice, http.MethodGet, "/api/v1/github/app-installation/acme/moved", nil)
+		return fmt.Sprintf("%d %s", response.Code, strings.TrimSpace(response.Body.String()))
+	}
+	if got := read(); got != `200 {"installed":false}` {
+		t.Errorf("alice reads acme/moved, which GitHub redirects to other/priv, while PRIV is private as %s, want 200 not installed", got)
+	}
+	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
+	if got := read(); got != `200 {"installed":true}` {
+		t.Errorf("alice reads acme/moved with no project private as %s, want 200 installed from GitHub's redirect, as before", got)
+	}
+}
+
 // appInstallationServer is Dispatch holding an App key, its GitHub answering the installation
 // lookup with github.
 func appInstallationServer(t *testing.T, github http.HandlerFunc) http.Handler {
