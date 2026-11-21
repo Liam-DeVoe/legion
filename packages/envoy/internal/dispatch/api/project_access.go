@@ -423,10 +423,12 @@ func (s *server) recordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, pe
 // where passkey sign-in is on (R5): it deletes the person's unused links of project key, takes the
 // address's lock (store.LockAddressTx), and when no project's owner is them and no list names them
 // directly any more (access.Listed, read after the removal and under that lock in tx), and their
-// row is no full member's, it ends their sign-in and deletes their passkeys
-// (store.EndPasskeySignInTx), so their cookie stops at its next use. The lock puts two removals
-// from the last two lists that name the person in order, so the second reads the first's commit
-// and ends the sign-in, with no broker configured too.
+// row is no full member's, it ends their account as the owner's Reset does
+// (store.PgPasskeys.EndAccountTx): a new passkey subject, which revokes their personal tokens and
+// owes the broker the old account's revocation, and their sign-in ended and passkeys deleted. So a
+// later owner who names the address names a new account, and nothing the old one made acts for it.
+// The lock puts two removals from the last two lists that name the person in order, so the second
+// reads the first's commit and ends the account, with no broker configured too.
 func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, key, email string) error {
 	if s.deps.Passkeys == nil {
 		return nil
@@ -452,7 +454,7 @@ func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, key, e
 	if kind == model.MemberFull {
 		return nil
 	}
-	_, err = store.EndPasskeySignInTx(ctx, tx, login)
+	_, err = s.deps.Passkeys.EndAccountTx(ctx, tx, login)
 	return err
 }
 
@@ -600,11 +602,7 @@ func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request
 		if err := store.DeletePersonInvitationsTx(ctx, tx, login); err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
-		subject, err := identity.NewPasskeySubject()
-		if err != nil {
-			return model.ProjectAccess{}, nil, err
-		}
-		if _, err := s.deps.Passkeys.ResetTx(ctx, tx, login, subject); errors.Is(err, auth.ErrAddressHeldByMember) {
+		if _, err := s.deps.Passkeys.ResetTx(ctx, tx, login); errors.Is(err, auth.ErrAddressHeldByMember) {
 			return model.ProjectAccess{}, nil, errFullMember
 		} else if err != nil {
 			return model.ProjectAccess{}, nil, err

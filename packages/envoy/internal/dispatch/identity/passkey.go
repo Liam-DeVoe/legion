@@ -88,10 +88,6 @@ var (
 // browser is told and the server enforces (webauthn.TimeoutConfig.Enforce).
 const passkeyCeremonyTimeout = 5 * time.Minute
 
-// passkeySubjectBytes is how many random bytes a passkey's subject holds (R5's design paragraph:
-// 16, base64url).
-const passkeySubjectBytes = 16
-
 // PasskeyCeremony is a ceremony in flight: what its finish needs from its begin, carried by the
 // browser (routes/passkey.go signs it into a cookie) rather than held by the process that began it,
 // so whichever process the finish reaches completes it. TokenHash, Email and Subject are an
@@ -196,16 +192,6 @@ func NewInvitationToken() (string, [32]byte, error) {
 	return base64.RawURLEncoding.EncodeToString(raw[:]), sha256.Sum256(raw[:]), nil
 }
 
-// NewPasskeySubject is a new passkey subject: 16 random bytes, base64url, unpadded. A person's
-// first enrollment makes one, and the owner's Reset makes another (store.PgPasskeys.ResetTx).
-func NewPasskeySubject() (string, error) {
-	var raw [passkeySubjectBytes]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("make the passkey subject: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
-}
-
 // invitedPerson reads the link token names and the person it is for, and refuses it as its finish
 // would: no such link (store.ErrInvitationUnknown), used, lapsed, the project's list no longer
 // naming its email directly, a project of another owner than the link's maker naming it
@@ -263,7 +249,7 @@ func (p *Passkeys) BeginEnrollment(ctx context.Context, token string) (*protocol
 	}
 	subject := account.Subject
 	if subject == "" {
-		if subject, err = NewPasskeySubject(); err != nil {
+		if subject, err = store.NewPasskeySubject(); err != nil {
 			return nil, PasskeyCeremony{}, err
 		}
 	}

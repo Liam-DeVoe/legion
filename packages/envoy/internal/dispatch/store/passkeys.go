@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -179,11 +181,11 @@ func DeleteInvitationsTx(ctx context.Context, tx pgx.Tx, project, email string) 
 	return nil
 }
 
-// EndPasskeySignInTx ends, in tx, email's sign-in and deletes their passkeys: a removal from the
-// last list that names a restricted member (api), the hourly check (settle) and the owner's Reset
-// (ResetTx). It advances the address's session generation, so no cookie of theirs acts again,
-// forgets the row's refresh token and confirmation, and answers how many passkeys it deleted. An
-// address no row holds has neither.
+// EndPasskeySignInTx ends, in tx, email's sign-in and deletes their passkeys (endAccountTx, which
+// also ends the account, and the hourly check of a listed person with no passkey left). It
+// advances the address's session generation, so no cookie of theirs acts again, forgets the row's
+// refresh token and confirmation, and answers how many passkeys it deleted. An address no row
+// holds has neither.
 func EndPasskeySignInTx(ctx context.Context, tx pgx.Tx, email string) (int64, error) {
 	login := model.CanonicalLogin(email)
 	if _, err := tx.Exec(ctx, addressLockSQL, login); err != nil {
@@ -231,40 +233,81 @@ func LockAddressTx(ctx context.Context, tx pgx.Tx, email string) error {
 
 // ResetTx is the owner's Reset of email, in tx (api.resetProjectAccessPerson), whose caller
 // deleted the person's unused links first (DeletePersonInvitationsTx), so the links are locked
-// before the address, as Enroll locks them. Where the address records a passkey's account (a
-// subject under the outside origin), it records subject, a new one, through the account binding
-// (signInAccountTx), as another account's sign-in would: that revokes the address's personal
-// tokens and, where a broker is configured, owes the broker the revocation of the old account at
-// the session generation the Reset leaves, which ends every machine login and sign-in the old
-// account approved at the broker, one minted after the Reset's own revocation pass too, and refuses
-// every later approve that names it or an older generation. An address that records no passkey's
-// account has its personal tokens revoked alone. Last it ends the sign-in and deletes the passkeys
-// (EndPasskeySignInTx), so nobody signs in as the person until they enroll with a new link, under
-// the new account. It answers how many passkeys it deleted. A full member's row, read under the
-// address's lock, is auth.ErrAddressHeldByMember and writes nothing.
-func (p *PgPasskeys) ResetTx(ctx context.Context, tx pgx.Tx, email, subject string) (int64, error) {
+// before the address, as Enroll locks them. A full member's row, read under the address's lock, is
+// auth.ErrAddressHeldByMember and writes nothing; every other address's account ends as
+// EndAccountTx ends it, so nobody signs in as the person until they enroll with a new link, under
+// a new account. It answers how many passkeys it deleted.
+func (p *PgPasskeys) ResetTx(ctx context.Context, tx pgx.Tx, email string) (int64, error) {
 	login := model.CanonicalLogin(email)
 	if _, err := tx.Exec(ctx, addressLockSQL, login); err != nil {
 		return 0, fmt.Errorf("reset the person: lock the address: %w", err)
 	}
-	var recorded, full bool
-	if err := tx.QueryRow(ctx, `select coalesce(bool_or(sub_issuer = $2), false), coalesce(bool_or(member_kind = 'full'), false)
-		from people where email = $1`, login, p.issuer).Scan(&recorded, &full); err != nil {
-		return 0, fmt.Errorf("reset the person: read their account: %w", err)
+	var full bool
+	if err := tx.QueryRow(ctx, `select coalesce(bool_or(member_kind = 'full'), false) from people where email = $1`, login).Scan(&full); err != nil {
+		return 0, fmt.Errorf("reset the person: read their member kind: %w", err)
 	}
 	// Read under the address's lock, which a Google sign-in takes too: a full member whose first
 	// sign-in committed after the caller checked the member kind is no one's to reset.
 	if full {
 		return 0, auth.ErrAddressHeldByMember
 	}
+	return p.endAccountTx(ctx, tx, login)
+}
+
+// EndAccountTx ends, in tx, what email's passkey account holds: the owner's Reset (ResetTx), a
+// removal from the last list that names the person (api.endUnlistedPasskeySignIn) and the hourly
+// end of a person no list names (End) each call it, so whatever an account made while one owner's
+// list named the person acts for nobody once that ends, and a later owner who names the address
+// names a new account. It answers how many passkeys it deleted (endAccountTx).
+func (p *PgPasskeys) EndAccountTx(ctx context.Context, tx pgx.Tx, email string) (int64, error) {
+	login := model.CanonicalLogin(email)
+	if _, err := tx.Exec(ctx, addressLockSQL, login); err != nil {
+		return 0, fmt.Errorf("end the person's account: lock the address: %w", err)
+	}
+	return p.endAccountTx(ctx, tx, login)
+}
+
+// endAccountTx is EndAccountTx under the address's lock tx holds. Where the address records a
+// passkey's account (a subject under the outside origin), it records a new subject
+// (NewPasskeySubject) through the account binding (signInAccountTx), as another account's sign-in
+// would: that revokes the address's personal tokens and, where a broker is configured, owes the
+// broker the revocation of the old account at the session generation it leaves, which ends every
+// machine login and sign-in the old account approved at the broker and refuses every later
+// approve that names it or an older generation. An address that records no passkey's account has
+// its personal tokens revoked alone. Last it ends the sign-in and deletes the passkeys
+// (EndPasskeySignInTx), and answers how many it deleted.
+func (p *PgPasskeys) endAccountTx(ctx context.Context, tx pgx.Tx, login string) (int64, error) {
+	var recorded bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from people where email = $1 and sub_issuer = $2)`, login, p.issuer).Scan(&recorded); err != nil {
+		return 0, fmt.Errorf("end the person's account: read it: %w", err)
+	}
 	if recorded {
+		subject, err := NewPasskeySubject()
+		if err != nil {
+			return 0, err
+		}
 		if _, err := p.people.signInAccountTx(ctx, tx, login, signInAccount{issuer: p.issuer, subject: subject}, nil, model.MemberRestricted); err != nil {
-			return 0, fmt.Errorf("reset the person: record a new account: %w", err)
+			return 0, fmt.Errorf("end the person's account: record a new one: %w", err)
 		}
 	} else if _, err := tx.Exec(ctx, revokeAddressTokensSQL, login); err != nil {
-		return 0, fmt.Errorf("reset the person: revoke their personal tokens: %w", err)
+		return 0, fmt.Errorf("end the person's account: revoke their personal tokens: %w", err)
 	}
 	return EndPasskeySignInTx(ctx, tx, login)
+}
+
+// passkeySubjectBytes is how many random bytes a passkey's subject holds (R5's design paragraph:
+// 16, base64url).
+const passkeySubjectBytes = 16
+
+// NewPasskeySubject is a new passkey subject: 16 random bytes, base64url, unpadded. A person's
+// first enrollment makes one (identity.Passkeys), and the end of the account (endAccountTx) makes
+// another.
+func NewPasskeySubject() (string, error) {
+	var raw [passkeySubjectBytes]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("make the passkey subject: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 // ListedByAnotherOwner reports whether a project whose owner is not owner names email directly on
@@ -603,8 +646,10 @@ func (p *PgPasskeys) Confirm(ctx context.Context, email, subject string) (bool, 
 }
 
 // End is the hourly confirmation's write for a passkey's sign-in the access lists no longer admit:
-// while email's row records subject under the outside origin, it ends the sign-in and deletes the
-// person's passkeys in one transaction (EndPasskeySignInTx), and answers whether it did.
+// while email's row records subject under the outside origin, it ends what that account holds and
+// deletes the person's passkeys in one transaction (endAccountTx: a new passkey subject, which
+// revokes their personal tokens and owes the broker the old account's revocation), and answers
+// whether it did. A row the lists still admit with no passkey left has its sign-in ended alone.
 func (p *PgPasskeys) End(ctx context.Context, email, subject string) (bool, error) {
 	return p.settle(ctx, email, subject, true)
 }
@@ -640,7 +685,18 @@ func (p *PgPasskeys) settle(ctx context.Context, email, subject string, end bool
 		}
 		return true, tx.Commit(ctx)
 	}
-	deleted, err := EndPasskeySignInTx(ctx, tx, login)
+	if !end {
+		// Still listed, with no passkey left: the sign-in ends, and the account stands for the
+		// person's next enrollment.
+		if _, err := EndPasskeySignInTx(ctx, tx, login); err != nil {
+			return false, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, fmt.Errorf("end the passkey sign-in of %q: %w", login, err)
+		}
+		return false, nil
+	}
+	deleted, err := p.endAccountTx(ctx, tx, login)
 	if err != nil {
 		return false, err
 	}
