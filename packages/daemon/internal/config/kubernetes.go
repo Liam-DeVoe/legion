@@ -633,9 +633,22 @@ func isASCII(s string) bool {
 // `İ` (U+0130) to `i` and the Kelvin sign (U+212A) to `k`, so the lower-cased name would pass while
 // the value kept, as written, is one no node's resolver resolves; and an HTTP client maps `ſ`
 // (U+017F) or a full-width `ｌｏｃａｌｈｏｓｔ` to localhost (UTS-46) where no ASCII comparison does.
+// It quotes host, a URL's parsed host, which holds no userinfo (validURL refuses an "@" after the
+// host first); refuseNonASCIIValue is the same rule for a value written whole, which it never
+// quotes.
 func refuseNonASCIIHost(key, host string) error {
 	if !isASCII(host) {
 		return fmt.Errorf("%s must be an IP address or an ASCII DNS name; got %+q", key, host)
+	}
+	return nil
+}
+
+// refuseNonASCIIValue is refuseNonASCIIHost for value, a host as the operator wrote it whole
+// (advertise_host, an NFS server, bind), named by key alone: such a value can be a URL with a
+// credential, or the credential itself, pasted where the host goes.
+func refuseNonASCIIValue(key, value string) error {
+	if !isASCII(value) {
+		return fmt.Errorf("%s must be an IP address or an ASCII DNS name; it holds a character that is not ASCII", key)
 	}
 	return nil
 }
@@ -657,7 +670,7 @@ func readAdvertiseHost(value *yaml.Node, key string) (*string, error) {
 	if err != nil || read == nil {
 		return read, err
 	}
-	if err := refuseNonASCIIHost(key, *read); err != nil {
+	if err := refuseNonASCIIValue(key, *read); err != nil {
 		return nil, err
 	}
 	// The value is not quoted: a credential, or a URL with one, pasted here would print.
@@ -1573,7 +1586,7 @@ func readNFSSource(value *yaml.Node, key string) (*corev1.NFSVolumeSource, error
 	if err != nil {
 		return nil, err
 	}
-	if err := refuseNonASCIIHost(key+".server", server); err != nil {
+	if err := refuseNonASCIIValue(key+".server", server); err != nil {
 		return nil, err
 	}
 	// The value is not quoted here, for the reason advertise_host's is not (readAdvertiseHost).
@@ -2352,7 +2365,7 @@ func checkKubernetesKeys(file fileConfig) error {
 // client maps a full-width `ｌｏｃａｌｈｏｓｔ` to localhost, which no check here would see.
 func checkPodReachable(cfg Config) error {
 	key, host, why := "bind", cfg.Bind, "bind the daemon host's own address when runtime is kubernetes"
-	if err := refuseNonASCIIHost("bind", cfg.Bind); err != nil {
+	if err := refuseNonASCIIValue("bind", cfg.Bind); err != nil {
 		return err
 	}
 	if cfg.AdvertiseHost != "" {

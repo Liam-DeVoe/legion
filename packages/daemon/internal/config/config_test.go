@@ -2270,8 +2270,12 @@ func TestAdvertiseHostMustBeABareHost(t *testing.T) {
 		{"a space inside a DNS name", `"legion daemon.legion.svc"`, refused},
 		{"a zoned IPv6 address", `"fe80::1%eth0"`, refused},
 		{"a URL with a made-up user name and password", `"http://madeUpHostUser0123:` + `madeUpHostPassword0123@legion-daemon.legion.svc"`, refused},
-		{"a dotted capital I", "nas.\u0130nternal.example", `advertise_host must be an IP address or an ASCII DNS name; got "nas.\u0130nternal.example"`},
-		{"a Kelvin sign", "\u212Aube.example", `advertise_host must be an IP address or an ASCII DNS name; got "\u212aube.example"`},
+		{"a dotted capital I", "nas.\u0130nternal.example", `advertise_host must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`},
+		{"a Kelvin sign", "\u212Aube.example", `advertise_host must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`},
+		// A non-ASCII host behind a made-up user name and password: refused before the shape check,
+		// and named by the key alone.
+		{"a non-ASCII URL with userinfo", `"https://madeUpAsciiUser0123:` + `madeUpAsciiPassword0123@dash.ex` + "\u00e4" + `mple"`,
+			`advertise_host must be an IP address or an ASCII DNS name; it holds a character that is not ASCII`},
 		{"blank", `""`, "advertise_host must not be empty"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

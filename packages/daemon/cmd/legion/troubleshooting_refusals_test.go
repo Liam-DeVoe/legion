@@ -47,8 +47,13 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"advertise_host must be an IP address or a DNS name, …": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, top: "advertise_host: http://legion.internal.example\n"}.refuse(t)
 	},
-	// The Kelvin sign, which no ASCII name holds and which the refusal prints as its \u escape.
+	// The Kelvin sign, which no ASCII name holds and which the refusal of a URL's host prints as its
+	// \u escape.
 	`<key> must be an IP address or an ASCII DNS name; got "…\u212a…"`: func(t *testing.T) string {
+		return refusalFile{kubernetes: true, drop: []string{"daemon_url:"}, top: "daemon_url: http://legion\u212a.internal.example:13370\n"}.refuse(t)
+	},
+	// A value written whole as the host is refused without being printed.
+	"<key> must be an IP address or an ASCII DNS name; it holds a character that is not ASCII": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, drop: []string{"bind:"}, top: "bind: legion\u212a.internal.example\n"}.refuse(t)
 	},
 	"<key> is required when runtime is kubernetes: …": func(t *testing.T) string {
