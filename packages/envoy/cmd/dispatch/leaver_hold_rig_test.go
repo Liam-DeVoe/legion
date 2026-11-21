@@ -169,6 +169,17 @@ func withRefreshFlowOfItsOwn() leaverOption {
 	return func(c *leaverConfig) { c.refreshFlow = true }
 }
 
+// withPersonPod has the broker map the Kubernetes service account account, logging in as service,
+// to person in BROKER_POD_OPERATORS (ciphertest.WithPersonPod): a pod of the account logs in as
+// person at any time with its own token. r.broker.SetPodOperator changes or drops the mapping.
+func withPersonPod(account, service, person string) leaverOption {
+	return func(c *leaverConfig) {
+		c.broker = append(c.broker, func(*testing.T, *leaverRig) []ciphertest.Option {
+			return []ciphertest.Option{ciphertest.WithPersonPod(account, service, person)}
+		})
+	}
+}
+
 // withMembershipPass runs Dispatch's maintenance sweep as main runs it under a Google rule
 // (api.RunMaintenanceSweep, every api.MaintenanceSweepInterval, under its lease), from the moment
 // the router is built until the test ends, with sweeps in place of its delivery sweep, so a test

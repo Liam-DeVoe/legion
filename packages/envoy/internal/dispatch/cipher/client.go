@@ -292,9 +292,10 @@ func (c *Client) RevokeSignIn(ctx context.Context, signInID, person string) (jso
 }
 
 // PersonAccess asks the broker what person has there that outlives their browser session (GET
-// /v1/person-access): their own live machine logins, their unrevoked sign-ins on a machine, and the
-// exchange entries that name them. person is a login as model.CanonicalLogin spells it, which the
-// broker's answer names back.
+// /v1/person-access): their own live machine logins, their unrevoked sign-ins on a machine, the
+// exchange entries that name them, and the Kubernetes service accounts BROKER_POD_OPERATORS maps
+// to them. person is a login as model.CanonicalLogin spells it, which the broker's answer names
+// back.
 //
 // It answers the counts once the broker answers 200 naming person, and an error for anything else,
 // each naming person: an *Error for any other status, a 404 included (the route needs a broker that

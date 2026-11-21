@@ -543,12 +543,13 @@ func (s *personAccessStandIn) asked() int {
 	return s.asks
 }
 
-// counts answers the person-access route with the three counts, as the broker does.
-func counts(machineLogins, signIns, exchangeEntries int) func(http.ResponseWriter, *http.Request) {
+// counts answers the person-access route with the four counts, as the broker does.
+func counts(machineLogins, signIns, exchangeEntries, podOperatorMappings int) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"person":"` + directoryAda + `","machine_logins":` + strconv.Itoa(machineLogins) +
-			`,"signins":` + strconv.Itoa(signIns) + `,"exchange_entries":` + strconv.Itoa(exchangeEntries) + `}`))
+			`,"signins":` + strconv.Itoa(signIns) + `,"exchange_entries":` + strconv.Itoa(exchangeEntries) +
+			`,"pod_operator_mappings":` + strconv.Itoa(podOperatorMappings) + `}`))
 	}
 }
 
@@ -571,14 +572,15 @@ func storePersonalToken(t *testing.T, database *store.Store, owner, name string,
 //
 //   - an unrevoked personal token of the address, nothing at the broker: Held, the stored id kept,
 //     and the broker not asked, since the token answers first;
-//   - one machine login, one sign-in on a machine, one exchange entry naming the address, each
-//     alone at the broker: Held, the stored id kept, the broker asked once;
+//   - one machine login, one sign-in on a machine, one exchange entry naming the address, one
+//     account BROKER_POD_OPERATORS maps to it, each alone at the broker: Held, the stored id kept,
+//     the broker asked once;
 //   - the broker answering 500, or not answering within its client's 5 seconds: Held, the stored
 //     id kept;
 //   - the Directory's answer delayed until less than five of the 15 seconds remain, and the broker
 //     waiting past the 15: Failed at the 15-second mark, not after the question's own 5 seconds,
 //     with the stored id, the confirmation, not_held_until and the hold unchanged;
-//   - a revoked personal token, the broker answering all three counts zero, on a held row: the
+//   - a revoked personal token, the broker answering all four counts zero, on a held row: the
 //     membership pass, with no request from the person, confirms the new account, stores u-ada-2,
 //     fixes a new not_held_until and releases the hold; the next answer, carrying the stored
 //     u-ada-2, is Active and asks the broker nothing;
@@ -632,7 +634,7 @@ func TestARecreatedAddressConfirmsOnlyOnceItsEarlierAccessIsGone(t *testing.T) {
 	}
 
 	t.Run("an unrevoked personal token", func(t *testing.T) {
-		r, standIn := start(t, directoryAda, counts(0, 0, 0))
+		r, standIn := start(t, directoryAda, counts(0, 0, 0, 0))
 		storePersonalToken(t, r.database, "Ada@Example.com", "ada's agent", false)
 		held(t, r, standIn, 0, "an unrevoked personal token, nothing at the broker")
 	})
@@ -640,9 +642,10 @@ func TestARecreatedAddressConfirmsOnlyOnceItsEarlierAccessIsGone(t *testing.T) {
 		name   string
 		answer func(http.ResponseWriter, *http.Request)
 	}{
-		{"one machine login", counts(1, 0, 0)},
-		{"one sign-in on a machine", counts(0, 1, 0)},
-		{"one exchange entry", counts(0, 0, 1)},
+		{"one machine login", counts(1, 0, 0, 0)},
+		{"one sign-in on a machine", counts(0, 1, 0, 0)},
+		{"one exchange entry", counts(0, 0, 1, 0)},
+		{"one account BROKER_POD_OPERATORS maps to the address", counts(0, 0, 0, 1)},
 		{"the broker answering 500", func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, `{"code":"INTERNAL","error":"boom"}`, http.StatusInternalServerError)
 		}},
@@ -698,7 +701,7 @@ func TestARecreatedAddressConfirmsOnlyOnceItsEarlierAccessIsGone(t *testing.T) {
 	})
 
 	t.Run("no access left, a held row", func(t *testing.T) {
-		r, standIn := start(t, directoryAda, counts(0, 0, 0))
+		r, standIn := start(t, directoryAda, counts(0, 0, 0, 0))
 		storePersonalToken(t, r.database, directoryAda, "ada's revoked agent", true)
 		r.held(directoryAda)
 		r.age(directoryAda, 2*time.Hour)
@@ -735,7 +738,7 @@ func TestARecreatedAddressConfirmsOnlyOnceItsEarlierAccessIsGone(t *testing.T) {
 	})
 
 	t.Run("an alias of a colleague's account", func(t *testing.T) {
-		r, standIn := start(t, directoryBob, counts(0, 0, 0))
+		r, standIn := start(t, directoryBob, counts(0, 0, 0, 0))
 		held(t, r, standIn, 0, "an answer whose primaryEmail is another address, all counts zero")
 	})
 }

@@ -631,13 +631,14 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 // sign-in pool's rule, and with no rule, it then forgets their refresh token (People.End). Under a
 // Google rule (SignInRule's Holds) it reads the row's signed_in_at before ending the sessions, then
 // asks whether the person has access that outlives the browser (api.Deps.Outliving): an unrevoked
-// personal token, or a live broker credential or an exchange entry that names them. When they
-// have, or that cannot be asked, it keeps the refresh token, for membership checks only, and marks
-// the row signed out (People.KeepAfterSignOut), so Google's later refusal still holds them; else it
-// forgets the token (People.ForgetAfterSignOut). Either write applies only while signed_in_at is
-// still the one it read, so a sign-in that commits while the broker is asked keeps its own token.
-// Once the sessions have ended, the ask and the write go on if the browser goes away, so a sign-out
-// the person started finishes as it would have; the broker's ask is bounded by its client's window.
+// personal token, or a live broker credential, an exchange entry or a pod account mapping that
+// names them. When they have, or that cannot be asked, it keeps the refresh token, for membership
+// checks only, and marks the row signed out (People.KeepAfterSignOut), so Google's later refusal
+// still holds them; else it forgets the token (People.ForgetAfterSignOut). Either write applies
+// only while signed_in_at is still the one it read, so a sign-in that commits while the broker is
+// asked keeps its own token. Once the sessions have ended, the ask and the write go on if the
+// browser goes away, so a sign-out the person started finishes as it would have; the broker's ask
+// is bounded by its client's window.
 func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 	email, ok := r.login(w, req)
 	if !ok {

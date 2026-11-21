@@ -20,9 +20,12 @@ type personAccessResponse = wire.PersonAccessResponse
 // personAccess counts what the person ?person= names holds at the broker that outlives their
 // browser: their own live machine logins (enroll.Service.OwnLiveCredentials, which leaves out
 // every service's login, one they approved included, and the credentials their sign-ins hold),
-// their sign-ins on a machine that are not revoked (store.Store.LivePersonSignIns), and the
-// exchange entries that name them (exchange.Set.EntriesNaming). The login is canonicalized before
-// it is read on, as the sign-ins list does, and the answer names the person as it was read.
+// their sign-ins on a machine that are not revoked (store.Store.LivePersonSignIns), the exchange
+// entries that name them (exchange.Set.EntriesNaming), and the accounts BROKER_POD_OPERATORS maps
+// to them (enroll.Service.PodOperatorMappings), each counted whether or not a pod of it holds a
+// live login, since a pod of one logs in as them at any time. Like an exchange entry, a mapping is
+// configuration, which only an operator ends. The login is canonicalized before it is read on, as
+// the sign-ins list does, and the answer names the person as it was read.
 func (s *server) personAccess(w http.ResponseWriter, r *http.Request, _ string) {
 	person := record.CanonicalLogin(r.URL.Query().Get("person"))
 	if !requirePerson(w, person) {
@@ -42,5 +45,8 @@ func (s *server) personAccess(w http.ResponseWriter, r *http.Request, _ string) 
 	if s.deps.Exchange != nil {
 		entries = s.deps.Exchange.EntriesNaming(person)
 	}
-	writeJSON(w, http.StatusOK, personAccessResponse{Person: person, MachineLogins: len(logins), SignIns: signIns, ExchangeEntries: entries})
+	writeJSON(w, http.StatusOK, personAccessResponse{
+		Person: person, MachineLogins: len(logins), SignIns: signIns, ExchangeEntries: entries,
+		PodOperatorMappings: s.deps.Enroll.PodOperatorMappings(person),
+	})
 }

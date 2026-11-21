@@ -81,11 +81,12 @@ func answerJSON(status int, body string) func(http.ResponseWriter, *http.Request
 
 // A person holds access that outlives the browser when agent_tokens holds an unrevoked token whose
 // owner is them, however its owner is spelled, and the broker is then not asked. Otherwise the
-// broker is asked (GET /v1/person-access, under Dispatch's own token), and any of its three counts
-// above 0 holds. Every failure to ask the broker is an error: a 500, a 404 (a broker without the
-// route), a 200 that is not the broker's answer for that person, and a broker slower than the
-// client's window. With no broker client, agent_tokens alone answers. With no database to read
-// agent_tokens from, the answer is an error, and the broker is not asked.
+// broker is asked (GET /v1/person-access, under Dispatch's own token), and any of its four counts
+// above 0 holds: an account BROKER_POD_OPERATORS maps to the person holds alone. Every failure to
+// ask the broker is an error: a 500, a 404 (a broker without the route), a 200 that is not the
+// broker's answer for that person, and a broker slower than the client's window. With no broker
+// client, agent_tokens alone answers. With no database to read agent_tokens from, the answer is an
+// error, and the broker is not asked.
 func TestOutlivingAccessCountsTokensThenTheBroker(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -98,7 +99,7 @@ func TestOutlivingAccessCountsTokensThenTheBroker(t *testing.T) {
 
 	standIn := &personAccessStandIn{}
 	broker := standIn.serve(t, map[string]func(http.ResponseWriter, *http.Request){
-		"bob@example.com":   answerJSON(http.StatusOK, `{"person":"bob@example.com","machine_logins":0,"signins":0,"exchange_entries":0}`),
+		"bob@example.com":   answerJSON(http.StatusOK, `{"person":"bob@example.com","machine_logins":0,"signins":0,"exchange_entries":0,"pod_operator_mappings":0}`),
 		"carol@example.com": answerJSON(http.StatusOK, `{"person":"carol@example.com","machine_logins":1,"signins":0,"exchange_entries":0}`),
 		"dave@example.com":  answerJSON(http.StatusOK, `{"person":"dave@example.com","machine_logins":0,"signins":2,"exchange_entries":0}`),
 		"erin@example.com":  answerJSON(http.StatusOK, `{"person":"erin@example.com","machine_logins":0,"signins":0,"exchange_entries":1}`),
@@ -110,6 +111,7 @@ func TestOutlivingAccessCountsTokensThenTheBroker(t *testing.T) {
 			// Slower than the client's window: it answers only once the client has given up.
 			<-r.Context().Done()
 		},
+		"kate@example.com": answerJSON(http.StatusOK, `{"person":"kate@example.com","machine_logins":0,"signins":0,"exchange_entries":0,"pod_operator_mappings":1}`),
 	})
 	access := OutlivingAccess{Pool: database.Pool, Broker: New(broker.URL, tokenFile(t, "account-token"))}
 	short := OutlivingAccess{Pool: database.Pool, Broker: New(broker.URL, tokenFile(t, "account-token"), WithTimeout(200*time.Millisecond))}
@@ -128,6 +130,7 @@ func TestOutlivingAccessCountsTokensThenTheBroker(t *testing.T) {
 		{name: "a machine login", access: access, person: "carol@example.com", holds: true, asked: "carol%40example.com"},
 		{name: "a sign-in on a machine", access: access, person: "dave@example.com", holds: true, asked: "dave%40example.com"},
 		{name: "an exchange entry", access: access, person: "erin@example.com", holds: true, asked: "erin%40example.com"},
+		{name: "an account BROKER_POD_OPERATORS maps to the person, no login of it live", access: access, person: "kate@example.com", holds: true, asked: "kate%40example.com"},
 		{name: "a broker answering 500", access: access, person: "frank@example.com", failed: true, status: http.StatusInternalServerError, asked: "frank%40example.com"},
 		{name: "a broker without the route (404)", access: access, person: "gina@example.com", failed: true, status: http.StatusNotFound, asked: "gina%40example.com"},
 		{name: "a 200 naming another person", access: access, person: "hank@example.com", failed: true, asked: "hank%40example.com"},

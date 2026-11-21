@@ -197,10 +197,11 @@ type Deps struct {
 	// handler that needs it answers 404 FEATURE_OFF.
 	AgentSecrets *cipher.Client
 	// Outliving answers whether a person has access that outlives their browser session: an
-	// unrevoked personal token, or a live broker credential or an exchange entry that names them
-	// (cipher.OutlivingAccess). A sign-out under a Google rule keeps the person's refresh
-	// token while it answers yes or cannot answer (routes' authLogout). NewDeps builds it from
-	// Store's pool and AgentSecrets, so with no broker it reads agent_tokens alone.
+	// unrevoked personal token, or a live broker credential, an exchange entry or an account
+	// BROKER_POD_OPERATORS maps to them (cipher.OutlivingAccess). A sign-out under a Google rule
+	// keeps the person's refresh token while it answers yes or cannot answer (routes'
+	// authLogout). NewDeps builds it from Store's pool and AgentSecrets, so with no broker it reads
+	// agent_tokens alone.
 	Outliving cipher.OutlivingAccess
 	// SignInIssuer is the issuer people sign in through (cmd/dispatch: DISPATCH_SIGNIN_ISSUER), as
 	// oidc.CanonicalIssuer spells it: the issuer of every Google account people records, which a

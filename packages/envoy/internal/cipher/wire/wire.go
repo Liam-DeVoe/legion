@@ -182,14 +182,19 @@ type PersonAccessResponse struct {
 	// The person asked about, a login as record.CanonicalLogin spells it.
 	Person string `json:"person"`
 	// How many of the person's own machine logins are live: approved for no service, not
-	// revoked, and unexpired or with a session still running (enroll.Service.OwnLiveCredentials).
-	// A service's machine login the person approved is not counted.
+	// revoked, and unexpired or with a session still running (enroll.Service.OwnLiveCredentials),
+	// a live login of an account BROKER_POD_OPERATORS maps to the person among them. A service's
+	// machine login the person approved is not counted.
 	MachineLogins int `json:"machine_logins"`
 	// How many of the person's sign-ins on a machine are not revoked.
 	SignIns int `json:"signins"`
 	// How many entries of the broker's exchange configuration let a pod, a workflow or a machine
 	// trade for a token that names the person.
 	ExchangeEntries int `json:"exchange_entries"`
+	// How many Kubernetes service accounts BROKER_POD_OPERATORS maps to the person, whether or not
+	// a pod of one holds a live login: a pod of each can log in as the person at any time with its
+	// own token (enroll.Service.PodOperatorMappings).
+	PodOperatorMappings int `json:"pod_operator_mappings"`
 }
 
 // PersonSignInRevokedResponse is POST /v1/person-signins/{id}/revoke's answer.

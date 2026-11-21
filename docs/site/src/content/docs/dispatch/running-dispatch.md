@@ -336,10 +336,12 @@ ago refreshes in that request too, which can add up to 2 seconds to it.
 
 **Signing out.** A sign-out ends the person's browser sessions and changes nothing else they hold.
 While they still hold an agent token, a machine login of their own, a sign-in on a machine
-(`agent-secrets login`), or an entry of the broker's exchange settings that names them, Dispatch
-keeps their refresh token after the sign-out, for these checks alone, so Google's later refusal
-still holds them; the kept token signs nobody in. Dispatch forgets it at the sign-out when they
-hold none of these, and otherwise at the first hourly check after the last one ends. It asks the
+(`agent-secrets login`), an entry of the broker's exchange settings that names them, or a pod
+account the broker's `BROKER_POD_OPERATORS` maps to them, Dispatch keeps their refresh token after
+the sign-out, for these checks alone, so Google's later refusal still holds them; the kept token
+signs nobody in. A pod account counts whether or not one of its pods is logged in, since a pod of
+it can log in as the person at any time. Dispatch forgets the token at the sign-out when they hold
+none of these, and otherwise at the first hourly check after the last one ends. It asks the
 broker at each sign-out and at each such check, and while the broker cannot be asked it keeps the
 token. With no broker configured, it counts agent tokens alone.
 
@@ -381,7 +383,7 @@ A hold stops a person's credentials only until they sign in again, and nothing e
 itself, so when someone leaves, end what they hold. Behind Identity-Aware Proxy this is also how an
 address created again for someone else is confirmed for its new person
 ([Checking people through the Workspace Directory](#checking-people-through-the-workspace-directory)).
-A person holds four kinds of access that outlive the browser, the ones a sign-out asks about:
+A person holds five kinds of access that outlive the browser, the ones a sign-out asks about:
 
 - **Agent tokens.** Revoke every token of the address on Dispatch's database; each answers
   `401 TOKEN_REVOKED` from then on.
@@ -393,6 +395,9 @@ A person holds four kinds of access that outlive the browser, the ones a sign-ou
 - **Exchange entries** that name the person: remove each from the broker's
   `BROKER_EXCHANGE_ACCOUNTS`, `BROKER_EXCHANGE_WORKFLOWS` and `BROKER_VM_EXCHANGE_ACCOUNTS`, and
   roll the broker's pods.
+- **Pod accounts** that `BROKER_POD_OPERATORS` maps to the person: remove each mapping, and roll
+  the broker's pods. From then on a pod of the account acts for no person, and its login is no
+  longer counted as the person's machine login.
 
 The block does the first two and then prints what the broker still counts for the person
 (`GET /v1/person-access`), with the address as Dispatch holds it and a token of Dispatch's own
@@ -430,11 +435,12 @@ curl -sS --fail-with-body -w '\n' -G -H @"$header" --data-urlencode "person=$per
 )
 ```
 
-Done is an answer whose counts read `"machine_logins":0,"signins":0,"exchange_entries":0`; a count
-above zero is what is left, an exchange entry to remove or a call the `NOT REVOKED` lines name, so
-fix it and run the block again. A broker database the block cannot read lists nothing, so read the
-last answer, not the absence of `NOT REVOKED`. A machine login revoked as its approver also ends
-every session it enrolled.
+Done is an answer whose counts read
+`"machine_logins":0,"signins":0,"exchange_entries":0,"pod_operator_mappings":0`; a count above
+zero is what is left, an exchange entry or a pod mapping to remove or a call the `NOT REVOKED`
+lines name, so fix it and run the block again. A broker database the block cannot read lists
+nothing, so read the last answer, not the absence of `NOT REVOKED`. A machine login revoked as its
+approver also ends every session it enrolled.
 
 ### After a restore
 
@@ -565,12 +571,13 @@ An address the Workspace deleted and created again for someone else answers with
 account. Dispatch's row for the address still belongs to the earlier person, and so does every
 credential that names it, so the new account is confirmed only once the address holds nothing that
 outlives the browser, the same question a sign-out asks: no unrevoked agent token, and at the
-broker no live machine login, no sign-in on a machine and no exchange entry that names it. Until
-then, or while that question cannot be answered, the address stays held. End the earlier person's
-access ([Ending a person's access](#ending-a-persons-access)), and the next hourly check confirms
-the new person, with no sign-in and no command. A Dispatch with `DISPATCH_AGENT_SECRETS_URL` unset
-asks no broker and counts agent tokens alone, so there the new account confirms with no check of
-what the earlier person still holds at the broker.
+broker no live machine login, no sign-in on a machine, no exchange entry that names it and no pod
+account `BROKER_POD_OPERATORS` maps to it. Until then, or while that question cannot be answered,
+the address stays held. End the earlier person's access
+([Ending a person's access](#ending-a-persons-access)), and the next hourly check confirms the new
+person, with no sign-in and no command. A Dispatch with `DISPATCH_AGENT_SECRETS_URL` unset asks no
+broker and counts agent tokens alone, so there the new account confirms with no check of what the
+earlier person still holds at the broker.
 
 Two settings configure the reads, both required with `DISPATCH_IDENTITY=iap` and refused without
 it: `DISPATCH_DIRECTORY_ACCOUNT`, the email of a service account with no key and no project role,

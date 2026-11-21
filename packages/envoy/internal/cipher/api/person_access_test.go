@@ -22,14 +22,15 @@ import (
 // wirePersonAccess is GET /v1/person-access's answer, its fields spelled as Dispatch's broker
 // client reads them.
 type wirePersonAccess struct {
-	Person          string `json:"person"`
-	MachineLogins   int    `json:"machine_logins"`
-	SignIns         int    `json:"signins"`
-	ExchangeEntries int    `json:"exchange_entries"`
+	Person              string `json:"person"`
+	MachineLogins       int    `json:"machine_logins"`
+	SignIns             int    `json:"signins"`
+	ExchangeEntries     int    `json:"exchange_entries"`
+	PodOperatorMappings int    `json:"pod_operator_mappings"`
 }
 
-// personAccessBob is a person who holds nothing at the broker: no machine login, no sign-in and
-// no exchange entry.
+// personAccessBob is a person who holds nothing at the broker: no machine login, no sign-in, no
+// exchange entry and no account BROKER_POD_OPERATORS maps to him.
 const personAccessBob = "bob@example.com"
 
 // personAccessEntries is the exchange configuration the route counts in: four entries naming
@@ -61,7 +62,7 @@ func personAccessEntries(t *testing.T) *exchange.Set {
 }
 
 // personAccess reads GET /v1/person-access?person=<person> as Dispatch's server, and fails t on
-// anything but a 200 whose body is exactly the four fields Dispatch reads.
+// anything but a 200 whose body is exactly the five fields Dispatch reads.
 func (ts *testServer) personAccess(t *testing.T, person string) wirePersonAccess {
 	t.Helper()
 	status, body := ts.ui(t, http.MethodGet, "/v1/person-access?person="+url.QueryEscape(person), nil)
@@ -72,7 +73,7 @@ func (ts *testServer) personAccess(t *testing.T, person string) wirePersonAccess
 	if err := json.Unmarshal(body, &fields); err != nil {
 		t.Fatalf("GET /v1/person-access?person=%q answered %s, which is no JSON object: %v", person, body, err)
 	}
-	if got, want := slices.Sorted(maps.Keys(fields)), []string{"exchange_entries", "machine_logins", "person", "signins"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(fields)), []string{"exchange_entries", "machine_logins", "person", "pod_operator_mappings", "signins"}; !slices.Equal(got, want) {
 		t.Fatalf("GET /v1/person-access?person=%q answered the fields %v, want %v: an absent count reads as 0 to Dispatch, which then forgets the person's token", person, got, want)
 	}
 	return decode[wirePersonAccess](t, body)
@@ -169,6 +170,61 @@ func TestPersonAccessCountsLiveCredentials(t *testing.T) {
 	status, body := ts.req(t, http.MethodGet, "/v1/person-access?person="+url.QueryEscape(signInAda), map[string]string{"Authorization": "Bearer " + listener}, nil)
 	if status != http.StatusForbidden || decode[wireError](t, body).Code != "ACCOUNT_LACKS_POWER" {
 		t.Errorf("GET /v1/person-access as the listener = %d %s, want 403 ACCOUNT_LACKS_POWER: what a person holds is Dispatch's to ask", status, body)
+	}
+}
+
+// The accounts BROKER_POD_OPERATORS maps in TestPersonAccessCountsEachPodAccountMappedToThePerson,
+// besides projectsPodAccount (bob's, whose pod logs in): a second account of bob's, no pod of
+// which logs in, and one of grace's.
+const (
+	personAccessBobBatch = "system:serviceaccount:people:bob-batch"
+	personAccessGracePod = "system:serviceaccount:people:grace"
+)
+
+// TestPersonAccessCountsEachPodAccountMappedToThePerson: the route counts each account that
+// BROKER_POD_OPERATORS maps to the person (pod_operator_mappings), whether or not a pod of it holds
+// a live login, since a pod of such an account logs in as the person at any time with its own
+// token, with no step of theirs. Bob's two accounts count 2 before any pod of them logs in, 2 while
+// his pod's login is live (which machine_logins counts as well), and 2 once that login has lapsed,
+// after which a second pod of the account logs in as him. Grace, whom one account maps, counts 1,
+// and ada, whom no account maps, counts 0.
+//
+// Control: personAccess counting no mapping, as it did: bob's answers before his pod logs in and
+// after its login lapsed count nothing, and the test fails there.
+func TestPersonAccessCountsEachPodAccountMappedToThePerson(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.Enroll.ServiceLogins[projectsPodAccount] = projectsPodService
+		d.Enroll.ServiceLogins[personAccessBobBatch] = "person-bob-batch"
+		d.Enroll.ServiceLogins[personAccessGracePod] = "person-grace"
+		d.Enroll.PodOperators = map[string]string{
+			projectsPodAccount:   projectsPodPerson,
+			personAccessBobBatch: projectsPodPerson,
+			personAccessGracePod: signInGrace,
+		}
+	})
+	before := ts.personAccess(t, projectsPodPerson)
+	pod := logInBobsPod(t, ts, "pod-uid-bob-access-1")
+	live := ts.personAccess(t, projectsPodPerson)
+	ts.expireLauncherCredential(t, pod.login)
+	lapsed := ts.personAccess(t, projectsPodPerson)
+	// A second pod of the account logs in as bob, with no step of his.
+	logInBobsPod(t, ts, "pod-uid-bob-access-2")
+
+	for _, c := range []struct {
+		what      string
+		got, want wirePersonAccess
+	}{
+		{"bob, no pod of his accounts logged in", before, wirePersonAccess{Person: projectsPodPerson, PodOperatorMappings: 2}},
+		{"bob, his pod's login live", live, wirePersonAccess{Person: projectsPodPerson, MachineLogins: 1, PodOperatorMappings: 2}},
+		{"bob, his pod's login lapsed", lapsed, wirePersonAccess{Person: projectsPodPerson, PodOperatorMappings: 2}},
+		{"grace, whom one account maps", ts.personAccess(t, signInGrace), wirePersonAccess{Person: signInGrace, PodOperatorMappings: 1}},
+		{"ada, whom no account maps", ts.personAccess(t, signInAda), wirePersonAccess{Person: signInAda}},
+	} {
+		if c.got != c.want {
+			t.Errorf("GET /v1/person-access for %s = %+v, want %+v", c.what, c.got, c.want)
+		} else {
+			t.Logf("GET /v1/person-access for %s = %+v, as wanted", c.what, c.got)
+		}
 	}
 }
 
