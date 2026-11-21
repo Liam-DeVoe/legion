@@ -3807,8 +3807,9 @@ Behind the NATS auth service in the secrets broker, the daemon's own connection 
 The daemon reads the file afresh at each connect, connects as user `service` with the token as its password, takes its account's own reply prefix (`_INBOX_` and the account, each byte outside `[A-Za-z0-9-]` escaped), and moves to a later token ten minutes before the one it presented lapses.
 List the daemon's entry with `*`, the daemon's whole grant (with its own reply prefix).
 Do not list it with `-` yet: `-` holds the grant to the projects the account's exchange entry lists (`docs/site/src/content/docs/broker/operate.md`, the NATS auth service), and that grant names the consumers a daemon opens only once it opens its consumers per project, and drops the stream reads today's daemon makes, so today's daemon would be refused at boot.
-`-` is for daemon entries once every reading of the release gate holds for such a daemon: `daemon-release-gate.sh`'s listener and daemon legs, the stored-wake read, the running-daemon read and the consumer-filter read.
-In the plan's words: "The step also waits on `daemon-running-gate.sh --deployment <owner/repo> <the deploy-4 commit>` printing that every running daemon is at or after deploy 4, and on the consumer-filter read below; the pin gates alone read the repository, not the daemons running, and are extra evidence only."
+`-` is for daemon entries once every reading of the release gate holds for such a daemon: `daemon-release-gate.sh`'s listener and daemon legs (each with `--deployment <owner/repo>`, which the script requires), the stored-wake read, the running-daemon read and the consumer-filter read.
+The running-daemon read is `daemon-running-gate.sh`, which comes with the daemon that opens its consumers per project, printing that every running daemon is at or after that release; the release gate's legs read the repository alone, not the daemons running.
+The consumer-filter read finds each daemon durable on its own kind's filter.
 The held grant names a daemon's consumers, not their filters, so a daemon pod still on today's build can keep a wide durable that a held daemon would read whole.
 The change that lists daemon entries with `-` waits on all of these.
 A daemon seed beside the token file refuses boot naming both, and so does a token file that cannot be read, is empty, or names no account.

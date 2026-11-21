@@ -134,6 +134,18 @@ func heldDeps(t *testing.T, tokens map[string]platformToken, exchange map[string
 	return deps
 }
 
+// known reports whether a refresh has answered whether person may see project: false on a nil
+// heldAccess.
+func (h *heldAccess) known(project, person string) bool {
+	if h == nil {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	_, ok := h.answers[heldKey{project: project, person: person}]
+	return ok
+}
+
 // withAccessRefresh runs the rest of the test with the service asking Dispatch again every
 // refresh.
 func withAccessRefresh(t *testing.T, refresh time.Duration) {
