@@ -310,7 +310,7 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	}
 	consumers := &Consumers{spec: spec, pool: pool, js: js, stream: stream, repos: slices.Clone(spec.Repositories)}
 	if spec.Names == consumernames.ModeFresh {
-		consumers.names = newDurableNames(stream, pool, spec)
+		consumers.names = newDurableNames(js, pool, spec)
 	}
 	opened := false
 	defer func() {

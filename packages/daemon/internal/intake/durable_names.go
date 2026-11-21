@@ -99,11 +99,11 @@ func readRefused(err error) bool {
 // connection once the protocol has reserved it (consumernames.Config.Reserved), before the create
 // is sent; an info of a name opens that name's; and the consumer each durable delivers from is
 // bound on its current's connection, which Run consumes on. The connection of a name the record no
-// longer selects is closed once the open that settled the record ends. The daemon's own connection
-// reads the stream alone.
+// longer selects is closed once the open that settled the record ends. The daemon's own connection,
+// js, reads the stream's info alone, through a handle of its own each time (streamInfo).
 type durableNames struct {
 	names   *consumernames.Names
-	stream  jetstream.Stream
+	js      jetstream.JetStream
 	pool    Pool
 	logger  *slog.Logger
 	connect func(ctx context.Context, name string) (*nats.Conn, error)
@@ -122,8 +122,8 @@ func GenerationConnection(physical string) string {
 	return logical + "/" + strings.TrimPrefix(physical, logical+"~")
 }
 
-func newDurableNames(stream jetstream.Stream, pool Pool, spec ConsumerSpec) *durableNames {
-	d := &durableNames{stream: stream, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]jetstream.JetStream{}}
+func newDurableNames(js jetstream.JetStream, pool Pool, spec ConsumerSpec) *durableNames {
+	d := &durableNames{js: js, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]jetstream.JetStream{}}
 	d.names = consumernames.New(consumernames.Config{
 		Store:         consumernames.NewPGStore(pool),
 		Server:        durableServer{d},
@@ -289,11 +289,22 @@ func (d *durableNames) failed(logical string, sel consumernames.Selection, call 
 // start a recovery creates at by start sequence, so a message published between the reservation
 // and the create is never skipped by a consumer created again in its place.
 func (d *durableNames) first(ctx context.Context) (consumernames.Start, error) {
-	info, err := d.stream.Info(ctx)
+	info, err := d.streamInfo(ctx)
 	if err != nil {
-		return consumernames.Start{}, fmt.Errorf("read %s info: %w", notificationStream, err)
+		return consumernames.Start{}, err
 	}
 	return consumernames.Start{Seq: info.State.LastSeq + 1, Native: consumernames.NativeNew}, nil
+}
+
+// streamInfo is the notification stream's info, read through a handle of its own on js (one
+// STREAM.INFO request), never through the stream handle the consumers share, as DispatchTarget and
+// createConsumer read it: nats.go's Info writes a handle's cached info under no lock.
+func (d *durableNames) streamInfo(ctx context.Context) (*jetstream.StreamInfo, error) {
+	stream, err := d.js.Stream(ctx, notificationStream)
+	if err != nil {
+		return nil, fmt.Errorf("read %s info: %w", notificationStream, err)
+	}
+	return stream.CachedInfo(), nil
 }
 
 // missingRecord refuses logical when the daemon keeps a checkpoint for it (consumer_positions,
@@ -316,9 +327,9 @@ func (d *durableNames) missingRecord(ctx context.Context, logical string) error 
 // streamID is the notification stream's identity, which a last floor carries and must match to
 // count (consumernames.StreamIdentity): the listener writes it when it creates the stream.
 func (d *durableNames) streamID(ctx context.Context) (string, error) {
-	info, err := d.stream.Info(ctx)
+	info, err := d.streamInfo(ctx)
 	if err != nil {
-		return "", fmt.Errorf("read %s info: %w", notificationStream, err)
+		return "", err
 	}
 	return consumernames.StreamIdentity(info), nil
 }
