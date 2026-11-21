@@ -7,54 +7,51 @@ import (
 	"sync/atomic"
 )
 
-// childEditRecorder is the function every write reports its positional child edits to (editsOf).
-// Only tests set it (RecordChildEditsForTest); it is nil otherwise, and a write reports nothing.
+// childEditRecorder is the function every write reports its reads and positional changes of a
+// fragment's children to (fragmentEdits). Only tests set it (RecordChildEditsForTest); it is nil
+// otherwise, and a write reports nothing.
 var childEditRecorder atomic.Pointer[func(ChildEdit)]
 
-// ChildEdit is one positional change a write made to a fragment's children (childEdits): Count
-// children deleted at Index, or, when Insert is set, Count children inserted there.
+// ChildEditKind is what one ChildEdit did to a fragment's children.
+type ChildEditKind int
+
+const (
+	// ChildRead read them all: Count is how many there were.
+	ChildRead ChildEditKind = iota
+	// ChildDelete deleted Count of them at Index.
+	ChildDelete
+	// ChildInsert inserted Count new ones at Index.
+	ChildInsert
+)
+
+// ChildEdit is one call a write made to a fragment's children (fragmentEdits).
 type ChildEdit struct {
-	Insert       bool
+	Kind         ChildEditKind
 	Index, Count int
 }
 
 func (e ChildEdit) String() string {
-	if e.Insert {
+	switch e.Kind {
+	case ChildRead:
+		return fmt.Sprintf("read %d", e.Count)
+	case ChildInsert:
 		return fmt.Sprintf("insert %d at %d", e.Count, e.Index)
+	default:
+		return fmt.Sprintf("delete %d at %d", e.Count, e.Index)
 	}
-	return fmt.Sprintf("delete %d at %d", e.Count, e.Index)
 }
 
-// RecordChildEditsForTest reports to record every positional delete and insert each write makes to
-// a fragment's children (childEdits), in the order ygo receives them, until the function it answers
-// puts back the recorder it found. That includes the inserts into an element the write builds
-// before it inserts the element itself, which ygo receives first. It is for tests alone, as
-// bus.HoldFirstConnectForTest is, and is exported for the tests of the packages that write
-// documents through this one. It reports every write in the process, so a test that reads it runs
-// no other write beside the one it reads, and record must be safe to call from the goroutine that
-// writes.
+// RecordChildEditsForTest reports to record every read of a fragment's children and every
+// positional delete and insert each write makes (fragmentEdits), in the order ygo receives them,
+// until the function it answers puts back the recorder it found. That includes the inserts into an
+// element the write builds before it inserts the element itself, which ygo receives first. It is
+// for tests alone, as bus.HoldFirstConnectForTest is, and is exported for the tests of the packages
+// that write documents through this one. It reports every write in the process, so a test that
+// reads it runs no other write beside the one it reads, and record must be safe to call from the
+// goroutine that writes.
 func RecordChildEditsForTest(record func(ChildEdit)) (restore func()) {
 	previous := childEditRecorder.Swap(&record)
 	return func() { childEditRecorder.Store(previous) }
-}
-
-// recordedEdits is edits with each call reported to record once ygo has received it.
-type recordedEdits struct {
-	edits  childEdits
-	record func(ChildEdit)
-}
-
-func (r recordedEdits) delete(index, length int) {
-	r.edits.delete(index, length)
-	r.record(ChildEdit{Index: index, Count: length})
-}
-
-func (r recordedEdits) insert(index int, children []normalizedChild) error {
-	if err := r.edits.insert(index, children); err != nil {
-		return err
-	}
-	r.record(ChildEdit{Insert: true, Index: index, Count: len(children)})
-	return nil
 }
 
 // UseManifestForTest makes manifest, a schema manifest in blocks.json's format, the one this

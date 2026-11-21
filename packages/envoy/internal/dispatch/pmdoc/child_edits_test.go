@@ -7,13 +7,15 @@ import (
 	"github.com/reearth/ygo/crdt"
 )
 
-// RecordChildEditsForTest reports each positional call a write makes to a fragment's children, in
-// the order ygo receives them, and its restore puts back the recorder it found. Replacing the middle
-// one of three paragraphs with a heading deletes the paragraph at index 1, inserts the heading's
-// text into the heading the write builds, and inserts the heading at index 1; replacing the heading
-// with a paragraph again is the same, with the paragraph's text. A recorder set over another takes
-// the write's calls while it stands; once it is restored the first one takes the next write's, and
-// once that one is restored a write reports nothing.
+// RecordChildEditsForTest reports each call a write makes to a fragment's children, in the order
+// ygo receives them, and its restore puts back the recorder it found. Replacing the middle one of
+// three paragraphs with a heading reads the three; reads the first and the last paragraph's
+// children to choose which end to keep first, and each again as it keeps it; deletes the middle
+// paragraph at index 1; inserts the heading's text into the heading the write builds; and inserts
+// the heading at index 1. Replacing the heading with a paragraph again is the same, with the
+// paragraph's text. A recorder set over another takes the write's calls while it stands; once it
+// is restored the first one takes the next write's, and once that one is restored a write reports
+// nothing.
 func TestRecordChildEditsForTestReportsEachCallOfAWrite(t *testing.T) {
 	doc := crdt.New()
 	fragment := doc.GetXmlFragment("prosemirror")
@@ -23,7 +25,16 @@ func TestRecordChildEditsForTestReportsEachCallOfAWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse the paragraphs around a heading: %v", err)
 	}
-	want := []ChildEdit{{Index: 1, Count: 1}, {Insert: true, Index: 0, Count: 1}, {Insert: true, Index: 1, Count: 1}}
+	want := []ChildEdit{
+		{Kind: ChildRead, Count: 3},
+		{Kind: ChildRead, Count: 1},
+		{Kind: ChildRead, Count: 1},
+		{Kind: ChildRead, Count: 1},
+		{Kind: ChildRead, Count: 1},
+		{Kind: ChildDelete, Index: 1, Count: 1},
+		{Kind: ChildInsert, Index: 0, Count: 1},
+		{Kind: ChildInsert, Index: 1, Count: 1},
+	}
 
 	var outer, inner []ChildEdit
 	restoreOuter := RecordChildEditsForTest(func(edit ChildEdit) { outer = append(outer, edit) })
