@@ -117,7 +117,8 @@ var noContent = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { 
 // sent through one proxy, leave the collaborator behind the same proxy its own bucket, and the
 // stranger's bucket follows it to a proxy of the other range. An IPv6 caller is keyed by its /64,
 // as the broker's own edge keys it, so one host cannot take a fresh bucket from each of its
-// addresses.
+// addresses, and an IPv4 address written as IPv6 is that IPv4 address, the proxy's and the
+// caller's alike.
 func TestEdgeForwardedAddressKeysEachCallersOwnBucket(t *testing.T) {
 	caller := brokertokentest.NewCaller(t)
 	broker := edgeLBBroker(t, caller)
@@ -147,6 +148,7 @@ func TestEdgeForwardedAddressKeysEachCallersOwnBucket(t *testing.T) {
 		{what: "its second, from another address of its /64", peer: "35.191.7.8:40007", forwarded: "2001:db8:1:2::2", want: http.StatusUnauthorized},
 		{what: "its third, from a third address of its /64", peer: "35.191.7.8:40008", forwarded: "2001:db8:1:2::ff", want: http.StatusTooManyRequests},
 		{what: "a caller of the next /64 through the same proxy", peer: "35.191.7.8:40009", forwarded: "2001:db8:1:3::1", want: http.StatusUnauthorized},
+		{what: "the first stranger written as IPv6, through a proxy written as IPv6", peer: "[::ffff:35.191.7.9]:40010", forwarded: "::ffff:198.51.100.1", want: http.StatusTooManyRequests},
 	} {
 		if got := send(step.token, step.peer, forwardedFor(step.forwarded)); got != step.want {
 			t.Errorf("%s (peer %s, forwarded for %s): status %d, want %d", step.what, step.peer, step.forwarded, got, step.want)

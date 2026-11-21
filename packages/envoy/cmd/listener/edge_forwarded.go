@@ -24,8 +24,6 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
-
-	"github.com/sjawhar/envoy/internal/broker/netaddr"
 )
 
 // googleFrontEnds are the ranges Google's load balancer proxies and health checkers connect from.
@@ -85,7 +83,7 @@ func fromGoogleFrontEnd(remote string) bool {
 	if err != nil {
 		return false
 	}
-	addr := netaddr.Canonical(peer.Addr())
+	addr := canonicalAddr(peer.Addr())
 	for _, prefix := range googleFrontEnds {
 		if prefix.Contains(addr) {
 			return true
@@ -98,11 +96,20 @@ func fromGoogleFrontEnd(remote string) bool {
 // address written as IPv6 (::ffff:a.b.c.d) included, and for IPv6 the /64 holding it, since one
 // host or one site holds a whole /64 and could take a fresh bucket from each of its addresses.
 func forwardedKey(addr netip.Addr) string {
-	addr = netaddr.Canonical(addr)
+	addr = canonicalAddr(addr)
 	if addr.Is6() {
 		return netip.PrefixFrom(addr, 64).Masked().String()
 	}
 	return addr.String()
+}
+
+// canonicalAddr is addr as the edge compares and keys it: an IPv4-mapped address is the IPv4
+// address it holds, which netip.Prefix.Contains would otherwise not find in an IPv4 range, and a
+// zone is dropped, for which Contains is false whatever the range. It is the broker's own reading
+// (internal/broker/netaddr.Canonical), written here so the listener's build reaches no broker
+// package for one line.
+func canonicalAddr(addr netip.Addr) netip.Addr {
+	return addr.Unmap().WithZone("")
 }
 
 // callerAddressKey is the context key the address apiAuth read for a request's caller is carried
