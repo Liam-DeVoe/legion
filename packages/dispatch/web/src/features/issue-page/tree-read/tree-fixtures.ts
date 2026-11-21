@@ -17,7 +17,10 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
  *   store keys it.
  *
  * A decision node carries the decisions read's object for it (`decision`), as the route answers
- * one: an agent's decision, never kept, replaced or changed, unless the case says otherwise.
+ * one: an agent's decision, never kept, replaced or changed, unless the case says otherwise. An
+ * ask a person answered carries the person's decision that answer made where the case gives it
+ * one, as the route answers it (`issue_tree_read.go`'s `readDecisions`): of kind `person`, the
+ * ask's own; an ask nobody answered carries none.
  */
 
 /** The issue every fixture of the page is read for. */
@@ -45,9 +48,9 @@ const NODE_KINDS: readonly string[] = [
 ];
 
 /** What a case gives a node beside its name, its supertag and its parent: any member of the
- *  generated node but the ids `treeNode` gives it, with only the members of a decision's
- *  `decision` it says otherwise, and for a block no `document` places, the slug of the document it
- *  is written in (`in`). */
+ *  generated node but the ids `treeNode` gives it, with only the members of a decision's - or of
+ *  an answered ask's - `decision` it says otherwise, and for a block no `document` places, the
+ *  slug of the document it is written in (`in`). */
 export type TreeNodeExtra = Partial<
   Omit<TreeAnswerNode, "block_id" | "decision" | "id" | "kind" | "parent">
 > & {
@@ -89,35 +92,58 @@ export function treeNode(
     visibility: "project",
     ...members,
   };
-  if (node.document === undefined && NODE_KINDS.includes(supertag)) return node;
   const owner = node.issue ?? TREE_KEY;
+  if (node.document === undefined && NODE_KINDS.includes(supertag)) {
+    return supertag !== "ask" || decision === undefined
+      ? node
+      : {
+          ...node,
+          decision: decisionOf(node.text, {
+            asks: [name],
+            kind: "person",
+            ref: `dispatch://${owner}/ask/${name}`,
+            ...decision,
+          }),
+        };
+  }
   const document = node.document?.slug ?? slug ?? "tree";
   return {
     ...node,
     block_id: name,
     ...(supertag === "decision"
       ? {
-          decision: {
-            asks: [],
+          decision: decisionOf(node.text, {
             block_id: name,
-            changed_at: null,
-            changed_version: 1,
-            heading: "",
-            kept: null,
             kind: "agent",
-            links: [],
             ref: `dispatch://${owner}/artifact/${document}#b-${name}`,
-            replaced: false,
-            text: node.text,
-            text_sha256: "",
-            unsure: false,
-            waiting_review: false,
             ...decision,
-          },
+          }),
         }
       : {}),
     id: `${owner}/${document}#${name}`,
     kind: "block",
+  };
+}
+
+/** The decisions read's object for a decision whose words are `text`: never kept, replaced or
+ *  changed, and naming no ask, no block and nothing it shaped, unless `members` says otherwise. */
+function decisionOf(text: string, members: Partial<Decision>): Decision {
+  return {
+    asks: [],
+    block_id: "",
+    changed_at: null,
+    changed_version: 1,
+    heading: "",
+    kept: null,
+    kind: "agent",
+    links: [],
+    ref: "",
+    replaced: false,
+    text,
+    text_sha256: "",
+    unsure: false,
+    waiting_review: false,
+    ...members,
   };
 }
 

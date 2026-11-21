@@ -47,8 +47,8 @@ import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode, type TreeTuple } 
 const KEY = "CORE-1";
 
 /** A supertag no part's step drafts, so a node of it is drawn by no row whatever later parts add
- *  to `treeDraftSteps` (later work drafts a lens, a finding, a risk, a constraint, a criterion
- *  and a reading). */
+ *  to `treeDraftSteps` (later work drafts a lens, a finding, a risk, a constraint and a
+ *  criterion). */
 const UNDRAWN = "unknown_kind";
 
 function artifact(id: string, slug: string, name: string, primary = false): Artifact {
@@ -414,6 +414,66 @@ test("a node whose parent is not drawn stands under its nearest drawn ancestor",
 
   expect(placementsOf(root, "c1").map((one) => one.parent)).toEqual([blockNodeId("spec", "r1")]);
   expect(placementsOf(root, "c2").map((one) => one.parent)).toEqual([KEY]);
+});
+
+// R4: a reading is an agent's reading of the ask or the decision it reads, and the read gives it
+// that ask or decision as its parent: it is drawn as a reading, by its own words, under the
+// parent the read names and nowhere else - one row each, whatever document it is written in.
+test("a reading stands under the parent the read names, and nowhere else", () => {
+  const { root } = drawn(
+    answer([
+      node("q1", "ask", KEY),
+      decisionNode("d1", KEY),
+      block("q1-reading", "reading", "q1", SPEC, 0),
+      node("d1-reading", "reading", "d1", { in: DECISIONS.slug }),
+    ])
+  );
+  const inSpec = blockNodeId("spec", "q1-reading");
+
+  expect(
+    nodesOf(root)
+      .filter((one) => one.type === "reading")
+      .map((one) => [one.id, nodeWords(one)])
+  ).toEqual([
+    [inSpec, "Words of q1-reading."],
+    ["d1-reading", "Words of d1-reading."],
+  ]);
+  expect(placementsOf(root, inSpec).map((one) => one.parent)).toEqual(["q1"]);
+  expect(placementsOf(root, "d1-reading").map((one) => one.parent)).toEqual(["d1"]);
+});
+
+// R10: a statement whose own `from` names one origin and a decision that says it shaped it names
+// another draws the two edges disagreeing - an agent's decision, and an ask a person answered,
+// which the read answers with that person's decision. An ask still open decided nothing, as the
+// decisions read's entries hold (`isDecisionEntry`), so its `shaped` tuple draws no disagreement.
+test("an open ask's shaped tuple draws no shaped_disagreement, where a decision's and an answered ask's do", () => {
+  const origin = { from: `dispatch://${KEY}/spec#b-r-origin` };
+  const { drafts } = drawn(
+    answer(
+      [
+        block("r-origin", "requirement", KEY, SPEC, 0),
+        block("r-open", "requirement", KEY, SPEC, 1, { attributes: origin }),
+        block("r-answered", "requirement", KEY, SPEC, 2, { attributes: origin }),
+        block("r-agent", "requirement", KEY, SPEC, 3, { attributes: origin }),
+        node("q-open", "ask", KEY),
+        node("q-answered", "ask", KEY, { decision: {} }),
+        decisionNode("d1", KEY),
+      ],
+      [
+        tuple("shaped", "q-open", "r-open"),
+        tuple("shaped", "q-answered", "r-answered"),
+        tuple("shaped", "d1", "r-agent"),
+      ]
+    ),
+    {
+      coverage: coverage(["r-origin", "r-open", "r-answered", "r-agent"].map(requirement)),
+      issue: issueDetails(),
+    }
+  );
+
+  expect(
+    ["r-open", "r-answered", "r-agent"].map((id) => drafts.get(blockNodeId("spec", id))?.gaps)
+  ).toEqual([[], ["shaped_disagreement"], ["shaped_disagreement"]]);
 });
 
 // R1, root R4: a check stands under the requirement the read answers and again under each other

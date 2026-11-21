@@ -552,16 +552,18 @@ function siblingOrder(one: Written, other: Written): number {
  * read answers it - a check or a plan task under the first
  * requirement its `serves` names, every other block under the issue unless the case gives it
  * another (`Fixture.parents`) - and a requirement the coverage read holds and a check the results
- * read holds with their words, each result under its check, the children, the asks, a reply
- * under its head, an ask's thread under the ask, a comment anchored inside a typed block under
- * that block, and every thread a person wrote in, a thread only agents wrote in being no node
- * (`agents-only.ts`). A decision of the decisions read is no node of it: a section of
- * `decisions.md`. Each block pointer is a tuple, to the node it names where the answer holds it,
- * and to its address where not or where it pins a version of that node, which is no node of the
- * answer; each tuple the case adds (`Fixture.tuples`) is one too. Ranks are the read's, which a
- * case does not state, so ranked siblings stand in the order the outline drew them - each
- * document's blocks in turn, the spec's first, then the statements the coverage read holds, then
- * the children - and the rest after them by time, then id, as the read orders them.
+ * read holds with their words, each result under its check, the children, the asks, an ask a
+ * person answered with that person's decision (`tree-fixtures.ts`), what it shaped as the
+ * decisions read's entry for the ask names it, a reply under its head, an ask's thread under the
+ * ask, a comment anchored inside a typed block under that block, and every thread a person wrote
+ * in, a thread only agents wrote in being no node (`agents-only.ts`). An agent's decision of the
+ * decisions read is no node of it: a section of `decisions.md`. Each block pointer is a tuple,
+ * to the node it names where the answer holds it, and to its address where not or where it pins
+ * a version of that node, which is no node of the answer; each tuple the case adds
+ * (`Fixture.tuples`) is one too. Ranks are the read's, which a case does not state, so ranked
+ * siblings stand in the order the outline drew them - each document's blocks in turn, the spec's
+ * first, then the statements the coverage read holds, then the children - and the rest after
+ * them by time, then id, as the read orders them.
  */
 function answered(fixture: Fixture): IssueTreeReads {
   const { documents, messages, nodes: added, parents: given, tuples: tied, ...reads } = fixture;
@@ -684,14 +686,27 @@ function answered(fixture: Fixture): IssueTreeReads {
       place: 3000 + at / children.length,
     });
   });
+  // The read answers each ask a person answered with that person's decision, which is the
+  // decisions read's entry for the ask (`issue_tree_read.go`'s `readDecisions`).
+  const decided = new Map(
+    (reads.decisions?.entries ?? []).flatMap((entry) =>
+      entry.node.kind === "ask" ? [[entry.node.id, entry] as const] : []
+    )
+  );
   for (const ask of asks.values()) {
     if (asBlock.has(ask.id)) continue;
+    const entry = decided.get(ask.id);
     written.push({
       node: answerNode(ask.id, "ask", key, {
         author: [ask.author],
         made_at: ask.created_at,
         text: ask.question,
         ...(ask.question_tree === undefined ? {} : { text_tree: ask.question_tree }),
+        ...(ask.state !== "answered"
+          ? {}
+          : {
+              decision: entry === undefined ? {} : { links: entry.shaped, text: entry.text },
+            }),
       }),
     });
   }
@@ -2322,12 +2337,12 @@ test("a person's decision is the answered ask's own node, which carries what it 
 });
 
 // R4: a reading is an agent's reading of the ask or the decision it reads, never of the issue:
-// the store's `part_of` reaches that ask or decision, and the reading's block stands inside its
-// block, which the block index records as its parent. So a reading inside a decision sits under
-// the decision, and one inside an answered ask under the ask, as the decisions read's entries
-// name them; before that read answers, the block that holds each places it the same way. A
-// reading in a copy of an answered ask reads the source's ask, and its entry places it there. A
-// reading no ask or decision holds sits under the issue.
+// the store's `part_of` reaches that ask or decision, and the tree read gives it that node as its
+// parent. So a reading inside a decision sits under the decision, and one inside an answered ask
+// under the ask, as the decisions read's entries name them. A reading in a copy of an answered
+// ask reads the source's ask, and the read places it there. A reading no ask or decision holds
+// sits under the issue. Placement is the server's: a reading stands under the parent the read
+// gives, before the decisions read answers as after it, and whatever that read's entries name.
 test("a reading sits under the ask or the decision it reads", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const answer = { at: "2026-11-06T00:00:00Z", selected: [], text: "One read.", user: "alice" };
@@ -2425,7 +2440,10 @@ test("a reading sits under the ask or the decision it reads", () => {
   expect(parentsOf(root, "loose")).toEqual([KEY]);
   expect(nodeOf(root, blockNodeId(SPEC, "d1-reading"))?.type).toBe("reading");
 
-  // Before the decisions read answers, the tree read places each reading as it did above.
+  // The reading stands under the parent the read gives: before the decisions read answers, each
+  // stands where it did above, the copy's reading under the source's ask; and a read that gives
+  // the copy's reading the copy itself places it there, though the decisions read's entry for
+  // the source's ask names it.
   const unread = treeOf({
     asks: [inSpec],
     documents,
@@ -2435,8 +2453,17 @@ test("a reading sits under the ask or the decision it reads", () => {
   });
   expect(parentsOf(unread, "d1-reading")).toEqual([blockNodeId(SPEC, "d1")]);
   expect(parentsOf(unread, "q1-reading")).toEqual([blockNodeId(SPEC, "q1")]);
-  expect(parentsOf(unread, "q2-reading")).toEqual([blockNodeId(SPEC, "q2")]);
+  expect(parentsOf(unread, "q2-reading")).toEqual([blockNodeId(SPEC, "q1")]);
   expect(parentsOf(unread, "loose")).toEqual([KEY]);
+  const inCopy = treeOf({
+    asks: [inSpec],
+    decisions: read,
+    documents,
+    issue: issueDetails([spec]),
+    nodes: [decisionNode],
+    parents: { ...parents, "q2-reading": "q2" },
+  });
+  expect(parentsOf(inCopy, "q2-reading")).toEqual([blockNodeId(SPEC, "q2")]);
 });
 
 // R9: the issue's own node carries the author the issue read names, so its row draws who

@@ -43,6 +43,7 @@ import type {
 import {
   type AskState,
   type CheckState,
+  coverageGapKind,
   type DecisionState,
   type GapKind,
   NODE_STATE_WORDS,
@@ -58,8 +59,9 @@ import { storedReading } from "./stored-reading";
  * The outline's rules for the drafts `buildIssueTree` places (root R4), which the tree read
  * keeps: how this issue addresses a node and names what a reference points
  * at (`treeContext`), a node's words read to plain words, how a check stands (`checkStanding`),
- * and the drafts of the decisions read's agent decisions that no node of the tree read holds
- * (`addDecisions`): a section of `decisions.md` a server of the release before answers.
+ * the gaps a statement draws (`requirementGaps`), and the drafts of the decisions read's agent
+ * decisions that no node of the tree read holds (`addDecisions`): a section of `decisions.md` a
+ * server of the release before answers.
  *
  * Every other node is drafted from the tree read (`tree-read/tree-nodes.ts`'s
  * `treeDraftsFrom`), which places and orders each one. Every function here is pure and takes the
@@ -808,6 +810,32 @@ export function markKeptAndUnsure(
     draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
   }
   if (decision.unsure === true) draft.unsure = true;
+}
+
+/**
+ * The gaps on one statement: the ones the coverage read carries that the page draws
+ * (`coverageGapKind`), and `shaped_disagreement` where the statement has an origin - the node its
+ * own `from` names - and a decision that says it shaped the statement (`shapers`, each by its
+ * node id) is not that origin: the two edges disagree, and the page draws that rather than
+ * picking one. The node its `from` names saying it shaped it is the two edges agreeing, which
+ * draws none, and an absent `from` is no gap of its own (R10). A decision is what the decisions
+ * read's entries hold one to be (`isDecisionEntry`): an open or a declined ask decided nothing.
+ * `tree-read/tree-nodes.ts`' `draftRequirement` reads both edges from the tree read: the
+ * statement's `from` attribute and the `shaped` tuples that end at it from a decision.
+ */
+export function requirementGaps(
+  coverage: readonly string[],
+  origin: string | undefined,
+  shapers: ReadonlySet<string> | undefined
+): GapKind[] {
+  const gaps = coverage.flatMap((line): GapKind[] => {
+    const kind = coverageGapKind(line);
+    return kind === undefined ? [] : [kind];
+  });
+  if (origin !== undefined && [...(shapers ?? [])].some((shaper) => shaper !== origin)) {
+    gaps.push("shaped_disagreement");
+  }
+  return gaps;
 }
 
 /**

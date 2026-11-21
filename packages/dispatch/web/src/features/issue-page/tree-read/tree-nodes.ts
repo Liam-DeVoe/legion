@@ -13,6 +13,7 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
+import { isDecisionEntry } from "../../issue/decision-entries";
 import {
   buildDispatchReference,
   parseDispatchReference,
@@ -22,7 +23,7 @@ import { textSourceOf } from "../../refs/text-references";
 import { checkFacts, resultFacts } from "../check-facts";
 import { decisionNodeChanges, decisionNodes, inReviewList } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
-import { blockAttributeLabel, coverageGapKind, type GapKind, type NodeType } from "../page-words";
+import { blockAttributeLabel, type NodeType } from "../page-words";
 import {
   addDocumentChips,
   answerOf,
@@ -34,6 +35,7 @@ import {
   decisionState,
   markKeptAndUnsure,
   plainWords,
+  requirementGaps,
   type TreeContext,
 } from "../tree-drafts";
 import type { TreeAnswer, TreeAnswerNode, TreeFilter, TreeTuple } from "./tree-read";
@@ -56,11 +58,11 @@ import type { TreeAnswer, TreeAnswerNode, TreeFilter, TreeTuple } from "./tree-r
  * read when the outline was built from the page's other reads.
  *
  * Each kind the page draws is one step of `treeDraftSteps`. A node of any other kind - a
- * criterion, a reading, a lens and its kind, a finding, a risk, a constraint, an interaction -
- * reaches no step of this part's, makes no draft and stays in the answer, which the page keeps
- * whole (R7); a later part draws a kind of its own with one line in that list, and adds a member
- * to another step's draft with one line in `treeDraftMarks`. A check or a plan task of an issue
- * under this one is out of this part's scope and makes no draft either.
+ * criterion, a lens and its kind, a finding, a risk, a constraint, an interaction - reaches no
+ * step of this part's, makes no draft and stays in the answer, which the page keeps whole (R7);
+ * a later part draws a kind of its own with one line in that list, and adds a member to another
+ * step's draft with one line in `treeDraftMarks`. A check or a plan task of an issue under this
+ * one is out of this part's scope and makes no draft either.
  *
  * `buildIssueTree` builds the tree from these drafts, so this module imports no code of
  * `issue-tree.ts`, which would close an import cycle (`biome.json`'s `noImportCycles`): the word
@@ -136,6 +138,8 @@ export interface TreeDraftContext extends TreeWords {
   readonly treeIdOfNode: (node: TreeAnswerNode) => string;
   /** The tuples of the answer that start at the node `readId` names, in the answer's order. */
   readonly tuplesFrom: (readId: string) => readonly TreeTuple[];
+  /** The tuples of the answer that end at the node `readId` names, in the answer's order. */
+  readonly tuplesTo: (readId: string) => readonly TreeTuple[];
 }
 
 /** One kind's step: the draft of `node` where it is of a kind the step draws, else undefined,
@@ -161,7 +165,7 @@ export type TreeDraftMark = (
  * the first that answers one. These steps draw the kinds the outline draws, a fixed list read
  * from each node's supertag and not from the page's names for kinds (`NODE_TYPE_NAMES`), which
  * later parts widen: a requirement, a check and a plan task, a result, a decision, an ask, a
- * comment and a message, a callout and an image, and a child issue.
+ * comment and a message, a callout and an image, a reading, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
   draftRequirement,
@@ -171,6 +175,7 @@ export const treeDraftSteps: readonly TreeDraftStep[] = [
   draftAsk,
   draftTurn,
   draftBlock,
+  draftReading,
   draftChild,
 ];
 
@@ -201,10 +206,14 @@ export function treeDraftsFrom(
 ): Map<string, Draft> {
   const nodes = nodesById(answer);
   const tuples = new Map<string, TreeTuple[]>();
+  const ending = new Map<string, TreeTuple[]>();
   for (const tuple of answer.tuples ?? []) {
     const from = tuples.get(tuple.from.id);
     if (from === undefined) tuples.set(tuple.from.id, [tuple]);
     else from.push(tuple);
+    const to = ending.get(tuple.to.id);
+    if (to === undefined) ending.set(tuple.to.id, [tuple]);
+    else to.push(tuple);
   }
   const idOfNode = nodeIdsIn(reads);
   const idOf = (readId: string): string => {
@@ -243,6 +252,7 @@ export function treeDraftsFrom(
     treeIdOf: idOf,
     treeIdOfNode: idOfNode,
     tuplesFrom: (readId) => tuples.get(readId) ?? [],
+    tuplesTo: (readId) => ending.get(readId) ?? [],
   };
   const made: [Draft, TreeAnswerNode][] = [];
   for (const [order, node] of walk.entries()) {
@@ -412,7 +422,10 @@ function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
 }
 
 /** A requirement, with the counts and the gaps the coverage read holds for it, and a statement of
- *  the issue where it is one (`isStatementNode`). */
+ *  the issue where it is one (`isStatementNode`). Where that read holds it, its gaps are read by
+ *  the outline's one rule (`requirementGaps`), which draws its two edges disagreeing too: the
+ *  node its `from` attribute names (`originOf`) against each decision a `shaped` tuple that ends
+ *  at it starts from (`isDecisionNode`), each read as the id the tree draws that node by. */
 function draftRequirement(
   node: TreeAnswerNode,
   _answer: TreeAnswer,
@@ -424,12 +437,38 @@ function draftRequirement(
   if (isStatementNode(node, context)) draft.statement = true;
   if (coverage !== undefined) {
     draft.counts = { checks: coverage.checks, planTasks: coverage.plan_tasks };
-    draft.gaps = (coverage.gaps ?? []).flatMap((line): GapKind[] => {
-      const kind = coverageGapKind(line);
-      return kind === undefined ? [] : [kind];
-    });
+    const shapers = new Set(
+      context.tuplesTo(node.id).flatMap((tuple) => {
+        const shaper = tuple.kind === "shaped" ? context.nodeOf(tuple.from.id) : undefined;
+        return shaper !== undefined && isDecisionNode(shaper) ? [context.treeIdOfNode(shaper)] : [];
+      })
+    );
+    draft.gaps = requirementGaps(coverage.gaps ?? [], originOf(node, context), shapers);
   }
   return draft;
+}
+
+/** Whether `node` is a decision, by the rule the decisions read's entries are read by
+ *  (`isDecisionEntry`): a decision node is an agent's decision, and an ask is a person's where a
+ *  person answered it, which the read says by the decision it sends on the ask - the route sends
+ *  one only on an ask whose state is `answered` (`issue_tree_read.go`'s `readDecisions`). An open
+ *  ask is a question and a declined one decided nothing, so neither carries one, and neither is
+ *  a decision. */
+function isDecisionNode(node: TreeAnswerNode): boolean {
+  if (node.supertag !== "decision" && node.supertag !== "ask") return false;
+  const answered = node.supertag === "ask" && node.decision !== undefined;
+  return isDecisionEntry({
+    answer_state: answered ? "answered" : null,
+    kind: node.supertag === "decision" ? (node.decision?.kind ?? "agent") : "person",
+  });
+}
+
+/** The node a requirement's `from` attribute names as where it came from: the attribute's first
+ *  pointer (`parseBlockPointerValue`), as this issue addresses it (`nodeIdOf`), which is the id
+ *  the tree draws that node by; undefined where it names none, or nothing of this issue. */
+function originOf(node: TreeAnswerNode, context: TreeDraftContext): string | undefined {
+  const [first] = parseBlockPointerValue(node.attributes?.from ?? "", POINTER_ITEMS) ?? [];
+  return first === undefined ? undefined : context.nodeIdOf(first);
 }
 
 /**
@@ -637,6 +676,19 @@ function draftBlock(
 ): Draft | undefined {
   if (node.supertag !== "callout" && node.supertag !== "image") return undefined;
   return draftOf(node, node.supertag, context);
+}
+
+/** A reading: an agent's reading of the ask or the decision it reads, never of the issue, drawn
+ *  as the outline drew one, by its kind and its words and nothing more. It stands under the
+ *  parent the read gives it, the ask or the decision its `part_of` reaches, as every draft whose
+ *  step names no parent does (`placeOf`), and nowhere else. */
+function draftReading(
+  node: TreeAnswerNode,
+  _answer: TreeAnswer,
+  context: TreeDraftContext
+): Draft | undefined {
+  if (node.supertag !== "reading") return undefined;
+  return draftOf(node, "reading", context);
 }
 
 /** A child issue, with its row as the issue read carries it (`TreeNode.child`). The issue itself
