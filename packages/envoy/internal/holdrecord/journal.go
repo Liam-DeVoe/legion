@@ -172,9 +172,13 @@ func Stoppable(w Workflow, command string) bool { return current.Stoppable(w, co
 func Epochal(w Workflow, command string) bool { return current.Epochal(w, command) }
 
 // Decide is Admit's decision on a verified record. It returns nil when the command may write its
-// `intent` entry, and otherwise the first refusal in this order: ErrBusy, ErrOutOfOrder for `hold
-// release`, ErrNotAdmitted, ErrAlreadyDone after completion, ErrExcluded, ErrOutOfOrder,
-// ErrAlreadyDone.
+// `intent` entry, and otherwise the first refusal in this order: ErrAlreadyDone once the hold has
+// ended (a done `hold release` or `hold abort`); ErrBusy; ErrOutOfOrder for `hold release` before
+// completion (or a record whose other entries are not all stops that left nothing changed);
+// ErrAlreadyDone for a second `hold set`; ErrOutOfOrder for any other command before `hold set`'s
+// done entry, but `hold abort`; ErrNotAdmitted; ErrAlreadyDone after completion; ErrExcluded;
+// ErrOutOfOrder for `hold abort` outside `hub-restore` when no command has stopped; ErrOutOfOrder
+// for a required command with no done entry; ErrAlreadyDone.
 func Decide(d Done, req Request) error { return current.Decide(d, modelRequest{Request: req}) }
 
 // Proven returns the latest `done` `hold prove` entry's outputs, and false before any `hold prove`

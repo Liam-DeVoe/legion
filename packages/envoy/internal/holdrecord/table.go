@@ -42,11 +42,13 @@ type rules struct {
 	EndIsFinal bool
 	// BackupCommand: `envoy-infra buckets backup`, a snapshot of each copied bucket, runs under a
 	// hold, as the first command of buckets-recreate and buckets-restore, Repeatable. The recreate,
-	// which deletes the bucket, requires its done entry, so a recreate always follows a backup of
-	// the bucket taken in its own hold; the restore does not, since a lost bucket cannot be backed
-	// up, and it restores from an archive an earlier hold took. Its stop records LeftUnchanged, but
-	// its done entry counts as a change under hold release's rule as every done entry does, so
-	// after a backup the way out of a recreate or restore that stops is hold abort.
+	// which deletes a bucket, requires a done `buckets backup` entry in this hold, which is what
+	// Decide checks; Decide sees no bucket names, so that the backup holds each bucket the recreate
+	// deletes is the recreate command's to check, from the backup's outputs. The restore requires
+	// no backup, since a lost bucket cannot be backed up, and it restores from an archive an
+	// earlier hold took. Its stop records LeftUnchanged, but its done entry counts as a change under
+	// hold release's rule as every done entry does, so after a backup the way out of a recreate or
+	// restore that stops is hold abort.
 	BackupCommand bool
 }
 

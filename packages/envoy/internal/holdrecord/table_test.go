@@ -2,6 +2,7 @@ package holdrecord
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -133,6 +134,46 @@ func TestACutRunCountsAsAChange(t *testing.T) {
 		whole := Done{Workflow: x.w, Ops: []Operation{op(CommandSet, stateIntent), op(CommandSet, stateDone), op(x.c, stateIntent), stop}}
 		if err := Decide(whole, Request{Command: CommandRelease}); err != nil {
 			t.Errorf("%s: release after one %q run's unchanged stop answered %v, want admitted", x.w, x.c, err)
+		}
+	}
+}
+
+// Decide refuses in the order its doc gives: each case below meets two refusals, or one that a
+// later check would answer otherwise, and the first in the doc's order must be the answer. Fails if
+// the code's order and the doc's part: with EndIsFinal's check after ErrBusy, the first case
+// answers ErrBusy.
+func TestDecideRefusesInItsDocumentedOrder(t *testing.T) {
+	op := func(c, s string) Operation { return Operation{Command: c, State: s} }
+	set := []Operation{op(CommandSet, stateIntent), op(CommandSet, stateDone)}
+	with := func(ops ...Operation) []Operation { return append(append([]Operation{}, set...), ops...) }
+	for _, x := range []struct {
+		name    string
+		d       Done
+		command string
+		want    error
+		names   string
+	}{
+		{"the hold ended, though another command's intent is pending", Done{Workflow: WorkflowCutover,
+			Ops: with(op("replay", stateIntent), op(CommandRelease, stateIntent), op(CommandRelease, stateDone))}, "create-bucket", ErrAlreadyDone, "the hold has ended"},
+		{"busy, though release is out of order too", Done{Workflow: WorkflowCutover, Ops: with(op("create-bucket", stateIntent))},
+			CommandRelease, ErrBusy, "create-bucket"},
+		{"release before completion", Done{Workflow: WorkflowCutover, Ops: with(op("replay", stateIntent), op("replay", stateDone))},
+			CommandRelease, ErrOutOfOrder, "not complete"},
+		{"a second hold set", Done{Workflow: WorkflowCutover, Ops: with()}, CommandSet, ErrAlreadyDone, CommandSet},
+		{"before hold set's done, though the command is not admitted either", Done{Workflow: WorkflowCutover,
+			Ops: []Operation{op(CommandSet, stateIntent), op(CommandSet, stateStop)}}, "buckets create", ErrOutOfOrder, CommandSet},
+		{"not admitted", Done{Workflow: WorkflowCutover, Ops: with()}, "buckets create", ErrNotAdmitted, "cutover"},
+		{"after completion, though the command is done too", Done{Workflow: WorkflowBucketsCreate,
+			Ops: with(op("buckets create", stateIntent), op("buckets create", stateDone)), Complete: true}, "buckets create", ErrAlreadyDone, "the record is complete"},
+		{"excluded", Done{Workflow: WorkflowHubRestore, Ops: with(op(CommandProve, stateIntent), op(CommandProve, stateDone))},
+			CommandAbort, ErrExcluded, CommandProve},
+		{"abort with no command stopped", Done{Workflow: WorkflowCutover, Ops: with()}, CommandAbort, ErrOutOfOrder, "no command has stopped"},
+		{"a required command with no done entry", Done{Workflow: WorkflowCutover, Ops: with()}, "streams census", ErrOutOfOrder, "convert"},
+		{"already done", Done{Workflow: WorkflowCutover, Ops: with(op("create-bucket", stateIntent), op("create-bucket", stateDone))},
+			"create-bucket", ErrAlreadyDone, "create-bucket"},
+	} {
+		if err := Decide(x.d, Request{Command: x.command}); !errors.Is(err, x.want) || !strings.Contains(err.Error(), x.names) {
+			t.Errorf("%s: Decide(%q) answered %v, want %v naming %q", x.name, x.command, err, x.want, x.names)
 		}
 	}
 }
