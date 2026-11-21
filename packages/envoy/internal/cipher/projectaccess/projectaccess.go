@@ -284,6 +284,10 @@ var ErrNotCached = errors.New("projectaccess: no young answer is cached")
 // answer a cached answer while it is young, as without it, and ErrNotCached where they would ask
 // Dispatch, which they neither ask nor wait on. It is for a caller with no time left to ask, as
 // the hold gate is for a check whose caller's deadline leaves it none (hold.Gate.CheckUntil).
+// A ctx marked Fresh as well asks Dispatch even so, since personAnswer reads Fresh first. No
+// caller marks both: the hold gate is the one caller that marks CachedOnly, and the request
+// machine's project reads, the ones that mark Fresh (requests' atDecision and decisionFacts),
+// never check a hold.
 func CachedOnly(ctx context.Context) context.Context {
 	return context.WithValue(ctx, cachedOnlyKey{}, true)
 }
@@ -432,7 +436,8 @@ func (c *Client) personAnswer(ctx context.Context, person string, keep func(cach
 	c.mu.Unlock()
 	if fresh(ctx) {
 		// A question asked under Fresh is Dispatch's to answer now: it reads no cached answer and
-		// shares no call already in flight, which was asked before it.
+		// shares no call already in flight, which was asked before it. It asks Dispatch even when
+		// ctx is marked CachedOnly too, which is read after this; no caller marks both (CachedOnly).
 		return c.askPerson(ctx, person)
 	}
 	if ok && c.now().Sub(cached.at) < keep(cached) {

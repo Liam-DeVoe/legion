@@ -36,7 +36,8 @@ func TestAHangingDispatchAdmitsAKeptNotHeldSessionWithinTheDecisionsBudget(t *te
 	served, held := newSession(t, "ses_kept_served", 15*time.Minute), newSession(t, "ses_kept_held", 15*time.Minute)
 	served.answer.Person, held.answer.Person = "ada@example.com", "bob@example.com"
 
-	// The broker keeps an answer for each person from a Dispatch that answered them.
+	// The broker keeps an answer for each person from a Dispatch that answered them: ada not held,
+	// bob held, each read back from person_standing as hold's own budget test reads it.
 	asOf := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
 	for person, isHeld := range map[string]bool{served.answer.Person: false, held.answer.Person: true} {
 		answering := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -44,8 +45,18 @@ func TestAHangingDispatchAdmitsAKeptNotHeldSessionWithinTheDecisionsBudget(t *te
 			_, _ = fmt.Fprintf(w, `{"person":%q,"member_kind":"full","held":%t,"as_of":%q}`, person, isHeld, asOf.Format(time.RFC3339Nano))
 		}))
 		keeper := hold.New(hold.Config{Access: projectaccess.New(answering.URL, projectaccesstest.StaticAccount("token"), nil), Store: st})
-		_ = keeper.Check(t.Context(), person)
+		err := keeper.Check(t.Context(), person)
 		answering.Close()
+		if isHeld {
+			require.ErrorIs(t, err, hold.ErrHeld, "Check(%s) with Dispatch answering held", person)
+			require.NotErrorIs(t, err, hold.ErrUncheckable, "Check(%s) with Dispatch answering held", person)
+		} else {
+			require.NoError(t, err, "Check(%s) with Dispatch answering not held", person)
+		}
+		kept, keptAt, _, found, err := st.PersonStanding(t.Context(), person)
+		require.NoError(t, err, "read person_standing for %s", person)
+		require.True(t, found && kept == isHeld && keptAt.Equal(asOf),
+			"person_standing for %s = held %t as of %v (found %t), want held %t as of %v kept", person, kept, keptAt, found, isHeld, asOf)
 	}
 
 	release := make(chan struct{})
@@ -59,14 +70,25 @@ func TestAHangingDispatchAdmitsAKeptNotHeldSessionWithinTheDecisionsBudget(t *te
 	t.Cleanup(func() { close(release) })
 	gate := hold.New(hold.Config{Access: projectaccess.New(hanging.URL, projectaccesstest.StaticAccount("token"), nil), Store: st})
 	base := introspector(served, held)
+	// introspect is base with the gate's answer mapped onto it as oauth.Provider's withHold maps it
+	// (internal/cipher/oauth/introspect.go), case for case. It mirrors that mapping rather than
+	// calling it: withHold is an unexported method of *oauth.Provider, reached only through
+	// Provider.Introspect for a token the broker's own exchange stored, and the sessions here are
+	// this package's test sessions (introspector), which no broker store holds.
 	introspect := func(ctx context.Context, token string) (oauthwire.Introspection, error) {
 		answer, err := base(ctx, token)
 		if err != nil {
 			return answer, err
 		}
-		switch err := gate.Check(ctx, answer.Person); {
+		until, err := gate.CheckUntil(ctx, answer.Person)
+		switch {
 		case err == nil:
-		case errors.Is(err, hold.ErrUncheckable) || !errors.Is(err, hold.ErrHeld):
+			if !until.IsZero() {
+				answer.NotHeldUntil = until.Unix()
+			}
+		case errors.Is(err, hold.ErrDeadlinePassed) && !errors.Is(err, hold.ErrHeld):
+			answer.NotHeldUntil = oauthwire.NotHeldUntilPassed
+		case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
 			return oauthwire.Introspection{}, &oauth.HoldUncheckableError{Person: answer.Person, Err: err}
 		default:
 			answer.Held = true
