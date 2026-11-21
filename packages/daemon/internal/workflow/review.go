@@ -1131,13 +1131,12 @@ func told(row record.PhaseRow, r round) bool {
 // (daemon's mergeStateLadder), and the next fact of the issue asks again.
 //
 // The switch also names the head whose verdict a fact can change, which has legion-verdict written
-// before any read (Config.WriteVerdict, askVerdictWrite): the reviewer's verdict, at the commit it
-// names, whether its completion of reviewing carries it or its call past review does; a webhook's
-// approval or request for changes not written with the one App's token, at the commit it read;
-// and the tester's verdict, at the commit it tested, which owes no read, since nothing GitHub
-// answers waits on it. No other fact changes a verdict, and a push writes nothing on the head it
-// makes: a check run belongs to one commit, so the new head has no legion-verdict until a verdict
-// names it (spec R4).
+// before any read (Config.WriteVerdict, askVerdictWrite): the reviewer's verdict, at the commit its
+// completion of reviewing names; a webhook's approval or request for changes not written with the
+// one App's token, at the commit it read; and the tester's verdict, at the commit it tested, which
+// owes no read, since nothing GitHub answers waits on it. No other fact changes a verdict, and a
+// push writes nothing on the head it makes: a check run belongs to one commit, so the new head has
+// no legion-verdict until a verdict names it (spec R4).
 //
 // A base push is the one fact of many pull requests, and the one this leaves alone: its handler
 // walks the open pull requests recorded on the base once, and asks for each read inside that
@@ -1191,9 +1190,6 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 			return nil
 		}
 		pr, err = e.store.PullRequest(ctx, tx, fact.Issue)
-	case intake.ReviewVerdict:
-		pr, err = e.store.PullRequest(ctx, tx, fact.Issue)
-		verdict = fact.Commit
 	case intake.BasePush:
 		// Asked for inside the walk that records the push, which is the last reader of what
 		// tells a redelivery from a first delivery (basePush).
