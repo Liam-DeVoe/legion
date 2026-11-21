@@ -64,10 +64,11 @@ test("a relay socket session takes its relay subject on the socket and no agent 
   }
 }, 60_000);
 
-// #4658 answers the session's own relay subject `subject_not_granted` when its NATS server refuses
-// the subscribe (a grant misrendered or missing). The subscription ends with that error, as a
-// nats.js one the server refused does, so the session is told why it receives nothing, rather
-// than told it holds no relay subject with no reason.
+// The wire lets the listener answer any `sub` `subject_not_granted`. #4658 answers so only a
+// subject other than the session's own, and closes the socket 1013 when NATS refuses a subscribe;
+// a listener that refused the session's own subject would leave a dead subscription unless it
+// ends with that error, as a nats.js one the server refused does. So the session is told why it
+// receives nothing, rather than told it holds no relay subject with no reason.
 test("a relay subject the listener refuses is told naming why", async () => {
   const server = startRelaySocketStandIn();
   server.refuseOwnSubject = true;

@@ -11,10 +11,10 @@
 // a text frame of JSON, and the listener reads a socket's frames one at a time, handling each in
 // full before the next. The client sends `{"op":"sub","sid":<int>,"subject":<s>}`, which the
 // listener grants only for the session's own relay subject (`deliverSubject`) and otherwise answers
-// `{"op":"err","sid":<int>,"code":"subject_not_granted"}`, and grants one on a socket, answering a
-// second `{"op":"err","sid":<int>,"code":"subscription_limit"}` and keeping the socket open (this
-// client takes one per socket); either refusal ends that subscription alone, logged once. A granted
-// `sub` has no
+// `{"op":"err","sid":<int>,"code":"subject_not_granted"}`, and grants one subscription a socket,
+// answering a second `{"op":"err","sid":<int>,"code":"subscription_limit"}` and keeping the socket
+// open (this client takes one per socket). Either refusal ends that subscription with an error
+// naming its subject and code, logged once, and the socket goes on. A granted `sub` has no
 // answer, so a `sub` is held once no `err` names its sid. It sends `{"op":"unsub","sid":<int>}`,
 // and `{"op":"pub","subject":<s>,"data":<base64>}`, and nothing more, which the listener takes only
 // on the reply of a frame this socket forwarded in the last 10 minutes and otherwise answers
@@ -330,6 +330,13 @@ function frameText(data: unknown): string {
   return "";
 }
 
+/**
+ * What the socket may tell the host's outage report: a refusal, and never its end. The report is
+ * the host's, shared with its registrations, and only a registration the listener accepted ends
+ * it, so a socket that could call `accepted` would not compile.
+ */
+export type RelayOutage = Pick<InboundUnavailable, "refused">;
+
 /** What `ListenerRelay` is opened with. */
 export interface ListenerRelayOptions {
   /** The listener's address (`EnabledEnvoySettings.url`); the socket is `relaySocketUrl`'s. */
@@ -343,7 +350,7 @@ export interface ListenerRelayOptions {
   readonly credential: RequestCredential;
   /** Told a failed trade once per outage: the host's own report (`inboundUnavailable`), which its
    *  registrations share and whose accepted registration alone ends the outage. */
-  readonly outage: InboundUnavailable;
+  readonly outage: RelayOutage;
   /** Where a line about the socket goes: a close, a refusal, a socket that stopped answering. */
   readonly log: (line: string) => void;
 }
@@ -372,7 +379,7 @@ interface SocketEnd {
  */
 export class ListenerRelay implements InboundConnection {
   readonly #options: ListenerRelayOptions;
-  #outage: InboundUnavailable;
+  #outage: RelayOutage;
   /** The socket opening or open, and the session and the presentation it was opened with. */
   #socket: Bun.WebSocket | undefined;
   #socketSession = "";
@@ -417,7 +424,7 @@ export class ListenerRelay implements InboundConnection {
 
   /** Has a later failed trade told `outage`, rather than the one this was opened with: a host
    *  whose own report is made only after the socket opened. */
-  reportOutagesTo(outage: InboundUnavailable): void {
+  reportOutagesTo(outage: RelayOutage): void {
     this.#outage = outage;
   }
 
@@ -865,13 +872,15 @@ export class ListenerRelay implements InboundConnection {
       return;
     }
     // Logged once per code the wire names; any other code once in all, so a listener sending code
-    // after code grows the once-logged set by one key, not one each.
+    // after code grows the once-logged set by one key, not one each. An unknown code is the
+    // listener's own text, as long as a frame, so the line holds its first 64 characters.
     const known = ERR_CODES[code] === true;
+    const shown = code.length > 64 ? `${code.slice(0, 64)}…` : code;
     this.#logOnce(
       `${session}\u0000${known ? code : "another code"}`,
       known
         ? `the listener's relay socket for ${session} answered ${code}`
-        : `the listener's relay socket for ${session} answered ${code}, a code this client does not know; later unknown codes are not logged`
+        : `the listener's relay socket for ${session} answered ${shown}, a code this client does not know; later unknown codes are not logged`
     );
   }
 

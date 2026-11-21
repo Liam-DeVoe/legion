@@ -303,8 +303,9 @@ session sends `sub` of its own relay subject, `unsub`, and `pub` of a relay rece
 reply, which is all the socket takes; the listener sends `msg`, whose `headers` map each name, case
 kept, to the list of its values in order (`RelaySocketHeaders.get` and `values`), and `err`. A
 frame past 2 MiB, larger than any the listener sends, is dropped unread. A
-`sub` the listener refuses (`subject_not_granted`, or `subscription_limit` past the four
-subscriptions a socket holds) ends that subscription alone and is logged once; a frame it cannot
+`sub` the listener refuses (`subject_not_granted`, or `subscription_limit` past the one
+subscription a socket holds) ends that subscription with an error naming its subject and code, as
+a nats.js subscription a server refused does, and is logged once; a frame it cannot
 read it answers `bad_frame` and closes the socket 1008, which the client logs naming the ops of the
 frames it sent since the listener last answered a ping, since the answer names none.
 The listener reads a socket's frames one at a time and answers no `sub` it grants, so `flush` sends

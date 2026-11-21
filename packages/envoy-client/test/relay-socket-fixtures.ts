@@ -12,9 +12,9 @@ import * as path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { brokerCredential, forgetBrokerClients } from "../src/broker-credential";
-import { type InboundUnavailable, inboundUnavailable } from "../src/consumer-delivery";
+import type { InboundUnavailable } from "../src/consumer-delivery";
 import type { EnvoyEnvironment } from "../src/envoy-settings";
-import { connectListenerRelay, type ListenerRelay } from "../src/listener-relay";
+import { connectListenerRelay, type ListenerRelay, type RelayOutage } from "../src/listener-relay";
 import { registerWithRelay } from "../src/relay-registration";
 import { EnvoyApiError } from "../src/transport";
 import {
@@ -27,10 +27,10 @@ import {
 /** What a row of the relay socket's test files may say it heard on a socket it opened. */
 export interface Heard {
   readonly logs?: string[];
-  readonly told?: string[];
   readonly asks?: { count: number };
-  readonly restored?: { count: number };
-  readonly outage?: InboundUnavailable;
+  /** The outage report the socket shares with a row's registrations; one that tells nothing
+   *  where a row gives none. */
+  readonly outage?: RelayOutage;
   readonly boundMs?: number;
   /** While above 0, each time the relay asks for the upgrade's headers the trade fails, as a
    *  broker that refuses it does, and the count goes down by one. */
@@ -69,9 +69,7 @@ export function relaySocketFixtures(prefix: string) {
 
   /** A relay socket for `session` at `server`, open once the first socket opens or `boundMs`
    *  pass; closed after the row. `heard.asks` counts each time the relay asks the credential for
-   *  the upgrade's headers, and `heard.restored` each time the outage was told it ended;
-   *  `heard.outage` is the outage report the socket shares with a row's registrations, in place
-   *  of one built from `heard.told` and `heard.restored`. */
+   *  the upgrade's headers. */
   async function opened(
     server: RelaySocketStandIn,
     session: string | (() => string),
@@ -93,14 +91,7 @@ export function relaySocketFixtures(prefix: string) {
             return credential.headers(...args);
           },
         },
-        outage:
-          heard.outage ??
-          inboundUnavailable(
-            (why) => heard.told?.push(why),
-            () => {
-              if (heard.restored !== undefined) heard.restored.count += 1;
-            }
-          ),
+        outage: heard.outage ?? { refused: () => undefined },
         log: (line) => heard.logs?.push(line),
       },
       AbortSignal.timeout(heard.boundMs ?? 20_000)

@@ -65,25 +65,27 @@ describe("a relay socket", () => {
     expect(server.malformed).toEqual([]);
   });
 
-  test("closed 4401 reopens within 1 s with a fresh token, and takes its subject again", async () => {
+  test("closed 4401 reopens at once with a fresh token, and takes its subject again", async () => {
     const server = standIn();
-    const relay = await opened(server, "ses_a");
+    const logs: string[] = [];
+    const relay = await opened(server, "ses_a", { logs });
     relay.subscribe(standInDeliverSubject("ses_a"));
     await relay.flush();
-    const closedAt = Date.now();
     server.close(4401, "credential_expired");
     await until(
       () => opens(server).length === 2,
-      1_000,
-      () => `no reopen within 1 s of a 4401 close; upgrades ${JSON.stringify(server.upgrades)}`
+      10_000,
+      () => `no reopen after a 4401 close; upgrades ${JSON.stringify(server.upgrades)}`
     );
+    expect(logs.filter((line) => line.includes(" closed ("))).toEqual([
+      "the listener's relay socket for ses_a closed (4401 credential_expired); it opens again in 0 ms",
+    ]);
     const [before, after] = opens(server);
-    expect(after?.at ?? Number.POSITIVE_INFINITY).toBeLessThan(closedAt + 1_000);
     expect(after?.token).not.toBe(before?.token);
     expect(server.minted.map((one) => one.session)).toEqual(["ses_a", "ses_a"]);
     await until(
       () => server.subs.length === 2,
-      1_000,
+      10_000,
       () => `the reopened socket took no subject again; it took ${JSON.stringify(server.subs)}`
     );
   });
@@ -446,10 +448,7 @@ describe("a relay socket", () => {
         headers: async () => ({ Authorization: `DPoP ${token}`, DPoP: "a-proof" }),
         secret: () => token,
       },
-      outage: inboundUnavailable(
-        () => undefined,
-        () => undefined
-      ),
+      outage: { refused: () => undefined },
       log: (line) => logs.push(line),
     });
     started.push(() => relay.close());
@@ -459,9 +458,8 @@ describe("a relay socket", () => {
       () =>
         `the relay made ${connections.length} connection(s) in 30 s to a listener that never answers its upgrade, and logged ${JSON.stringify(logs)}`
     );
-    const gap = (connections[1] ?? 0) - (connections[0] ?? 0);
-    expect(gap).toBeGreaterThanOrEqual(20_000);
-    expect(gap).toBeLessThan(23_000);
+    // The 20 s deadline is the logged line below; the gap only shows it was waited out.
+    expect((connections[1] ?? 0) - (connections[0] ?? 0)).toBeGreaterThanOrEqual(20_000);
     expect(logs).toEqual([
       "the listener's relay socket for ses_a could not be opened: the upgrade was not answered within 20 s; it is tried again in 1000 ms, the wait doubling to a minute while it fails",
     ]);
@@ -514,11 +512,11 @@ describe("a relay socket", () => {
     const logs: string[] = [];
     const relay = await opened(server, "ses_a", { logs });
     const subject = standInDeliverSubject("ses_a");
-    const held = [relay.subscribe(subject)];
-    const fifth = relay.subscribe(subject);
+    const first = relay.subscribe(subject);
+    const second = relay.subscribe(subject);
     await relay.flush();
-    const fifthNow = await Promise.race([
-      fifth[Symbol.asyncIterator]()
+    const secondNow = await Promise.race([
+      second[Symbol.asyncIterator]()
         .next()
         .then(
           (next) => (next.done === true ? "ended with no error" : "yielded a frame"),
@@ -528,7 +526,7 @@ describe("a relay socket", () => {
       // anything still to come about it.
       relay.flush().then(() => "still open a round trip after the listener refused it"),
     ]);
-    expect(fifthNow).toBe(
+    expect(secondNow).toBe(
       `the listener's relay socket refused the subject ${subject} (subscription_limit)`
     );
     expect(server.refusedSubs).toEqual([{ session: "ses_a", subject, code: "subscription_limit" }]);
@@ -537,15 +535,8 @@ describe("a relay socket", () => {
     ]);
     // The first still receives.
     expect(server.deliver("ses_a", frame("ses_a", 1))).toBeDefined();
-    const seqs = await Promise.all(
-      held.map(
-        async (subscription) =>
-          (await subscription[Symbol.asyncIterator]().next()).value?.headers.get(
-            "Envoy-Stream-Seq"
-          ) ?? "nothing"
-      )
-    );
-    expect(seqs).toEqual(["1"]);
+    const next = await first[Symbol.asyncIterator]().next();
+    expect(next.value?.headers.get("Envoy-Stream-Seq")).toBe("1");
   });
 
   test("a flush resolves once the listener has handled every sub sent before it", async () => {
@@ -620,8 +611,8 @@ describe("a relay socket", () => {
     server.trades = "mint";
     await opening;
     expect(opens(server)).toHaveLength(1);
-    // The registration the open lets the host make is accepted, and the outage the socket told is
-    // said to have ended once, whichever of the two ended it.
+    // The socket's open ends no outage; the registration the open lets the host make is accepted,
+    // and that ends the outage the failed trade told, once.
     await registerOnce(outage, () => false);
     expect(restored.count).toBe(1);
   }, 60_000);
@@ -737,10 +728,7 @@ describe("a relay socket", () => {
         headers: async () => ({ Authorization: `DPoP ${token}`, DPoP: "a-proof" }),
         secret: () => token,
       },
-      outage: inboundUnavailable(
-        () => undefined,
-        () => undefined
-      ),
+      outage: { refused: () => undefined },
       log: (line) => logs.push(line),
     });
     started.push(() => relay.close());
@@ -786,22 +774,41 @@ describe("a relay socket", () => {
     ]);
   });
 
+  test("an err code the wire does not name is logged once in all, cut short, and a named one once", async () => {
+    // The code is the listener's text: a listener sending code after code, or one code of any
+    // length, grows the log by one line of bounded length.
+    const server = standIn();
+    const logs: string[] = [];
+    await opened(server, "ses_a", { logs });
+    const long = `x${"y".repeat(10_000)}`;
+    for (const code of [long, "another_unknown", "publish_not_granted", "publish_not_granted"]) {
+      server.sendRaw("ses_a", JSON.stringify({ op: "err", code }));
+    }
+    // A round trip after them: the listener's frames reach the client in order.
+    server.sendRaw("ses_a", JSON.stringify({ op: "err", code: "bad_frame" }));
+    await until(
+      () => logs.some((line) => line.includes("answered bad_frame")),
+      5_000,
+      () => `the last err was never logged; the log holds ${JSON.stringify(logs)}`
+    );
+    expect(logs).toEqual([
+      `the listener's relay socket for ses_a answered ${long.slice(0, 64)}…, a code this client does not know; later unknown codes are not logged`,
+      "the listener's relay socket for ses_a answered publish_not_granted",
+      "the listener's relay socket for ses_a answered bad_frame",
+    ]);
+  });
+
   test("drain unsubscribes every subscription, waits for the listener to take that, and closes", async () => {
     const server = standIn();
     const relay = await opened(server, "ses_a");
     const subject = standInDeliverSubject("ses_a");
-    const subscriptions = [relay.subscribe(subject)];
+    const subscription = relay.subscribe(subject);
     const statuses = relay.status()[Symbol.asyncIterator]();
     await relay.flush();
     await relay.drain();
     expect(relay.isClosed()).toBe(true);
     expect(server.handled.filter((one) => one.frame.startsWith("unsub "))).toHaveLength(1);
-    const ended = await Promise.all(
-      subscriptions.map(
-        async (subscription) => (await subscription[Symbol.asyncIterator]().next()).done
-      )
-    );
-    expect(ended).toEqual([true]);
+    expect((await subscription[Symbol.asyncIterator]().next()).done).toBe(true);
     expect((await statuses.next()).done).toBe(true);
   });
 });

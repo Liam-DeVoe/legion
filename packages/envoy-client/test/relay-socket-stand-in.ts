@@ -135,8 +135,9 @@ export interface RelaySocketStandIn {
   tokenSeconds: number;
   /** A status every upgrade is refused with while set, as an edge whose broker is away (503). */
   refuseUpgrades: number | undefined;
-  /** While true, a `sub` of the session's own relay subject is refused `subject_not_granted` too,
-   *  as a listener whose NATS server rejects its subscribe (a grant misrendered or missing) does. */
+  /** While true, a `sub` of the session's own relay subject is refused `subject_not_granted` too:
+   *  the wire allows it, though #4658 answers so only another subject (it closes the socket 1013
+   *  when NATS refuses a subscribe), for a row on what a client does with such a refusal. */
   refuseOwnSubject: boolean;
   /** The open sockets of `session`. */
   sockets(session: string): number;

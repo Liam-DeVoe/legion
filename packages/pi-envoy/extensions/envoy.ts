@@ -2521,7 +2521,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     );
     if (closed.length === 0) return;
     void Promise.resolve()
-      .then(registerSession)
+      .then(() => registerSession())
       .catch(() => undefined);
   };
 
@@ -2791,7 +2791,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       subscribeRelay(owner).then(
         () =>
           void Promise.resolve()
-            .then(registerSession)
+            .then(() => registerSession())
             .catch(() => undefined),
         () => retryRelay(owner, NATS_RETRY_INTERVAL_MS)
       );
@@ -2804,7 +2804,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     if (shuttingDown || relay?.subscription === undefined || relay.sessionID !== sessionID) return;
     relay.delivery.beginEpoch();
     void Promise.resolve()
-      .then(registerSession)
+      .then(() => registerSession())
       .catch(() => undefined);
   };
 
@@ -3111,12 +3111,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     const connected = await connect();
     // Another open of this subject - the pass's, or the pump's own resubscribe - may have landed
     // while this one dialed, or the host may have moved to another session: either way this
-    // open takes nothing, so one subscription answers each viewer. A connection that carries no
-    // live view takes nothing either, and leaves no session marked as holding one.
-    if (!connected.liveView) {
-      if (agentStreamControlSession === session) agentStreamControlSession = "";
-      return;
-    }
+    // open takes nothing, so one subscription answers each viewer.
     if (agentStreamControlSession !== session || agentStreamControl !== undefined) return;
     const subscription = connected.subscribe(agentStreamControlSubject(session));
     agentStreamControl = subscription;
@@ -3574,12 +3569,11 @@ export default function envoyExtension(hostApi: PiApi): void {
   // the answer on the one clock the heartbeat's stall test reads. It is recorded as on the wire
   // for its session, so a deregistration of that session waits it out.
   // `dropped` as `sendRegistration`'s.
-  const registerSessionCollecting = (dropped: string[] | undefined) =>
+  const registerSession = (dropped?: string[]) =>
     trackRegistration(
       sessionID,
       sendRegistration(registrationState.refreshRegistration, undefined, dropped)
     );
-  const registerSession = () => registerSessionCollecting(undefined);
 
   // The session title the `dispatch` command reads from the session's `title` file. A shell
   // command takes the environment Oh My Pi captured at the last session event, and a session is
@@ -5295,7 +5289,7 @@ export default function envoyExtension(hostApi: PiApi): void {
           const dropped: string[] = [];
           if (added.length > 0) {
             try {
-              warnings = (await registerSessionCollecting(dropped)).warnings;
+              warnings = (await registerSession(dropped)).warnings;
             } catch (error) {
               registrationError = messageFor(error);
             }
@@ -5352,7 +5346,7 @@ export default function envoyExtension(hostApi: PiApi): void {
               ? undefined
               : await client
                   .unsubscribe({ sessionID, topics: registryRemoved })
-                  .then(registerSession)
+                  .then(() => registerSession())
                   .then(() => undefined, messageFor);
           const unsubscribed = `Unsubscribed: ${removed.join(", ") || "(none)"}`;
           return toolSuccess(

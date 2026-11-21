@@ -14,7 +14,8 @@ body: |-
   (subprotocol `envoy-relay.v1`) with a fresh DPoP proof of the session's broker token and answers a
   `ListenerRelay`, a connection of the shape a plugin holds over NATS (`InboundConnection`), so
   consumer delivery runs on either. A `sub` the listener refuses (`subject_not_granted`, or
-  `subscription_limit` past four on one socket) ends that subscription alone and is logged once;
+  `subscription_limit` past the one subscription a socket holds) ends that subscription with an
+  error naming its subject and code, and is logged once;
   `flush` waits on a WebSocket ping's pong, which the listener sends after it handled every `sub`
   before it, and rejects when its socket closes or is replaced first; a `msg`'s headers keep each
   name's case and every value in order (`RelaySocketHeaders.values`), and a frame past 2 MiB, larger

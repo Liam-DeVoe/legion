@@ -7,9 +7,9 @@
 // servers take theirs from here: Claude Code's (`./envoy-channel-server`) and Codex's
 // (`./codex/codex-server`).
 import type { RequestCredential } from "@legion/envoy-client/bearer"
-import { type InboundUnavailable, inboundUnavailable } from "@legion/envoy-client/consumer-delivery"
+import { inboundUnavailable } from "@legion/envoy-client/consumer-delivery"
 import { LoggableError } from "@legion/envoy-client/errors"
-import { connectListenerRelay } from "@legion/envoy-client/listener-relay"
+import { connectListenerRelay, type RelayOutage } from "@legion/envoy-client/listener-relay"
 import {
   connectNats,
   NATS_DIAL_PLAN,
@@ -248,7 +248,7 @@ export interface ChannelInbound {
   /** Has a refused trade of the connection's own told `outage`, the session's, rather than the
    *  report it was opened with: the relay socket's (`ListenerRelay.reportOutagesTo`); absent for
    *  NATS, which trades no token of its own outside the keeper. */
-  readonly reportOutagesTo?: (outage: InboundUnavailable) => void
+  readonly reportOutagesTo?: (outage: RelayOutage) => void
   /** Whether the session's live view takes its control subject on the connection: never over the
    *  relay socket, which carries no agent stream (`ControlSubscriptionOptions.liveView`). */
   readonly liveView: boolean
@@ -321,7 +321,7 @@ export interface ReopenedConnection {
   /** `ChannelSessionOptions.followSession`, for this connection. */
   readonly followSession?: () => Promise<void>
   /** `ChannelSessionOptions.reportOutagesTo`, for this connection. */
-  readonly reportOutagesTo?: (outage: InboundUnavailable) => void
+  readonly reportOutagesTo?: (outage: RelayOutage) => void
 }
 
 /** Opens a new inbound connection in place of one closed for good

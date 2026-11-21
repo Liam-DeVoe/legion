@@ -745,8 +745,8 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
         await dialled.close().catch(() => {});
         refuse(
           live()
-            ? `the task acting for session ${bound} dialled NATS for a session that is no longer the open one; the connection it opened was closed`
-            : "the task that dialled NATS was abandoned at its deadline while the dial was in flight; the connection it opened was closed"
+            ? `the task acting for session ${bound} opened its ${dialled.name} for a session that is no longer the open one; the connection it opened was closed`
+            : `the task that opened the ${dialled.name} was abandoned at its deadline while it was being opened; the connection it opened was closed`
         );
       }
       return dialled;
@@ -763,8 +763,8 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
       if (!acting()) {
         refuse(
           live()
-            ? `the task acting for session ${bound} connected to NATS for a session that is no longer the open one`
-            : "the task that connected to NATS was abandoned at its deadline while the connection was made"
+            ? `the task acting for session ${bound} took its ${connected.name} for a session that is no longer the open one`
+            : `the task that took the ${connected.name} was abandoned at its deadline while the connection was made`
         );
       }
       return connected;

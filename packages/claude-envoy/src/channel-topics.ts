@@ -26,9 +26,10 @@ export type ChannelConnectionStatus = InboundStatus
 
 /**
  * The inbound connection a channel session holds, NATS or the listener's relay socket
- * (`@legion/envoy-client/inbound-connection`). A channel session opens two subscriptions on it:
- * the session's relay subject, where every Envoy message arrives, and the live view's control
- * subject, which a viewer takes the session on (`./agent-stream-runner`).
+ * (`@legion/envoy-client/inbound-connection`). Over NATS a channel session opens two
+ * subscriptions on it: the session's relay subject, where every Envoy message arrives, and the
+ * live view's control subject, which a viewer takes the session on (`./agent-stream-runner`). Over
+ * the relay socket it opens the relay subject alone: the socket carries no live view.
  */
 export type ChannelConnection = InboundConnection
 

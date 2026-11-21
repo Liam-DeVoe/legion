@@ -12513,6 +12513,50 @@ console.log(JSON.stringify(args));
     }
   });
 
+  // The tool names as refused only what its own registration was refused: a topic the session
+  // stopped following meanwhile, by an unsubscribe or a session switch, was subscribed, not
+  // refused by the listener.
+  test("a topic unsubscribed while the tool's registration is in flight is reported subscribed, not refused", async () => {
+    const kept = "notifications.dispatch.issue.PRIV-1";
+    const held: (() => void)[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === "/v1/interests/subscribe") {
+        const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
+        if (topics.includes(`${kept}.>`) && held.length === 0) {
+          // The tool's registration, answered only once the unsubscribe has landed.
+          const { promise, resolve } = Promise.withResolvers<void>();
+          held.push(resolve);
+          await promise;
+        }
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?unsubscribed-in-flight");
+    const fixture = createPi();
+    const context = sessionContext("ses_unsubscribed_in_flight");
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    const unsubscribeTool = fixture.tools.find((tool) => tool.name === "envoy_unsubscribe");
+    if (subscribeTool === undefined || unsubscribeTool === undefined) {
+      throw new Error("subscription tools were not registered");
+    }
+    try {
+      const subscribing = subscribeTool.execute("", { topics: [`${kept}.>`] });
+      await until(() => held.length === 1, "the tool's registration in flight", 10_000);
+      await unsubscribeTool.execute("", { topics: [kept, `${kept}.>`] });
+      for (const release of held.splice(0)) release();
+      const subscribed = await subscribing;
+
+      expect(subscribed.details).toMatchObject({ added: [kept, `${kept}.>`] });
+      expect(subscribed.details).not.toHaveProperty("refused");
+    } finally {
+      await fixture.handlers.get("session_shutdown")?.({}, context);
+    }
+  });
+
   test("unsubscribes role-shaped subscriptions locally without releasing the held role", async () => {
     const role = "librarian";
     const roleTopic = `notifications.role.${role}`;

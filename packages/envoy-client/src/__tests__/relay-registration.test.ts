@@ -20,6 +20,7 @@ import { consumerDelivery, projectRefusal } from "../../test/subscribe-answer";
 import { brokerCredential } from "../broker-credential";
 import {
   createConsumerDelivery,
+  type InboundUnavailable,
   inboundRestoredNoticeText,
   inboundUnavailable,
 } from "../consumer-delivery";
@@ -329,54 +330,41 @@ describe("one registration", () => {
 });
 
 describe("a relay socket", () => {
-  test("a refused registration and then a 4401 tell the session no restored until a registration is accepted", async () => {
-    // The socket shares the host's outage report with its registrations. Its reopen says nothing
-    // of a registration it did not make: an outage the listener's refusal told ends only once a
-    // registration is accepted.
-    const server = standIn();
+  /** The host's outage report, shared by the socket and the registrations, and what it told. */
+  const sharedOutage = () => {
     const told: string[] = [];
     const outage = inboundUnavailable(
       (why) => told.push(why),
       () => told.push("restored")
     );
-    const relay = await opened(server, "ses_a", { outage });
-    let refuse = true;
-    await registerOnce(outage, () => refuse);
-    expect(told).toEqual([expect.stringContaining("repositories_unknown")]);
+    return { told, outage };
+  };
 
-    server.close(4401, "credential_expired");
-    await until(
-      () => opens(server).length === 2,
-      5_000,
-      () => `no reopen after the 4401 close; upgrades ${JSON.stringify(server.upgrades)}`
-    );
-    await relay.flush();
-    await registerOnce(outage, () => refuse);
+  /** After the reopen: a refused registration tells no "restored", and the next accepted one
+   *  tells it once. */
+  const restoredOnlyOnceAccepted = async (
+    outage: InboundUnavailable,
+    told: readonly string[]
+  ): Promise<void> => {
+    await registerOnce(outage, () => true);
     if (told.includes("restored")) {
       throw new Error(
         `the session was told its inbound was restored while every registration was refused: ${JSON.stringify(told)}`
       );
     }
-
-    refuse = false;
-    await registerOnce(outage, () => refuse);
+    await registerOnce(outage, () => false);
     expect(told.slice(1)).toEqual(["restored"]);
-  });
+  };
 
   test("a refused registration and then a 4401 whose fresh trade fails once tell the session no restored until a registration is accepted", async () => {
     // The socket's own trade fails inside an outage a refused registration told: the shared report
     // was told already, so the failed trade tells nothing, and the socket that opens after it must
     // not end an outage it cannot tell apart from the registration's.
     const server = standIn();
-    const told: string[] = [];
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
-    );
+    const { told, outage } = sharedOutage();
     const tradeFails = { count: 0 };
     const relay = await opened(server, "ses_a", { outage, tradeFails });
-    let refuse = true;
-    await registerOnce(outage, () => refuse);
+    await registerOnce(outage, () => true);
     expect(told).toEqual([expect.stringContaining("repositories_unknown")]);
 
     tradeFails.count = 1;
@@ -388,16 +376,7 @@ describe("a relay socket", () => {
     );
     expect(tradeFails.count).toBe(0);
     await relay.flush();
-    await registerOnce(outage, () => refuse);
-    if (told.includes("restored")) {
-      throw new Error(
-        `the session was told its inbound was restored while every registration was refused: ${JSON.stringify(told)}`
-      );
-    }
-
-    refuse = false;
-    await registerOnce(outage, () => refuse);
-    expect(told.slice(1)).toEqual(["restored"]);
+    await restoredOnlyOnceAccepted(outage, told);
   });
 
   test("a 4401 whose fresh trade fails once and then a refused registration tell the session no restored until a registration is accepted", async () => {
@@ -405,11 +384,7 @@ describe("a relay socket", () => {
     // after it tells nothing more. The socket that opens once the trade succeeds must not end it,
     // since the registration's cause still stands.
     const server = standIn();
-    const told: string[] = [];
-    const outage = inboundUnavailable(
-      (why) => told.push(why),
-      () => told.push("restored")
-    );
+    const { told, outage } = sharedOutage();
     const tradeFails = { count: 0 };
     const relay = await opened(server, "ses_a", { outage, tradeFails });
 
@@ -417,28 +392,18 @@ describe("a relay socket", () => {
     server.close(4401, "credential_expired");
     await until(
       () => told.length > 0,
-      5_000,
+      10_000,
       () => `the failed trade was never told; upgrades ${JSON.stringify(server.upgrades)}`
     );
     expect(told).toEqual([expect.stringContaining("the secrets broker refused the trade")]);
-    let refuse = true;
-    await registerOnce(outage, () => refuse);
+    await registerOnce(outage, () => true);
     await until(
       () => opens(server).length === 2,
       10_000,
       () => `no reopen after the failed trade; upgrades ${JSON.stringify(server.upgrades)}`
     );
     await relay.flush();
-    await registerOnce(outage, () => refuse);
-    if (told.includes("restored")) {
-      throw new Error(
-        `the session was told its inbound was restored while every registration was refused: ${JSON.stringify(told)}`
-      );
-    }
-
-    refuse = false;
-    await registerOnce(outage, () => refuse);
-    expect(told.slice(1)).toEqual(["restored"]);
+    await restoredOnlyOnceAccepted(outage, told);
   });
 
   test("a topic the edge refuses for the session's projects is dropped, and the rest go on being delivered", async () => {

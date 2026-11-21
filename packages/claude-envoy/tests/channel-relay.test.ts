@@ -148,10 +148,11 @@ function notices(notifier: FakeNotifier, heading: string): string[] {
     .map((written) => written.content)
 }
 
-// #4658 answers the session's own relay subject `subject_not_granted` when its NATS server refuses
-// the subscribe, as a misrendered or missing grant makes it. The subscription ends with that
-// error, as a nats.js one the server refused does, so the session is told why it receives nothing
-// and takes the subject again at the heartbeat, rather than holding a dead subscription.
+// The wire lets the listener answer any `sub` `subject_not_granted`. #4658 answers so only a
+// subject other than the session's own, and closes the socket 1013 when NATS refuses a subscribe;
+// a listener that refused the session's own subject would leave a dead subscription unless it
+// ends with that error, as a nats.js one the server refused does. So the session is told why it
+// receives nothing and takes the subject again at the heartbeat.
 test("a relay subject the listener refuses is told as an outage naming why, and the heartbeat takes it again", async () => {
   const server = startRelaySocketStandIn()
   started.push(() => server.stop())

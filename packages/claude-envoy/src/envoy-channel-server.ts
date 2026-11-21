@@ -16,7 +16,6 @@ import {
   type ConsumerGapNotice,
   createConsumerDelivery,
   gapNoticeText,
-  type InboundUnavailable,
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
@@ -46,6 +45,7 @@ import {
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings"
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
+import type { RelayOutage } from "@legion/envoy-client/listener-relay"
 import { machineID } from "@legion/envoy-client/machine"
 import { refusedTopicsNoticeText, registerWithRelay } from "@legion/envoy-client/relay-registration"
 import {
@@ -375,7 +375,7 @@ export interface ChannelSessionOptions {
   readonly followSession?: () => Promise<void>
   /** Has a refused trade of the connection's own told the session's outage report: the relay
    *  socket's (`ListenerRelay.reportOutagesTo`); absent for NATS. */
-  readonly reportOutagesTo?: (outage: InboundUnavailable) => void
+  readonly reportOutagesTo?: (outage: RelayOutage) => void
   /**
    * Told each `/clear` this session adopts from the handoff file, as it moves from `previous` to
    * `next` (`adoptHandoff`), before the new id registers: what else the server keeps under the
