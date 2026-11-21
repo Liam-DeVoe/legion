@@ -16,13 +16,14 @@ body: |-
   approved by or when it was made, is held to that account as a `person` token is; an operator
   entry's, which records neither, is held to none, as before. A broker token of project scope
   `person` naming a restricted member holds no scope at Dispatch, as their `named` token holds
-  none. Taking a restricted member off a project's access list that names them, when no other
-  project's list names them any more, now records that Dispatch owes the broker the revocation of
-  every machine login they approved before the removal, and Dispatch pays it after the removal
-  commits, again until the broker confirms (table `machine_login_revocations`, migration
-  20261120150130); a login they approve after an owner puts them back survives it. The removal
-  never waits on the broker, and a removal from a list that does not name the person, or one that
-  leaves them on another project's list, owes nothing.
+  none. Taking a restricted member off a project's access list that names them now records that
+  Dispatch owes the broker the revocation of every machine login they approved, whatever other
+  list still names them, and Dispatch pays it after the removal commits, again until the broker
+  confirms (table `machine_login_revocations`, migration 20261120150130). Until it is paid, their
+  approve of a machine login is `409 MACHINE_LOGIN_REVOCATION_OWED`, and an approval Dispatch is
+  relaying makes the removal wait for it, so every login the payment finds was approved before the
+  removal. The removal never waits on the broker, and a removal from a list that does not name the
+  person owes nothing.
   `/metrics` carries `envoy_dispatch_machine_login_revocations_owed` and
   `envoy_dispatch_machine_login_revocation_oldest_owed_seconds`, so a revocation the broker never
   confirms shows; the runbook's recovery of a broker database restored alone owes again each such
