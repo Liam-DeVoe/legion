@@ -343,3 +343,27 @@ func TestReadyNeedsNoDeadline(t *testing.T) {
 	service := startService(t, url, keys, Deps{}, Decide)
 	require.NoError(t, service.Ready(context.Background()))
 }
+
+// The service's connect error names the hub's URLs by their count, never their text: the broker
+// prints it as it is, and its loader refuses a URL with user info, a query or a fragment, but
+// start takes its settings from any caller. Here a URL that does not parse, so the bus refuses it
+// at once; the URL's own text may still come back in the bus's wrapped error, which is the bus's
+// to name (internal/bus).
+func TestTheConnectErrorNamesTheHubsByCount(t *testing.T) {
+	keys := testnats.NewCalloutKeys(t)
+	dir := t.TempDir()
+	write := func(name, seed string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(seed+"\n"), 0o600))
+		return path
+	}
+	_, err := start(t.Context(), Settings{
+		URLs:           []string{"nats://hub-a:4222", "nats://hub-b:4222/%zz"},
+		SeedFile:       write("service.seed", keys.ServiceSeed),
+		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
+		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
+		Services:       exampleServices,
+	}, Deps{}, Decide)
+	require.Error(t, err)
+	require.True(t, strings.HasPrefix(err.Error(), "natscallout: connect to the hub's 2 BROKER_NATS_URLS entries: "), "the error does not name the hubs by count: %v", err)
+}

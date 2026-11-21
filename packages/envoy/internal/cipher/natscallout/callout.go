@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -282,7 +281,7 @@ func start(_ context.Context, settings Settings, deps Deps, decide decideFunc) (
 	conn, err := bus.Dial(connectionName, settings.URLs, lookup,
 		bus.WithConnectInBackground(), bus.WithSilentCutDetection(), bus.WithImmediateReconnect())
 	if err != nil {
-		return nil, fmt.Errorf("natscallout: connect to %s: %w", strings.Join(settings.URLs, ","), err)
+		return nil, fmt.Errorf("natscallout: connect to the hub's %d BROKER_NATS_URLS entries: %w", len(settings.URLs), err)
 	}
 	s := &Service{
 		conn: conn,
