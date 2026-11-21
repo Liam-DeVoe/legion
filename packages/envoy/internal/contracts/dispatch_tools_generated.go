@@ -348,7 +348,7 @@ var DispatchTools = []DispatchTool{
 			{Name: "name", Kind: ToolFieldString, Required: true, Description: "Artifact filename shown in Dispatch."},
 			{Name: "path", Kind: ToolFieldString, Description: "Local path to the file to upload."},
 			{Name: "content", Kind: ToolFieldString, Description: "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. The refusal prints the text Dispatch stores, which is the text to send."},
-			{Name: "force", Kind: ToolFieldBoolean, Description: "Write the next version of a document the owner already holds under this name; without it the upload of a name that exists is refused."},
+			{Name: "force", Kind: ToolFieldBoolean, Description: "Write the next version of a document the owner already holds under this name; without it the upload of a name that exists is refused. The command checks the text first, so a text it refuses for the text alone gets that refusal, not this one."},
 			{Name: "precondition", Kind: ToolFieldObject, Description: "The token of the version this upload replaces, which an upload over a document the owner already holds must name; a first upload under a name replaces nothing and names none.", Fields: []ToolField{
 				{Name: "document", Kind: ToolFieldString, Required: true, Description: "Token for the exact canonical document returned by dispatch doc-read."},
 			}},

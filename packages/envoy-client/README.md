@@ -1163,16 +1163,23 @@ nothing of the text, whatever its status. A `--path` file Dispatch stores as a M
 (a path ending in .md or .markdown, which the upload carries as `text/markdown`) is held to the
 same size: it is read once, as the call reads it (`documentFileBytes`), which refuses a file past
 1 MiB by its size before it reads it, or, where AskGate's check read it, by the bytes it holds,
-and measures the bytes it read again, so its callers take bytes already checked. The dry run then
-sends the file's bytes to their own round trip (`POST /api/v1/markdown/file-round-trip`, `file`
-in base64, with `new_document` as for inline text), which Dispatch checks as it checks an upload's
-file part, and takes only its refusal (`storedFileCheck`), never a spelling, since the call stores
-a Markdown file as the store spells it and asks the round trip nothing about it; a file Dispatch
-stores as its bytes is asked nothing. What only the call checks, since it needs more than the
+and measures the bytes it read again, so its callers take bytes already checked. The call and its
+dry run then send those bytes to their own round trip (`POST /api/v1/markdown/file-round-trip`,
+`file` in base64, with `new_document` as for inline text), which Dispatch checks as it checks an
+upload's file part, and take only its refusal (`storedFileCheck`), never a spelling, since the call
+stores a Markdown file as the store spells it. The call throws that refusal before it uploads, so
+the two print the same refusal and exit alike; on any other answer, a spelling or none (no answer
+in time, a failure, or a Dispatch without the route, which answers 404 or 405), the call uploads
+the file, and its upload makes its own refusal. A file Dispatch stores as its bytes is asked
+nothing, by the call as by the dry run. What only the call checks, since it needs more than the
 text, stays the call's: whether the owner holds the name, the token of a replacement, a
 replacement's own rules, a block pointer's target, whether a check proved by CI holds a recorded
-result, and the issue's state. With no Dispatch configured, the dry run of inline text or of a
-Markdown file passes with a warning that the call is refused for the same reason. The step waits
+result, and the issue's state. The call checks the text, inline or a file's, before it reads
+whether the owner holds the name, so a text the check refuses gets the same refusal from the call
+and its dry run under a held name too; a text the check passes, the call without `--force` still
+refuses under a held name, and the dry run, which cannot know the name, passes it. With no
+Dispatch configured, the dry run of inline text or of a Markdown file passes with a warning that
+the call is refused for the same reason. The step waits
 at most 5 s. When it gets no answer (no Dispatch configured, any other failure, no answer in time,
 or a Dispatch without the route), the dry run passes, and one `dispatch: warning:` line on stderr
 says why and what the call does then, as the check's kind says it: a Dispatch without the route

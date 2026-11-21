@@ -6,6 +6,7 @@ import {
   DISPATCH_BLOCK_UNITS,
   IDEMPOTENCY_KEY_HEADER,
   MARKDOWN_DOCUMENT_MAX_BYTES,
+  NO_ROUTE_RETRY_DELAYS_MS,
   PROJECT_KEY_RULE,
   TEXT_REFUSAL_HEADER,
   TEXT_REFUSAL_NEW_DOCUMENT,
@@ -1391,13 +1392,13 @@ describe("the dispatch CLI", () => {
   });
 
   // The same items in a markdown file sent with --path: Dispatch stores it as a document and
-  // refuses its upload with that refusal, which this fake's upload answers as the server's does
-  // (markdown_round_trip_test.go measures the upload's refusal and the round trip's equal). The
-  // dry run asks the round trip about the file's bytes and refuses it with the stdout and exit of
-  // the call's refused upload, uploading nothing.
-  test("an upload's dry run refuses a markdown --path file past the element limit with Dispatch's refusal, as the call's upload is refused", async () => {
+  // refuses its upload with that refusal, and its file round trip alike, in the upload's own words
+  // (markdown_round_trip_test.go measures the upload's refusal and the round trip's equal). The dry
+  // run and the call each ask the round trip about the file's bytes and refuse it with that
+  // refusal, the same stdout and exit 1, before anything is uploaded: this fake's upload would
+  // take the file, and neither reaches it.
+  test("an upload's dry run refuses a markdown --path file past the element limit with Dispatch's refusal, as the call does, and neither uploads", async () => {
     roundTrip = () => textRefusal(TOO_MANY_ELEMENTS, 413);
-    uploadRefusal = () => Response.json(TOO_MANY_ELEMENTS, { status: 413 });
     writeFileSync(join(stateDir, "items.md"), MANY_ITEMS);
     const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "items.md"];
 
@@ -1413,14 +1414,14 @@ describe("the dispatch CLI", () => {
     requests.length = 0;
     const call = await run(argv, omp);
     expect(call).toEqual(dry);
-    expect(requests.filter((request) => request.method === "POST")).toEqual([
-      { method: "POST", path: "/api/v1/issues/DSP-1/artifacts", body: MANY_ITEMS },
+    expect(requests).toEqual([
+      { method: "POST", path: FILE_ROUND_TRIP, body: fileBody(MANY_ITEMS) },
     ]);
   });
 
-  // A markdown file is stored as the store spells it, with no refusal for its spelling: its dry
-  // run asks the round trip only for a refusal, so a file the store would respell passes, and the
-  // call, which asks the round trip nothing about a file, uploads its bytes.
+  // A markdown file is stored as the store spells it, with no refusal for its spelling: the dry
+  // run and the call ask the round trip only for a refusal, so a file the store would respell
+  // passes the dry run, and the call uploads its bytes.
   test("an upload's dry run of a markdown --path file Dispatch would respell passes, as the call stores it", async () => {
     roundTrip = (markdown) => Response.json({ markdown: markdown.replace("* one", "- one") });
     writeFileSync(join(stateDir, "notes.md"), NOTES);
@@ -1437,15 +1438,18 @@ describe("the dispatch CLI", () => {
     const call = await run(argv, omp);
     expect(call.code, call.stdout).toBe(0);
     expect(requests.filter((request) => request.method === "POST")).toEqual([
+      { method: "POST", path: FILE_ROUND_TRIP, body: fileBody(NOTES) },
       { method: "POST", path: "/api/v1/issues/DSP-1/artifacts", body: NOTES },
     ]);
   });
 
   // INFRA-4224 R3 (spec v24): Dispatch's round trip refuses, in its upload's own status, code and
   // words, every text that upload refuses for the text alone (markdown_round_trip_test.go measures
-  // the two equal, and these are the words it measured), and this fake answers both alike. A
-  // markdown --path file holding one is refused by the dry run, from the round trip it sends the
-  // file's bytes to, and by the call, from its upload, with the same stdout and exit 1.
+  // the two equal, and these are the words it measured). A markdown --path file holding one is
+  // refused by the dry run and by the call alike, each from the file round trip it sends the
+  // file's bytes to, with the same stdout and exit 1. The call refuses it before it reads whether
+  // the issue holds the name and before its upload, which this fake would take: it sends nothing
+  // else.
   for (const refusal of [
     {
       holding: "a NUL character",
@@ -1475,10 +1479,9 @@ describe("the dispatch CLI", () => {
       scope: TEXT_REFUSAL_UPLOAD,
     },
   ]) {
-    test(`a markdown --path file holding ${refusal.holding} is refused by the dry run as the call's upload is`, async () => {
+    test(`a markdown --path file holding ${refusal.holding} is refused by the call as by its dry run, and neither uploads`, async () => {
       const answer = { code: refusal.code, error: refusal.error };
       roundTrip = () => textRefusal(answer, 400, refusal.scope);
-      uploadRefusal = () => Response.json(answer, { status: 400 });
       writeFileSync(join(stateDir, "refused.md"), refusal.bytes);
       const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "refused.md"];
 
@@ -1490,11 +1493,139 @@ describe("the dispatch CLI", () => {
       requests.length = 0;
       const call = await run(argv, omp);
       expect(call).toEqual(dry);
-      expect(
-        requests.filter((request) => request.method === "POST").map((request) => request.path)
-      ).toEqual(["/api/v1/issues/DSP-1/artifacts"]);
+      expect(requests).toEqual([
+        { method: "POST", path: FILE_ROUND_TRIP, body: fileBody(refusal.bytes) },
+      ]);
     });
   }
+
+  // INFRA-4224, the tester's round 16: the call of a markdown --path file asked Dispatch nothing
+  // about the file and uploaded it, so a file its dry run refused from the file round trip was
+  // refused by the upload instead, in the upload's own words. The call now asks the same round
+  // trip about the bytes it would send, with and without --force, and throws its refusal before
+  // it uploads. This fake's upload refuses the file in other words, which neither prints.
+  test("the call of a markdown --path file whose file round trip Dispatch refuses prints that refusal as its dry run does, and uploads nothing", async () => {
+    roundTrip = () => textRefusal(BLOCK_HTML_REFUSED, 400, TEXT_REFUSAL_UPLOAD);
+    uploadRefusal = () =>
+      Response.json(
+        { code: "INVALID_MARKDOWN", error: "the upload's own words, which the call never reaches" },
+        { status: 400 }
+      );
+    writeFileSync(join(stateDir, "refused.md"), BLOCK_HTML);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "refused.md"];
+    for (const [call, asked] of [
+      [argv, fileBody(BLOCK_HTML)],
+      [[...argv, "--force"], { file: Buffer.from(BLOCK_HTML).toString("base64") }],
+    ] as const) {
+      requests.length = 0;
+      const dry = await run([...call, "--dry-run"], omp);
+      const called = await run(call, omp);
+      expect(called, call.join(" ")).toEqual({
+        code: 1,
+        stdout: `${BLOCK_HTML_REFUSED.code}: ${BLOCK_HTML_REFUSED.error}\n`,
+        stderr: "",
+      });
+      expect(dry, call.join(" ")).toEqual(called);
+      // The dry run's round trip, then the call's, which is all the call sends: no read of the
+      // held name, and no upload.
+      expect(requests, call.join(" ")).toEqual([
+        { method: "POST", path: FILE_ROUND_TRIP, body: asked },
+        { method: "POST", path: FILE_ROUND_TRIP, body: asked },
+      ]);
+    }
+  });
+
+  // INFRA-4224: without --force the call reads whether the issue holds the name, and it reads it
+  // only after its check of the text, the check its dry run makes. So a text that check refuses,
+  // inline or in a markdown --path file, under a name the issue holds, gets the text's refusal
+  // from the call, which reads no held name for it, as from its dry run, which reads none at all:
+  // the same stdout and exit. The call used to read the name first and refuse it for the name,
+  // exit 2, where the dry run refused the text. A text the check passes is still refused for the
+  // name by the call, read after the check, and passed by the dry run, which cannot know the name.
+  test("a text refused for the text alone under a name the issue holds gets the text's refusal from the call, as from its dry run, not the name's", async () => {
+    issueArtifacts = [
+      {
+        id: "artifact-notes",
+        issue_key: "DSP-1",
+        name: "notes.md",
+        slug: "notes-md",
+        kind: "doc",
+        created_by: { kind: "user", id: "alice" },
+        versions: [{ number: 1, authors: [{ kind: "user", id: "alice" }] }],
+      },
+    ];
+    writeFileSync(join(stateDir, "refused.md"), BLOCK_HTML);
+    writeFileSync(join(stateDir, "notes.md"), NOTES);
+    const owner = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
+    const refusedText = () => textRefusal(BLOCK_HTML_REFUSED, 400, TEXT_REFUSAL_UPLOAD);
+    const textRefused = `${BLOCK_HTML_REFUSED.code}: ${BLOCK_HTML_REFUSED.error}\n`;
+    const cases: {
+      argv: string[];
+      stdin: string;
+      answer: typeof roundTrip;
+      asked: { path: string; body: unknown };
+      code: number;
+      refusal: string;
+    }[] = [
+      {
+        argv: [...owner, "--content-file", "-"],
+        stdin: BLOCK_HTML,
+        answer: refusedText,
+        asked: { path: ROUND_TRIP, body: markdownBody(BLOCK_HTML) },
+        code: 1,
+        refusal: textRefused,
+      },
+      {
+        argv: [...owner, "--path", "refused.md"],
+        stdin: "",
+        answer: refusedText,
+        asked: { path: FILE_ROUND_TRIP, body: fileBody(BLOCK_HTML) },
+        code: 1,
+        refusal: textRefused,
+      },
+      // Refused for its spelling, which exits 2 as the name's refusal does, in other words.
+      {
+        argv: [...owner, "--content-file", "-"],
+        stdin: NOTES,
+        answer: (markdown) => Response.json({ markdown: markdown.replace("* one", "- one") }),
+        asked: { path: ROUND_TRIP, body: markdownBody(NOTES) },
+        code: 2,
+        refusal:
+          'dispatch artifact was not called: 1 problem\n- Dispatch stores this text under another spelling: line 3 reads "* one" and is stored as "- one".',
+      },
+    ];
+    for (const { argv, stdin, answer, asked, code, refusal } of cases) {
+      roundTrip = answer;
+      requests.length = 0;
+      const call = await run(argv, omp, stdin);
+      expect({ code: call.code, stderr: call.stderr }, argv.join(" ")).toEqual({
+        code,
+        stderr: "",
+      });
+      expect(call.stdout, argv.join(" ")).toStartWith(refusal);
+      expect(call.stdout, argv.join(" ")).not.toContain("already holds");
+      expect(requests, argv.join(" ")).toEqual([{ method: "POST", ...asked }]);
+      expect(await run([...argv, "--dry-run"], omp, stdin), argv.join(" ")).toEqual(call);
+    }
+
+    roundTrip = keptText;
+    for (const [argv, stdin, asked] of [
+      [[...owner, "--content-file", "-"], NOTES, ROUND_TRIP],
+      [[...owner, "--path", "notes.md"], "", FILE_ROUND_TRIP],
+    ] as const) {
+      requests.length = 0;
+      const call = await run(argv, omp, stdin);
+      expect(call.code, argv.join(" ")).toBe(2);
+      expect(call.stdout, argv.join(" ")).toStartWith(
+        "dispatch artifact was not called: 1 problem\n- issue DSP-1 already holds notes.md"
+      );
+      expect(
+        requests.map((request) => `${request.method} ${request.path}`),
+        argv.join(" ")
+      ).toEqual([`POST ${asked}`, "GET /api/v1/issues/DSP-1/artifacts"]);
+      expect((await run([...argv, "--dry-run"], omp, stdin)).code, argv.join(" ")).toBe(0);
+    }
+  });
 
   // The same ask block and markdown sent inline: the call asks the round trip before it uploads,
   // and is refused there as its dry run is, with the same stdout and exit 1; neither uploads.
@@ -1589,9 +1720,9 @@ describe("the dispatch CLI", () => {
   });
 
   // A refusal every upload makes before its write (TEXT_REFUSAL_UPLOAD), a NUL character here,
-  // holds under --force too: the dry run and the call each refuse it, with the same stdout and
-  // exit 1, inline from the round trip and for a --path file from the round trip and the upload,
-  // naming the field each upload names (`content`, `file`).
+  // holds under --force too: the dry run and the call each refuse it from the round trip, inline
+  // and for a --path file alike, with the same stdout and exit 1, naming the field each upload
+  // names (`content`, `file`).
   test("under --force an upload's refusal is still the call's: the dry run and the call refuse a NUL alike", async () => {
     const text = "# Notes\n\nA\u0000B\n";
     writeFileSync(join(stateDir, "nul.md"), text);
@@ -1703,7 +1834,10 @@ describe("the dispatch CLI", () => {
   // A Dispatch that has the inline round trip and not the file one - main's server, and the old
   // pods of a rolling deploy - answers the file's check 404, as its own JSON. The dry run of a
   // markdown --path file then passes, saying this Dispatch cannot check the file, and the call,
-  // which asks the round trip nothing about a file, uploads it.
+  // which asks the same route, uploads the file once that route is absent, as it did before it
+  // asked. The call's client asks a no-route answer again after each of the rolling release's
+  // waits (NO_ROUTE_RETRY_DELAYS_MS, 1, 2 and 4 s, jittered), as it does for inline text, so this
+  // row runs about 7 s; the 30 s limit is a hang guard.
   test("a markdown --path file's dry run against a Dispatch with no file round trip passes, saying it cannot check the file, and the call uploads", async () => {
     roundTrip = (markdown, body) =>
       "file" in body
@@ -1714,6 +1848,7 @@ describe("the dispatch CLI", () => {
         : keptText(markdown);
     writeFileSync(join(stateDir, "notes.md"), NOTES);
     const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "notes.md"];
+    const asked = { method: "POST", path: FILE_ROUND_TRIP, body: fileBody(NOTES) };
 
     const dry = await run([...argv, "--dry-run"], omp);
     expect(dry).toEqual({
@@ -1721,13 +1856,39 @@ describe("the dispatch CLI", () => {
       stdout: `${JSON.stringify({ issue: "DSP-1", name: "notes.md", path: "notes.md" }, null, 2)}\n`,
       stderr: `dispatch: warning: this Dispatch cannot check the file: POST ${FILE_ROUND_TRIP} failed with NOT_FOUND: no route for POST ${FILE_ROUND_TRIP}. The call uploads the file unchecked.\n`,
     });
-    expect(requests).toEqual([{ method: "POST", path: FILE_ROUND_TRIP, body: fileBody(NOTES) }]);
+    expect(requests).toEqual([asked]);
     requests.length = 0;
     const call = await run(argv, omp);
     expect(call.code, call.stdout).toBe(0);
     expect(requests.filter((request) => request.method === "POST")).toEqual([
+      ...Array.from({ length: NO_ROUTE_RETRY_DELAYS_MS.length + 1 }, () => asked),
       { method: "POST", path: "/api/v1/issues/DSP-1/artifacts", body: NOTES },
     ]);
+  }, 30_000);
+
+  // Every other answer of the file round trip that is not a refusal Dispatch marks says nothing
+  // of the file, and the call uploads it, leaving its refusal to the upload, as it did before it
+  // asked: a Dispatch without the route answering 405, and the route's own 413 for a body past
+  // its bound, which carries no mark.
+  test("the call of a markdown --path file uploads it when the file round trip gives no answer about it", async () => {
+    writeFileSync(join(stateDir, "notes.md"), NOTES);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "notes.md"];
+    for (const [status, answer] of [
+      [405, { code: "METHOD_NOT_ALLOWED", error: "method not allowed" }],
+      [413, { code: "CAP_EXCEEDED", error: "request body exceeds 6292480 bytes" }],
+    ] as const) {
+      roundTrip = () => Response.json(answer, { status });
+      requests.length = 0;
+      const call = await run(argv, omp);
+      expect(call.code, `${status}: ${call.stdout}`).toBe(0);
+      expect(
+        requests.filter((request) => request.method === "POST"),
+        String(status)
+      ).toEqual([
+        { method: "POST", path: FILE_ROUND_TRIP, body: fileBody(NOTES) },
+        { method: "POST", path: "/api/v1/issues/DSP-1/artifacts", body: NOTES },
+      ]);
+    }
   });
 
   // A dry run whose round trip cannot run passes and says why on stderr: an AskGate that runs the

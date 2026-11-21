@@ -348,15 +348,18 @@ export async function storedTextCheck(
 /**
  * The stored-text check of a `--path` file Dispatch stores as a Markdown document, `bytes` its
  * content as `documentFileBytes` answers it, already held to the bytes one document holds, and
- * `force` the upload's `--force`, which `dispatch artifact --dry-run` makes. The file round trip is
- * asked about the file's bytes as they are (`fileRoundTrip`), for a new document's refusals too
- * where the call makes a new document, without `force`, and only its refusal is taken
- * (`askRoundTrip`): Dispatch refuses there, in the upload's own words, the bytes the upload of
- * that file refuses for the text alone - a NUL, a byte that is not UTF-8, the parse's refusal, an
- * ask that breaks its content rule, a text or a rendering too large - and the call's upload of the
- * file is refused so. Whatever spelling it answers is `kept`: the call stores a Markdown file as
- * the store spells it, with no refusal for its spelling. The call itself asks the round trip
- * nothing about a file, so a round trip that gave no answer is `unchecked`.
+ * `force` the upload's `--force`. `dispatch artifact` and its dry run both make it, with the bytes
+ * the call sends, so the two never answer differently. The file round trip is asked about the
+ * file's bytes as they are (`fileRoundTrip`), for a new document's refusals too where the call
+ * makes a new document, without `force`, and only its refusal is taken (`askRoundTrip`): Dispatch
+ * refuses there, in the upload's own words, the bytes the upload of that file refuses for the text
+ * alone - a NUL, a byte that is not UTF-8, the parse's refusal, an ask that breaks its content
+ * rule, a text or a rendering too large - and the call throws that refusal before it uploads.
+ * Whatever spelling it answers is `kept`: the call stores a Markdown file as the store spells it,
+ * with no refusal for its spelling. The upload refuses the file for everything the round trip
+ * would refuse its bytes for, so a round trip that gave no answer - none in time, a failure, or a
+ * Dispatch without the route, which answers 404 or 405 - is `unchecked`, and the call uploads the
+ * file, leaving its refusal to the upload, as it did before the route existed.
  */
 export async function storedFileCheck(
   client: () => DispatchClient,

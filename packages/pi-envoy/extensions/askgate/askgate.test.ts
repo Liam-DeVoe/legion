@@ -5968,6 +5968,12 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       if (route.endsWith("/artifacts") && request.method === "GET") {
         return Response.json([]);
       }
+      // The file round trip a markdown upload asks before it uploads, for a refusal of the file's
+      // bytes: the bytes as given let it through.
+      if (route === "/api/v1/markdown/file-round-trip") {
+        const { file } = (await request.json()) as { file: string };
+        return Response.json({ markdown: Buffer.from(file, "base64").toString("utf8") });
+      }
       if (route.endsWith("/artifacts")) {
         const file = (await request.formData()).get("file") as Blob;
         sent.push({ path: route, body: await file.text() });
@@ -6027,8 +6033,8 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
         const text = await request.text();
         const body: unknown = text === "" ? undefined : JSON.parse(text);
         requests.push({ method: request.method, path: route, ...(text === "" ? {} : { body }) });
-        // The upload reads the issue's documents, to refuse a name the issue holds, and the
-        // store's round trip of its text: an empty list and the text as given let it through.
+        // The upload asks the store's round trip of its text, then reads the issue's documents, to
+        // refuse a name the issue holds: the text as given and an empty list let it through.
         if (request.method === "GET" && route === "/api/v1/issues/DSP-1/artifacts") {
           return Response.json([]);
         }
@@ -6072,12 +6078,12 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       expect({ code: await call.exited, stderr }).toEqual({ code: 0, stderr: "" });
       expect(stdout).toStartWith("Uploaded brief.md as version 1");
       expect(requests).toEqual([
-        { method: "GET", path: "/api/v1/issues/DSP-1/artifacts" },
         {
           method: "POST",
           path: "/api/v1/markdown/round-trip",
           body: { markdown: BRIEF, new_document: true },
         },
+        { method: "GET", path: "/api/v1/issues/DSP-1/artifacts" },
         {
           method: "POST",
           path: "/api/v1/issues/DSP-1/artifacts",
