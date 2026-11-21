@@ -6062,6 +6062,20 @@
       }
     },
     {
+      "id": "workflow-answer-words-dropped-head",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workflow",
+      "test": "TestAMergeStateReadForAnotherHeadLogsThatHeadOnlyAsACommit",
+      "production": "workflow Engine.mergeability: the head a dropped merge-state read names is logged only in a commit's shape (githubrest.ShownSHA)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/workflow.Engine).mergeability",
+      "capture": "workflow.answer-words/dropped-head",
+      "mutation": {
+        "file": "packages/daemon/internal/workflow/review.go",
+        "preimage": "\"answered\", githubrest.ShownSHA(fact.HeadSHA), \"head\"",
+        "replacement": "\"answered\", fact.HeadSHA, \"head\""
+      }
+    },
+    {
       "id": "daemon-answer-words-base-answered",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
@@ -8752,6 +8766,11 @@
       "site": "daemon dispatch Approval: time.Parse's error, quoting Dispatch's approval time, printed with %w",
       "source": "the decoder-error class search of round 6",
       "guard": "dispatch-approval-at-not-printed"
+    },
+    {
+      "site": "workflow mergeability: the head a dropped merge-state read answered for, logged as GitHub wrote it",
+      "source": "the class search of round 5's deep review",
+      "guard": "workflow-answer-words-dropped-head"
     }
   ]
 }
