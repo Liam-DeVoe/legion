@@ -301,9 +301,10 @@ func (c *Branches) ReadDefaultBranchOf(
 // names a branch is recognised as naming no default branch and spends the compare read it
 // always did.
 //
-// It is readCommitOnBranch, which reads all of the above and writes no row, then the write of
-// the answer a compare read earned to branch_commits. ReadCommitOnBranch is the same read for a
-// read-only caller, which writes no row.
+// It is readCommitOnBranch, which reads all of the above and writes no branch_commits row, then
+// the write of the answer a compare read earned to branch_commits. ReadCommitOnBranch is the same
+// read for a read-only caller, which writes no branch_commits row; a rate limit GitHub answers a
+// compare read with is recorded for it as for any caller (githubapp.Client.request).
 func (c *Branches) CommitOnBranch(
 	ctx context.Context,
 	pool *store.Pool,

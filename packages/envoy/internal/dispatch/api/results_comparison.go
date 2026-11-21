@@ -458,8 +458,8 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 // document that heads none of the pull requests it already holds, and, where any read-through
 // stored or learned a head, reads the bases of every check again: such a head is now a row, and so
 // a basis, and a merge is now the branch an `after_merge` check compares with. A read-only
-// caller's read stores no row: it reads the bases again as they would stand had it stored what
-// GitHub named (answerCommitPulls, answers), so the same heads are its bases too. So every check of
+// caller's read stores no pull request head: it reads the bases again as they would stand had it
+// stored what GitHub named (answerCommitPulls, answers), so the same heads are its bases too. So every check of
 // one answer is answered on the heads as they stand after this read's read-throughs, both
 // callers alike (plan D32).
 //
