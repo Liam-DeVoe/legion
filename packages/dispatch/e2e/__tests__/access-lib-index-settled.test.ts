@@ -88,7 +88,8 @@ beforeAll(() => {
           const stand = stands[name];
           const url = new URL(request.url);
           if (url.pathname === "/api/v1/search/coverage") {
-            if (!Array.isArray(stand.coverage)) {
+            // `in` narrows the read-only list away, which Array.isArray does not.
+            if ("status" in stand.coverage) {
               return Response.json({ code: "SEARCH_COVERAGE_TIMEOUT" }, stand.coverage);
             }
             stand.reads++;
