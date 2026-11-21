@@ -41,7 +41,7 @@ type freshSessions struct {
 	names *consumernames.Names
 	store *consumernames.KVStore
 	// observe is the counters' callback a caller set (ObserveNames), or nil.
-	observe atomic.Pointer[func(op, outcome string)]
+	observe atomic.Pointer[func(consumernames.Operation, consumernames.Outcome)]
 	// storeRefusal is the refusal the bucket, its sentinel or the cutover marker last gave a call
 	// or a check (a missing bucket or sentinel, a marker that is not done), nil once one admitted a
 	// call; SelectionHealth reads the sentinel again while it is set, so a bucket created after
@@ -100,7 +100,7 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 		Owner:       fmt.Sprintf("%s/%s/%d", s.client.name, host, os.Getpid()),
 		Observe: func(op consumernames.Operation, outcome consumernames.Outcome) {
 			if observe := fresh.observe.Load(); observe != nil {
-				(*observe)(string(op), string(outcome))
+				(*observe)(op, outcome)
 			}
 		},
 	})
@@ -180,10 +180,9 @@ func (s *SessionConsumers) WatchConversion(converted func(error)) {
 // Fresh reports whether s runs in the fresh mode.
 func (s *SessionConsumers) Fresh() bool { return s.fresh != nil }
 
-// ObserveNames sets the counters' callback of the fresh mode's selection steps: op is a
-// consumernames.Operation and outcome a consumernames.Outcome. The listener counts them in
-// envoy_session_consumer_names_total. It does nothing in the fixed mode.
-func (s *SessionConsumers) ObserveNames(observe func(op, outcome string)) {
+// ObserveNames sets the counters' callback of the fresh mode's selection steps. The listener counts
+// them in envoy_session_consumer_names_total. It does nothing in the fixed mode.
+func (s *SessionConsumers) ObserveNames(observe func(consumernames.Operation, consumernames.Outcome)) {
 	if s.fresh != nil {
 		s.fresh.observe.Store(&observe)
 	}
