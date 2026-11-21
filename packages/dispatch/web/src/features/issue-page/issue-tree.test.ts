@@ -39,7 +39,7 @@ import {
   type TreeNode,
   targetNaming,
 } from "./issue-tree";
-import { useNodeLine } from "./NodeRow";
+import { useNodeLine } from "./node-line";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import { nameOf, namesOf, nodeLineOf, projectedNames, publishingNames } from "./projection-fixture";

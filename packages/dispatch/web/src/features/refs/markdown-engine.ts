@@ -609,10 +609,10 @@ interface ProjectedText {
   readonly questions: boolean;
 }
 
-/** Where one line's references are written as the projection reads them: every one it read,
- *  and those of them it wrote a name for. */
+/** Where one line's references are written as the projection reads them: every one it read
+ *  (`ProjectedText.addresses`), and those of them it wrote a name for. */
 interface LineReferences {
-  readonly read: string[];
+  readonly addresses: string[];
   readonly named: string[];
 }
 
@@ -690,7 +690,7 @@ function nameReferences(
     if (target === undefined || naming.cited?.has(target.reference) === false) {
       continue;
     }
-    references.read.push(target.reference);
+    references.addresses.push(target.reference);
     const name =
       naming.readsNone === true
         ? undefined
@@ -742,7 +742,7 @@ function linkDrawn(
     return undefined;
   }
   const reference = buildDispatchReference(route);
-  references.read.push(reference);
+  references.addresses.push(reference);
   if (naming.readsNone === true && reads !== "mention") {
     return href.startsWith("dispatch://") ? shortForm(route) : undefined;
   }
@@ -811,7 +811,7 @@ export function linkWordsAt(
 function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedText[] {
   const lines: ProjectedText[] = [];
   let words = "";
-  let references: LineReferences = { named: [], read: [] };
+  let references: LineReferences = { addresses: [], named: [] };
   let questions = false;
   // Where the table row being read ends: a node that starts before it is one of its cells.
   let rowEnd = -1;
@@ -827,9 +827,9 @@ function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTex
       words += " ";
       return;
     }
-    lines.push({ addresses: references.read, named: references.named, questions, words });
+    lines.push({ ...references, questions, words });
     words = "";
-    references = { named: [], read: [] };
+    references = { addresses: [], named: [] };
     questions = false;
   };
   // A reference never spans a newline (`reference-spans.ts`), so each line of a text is named

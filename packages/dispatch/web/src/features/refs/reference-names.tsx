@@ -15,6 +15,7 @@ import type { DisplayTree } from "../../api/types";
 import { type ReferenceNaming, useMarkdownHeadline } from "./markdown-engine";
 import { linkTitleMax } from "./reference-target";
 import { parseNodeReference } from "./routes";
+import { referenceTargetKind } from "./target-id";
 import { firstWordedBlock } from "./tree-fragment";
 
 /**
@@ -94,7 +95,8 @@ export interface KnownReferences {
   readonly asked: ReadonlySet<string>;
   readonly gone: ReadonlySet<string>;
   /** The line a chip names each block by, by its reference (`blockLineReading`): the first
-   *  block of its words that holds any, whole, which a chip cuts to its room where it draws it
+   *  block of its words that holds any, whole, which a chip cuts to its room where it draws it -
+   *  a tie's (`issue-page/NodeRow.tsx`'s `Chip`) and one drawn in place in a node's words
    *  (`issue-page/row-references.ts`). None for a target that is no block. */
   readonly lines: ReadonlyMap<string, string>;
   readonly names: ReadonlyMap<string, string>;
@@ -241,12 +243,12 @@ const NAME_NAMING: ReferenceNaming = { names: new Map(), readsNone: true };
 /**
  * The name `reading` projects to, by the one reader every surface reads a stored text with
  * (`useMarkdownHeadline`), as a title over one record, so a name inside it resolves nothing
- * (`NAME_NAMING`), and cut to `max` characters: the store's own projection of a published name
- * (`NameProjection`), and a chip's of the line it names a block by (`blockLineReading`). Words
- * that are no writer's text are the name as they stand. `undefined` for no reading and until the
- * engine has answered, and `""` for a reading that projects to no words and names no `fallback`.
+ * (`NAME_NAMING`), and cut to `max` characters: a published name, and a block's line beside it
+ * (`blockLineReading`). Words that are no writer's text are the name as they stand. `undefined`
+ * for no reading and until the engine has answered, and `""` for a reading that projects to no
+ * words and names no `fallback`.
  */
-export function useReadingName(
+function useReadingName(
   reading: ReferenceNameReading | undefined,
   max: number
 ): string | undefined {
@@ -264,25 +266,22 @@ export function useReadingName(
 /**
  * The reading a chip names a block by (INFRA-1196 decisions 66 and 88), from the reading the page
  * published for it (`reading`), which is the block's whole text: its first block that holds any
- * words (`firstWordedBlock`), so a decision is named by its own heading, and the page's word for
- * the block's kind where none does (`fallback`). A link to the block, and so a plain line, names
- * it by its whole text (`NameProjection`). Undefined where `reference` names no block, for a block
- * named by words alone, which a chip draws as they stand, and for a block with no words and no
- * word for its kind.
+ * words (`firstWordedBlock`), so a decision is named by its own heading, with the page's word for
+ * the block's kind (`fallback`). The page publishes a block's whole text only where a block of it
+ * holds words (`issue-page/tree-drafts.ts`'s `treeContext`). A link to the block, and so a plain
+ * line, names it by its whole text. Undefined where `reference` names no block and for a block
+ * named by words alone, which a chip draws as they stand.
  */
-export function blockLineReading(
+function blockLineReading(
   reference: string,
-  reading: ReferenceNameReading | undefined
+  reading: ReferenceNameReading
 ): ReferenceNameReading | undefined {
   const route = parseNodeReference(reference);
-  const block = route !== undefined && "block" in route && route.block !== undefined;
-  if (!block || reading === undefined || !("tree" in reading)) return undefined;
-  const first = firstWordedBlock(reading.tree);
-  if (first === undefined)
-    return reading.fallback === undefined ? undefined : { words: reading.fallback };
-  return reading.fallback === undefined
-    ? { tree: first }
-    : { fallback: reading.fallback, tree: first };
+  if (route === undefined || referenceTargetKind(route) !== "block" || !("tree" in reading)) {
+    return undefined;
+  }
+  const tree = firstWordedBlock(reading.tree) ?? reading.tree;
+  return reading.fallback === undefined ? { tree } : { fallback: reading.fallback, tree };
 }
 
 /** What one target's projection reported: its name, `""` for a reading that projected to no

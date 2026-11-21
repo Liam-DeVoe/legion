@@ -43,7 +43,7 @@ import {
   NODE_TYPE_NAMES,
   type NodeType,
 } from "./page-words";
-import { publishedNames } from "./projection-fixture";
+import { publishedChips, publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
 import { ProvidersSlot } from "./slots/providers";
 import { treeContext } from "./tree-drafts";
@@ -86,27 +86,6 @@ const NOBODY_RECORDED: Author = {
   name: CONTROL_LABELS.unknown_author,
   reader: false,
 };
-
-/** What the page's chips publish (`issue-tree.ts`'s `targetNaming`): each chip's reading, the
- *  chips that are gone or ambiguous, every answered chip with no reading as one the read
- *  answered with no words, and every chip's reference as one the page asks for. */
-function publishedChips(chips: readonly NodeChip[]): PublishedReferences {
-  return {
-    ambiguous: new Set(chips.filter((chip) => chip.ambiguous === true).map((chip) => chip.ref)),
-    asked: new Set(chips.map((chip) => chip.ref)),
-    gone: new Set(
-      chips.filter((chip) => chip.gone && chip.ambiguous !== true).map((chip) => chip.ref)
-    ),
-    readings: new Map(
-      chips.flatMap((chip) => (chip.reading === undefined ? [] : [[chip.ref, chip.reading]]))
-    ),
-    unnamed: new Set(
-      chips
-        .filter((chip) => chip.answered && !chip.gone && chip.reading === undefined)
-        .map((chip) => chip.ref)
-    ),
-  };
-}
 
 /** The parties Dispatch knows, as a party's own read finds them (`useReferenceTarget`): a
  *  session the registry lists, a role a listed session holds, and a person's login. */

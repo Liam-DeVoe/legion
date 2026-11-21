@@ -21,7 +21,7 @@ import {
 } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
@@ -66,11 +66,11 @@ import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused
 import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
 import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
-import type { TreeNode } from "./issue-tree";
+import type { NodeChip, TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
-import { lineOrKindWord } from "./NodeRow";
 import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE, MAC_PLATFORM } from "./node-caret";
+import { lineOrKindWord } from "./node-line";
 import { readComment, TWO_THREADS, waitInAct } from "./outline-fixtures";
 import {
   OutlineRequestProvider,
@@ -94,7 +94,7 @@ import {
   type Preset,
   STATE_LINES,
 } from "./page-words";
-import { nodeLineOf, publishedNames } from "./projection-fixture";
+import { nodeLineOf, publishedNames, publishedTree } from "./projection-fixture";
 import { EditorBox } from "./StagedDocument";
 import type { SlotProps } from "./slot-props";
 import { BodySlot } from "./slots/body";
@@ -232,7 +232,7 @@ function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode
 }
 
 /** What the panel names the focused node by: its one line, as every place that names a node by
- *  one draws it (`NodeRow.tsx`'s `useNodeLine`), and its kind's word where its words hold none
+ *  one draws it (`node-line.tsx`'s `useNodeLine`), and its kind's word where its words hold none
  *  (`lineOrKindWord`); `""` where nothing has the focus. */
 function panelWords(focused: FocusedNode | undefined): string {
   return focused === undefined ? "" : lineOrKindWord(nodeLineOf(focused), focused.type);
@@ -333,8 +333,9 @@ function EditedDocument({
  *  does, and `reread` draws it over another tree, as a read answering with other nodes does;
  *  `admit` answers for a document's room, as the page's row editor reports what that room
  *  admitted the page to (`document-admission.tsx`). `published` is what the page publishes of
- *  its batched names read, to the store and to the tree (`Publisher`), until `publish` publishes
- *  another value, as a later answer of that read does. */
+ *  its batched names read, to the store and to the tree (`Publisher`): where it is not given,
+ *  what the page publishes for the chips of the tree it draws (`publishedTree`), each time it
+ *  draws one. `publish` publishes another value, as a later answer of that read does. */
 function renderTree(
   root: TreeNode,
   {
@@ -365,7 +366,10 @@ function renderTree(
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
   const edited: (string | undefined)[] = [];
   const reads = { held: readsHeld, settled: readsSettled };
-  const names = { published };
+  const names = {
+    follows: published === undefined,
+    published: published ?? publishedTree(root),
+  };
   const tree = { root };
   const editedDocument: { set?: OnEditing } = {};
   const seen: { path?: string } = {};
@@ -430,16 +434,19 @@ function renderTree(
     /** Publishes `next` in place of what the page published, as its batched read answering
      *  again does. */
     publish: (next: PublishedReferences) => {
+      names.follows = false;
       names.published = next;
       view.rerender(draw());
     },
     reread: (next: TreeNode) => {
       tree.root = next;
+      if (names.follows) names.published = publishedTree(next);
       view.rerender(draw());
     },
     /** Draws `next` with every read answered, as the last read to answer draws it. */
     settle: (next: TreeNode) => {
       tree.root = next;
+      if (names.follows) names.published = publishedTree(next);
       reads.held = true;
       reads.settled = true;
       view.rerender(draw());
@@ -459,7 +466,8 @@ interface PageHold {
 }
 
 /** The tree as `slots/body.tsx` draws it: from the last request of the page's
- *  `OutlineRequestProvider`, under the page's row writer, while it is shown. */
+ *  `OutlineRequestProvider`, under the page's row writer, while it is shown, with what the page
+ *  publishes for its chips published to the store and handed to it (`publishedTree`). */
 function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNode {
   held.ask = useAskOutline();
   held.focusBranch = useFocusBranch()[1];
@@ -467,6 +475,8 @@ function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNo
   const request = useOutlineRequest();
   const [shown, setShown] = useState(true);
   held.show = setShown;
+  const published = useMemo(() => publishedTree(drawn), [drawn]);
+  usePublishReferenceNames(published);
   return shown ? (
     <IssueTree
       artifacts={new Map()}
@@ -477,6 +487,7 @@ function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNo
       holdsEscape={false}
       isClosed={false}
       onEditing={() => {}}
+      published={published}
       {...(request === undefined ? {} : { request })}
       reveal={undefined}
       root={drawn}
@@ -516,7 +527,8 @@ function renderPageTree(root: TreeNode, reader = "alice") {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  const view = render(draw(root));
+  // Under the names store, as the shell draws every page (`app.tsx`).
+  const view = render(draw(root), { wrapper: ReferenceNamesProvider });
   return {
     ask: (id: string | undefined, focusBranch: boolean) =>
       act(async () => held.ask?.(id, focusBranch)),
@@ -6755,7 +6767,7 @@ test("the outline draws no row of the issue, and opens with the focus on its fir
       node({ id: "ask-1", question: true, text: "Which flag?", type: "ask" }),
     ],
     id: KEY,
-    text: `${KEY} The issue's own title`,
+    text: "The issue's own title",
     type: "issue",
   });
   const view = renderTree(root);
@@ -8666,7 +8678,7 @@ test("a crumb is its node's first line cut at a word, and the issue's is its key
       }),
     ],
     id: KEY,
-    text: `${KEY} The issue's own title`,
+    text: "The issue's own title",
     type: "issue",
   });
   const view = renderTree(root);
@@ -8705,7 +8717,7 @@ test("a crumb of a node with no words is its kind's word, not its id", async () 
       }),
     ],
     id: KEY,
-    text: `${KEY} The issue's own title`,
+    text: "The issue's own title",
     type: "issue",
   });
   const view = renderTree(root);
@@ -8747,7 +8759,7 @@ test("a crumb reads a reference in its node's line as its target's name, and as 
       }),
     ],
     id: KEY,
-    text: `${KEY} The issue's own title`,
+    text: "The issue's own title",
     type: "issue",
   });
   const view = renderTree(root, { published: publishedNames(new Map(), { asked: [address] }) });
@@ -8809,6 +8821,34 @@ test("a row of the outline waits on the page's read for a reference the page ask
     expect(getReferences, "a row read the reference the page named").not.toHaveBeenCalled();
   } finally {
     getReferences.mockRestore();
+    view.unmount();
+  }
+});
+
+// The architect's ruling on a block chip's line: a tie's chip names a block by the line the names
+// store projects beside the block's name from what the page published (`KnownReferences.lines`),
+// as a block drawn as a chip in a node's words is named, and projects none of its own. The page
+// hands its rows what it publishes in the render that draws them, the store's lines with it
+// (`PublishedReferenceNames`), so a row drawn once the store holds a block's line draws its chip
+// by that line in the very render that draws it: a block that opens on a heading by the heading.
+test("a chip drawn once the store holds its block's line draws it in the render that draws it", async () => {
+  setViewport(1440);
+  const chip: NodeChip = {
+    answered: true,
+    gone: false,
+    reading: { tree: readingOf("## Keep it\n\nKeep the model pure.") },
+    ref: `dispatch://${KEY}/spec#b-r1`,
+  };
+  const row = (id: string) => node({ chips: [chip], id, text: "The words.", type: "comment" });
+  const tree = (...children: TreeNode[]) => node({ children, id: KEY, type: "issue" });
+  const view = renderTree(tree(row("comment-1")));
+  const chipOf = (id: string) =>
+    rowsFor(view.container, id)[0]?.querySelector("[data-chip-name]")?.textContent;
+  try {
+    await waitFor(() => expect(chipOf("comment-1"), "the chip drew no line").toBe("Keep it"));
+    view.reread(tree(row("comment-1"), row("comment-2")));
+    expect(chipOf("comment-2"), "a chip drawn after its line came drew it later").toBe("Keep it");
+  } finally {
     view.unmount();
   }
 });
