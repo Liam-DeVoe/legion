@@ -27,7 +27,7 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(sessionID) })
+	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return deleteInterestAtRead(ctx, kv, sessionID) })
 	if !answered {
 		return fmt.Errorf("delete %s's interest record: %w", sessionID, err)
 	}
@@ -36,6 +36,31 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	}
 	r.reconcileDeleted(ctx, kv, epoch, sessionID, max(revision, read))
 	return nil
+}
+
+// deleteInterestAtRead is bus.KeyValue.DeleteAtRead fenced on the revision the row is stored at. A
+// value that is no row of sessionID's (boundInterest) can be a copy the server stored from another
+// key, which carries its source's Nats-Sequence header ahead of its own, so the revision the
+// direct get reports for it is the source's and a delete fenced on it is refused at every
+// attempt: its revision is read from the stream's leader instead (bus.KeyValue.GetFromLeader).
+func deleteInterestAtRead(ctx context.Context, kv bus.KeyValue, sessionID string) (uint64, error) {
+	entry, err := kv.Get(sessionID)
+	switch {
+	case errors.Is(err, bus.ErrRefused):
+		return kv.DeleteAtRead(sessionID)
+	case errors.Is(err, nats.ErrKeyNotFound):
+		return 0, nil
+	case err != nil:
+		return 0, err
+	}
+	if _, err := boundInterest(sessionID, entry.Value()); err != nil {
+		if entry, err = kv.GetFromLeader(ctx, sessionID); errors.Is(err, nats.ErrKeyNotFound) {
+			return 0, nil
+		} else if err != nil {
+			return 0, err
+		}
+	}
+	return entry.Revision(), kv.Delete(sessionID, nats.LastRevision(entry.Revision()))
 }
 
 // deleteInterestAt deletes sessionID's interest record only while its latest revision is
@@ -264,7 +289,10 @@ func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan Intere
 
 // writeRowAt stores the row a write of item under plan over cur makes (interestRow), under the
 // revision cur was read at, and reports the row the session's record now holds with whether the
-// bucket took the write. getErr is what that read answered with.
+// bucket took the write. getErr is what that read answered with. The row is written under
+// item.SessionID, the session the write is for, and names it (mergeForUpsert): never under a key a
+// stored row names, so a row the server copied under this key from another session's cannot
+// carry the write into that session's row (ErrInterestUnbound).
 //
 // It is the whole of what a merging write and a planned write do once their row is read
 // (UpsertWithin, UpsertPlanned): the heartbeat skip, which answers cur and writes nothing, the
@@ -281,7 +309,7 @@ func (r *Registry) writeRowAt(ctx context.Context, cur Interest, revision uint64
 	if unchanged {
 		return cur, true, nil
 	}
-	written, epoch, stored, err := r.putInterestAt(ctx, merged.SessionID, buf, revision)
+	written, epoch, stored, err := r.putInterestAt(ctx, item.SessionID, buf, revision)
 	if err != nil {
 		return Interest{}, false, err
 	}
@@ -386,7 +414,12 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []
 // ErrKeyNotFound is the genuinely-new-session case — proceed with the passed-in
 // item and topics. ErrMalformedInterest is merged the same way: the record answered, so this is
 // not the transient case, its topics are ones this build never routed (the cache holds no record
-// it cannot decode), and the session's own subscribe is the authority on its record.
+// it cannot decode), and the session's own subscribe is the authority on its record. A record
+// naming another session than its key is one of these (ErrInterestUnbound): its topics are another
+// session's, or a JetStream answer's, and none of them is merged.
+//
+// The merged row names the requesting session on every branch: the key it is written under
+// (writeRowAt), whatever the stored row named.
 //
 // The merged row keeps no topic reaching a private stream subject that is not the session's own,
 // and holds them sorted (MergedTopics): a row stored before the listener refused such a topic is
@@ -419,6 +452,7 @@ func mergeForUpsert(cur Interest, getErr error, item Interest, now int64, plan I
 	item.MachineID = first(requested.MachineID, cur.MachineID)
 	item.Dir = first(requested.Dir, cur.Dir)
 	item.UpdatedAt = now
+	item.SessionID = requested.SessionID
 	item.Topics = MergedTopics(requested.SessionID, plan.Roles, slices.DeleteFunc(slices.Clone(item.Topics), func(topic string) bool {
 		return slices.Contains(plan.Dropped, topic)
 	}), plan.Topics)
