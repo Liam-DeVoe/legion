@@ -1771,7 +1771,9 @@ function InboxBody({
   // view is passed over: it is still drawn until the write's optimistic apply lands, and a focus
   // handed to it would drop with it. `dismissedHere` names every such row - each id the dismiss
   // write's `pending` holds, and the ids of a press made under the narrowing, which `pending`
-  // leaves out.
+  // leaves out. Each row after such rows is judged where it will stand once they have gone, as
+  // the list's anchor lets them go (`leaving` below); where their going leaves the row at the
+  // place wholly above the view, the nearest row after it in sight takes the focus.
   const landAtPlace = useLastMarkedPlace({
     control: (id) => originRow(id)?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null,
     lastMarked,

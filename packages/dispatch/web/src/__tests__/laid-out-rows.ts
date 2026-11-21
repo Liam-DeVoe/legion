@@ -11,17 +11,22 @@ import { spyOn } from "bun:test";
 /** How tall each row `layRowsOut` lays down is drawn. */
 const ROW_PX = 100;
 
-/** Lays the checkbox of each row `rowSelector` names down the window, `ROW_PX` a row, with the
- *  row at `first` in the page's order at the window's top, as a reader deep in a list sees it. A
- *  checkbox is drawn where its row stands now, so the checkbox of a row that moves up into a
- *  place that went is drawn there. Every other element keeps happy-dom's own box, in which every
- *  element reads as in sight. Answers the function that gives happy-dom its own boxes back. */
+/** Lays each row `rowSelector` names, and the checkbox in it, down the window, `ROW_PX` a row,
+ *  with the row at `first` in the page's order at the window's top, as a reader deep in a list
+ *  sees it. A row and its checkbox are drawn where the row stands now, so the checkbox of a row
+ *  that moves up into a place that went is drawn there. The selection bar's hand-off reads a
+ *  row's own box for the space it takes in the list, where a press is still taking it away. Every
+ *  other element keeps happy-dom's own box, in which every element reads as in sight. Answers the
+ *  function that gives happy-dom its own boxes back. */
 export function layRowsOut(rowSelector: string, first: number): () => void {
   const real = Element.prototype.getBoundingClientRect;
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
-    const row = this.matches('input[type="checkbox"]') ? this.closest(rowSelector) : null;
+    const row =
+      this.matches('input[type="checkbox"]') || this.matches(rowSelector)
+        ? this.closest(rowSelector)
+        : null;
     if (row === null) return real.call(this);
     const index = [...document.querySelectorAll(rowSelector)].indexOf(row);
     return new DOMRect(0, (index - first) * ROW_PX, 200, ROW_PX);

@@ -12,9 +12,8 @@ export interface AnchorRow {
 /** A row above the current one that a press of the reader's is taking away (`leaving`), as the
  *  commit's snapshot reads it, immediately before the row goes. */
 interface Leaving {
-  /** How far the current row moves up once this row has gone from above it: the part of the
-   *  space the row takes in the list, from its own top to the top of the element after it, that
-   *  lies below the top of the view and above the current row. */
+  /** How far the current row moves up once this row has gone from above it: the whole space the
+   *  row takes in the list (`spaceTaken`), the part above the view's top included. */
   by: number;
   id: string;
   /** The element right before the row where that element is no row (a group's heading), and how
@@ -40,6 +39,17 @@ interface View {
   top: number;
 }
 
+/** The space `element` takes in its list, in pixels: from its own top to the top of the element
+ *  after it, the gap between them included, else to its own bottom. What a row a press of the
+ *  reader's takes away frees for the rows after it (`ViewportAnchor`'s `leaving`), and what the
+ *  selection bar's hand-off reads to tell where each row will stand once such rows have gone
+ *  (`components/SelectionBar.tsx`), so the two agree. */
+export function spaceTaken(element: Element): number {
+  const box = element.getBoundingClientRect();
+  const after = element.nextElementSibling;
+  return (after === null ? box.bottom : after.getBoundingClientRect().top) - box.top;
+}
+
 export interface ViewportAnchorProps {
   as?: "div" | "section";
   children: ReactNode;
@@ -56,9 +66,10 @@ export interface ViewportAnchorProps {
   /** Whether a press of the reader's is taking row `id` away from its place: a Dismiss, or a
    *  write that moves the row into another group once it lands. The anchor does not hold the
    *  current row in place against the going of such a row above it: the current row and the rows
-   *  after it move up into the place the row leaves. It is asked of the render that last drew the
-   *  rows and of the render being committed alike, because a write can stop naming its rows in
-   *  the same commit that moves them. With no function, no row is named. */
+   *  after it move up by the whole space the row took, and the view does not scroll. It is asked
+   *  of the render that last drew the rows and of the render being committed alike, because a
+   *  write can stop naming its rows in the same commit that moves them. With no function, no row
+   *  is named. */
   leaving?: (id: string) => boolean;
   label?: string;
   /** Receives the rendered root element, for a host that also queries the rows itself. */
@@ -118,12 +129,6 @@ function rowWithin(root: HTMLElement, selector: string, node: Element | null): H
   return row !== null && root.contains(row) ? row : null;
 }
 
-/** How much of the stretch from `top` to `bottom` lies below the view's top, `viewTop`, and above
- *  `limit`, in pixels. */
-function inPlace(top: number, bottom: number, viewTop: number, limit: number): number {
-  return Math.max(0, Math.min(bottom, limit) - Math.max(top, viewTop));
-}
-
 /**
  * Keeps the row the reader is currently on pinned to its viewport position across commits that
  * shift content around it: a row inserted or removed above, a reorder within its section, a
@@ -138,13 +143,16 @@ function inPlace(top: number, bottom: number, viewTop: number, limit: number): n
  *
  * One shift is not compensated: a row that a press of the reader's takes away from above the
  * current row (`leaving`: a Dismiss, or a snooze that moves its rows into another group). The
- * reader asked for that row to go, so the current row and the rows after it move up into its
- * place, and the view is not scrolled to hold the current row where it stood. The part of that
- * place above the view's top is still compensated, as any shift the reader cannot see is: the view
- * moves by that part alone, so the rows in sight stay where they were, and the current row moves up
- * exactly into the place the row held in sight and never past the view's top. A current row that
- * holds the focus and is left partly in sight is then brought whole into sight at its nearest
- * edge, and a focus left wholly out of sight is not scrolled to.
+ * reader asked for that row to go, so the current row and the rows after it move up by the whole
+ * space the row took, the part above the view's top included, and the view does not scroll. A
+ * current row that holds the focus and is left partly in sight is then brought whole into sight
+ * at its nearest edge, and a focus left wholly out of sight is not scrolled to: the selection
+ * bar's hand-off has put the focus on a row that will stand in sight once those rows have gone
+ * (`useLastMarkedPlace`). For that one commit the browser's own scroll anchoring is turned off on
+ * the box that scrolls the rows, since it would hold the view against the same going, and it is
+ * turned back on as soon as this component has kept its place. A row that goes in the same
+ * commit without the reader's press, by a live update or another device, is compensated as any
+ * other shift is, so the rows in view do not jump under it.
  *
  * Rows are the elements matching `[item]`, identified by that attribute's value, and must keep
  * their identity across the commit (a remounted row is a new node and cannot be found again).
@@ -203,6 +211,9 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  coordinates: that is the list moving under the hand, which is the thing being compensated
    *  for, so it must not be read as the reader looking somewhere new. */
   private pointerAt: { x: number; y: number } | null = null;
+  /** The box whose own scroll anchoring is turned off for the commit in flight, and the inline
+   *  `overflow-anchor` it had before (`holdNativeAnchoring`). Null between such commits. */
+  private nativeAnchoring: { box: HTMLElement; priority: string; value: string } | null = null;
 
   /** The box the host named, while it holds one: what this anchor reads its offset from and
    *  what it moves. Null where the rows scroll in the document, which is the window's own
@@ -219,6 +230,36 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
       bottom: Math.min(window.innerHeight, box?.bottom ?? window.innerHeight),
       top: Math.max(0, box?.top ?? 0),
     };
+  }
+
+  /** Turns the browser's own scroll anchoring off on the box that scrolls the rows for the
+   *  commit in flight: the box the host named, else the document's root, whose value the window
+   *  takes. The browser would hold the view against the going of the rows a press of the reader's
+   *  takes away, which is the shift this component lets happen. The value is read back at once,
+   *  so it is in force before React removes the rows. `releaseNativeAnchoring` turns it back on. */
+  private holdNativeAnchoring(): void {
+    const box = this.scrollerElement() ?? document.documentElement;
+    const { style } = box;
+    this.nativeAnchoring = {
+      box,
+      priority: style.getPropertyPriority("overflow-anchor"),
+      value: style.getPropertyValue("overflow-anchor"),
+    };
+    style.setProperty("overflow-anchor", "none");
+    void getComputedStyle(box).overflowAnchor;
+  }
+
+  /** Gives the box back the scroll anchoring `holdNativeAnchoring` turned off, with the inline
+   *  value it had. */
+  private releaseNativeAnchoring(): void {
+    const held = this.nativeAnchoring;
+    if (held === null) return;
+    this.nativeAnchoring = null;
+    if (held.value === "") {
+      held.box.style.removeProperty("overflow-anchor");
+    } else {
+      held.box.style.setProperty("overflow-anchor", held.value, held.priority);
+    }
   }
 
   /** The group `row` is in, null where the host names none. A kept place belongs to one: a row
@@ -443,39 +484,25 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   }
 
   /** The rows above `row` that the host names as leaving (`leaving`), in the render that last
-   *  drew them (`previous`) or in this one, each with how far `row` moves up once it has gone.
-   *  Only the part of a row's space below the view's top counts: the rows in sight are to stay
-   *  where they were, and the part above that top is a shift the reader cannot see, which is
-   *  compensated as any other is. So `row` moves up exactly into the place the rows held in
-   *  sight, never past the view's top. Layout reads for the rows named alone; none where the
-   *  host names none. */
+   *  drew them (`previous`) or in this one, each with how far `row` moves up once it has gone:
+   *  the whole space it takes (`spaceTaken`), the part above the view's top included. Layout
+   *  reads for the rows named alone; none where the host names none. */
   private leavingAbove(row: HTMLElement, previous: Readonly<ViewportAnchorProps>): Leaving[] {
     const root = this.root;
     const { leaving } = this.props;
     if (root === null || (previous.leaving === undefined && leaving === undefined)) return [];
     const selector = `[${this.props.item}]`;
     const found: Leaving[] = [];
-    let edges: { limit: number; viewTop: number } | null = null;
     for (const each of root.querySelectorAll<HTMLElement>(selector)) {
       if (each === row) break;
       const id = this.idOf(each);
       if (previous.leaving?.(id) !== true && leaving?.(id) !== true) continue;
-      edges ??= { limit: row.getBoundingClientRect().top, viewTop: this.view().top };
-      const { limit, viewTop } = edges;
-      const box = each.getBoundingClientRect();
-      const after = each.nextElementSibling;
-      const end = after === null ? box.bottom : after.getBoundingClientRect().top;
       const lead = each.previousElementSibling;
       found.push({
-        by: inPlace(box.top, end, viewTop, limit),
+        by: spaceTaken(each),
         id,
         lead:
-          lead === null || lead.matches(selector)
-            ? null
-            : {
-                by: inPlace(lead.getBoundingClientRect().top, box.top, viewTop, limit),
-                element: lead,
-              },
+          lead === null || lead.matches(selector) ? null : { by: spaceTaken(lead), element: lead },
       });
     }
     return found;
@@ -521,13 +548,10 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     // a change no commit of this component's saw may already have moved it (`held`), and
     // measuring again there would take that drift for the place to keep.
     const held = this.heldTop(current.id, at);
-    return {
-      group: at,
-      id: current.id,
-      leaving: this.leavingAbove(current.row, previousProps),
-      top: held ?? current.row.getBoundingClientRect().top,
-      via: current.via,
-    };
+    const leaving = this.leavingAbove(current.row, previousProps);
+    const top = held ?? current.row.getBoundingClientRect().top;
+    if (leaving.length > 0) this.holdNativeAnchoring();
+    return { group: at, id: current.id, leaving, top, via: current.via };
   }
 
   componentDidUpdate(
@@ -535,6 +559,16 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     _previousState: Readonly<object>,
     snapshot: Snapshot | null
   ): void {
+    try {
+      this.keepPlace(snapshot);
+    } finally {
+      this.releaseNativeAnchoring();
+    }
+  }
+
+  /** Puts the row `snapshot` measured back at its top, less the space the rows a press of the
+   *  reader's took away from above it freed, once the commit is in. */
+  private keepPlace(snapshot: Snapshot | null): void {
     const root = this.root;
     if (snapshot === null || root === null) return;
     const element = root.querySelector<HTMLElement>(

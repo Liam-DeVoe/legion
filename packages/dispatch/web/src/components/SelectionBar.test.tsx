@@ -437,16 +437,19 @@ const PLACED_KEYS = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`
 /** Rows, each an `<li>` with its mark, in a list, and the bar over them with one action: the
  *  page the hand-off where the row marked last cannot take the focus is read on
  *  (`useLastMarkedPlace`). `listed` names the rows the list draws, `leaving` the drawn ones a
- *  press is taking away, and `last` the row marked last, null where no row is marked. Its
- *  `returnFocus` names the mark of the row marked last while the list holds it, as the Inbox's
- *  does; the hand-off moves the focus itself otherwise. */
+ *  press is taking away, `headings` the rows a group's heading is drawn right before, and `last`
+ *  the row marked last, null where no row is marked. Its `returnFocus` names the mark of the row
+ *  marked last while the list holds it, as the Inbox's does; the hand-off moves the focus itself
+ *  otherwise. */
 function PlacedList({
   count,
+  headings = [],
   last,
   leaving = [],
   listed,
 }: {
   count: number;
+  headings?: readonly string[];
   last: string | null;
   leaving?: readonly string[];
   listed: readonly string[];
@@ -468,11 +471,16 @@ function PlacedList({
   return (
     <>
       <ul aria-label="Rows" ref={list}>
-        {listed.map((key) => (
+        {listed.flatMap((key) => [
+          headings.includes(key) ? (
+            <li data-heading={key} key={`heading-${key}`}>
+              Group
+            </li>
+          ) : null,
           <li data-row={key} key={key}>
             <input aria-label={`Select ${key}`} type="checkbox" />
-          </li>
-        ))}
+          </li>,
+        ])}
       </ul>
       <SelectionBar
         count={count}
@@ -565,7 +573,7 @@ test("a press that takes away the row marked last, with the row now at its place
 
 // A row the page is still drawing while the press takes it away is passed over: the focus would
 // drop with it. The row after it is drawn under the window until then, and it moves up into the
-// leaving row's place once that row goes, so the place is read from the leaving row, which the
+// leaving row's place once that row goes, so it is read where it will stand then, which the
 // reader can see: the focus goes to the row after it, with no scroll.
 test("a press still taking away the row marked last hands the focus to the row after it, which moves up into its place in sight", () => {
   const laidOut = layRowsOut("[data-row]", 9);
@@ -576,6 +584,41 @@ test("a press still taking away the row marked last hands the focus to the row a
     view.rerender(
       <PlacedList count={0} last="CORE-17" leaving={["CORE-17"]} listed={PLACED_KEYS} />
     );
+    const landing = rowBox("CORE-18");
+    expect(landing).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// The press is still taking away the row marked last, the only row of its group, so the group's
+// heading goes with it. The row after them is drawn below the window until then, and it moves up
+// by the space of both once they go, into the place where the row marked last stands, in sight:
+// the focus goes to that row, with no scroll, and not to the row before the place.
+test("a press still taking away the last row of a group reads the row after it where it will stand once the group's heading has gone too", () => {
+  const laidOut = layRowsOut("[data-row], [data-heading]", 10);
+  const headings = ["CORE-17", "CORE-18"];
+  const view = render(
+    <PlacedList count={1} headings={headings} last="CORE-17" listed={PLACED_KEYS} />
+  );
+  const moves = watchMoves();
+  try {
+    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    view.rerender(
+      <PlacedList
+        count={0}
+        headings={headings}
+        last="CORE-17"
+        leaving={["CORE-17"]}
+        listed={PLACED_KEYS}
+      />
+    );
+    // CORE-18 is drawn 900 px down, under the window's 768 px, until the heading at 600 px and
+    // CORE-17 at 700 px go.
     const landing = rowBox("CORE-18");
     expect(landing).toHaveFocus();
     expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });

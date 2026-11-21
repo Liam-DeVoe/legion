@@ -329,23 +329,59 @@ function land(element: HTMLElement): boolean {
   return true;
 }
 
-/** Whether any part of `element` is in the reader's sight: its box meets the viewport and every
- *  box in `boxes`, the boxes around it that can hide it (`Sight`). An element whose edge only
- *  touches the edge of what is in sight counts as in sight. */
-function inSight(element: Element, boxes: Iterable<Element>): boolean {
+/** A row that will move up the page by `by` pixels once the rows a press is still taking away
+ *  from above it have gone: an element inside it is read where it will stand then
+ *  (`SelectionBar`'s hand-off). */
+export interface MovedUp {
+  readonly by: number;
+  readonly row: Element;
+}
+
+/** The box of `element`: where it will stand once `moved`'s row has moved up, where the element
+ *  is inside that row, else where it stands now. */
+function boxOf(
+  element: Element,
+  moved: MovedUp | undefined
+): { bottom: number; left: number; right: number; top: number } {
+  const box = element.getBoundingClientRect();
+  const by = moved?.row.contains(element) ? moved.by : 0;
+  return { bottom: box.bottom - by, left: box.left, right: box.right, top: box.top - by };
+}
+
+/** What is in the reader's sight through `boxes`, the boxes around an element that can hide it
+ *  (`Sight`): the viewport cut to each of them, a box inside `moved`'s row read where it will
+ *  stand. */
+function sightOf(
+  boxes: Iterable<Element>,
+  moved: MovedUp | undefined
+): { bottom: number; left: number; right: number; top: number } {
   let top = 0;
   let left = 0;
   let bottom = window.innerHeight;
   let right = window.innerWidth;
   for (const box of boxes) {
-    const edges = box.getBoundingClientRect();
+    const edges = boxOf(box, moved);
     top = Math.max(top, edges.top);
     left = Math.max(left, edges.left);
     bottom = Math.min(bottom, edges.bottom);
     right = Math.min(right, edges.right);
   }
-  const drawn = element.getBoundingClientRect();
-  return drawn.bottom >= top && drawn.top <= bottom && drawn.right >= left && drawn.left <= right;
+  return { bottom, left, right, top };
+}
+
+/** Whether any part of `element` is in the reader's sight: its box meets the viewport and every
+ *  box in `boxes`, the boxes around it that can hide it (`Sight`). An element whose edge only
+ *  touches the edge of what is in sight counts as in sight. With `moved`, the element is read
+ *  where it will stand once that row has moved up. */
+function inSight(element: Element, boxes: Iterable<Element>, moved?: MovedUp): boolean {
+  const sight = sightOf(boxes, moved);
+  const drawn = boxOf(element, moved);
+  return (
+    drawn.bottom >= sight.top &&
+    drawn.top <= sight.bottom &&
+    drawn.right >= sight.left &&
+    drawn.left <= sight.right
+  );
 }
 
 /** The overflow values that clip what overflows a box. */
@@ -1309,9 +1345,26 @@ function walkBack(controls: readonly HTMLElement[], index: number): HTMLElement[
  *  around it that clips it (`clippingBoxes`, which reads each box's style once in `clips`). The
  *  page's rescue and a component's hand-off (`useFocusPlace`) read it of each control their walk
  *  back reaches, as they reach it, the hand-off of its fallback too, and the selection bar's
- *  hand-off reads it of each row mark it tries (`SelectionBar`'s `markShown`). */
-export function inSightNow(element: Element, clips: Map<Element, boolean>): boolean {
-  return inSight(element, clippingBoxes(element, clips));
+ *  hand-off reads it of each row mark it tries (`SelectionBar`'s `markShown`), with `moved`
+ *  where the mark's row will move up once the rows a press is taking away have gone. */
+export function inSightNow(
+  element: Element,
+  clips: Map<Element, boolean>,
+  moved?: MovedUp
+): boolean {
+  return inSight(element, clippingBoxes(element, clips), moved);
+}
+
+/** Whether `element` reaches above what the reader can see, the viewport cut to every box around
+ *  it that clips it: the top of its box stands above the top of that. With `moved`, it is read
+ *  where it will stand once that row has moved up. One that is also not in sight (`inSightNow`)
+ *  stands wholly above it. */
+export function aboveSightNow(
+  element: Element,
+  clips: Map<Element, boolean>,
+  moved?: MovedUp
+): boolean {
+  return boxOf(element, moved).top < sightOf(clippingBoxes(element, clips), moved).top;
 }
 
 /** Hands on the focus `loss`'s element took with it when it went. A loss the reader did not

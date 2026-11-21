@@ -3537,27 +3537,34 @@ function markOf(id: string): HTMLElement {
   return mark;
 }
 
+/** Lists `count` comment threads in the Inbox and nothing else, each card's issue and comments
+ *  answered, which no case here asserts. Answers the function that puts the reads back. */
+function listThreads(count: number): () => void {
+  const threads = Array.from({ length: count }, (_, index) => replyRow(`c${index + 1}`));
+  const mocks = [
+    spyOn(api, "getInbox").mockResolvedValue([]),
+    spyOn(api, "listMyReplies").mockResolvedValue({
+      as_of: "2026-10-12T00:00:00Z",
+      limit: 200,
+      offset: 0,
+      rows: threads,
+      total: threads.length,
+    }),
+    spyOn(api, "getIssue").mockResolvedValue({ closed_at: null } as unknown as IssueDetails),
+    spyOn(api, "listComments").mockResolvedValue([]),
+  ];
+  return () => {
+    for (const mock of mocks) mock.mockRestore();
+  };
+}
+
 // The bar's Dismiss deep in the list, over a thread the reader can see. The bar's hand-off puts
 // the focus on the mark of the row after it while the thread is still drawn. The thread goes, and
 // that row moves up into its place: the window stays where the reader put it, and is not scrolled
 // to hold the focused row where it stood.
 test("a bulk Dismiss of a marked thread above the focused row leaves the window's scroll and the list's scrollTop as they were", async () => {
   const user = userEvent.setup();
-  const threads = Array.from({ length: 12 }, (_, index) => replyRow(`c${index + 1}`));
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
-  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
-    as_of: "2026-10-12T00:00:00Z",
-    limit: 200,
-    offset: 0,
-    rows: threads,
-    total: threads.length,
-  });
-  // Each thread's card reads the issue it is on and that issue's comments; no case here asserts
-  // them.
-  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
-    closed_at: null,
-  } as unknown as IssueDetails);
-  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const reads = listThreads(12);
   // Held open, so the list read here is the one the press leaves behind rather than the read the
   // landed press asks for.
   const settle = Promise.withResolvers<{ dismissed: number }>();
@@ -3567,7 +3574,7 @@ test("a bulk Dismiss of a marked thread above the focused row leaves the window'
   const moves = watchMoves();
   const { unmount } = renderInbox("/?group=none");
   try {
-    await waitFor(() => expect(rowIds()).toHaveLength(threads.length));
+    await waitFor(() => expect(rowIds()).toHaveLength(12));
     const [marked, after] = rowIds().slice(7, 9) as [string, string];
     await user.click(markOf(marked));
     await screen.findByText("1 selected");
@@ -3590,10 +3597,52 @@ test("a bulk Dismiss of a marked thread above the focused row leaves the window'
     unmount();
     moves.restore();
     laidOut();
-    listMyReplies.mockRestore();
-    listComments.mockRestore();
-    getIssue.mockRestore();
-    getInbox.mockRestore();
+    reads();
+  }
+});
+
+// The bar's Dismiss over two threads the reader marked and then scrolled above the window. Their
+// whole space goes, so every row after them moves up by it: the row now at the place of the row
+// marked last, and the next one, end wholly above the window. The bar's hand-off reads each row
+// where it will stand once the threads have gone, and puts the focus on the mark of the nearest
+// row after that place that will stand in sight, with no scroll. The window stays where it was.
+test("a bulk Dismiss of marked threads that all stood above the view hands the focus to the nearest row after their place that ends in sight, and scrolls nothing", async () => {
+  const user = userEvent.setup();
+  const reads = listThreads(12);
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  // Five rows above the window: the third and fourth rows, the ones marked, stand 300 and 200 px
+  // above its top.
+  const laidOut = layRowsDown(5 * LAID_ROW_PX);
+  const moves = watchMoves();
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(12));
+    const order = rowIds();
+    const marked = order.slice(2, 4);
+    // The upper thread is marked last, as a reader marking upward does.
+    for (const id of [...marked].reverse()) await user.click(markOf(id));
+    await screen.findByText("2 selected");
+
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
+    // The two rows after the marked ones end above the window, and the third ends at its top
+    // edge and shows none of itself: the fourth, which will stand at the window's top, is the
+    // nearest the reader will see.
+    const landing = markOf(order[7] as string);
+    await waitFor(() => expect(landing).toHaveFocus());
+    expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
+    expect(landing.getBoundingClientRect().top).toBe(0);
+    expect(window.scrollY).toBe(5 * LAID_ROW_PX);
+    expect(moves.scrolled.length).toBe(0);
+  } finally {
+    await act(async () => {
+      settle.resolve({ dismissed: 2 });
+    });
+    unmount();
+    moves.restore();
+    laidOut();
+    reads();
   }
 });
 
