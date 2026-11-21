@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -83,9 +85,7 @@ const (
 
 // TestTheFinalSchemaReachesTheProviderInTheOrderItIsWritten: on every protocol Run serves, each
 // object of the schema the call's body carries holds its keys in the order Request.Final writes
-// them, the nested object's included. Under structured output the model writes its reply's keys
-// in the schema's order, and the SDK's Anthropic and Responses adapters rebuild the schema as a
-// map, which Go writes with its keys sorted (doc.go, "The structured reply").
+// them, the nested object's included (doc.go, "The structured reply").
 func TestTheFinalSchemaReachesTheProviderInTheOrderItIsWritten(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
@@ -125,16 +125,16 @@ func TestTheFinalSchemaReachesTheProviderInTheOrderItIsWritten(t *testing.T) {
 					t.Fatalf("the request body holds no %q on the path %v", key, c.schema)
 				}
 			}
-			inFinalsOrder(t, schema, json.RawMessage(orderedFinal), "the schema")
+			holdsFinalsOrder(t, schema, json.RawMessage(orderedFinal), "the schema")
 		})
 	}
 }
 
-// inFinalsOrder fails t where an object of sent, the schema a request body carries, does not
+// holdsFinalsOrder fails t where an object of sent, the schema a request body carries, does not
 // begin with the keys of the same object of final, in final's order. It goes on into the values
 // of each object whose keys are in that order and into each array's elements, so it fails once
 // for the outermost object out of order on a path, and names that object by its path from at.
-func inFinalsOrder(t *testing.T, sent, final json.RawMessage, at string) {
+func holdsFinalsOrder(t *testing.T, sent, final json.RawMessage, at string) {
 	t.Helper()
 	switch bytes.TrimSpace(final)[0] {
 	case '{':
@@ -146,7 +146,7 @@ func inFinalsOrder(t *testing.T, sent, final json.RawMessage, at string) {
 			return
 		}
 		for i, key := range finalKeys {
-			inFinalsOrder(t, sentValues[i], finalValues[i], at+"."+key)
+			holdsFinalsOrder(t, sentValues[i], finalValues[i], at+"."+key)
 		}
 	case '[':
 		var sentElements, finalElements []json.RawMessage
@@ -161,7 +161,7 @@ func inFinalsOrder(t *testing.T, sent, final json.RawMessage, at string) {
 			return
 		}
 		for i := range finalElements {
-			inFinalsOrder(t, sentElements[i], finalElements[i], fmt.Sprintf("%s[%d]", at, i))
+			holdsFinalsOrder(t, sentElements[i], finalElements[i], fmt.Sprintf("%s[%d]", at, i))
 		}
 	}
 }
@@ -188,4 +188,79 @@ func objectMembers(t *testing.T, value json.RawMessage) ([]string, []json.RawMes
 		keys, values = append(keys, token.(string)), append(values, v)
 	}
 	return keys, values
+}
+
+// recordingBase is a base transport that keeps what each attempt of a call carried - its body,
+// what its GetBody gives, and its Content-Length - and answers the statuses it was given in turn.
+type recordingBase struct {
+	statuses []int
+	bodies   [][]byte
+	again    [][]byte
+	lengths  []int64
+}
+
+func (b *recordingBase) RoundTrip(req *http.Request) (*http.Response, error) {
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	reread, err := req.GetBody()
+	if err != nil {
+		return nil, err
+	}
+	again, err := io.ReadAll(reread)
+	if err != nil {
+		return nil, err
+	}
+	b.bodies, b.again, b.lengths = append(b.bodies, body), append(b.again, again), append(b.lengths, req.ContentLength)
+	status := b.statuses[len(b.bodies)-1]
+	// A negative Retry-After reads as no wait, so the retry is made at once.
+	return &http.Response{StatusCode: status, Header: http.Header{"Retry-After": {"-1"}}, Body: http.NoBody}, nil
+}
+
+// TestTheRetryAndTheRereadCarryTheSchemaInFinalsOrder: the one retry of a call, and the body the
+// base transport reads again through GetBody on a new connection, are the bytes the first attempt
+// sent, with their length - the schema in Final's order, a key Final lacks after Final's own, and
+// every byte outside the schema as the SDK wrote it, a `schema` key inside a message included.
+func TestTheRetryAndTheRereadCarryTheSchemaInFinalsOrder(t *testing.T) {
+	t.Parallel()
+	const (
+		final = `{"type":"object","properties":{"kind":{"type":"string"},"text":{"type":"string"},"needs":{"type":"string"}}}`
+		// The SDK's body: the schema's keys sorted, `description` added, and a message that
+		// holds a sorted `schema` of its own, which is the conversation's and stays as it is.
+		sent = `{"model": "m", "messages":[{"schema":{"b":1,"a":2}}],"output_config":{"format":{"schema":` +
+			`{"description":"d","properties":{"kind":{"type":"string"},"needs":{"type":"string"},"text":{"type":"string"}},"type":"object"}` +
+			`,"type":"json_schema"}},"stream":true}`
+		want = `{"model": "m", "messages":[{"schema":{"b":1,"a":2}}],"output_config":{"format":{"schema":` +
+			`{"type":"object","properties":{"kind":{"type":"string"},"text":{"type":"string"},"needs":{"type":"string"}},"description":"d"}` +
+			`,"type":"json_schema"}},"stream":true}`
+	)
+	base := &recordingBase{statuses: []int{http.StatusServiceUnavailable, http.StatusOK}}
+	transport := newModelTransport(Endpoint{
+		Kind:  AnthropicMessages,
+		Token: func(context.Context) (string, error) { return "key", nil },
+	}, json.RawMessage(final))
+	transport.base = base
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://model.example/v1/messages", strings.NewReader(sent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := transport.RoundTrip(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("the call: %v, %v; want the retry's 200", resp, err)
+	}
+	if len(base.bodies) != 2 {
+		t.Fatalf("%d attempts, want the call and its one retry", len(base.bodies))
+	}
+	for attempt := range base.bodies {
+		if got := string(base.bodies[attempt]); got != want {
+			t.Errorf("attempt %d sent\n%s\nwant\n%s", attempt, got, want)
+		}
+		if got := string(base.again[attempt]); got != want {
+			t.Errorf("attempt %d's GetBody gives\n%s\nwant the bytes it sent\n%s", attempt, got, want)
+		}
+		if base.lengths[attempt] != int64(len(want)) {
+			t.Errorf("attempt %d's Content-Length is %d, want %d", attempt, base.lengths[attempt], len(want))
+		}
+	}
 }

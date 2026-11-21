@@ -143,13 +143,10 @@ func finalSchemaPath(kind Kind) []string {
 
 // inFinalOrder is body with the schema it carries at its protocol's path (finalSchemaPath) put
 // back in the order of Request.Final: every byte of the body stays as it came but for that
-// schema's objects, each of which takes the order of the same object in Final (appendInOrder).
-// The SDK's Anthropic and Responses adapters rebuild the schema as a map[string]any before they
-// send it, and Go writes a map with its keys sorted; under structured output the model writes
-// its reply's keys in the schema's order, so the order a caller writes is the order the model
-// decides the reply's fields in. A run with no Final, a body that carries no schema at the path,
-// and a body that is no JSON, which is the provider's to refuse, are sent byte for byte as they
-// came.
+// schema's objects, each of which takes the order of the same object in Final (appendInOrder);
+// why is doc.go's "The structured reply". A run with no Final, a body that carries no schema at
+// the path, and a body that is no JSON, which is the provider's to refuse, are sent byte for byte
+// as they came.
 func (t *modelTransport) inFinalOrder(body []byte) []byte {
 	path := finalSchemaPath(t.kind)
 	if t.final == nil || path == nil {

@@ -384,13 +384,16 @@ omp_openai_summary() {
 answer_question_id() { grep -oE 'legion-answer:[0-9a-f]+' <<<"$1" | head -1 | cut -d: -f2 || true; }
 # occurrences TEXT NEEDLE: how many times NEEDLE occurs in TEXT.
 occurrences() { grep -oF -- "$2" <<<"$1" | wc -l || true; }
+# question_suffix ID TAG MARKER: the suffix the rig ends a question it will count with, which names
+# the question ID, the run TAG and the MARKER of the check that asks it. The ask and the count
+# (question_occurrences) both take it from here, so the two cannot drift apart.
+question_suffix() { printf '(question %s of run %s, %s)' "$1" "$2" "$3"; }
 # question_occurrences REQUEST ID TAG MARKER: how many times the question ID of run TAG asked under
-# MARKER occurs in REQUEST, counted by the whole suffix the rig asks it with,
-# `(question ID of run TAG, MARKER)`, and not by MARKER alone: a model's own reply can name the
-# marker ("the same as for the earlier questions, A10-1 included"), and a later request carries
-# that reply in the conversation, so the marker alone counts the question twice (proof run
-# 44858316560, A10 under the postgres store).
-question_occurrences() { occurrences "$1" "(question $2 of run $3, $4)"; }
+# MARKER occurs in REQUEST, counted by the whole suffix the rig asks it with (question_suffix) and
+# not by MARKER alone: a model's own reply can name the marker ("the same as for the earlier
+# questions, A10-1 included"), and a later request carries that reply in the conversation, so the
+# marker alone counts the question twice (proof run 44858316560, A10 under the postgres store).
+question_occurrences() { occurrences "$1" "$(question_suffix "$2" "$3" "$4")"; }
 
 # ---- the asker's inbox -------------------------------------------------------------------------------
 # inbox_reply EVENT prints the text the asker received in reply to EVENT, or fails; inbox_replies

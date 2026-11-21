@@ -738,8 +738,14 @@ describe("the stopped agents' conversations", () => {
     // then the agent's own reply naming the marker again.
     const request = JSON.stringify({
       messages: [
-        { role: "user", content: "What blocked the release? (question pre-change-scan of run 12688, A10-1)" },
-        { role: "assistant", content: "The same as for the earlier pre-change-scan questions (including A10-1)." },
+        {
+          role: "user",
+          content: "What blocked the release? (question pre-change-scan of run 12688, A10-1)",
+        },
+        {
+          role: "assistant",
+          content: "The same as for the earlier pre-change-scan questions (including A10-1).",
+        },
         { role: "user", content: "And again? (question pre-change-scan of run 12688, A10-2)" },
       ],
     });
@@ -748,7 +754,18 @@ describe("the stopped agents' conversations", () => {
     expect(read(`question_occurrences ${q} pre-change-scan 12688 A10-2`).text).toBe("1");
     // The marker alone is what counted the question twice.
     expect(read(`occurrences ${q} 'A10-1)'`).text).toBe("2");
-    expect(read(`question_occurrences ${q} pre-change-scan 12689 A10-1`)).toEqual({ code: 0, text: "0" });
+    expect(read(`question_occurrences ${q} pre-change-scan 12689 A10-1`)).toEqual({
+      code: 0,
+      text: "0",
+    });
+    expect(read(`question_occurrences '' pre-change-scan 12688 A10-1`)).toEqual({
+      code: 0,
+      text: "0",
+    });
+    // The ask ends with the same suffix the count looks for.
+    expect(read("question_suffix pre-change-scan 12688 'A10 after compaction'").text).toBe(
+      "(question pre-change-scan of run 12688, A10 after compaction)"
+    );
   });
 });
 

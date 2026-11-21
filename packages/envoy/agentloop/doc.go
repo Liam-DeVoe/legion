@@ -86,8 +86,13 @@
 // therefore puts every object of the schema in each call's body back in Final's order, nested
 // objects and array elements included, once per call and before the retry, so the retry sends
 // the same bytes. A key the SDK added that Final lacks keeps its place after Final's own keys,
-// every string and number keeps the bytes the SDK wrote, and a body that carries no schema is
-// sent byte for byte as it came.
+// every value but an object or an array keeps the bytes the SDK wrote, a key is written again
+// without HTML escaping, and a body that carries no schema is sent byte for byte as it came.
+//
+// A tool's input schema (Tool.Schema) is not put back: the same two adapters send its keys
+// sorted, as that run's requests show, so a tool whose input has more than one property is
+// offered them sorted, and the model writes a call's arguments in that order. A call's input is
+// read by key, so no call fails for it.
 //
 // # The Final schema is held to the strict subset
 //

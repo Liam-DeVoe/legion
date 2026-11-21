@@ -45,8 +45,6 @@ var strictFormats = []string{
 // error names the JSON path of the node at fault and what is wrong with it, so the caller fixes
 // the schema rather than the symptom; the caller of this function gives it its prefix.
 func strictFinal(final json.RawMessage) error {
-	// The schema is decoded into maps, which keep no order, only to be read: nothing decoded
-	// here is sent, and the schema reaches the provider in Final's own order (inFinalOrder).
 	var doc any
 	if err := json.Unmarshal(final, &doc); err != nil {
 		return err

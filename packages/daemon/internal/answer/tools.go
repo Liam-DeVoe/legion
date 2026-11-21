@@ -53,9 +53,10 @@ func ghSchema(req Request) json.RawMessage {
 }
 
 // ghArgsSchema is the shape of the gh tool's input schema (ghSchema): one property, args, an array
-// of strings, required, and no other property. Its fields are structs rather than maps so the keys
-// keep the order the model has always been offered, and the schema is one Go value marshalled
-// once, so no text is joined into JSON by hand.
+// of strings, required, and no other property. It is one Go value marshalled once, so no text is
+// joined into JSON by hand. The order of its keys decides nothing: agentloop's Anthropic and
+// Responses adapters send a tool's input schema with its keys sorted (agentloop's doc.go, "The
+// structured reply"), and the input has one property.
 type ghArgsSchema struct {
 	Type       string `json:"type"`
 	Properties struct {

@@ -2301,8 +2301,8 @@ check_a8() {
 check_a9() {
   criterion A9 "two questions at once are answered in order, and the resumed agent holds both once and carries on from them" || return 0
   local token=${agent[$store:architect.token]} t1 t2 s1 s2 e1 e2 first reply m request q1 q2 counts
-  t1="$(question_text in-order-1) (question in-order-1 of run $run_tag, A9)"
-  t2="$(question_text in-order-2) (question in-order-2 of run $run_tag, A9)"
+  t1="$(question_text in-order-1) $(question_suffix in-order-1 "$run_tag" A9)"
+  t2="$(question_text in-order-2) $(question_suffix in-order-2 "$run_tag" A9)"
   s1=$(envoy_ask_text session "${agent[$store:architect.session]}" "$t1")
   s2=$(envoy_ask_text session "${agent[$store:architect.session]}" "$t2")
   e1=${s1#* }
@@ -2431,7 +2431,7 @@ a10_gpt() {
       mkdir -p "$evidence/sessions/$store"
       printf '%s\n' "$second" >"$evidence/sessions/$store/gpt-before-A10-gpt-2.jsonl"
     fi
-    s=$(envoy_ask_text session "$session" "$(question_text "$id") (question $id of run $run_tag, A10-gpt-$n)")
+    s=$(envoy_ask_text session "$session" "$(question_text "$id") $(question_suffix "$id" "$run_tag" "A10-gpt-$n")")
     sent+=("$s")
     e=${s#* }
     soft_wait 240 "the GPT-6.1 merger's answer to $id (A10-gpt-$n)" inbox_reply "$e" || true
@@ -2513,7 +2513,7 @@ check_a10() {
     a10_gpt
   fi
   criterion A10 "a Claude Code worker and a compacted Oh My Pi conversation are answered from their conversations and resume after" || return 0
-  local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line request transcript effort want_effort sigs thinking unexercised='' missing m counts ok_claude=0 ok_compact=0 t3 s3 e3 compaction
+  local session=${agent[$store:pre_change.session]} token=${agent[$store:pre_change.token]} t1 t2 s1 s2 e1 e2 line request transcript effort want_effort sigs thinking unexercised='' missing m counts ok_claude=0 ok_compact=0 t3 s3 e3 compaction after
   local asked_at k marker again pair='' pairs='' cache_why='' found judged=''
   local -a markers events organizations
   transcript=$(conversation_text pre_change)
@@ -2529,8 +2529,8 @@ check_a10() {
     unexercised+=", so the clause that the replay carries each thinking signature byte for byte is unexercised"
     note "$unexercised: the Claude Code leg fails"
   fi
-  t1="$(question_text pre-change-scan) (question pre-change-scan of run $run_tag, A10-1)"
-  t2="$(question_text pre-change-scan) (question pre-change-scan of run $run_tag, A10-2)"
+  t1="$(question_text pre-change-scan) $(question_suffix pre-change-scan "$run_tag" A10-1)"
+  t2="$(question_text pre-change-scan) $(question_suffix pre-change-scan "$run_tag" A10-2)"
   asked_at=$SECONDS
   s1=$(envoy_ask_text session "$session" "$t1")
   e1=${s1#* }
@@ -2635,7 +2635,7 @@ check_a10() {
   soft_wait 300 "the architect's conversation to hold a compaction written as text" compacted || true
   note "the architect's conversation holds a compaction written as text: $(compacted && echo yes || echo no) ($(occurrences "$(conversation_text architect)" '"type":"compaction"') compaction entries of any kind)"
   suspend_agent architect || true
-  t3="$(question_text in-order-2) (question in-order-2 of run $run_tag, A10 after compaction)"
+  t3="$(question_text in-order-2) $(question_suffix in-order-2 "$run_tag" "A10 after compaction")"
   s3=$(envoy_ask_text session "${agent[$store:architect.session]}" "$t3")
   e3=${s3#* }
   soft_wait 240 "the answer from the compacted conversation" inbox_reply "$e3" || true
@@ -2645,9 +2645,10 @@ check_a10() {
   claims_cmd deliver --claim "${agent[$store:architect.token]}" --task "Reply with one word: ready." >/dev/null
   soft_wait 300 "the resumed architect's first model call" more_than "$m" proxy_count agents || true
   request=$(first_request_after agents "$m")
-  note "the resumed architect's first request holds the question asked after the compaction $(question_occurrences "$request" in-order-2 "$run_tag" "A10 after compaction") time(s)"
+  after=$(question_occurrences "$request" in-order-2 "$run_tag" "A10 after compaction")
+  note "the resumed architect's first request holds the question asked after the compaction $after time(s)"
   compacted && inbox_reply "$e3" >/dev/null && answer_holds in-order-2 "$(inbox_reply "$e3")" >/dev/null &&
-    [ "$(question_occurrences "$request" in-order-2 "$run_tag" "A10 after compaction")" = 1 ] && ok_compact=1
+    [ "$after" = 1 ] && ok_compact=1
   suspend_agent architect || true
   if [ "$ok_claude$ok_compact" = 11 ]; then
     record_result A10 PASS "Claude Code: effort $effort and each of the transcript's $(grep -c . <<<"$sigs") thinking signatures replayed, the answer to ${markers[judged]}, the later of the pair $pair one organization served, read $(cache_read_tokens "$line") tokens from cache, resumed holding both; the compacted conversation answered and resumed holding the exchange"
