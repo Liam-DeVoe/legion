@@ -32,16 +32,25 @@ var reusedSessionSecondProjects = []string{"PUB"}
 // relay is stopped), so its consumer holds both undecided when it registers again. The relay
 // then starts, and decides each in stream order: PRIV's first.
 //
+// What decides is the token's list, not the project's privacy. PRIV is private at the privacy
+// source, so a relay that ignored the list and read privacy instead would withhold PRIV and
+// deliver PUB as well. The test therefore also requires that the relay sent the privacy source no
+// read while it decided these frames, that it withheld exactly one frame, and that it holds
+// nothing for the session.
+//
 // Controls (each run by hand, then reverted): give the second registration a token listing PRIV,
 // which is what an exchange that took a token's projects from the session name would mint; run
 // the relay and the routes in the all-public mode (no setPrivacy); and make the relay deliver a
 // session whose token lists projects every project's frame (sessionRelays.decideFrame). Under
-// each the PRIV message arrives, and the test fails naming it.
+// each the PRIV message arrives, and the test fails naming it. A fourth makes decideFrame ignore
+// the session's stored projects, so every frame is decided by a privacy read: the PRIV message
+// is still withheld, and the test fails naming the reads.
 func TestAHeldPrivateMessageIsNotDeliveredToAReusedSessionName(t *testing.T) {
 	const sessionID = "ses_reused_name"
 	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
 	source := newPrivacySource(t, privacyListingPRIV)
-	privacy := &listenerPrivacy{required: true, k7: testK7Reader(source.server.URL, k7ReadTimeout), counters: newPrivacyCounters(metrics.New())}
+	met := metrics.New()
+	privacy := &listenerPrivacy{required: true, k7: testK7Reader(source.server.URL, k7ReadTimeout), counters: newPrivacyCounters(met)}
 	rig.deps.privacy = privacy
 	rig.relays.setPrivacy(privacy)
 	// The routes read the privacy mode they were mounted with, as main mounts them after it.
@@ -73,6 +82,7 @@ func TestAHeldPrivateMessageIsNotDeliveredToAReusedSessionName(t *testing.T) {
 
 	register(t, brokertokentest.NewCaller(t), "token-of-the-reusing-pod", "epoch-2", reusedSessionSecondProjects)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
+	readsBefore := source.reads()
 	rig.relays.setOwned(true)
 
 	frames := standIn.collect(t, 1, 10*time.Second)
@@ -92,5 +102,19 @@ func TestAHeldPrivateMessageIsNotDeliveredToAReusedSessionName(t *testing.T) {
 	case frame := <-standIn.frames:
 		t.Fatalf("%s received a second frame, seq %d event %s, want none: the PRIV message %s is withheld", sessionID, frame.seq, frame.item.EventID, private.EventID)
 	default:
+	}
+	// The token's list decided both frames: no privacy read was sent for them, one frame was
+	// withheld, and nothing is held for the session.
+	if reads := source.reads() - readsBefore; reads != 0 {
+		t.Fatalf("the relay sent the privacy source %d reads to decide the frames of %s, whose token lists %v: it decided them by the projects' privacy, not by the token's list",
+			reads, sessionID, reusedSessionSecondProjects)
+	}
+	recorder := httptest.NewRecorder()
+	met.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if withheld := counterValue(t, recorder.Body.String(), `envoy_listener_project_withheld_total{family="dispatch"}`); withheld != 1 {
+		t.Fatalf(`envoy_listener_project_withheld_total{family="dispatch"} = %d, want 1: the PRIV message %s withheld`, withheld, private.EventID)
+	}
+	if _, held := rig.relays.heldDue(sessionID); held {
+		t.Fatalf("the relay holds a frame for %s, want none: a session whose token lists projects is decided by its list at once", sessionID)
 	}
 }
