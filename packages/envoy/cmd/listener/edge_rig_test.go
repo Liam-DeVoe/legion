@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/legionagents"
@@ -151,8 +151,8 @@ type edgeRig struct {
 	*relayRig
 	projects     []string
 	handler      http.Handler
-	broker       *brokertokentest.StubBroker
-	caller       *brokertokentest.Caller
+	broker       *ciphertokentest.StubBroker
+	caller       *ciphertokentest.Caller
 	repositories *repositoryStandIn
 	reader       *edgeRepositories
 	clock        *edgeClock
@@ -202,8 +202,8 @@ func newEdgeRigServing(t *testing.T, projects []string) *edgeRig {
 		})
 	}
 	rig.relays.setOwned(true)
-	edge.broker = brokertokentest.NewStubBroker(t)
-	edge.caller = brokertokentest.NewCaller(t)
+	edge.broker = ciphertokentest.NewStubBroker(t)
+	edge.caller = ciphertokentest.NewCaller(t)
 	edge.handler = apiAuth(listenerAPIAuth{brokers: listenerBrokerTokens(t, edge.broker), edgeProjects: projects, logger: logger}, rig.mux)
 	return edge
 }
@@ -240,7 +240,7 @@ func (r *edgeRig) personToken(session string, projects ...string) string {
 func (r *edgeRig) namedToken(session, project string) string {
 	token := "named-token-of-" + session
 	answer := sessionAnswer(session, "outside@example.com", r.caller.JKT())
-	answer.ProjectScope = brokertoken.ProjectScopeNamed
+	answer.ProjectScope = ciphertoken.ProjectScopeNamed
 	answer.Projects = []string{project}
 	r.broker.Says(token, answer)
 	return token

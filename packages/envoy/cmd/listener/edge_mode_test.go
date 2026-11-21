@@ -26,8 +26,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -45,8 +45,8 @@ import (
 // before any handler runs. The exported admission (EdgeAdmits) is the very rule apiAuth asks.
 func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	projects := edgeTestProjects(t)
-	broker := brokertokentest.NewStubBroker(t)
-	caller := brokertokentest.NewCaller(t)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
 	reached := 0
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached++
@@ -54,7 +54,7 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	})
 	logger := logging.NewWithWriter("test-machine", io.Discard)
 	handler := apiAuth(listenerAPIAuth{brokers: listenerBrokerTokens(t, broker), edgeProjects: projects, logger: logger}, next)
-	answer := func(session, scope string, projects ...string) brokertoken.Introspection {
+	answer := func(session, scope string, projects ...string) ciphertoken.Introspection {
 		got := sessionAnswer(session, "outside@example.com", caller.JKT())
 		got.ProjectScope, got.Projects = scope, projects
 		return got
@@ -62,16 +62,16 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	service := serviceAnswer("ses_service", "example-fleet", caller.JKT())
 	for _, tc := range []struct {
 		name   string
-		answer *brokertoken.Introspection
+		answer *ciphertoken.Introspection
 		header string
 		admit  bool
 		status int
 	}{
-		{name: "a named token of the project it serves", answer: new(answer("ses_named", brokertoken.ProjectScopeNamed, "PRIV")), admit: true},
-		{name: "a person token listing only that project", answer: new(answer("ses_person", brokertoken.ProjectScopePerson, "PRIV")), admit: true},
-		{name: "a person token listing a project it does not serve beside it", answer: new(answer("ses_two", brokertoken.ProjectScopePerson, "INFRA", "PRIV")), status: http.StatusForbidden},
-		{name: "a named token of another project", answer: new(answer("ses_other", brokertoken.ProjectScopeNamed, "INFRA")), status: http.StatusForbidden},
-		{name: "a person token listing no project", answer: new(answer("ses_none", brokertoken.ProjectScopePerson)), status: http.StatusForbidden},
+		{name: "a named token of the project it serves", answer: new(answer("ses_named", ciphertoken.ProjectScopeNamed, "PRIV")), admit: true},
+		{name: "a person token listing only that project", answer: new(answer("ses_person", ciphertoken.ProjectScopePerson, "PRIV")), admit: true},
+		{name: "a person token listing a project it does not serve beside it", answer: new(answer("ses_two", ciphertoken.ProjectScopePerson, "INFRA", "PRIV")), status: http.StatusForbidden},
+		{name: "a named token of another project", answer: new(answer("ses_other", ciphertoken.ProjectScopeNamed, "INFRA")), status: http.StatusForbidden},
+		{name: "a person token listing no project", answer: new(answer("ses_none", ciphertoken.ProjectScopePerson)), status: http.StatusForbidden},
 		{name: "a service's token, which lists none", answer: &service, status: http.StatusForbidden},
 		{name: "a read-only token", answer: new(readOnlyAnswer("ses_reader", "example-reader", caller.JKT())), status: http.StatusUnauthorized},
 		{name: "no credential at all", status: http.StatusUnauthorized},
@@ -107,14 +107,14 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	}
 	// The exported rule, as the relay socket calls it on each live answer.
 	for _, tc := range []struct {
-		caller brokertoken.Caller
+		caller ciphertoken.Caller
 		admit  bool
 	}{
-		{brokertoken.Caller{Session: "s", Person: "p", ProjectScope: brokertoken.ProjectScopeNamed, Projects: []string{"PRIV"}}, true},
-		{brokertoken.Caller{Session: "s", Person: "p", ProjectScope: brokertoken.ProjectScopePerson, Projects: []string{"INFRA", "PRIV"}}, false},
-		{brokertoken.Caller{Session: "s", Person: "p", ProjectScope: brokertoken.ProjectScopePerson}, false},
-		{brokertoken.Caller{Session: "s", Service: "f", ProjectScope: brokertoken.ProjectScopeNone, ReadOnly: true}, false},
-		{brokertoken.Caller{Session: "s", Person: "p", ProjectScope: "elsewhere", Projects: []string{"PRIV"}}, false},
+		{ciphertoken.Caller{Session: "s", Person: "p", ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{"PRIV"}}, true},
+		{ciphertoken.Caller{Session: "s", Person: "p", ProjectScope: ciphertoken.ProjectScopePerson, Projects: []string{"INFRA", "PRIV"}}, false},
+		{ciphertoken.Caller{Session: "s", Person: "p", ProjectScope: ciphertoken.ProjectScopePerson}, false},
+		{ciphertoken.Caller{Session: "s", Service: "f", ProjectScope: ciphertoken.ProjectScopeNone, ReadOnly: true}, false},
+		{ciphertoken.Caller{Session: "s", Person: "p", ProjectScope: "elsewhere", Projects: []string{"PRIV"}}, false},
 	} {
 		err := EdgeAdmits(projects, tc.caller)
 		if tc.admit != (err == nil) {
