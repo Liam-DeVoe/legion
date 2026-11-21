@@ -302,8 +302,9 @@ func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Reques
 // another list still names approves a new login, at their browser, for the projects that list
 // them. Its read under the project's lock decides: where the same read before the locks did not
 // find the debt, the person's addition to the list or their becoming a restricted member having
-// committed in between, the record takes the person's approval lock then, and while an approval
-// of theirs is in flight the removal is refused 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT and changes
+// committed in between, the record takes the person's approval lock then, and while another
+// transaction holds it (an approval of theirs in flight, another owner's removal of them, or the
+// runbook's restore block) the removal is refused 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT and changes
 // nothing, for the owner to send again.
 func (s *server) removePerson(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, email string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	owes, err := access.RemovalOwes(ctx, tx, key, email)
@@ -316,7 +317,7 @@ func (s *server) removePerson(ctx context.Context, tx pgx.Tx, ev *events.Broker,
 	}
 	if err := s.recordMachineLoginRevocation(ctx, tx, email); err != nil {
 		if errors.Is(err, store.ErrMachineLoginApprovalInFlight) {
-			err = fmt.Errorf("an approval of this person's machine logins is being relayed to the secrets broker, and the removal found them on the list only once it held the project's lock; remove them again in a few seconds (%w)", err)
+			err = fmt.Errorf("the removal found this person on the list only once it held the project's lock, and an approval or another removal of this person is in progress; remove them again in a few seconds (%w)", err)
 		}
 		return model.ProjectAccess{}, model.Event{}, err
 	}

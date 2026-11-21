@@ -11,7 +11,7 @@ body: |-
   broker is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT. `DELETE /api/v1/projects/{key}/access/people/{email}`
   says that a removal that owes nothing holds up no approval of the person's, and that one that
   finds a restricted member on the list only once it holds the project's lock is
-  409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT while an approval of theirs is being relayed.
+  409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT while an approval or another removal of theirs is in progress.
 time: 2026-11-20T10:37:34Z
 custom:
     Issue: restricted-agent-tokens-named

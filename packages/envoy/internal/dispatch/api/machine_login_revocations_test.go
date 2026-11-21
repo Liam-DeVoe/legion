@@ -822,6 +822,11 @@ func TestARemovalThatFindsThePersonListedOnlyUnderItsLocksIsRefusedWhileTheirApp
 		t.Fatalf("carol's removal of erin from OWN did not answer within 30 s of the addition's commit, with erin's approve in flight: it waits on erin's approval lock under OWN's owner lock")
 	}
 	wantRefusal(t, refused, http.StatusConflict, "MACHINE_LOGIN_APPROVAL_IN_FLIGHT", accessCarol, "DELETE erin from OWN's list, which names her only under its locks, while her approve is in flight")
+	// The record's try of the lock fails behind any holder of it: an approve in flight, another
+	// owner's removal of the person or the runbook's restore block, so the answer names no one cause.
+	if body := refused.Body.String(); !strings.Contains(body, "an approval or another removal of this person is in progress") {
+		t.Errorf("carol's refused removal answers %s; want it to say an approval or another removal of this person is in progress", body)
+	}
 	listed := dispatchRequest(t, served, http.MethodGet, "/api/v1/projects/OWN/access", nil, accessCarol)
 	if people := decodeBody[model.ProjectAccess](t, listed).People; !slices.Contains(people, accessErin) {
 		t.Errorf("OWN's list after carol's refused removal names %v, want erin still on it", people)
