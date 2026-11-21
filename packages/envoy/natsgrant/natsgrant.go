@@ -157,19 +157,32 @@ func ListenerHost(machineID string) Permissions {
 // arrive under a prefix of its own, which Edge subscribes in place of every reply inbox.
 const EdgeInboxPrefix = "_INBOX_envoy_edge"
 
-// Edge is the grant of an edge listener's own NATS user as machine machineID: the listener that
-// serves an outside person's sessions, which no session and no other listener shares. It is
-// Listener's set with these changes and no other.
+// Edge is the grant of an edge listener's own NATS user as machine machineID, serving projects:
+// the listener that serves an outside person's sessions, which no session and no other listener
+// shares. It is Listener's set with these changes and no other. Each project is a project key, as
+// ENVOY_EDGE_PROJECTS and an edge-listener entry of BROKER_NATS_SERVICES are read (one subject
+// token, no wildcard); both callers pass them sorted, each once, and Edge lists them in the order
+// given.
 //
-// Publish: the agent subjects (contracts.AgentTopicPrefix), the role subjects
-// (contracts.RoleTopicPrefix) and Envoy's own lanes (bus.EnvoyTopicPrefix: the relay subjects, the
-// relay receipts, the exception lanes and the lanes the stream carries for the listener) in place
-// of every notification topic, and no create or update of the stream. So the edge publishes no
-// Dispatch, GitHub, Slack or Legion event, no team topic and no reply to another client's request,
-// and cannot change the stream's configuration: its start reads the stream and refuses when it is
-// missing. The rest of Listener's publish list stays as it is: the stream's info and stored-message
-// get, its durable's calls, JetStream's account info, the KV calls of every bucket of
-// bus.ListenerBuckets, the interest bucket's purge and the session consumers' calls.
+// Publish, in place of every notification topic, this list and no other notification topic:
+//   - the agent subjects (contracts.AgentTopicPrefix): a send;
+//   - the role subjects of each project, in the form that names the project
+//     (contracts.RoleTopicPrefix + project): a role message;
+//   - the relay subjects (bus.DeliverSubjectPrefix): a frame to a session whose consumer it holds;
+//   - the relay receipts (bus.RelayReplyPrefix);
+//   - the resume lane (bus.SessionResumeSubjectPrefix): where a deleted session consumer stopped;
+//   - the exception lanes (bus.ExceptionTopicPrefix) of the agent subjects and of each project's
+//     role subjects: a failed delivery's report, and an unheld role's refusal.
+//
+// So the edge publishes no Dispatch, GitHub, Slack, team or Legion event, no role message of
+// another project or in the form that names none, nothing on the kept role lane
+// (bus.KeptTopicPrefix, its copies and drain cursors, which only a listener that takes the role
+// lane writes), no exception of any other topic and no reply to another client's request. It holds
+// no create or update of the stream, so it cannot change the stream's configuration: its start
+// reads the stream and refuses when it is missing. The rest of Listener's publish list stays as it
+// is: the stream's info and stored-message get, its durable's calls, JetStream's account info, the
+// KV calls of every bucket of bus.ListenerBuckets, the interest bucket's purge and the session
+// consumers' calls.
 //
 // Subscribe: its own inbox prefix (EdgeInboxPrefix) in place of every reply inbox, so it reads no
 // other client's replies or push deliveries; every session's relay subject (bus.DeliverSubject),
@@ -179,16 +192,29 @@ const EdgeInboxPrefix = "_INBOX_envoy_edge"
 // the holder's agent subject, which the holder's session consumer delivers. It names no agent
 // stream subject in either direction.
 //
-// What it does not narrow: the session consumers' calls create a consumer on any filter, so the
-// edge can read any stored message, and its KV calls reach every record of the session, interest
-// and role buckets. Its read stays the whole bus until subjects and keys name their project.
-func Edge(machineID string) Permissions {
+// What it does not narrow: today's agent, relay and resume subjects name no project, so the edge
+// can publish on any session's; the session consumers' calls create a consumer on any filter, so it
+// can read any stored message; and its KV calls reach every record of the session, interest and
+// role buckets. Its read stays the whole bus until subjects and keys name their project.
+func Edge(machineID string, projects []string) Permissions {
 	removed := []string{
 		bus.NotificationTopicPrefix + ">",
 		jsAPI + "STREAM.CREATE." + bus.Stream,
 		jsAPI + "STREAM.UPDATE." + bus.Stream,
 	}
-	publish := []string{contracts.AgentTopicPrefix + ">", contracts.RoleTopicPrefix + ">", bus.EnvoyTopicPrefix + ">"}
+	publish := []string{contracts.AgentTopicPrefix + ">"}
+	for _, project := range projects {
+		publish = append(publish, contracts.RoleTopicPrefix+project+".>")
+	}
+	publish = append(publish,
+		bus.DeliverSubjectPrefix+"*",
+		bus.RelayReplyPrefix+">",
+		bus.SessionResumeSubjectPrefix+">",
+		bus.ExceptionTopicPrefix+contracts.AgentTopicPrefix+">",
+	)
+	for _, project := range projects {
+		publish = append(publish, bus.ExceptionTopicPrefix+contracts.RoleTopicPrefix+project+".>")
+	}
 	for _, entry := range Listener(machineID).Publish {
 		if !slices.Contains(removed, entry) {
 			publish = append(publish, entry)

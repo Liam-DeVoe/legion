@@ -239,7 +239,7 @@ func (r *edgeLiveRig) violations(t *testing.T) [][]string {
 // under it.
 func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 	t.Run("under its grant", func(t *testing.T) {
-		rig := newEdgeLiveRig(t, natsgrant.Edge(edgeLiveMachine))
+		rig := newEdgeLiveRig(t, natsgrant.Edge(edgeLiveMachine, []string{edgeProject}))
 		edge := rig.startEdge(t)
 		edge.waitHealthy(t)
 		frames, err := rig.connect(t, "observer").SubscribeSync(bus.DeliverSubject(edgeLiveSession))
@@ -282,7 +282,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 		}
 	})
 	t.Run("without its inbox prefix", func(t *testing.T) {
-		grant := natsgrant.Edge(edgeLiveMachine)
+		grant := natsgrant.Edge(edgeLiveMachine, []string{edgeProject})
 		grant.Subscribe = slices.DeleteFunc(slices.Clone(grant.Subscribe), func(entry string) bool { return entry == natsgrant.EdgeInboxPrefix+".>" })
 		if len(grant.Subscribe) != 2 {
 			t.Fatalf("the edge's grant does not subscribe %s.>: %v", natsgrant.EdgeInboxPrefix, grant.Subscribe)
@@ -332,7 +332,7 @@ func edgeRoleEnvelope(summary string) contracts.Envelope {
 // is taken from the role lane by it, which resolves the edge session as the holder and forwards
 // the message to the session's agent subject, and the edge listener relays it to the session.
 func TestARoleHeldAtTheEdgeIsReachedThroughASharedListener(t *testing.T) {
-	rig := newEdgeLiveRig(t, natsgrant.Edge(edgeLiveMachine))
+	rig := newEdgeLiveRig(t, natsgrant.Edge(edgeLiveMachine, []string{edgeProject}))
 	edge := rig.startEdge(t)
 	edge.waitHealthy(t)
 	frames, err := rig.connect(t, "observer").SubscribeSync(bus.DeliverSubject(edgeLiveSession))
