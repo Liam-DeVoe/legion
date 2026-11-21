@@ -149,13 +149,14 @@ func resolveThenLock[R, T any](
 // of a private project it does not see by the role's own name (legion-<project>-…,
 // contracts.RoleProject), whoever holds it, is answered as a role no session claims
 // (dispatchenvoy.NoRoleHolder), in the listener's words.
-// A role resolved with no reader at all - the delivery sweep's resume of an attempt nothing
-// resolved before a crash, which cannot tell whose mention it is - is answered so too while the
-// deployment holds a private project (roleResolvesWithoutAReader): its holder is chosen now, and
-// could be a session the author may not see. A session route was held to its author's reader
-// when it was written. The role's reads run whatever the listener answers, a holder or none, so a
-// role held by a session the reader may not see costs what an unheld role costs, and the time a
-// resolve takes tells nothing of the holder (roleHolderHidden).
+// A role resolved with no reader at all - the delivery sweep's resume of a message attempt nothing
+// resolved before a crash - is answered so too while the deployment holds a private project
+// (roleResolvesWithoutAReader): its holder is chosen now, and could be a session the author may not
+// see. The sweep resumes a comment mention's attempt as the comment's author (resumeOwedDelivery).
+// A session route was held to its author's reader when it was written. The role's reads run
+// whatever the listener answers, a holder or none, so a role held by a session the reader may not
+// see costs what an unheld role costs, and the time a resolve takes tells nothing of the holder
+// (roleHolderHidden).
 func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, delivery string) (string, string, string, bool) {
 	if s.deps.Envoy == nil {
 		return "", "", listenerNotConfiguredText, false
@@ -174,9 +175,10 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 		}
 	} else {
 		// A session route was held to its author's reader when it was written, so a resolve with
-		// no reader in ctx - the delivery sweep's resume, a mention send queued with none - reads
-		// the session as the server's own reader, by name, where sessionHiddenFromReader answers a
-		// context with no reader hidden. The listener's read below takes ctx as it came.
+		// no reader in ctx - the delivery sweep's resume of a message attempt, a mention send
+		// queued with none - reads the session as the server's own reader, by name, where
+		// sessionHiddenFromReader answers a context with no reader hidden. The listener's read
+		// below takes ctx as it came.
 		seen := ctx
 		if _, ok := readerFromContext(ctx); !ok {
 			seen = withReader(ctx, everyReader)

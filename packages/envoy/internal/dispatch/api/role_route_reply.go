@@ -8,8 +8,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // roleHolderReply is what a reply route learned, before its transaction opened, of whether the
@@ -27,27 +29,98 @@ func (r roleHolderReply) allows(route string) bool {
 	return r.holder && r.route == route
 }
 
-// roleHolderReplyOf is lookUpRoleHolderReply for the route and the attempt's session that the one
-// row query names, scanned as (route, session_id), with id - the message's or the comment's - as
-// the query's $1 and args after it. An id that is no uuid, and one that no row has, asks nothing
-// and names no holder, so the reply's transaction answers it as it always has. A read that failed
-// (a statement timeout, a reset connection) is the error, which the route answers 500: whether the
+// messageReplyRoleHolderOf is the lookUpRoleHolderReply of a reply to attempt of message id: the
+// message's target, as who reads it (leaveOutHiddenMessageSessions), and the session the attempt
+// names. A target who does not see is none, as the reply's transaction reads it, so no listener is
+// asked about its role. An id that is no uuid, and a message who does not see (access.MessageClause)
+// or no row holds, ask nothing and name no holder, so the reply's transaction answers them as it
+// always has. The read of what who sees is made whatever the message targets. A read that failed (a
+// statement timeout, a reset connection) is the error, which the route answers 500: whether the
 // session replying holds the role was not read, and a refusal would end a reply that the role's
 // live holder may make again.
-func (s *server) roleHolderReplyOf(ctx context.Context, actor model.Actor, id, query string, args ...any) (roleHolderReply, error) {
+func (s *server) messageReplyRoleHolderOf(ctx context.Context, actor, who model.Actor, id string, attempt int) (roleHolderReply, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return roleHolderReply{}, nil
 	}
-	var route string
+	var message model.Message
 	var attemptSession *string
-	err := s.deps.Store.Pool.QueryRow(ctx, query, append([]any{id}, args...)...).Scan(&route, &attemptSession)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return roleHolderReply{}, nil
-	}
-	if err != nil {
+	err := s.deps.Store.Pool.QueryRow(ctx, `
+		select m.target, d.session_id
+		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
+		where m.id = $1 and `+access.MessageClause("m", "$3")+`
+	`, id, attempt, refs.VisibilityArg(who)).Scan(&message.Target, &attemptSession)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return roleHolderReply{}, fmt.Errorf("read the route and the attempt that the reply to %s answers: %w", id, err)
 	}
-	return s.lookUpRoleHolderReply(ctx, route, attemptSession, actor)
+	if err := leaveOutHiddenMessageSessions(ctx, s.deps.Store.Pool, who, []*model.Message{&message}); err != nil {
+		return roleHolderReply{}, err
+	}
+	if message.Target == nil {
+		return roleHolderReply{}, nil
+	}
+	return s.lookUpRoleHolderReply(ctx, *message.Target, attemptSession, actor)
+}
+
+// replyRoleHolderOf is the lookUpRoleHolderReply of a reply to an attempt of comment id: the
+// mention the reply answers is picked among the comment's mentions as who reads them
+// (mentionsReadBy), as the reply's transaction picks it - the one target names, or the only one
+// when target is nil - and the attempt's session is attempt's of that mention. A mention who does
+// not see is none, as one the comment does not have, so no listener is asked about its role. An id
+// that is no uuid, a comment who does not see (access.ItemOwnerClause) or has not got, and a pick
+// that finds no mention ask nothing and name no holder, so the reply's transaction answers them as
+// it always has. A read that failed is the error, which the route answers 500.
+func (s *server) replyRoleHolderOf(
+	ctx context.Context, actor, who model.Actor, id string, target *string, attempt int,
+) (roleHolderReply, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return roleHolderReply{}, nil
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select m.target, m.resolved_session_id, d.session_id
+		from comment_mentions m
+		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $2
+		join comments c on c.id = m.comment_id
+		where m.comment_id = $1 and `+access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$3")+`
+		order by m.target
+	`, id, attempt, refs.VisibilityArg(who))
+	if err != nil {
+		return roleHolderReply{}, fmt.Errorf("read the mentions and the attempt that the reply to %s answers: %w", id, err)
+	}
+	var mentions []model.Mention
+	attemptSessions := map[string]*string{}
+	for rows.Next() {
+		var mention model.Mention
+		var attemptSession *string
+		if err := rows.Scan(&mention.Target, &mention.SessionID, &attemptSession); err != nil {
+			rows.Close()
+			return roleHolderReply{}, fmt.Errorf("read the mentions and the attempt that the reply to %s answers: %w", id, err)
+		}
+		mentions = append(mentions, mention)
+		attemptSessions[mention.Target] = attemptSession
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return roleHolderReply{}, fmt.Errorf("read the mentions and the attempt that the reply to %s answers: %w", id, err)
+	}
+	readable, err := mentionsReadBy(ctx, s.deps.Store.Pool, who, id, mentions)
+	if err != nil {
+		return roleHolderReply{}, err
+	}
+	route := ""
+	switch {
+	case target != nil:
+		for _, mention := range readable {
+			if mention.Target == *target {
+				route = mention.Target
+			}
+		}
+	case len(readable) == 1:
+		route = readable[0].Target
+	}
+	if route == "" {
+		return roleHolderReply{}, nil
+	}
+	return s.lookUpRoleHolderReply(ctx, route, attemptSessions[route], actor)
 }
 
 // lookUpRoleHolderReply asks the listener whether actor holds the role route names, for a reply

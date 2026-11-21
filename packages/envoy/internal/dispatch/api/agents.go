@@ -233,8 +233,8 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		// A session the reader may read can still hold a role of a private project it does not
-		// see, whose name spells that project's key (contracts.RoleProject).
+		// A session the reader may read can still hold a role of a project it does not see,
+		// whose name spells that project's key (contracts.RoleProject).
 		if err = leaveOutHiddenSessionRoles(r.Context(), s.deps.Store.Pool, reader, sessions); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -278,27 +278,44 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, rows)
 }
 
-// leaveOutHiddenSessionRoles writes each session's roles as who reads them: a role of a private
-// project who does not see (a legion-<project>-… name, contracts.RoleProject) is left out, as
-// access.RoleProjectClause leaves out every reference to such a role, held or not; a session's
-// other roles stay, in their order. One read judges every session's roles (seenReferences), made
-// whatever they name, so a list that names a hidden role costs what one that names none costs. Each
-// session that holds a role is given a list of its own: the sessions are a copy of the roster's,
-// whose lists every read shares. A reader that sees every object reads every role, with no read
-// (R9), and no session left to answer reads nothing either.
+// leaveOutHiddenSessionRoles writes each session's roles as who reads them. A role's name can spell
+// a project's key (legion-<project>-…, contracts.RoleProject), so a role of a project who does not
+// see is left out, and a session's other roles stay, in their order. Which projects those are
+// depends on the reader:
+//
+//   - A restricted member, or a credential acting for one (a viewer that is not open), is confined
+//     to the projects it sees, public ones no more its own than private ones: it reads a role of a
+//     project only where that key is one it sees (Viewer.Sees), and a role whose name spells no
+//     project. A key no project holds is left out as well, so what it reads never tells a project
+//     from a key nobody holds. Its viewer already holds what it sees, so this reads nothing.
+//   - An open viewer reads every role but one of a private project it does not see, as
+//     access.RoleProjectClause leaves out every reference to such a role, held or not. One read
+//     judges every session's roles (seenReferences), made whatever they name, so a list that names
+//     a hidden role costs what one that names none costs.
+//
+// Each session that holds a role is given a list of its own: the sessions are a copy of the
+// roster's, whose lists every read shares. A reader that sees every object reads every role, with
+// no read (R9), and no session left to answer reads nothing either.
 func leaveOutHiddenSessionRoles(ctx context.Context, q queryer, who model.Actor, sessions []envoy.Session) error {
 	if seesEveryObject(who) || len(sessions) == 0 {
 		return nil
 	}
-	named := references{}
-	for _, session := range sessions {
-		for _, role := range session.Roles {
-			named.name(roleProjectReference, routeRoleProject("role:"+role))
-		}
+	reads := func(role string) bool {
+		project := routeRoleProject("role:" + role)
+		return project == "" || (who.Viewer != nil && slices.Contains(who.Viewer.Sees, project))
 	}
-	seen, err := seenReferences(ctx, q, who, named)
-	if err != nil {
-		return err
+	if who.Viewer != nil && who.Viewer.Open {
+		named := references{}
+		for _, session := range sessions {
+			for _, role := range session.Roles {
+				named.name(roleProjectReference, routeRoleProject("role:"+role))
+			}
+		}
+		seen, err := seenReferences(ctx, q, who, named)
+		if err != nil {
+			return err
+		}
+		reads = func(role string) bool { return seen.holdsRoute("role:" + role) }
 	}
 	for index := range sessions {
 		if len(sessions[index].Roles) == 0 {
@@ -306,7 +323,7 @@ func leaveOutHiddenSessionRoles(ctx context.Context, q queryer, who model.Actor,
 		}
 		kept := make([]string, 0, len(sessions[index].Roles))
 		for _, role := range sessions[index].Roles {
-			if seen.holdsRoute("role:" + role) {
+			if reads(role) {
 				kept = append(kept, role)
 			}
 		}

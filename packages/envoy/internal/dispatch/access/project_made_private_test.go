@@ -10,9 +10,9 @@ import (
 
 // TestTheMadePrivateTriggerIsTheBodyGoRenders: record_project_made_private, the function of the
 // projects table's trigger, is projectMadePrivateFunctionBody as it renders now, word for word
-// (whitespace aside), so the rule it reads (PersonSeesProjectSQL) is written once, in Go; it sets
-// nothing for its calls; and its trigger, projects_made_private_reached, is a constraint trigger
-// deferred to commit, so the person locks it takes are the last its transaction takes.
+// (whitespace aside), so what it records at a switch is written once, in Go; it sets nothing for
+// its calls; and its trigger, projects_made_private_reached, is a constraint trigger deferred to
+// commit, so it reads the listener record as the switch's transaction leaves it.
 //
 // Control: a word of the rendered body changed (the listed sessions' insert dropped), and the test
 // names the difference.
@@ -39,6 +39,6 @@ func TestTheMadePrivateTriggerIsTheBodyGoRenders(t *testing.T) {
 		t.Fatalf("read the trigger projects_made_private_reached: %v", err)
 	}
 	if !deferrable || !deferred {
-		t.Errorf("projects_made_private_reached is deferrable=%t initially deferred=%t, want both: its person locks must be the last its transaction takes", deferrable, deferred)
+		t.Errorf("projects_made_private_reached is deferrable=%t initially deferred=%t, want both: it must read the listener record as the switch's transaction leaves it", deferrable, deferred)
 	}
 }

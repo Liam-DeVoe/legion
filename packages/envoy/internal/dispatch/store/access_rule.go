@@ -56,66 +56,55 @@ const SessionOwnerLock = "dispatch-session-owner"
 // list, a group's full members, the members taken out of a group and the owner the project was
 // taken from; PgPeopleStore's writes of a member kind name the person whose kind they change, with
 // the projects that person saw under the kind the row held (projectsSeenAs). A switch of a project
-// to private runs the same two statements in its trigger (MadePrivateReachedSQL). A session's
-// transcript holds what it read while its person saw the project, so the content rule reads each
-// pair as a project the session acted in (access.SessionContentClause); nothing removes one.
+// to private records nothing for the people tied to a session (access:
+// projectMadePrivateFunctionBody). A session's transcript holds what it read while its person saw
+// the project, so the content rule reads each pair as a project the session acted in
+// (access.SessionContentClause); nothing removes one.
 //
-// It first takes each person's SessionOwnerLock, exclusive, in login order, by the statement the
-// trigger takes its locks with (lockSessionOwnersSQL), so two changes that lock the same people
-// never wait on each other in a cycle; it is the last advisory lock its callers take. A pair is
-// written only where no row holds it, as session_projects' are.
+// It first takes each person's SessionOwnerLock, exclusive, in login order
+// (lockSessionOwnersSQL), so two changes that lock the same people never wait on each other in a
+// cycle; it is the last advisory lock its callers take. A pair is written only where no row holds
+// it, as session_projects' are.
 func RecordReachedProjects(ctx context.Context, tx pgx.Tx, keys, people []string) error {
 	if len(keys) == 0 || len(people) == 0 {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, lockSessionOwnersSQL("select", `from unnest($1::text[]) as tied (login)`), people); err != nil {
+	if _, err := tx.Exec(ctx, lockSessionOwnersSQL(`from unnest($1::text[]) as tied (login)`), people); err != nil {
 		return fmt.Errorf("lock the sessions of the people who lost a project: %w", err)
 	}
-	lost := lostProjectSQL("", `
+	lost := lostProjectSQL(`
 		join projects lost on lost.key = any($1::text[])`, `tied.login = any($2::text[])`, "lost")
-	if _, err := tx.Exec(ctx, insertReachedSQL("", "lost.key", lost), keys, people); err != nil {
+	if _, err := tx.Exec(ctx, insertReachedSQL("lost.key", lost), keys, people); err != nil {
 		return fmt.Errorf("record the projects the sessions of the people who lost one reached: %w", err)
 	}
 	return nil
 }
 
-// MadePrivateReachedSQL is RecordReachedProjects for the trigger of a switch of a project to
-// private (access: projectMadePrivateFunctionBody), as two statements of a PL/pgSQL body: the
-// people are each person tied to a session who saw the project by its row as the update found it
-// (old) and does not see it by its row after (new), and the project is new's. Every table is named
-// under public, as a function's body names them.
-func MadePrivateReachedSQL() string {
-	lost := lostProjectSQL("public.", "", `coalesce(`+PersonSeesProjectSQLIn("public.", "tied.login", "coalesce(tied_person.member_kind, 'full')", "old")+`, false)`, "new")
-	return lockSessionOwnersSQL("perform", lost) + `;
-	` + insertReachedSQL("public.", "new.key", lost) + `;`
-}
-
 // lostProjectSQL is the from and where of the sessions (tied, with its person's row tied_person)
-// of the people who lost the project projectAlias names: join brings that project in when the
-// statement reads it from a table, who names the people, and the person no longer sees it
-// (PersonSeesProjectSQLIn, a person no people row holds reading as a full member).
-func lostProjectSQL(schema, join, who, projectAlias string) string {
-	return `from ` + schema + `session_owners tied` + join + `
-		left join ` + schema + `people tied_person on tied_person.email = tied.login
+// of the people who lost the project projectAlias names: join brings that project in, who names
+// the people, and the person no longer sees it (PersonSeesProjectSQLIn, a person no people row
+// holds reading as a full member).
+func lostProjectSQL(join, who, projectAlias string) string {
+	return `from session_owners tied` + join + `
+		left join people tied_person on tied_person.email = tied.login
 		where ` + who + `
-			and not coalesce(` + PersonSeesProjectSQLIn(schema, "tied.login", "coalesce(tied_person.member_kind, 'full')", projectAlias) + `, false)`
+			and not coalesce(` + PersonSeesProjectSQLIn("", "tied.login", "coalesce(tied_person.member_kind, 'full')", projectAlias) + `, false)`
 }
 
 // lockSessionOwnersSQL takes SessionOwnerLock, exclusive, for each distinct login people (a from
-// and where over an alias tied with a login column) answers, in login order: verb is select in a
-// statement and perform in a PL/pgSQL body.
-func lockSessionOwnersSQL(verb, people string) string {
-	return verb + ` count(pg_advisory_xact_lock(hashtext('` + SessionOwnerLock + `'), hashtext(lost.login)))
+// and where over an alias tied with a login column) answers, in login order.
+func lockSessionOwnersSQL(people string) string {
+	return `select count(pg_advisory_xact_lock(hashtext('` + SessionOwnerLock + `'), hashtext(lost.login)))
 	from (select distinct tied.login ` + people + `
 		order by tied.login offset 0) as lost`
 }
 
 // insertReachedSQL writes a pair (session, project) for each session lost (lostProjectSQL) names,
 // with key the project's key, where no row holds the pair.
-func insertReachedSQL(schema, key, lost string) string {
-	return `insert into ` + schema + `session_reached_projects (session_id, project_key)
+func insertReachedSQL(key, lost string) string {
+	return `insert into session_reached_projects (session_id, project_key)
 	select distinct tied.session_id, ` + key + ` ` + lost + `
 		and not exists (
-			select 1 from ` + schema + `session_reached_projects recorded
+			select 1 from session_reached_projects recorded
 			where recorded.session_id = tied.session_id and recorded.project_key = ` + key + `)`
 }

@@ -11,15 +11,16 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// TestADocumentSocketAsksItsRuleBeforeEachBatchOfFrames: a document socket asks whether its person
-// still reads its room before each batch of the room's frames goes out (recheckedConn), as the
-// live agent view asks before each batch of a session's frames, so a change that announces nothing
-// - a session's new tie or pair for a session's document, here an SQL statement alone - ends the
-// socket before the room's next frame reaches the person, not only on the access heartbeat. carol,
-// a full member no list names, and alice, DOC's owner, hold sockets to public DOC's document; no
-// access heartbeat and no room sync run here, so nothing else can see the change. DOC is then made
-// private by SQL alone, and alice types: carol's socket closes with the code a revoked admission
-// gets, and her copy never holds alice's edit; alice, who still reads DOC, keeps her socket.
+// TestADocumentSocketAsksItsRuleBeforeEachBatchOfFrames: while no LISTEN of the process stands, the
+// access epoch keeps no answer (accessEpoch.stamp), so a document socket asks whether its person
+// still reads its room before each data frame of the room goes out (recheckedConn, socketAsk): a
+// change no listener here can hear - here an SQL statement alone, with no room sync running at all
+// - ends the socket before the room's next frame reaches the person, not only on the access
+// heartbeat. carol, a full member no list names, and alice, DOC's owner, hold sockets to public
+// DOC's document; no access heartbeat and no room sync run here, so nothing else can see the
+// change. DOC is then made private by SQL alone, and alice types: carol's socket closes with the
+// code a revoked admission gets, and her copy never holds alice's edit; alice, who still reads DOC,
+// keeps her socket.
 //
 // Control: the connection asking nothing before a batch (revocableSocketWriter hands ygo the
 // connection as it is); carol's copy holds "after" and her socket stays open.

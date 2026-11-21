@@ -127,6 +127,9 @@ type testServerOptions struct {
 	// rosterUncached is Deps.ListenerRosterUncached: every read of the listener's session list asks
 	// the listener, as an end-to-end test process does (DISPATCH_TEST_ROSTER_UNCACHED).
 	rosterUncached bool
+	// routeRosterTTL is Deps.RouteRosterTTL: how long a stored listener answer serves reads before
+	// a read fetches it again. Zero keeps five seconds.
+	routeRosterTTL time.Duration
 	// persistence is an optional document-store seam for API handlers that need the document
 	// service to observe a persistence boundary condition.
 	persistence func(*store.Store) docs.VersionedStore
@@ -348,6 +351,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
 		ListenerRosterUncached: options.rosterUncached,
+		RouteRosterTTL:         options.routeRosterTTL,
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.

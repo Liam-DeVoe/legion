@@ -263,6 +263,24 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 	return nil
 }
 
+// SessionAccessChannel is the Postgres channel each write of what the session content rule reads
+// (access.SessionContentClause) notifies inside its own statement, when the statement wrote a row,
+// so every Dispatch process hears it once the write commits and none hears a write that did not: a
+// session's tie to a person or a project it wrote in (queueSessionProject), the tie and the reached
+// projects a broker-issued token records (access.TieSession, access.RecordListedReach), a stored
+// listener answer (api: storeRouteRoster) and `envoy-dispatch backfill-session-projects`. It
+// carries no payload. Each process's document service moves its access epoch on it (docs:
+// accessEpoch), so a document socket asks its rule again before its next frame; a project's owner,
+// visibility or access list and a group announce on store.AccessChangedChannel instead, which
+// moves the epoch too.
+const SessionAccessChannel = "dispatch_session_access_changed"
+
+// AnnounceSessionAccess is the notification on SessionAccessChannel as an SQL expression, for the
+// select list of a statement over the rows it wrote: Postgres sends one notification however many
+// rows select it in a transaction, none when no row does, and none when the transaction does not
+// commit.
+const AnnounceSessionAccess = `pg_notify('` + SessionAccessChannel + `', '')`
+
 // queueSessionProject queues the record that e's session acted in the project e belongs to
 // (session_projects), which is how a session is one of a project's agents (access.SessionClause),
 // and the record of the person its credential acts for (session_owners): a read model of the event
@@ -270,7 +288,8 @@ func (b *Broker) QueueAppendWithLogins(batch *store.WriteBatch, e model.Event, l
 // route. The project is the owner row's, read in the statement's own snapshot, as the insert
 // before it reads last_seq. Only a session the event's credential proved is recorded
 // (provedSession): an event of a person or of a session a request body named records nothing, and
-// one of no issue, document or project records the person alone.
+// one of no issue, document or project records the person alone. Each statement that writes a row
+// announces it on SessionAccessChannel, since the session content rule reads both tables.
 //
 // A pair is written only where no row of the transaction's snapshot holds it, and session_projects
 // has no unique key, so the write never waits for another transaction: with a unique key, a
@@ -292,10 +311,14 @@ func queueSessionProject(batch *store.WriteBatch, e model.Event) {
 	if e.Actor.Owner != nil {
 		if login := model.CanonicalLogin(*e.Actor.Owner); login != "" {
 			batch.Queue("record the session's person", `
-				insert into session_owners (session_id, login)
-				select $1, $2
-				where not exists (
-					select 1 from session_owners recorded where recorded.session_id = $1 and recorded.login = $2)
+				with written as (
+					insert into session_owners (session_id, login)
+					select $1, $2
+					where not exists (
+						select 1 from session_owners recorded where recorded.session_id = $1 and recorded.login = $2)
+					returning 1
+				)
+				select `+AnnounceSessionAccess+` from written
 			`, e.Actor.ID, login)
 		}
 	}
@@ -303,17 +326,21 @@ func queueSessionProject(batch *store.WriteBatch, e model.Event) {
 		return
 	}
 	batch.Queue("record the session's project", `
-		insert into session_projects (session_id, project_key)
-		select $1, owner.project_key
-		from (
-			select project_key from issues where key = $2
-			union all select project_key from artifacts where id = $3
-			union all select key from projects where key = $4
-		) owner
-		where owner.project_key is not null
-			and not exists (
-				select 1 from session_projects recorded
-				where recorded.session_id = $1 and recorded.project_key = owner.project_key)
+		with written as (
+			insert into session_projects (session_id, project_key)
+			select $1, owner.project_key
+			from (
+				select project_key from issues where key = $2
+				union all select project_key from artifacts where id = $3
+				union all select key from projects where key = $4
+			) owner
+			where owner.project_key is not null
+				and not exists (
+					select 1 from session_projects recorded
+					where recorded.session_id = $1 and recorded.project_key = owner.project_key)
+			returning 1
+		)
+		select `+AnnounceSessionAccess+` from written
 	`, e.Actor.ID, e.IssueKey, e.ArtifactID, e.ProjectKey)
 }
 

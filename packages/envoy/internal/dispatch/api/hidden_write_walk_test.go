@@ -490,7 +490,11 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	trace := &existenceTrace{}
 	listener := walkListener(t, &topics, calls)
 	t.Cleanup(listener.Close)
-	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL, store: storetest.TracedStore(t, storetest.Open(t), trace)})
+	// The stored listener answer serves the whole walk: every request of a caller that does not see
+	// every object refreshes it before it reads (readerFor), and a refresh that found it stale would
+	// ask the listener and write route_roster in whichever call of a pair came first, which the walk
+	// holds to the same listener calls and no write (callPair). The seed's agents list stores it.
+	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL, store: storetest.TracedStore(t, storetest.Open(t), trace), routeRosterTTL: time.Hour})
 	issue := seed.issue[seedPrivate]
 	asCarol := func(method, path string, body any) *httptest.ResponseRecorder {
 		t.Helper()
