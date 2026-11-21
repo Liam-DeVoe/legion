@@ -2924,12 +2924,13 @@ func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if err != nil {
 		return nil, err
 	}
-	// An issue whose key yields no claim token holds no stored claim, and each of its roles is a
-	// target by the role alone, as every row by role is: the executor answers a claim it cannot name
-	// as one that does not exist.
+	// Every issue the record holds has a key of Dispatch's shape, so each of its roles names a
+	// claim token (claim.NewToken): a failure here is a record the daemon did not write.
 	var excepted claim.Token
 	if except != "" {
-		excepted, _ = record.WorkerClaim(project, issue.Key, except, rows)
+		if excepted, err = record.WorkerClaim(project, issue.Key, except, rows); err != nil {
+			return nil, fmt.Errorf("the %s of %s: %w", except, issue.Key, err)
+		}
 	}
 	var targets []claimTarget
 	// The excepted claim counts as reached, so no row by role reaches it either.
@@ -2950,7 +2951,10 @@ func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue
 			continue
 		}
 		worker, err := record.WorkerClaim(project, issue.Key, role, rows)
-		if err != nil || !named[worker] {
+		if err != nil {
+			return nil, fmt.Errorf("the %s of %s: %w", role, issue.Key, err)
+		}
+		if !named[worker] {
 			targets = append(targets, claimTarget{role: role})
 		}
 	}
