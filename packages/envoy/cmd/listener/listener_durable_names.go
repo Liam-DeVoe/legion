@@ -130,16 +130,25 @@ func durableInfo(ctx context.Context, client *bus.Client, durable string) (*nats
 		if sel.Record.Current == "" {
 			return nil, fmt.Errorf("%w: the selection of %s names no current", nats.ErrConsumerNotFound, durable)
 		}
-		info, err := client.JS().ConsumerInfo(bus.Stream, sel.Record.Current, nats.Context(ctx))
-		if err != nil {
-			return nil, err
-		}
-		if err := names.Owns(key, protocolInfo(info)); err != nil {
-			return nil, err
-		}
-		return info, nil
+		return ownedDurable(ctx, client, names, key, sel.Record.Current)
 	}
 	return client.JS().ConsumerInfo(bus.Stream, durable, nats.Context(ctx))
+}
+
+// ownedDurable reads the listener's durable consumer name, which key's record names, and answers it
+// only when the consumer's own metadata names the durable (Names.Owns): a read of the durable that
+// a reader then acts on, to report, correct or bind it, is never another owner's consumer. Both of
+// the durable's readers through its record use it (durableInfo, ensureFreshDurable); Names reads
+// the protocol's part of it itself (protocolInfo).
+func ownedDurable(ctx context.Context, client *bus.Client, names *consumernames.Names, key, name string) (*nats.ConsumerInfo, error) {
+	info, err := client.JS().ConsumerInfo(bus.Stream, name, nats.Context(ctx))
+	if err != nil {
+		return nil, err
+	}
+	if err := names.Owns(key, protocolInfo(info)); err != nil {
+		return nil, err
+	}
+	return info, nil
 }
 
 // ensureFreshDurable is startListenerSubscription's create in the fresh mode: the durable's current
@@ -195,11 +204,8 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 	if created && current == createdHere {
 		return current, nil
 	}
-	info, err := client.JS().ConsumerInfo(bus.Stream, current, nats.Context(ctx))
+	info, err := ownedDurable(ctx, client, names, key, current)
 	if err != nil {
-		return "", err
-	}
-	if err := names.Owns(key, protocolInfo(info)); err != nil {
 		return "", err
 	}
 	if err := correctListenerDurable(client, info, subjects, nats.Context(ctx)); err != nil {
