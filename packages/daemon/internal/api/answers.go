@@ -208,15 +208,15 @@ var Answers = []Answer{
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
 	// version.go's 206: what a live role's claim owes now (`api.OwedResponse`), which the
 	// end-of-turn reminder renders. The route arrives with the answer at the contract of the
-	// repository correction, so no contract below it records either. version.go's 213 added
+	// repository correction, so no contract below it records either. version.go's 212 added
 	// `wait` and `hold` to it, which a caller below that contract is served without (shaping.go's
 	// withoutOwedWaitAndHold).
 	{ID: AnswerOwed, Routes: []string{"POST /legion/v1/claims/owed"}, Since: repositoryCorrectionContract},
-	// version.go's 213: the wait a phase worker declared, as the daemon recorded it
-	// (`api.WaitResponse`). The route arrives with the answer, so no contract below 213 records
+	// version.go's 212: the wait a phase worker declared, as the daemon recorded it
+	// (`api.WaitResponse`). The route arrives with the answer, so no contract below 212 records
 	// either.
 	{ID: AnswerWait, Routes: []string{"POST /legion/v1/claims/wait"}, Since: waitContract},
-	// version.go's 213: whether a report of news ended the wait it names (`api.WaitNewsResponse`),
+	// version.go's 212: whether a report of news ended the wait it names (`api.WaitNewsResponse`),
 	// arrived with its route as the wait's answer did.
 	{ID: AnswerWaitNews, Routes: []string{"POST /legion/v1/claims/wait-news"}, Since: waitContract},
 }
@@ -304,7 +304,7 @@ func enumeratedFields() []EnumeratedField {
 	// `step` of the owed answer's hold, the gated step whose row of the closed design gate holds
 	// the asking merger (api.OwedResponse.Hold, record.DesignStep). It arrived with `hold` at
 	// waitContract and is served down below that contract with the whole key (shaping.go's
-	// withoutOwedWaitAndHold), so no body below 213 carries a value of it, as on the state.
+	// withoutOwedWaitAndHold), so no body below 212 carries a value of it, as on the state.
 	return append(fields, EnumeratedField{Answer: AnswerOwed, KeyPath: "hold.step", Values: holdSteps})
 }
 
@@ -330,7 +330,7 @@ var stateEnumeratedFields = []EnumeratedField{
 	// `step` of a merger's hold, the gated step whose row of the closed design gate holds it
 	// (api.HoldView.Step, record.DesignStep). It arrived with `hold` at waitContract and is served
 	// down below that contract with the whole key (shaping.go's withoutWaitAndHold), so no body
-	// below 213 carries a value of it. The architect's view and each worker's carry the one key,
+	// below 212 carries a value of it. The architect's view and each worker's carry the one key,
 	// as every claim view does, though the gate holds a merger alone.
 	{Answer: AnswerState, KeyPath: "issues.*.architect.hold.step", Values: holdSteps},
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.hold.step", Values: holdSteps},

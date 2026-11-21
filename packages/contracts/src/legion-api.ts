@@ -387,7 +387,7 @@ const legionClaimView = z.object({
   /** The wait the claim's worker declared (`POST /legion/v1/claims/wait`) while it stands: the
    * same four keys the declaration's answer named. Absent for a claim with no wait that stands:
    * one that declared none, one whose wait ended, and one whose wait has no end yet but no longer
-   * stands — a fresh session, or a phase that moved. A caller below 213, by the contract it states
+   * stands — a fresh session, or a phase that moved. A caller below 212, by the contract it states
    * or its pod records, is served the state with no such key at all (the daemon's
    * `withoutWaitAndHold`), so every reader takes it as optional. */
   wait: legionWait.optional(),
@@ -395,7 +395,7 @@ const legionClaimView = z.object({
    * outbox's fence reads, so it is present exactly while the daemon holds the merger's phase
    * start. Absent for every other claim: another role's, a merger whose issue is not in
    * `merging`, and a merger whose tree's gated steps stand open or have no registered row. A
-   * caller below 213, by the contract it states or its pod records, is served the state with no
+   * caller below 212, by the contract it states or its pod records, is served the state with no
    * such key at all (the daemon's `withoutWaitAndHold`), so every reader takes it as optional. */
   hold: legionHold.optional(),
 });
@@ -1661,13 +1661,13 @@ export const LegionOwedResponse = z
      * the rule the state's claim view reads: the same four keys the declaration's answer named.
      * Absent where no wait stands: none declared, one that ended, and one with no end that no
      * longer stands — a fresh session, or a phase that moved. It is named whether or not the
-     * claim owes, as `architect` is. A caller below 213 is served the answer with no such key at
+     * claim owes, as `architect` is. A caller below 212 is served the answer with no such key at
      * all (the daemon's `withoutOwedWaitAndHold`), so every reader takes it as optional. */
     wait: legionWait.optional(),
     /** The closed design gate that holds this merger, by the rule the outbox's fence reads: a
      * merger whose issue is in `merging` while a step its deployment gates stands closed with a
      * row of its own. Absent for every other claim, once the gate opens, and on a tree with no
-     * registered gate row. A caller below 213 is served the answer with no such key at all (the
+     * registered gate row. A caller below 212 is served the answer with no such key at all (the
      * daemon's `withoutOwedWaitAndHold`), so every reader takes it as optional. */
     hold: legionHold.optional(),
   })
@@ -2495,7 +2495,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   LegionTurnOutcomeResponse: ["refusedRun", "failed"],
   // `pi-shared/src/phase-reminder.ts` decides whether a due reminder goes out by `owes`, names
   // the work it gives by `work`, and sends the architect notice to `architect`, as the stall
-  // watch's notice does (`pi-legion/src/stall-evidence.ts`, contract 206). From contract 213 it
+  // watch's notice does (`pi-legion/src/stall-evidence.ts`, contract 206). From contract 212 it
   // holds every reminder but the one for a tool call written as text while the answer's `wait`
   // stands, which it tells by the wait's `id`, or while its `hold` stands, whose step, document
   // and version that reminder names (`quietReminderText` in `pi-shared/src/phase-stall.ts`).

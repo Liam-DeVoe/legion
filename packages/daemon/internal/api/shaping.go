@@ -880,7 +880,7 @@ const quietTimeContract = 111
 // (answers.go's AnswerIssueRecord and AnswerHealth).
 const shapedAnswersContract = 193
 
-// waitContract is the daemon contract this change lands under (version.go's 213,
+// waitContract is the daemon contract this change lands under (version.go's 212,
 // dispatch://INFRA-2040), and the contract that added two keys to each claim view: `wait`, the
 // wait the claim's worker declared, while it stands (workflow.WaitStands), and `hold`, the closed
 // design gate that holds a merger, while the hold stands (workflow.HeldByDesignGate). A plugin
@@ -897,7 +897,7 @@ const shapedAnswersContract = 193
 // that constant, and the contract these keys arrived at stays where it is. It moves only with
 // this change's own number, as the arrival contracts of this change's two new answers do
 // (answers.go's AnswerWait and AnswerWaitNews).
-const waitContract = 213
+const waitContract = 212
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
 // line's `kind` (version.go's 132): a started issue that gave its admission slot back to wait on
