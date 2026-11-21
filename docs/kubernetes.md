@@ -8022,7 +8022,7 @@ each issue's pod (every role of it alike) and the image probe's.
   What the pacing holds at any moment is on the state's `wakesWaiting`, which `legion state` prints as its `wakes waiting:` line.
 
 - **AskGate's time limit** is the operator's too.
-  Every pod loads pi-envoy, whose AskGate reviews each Dispatch write of a role's main agent before it posts.
+  Every pod loads pi-envoy, whose AskGate reviews each gated write that a role's main agent sends with a `dispatch` command, before the write posts (pi-envoy's README, "AskGate", lists the gated commands).
   Its review must finish inside Oh My Pi's limit for one `tool_call` handler, `extensionHandlers.toolCallTimeoutMs`, and the gate holds its deadline 5,000 ms under that limit:
   the room its handler still needs for an aborted call's usage report and its entry.
   The Dispatch decision record is no part of it, since it runs after the handler has returned.
@@ -8034,10 +8034,12 @@ each issue's pod (every role of it alike) and the image probe's.
   A limit under 15,000 ms leaves no room for a verdict:
   the gate does not bind there, and a gate that did not load refuses every Dispatch write it would have reviewed.
   The gate binds in a pod because the pod has Dispatch; one without it gets no gate.
-  The pod's `dispatch` command enforces the review:
-  while the gate is bound, a gated write that is not one literal `dispatch` call the gate reviewed (a pipe other than one trailing `head` or `tail`, a script, `python3 -c`, an eval cell's process) is refused by the CLI, in block mode, for want of the single-use marker the gate mints.
-  It reviews the writes of a cooperating agent and is no sandbox:
-  it does not cover a direct HTTP request to Dispatch, an older or a different CLI, or a process of the pod's own user that removes the CLI's AskGate record or a marker, acts as another session id or state directory, or otherwise goes around the CLI (pi-envoy's README, "What AskGate is not").
+  The pod's `dispatch` command enforces the review for each gated command:
+  while the gate is bound, a gated write of a `dispatch` command that is not one literal `dispatch` call the gate reviewed (a pipe other than one trailing `head` or `tail`, a script, `python3 -c`, an eval cell's process) is refused by the CLI, in block mode, for want of the single-use marker the gate mints.
+  `dispatch proxy` is not a gated command, so the comment POST it sends for its command passes no review and needs no marker, in block mode too (`packages/envoy-client/README.md`, "`dispatch proxy`").
+  Dispatch's server checks no marker, so a role that holds the bearer of `DISPATCH_TOKEN_FILE` can already send the same comment with `curl` and no review.
+  AskGate reviews the writes of a cooperating agent and is no sandbox:
+  it does not cover the comment POST of `dispatch proxy`, a direct HTTP request to Dispatch, an older or a different CLI, or a process of the pod's own user that removes the CLI's AskGate record or a marker, acts as another session id or state directory, or otherwise goes around the CLI (pi-envoy's README, "What AskGate is not").
 
 - **Turning AskGate off in a pod:** put `{"askgate":{"enabled":false}}` in the `envoy.json` that the pod's pi-envoy reads.
   The image sets `OMP_PROFILE=legion`, so Oh My Pi sets `PI_CODING_AGENT_DIR` to the profile's agent directory in its own process, and pi-envoy reads `/home/legion/.omp/profiles/legion/agent/envoy.json`.
