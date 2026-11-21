@@ -5119,7 +5119,7 @@ Each bound of 10 s is measured from the operation that triggers the answer, neve
 
 - after a result, from the start of its `dispatch result` command, against the daemon's own time of the matching log record;
 
-- after the tester's completion, from the moment the turn that completes reached the tester's model, which comes before the tool's request reaches the daemon;
+- after the tester's completion, from a moment the driver takes once the completing turn has reached the tester's model stand-in, which holds that turn's answer, the tool call, until the moment is taken, so the tool's request reaches the daemon only after it; the delivery command runs beside the turn, so a slow answer of that command starts no clock late;
 
 - after the broker comes back, from the `SIGCONT`.
 

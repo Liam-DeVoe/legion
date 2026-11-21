@@ -112,8 +112,8 @@ const statesHeld = "workflow: a check state is held"
 // statesWithin is the bound the approved checks give the daemon's answer: the line after a result,
 // the move and the reviewer's start after the tester's completion, and the move after the broker
 // comes back. It is measured from the operation that triggers the answer: the start of the
-// result's write, the moment the turn that completes reached the tester's model (which comes
-// before the tool's request), or the SIGCONT.
+// result's write, the moment complete takes while the stand-in holds the answer that makes the
+// tool's call (so before the tool's request), or the SIGCONT.
 const statesWithin = 10 * time.Second
 
 // statesLate is how long a case reads on for an answer past statesWithin, so an answer that comes
@@ -921,10 +921,15 @@ func (r *statesProof) writeTestRecord(issue *statesIssue) {
 
 // complete has the tester's pane complete testing through its real `legion` tool: an operator's
 // task (`legion claims deliver`) starts a turn the tester's stand-in answers with one call of
-// handoff_complete carrying summary and no verdict. The tool must take it. It answers the moment
-// the turn that makes the call reached the tester's model, which comes before the tool's request
-// reaches the daemon: a bound measured from it is never shorter than one measured from the
-// completion itself.
+// handoff_complete carrying summary and no verdict. The tool must take it.
+//
+// It answers the moment every bound after the completion is measured from, and that moment comes
+// before the tool's request by construction, not by timing: the stand-in holds the answer of the
+// turn that makes the call until the driver has taken the moment, after the turn reached the model,
+// and only then releases it, so the tool's request, which the answer starts, can reach the daemon
+// only after it. The delivery command runs beside the turn rather than before it, since the
+// moment the command returns says nothing of when the turn ran: a delivery whose answer is slow
+// cannot start the clock late, it only makes a case read later.
 func (r *statesProof) complete(issue *statesIssue, summary string) time.Time {
 	r.t.Helper()
 	token := r.token(issue.key, claim.RoleTester)
@@ -933,19 +938,49 @@ func (r *statesProof) complete(issue *statesIssue, summary string) time.Time {
 		return state == string(supervise.StateIdle) || state == string(supervise.StateReady)
 	})
 	marker := "CHECK-STATES " + issue.key + ": complete testing"
-	call := r.tester.arm(marker, map[string]any{"op": "handoff_complete", "summary": summary}, false)
+	call := r.tester.arm(marker, map[string]any{"op": "handoff_complete", "summary": summary}, true)
+	defer call.release()
 	task := marker + " with the legion tool."
 	from := r.daemon.count()
-	r.note("legion claims deliver --claim %s --task %q:\n%s", token, task,
-		indentOutput(r.legionClaims("deliver", "--claim", string(token), "--task", task)))
-	var result toolResult
-	var reached time.Time
-	select {
-	case <-call.reached:
-		reached = time.Now()
-	case <-time.After(2 * time.Minute):
-		r.fail("completion", "no turn of the tester's pane carried the task %q within two minutes; %s", task, r.tester.lastRequest())
+	type delivered struct {
+		out string
+		err error
 	}
+	delivery := make(chan delivered, 1)
+	go func() {
+		out, err := r.legionClaimsTry("deliver", "--claim", string(token), "--task", task)
+		delivery <- delivered{out: out, err: err}
+	}()
+	refused := func(answer delivered) {
+		if answer.err != nil {
+			r.fail("completion", "legion claims deliver --claim %s --task %q failed: %v\n%s", token, task, answer.err, answer.out)
+		}
+	}
+	var answer *delivered
+	var stamp time.Time
+	for waited := time.After(2 * time.Minute); stamp.IsZero(); {
+		select {
+		case <-call.reached:
+			stamp = time.Now()
+		case got := <-delivery:
+			refused(got)
+			answer = &got
+		case <-waited:
+			r.fail("completion", "no turn of the tester's pane carried the task %q within two minutes; %s", task, r.tester.lastRequest())
+		}
+	}
+	call.release()
+	if answer == nil {
+		select {
+		case got := <-delivery:
+			refused(got)
+			answer = &got
+		case <-time.After(2 * time.Minute):
+			r.fail("completion", "legion claims deliver --claim %s did not return within two minutes", token)
+		}
+	}
+	r.note("legion claims deliver --claim %s --task %q:\n%s", token, task, indentOutput(answer.out))
+	var result toolResult
 	select {
 	case result = <-call.result:
 	case <-time.After(2 * time.Minute):
@@ -955,12 +990,13 @@ func (r *statesProof) complete(issue *statesIssue, summary string) time.Time {
 	if line := r.daemon.firstAfter(from, func(l loggedRecord) bool {
 		return l.Message == lateCompletionAnswered && l.Attrs["claim"] == string(token)
 	}); line != nil {
-		r.note("daemon, %s after the turn reached the model: %s", line.at.Sub(reached).Round(time.Millisecond), answeredLine(*line))
+		r.note("daemon, %s after the completion's moment, which the driver took before it released the call: %s",
+			line.at.Sub(stamp).Round(time.Millisecond), answeredLine(*line))
 	}
 	if result.isError {
 		r.fail("completion", "the tester's legion tool refused the completion of testing with no verdict: %s", result.text)
 	}
-	return reached
+	return stamp
 }
 
 // phaseOf is issue's phase as GET /legion/v1/state shows it now. An answer that holds no such issue
