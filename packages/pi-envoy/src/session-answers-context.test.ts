@@ -10,6 +10,7 @@ import {
   sessionAnswersFailureLine,
   sessionAnswersWords,
 } from "@legion/envoy-client/session-answers";
+import { APPROVAL_MESSAGE_TYPE } from "@legion/pi-shared/approval-message";
 import {
   answersSentEntry,
   ask,
@@ -60,35 +61,33 @@ const reply = {
   timestamp: 4,
 };
 
-// What Oh My Pi 18.12.2 adds after the conversation for a side turn (`runEphemeralTurn`) and for
-// the handoff, as the binary builds them.
-const sideTurnNotice = {
-  role: "developer",
+// The message pi-legion places in a request while a person's approval of the spec stands, as the
+// host hands it to a `context` handler: a custom message of the type both plugins read
+// (`APPROVAL_MESSAGE_TYPE`), text only, attribution `agent`, stamped with the time it was placed.
+// pi-legion places a new one as the request's last message; whichever plugin's handler runs
+// first, the answers message goes before it.
+const approval = {
+  role: "custom",
+  customType: APPROVAL_MESSAGE_TYPE,
   content: [
     {
       type: "text",
-      text: "<system-reminder>\nEphemeral side-channel turn; reuses current conversation context.\nTool catalog attached only to keep prompt cache warm; tools NOT available this turn.\nDo NOT emit tool calls; reply plain text only. Tool calls discarded without execution.\n</system-reminder>\n",
+      text: "A person has approved version 24 of the spec of ACME-2694 (dispatch://ACME-2694/spec@v24).",
     },
   ],
+  display: false,
   attribution: "agent",
-  timestamp: 10,
+  timestamp: 20,
 };
-const sidePrompt = {
-  role: "user",
-  content: [{ type: "text", text: "<btw>\nQuestion:\nWhat is up?\n</btw>" }],
-  attribution: "agent",
-  timestamp: 11,
-};
-const handoffPrompt = {
-  role: "user",
+const laterApproval = {
+  ...approval,
   content: [
     {
       type: "text",
-      text: "<critical>\nWrite a handoff document for another instance of yourself.\nThe handoff MUST be sufficient for seamless continuation without access to this conversation.\n</critical>",
+      text: "A person has approved version 26 of the spec of ACME-2694 (dispatch://ACME-2694/spec@v26).",
     },
   ],
-  attribution: "agent",
-  timestamp: 12,
+  timestamp: 21,
 };
 
 // A delivered Envoy message and a branch summary as the session's branch holds them, and the
@@ -834,17 +833,6 @@ test("each session on one sessionManager has its own failure episode", async () 
   expect(told).toStrictEqual(both);
 });
 
-test("tool results with one timestamp are told apart by their call ids", async () => {
-  const session = {};
-  const read = readingEach(LIST);
-  const sameTime = { ...grepResult, timestamp: readResult.timestamp };
-  const turn = [skill, ask, readCall, readResult];
-  await withSessionAnswers([...turn], requestOf(read, noBranch, session));
-  expect(
-    await withSessionAnswers([...turn, grepCall, sameTime], requestOf(read, noBranch, session))
-  ).toEqual([...turn, list, grepCall, sameTime]);
-});
-
 test("the failure line goes where the list would", async () => {
   const line = sessionAnswersFailureLine("Dispatch did not answer within 800 ms");
   const { read } = reading(line);
@@ -1387,56 +1375,6 @@ test("a list quoted earlier in the conversation does not switch the list off", a
   ]);
 });
 
-test("a side turn keeps its prompt last and is not read for", async () => {
-  const { read, calls } = reading(LIST);
-  const conversation = [skill, ask, reply];
-  const branch = branchOf(ask, reply);
-  expect(
-    await withSessionAnswers([...conversation, sideTurnNotice, sidePrompt], requestOf(read, branch))
-  ).toBeUndefined();
-  // A /btw follow-up: the earlier question and answer sit between the notice and the prompt.
-  const earlier = { ...sidePrompt, timestamp: 8 };
-  const earlierAnswer = { ...reply, content: [{ type: "text", text: "Not much." }], timestamp: 9 };
-  expect(
-    await withSessionAnswers(
-      [...conversation, sideTurnNotice, earlier, earlierAnswer, sidePrompt],
-      requestOf(read, branch)
-    )
-  ).toBeUndefined();
-  expect(calls()).toBe(0);
-});
-
-test("a host reminder before a host prompt in the main loop is no side turn", async () => {
-  const { read } = reading(LIST);
-  const reminder = {
-    role: "developer",
-    content: [{ type: "text", text: "<system-reminder>\nFinish the todos.\n</system-reminder>" }],
-    attribution: "agent",
-    timestamp: 5,
-  };
-  const messages = [skill, ask, reply, reminder, { ...sidePrompt, timestamp: 6 }];
-  expect(await withSessionAnswers(messages, requestOf(read, branchOf(ask, reply)))).toEqual([
-    ...messages,
-    list,
-  ]);
-});
-
-test("the handoff prompt stays last and is not read for", async () => {
-  const { read, calls } = reading(LIST);
-  expect(
-    await withSessionAnswers(
-      [skill, ask, reply, handoffPrompt],
-      requestOf(read, branchOf(ask, reply))
-    )
-  ).toBeUndefined();
-  expect(calls()).toBe(0);
-  // The same words from the person are their prompt.
-  const typed = { ...handoffPrompt, attribution: "user" };
-  expect(
-    await withSessionAnswers([skill, ask, reply, typed], requestOf(read, branchOf(ask, reply)))
-  ).toEqual([skill, ask, reply, typed, list]);
-});
-
 // Anthropic remote compaction converts the conversation up to its cut, counts it, and keeps that
 // many messages of the whole conversation's conversion.
 test("a conversion that ends before the branch's last message is not read for; the whole conversation is", async () => {
@@ -1564,4 +1502,66 @@ test("the main loop's request after a speculative compaction's cut and whole con
     list,
   ]);
   expect(calls()).toBe(2);
+});
+
+// pi-legion's handler ran first and placed the approval message last, then this handler ran. The
+// answers message goes before the trailing run of approval messages, so the approval message
+// stays the request's last message.
+test("an answers list placed in a request that ends with an approval message goes before it", async () => {
+  const { read } = reading(LIST);
+  expect(await withSessionAnswers([skill, ask, approval], requestOf(read, noBranch))).toEqual([
+    skill,
+    ask,
+    list,
+    approval,
+  ]);
+  expect(
+    await withSessionAnswers([skill, ask, approval, laterApproval], requestOf(read, noBranch))
+  ).toEqual([skill, ask, list, approval, laterApproval]);
+});
+
+// The approval message is no session message, so a later request holds it only where pi-legion
+// rebuilds it, and not at all when this handler runs first. The answers message is recorded after
+// the message before it, which every later request holds.
+test("an answers list anchors on the message before a trailing approval message", async () => {
+  const session = {};
+  const read = readingEach(LIST);
+  await withSessionAnswers([skill, ask, approval], requestOf(read, noBranch, session));
+  expect(recordedFor(session)).toStrictEqual([
+    { after: "user@1", blocks: [LIST, REPLACES], words: carry(LIST)?.words },
+  ]);
+  const answer = { ...reply, timestamp: 22 };
+  // This handler first: the request does not hold the approval message yet.
+  expect(
+    await withSessionAnswers([skill, ask, answer], requestOf(read, noBranch, session))
+  ).toEqual([skill, ask, list, answer]);
+  // pi-legion's handler first: it rebuilt the approval message right before its answer.
+  expect(
+    await withSessionAnswers([skill, ask, approval, answer], requestOf(read, noBranch, session))
+  ).toEqual([skill, ask, list, approval, answer]);
+});
+
+// The approval message is no entry of the branch: where the request ends on the branch is where
+// the message before the trailing approval messages sits. A remote compaction's conversion up to
+// its cut ends before the branch's last message; a repeat of a conversion that ends at the
+// branch's last message, while the session compacts, is not read for.
+test("a request that ends with an approval message reads as the branch's position", async () => {
+  const { read, calls } = reading(LIST);
+  expect(
+    await withSessionAnswers(
+      [skill, ask, readCall, readResult, approval],
+      requestOf(read, branchOf(ask, readCall, readResult, reply))
+    )
+  ).toBeUndefined();
+  expect(calls()).toBe(0);
+  const session = {};
+  const branch = branchOf(ask, reply, deliveryEntry);
+  const conversation = [skill, ask, reply, delivery, approval];
+  expect(
+    await withSessionAnswers([...conversation], requestOf(read, branch, session, true))
+  ).toEqual([skill, ask, reply, delivery, list, approval]);
+  expect(
+    await withSessionAnswers([...conversation], requestOf(read, branch, session, true))
+  ).toBeUndefined();
+  expect(calls()).toBe(1);
 });

@@ -4,15 +4,15 @@ import {
   type SessionAnswersRead,
   sessionAnswersChanged,
 } from "@legion/envoy-client/session-answers";
-import { leadingText, userTextMessage } from "./context-message";
-import { customEntries } from "./custom-entries";
-
-/** The first line of Oh My Pi's side-turn notice (`side-channel-no-tools.md`): the `developer`
- *  message `AgentSession.runEphemeralTurn` puts after the conversation, before the side prompt. */
-const SIDE_TURN_NOTICE = "Ephemeral side-channel turn; reuses current conversation context.";
-
-/** How Oh My Pi's handoff prompt (`handoff-document.md`) begins. */
-const HANDOFF_PROMPT = "<critical>\nWrite a handoff document for another instance of yourself.";
+import {
+  isHandoffPrompt,
+  isSideTurn,
+  leadingText,
+  messageKey,
+  splitTrailingApproval,
+} from "@legion/pi-shared/approval-message";
+import { customEntries } from "@legion/pi-shared/custom-entry";
+import { userTextMessage } from "./context-message";
 
 /** The requests a copy of this extension already decided the list for: the messages array the
  *  host hands each `context` handler of one request in turn, which a handler that returns nothing
@@ -23,16 +23,6 @@ const DECIDED_KEY: unique symbol = Symbol.for("legion.pi-envoy.session-answers-r
 const processGlobal = globalThis as typeof globalThis & { [DECIDED_KEY]?: WeakSet<object> };
 const decided = processGlobal[DECIDED_KEY] ?? new WeakSet<object>();
 processGlobal[DECIDED_KEY] = decided;
-
-/** The text of `message` when the host wrote it (`attribution: "agent"`) with `role`. */
-function hostText(message: unknown, role: string): string | undefined {
-  return typeof message === "object" &&
-    message !== null &&
-    "attribution" in message &&
-    message.attribution === "agent"
-    ? leadingText(message, role)
-    : undefined;
-}
 
 /**
  * Whether the request's last message is the list of people's answers as an older copy of this
@@ -45,37 +35,6 @@ function hostText(message: unknown, role: string): string | undefined {
 function endsWithSessionAnswers(messages: readonly unknown[]): boolean {
   const text = leadingText(messages.at(-1), "user");
   return text !== undefined && isSessionAnswersText(text);
-}
-
-/** A context message as matching reads it: its role and timestamp, and a tool result's call id,
- *  since the tool results of one round can share a timestamp. */
-function messageKey(message: unknown): string {
-  if (typeof message !== "object" || message === null) return "";
-  const role = "role" in message ? String(message.role) : "";
-  const timestamp = "timestamp" in message ? String(message.timestamp) : "";
-  const call = "toolCallId" in message ? `#${String(message.toolCallId)}` : "";
-  return `${role}@${timestamp}${call}`;
-}
-
-/**
- * Whether the request is a side turn: Oh My Pi's `runEphemeralTurn` (a Dispatch BTW, the stop-time
- * self-check, `/btw`, the idle recap) converts `[...conversation, notice, ...history, prompt]`,
- * where the notice is a host `developer` message, the history `/btw`'s earlier questions and
- * answers, and the prompt a host user message.
- */
-function isSideTurn(messages: readonly unknown[]): boolean {
-  if (hostText(messages.at(-1), "user") === undefined) return false;
-  for (let index = messages.length - 2; index >= 0; index -= 1) {
-    const message = messages[index];
-    const role =
-      typeof message === "object" && message !== null && "role" in message
-        ? message.role
-        : undefined;
-    if (role !== "user" && role !== "assistant") {
-      return hostText(message, "developer")?.includes(SIDE_TURN_NOTICE) === true;
-    }
-  }
-  return false;
 }
 
 /**
@@ -273,12 +232,13 @@ export const ANSWERS_SENT_ENTRY = "envoy-answers-sent";
 
 /** One answers message a request sent, as the session records it (`ANSWERS_SENT_ENTRY`'s data):
  *  `after`, the `messageKey` of the request's last message before the answers message was added,
- *  which every later request that still holds that message carries it right after; `blocks`, the
- *  exact text of each of its text blocks in order, of which there is at least one, which it is
- *  rebuilt from with no constant read again, so a later release that rewords the sentence still
- *  rebuilds the old bytes; and `words`, the read's words when the read gave them
- *  (`CarriedAnswers.words`). Its kind is its first block's: a list, the "no item" list included,
- *  starts with `SESSION_ANSWERS_MARKER`, and the failure line with its own marker. */
+ *  never a trailing approval message (`withSessionAnswers`), which every later request that still
+ *  holds that message carries it right after; `blocks`, the exact text of each of its text blocks
+ *  in order, of which there is at least one, which it is rebuilt from with no constant read again,
+ *  so a later release that rewords the sentence still rebuilds the old bytes; and `words`, the
+ *  read's words when the read gave them (`CarriedAnswers.words`). Its kind is its first block's: a
+ *  list, the "no item" list included, starts with `SESSION_ANSWERS_MARKER`, and the failure line
+ *  with its own marker. */
 export interface AnswersSent {
   readonly after: string;
   readonly blocks: readonly [string, ...string[]];
@@ -699,6 +659,15 @@ export interface SessionAnswersRequest {
  * `context` handler adds as per-call, and its Anthropic placement puts no cache anchor on a
  * per-call message, so every byte before the message a change appends, the messages sent before
  * it included, is the cached prefix of the request before it.
+ *
+ * A request that ends with a run of approval messages (`splitTrailingApproval`: the message
+ * pi-legion places while a person's approval of the spec stands) is decided as the request up to
+ * the message before that run (`withAnswers`), and the run goes back after what that gives, so the
+ * approval message stays the request's last message whichever plugin's `context` handler runs
+ * first. The message before the run is where the request ends on the branch (`branchPosition`),
+ * the last message every check above reads, and the anchor an answers message appended is
+ * recorded after: an approval message is no session message, and a later request holds it only
+ * where pi-legion rebuilds it, so no answers message anchors on one.
  */
 export async function withSessionAnswers(
   messages: readonly unknown[],
@@ -706,13 +675,25 @@ export async function withSessionAnswers(
 ): Promise<unknown[] | undefined> {
   if (decided.has(messages)) return undefined;
   decided.add(messages);
+  const { head, tail } = splitTrailingApproval(messages);
+  const answered = await withAnswers(head, request);
+  if (answered === undefined || tail.length === 0) return answered;
+  const withApproval = [...answered, ...tail];
+  decided.add(withApproval);
+  return withApproval;
+}
+
+/**
+ * `withSessionAnswers`'s rule for `messages`, a request without its trailing approval messages.
+ * It awaits nothing, so a request that reads takes its place among the session's requests
+ * (`deciding`) as it begins, in the order the requests began.
+ */
+function withAnswers(
+  messages: readonly unknown[],
+  request: SessionAnswersRequest
+): Promise<unknown[] | undefined> | unknown[] | undefined {
   if (endsWithSessionAnswers(messages)) return placedLegacy(messages, request);
-  if (
-    isSideTurn(messages) ||
-    hostText(messages.at(-1), "user")?.startsWith(HANDOFF_PROMPT) === true
-  ) {
-    return undefined;
-  }
+  if (isSideTurn(messages) || isHandoffPrompt(messages)) return undefined;
   const entries = request.branch() ?? [];
   const position = branchPosition(messages, entries);
   const previous = conversions.get(request.session);
