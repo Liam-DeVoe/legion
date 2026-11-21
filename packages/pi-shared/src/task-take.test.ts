@@ -1326,3 +1326,25 @@ test("deferUntilSettled calls back once when a pending take is refused or droppe
   expect(idle.routed("take")).toEqual([body(4, 12)]);
   expect(idleCalls).toBe(0);
 });
+
+// The running task's own number written again while the host sets that task's text up, before its
+// agent_start: the idle host asks the newer revision at once, and the task's turn starts before
+// the daemon answers. That take brings no turn (an accepted answer's text runs nothing for the
+// number whose turn is running, and a refusal `in-turn` leaves that number out), so the take in
+// flight is no task's turn to come, as a value not asked about is not (R6): `pending` must say so,
+// or the run's own settle withholds its continuation and a stall abort holds its restart.
+test("pending() is false for a take in flight at a newer revision of the task whose turn is running", async () => {
+  const { take, takes, ran, routed, advance } = rig();
+  take.ready();
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(ran).toEqual([TEXT]);
+  takes.push({ silent: true });
+  take.relayed(put(4, 13));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  take.runStarted();
+  expect(take.noteFor()).toBeUndefined();
+  expect(take.pending()).toBe(false);
+});
