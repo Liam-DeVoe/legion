@@ -52,6 +52,10 @@ type StoredIssue struct {
 type Actor struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
+	// Act is the command bar's run a person's write was made by, where the bar made it.
+	Act struct {
+		Run string `json:"run"`
+	} `json:"act"`
 }
 
 // StoredComment is one comment: the issue, document or ask it is on, its author and body, and

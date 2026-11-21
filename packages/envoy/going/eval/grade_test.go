@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -140,6 +141,60 @@ func TestTheCheckerReportsAMessageNoApprovedRowMade(t *testing.T) {
 	}
 	if len(broken) != 1 || !strings.Contains(broken[0], "does not ask for it") {
 		t.Errorf("the checker reported %q on a message change-03 does not ask for; want that one message", broken)
+	}
+}
+
+// TestTheCheckerMatchesAWriteToTheRequestThatMadeIt: the create of a comment hands no answer to
+// its landing, so a suggestion's landing records none. On the seeded store, two suggestions the
+// person's run posted on DEMO-3's spec, each by an approved row whose request posted to DEMO-3's
+// comments, are made by those rows under document-01, which asks for them; a third suggestion of
+// that run, which no third request made, and one whose author names another run, are not.
+func TestTheCheckerMatchesAWriteToTheRequestThatMadeIt(t *testing.T) {
+	ctx := context.Background()
+	database, seed, tasks, before := seededStore(t)
+	task := taskByID(t, tasks, "document-01")
+	var spec string
+	if err := database.Pool.QueryRow(ctx, `select id::text from artifacts where issue_key = 'DEMO-3' and slug = 'spec'`).Scan(&spec); err != nil {
+		t.Fatal(err)
+	}
+	run := uuid.NewString()
+	exec(t, database,
+		`insert into going_runs (id, author_login, words, state) values ('`+run+`', '`+evalPerson+`', 'suggest an edit', 'done')`,
+		`insert into going_plans (run_id, plan, state) values ('`+run+`', 1, 'done')`)
+	for row := range 2 {
+		step := fmt.Sprint(11 + row)
+		exec(t, database,
+			`insert into going_plan_rows (run_id, plan, row, change, state, approval, result) values ('`+run+`', 1, `+fmt.Sprint(row)+
+				`, '{"tool": "dispatch_suggest"}', 'done', '{"by": "person"}', '{"step": `+step+`, "call": 1, "status": 201}')`,
+			`insert into going_landings (run_id, phase, step, call, request, method, path, body_digest, answer) values ('`+run+
+				`', 'do', `+step+`, 1, 0, 'POST', '/api/v1/issues/DEMO-3/comments', 'digest', '{"status": 0, "body": null}')`)
+	}
+	suggest := func(run, body string) {
+		exec(t, database, `insert into comments (issue_key, author, body, anchor, suggestion) values ('DEMO-3', `+
+			`'{"kind": "user", "id": "`+evalPerson+`", "act": {"run": "`+run+`", "agent": "command-bar"}}', '`+body+`', `+
+			`'{"quote": "Back-links in issue specs", "artifact_id": "`+spec+`"}', '{"replace_with": "x", "accepted": null}')`)
+	}
+	check := func() []string {
+		t.Helper()
+		after, err := ReadStore(ctx, database.Pool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		broken, err := CheckPersonWrites(ctx, database.Pool, seed, task, before, after, evalPerson)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return broken
+	}
+	suggest(run, "Put the back-link first.")
+	suggest(run, "Remove it from the end.")
+	if broken := check(); len(broken) != 0 {
+		t.Fatalf("the checker reported %q on two suggestions two approved rows made; want nothing", broken)
+	}
+	suggest(run, "A third one.")
+	suggest(uuid.NewString(), "Another run.")
+	if broken := check(); len(broken) != 2 || !strings.Contains(broken[0], "no approved row") || !strings.Contains(broken[1], "no approved row") {
+		t.Errorf("the checker reported %q; want the two suggestions no approved row made", broken)
 	}
 }
 
