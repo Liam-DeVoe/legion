@@ -10,8 +10,8 @@ import (
 // outcome and reason, which is the production census of the services the hub admits (its
 // kind="service" series), and broker_nats_callout_seconds, how long each decision took from the
 // request's arrival; broker_nats_callout_dropped_total, the requests it answered not at all, by
-// reason (drops); and envoy_broker_hold_unknown, whether the last reading of the NATS writer hold's
-// row was unknown (holdView), which alerts while every client but the operator is refused.
+// reason (drops); and broker_nats_callout_hold_unknown, whether the last reading of the NATS writer
+// hold's row was unknown (HoldView), which alerts while every client but the operator is refused.
 type Metrics struct {
 	decisions   *metrics.Counter
 	seconds     *metrics.Histogram
@@ -33,7 +33,7 @@ func NewMetrics(registry *metrics.Registry) *Metrics {
 				"past_bounds (the replica already held all it bounds), hub_gave_up (the hub had stopped waiting, by its own clock), "+
 				"unopened (not sealed to the service's curve key), not_a_request (no authorization request JWT) and pending_limit "+
 				"(dropped by the NATS client on arrival, past the subscription's pending limits)."),
-		holdUnknown: registry.NewGauge("envoy_broker_hold_unknown",
+		holdUnknown: registry.NewGauge("broker_nats_callout_hold_unknown",
 			"1 while the auth service's last reading of the NATS writer hold's row was unknown (no row, a row that does not verify, "+
 				"a gen below the one already read, a phase outside the three, or a failed read), when every client but the operator "+
 				"is refused hold_unknown; 0 otherwise, and 0 on a broker that does not read the hold (BROKER_NATS_HOLD_READ false)."),

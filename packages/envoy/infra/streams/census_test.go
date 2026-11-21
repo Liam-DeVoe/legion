@@ -264,3 +264,32 @@ func TestStreamsCensusRemovesAnUnrecordedFreshName(t *testing.T) {
 		require.Contains(t, left, kept, "the census removed a recorded fresh name")
 	}
 }
+
+// A consumer of a family whose store is gone (CensusInput.GoneNames) is left as it is and named,
+// whatever its configuration, in its own name or its fresh form: the records that alone tell an
+// orphan from a selected name went with the store, which is no evidence to delete anything. Each is
+// printed LEFT with why, and counted as neither a change nor a failure, so a census that finds only
+// those is clean.
+func TestStreamsCensusLeavesAGoneStoresConsumers(t *testing.T) {
+	c := startCensus(t, natsgrant.Operator(natsgrant.OperatorPhaseHeld))
+	const gone, why = "legion-go-GONE-github", "the project's store is gone"
+	fresh := gone + "~" + nuid.Next()
+	for _, name := range []string{gone, fresh} {
+		_, err := c.js.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{
+			Durable: name, FilterSubject: "notifications.dispatch.issue.*.>", AckPolicy: natsgo.AckNonePolicy,
+		})
+		require.NoError(t, err)
+	}
+	in := c.input()
+	in.GoneNames = map[string]string{gone: why}
+
+	report, err := streams.Census(t.Context(), c.connect(t, operatorInbox, nil), in)
+	require.NoError(t, err)
+	require.Equal(t, 0, report.ExitCode(), "%v", report.Lines())
+	require.Empty(t, report.Changes)
+	left := c.consumers(t, bus.Stream)
+	for _, name := range []string{gone, fresh} {
+		require.Contains(t, left, name, "the census removed a gone store's consumer")
+		require.Contains(t, report.Lines(), "LEFT "+bus.Stream+" consumer "+name+": "+why)
+	}
+}

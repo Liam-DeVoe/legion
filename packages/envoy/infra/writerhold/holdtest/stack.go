@@ -158,8 +158,7 @@ func StartWith(t testing.TB, opts Options) *Stack {
 		Services:       services,
 	}, natscallout.Deps{
 		ServiceToken: tokens.verify,
-		HoldRead:     holdRead,
-		HoldKeys:     []ed25519.PublicKey{broker.VerifyKey},
+		Hold:         natscallout.NewHoldView(holdRead, []ed25519.PublicKey{broker.VerifyKey}, nil),
 	})
 	if err != nil {
 		t.Fatalf("holdtest: start the auth service: %v", err)

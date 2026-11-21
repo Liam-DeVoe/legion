@@ -90,17 +90,17 @@ func (s *Stack) StartReplica(t testing.TB, cfg ReplicaConfig) *Replica {
 		if cfg.Wrap != nil {
 			read = cfg.Wrap(read)
 		}
-		deps.HoldRead = func(ctx context.Context) (natshold.Reading, bool, error) {
+		keys := cfg.HoldKeys
+		if keys == nil {
+			keys = []ed25519.PublicKey{s.Broker.VerifyKey}
+		}
+		deps.Hold = natscallout.NewHoldView(func(ctx context.Context) (natshold.Reading, bool, error) {
 			reading, found, err := read(ctx)
 			r.mu.Lock()
 			r.readings = append(r.readings, Reading{Phase: reading.Phase, Found: found, Err: err})
 			r.mu.Unlock()
 			return reading, found, err
-		}
-		deps.HoldKeys = cfg.HoldKeys
-		if deps.HoldKeys == nil {
-			deps.HoldKeys = []ed25519.PublicKey{s.Broker.VerifyKey}
-		}
+		}, keys, deps.Metrics)
 	}
 	dir := t.TempDir()
 	write := func(name, seed string) string {

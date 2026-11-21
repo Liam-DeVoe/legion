@@ -130,8 +130,8 @@ func openHoldPool(st *store.Store, size int) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-// holdReader is natscallout.Deps.HoldRead over pool: natshold.Read of schema's hold row, under its
-// own deadline.
+// holdReader is the read a natscallout.HoldView takes, over pool: natshold.Read of schema's hold
+// row, under its own deadline.
 func holdReader(pool *pgxpool.Pool, schema string) func(ctx context.Context) (natshold.Reading, bool, error) {
 	return func(ctx context.Context) (natshold.Reading, bool, error) {
 		return natshold.Read(ctx, pool, schema)

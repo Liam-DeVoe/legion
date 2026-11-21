@@ -55,6 +55,32 @@ func TestTheHoldReadAnswersTheStoredRow(t *testing.T) {
 	}
 }
 
+// The auth service's read and the routes' read are one read: Read answers the columns Store.Row
+// answers, for no row and for a stored row. A copy of the query that drifted, a column read from
+// another place, fails this.
+func TestTheHoldReadIsTheStoresRead(t *testing.T) {
+	pool, schema := testPool(t)
+	ctx := context.Background()
+	store := natshold.Store{Pool: pool, Schema: schema}
+	check := func(state string) {
+		t.Helper()
+		reading, readFound, readErr := natshold.Read(ctx, pool, schema)
+		row, rowFound, rowErr := store.Row(ctx)
+		if readErr != nil || rowErr != nil || readFound != rowFound {
+			t.Fatalf("%s: Read = found %v, %v; Store.Row = found %v, %v", state, readFound, readErr, rowFound, rowErr)
+		}
+		if reading.Gen != row.Gen || reading.Phase != row.Phase || reading.HoldID != row.HoldID || !reading.SignedAt.Equal(row.SignedAt) || reading.Sig != row.Sig {
+			t.Fatalf("%s: Read = %+v, and Store.Row = %+v", state, reading, row)
+		}
+	}
+	check("no row")
+	if _, err := pool.Exec(ctx, `insert into nats_hold (id, gen, phase, hold_id, reason, updated_at, updated_by, signed_at, sig)
+		values (1, 9, 'prepare', 'h-2', 'r', now(), 'operator', now(), 'c2ln')`); err != nil {
+		t.Fatal(err)
+	}
+	check("a stored row")
+}
+
 // The read takes its own deadline, ReadDeadline, over the connection's acquire and the whole
 // transaction, whatever deadline its caller's context carries: a read held behind a lock on the row
 // fails within it rather than waiting.

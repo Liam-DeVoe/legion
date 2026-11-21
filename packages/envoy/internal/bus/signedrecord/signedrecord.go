@@ -42,10 +42,11 @@ var (
 
 // The tags each kind's lines open with.
 const (
-	holdRowTag      = "nats-hold-v1"
-	recordTag       = "nats-hold-record-v1"
-	recordDeleteTag = "nats-hold-record-delete-v1"
-	cutoverTag      = "nats-cutover-v1"
+	holdRowTag         = "nats-hold-v1"
+	recordTag          = "nats-hold-record-v1"
+	recordDeleteTag    = "nats-hold-record-delete-v1"
+	cutoverTag         = "nats-cutover-v1"
+	recordsManifestTag = "envoy-kv-records-manifest-v1"
 )
 
 // HoldRow is the hold row's lines: its gen, phase, hold id and the time it was signed, which the
@@ -55,10 +56,11 @@ func HoldRow(gen uint64, phase, holdID string, signedAt time.Time) []string {
 }
 
 // Record is one hold record's lines: its hold id, kind, key, gen and the hex SHA-256 of its value's
-// canonical form. A value that is not JSON is hashed as the bytes it is, and Verify then refuses it
-// as Sign does (ErrBadField).
+// canonical form. A value that is not JSON has no canonical form, so its digest line is empty, and
+// Sign and Verify refuse it (ErrBadField), as they refuse any record whose digest line is not a
+// SHA-256 digest in hex.
 func Record(holdID, kind, key string, gen uint64, value []byte) []string {
-	digest := "not-json"
+	digest := ""
 	if canonical, err := Canonical(value); err == nil {
 		sum := sha256.Sum256(canonical)
 		digest = hex.EncodeToString(sum[:])
@@ -77,6 +79,15 @@ func RecordDelete(holdID, kind, key string, gen uint64) []string {
 // under and the hold row's gen at that write.
 func Cutover(family, state, holdID string, holdGen uint64) []string {
 	return []string{cutoverTag, family, state, holdID, strconv.FormatUint(holdGen, 10)}
+}
+
+// RecordsManifest is the lines of a records-only copy's manifest (internal/bus/kvrecords): the hex
+// SHA-256 of the manifest file's bytes as written. The manifest names the records file's own
+// SHA-256, so one signature covers the whole copy, and a copy rewritten so that its three files
+// agree with each other still does not verify.
+func RecordsManifest(manifest []byte) []string {
+	sum := sha256.Sum256(manifest)
+	return []string{recordsManifestTag, hex.EncodeToString(sum[:])}
 }
 
 // Canonical is value's canonical JSON: decoded, then encoded with its object keys sorted, no
@@ -103,17 +114,31 @@ func Canonical(value []byte) ([]byte, error) {
 }
 
 // message is the bytes a record's lines are signed as, or ErrBadField for a field holding a line
-// feed, or a record whose value is not JSON.
+// feed, or a record whose digest line is not a SHA-256 digest in lowercase hex: a value that is not
+// JSON, which Record gives an empty digest, or lines built by hand.
 func message(lines []string) ([]byte, error) {
 	for index, line := range lines {
 		if strings.ContainsAny(line, "\n\r") {
 			return nil, fmt.Errorf("%w: field %d holds a line break", ErrBadField, index)
 		}
 	}
-	if len(lines) > 0 && lines[0] == recordTag && lines[len(lines)-1] == "not-json" {
-		return nil, fmt.Errorf("%w: the record's value is not JSON", ErrBadField)
+	if len(lines) > 0 && lines[0] == recordTag && (len(lines) != 6 || !sha256Hex(lines[5])) {
+		return nil, fmt.Errorf("%w: the record's value is not JSON, or its digest is no SHA-256 digest in hex", ErrBadField)
 	}
 	return []byte(strings.Join(lines, "\n")), nil
+}
+
+// sha256Hex reports whether s is a SHA-256 digest as Record writes it: 64 lowercase hex digits.
+func sha256Hex(s string) bool {
+	if len(s) != hex.EncodedLen(sha256.Size) {
+		return false
+	}
+	for _, r := range s {
+		if !('0' <= r && r <= '9' || 'a' <= r && r <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // Sign signs lines with key and returns the signature, base64url without padding.
@@ -172,11 +197,10 @@ func ParsePublicKeys(setting, raw string) ([]ed25519.PublicKey, error) {
 // Floor is the highest gen a reader has accepted of one record, so an older signed copy that a
 // database writer puts back reads as a replay. It lives as long as its reader's process: a reader
 // that starts again starts with no floor, which is the residual the hold's design states. The zero
-// Floor accepts any gen, and is safe for concurrent use.
+// Floor is at gen 0, below which no gen lies, so it accepts any gen; it is safe for concurrent use.
 type Floor struct {
-	mu   sync.Mutex
-	gen  uint64
-	seen bool
+	mu  sync.Mutex
+	gen uint64
 }
 
 // Accept records gen when it is at or above the floor and returns nil, or returns ErrReplay naming
@@ -184,9 +208,9 @@ type Floor struct {
 func (f *Floor) Accept(gen uint64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.seen && gen < f.gen {
+	if gen < f.gen {
 		return fmt.Errorf("%w: gen %d, after gen %d", ErrReplay, gen, f.gen)
 	}
-	f.gen, f.seen = gen, true
+	f.gen = gen
 	return nil
 }

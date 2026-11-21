@@ -3469,8 +3469,12 @@ workflows, so its done entry completes the record that `hold release` needs.
   it. A listing it cannot complete is `UNKNOWN`. It reads the session consumers the hold records,
   after the hold's barrier on their bucket. A consumer in a family's fresh form, `<base>~<nuid>`, is
   kept only when a selection record names it: under a hold no creator runs, so an unrecorded one
-  is a crashed create's orphan, and the census removes it and names it. The census writes, so it
-  runs only while the row is `held`; `check` is the read-only word.
+  is a crashed create's orphan, and the census removes it and names it. A consumer of a family
+  whose store is gone (its database no longer exists), in its own name or its fresh form, is left
+  as it is, whatever its configuration, and printed `LEFT` with why: the records that alone tell an
+  orphan from a selected name went with the store, which is no evidence to delete anything. A `LEFT`
+  line is neither a change nor a failure. The census writes, so it runs only while the row is
+  `held`; `check` is the read-only word.
 
 `check`'s token file holds the measurement job's platform token, presented as user `service`. Its
 settings are `--replicas`, `--stream-max-bytes` and `--session-max-age`, which default to
@@ -4304,21 +4308,42 @@ answers them, to the `BROKER_NATS_SERVICES` entries of kinds `operator` and `pro
 once, as `operator/-/*=<account>` and `probe/-/*=<account>`. `natsgrant.Operator(phase)` is the
 deployment's one operator identity's grant, a function of the NATS writer hold's phase, which the
 hold's row in the secrets broker's Postgres holds and the auth service reads at each decision. Each
-phase holds the one before it, and every phase subscribes `_INBOX_envoy_operator.>` alone, so an
-operator connects with that inbox prefix:
+phase holds the one before it, and every phase subscribes `_INBOX_envoy._operator.>` alone, so an
+operator connects with that inbox prefix, which sits under the one reply root `_INBOX_envoy`
+(`natsgrant.ReplyRoot`), the token a render that gives JetStream its own account exports:
 
-- `released`, no hold, and the grant whenever the auth service cannot read the row, which is reads
-  only: `$JS.API.INFO`; the infos of `ENVOY_NOTIFICATIONS`, `KV_envoy_session_consumers` and each
-  copied bucket (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`,
-  `envoy_ci_state`); the stored-message get of `KV_envoy_session_consumers`, the consumer names and
-  infos of `ENVOY_NOTIFICATIONS`, and the info of `ENVOY_MEASURE`. Its one backup is a records-only
-  copy of `KV_envoy_session_consumers`, its messages read one by one with that get
-  (`internal/bus/kvrecords`, format `envoy-kv-records-v1`), each with its sequence, subject,
-  headers, time and data. A restore from it writes each message again, so it cannot reproduce the
-  stream's `last_seq`. No snapshot and no stream create is in `released`: nats-server checks a
-  snapshot's deliver subject for its syntax alone and sends every chunk there from the stream's own
-  sender, and a create carries a republish or a source of the caller's choosing, so either writes
-  any subject, a protected bucket's key among them;
+- `released`, no hold, and the grant whenever the auth service cannot read the row, which names no
+  subject that writes: `$JS.API.INFO`; the infos of `ENVOY_NOTIFICATIONS`,
+  `KV_envoy_session_consumers` and each copied bucket (`envoy_interests`, `envoy_roles`,
+  `envoy_sessions`, `envoy_known_sessions`, `envoy_ci_state`); the stored-message get of
+  `KV_envoy_session_consumers`, the consumer names and infos of `ENVOY_NOTIFICATIONS`, and the info
+  of `ENVOY_MEASURE`. Its one backup is a records-only copy of `KV_envoy_session_consumers`, its
+  messages read one by one with that get (`internal/bus/kvrecords`, format `envoy-kv-records-v1`),
+  each with its sequence, subject, headers, time and data, signed with the operator's hold key. A
+  restore from it writes each message again, so it cannot reproduce the stream's `last_seq`. No
+  snapshot and no stream create is in `released`: nats-server checks a snapshot's deliver subject
+  for its syntax alone and sends every chunk there from the stream's own sender, and a create
+  carries a republish or a source of the caller's choosing, so either writes any subject, a
+  protected bucket's key among them. A stream create or update reads every stream of the account
+  through a source, and writes any KV bucket of the account through a RePublish whose destination
+  is a KV subject: the server checks only that the destination does not loop into the stream itself
+  (measured on 2.15.1 and 2.10.29 with a user holding exactly the measurement job's old grant), so
+  it writes chosen self-keyed records and a bucket's sentinel. The streams change (#4687) removes
+  stream creates and updates from every callout answer but the held operator's and narrows every
+  static user on a callout hub, so after the cutover the held operator is their only holder. Naming
+  no write subject does not keep a grant from writing:
+  the boundary is one bus, a grant per connection, and every client in `$G`, and any grant that
+  holds a JetStream API request can have the server store a JetStream answer on any subject a
+  stream in `$G` captures, by naming it as the request's reply. The writers of a bucket by design
+  (today Listener, ListenerHost, Dispatch, and Host, which retires) can choose those bytes, by
+  writing a key of a bucket they write and direct-getting it with that reply; Measure can copy a
+  listener lease message, with its headers, onto any captured subject; Daemon can have a
+  notification it may pull stored, under the notification's own subject, in any stream that
+  captures the pull's reply subject; every other principal can store only a server JSON document,
+  and the held operator writes keys by design. Session grants hold no `$JS.API.` publish. So no
+  record the hold trusts for completion is in NATS (the broker's cutover record in Postgres
+  decides), and every reader of a bucket value decodes strictly and fails closed on a value that is
+  not an exact record of its key's kind;
 - `prepare`, a hold being prepared while every client is still admitted: also
   `$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.*`, which raises the consumers' inactive thresholds
   (one subject serves a consumer's create and its update, so it admits a named create too), and the
@@ -4337,6 +4362,29 @@ No phase names a `$SYS` subject or the retired hold bucket `KV_envoy_maintenance
 `natsgrant.HoldProbe()` is the hold probe's grant: publish and subscribe `_ENVOY_HOLD_PROBE.none`,
 a subject nothing else uses, so the probe only shows whether the hub admits a connection.
 
+**Ending a hold after a failed command.** The hold's journal (`internal/holdrecord`) admits every
+command of a hold through the broker's records, one command at a time: while one command's intent
+is pending every other is refused, but its own pending intent admits it again, its rerun after a
+crash, so the operator runs one command of a hold at a time (assumption A2), and the journal cannot
+tell a rerun from a second process. A command whose own check refuses after its intent
+writes a `stop` entry naming what it left, and `hold abort` ends the hold once a command has
+stopped and no other command's intent is pending; `hold release` follows only a complete record or
+one whose stops all left nothing changed. In `hub-restore`, before a done `hold prove`, `hold abort`
+passes its disk check only with each target's disk its step-1 one. After a done prove, `hold abort`
+is admitted only once the pending command's latest entry is a `stop` (a census that cannot read a
+stream, say), or once its own latest entry is a stop, and is refused otherwise; it then releases
+the row, its entry carrying the stop's record of what was left, after `envoy-infra hold abort`
+compares each disk with the done prove's record. After a failed re-prove on a disk that moved,
+restore that target back onto the done prove's disk, then run `hold abort`. If the proven disk is
+gone (a 404 by name, or that name now has another numeric id), `hold abort` writes a stop naming
+it: restore that target onto another disk, run `hold prove` there, and run `hold abort` again,
+which reruns the reconcile for the stores its stop named and releases over the new prove's disks.
+A `hold abort` whose process was killed before its release is run again: its own pending intent
+admits it, and the rerun repeats the whole abort from its start, the disk check against the newest
+done prove and then the reconcile over every store, trusting nothing the killed run wrote.
+The residual: on this path clients reach the restored and proven hub before its census, until a
+`streams-census` hold runs clean.
+
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
 shell it runs in, requests no credential, and lists each principal that is not a person and can
@@ -4346,10 +4394,13 @@ the operator's Google service account's token, make a guarded namespace on anoth
 project or of the workload pool's fleet, register a cluster to that fleet, set IAM policy over any
 of these, or write the writer hold's tables beside the broker's routes, and each principal that can
 become one of those: through IAM impersonation, reported as the chain, or in Kubernetes by running,
-entering or minting the token of a ServiceAccount that holds such a right. On each cluster it
-reviews every ServiceAccount outside the system namespaces, each Google identity the cluster's
-bindings name, and anyone unauthenticated; a Group other than Kubernetes' system groups is never a
-finding while GKE's Google Groups for RBAC is off. It reads code first (`--rbac-render`,
+entering or minting the token of a ServiceAccount that holds such a right. On each cluster of the
+project, of the pool project and of the pool's fleet it reviews every ServiceAccount outside the
+system namespaces, Kubernetes' own groups, each binding subject that is not a person (a person is
+an email outside `gserviceaccount.com`), and anyone
+unauthenticated, and reports every binding of `system:masters` but the bootstrap one. Any other
+Group is no finding while GKE's Google Groups for RBAC is off, and reads UNKNOWN where it is on or
+on a fleet member that is no GKE cluster. It reads code first (`--rbac-render`,
 `--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming each principal and
 right, or 2 naming each step it could not read, a run that stopped mid-way included.
 `--report <file>` writes the same as JSON, and is deleted when a run starts, so a report is that

@@ -8,11 +8,8 @@ package natshold
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -30,34 +27,18 @@ type Reading struct {
 	Sig      string
 }
 
-// Read reads the hold row of schema's nats_hold, in a read-only transaction that first sets its
-// search_path to pg_catalog and pg_temp, so no object another writer put in a schema of the pool's
-// search path is resolved in its place, under ReadDeadline. It answers found false for no row, and
-// an error for any failure, a deadline passed included: the caller reads every error as unknown,
-// whatever it read before. schema is public in a deployment; a test names the schema of its own.
+// Read reads the hold row of schema's nats_hold through the Store's own read (Store.Row): a
+// read-only transaction that first sets its search_path to pg_catalog and pg_temp, so no object
+// another writer put in a schema of the pool's search path is resolved in its place, here under
+// ReadDeadline. It answers found false for no row, and an error for any failure, a deadline passed
+// included: the caller reads every error as unknown, whatever it read before. schema is public in
+// a deployment; a test names the schema of its own.
 func Read(ctx context.Context, pool *pgxpool.Pool, schema string) (Reading, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, ReadDeadline)
 	defer cancel()
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return Reading{}, false, fmt.Errorf("natshold: begin the hold read: %w", err)
+	row, found, err := Store{Pool: pool, Schema: schema}.Row(ctx)
+	if err != nil || !found {
+		return Reading{}, false, err
 	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := tx.Exec(ctx, `set local search_path = pg_catalog, pg_temp`); err != nil {
-		return Reading{}, false, fmt.Errorf("natshold: set the hold read's search path: %w", err)
-	}
-	var reading Reading
-	var gen int64
-	err = tx.QueryRow(ctx, `select gen, phase, hold_id, signed_at, sig from `+pgx.Identifier{schema, "nats_hold"}.Sanitize()+` where id = 1`).
-		Scan(&gen, &reading.Phase, &reading.HoldID, &reading.SignedAt, &reading.Sig)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return Reading{}, false, nil
-	case err != nil:
-		return Reading{}, false, fmt.Errorf("natshold: read the hold row: %w", err)
-	case gen < 0:
-		return Reading{}, false, fmt.Errorf("natshold: the hold row's gen is %d", gen)
-	}
-	reading.Gen = uint64(gen)
-	return reading, true, nil
+	return Reading{Gen: row.Gen, Phase: row.Phase, HoldID: row.HoldID, SignedAt: row.SignedAt, Sig: row.Sig}, true, nil
 }

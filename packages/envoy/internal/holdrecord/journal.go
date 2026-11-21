@@ -109,12 +109,27 @@ const CommandProve = "hold prove"
 // ErrBusy while another command's `intent` is pending. Outside `hub-restore` it is admitted only
 // once a command's latest entry is a `stop`, a command that stopped and has not run again since,
 // and refused ErrOutOfOrder ("no command has stopped") otherwise, so it is the way out of a failed
-// command, not a way to end a workflow that is going well. In `hub-restore` it keeps its own
-// rules: a `done` CommandProve entry excludes it, so a census that stops after a done prove is not
-// ended by abort, but by another prove and census, the restore's own way on. It moves the row to
-// `released` before its `done` entry, which completes the record; its `intent` carries each stop's
-// record of what its command left (Admit). It is refused after completion. From `prepare` it
-// deletes the cohort (DeleteCohort) and moves the row, and writes no entry.
+// command, not a way to end a workflow that is going well. In `hub-restore`, before any done
+// CommandProve, the hold's command passes its disk check only with each target's disk its step-1
+// one. After a done prove, abort is admitted only once the pending command's latest entry is a
+// `stop` (a stop after the latest done prove, a census that fails for good, say), or once its own
+// latest entry is a stop, whenever written, and is refused ErrExcluded otherwise; another command's
+// stop from before the latest prove lifts nothing. It then releases the row: the hold's command
+// compares each disk with the done prove's record first, which is t-10's check, not this
+// package's. After a failed re-prove on a disk that moved, the operator restores that target back
+// onto the done prove's disk and then runs abort. If the check finds the done prove's disk gone (a
+// 404 by name, or that name now has another numeric id), abort writes a stop naming it; the
+// operator restores that target onto another disk and runs a new prove, whose done opens a new
+// epoch, and abort, admitted again after its own stop, reruns the reconcile for the stores that
+// stop named and releases over the new epoch's disks. The residual: on this path clients reach the
+// restored and proven hub before its census, until a streams-census hold runs clean. Release stays
+// refused, since hub-restore's completion is its clean census. Abort moves the row to `released`
+// before its `done` entry, which completes the
+// record; its `intent` carries each stop's record of what its command left (Admit).
+// It is refused after completion. From `prepare` it deletes the cohort (DeleteCohort) and moves
+// the row, and writes no entry. Like every command, its own pending intent admits it again, so two
+// processes running abort at once are both admitted: the operator runs one command of a hold at a
+// time (assumption A2).
 const CommandAbort = "hold abort"
 
 // LeftUnchanged is what a stop records (AppendStopLeft) when no run of its command in this hold
@@ -172,9 +187,13 @@ func Stoppable(w Workflow, command string) bool { return current.Stoppable(w, co
 func Epochal(w Workflow, command string) bool { return current.Epochal(w, command) }
 
 // Decide is Admit's decision on a verified record. It returns nil when the command may write its
-// `intent` entry, and otherwise the first refusal in this order: ErrBusy, ErrOutOfOrder for `hold
-// release`, ErrNotAdmitted, ErrAlreadyDone after completion, ErrExcluded, ErrOutOfOrder,
-// ErrAlreadyDone.
+// `intent` entry, and otherwise the first refusal in this order: ErrAlreadyDone once the hold has
+// ended (a done `hold release` or `hold abort`); ErrBusy; ErrOutOfOrder for `hold release` before
+// completion (or a record whose other entries are not all stops that left nothing changed);
+// ErrAlreadyDone for a second `hold set`; ErrOutOfOrder for any other command before `hold set`'s
+// done entry, but `hold abort`; ErrNotAdmitted; ErrAlreadyDone after completion; ErrExcluded;
+// ErrOutOfOrder for `hold abort` outside `hub-restore` when no command has stopped; ErrOutOfOrder
+// for a required command with no done entry; ErrAlreadyDone.
 func Decide(d Done, req Request) error { return current.Decide(d, modelRequest{Request: req}) }
 
 // Proven returns the latest `done` `hold prove` entry's outputs, and false before any `hold prove`
@@ -284,6 +303,41 @@ func pending(d Done) []string {
 		}
 	}
 	return out
+}
+
+// cutRun reports whether a run of command in ops ended with no entry: an intent of command followed
+// by another intent of it with no stop or done of it between, a run cut after its intent, whose
+// change no entry records.
+func cutRun(ops []Operation, command string) bool {
+	open := false
+	for _, o := range ops {
+		if o.Command != command {
+			continue
+		}
+		if o.State == stateIntent && open {
+			return true
+		}
+		open = o.State == stateIntent
+	}
+	return false
+}
+
+// latestIsStop reports whether command's latest entry in ops is a `stop`.
+func latestIsStop(ops []Operation, command string) bool {
+	latest := ""
+	for _, o := range ops {
+		if o.Command == command {
+			latest = o.State
+		}
+	}
+	return latest == stateStop
+}
+
+// stoppedSinceProve reports whether, among the entries after the latest done hold prove (Epoch),
+// some command's latest entry is a stop.
+func stoppedSinceProve(d Done) bool {
+	_, ents, ok := Epoch(d)
+	return ok && anyStopped(ents)
 }
 
 // anyStopped reports whether some command's latest entry is a `stop`: a command that stopped and

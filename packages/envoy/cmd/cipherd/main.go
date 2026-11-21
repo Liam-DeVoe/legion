@@ -825,13 +825,14 @@ func main() {
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
 		}
 		// The writer hold's rule, only with its switch on (BROKER_NATS_HOLD_READ): the hold row is
-		// read at every decision, on a pool of its own, and verified against the operator's keys.
-		// With the switch off nothing reads the row and every decision is answered as before.
+		// read at every decision, on a pool of its own, and verified against the operator's keys,
+		// through one view for this replica, whose floor every decision shares. With the switch off
+		// Hold is nil, nothing reads the row and every decision is answered as before.
 		if cfg.NATS.HoldRead {
 			holdPool, err := openHoldPool(st, cfg.NATS.HoldPoolSize)
 			fatal(err)
 			defer holdPool.Close()
-			deps.HoldRead, deps.HoldKeys = holdReader(holdPool, holdSchema), cfg.NATS.HoldSigningKeys
+			deps.Hold = natscallout.NewHoldView(holdReader(holdPool, holdSchema), cfg.NATS.HoldSigningKeys, deps.Metrics)
 		}
 		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,

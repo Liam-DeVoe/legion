@@ -18,7 +18,6 @@ package natscallout
 
 import (
 	"context"
-	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
 	"log/slog"
@@ -26,7 +25,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
-	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/natscred"
@@ -52,29 +50,12 @@ type Deps struct {
 	// Metrics is the registry the service's decisions are counted on (NewMetrics); nil counts
 	// nothing.
 	Metrics *Metrics
-	// HoldRead reads the writer hold's row from the broker's Postgres (natshold.Read on a pool of
-	// its own), which decides the operator's grant and, while it cannot be read, refuses every
-	// other client (holdView). Nil is a broker whose BROKER_NATS_HOLD_READ is false: nothing reads
-	// the row, and every decision is answered as if the row held released.
-	HoldRead func(ctx context.Context) (natshold.Reading, bool, error)
-	// HoldKeys are BROKER_NATS_HOLD_SIGNING_KEYS, the operator's public keys a row must be signed
-	// with to be read at all (signedrecord.Verify).
-	HoldKeys []ed25519.PublicKey
-
-	// hold is the view of the hold row a replica's every decision reads, with its floor, which
-	// Start makes from HoldRead and HoldKeys (newHoldView). Nil with HoldRead set is a caller of
-	// Decide that started no replica (view).
-	hold *holdView
-}
-
-// view is the hold view a decision reads: the replica's, or, for a caller of Decide that started
-// none, a view of this decision's own, whose floor ends with it. Nil, with HoldRead nil, answers
-// released and reads nothing.
-func (d Deps) view() *holdView {
-	if d.hold != nil {
-		return d.hold
-	}
-	return newHoldView(d)
+	// Hold is the view of the writer hold's row in the broker's Postgres (NewHoldView), which
+	// decides the operator's grant and, while it cannot be read, refuses every other client. Every
+	// decision made through these Deps reads it, so they share its floor. Nil is a broker whose
+	// BROKER_NATS_HOLD_READ is false: nothing reads the row, and every decision is answered as if
+	// the row held released.
+	Hold *HoldView
 }
 
 func (d Deps) now() time.Time {
@@ -212,12 +193,12 @@ const heldReason = "held: the NATS writer hold is set, and admits only its opera
 
 // outsideTheHold is decision, the answer to a client other than the operator, under released and
 // prepare; the refusal held while the hold row holds held; and the refusal hold_unknown while it
-// cannot be read (holdView). The row is read once, now, inside the decision's budget. So while a
+// cannot be read (HoldView). The row is read once, now, inside the decision's budget. So while a
 // hold is set no client but the operator is admitted to any server of the hub, and one that the
-// hold's restart disconnects is refused again at each reconnect. With HoldRead nil nothing is read
-// and the decision stands.
+// hold's restart disconnects is refused again at each reconnect. With Hold nil nothing is read and
+// the decision stands.
 func outsideTheHold(ctx context.Context, deps Deps, decision Decision) (Decision, error) {
-	phase, err := deps.view().phase(ctx)
+	phase, err := deps.Hold.phase(ctx)
 	switch {
 	case err != nil:
 		return Decision{}, refuse(labelHoldUnknown, holdUnknownReason).because(err)
@@ -232,7 +213,7 @@ func outsideTheHold(ctx context.Context, deps Deps, decision Decision) (Decision
 // not, so the operator is never refused for the hold's sake and can restore a missing or forged
 // row; its user expires at expiry or operatorLife after the decision, whichever is first.
 func decideOperator(ctx context.Context, deps Deps, entry config.NATSService, expiry time.Time) (Decision, error) {
-	phase, err := deps.view().phase(ctx)
+	phase, err := deps.Hold.phase(ctx)
 	if err != nil {
 		phase = natsgrant.OperatorPhaseReleased
 	}

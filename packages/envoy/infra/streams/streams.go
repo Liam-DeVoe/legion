@@ -82,6 +82,9 @@ type Report struct {
 	// Unknown is what the run could not read, each naming why: a run with any is UNKNOWN, never
 	// clean.
 	Unknown []string
+	// Left are what the run left as it was on purpose, each named with why: a consumer of a family
+	// whose store is gone (CensusInput.GoneNames). They are neither a change nor a failure.
+	Left []Finding
 }
 
 // ExitCode is the command's exit code for r: 2 when it read something it could not read (UNKNOWN),
@@ -96,12 +99,15 @@ func (r Report) ExitCode() int {
 	return 0
 }
 
-// Lines are r as the command prints it: one line for each change, failure and unknown read, and a
-// last line, CLEAN, FAIL or UNKNOWN.
+// Lines are r as the command prints it: one line for each change, thing left, failure and unknown
+// read, and a last line, CLEAN, FAIL or UNKNOWN.
 func (r Report) Lines() []string {
 	var lines []string
 	for _, change := range r.Changes {
 		lines = append(lines, "CHANGED "+change.String())
+	}
+	for _, left := range r.Left {
+		lines = append(lines, "LEFT "+left.String())
 	}
 	for _, failure := range r.Failures {
 		lines = append(lines, "FAIL "+failure.String())
