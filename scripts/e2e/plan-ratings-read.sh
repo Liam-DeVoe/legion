@@ -23,7 +23,9 @@
 # `dispatch` command on PATH (packages/envoy-client's bin), the session the operator's shell names
 # (DISPATCH_HOST and DISPATCH_SESSION_ID), and the deployed Dispatch and token the operator's
 # envoy.json or DISPATCH_URL and DISPATCH_TOKEN name. This script sets none of those and reads
-# no credential of its own. It reaches only that Dispatch, and writes nothing.
+# no credential of its own. It reaches only that Dispatch, and writes nothing. It reads no file but
+# lib/dispatch-read.sh beside it, so a copy of the two runs outside a checkout of this repository
+# too.
 set -euo pipefail
 
 usage="usage: scripts/e2e/plan-ratings-read.sh <PROJECT> <ISSUE>, a project key and the key of one issue of it, such as INFRA INFRA-123"
@@ -33,35 +35,33 @@ if [ "$#" -ne 2 ] || ! [[ $1 =~ ^[A-Z][A-Z0-9]*$ ]] || ! [[ $2 =~ ^$1-[0-9]+$ ]]
 fi
 project=$1
 issue=$2
-unknown() {
-  echo "UNKNOWN: $*"
-  exit 2
-}
-command -v dispatch >/dev/null || unknown "no dispatch command is on PATH, so nothing was read"
+case ${BASH_SOURCE[0]} in */*) here=${BASH_SOURCE[0]%/*} ;; *) here=. ;; esac
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-read.sh
+. "$here/lib/dispatch-read.sh"
+read_require_dispatch
 
-code=0
-out=$(dispatch plans --project "$project" 2>&1) || code=$?
-[ "$code" -eq 0 ] || unknown "dispatch plans --project $project exited $code, so nothing was read: $out"
-printf '%s\n' "$out"
+read_dispatch plans --project "$project"
 
 # Each line after the header is one finished issue, as `dispatch plans` prints it
 # (packages/envoy-client/src/dispatch-commands/plans.ts):
-#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps|->)> ratings <none|<r>/5 "<reason>", …> time <-|<h>h<m>m> failed steps <n>
+#   <issue> closed <closed_at> plan <none|<source> (<n> tasks: <steps|->)> ratings <none|<r>/<most> "<reason>", …> time <-|<h>h<m>m> failed steps <n>
 # Each reason is a JSON string, so a quotation mark or a line break in it keeps the issue on one
 # line; the ratings are separated by `, ` outside those strings.
 awk -v project="$project" -v issue="$issue" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit }
   # ratingsOf reads the ratings text of one line: the number of ratings it lists, 0 for `none`,
-  # and -1 when it is no list of ratings. It sets reasonless to how many of them have an empty
-  # reason.
-  function ratingsOf(text,   n, at, end, c) {
+  # and -1 when it is no list of ratings: each is a whole number, `/`, the top of the scale and a
+  # JSON string. Dispatch refuses a rating off the scale, so the number is read as the form alone.
+  # It sets reasonless to how many of them have an empty reason.
+  function ratingsOf(text,   n, at, head, end, c) {
     reasonless = 0
     if (text == "none") return 0
     n = 0
     at = 1
     while (1) {
-      if (substr(text, at, 5) !~ /^[1-5]\/5 "$/) return -1
-      end = at + 5
+      if (!match(substr(text, at), /^[0-9]+\/[0-9]+ "/)) return -1
+      head = RLENGTH
+      end = at + head
       while (1) {
         c = substr(text, end, 1)
         if (c == "") return -1
@@ -70,7 +70,7 @@ awk -v project="$project" -v issue="$issue" '
         end++
       }
       n++
-      if (end == at + 5) reasonless++
+      if (end == at + head) reasonless++
       end++
       if (end > length(text)) return n
       if (substr(text, end, 2) != ", ") return -1
@@ -118,4 +118,4 @@ awk -v project="$project" -v issue="$issue" '
     if (count) exit 1
     print "PASS: " issue ": " said
   }
-' <<<"$out"
+' <<<"$read_out"

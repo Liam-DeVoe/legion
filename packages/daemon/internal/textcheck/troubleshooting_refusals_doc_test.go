@@ -11,7 +11,7 @@ import (
 // The refusal table of the troubleshooting page - the table under its `## The daemon will not
 // start` heading - is held to the daemon by cmd/legion's
 // TestTheTroubleshootingTableHoldsEveryRefusalToAMessageTheLoaderProduces, which drives a fixture
-// per row and holds the row's `It says` text to the refusal `legion start --check-config` prints.
+// per row and holds the row's `It says` text to the refusal `legion config check` prints.
 // That comparison is in two halves, because a test that reads the guide puts the guide in its
 // job's filter — a declared read applies to every compiled source file of a run — and a
 // documentation-only edit would then start the whole daemon Go lane. The product half reads
@@ -58,9 +58,11 @@ func TestTheTroubleshootingRefusalsExtractIsTheGuidesRefusalTable(t *testing.T) 
 // A refusal table a reader of the rendered page cannot see is none: the page shows nothing of a
 // heading or a row inside an HTML comment, and a row the copy lacks inside a comment is still a
 // row of the page as an editor reads it. So the table is held in both readings of the page, and a
-// comment around the table, around one of its rows or around its heading, or one never closed
-// before it, fails for the comment. A comment that holds nothing of the heading or the table, one
-// around the section's fenced command or a "<!--" inside that fenced block, hides nothing of it.
+// comment around the table, around one of its rows or around its heading, or one opened on a line
+// of its own and never closed before it, fails for the comment. A comment that holds nothing of the
+// heading or the table, one around the section's fenced command, a "<!--" inside that fenced block,
+// and a "<!--" inside a line that its paragraph never closes, which the page shows as text, hide
+// nothing of it.
 // Each case is a section as the page writes one: the heading, the fenced command and the table.
 func TestTheRefusalTableIsHeldWhereAReaderSeesIt(t *testing.T) {
 	const heading = "## The daemon will not start"
@@ -82,7 +84,9 @@ func TestTheRefusalTableIsHeldWhereAReaderSeesIt(t *testing.T) {
 		{"the heading inside a comment",
 			"<!--\n" + heading + "\n-->\n\n" + command + "\n\n" + table + "\n", errCommented},
 		{"a comment never closed before the table",
-			heading + "\n\nRun the check first. <!-- a note\n\n" + command + "\n\n" + table + "\n", errCommented},
+			heading + "\n\nRun the check first.\n<!-- a note\n\n" + command + "\n\n" + table + "\n", errCommented},
+		{"a \"<!--\" never closed inside a line before the table",
+			heading + "\n\nRun the check first. <!-- a note\n\n" + command + "\n\n" + table + "\n", nil},
 		{"the section's fenced command inside a comment",
 			heading + "\n\n<!--\n" + command + "\n-->\n\n" + table + "\n", nil},
 		{"a comment opened inside the section's fenced block",

@@ -12,9 +12,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// todaysDefaultSteps is the steps of a project that names no default_steps, as the walk stores
+// todaysStoredSteps is the steps of a project that names no default_steps, as the walk stores
 // them: today's line up to the owner's acceptance, each with the type of its role.
-var todaysDefaultSteps = []string{"planner/planning", "implementer/implementation", "tester/testing", "reviewer/review", "acceptance:owner/review"}
+var todaysStoredSteps = []string{"planner/planning", "implementer/implementation", "tester/testing", "reviewer/review", "acceptance:owner/review"}
 
 // engineRunningByDefault is returnEngine for a project whose default_steps are words
 // (config.Project.RunsByDefault, which the daemon wires as Config.DefaultSteps).
@@ -30,7 +30,7 @@ func engineRunningByDefault(t *testing.T, words ...string) *Engine {
 }
 
 // assertDefaultPlan fails unless key's run at generation holds the plan of the default steps
-// alone (R5): version 0 of the source default, with no document and no giver, and one task,
+// alone: version 0 of the source default, with no document and no giver, and one task,
 // default, whose block text says so and whose steps are steps, run by default.
 func assertDefaultPlan(t *testing.T, stored *record.StoredPlan, key string, generation uint64, steps []string) {
 	t.Helper()
@@ -54,7 +54,7 @@ func assertDefaultPlan(t *testing.T, stored *record.StoredPlan, key string, gene
 }
 
 // An issue whose owner gives no plan stores the project's default steps at the start of its work
-// (R5; StartFirstPhase's gateOpened): one version 0 of the source default, one task default, the
+// (StartFirstPhase's gateOpened): one version 0 of the source default, one task default, the
 // project's default_steps, and the first of them running, which is planning for a project that
 // names none and implementing for `default_steps: [implementer, reviewer]`, whose run starts no
 // planner. An owner's plan whose one block names no steps stores the project's default steps under
@@ -68,12 +68,12 @@ func TestAnIssueWithNoPlanStoresTheDefaultSteps(t *testing.T) {
 		firstStep(t, pool, engine, root.Key)
 
 		now := planStandingOf(t, pool, engine, root.Key, root.Generation)
-		assertDefaultPlan(t, now.plan, root.Key, root.Generation, todaysDefaultSteps)
-		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysDefaultSteps}
+		assertDefaultPlan(t, now.plan, root.Key, root.Generation, todaysStoredSteps)
+		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysStoredSteps}
 		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s after its first step stands at %+v, want %+v", root.Key, got, want)
 		}
-		if planners := startsOf(t, pool, root.Key, claim.RolePlanner); len(planners) != 1 {
+		if planners := roleStartsOf(t, pool, root.Key, claim.RolePlanner); len(planners) != 1 {
 			t.Fatalf("the planner's starts = %+v, want one", planners)
 		}
 	})
@@ -91,10 +91,10 @@ func TestAnIssueWithNoPlanStoresTheDefaultSteps(t *testing.T) {
 		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s after its first step stands at %+v, want %+v", root.Key, got, want)
 		}
-		if planners := startsOf(t, pool, root.Key, claim.RolePlanner); len(planners) != 0 {
+		if planners := roleStartsOf(t, pool, root.Key, claim.RolePlanner); len(planners) != 0 {
 			t.Fatalf("the planner's starts = %+v, want none: the project's default steps name no planner", planners)
 		}
-		if implementers := startsOf(t, pool, root.Key, claim.RoleImplementer); len(implementers) != 1 || implementers[0].Phase != phase.Implementing {
+		if implementers := roleStartsOf(t, pool, root.Key, claim.RoleImplementer); len(implementers) != 1 || implementers[0].Phase != phase.Implementing {
 			t.Fatalf("the implementer's starts = %+v, want one, of implementing", implementers)
 		}
 	})
@@ -120,7 +120,7 @@ func TestAnIssueWithNoPlanStoresTheDefaultSteps(t *testing.T) {
 	})
 }
 
-// An owner's plan starts its first step (C2-2): `implementer reviewer` given while the root stands
+// An owner's plan starts its first step: `implementer reviewer` given while the root stands
 // at admitted starts implementing at its first step, and no planner claim starts. A plan the owner
 // gave at generation 0 for a child the daemon had not recorded is carried to the child's
 // generation when its first step starts (StartFirstPhase), each task from its start, and the child
@@ -144,10 +144,10 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 		if got := planStandingOf(t, pool, engine, root.Key, root.Generation).versions; !reflect.DeepEqual(got, []string{"1 owner"}) {
 			t.Fatalf("the versions of %s = %v, want the owner's alone", root.Key, got)
 		}
-		if planners := startsOf(t, pool, root.Key, claim.RolePlanner); len(planners) != 0 {
+		if planners := roleStartsOf(t, pool, root.Key, claim.RolePlanner); len(planners) != 0 {
 			t.Fatalf("the planner's starts = %+v, want none", planners)
 		}
-		if implementers := startsOf(t, pool, root.Key, claim.RoleImplementer); len(implementers) != 1 || implementers[0].Phase != phase.Implementing {
+		if implementers := roleStartsOf(t, pool, root.Key, claim.RoleImplementer); len(implementers) != 1 || implementers[0].Phase != phase.Implementing {
 			t.Fatalf("the implementer's starts = %+v, want one, of implementing", implementers)
 		}
 	})
@@ -171,7 +171,7 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 		if got := planRowsOf(t, pool, "LEGION-209"); got != [3]int{2, 2, 4} {
 			t.Fatalf("the plan rows of LEGION-209 = %v, want the plan at generation 0 and its copy at generation 1", got)
 		}
-		if planners := startsOf(t, pool, "LEGION-209", claim.RolePlanner); len(planners) != 0 {
+		if planners := roleStartsOf(t, pool, "LEGION-209", claim.RolePlanner); len(planners) != 0 {
 			t.Fatalf("the planner's starts = %+v, want none", planners)
 		}
 		if strings.Contains(logged.String(), notTaken) || len(noticesOf(t, pool, "LEGION-209", "plan-not-taken")) != 0 {
@@ -179,7 +179,7 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 		}
 		// The child's architect is told the phase the child starts, its plan's first step.
 		started := []record.Notice{{Kind: "child-status", Role: claim.RoleArchitect,
-			Reason: "LEGION-209 starts implementing under LEGION-208: it reached the front of the waiting line and took an admission slot"}}
+			Reason: "LEGION-209 starts implementing under LEGION-208: it reached the front of the waiting line and took an admission slot" + childStartedOwnership}}
 		if got := noticesOf(t, pool, "LEGION-209", "child-status"); !reflect.DeepEqual(got, started) {
 			t.Fatalf("the child-status notices = %+v, want %+v", got, started)
 		}
@@ -223,12 +223,12 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 
 		firstStep(t, pool, engine, "LEGION-209")
 
-		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysDefaultSteps}
+		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysStoredSteps}
 		if got := walkStandingOf(t, pool, engine, "LEGION-209", 1); !reflect.DeepEqual(got, want) {
 			t.Fatalf("LEGION-209 after its first step stands at %+v, want %+v", got, want)
 		}
 		started := []record.Notice{{Kind: "child-status", Role: claim.RoleArchitect,
-			Reason: "LEGION-209 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot"}}
+			Reason: "LEGION-209 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot" + childStartedOwnership}}
 		if got := noticesOf(t, pool, "LEGION-209", "child-status"); !reflect.DeepEqual(got, started) {
 			t.Fatalf("the child-status notices = %+v, want %+v", got, started)
 		}
@@ -237,9 +237,9 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 
 // An issue admitted in this release that its owner gave no plan holds the rows of the task
 // default from its first step, so a plan its owner gives later is judged as a later version over
-// them (R16): while default runs it is refused with the running task's text, never with the text
+// them: while default runs it is refused with the running task's text, never with the text
 // of an issue that started its work before Legion took plans; once the owner stops default, the
-// same version is taken and its task starts. The twin (R20): an issue that started its work before
+// same version is taken and its task starts. The twin: an issue that started its work before
 // the release, with no plan rows, is refused with that earlier release's text.
 func TestAnIssueOfThisReleaseJudgesALaterPlanAsALaterVersion(t *testing.T) {
 	t.Run("the default task running refuses it, and stopped takes it", func(t *testing.T) {
@@ -256,7 +256,7 @@ func TestAnIssueOfThisReleaseJudgesALaterPlanAsALaterVersion(t *testing.T) {
 		assertPlanRefusal(t, pool, engine, key, gen, id, apply(id, version1), &intake.Refusal{Status: 409, Code: "PLAN_REFUSED",
 			Message: "Legion refused this plan and recorded nothing: " + reason, Reasons: []plan.Refusal{{Task: plan.DefaultTask, Reason: reason}}}, before)
 
-		if result := apply("stop", ownersStop(t, key, plan.DefaultTask)); result.Refusal != nil {
+		if result := apply("stop", ownersStop(t, root, plan.DefaultTask)); result.Refusal != nil {
 			t.Fatalf("the owner's stop of default was refused: %+v", result.Refusal)
 		}
 		mustTake(t, "version 1 given again after the stop", apply(id, version1))

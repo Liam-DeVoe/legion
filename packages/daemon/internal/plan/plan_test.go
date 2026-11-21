@@ -88,7 +88,7 @@ func TestBuiltinRolesAreLegionsFiveStepRoles(t *testing.T) {
 	}
 }
 
-// A task with neither steps nor a sub-owner runs the project's default steps (R5), and a block
+// A task with neither steps nor a sub-owner runs the project's default steps, and a block
 // whose `steps` is empty is the same as a block with none. Neither check refuses such a plan.
 func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 	defaults := defaultSteps(t)

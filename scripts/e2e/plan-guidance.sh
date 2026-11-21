@@ -13,7 +13,7 @@
 #   - worker-has-none: the planner, the agent of the issue's first step, is launched with neither;
 #   - settings-serve-the-key: GET /legion/v1/state, the route `legion state --json` prints, serves
 #     settings.plan_guidance, the guidance file's path;
-#   - check-config-names-it: `legion start --check-config`, built from this checkout, on a
+#   - check-config-names-it: `legion config check`, built from this checkout, on a
 #     legion.yaml that names the same file, prints the line that names it.
 # The control runs first, as a whole run of its own with its own broker: the same run with
 # plan_guidance unset, where owner-has-guidance, settings-serve-the-key and check-config-names-it

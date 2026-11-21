@@ -44,8 +44,8 @@ func TestOnlyAnOwnersPromptHoldsThePlanGuidance(t *testing.T) {
 		name string
 		s    specs
 	}{
-		{"with", specs{stateDir: stateDir, project: "s1", prompts: composer, instructions: instructions, planGuidance: guidance, repositories: noRepositoriesView}},
-		{"without", specs{stateDir: stateDir, project: "s1", prompts: composer, instructions: instructions, repositories: noRepositoriesView}},
+		{"with", specs{stateDir: stateDir, project: "s1", prompts: composer, instructions: instructions, planGuidance: guidance, appOwners: noAppOwners}},
+		{"without", specs{stateDir: stateDir, project: "s1", prompts: composer, instructions: instructions, appOwners: noAppOwners}},
 	}
 	launches := []struct {
 		name, issue string

@@ -2,7 +2,7 @@
 
 // The live proof's driver for the plan guidance: a deployment whose configuration sets
 // plan_guidance gives that text to the launch of the owner of a person's issue and to no other
-// launch, serves the file's path in its settings, and `legion start --check-config` names it.
+// launch, serves the file's path in its settings, and `legion config check` names it.
 // scripts/e2e/plan-guidance.sh builds this driver with `-tags e2e`, owns the nats-server and the
 // PostgreSQL it runs against, and runs TestPlanGuidanceControlLive, a deployment that sets no
 // plan_guidance, before TestPlanGuidanceLive.
@@ -14,7 +14,7 @@
 // launches the issue's architect and its admission pass the planner, the first step's agent.
 // The runtime is the package's fake one, which records each launch's spec; each check composes
 // the launch's prompt from that spec with runtime.ComposePrompt, the function every runtime
-// writes an agent's prompt file with. `legion start --check-config` is the binary this checkout
+// writes an agent's prompt file with. `legion config check` is the binary this checkout
 // builds, run on a legion.yaml that names the same guidance file. GitHub's REST API, the Apps'
 // tokens and Envoy's listener are stood in for, as for the step records' driver.
 package daemon
@@ -72,7 +72,7 @@ func TestPlanGuidanceLive(t *testing.T) {
 // TestPlanGuidanceControlLive is the proof's control, run first: the same run with plan_guidance
 // unset. The owner's launch then holds no guidance and the settings serve no path, so those two
 // checks must fail; the worker's launch holds none either way, so that check must hold; and
-// `--check-config` prints no plan_guidance line, so that check must fail too.
+// `legion config check` prints no plan_guidance line, so that check must fail too.
 func TestPlanGuidanceControlLive(t *testing.T) {
 	g := newPlanGuidanceLive(t, false)
 	holds := map[string]bool{"owner-has-guidance": false, "worker-has-none": true, "settings-serve-the-key": false, "check-config-names-it": false}
@@ -182,7 +182,7 @@ func (g *planGuidanceLive) settingsServeTheKey() (string, error) {
 	return observed, nil
 }
 
-// checkConfigNamesIt: `legion start --check-config`, built from this checkout, on a legion.yaml
+// checkConfigNamesIt: `legion config check`, built from this checkout, on a legion.yaml
 // that names the run's guidance file as the deployment does, exits 0 and prints the line that
 // names the file and who carries it.
 func (g *planGuidanceLive) checkConfigNamesIt() (string, error) {
@@ -215,7 +215,7 @@ projects:
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
-	check := exec.Command(legion, "start", "--config", file, "--check-config")
+	check := exec.Command(legion, "config", "check", "--config", file)
 	check.Env = append(os.Environ(), "LEGION_OMP_PATH="+legion, "LEGION_GH_PATH="+legion, "XDG_STATE_HOME="+t.TempDir())
 	var stdout, stderr bytes.Buffer
 	check.Stdout, check.Stderr = &stdout, &stderr
@@ -223,18 +223,18 @@ projects:
 	if err := check.Run(); err != nil {
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) {
-			t.Fatalf("run `legion start --check-config`: %v", err)
+			t.Fatalf("run `legion config check`: %v", err)
 		}
 		code = exit.ExitCode()
 	}
 	want := "plan_guidance: " + g.guidance + " — each owner's system prompt carries this guidance after its addressing; Legion requires none of it"
 	printed := slices.ContainsFunc(strings.Split(stdout.String(), "\n"), func(line string) bool { return strings.HasPrefix(line, "plan_guidance: ") })
-	observed := fmt.Sprintf("`legion start --check-config` exited %d and printed a plan_guidance line: %t", code, printed)
+	observed := fmt.Sprintf("`legion config check` exited %d and printed a plan_guidance line: %t", code, printed)
 	if code != 0 {
-		return observed, fmt.Errorf("`legion start --check-config` exited %d: %s", code, strings.TrimSpace(stderr.String()))
+		return observed, fmt.Errorf("`legion config check` exited %d: %s", code, strings.TrimSpace(stderr.String()))
 	}
 	if !slices.Contains(strings.Split(stdout.String(), "\n"), want) {
-		return observed, fmt.Errorf("`legion start --check-config` printed no line %q:\n%s", want, stdout.String())
+		return observed, fmt.Errorf("`legion config check` printed no line %q:\n%s", want, stdout.String())
 	}
 	return observed + ": " + want, nil
 }

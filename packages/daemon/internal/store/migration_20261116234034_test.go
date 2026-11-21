@@ -15,7 +15,7 @@ import (
 // migrate through everything before it whatever lands beside it.
 const phaseReviewedHeadVersion = 20261116234034
 
-// 20261116234034 adds the commit the reviewer's own newest deciding review read
+// 20261116234034 adds the commit the reviewer's newest recorded review read
 // (record.PhaseRow.ReviewedHead), which no entry into a phase clears. The release before kept no
 // such commit, so every reviewer's row the upgrade finds reads none, and the next round of an issue
 // already in review reads the whole change as it did before; the decision beside it is left as it

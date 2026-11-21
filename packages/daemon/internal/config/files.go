@@ -183,7 +183,7 @@ func WriteDeploymentInstructions(contents []byte, stateDir, legionID string) (st
 // ReadPlanGuidance is the operator's plan guidance file (`plan_guidance`), refused naming the
 // operator's path when it is missing, unreadable, or blank: a configured file with nothing in it is
 // a misconfiguration, not an empty guidance. It writes nothing, so boot reads it with every other
-// refusal before it writes anything, and `legion start --check-config` refuses what boot refuses.
+// refusal before it writes anything, and `legion config check` refuses what boot refuses.
 func ReadPlanGuidance(path string) ([]byte, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {

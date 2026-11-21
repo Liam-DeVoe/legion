@@ -208,6 +208,11 @@ place with `dispatch doc-edit`. Do not upload a file named `spec.md` to change i
 whole spec with your text. Use `dispatch artifact` for real files, such as a report, an image, or a
 draft to send as-is.
 
+An upload that does replace a document the owner already holds under that name says which version it replaces.
+Read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload with `--force --precondition-json '{"document":"sha256:…"}'`: `--force` asks the command for the document's next version, which it otherwise refuses before sending anything, and the token is what Dispatch itself asks of every replacement.
+An upload that names no token is refused `400 PRECONDITION_REQUIRED`, and one naming a token the document has moved past is refused `409 PRECONDITION_FAILED`; nothing is written either way, and the refusal tells you to read the document again with `dispatch doc-read`, which prints the token it carries now, decide what that version says, and upload again naming that token.
+A first upload of a name replaces no version, so it names no token.
+
 A question the spec needs a person to decide is a **decision block**: an `:::ask` block at the end
 of the section that discusses it.
 
@@ -388,15 +393,21 @@ the whole command within 60. Once an attempt got no answer for 20 seconds or was
 command does, so the command keeps asking every 3 seconds or less (longer only when Dispatch's
 `Retry-After` asks), starting no ask in the last 5 seconds of its 60, to collect the answer; an
 upload of a megabyte or more, whose every ask sends the whole file again, keeps the five attempts.
-It asks again only of a Dispatch that judges the key: one whose answer
-carried the key back, or whose `/healthz` said `idempotency_keys: true` in the last five minutes,
-whatever its status; any other would make a repeated write twice. Dispatch makes the write once per
-key and answers a repeat with the first answer, so the command never makes a write twice. When the
-write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too
-large to keep), the command exits 0 and says it was made: read it back to see it. When no attempt
-got an answer, the command says the write may or may not have taken effect: read it back before
-you run the command again, since a new command is a new key. Reads, and the `PUT` and `DELETE` of
-`dispatch follow` and `dispatch claim --release`, carry no key and go once. A script that calls
+Once an attempt may have reached Dispatch, it asks again only of a Dispatch that judges the key:
+one whose answer carried the key back, or whose `/healthz` said `idempotency_keys: true` in the
+last five minutes, whatever its status; any other would make a repeated write twice. An attempt
+that reached nothing (a refused connection, a credential whose trade goes on) is asked again
+without that check, since its repeat is no second write. Dispatch makes the write once per key and
+answers a repeat with the first answer, so the command never makes a write twice. When the write
+landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too large
+to keep), the command exits 0 and says it was made: read it back to see it. When an attempt may
+have reached Dispatch and the command got no answer Dispatch's keyed layer gave (no attempt
+answered, a page something in Dispatch's place wrote, a 2xx that is empty, not typed JSON or not
+JSON, but a bodiless 204 or 205), the command says the write may or may not have taken effect:
+read it back before you run the command again, since a new command is a new key. Reads, and the
+`PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, carry no key. Each goes
+once, and again only where Dispatch did nothing with it: once more after Dispatch calls the token
+it presented dead, and on an old build's "no route" during a rolling release. A script that calls
 the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters, digits, `.`,
 `_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
 each key's answer for 24 hours; the same key with a different request is refused

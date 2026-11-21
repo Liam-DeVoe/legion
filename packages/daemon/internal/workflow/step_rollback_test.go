@@ -54,7 +54,7 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			secondRun := stepClock.Add(time.Hour)
 			if tc.open {
 				engine := stepEngine(nil)
-				applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 					issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
 					if err != nil {
 						return err
@@ -158,8 +158,14 @@ func TestALateReviewersReportLandsOnItsCountedRecordAcrossARollback(t *testing.T
 	pool := migratedPool(t)
 	seedReview(t, pool, "green")
 	engine := testEngine(config.DesignGateRootIssues, nil)
-	onStored(t, pool, engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		return engine.StartStepRecord(ctx, tx, issue)
+	// The start this release counted is in the store before the daemon boots, so it is written
+	// with no boot pass before it (factTx); the boot then finds the run open and opens nothing.
+	factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
+		if err != nil {
+			return err
+		}
+		return engine.StartStepRecord(ctx, tx, *issue)
 	})
 	apply := applyFacts(t, pool, engine)
 	apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, Author: testReviewApp,
@@ -175,7 +181,7 @@ func TestALateReviewersReportLandsOnItsCountedRecordAcrossARollback(t *testing.T
 	rollForwardStepRecords(t, pool)
 	before := len(stepWrites(t, pool, "LEGION-208"))
 	if result := apply("reviewer-handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
-		Claim: "review-claim", Summary: "reviewed", HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
+		Claim: reviewClaim, Summary: "reviewed", HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
 		t.Fatalf("the reviewer's completion was refused: %+v", result.Refusal)
 	}
 	after := stepWrites(t, pool, "LEGION-208")[before:]
@@ -203,17 +209,13 @@ func databaseNow(t *testing.T, pool *pgxpool.Pool) time.Time {
 	return now
 }
 
-// stepRecordsRollForward is the version of the migration whose header carries the step records'
-// way back, which the way back re-arms and the roll forward applies again.
-const stepRecordsRollForward = 20261117064152
-
 // rollBackStepRecords runs the way back the roll forward's migration carries in its header
 // (migrations.WayBack), as an operator runs it with the daemon stopped (docs/kubernetes.md,
 // "Rolling back the release that records each step", carries the same block; internal/textcheck
 // holds the two to one text).
 func rollBackStepRecords(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	block, err := migrations.WayBack(stepRecordsRollForward)
+	block, err := migrations.WayBack(migrations.StepRecordsRollForward)
 	if err != nil {
 		t.Fatalf("read the way back of the roll forward: %v", err)
 	}
@@ -221,7 +223,8 @@ func rollBackStepRecords(t *testing.T, pool *pgxpool.Pool) {
 }
 
 // rollForwardStepRecords is the newer image's boot over the store the earlier release left: its
-// Migrate, which applies the roll forward the way back re-armed, and that one migration alone.
+// Migrate, which applies the roll forward the way back re-armed, and that one migration alone, and
+// the boot that follows it (rebooted).
 func rollForwardStepRecords(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	st, err := store.Open(t.Context(), pool.Config().ConnString())
@@ -232,4 +235,5 @@ func rollForwardStepRecords(t *testing.T, pool *pgxpool.Pool) {
 	if applied, err := st.Migrate(t.Context()); err != nil || applied != 1 {
 		t.Fatalf("the roll forward's Migrate applied %d migrations, %v; want the one the way back re-armed", applied, err)
 	}
+	rebooted(t, pool)
 }
