@@ -82,7 +82,8 @@
  *  its relay socket and registration live for a check that acts as the person's session. It reads
  *  OUTSIDE_EDGE_STATE, OUTSIDE_PROJECT, OUTSIDE_BROKER_URL and OUTSIDE_LISTENER_URL (and
  *  OUTSIDE_EDGE_ALLOW_HTTP), no link and no peer. Once the listener took the registration it
- *  writes its pid to `held` and prints `HELD <session>`; it holds until SIGTERM, or until
+ *  writes its pid and its start (field 22 of `/proc/<pid>/stat`) to `held` and prints
+ *  `HELD <session>`; it holds until SIGTERM, or until
  *  OUTSIDE_EDGE_HOLD_SECONDS have passed (1200 when unset; 60 to 3600), then unregisters the
  *  session, writes `released` (`unregistered`, or why not) and prints `RELEASED <session>`: 0, or
  *  2 where the unregister failed. A registration the listener did not take is
@@ -91,8 +92,9 @@
  *
  *  `release` ends that hold, reading OUTSIDE_EDGE_STATE alone: SIGTERM to the pid `held` names,
  *  up to 15 s for it to end, then `RELEASED <session>` (0) when `released` says `unregistered`,
- *  else `UNKNOWN: <why>` (2). No `held` is `UNKNOWN: no session is held`, and a holder still
- *  running after the 15 s is sent SIGKILL.
+ *  else `UNKNOWN: <why>` (2). No `held` is `UNKNOWN: no session is held`; a pid whose process did
+ *  not start when `held` says is `UNKNOWN: the held process is gone`, and is not signalled; and a
+ *  holder still running after the 15 s is sent SIGKILL.
  *
  *  Output: each row as `row<TAB>want<TAB>got<TAB>PASS|FAIL|UNKNOWN` on stdout and in the TSV
  *  file, then the verdict: `PASS` (exit 0) when every row passed, `FAIL: <rows>` (exit 1) when
@@ -1445,7 +1447,8 @@ type HoldEnd = { readonly by: "SIGTERM" | "time" } | { readonly by: "close"; rea
  * `hold`: the session `run` kept, registered at the listener again and held live, for a check that
  * acts as the person's session. It trades for the session's broker credential with the kept
  * device login, opens its relay socket and registers it as step 3 does; once the listener took the
- * registration it writes its pid to `held` and prints `HELD <session>`. At SIGTERM, or once
+ * registration it writes its pid and its start (field 22 of `/proc/<pid>/stat`) to `held` and
+ * prints `HELD <session>`. At SIGTERM, or once
  * OUTSIDE_EDGE_HOLD_SECONDS have passed, it unregisters the session (at most UNREGISTER_MS),
  * closes the socket, writes `released`, `unregistered` or why not, and prints
  * `RELEASED <session>`: 0, or 2 where the unregister failed. A socket the listener closes ends the
@@ -1468,6 +1471,15 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
       return 2;
     }
     const { state, session } = inputs;
+    // `release` signals the pid `held` names only while that pid's process started when this one
+    // did, so a pid another process took after this one ended is never signalled.
+    const holder = procStat(process.pid)?.start;
+    if (holder === undefined) {
+      console.log(
+        "UNKNOWN: no session held: /proc/self/stat could not be read, which names this holder's start"
+      );
+      return 2;
+    }
     // A hold before this one wrote these, and they say nothing of this one.
     rmSync(join(state, "held"), { force: true });
     rmSync(join(state, "released"), { force: true });
@@ -1509,7 +1521,7 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
       console.log(`UNKNOWN: the listener did not register ${session}: ${messageOf(error)}`);
       return 2;
     }
-    keep(state, "held", String(process.pid));
+    keep(state, "held", `${process.pid} ${holder}`);
     console.log(`HELD ${session}`);
     const timer = setTimeout(() => ended.resolve({ by: "time" }), inputs.seconds * 1000);
     const end = await ended.promise;
@@ -1539,35 +1551,42 @@ async function hold(env: NodeJS.ProcessEnv): Promise<number> {
   }
 }
 
-/** Whether process `pid` runs. One that ended and is not yet reaped, a zombie, does not. */
-function running(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-  } catch (error) {
-    return member(error, "code") === "EPERM";
-  }
+/** What `/proc/<pid>/stat` says of process `pid`: its state (field 3) and its start, in clock
+ *  ticks since boot (field 22); undefined where it names no process. */
+function procStat(pid: number): { readonly state: string; readonly start: string } | undefined {
   let stat: string;
   try {
     stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-  } catch (error) {
-    // No /proc to read on this machine: the signal above found the process.
-    return member(error, "code") !== "ENOENT";
+  } catch {
+    return undefined;
   }
-  // The state is the field after the name, which is in parentheses and may hold either.
-  return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+  // The fields after the name, which is in parentheses and may hold either: field 3 first.
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+  const [state] = fields;
+  const start = fields[19];
+  return state === undefined || start === undefined ? undefined : { state, start };
+}
+
+/** Whether the holder `held` names still runs: the process at `pid` is the one that started at
+ *  `start`, and it has not ended (a zombie, ended and not yet reaped, has). */
+function holderRuns(pid: number, start: string): boolean {
+  const stat = procStat(pid);
+  return stat !== undefined && stat.start === start && stat.state !== "Z";
 }
 
 /**
- * `release`: ends the hold whose pid `held` names. It sends that process SIGTERM and waits up to
- * RELEASE_MS for it to end, then prints `RELEASED <session>` (0) when `released` says
- * `unregistered`, else `UNKNOWN: <why>` (2): no `held` at all, `released` naming why the session
- * was not unregistered, or a holder still running at the end of the wait, which is sent SIGKILL.
- * A hold that already ended wrote `released`, and its pid is not signalled: it may be another
- * process's by now.
+ * `release`: ends the hold whose process `held` names, by its pid and its start. It sends that
+ * process SIGTERM and waits up to RELEASE_MS for it to end, then prints `RELEASED <session>` (0)
+ * when `released` says `unregistered`, else `UNKNOWN: <why>` (2): no `held` at all, `released`
+ * naming why the session was not unregistered, or a holder still running at the end of the wait,
+ * which is sent SIGKILL. A pid whose process did not start when `held` says is no holder's any
+ * more, and is not signalled: the held process is gone. A hold that ended wrote `released`, and
+ * its pid is not signalled either.
  */
 async function release(env: NodeJS.ProcessEnv): Promise<number> {
   let state: string;
   let pid: number;
+  let start: string;
   let session: string;
   try {
     state = required(env, "OUTSIDE_EDGE_STATE");
@@ -1575,11 +1594,12 @@ async function release(env: NodeJS.ProcessEnv): Promise<number> {
       console.log("UNKNOWN: no session is held");
       return 2;
     }
-    const named = kept(state, "held");
-    if (!/^[1-9][0-9]*$/.test(named)) {
-      throw new Refused(`OUTSIDE_EDGE_STATE's held names no process: ${named}`);
+    const named = /^([1-9][0-9]*) ([0-9]+)$/.exec(kept(state, "held"));
+    if (named === null) {
+      throw new Refused("OUTSIDE_EDGE_STATE's held names no process and its start");
     }
-    pid = Number(named);
+    pid = Number(named[1]);
+    start = named[2] ?? "";
     session = kept(state, "session");
   } catch (error) {
     if (!(error instanceof Refused)) throw error;
@@ -1587,25 +1607,35 @@ async function release(env: NodeJS.ProcessEnv): Promise<number> {
     return 2;
   }
   const released = join(state, "released");
-  if (!existsSync(released) && running(pid)) {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch (error) {
-      console.log(`UNKNOWN: the holder ${pid} of ${session} took no SIGTERM: ${messageOf(error)}`);
-      return 2;
-    }
-    const until = Date.now() + RELEASE_MS;
-    while (running(pid) && Date.now() < until) await Bun.sleep(100);
-    if (running(pid)) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // It ended between the read and the kill.
+  if (!existsSync(released)) {
+    if (!holderRuns(pid, start)) {
+      // The hold may have ended, writing `released`, since the read above.
+      if (!existsSync(released)) {
+        console.log("UNKNOWN: the held process is gone");
+        return 2;
       }
-      console.log(
-        `UNKNOWN: the holder ${pid} of ${session} still ran ${RELEASE_MS / 1000} s after its SIGTERM, so it was sent SIGKILL; ${session} may still be registered`
-      );
-      return 2;
+    } else {
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch (error) {
+        console.log(
+          `UNKNOWN: the holder ${pid} of ${session} took no SIGTERM: ${messageOf(error)}`
+        );
+        return 2;
+      }
+      const until = Date.now() + RELEASE_MS;
+      while (holderRuns(pid, start) && Date.now() < until) await Bun.sleep(100);
+      if (holderRuns(pid, start)) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // It ended between the read and the kill.
+        }
+        console.log(
+          `UNKNOWN: the holder ${pid} of ${session} still ran ${RELEASE_MS / 1000} s after its SIGTERM, so it was sent SIGKILL; ${session} may still be registered`
+        );
+        return 2;
+      }
     }
   }
   if (!existsSync(released)) {

@@ -9,8 +9,10 @@
  *  OUTSIDE_EDGE_STATE (and OUTSIDE_EDGE_ALLOW_HTTP, for the stand-in's http), `release` with
  *  OUTSIDE_EDGE_STATE alone. Each way a hold ends is a row, and so is each refusal: a hold time
  *  outside 60 to 3600 s, a listener that refuses the registration, a listener that closes the held
- *  socket, an unregister that fails, no hold to release, and a holder that ignores SIGTERM. The
- *  rows start no browser and no stack, so they run wherever `e2e/__tests__` runs. */
+ *  socket, an unregister that fails, no hold to release, a holder that ignores SIGTERM, and a held
+ *  pid whose process started at another time, which release does not signal. The rows start no
+ *  browser and no stack, so they run wherever `e2e/__tests__` runs; they read `/proc`, as `hold`
+ *  and `release` do. */
 
 import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
@@ -187,6 +189,42 @@ async function heldBy(state: string, held: Promise<BoundedRun>): Promise<void> {
 /** The mode bits of a file. */
 const modeOf = (path: string) => statSync(path).mode & 0o777;
 
+/** The start of process `pid`, in clock ticks since boot: field 22 of `/proc/<pid>/stat`, the
+ *  fields after the name counted from field 3, since the name may hold spaces. */
+function startOf(pid: number): number {
+  const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+  return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
+}
+
+/** The process a file names as `held` does, `<pid> <start>`; undefined until it is written. */
+function namedBy(path: string): { readonly pid: number; readonly start: number } | undefined {
+  const named = existsSync(path)
+    ? /^([1-9][0-9]*) ([0-9]+)$/.exec(readFileSync(path, "utf8"))
+    : null;
+  return named === null ? undefined : { pid: Number(named[1]), start: Number(named[2]) };
+}
+
+/** A holder that takes SIGTERM and goes on, printing that it took it. Once its handler is in
+ *  place it writes `<pid> <start>` to `at`, as `hold` names itself in `held`, so a SIGTERM sent
+ *  after that reaches the handler. */
+function stubbornHolder(at: string): Promise<BoundedRun> {
+  return runBounded({
+    argv: [
+      "bun",
+      "--eval",
+      `process.on("SIGTERM", () => console.log("took SIGTERM"));
+const fs = require("node:fs");
+const stat = fs.readFileSync("/proc/self/stat", "utf8");
+const start = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+fs.writeFileSync(${JSON.stringify(at)}, \`\${process.pid} \${start}\`);
+setInterval(() => undefined, 1_000);`,
+    ],
+    bound: "short",
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+    from: import.meta.url,
+  });
+}
+
 describe.concurrent("hold and release, against an edge stand-in", () => {
   test(
     "hold registers the kept session and holds its socket until release ends it, unregistered",
@@ -203,9 +241,9 @@ describe.concurrent("hold and release, against an edge stand-in", () => {
           session,
           subject: standInDeliverSubject(session),
         });
-        const pid = Number(readFileSync(join(state, "held"), "utf8"));
-        expect(Number.isInteger(pid) && pid > 0).toBe(true);
-        expect(() => process.kill(pid, 0)).not.toThrow();
+        const { pid, start } = namedBy(join(state, "held")) ?? { pid: 0, start: 0 };
+        expect(pid).toBeGreaterThan(0);
+        expect(start).toBe(startOf(pid));
         expect(modeOf(join(state, "held"))).toBe(0o600);
         expect(edge.unregisters).toEqual([]);
         const released = await release(state);
@@ -390,20 +428,13 @@ describe.concurrent("hold and release, against an edge stand-in", () => {
       const session = `outside-e2e-${randomBytes(6).toString("hex")}`;
       writeFileSync(join(state, "session"), session, { mode: 0o600 });
       try {
-        // A holder that takes SIGTERM and goes on: it names its pid in held once its handler is
-        // in place, so the SIGTERM release sends reaches the handler.
-        const holder = runBounded({
-          argv: [
-            "bun",
-            "--eval",
-            `process.on("SIGTERM", () => console.log("took SIGTERM")); require("node:fs").writeFileSync(${JSON.stringify(join(state, "held"))}, String(process.pid)); setInterval(() => undefined, 1_000);`,
-          ],
-          bound: "short",
-          env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
-          from: import.meta.url,
-        });
-        await eventually("the holder's held file", () => existsSync(join(state, "held")));
-        const pid = Number(readFileSync(join(state, "held"), "utf8"));
+        const holder = stubbornHolder(join(state, "held"));
+        await eventually(
+          "the holder's held file",
+          () => namedBy(join(state, "held")) !== undefined
+        );
+        const { pid } = namedBy(join(state, "held")) ?? { pid: 0 };
+        expect(pid).toBeGreaterThan(0);
         const started = performance.now();
         const released = await release(state);
         expect(performance.now() - started).toBeGreaterThanOrEqual(15_000);
@@ -416,6 +447,44 @@ describe.concurrent("hold and release, against an edge stand-in", () => {
         expect(ran.code).not.toBe(0);
         expect(() => process.kill(pid, 0)).toThrow();
       } finally {
+        rmSync(state, { force: true, recursive: true });
+      }
+    },
+    rowLimit("short", "short", "short")
+  );
+
+  test(
+    "release signals no process at the held pid that started at another time: the held process is gone",
+    async () => {
+      // The row above is this one's control: the same holder, named by its own start, takes the
+      // SIGTERM. Here `held` names its pid with another start, as a pid a later process took.
+      const state = mkdtempSync(join(tmpdir(), "outside-edge-hold-"));
+      const session = `outside-e2e-${randomBytes(6).toString("hex")}`;
+      writeFileSync(join(state, "session"), session, { mode: 0o600 });
+      const ready = join(state, "ready");
+      const holder = stubbornHolder(ready);
+      let alive = 0;
+      try {
+        await eventually("the holder's ready file", () => namedBy(ready) !== undefined);
+        const { pid, start } = namedBy(ready) ?? { pid: 0, start: 0 };
+        expect(pid).toBeGreaterThan(0);
+        alive = pid;
+        writeFileSync(join(state, "held"), `${pid} ${start + 1}`, { mode: 0o600 });
+        const released = await release(state);
+        expect(() => process.kill(pid, 0)).not.toThrow();
+        process.kill(pid, "SIGKILL");
+        alive = 0;
+        const ran = await holder;
+        expect(released.stdout).toBe("UNKNOWN: the held process is gone\n");
+        expect(released.code).toBe(2);
+        // It took no SIGTERM, which it would have printed.
+        expect(ran.stdout).toBe("");
+      } finally {
+        // A row that failed before the holder was ended ends it here, rather than at its bound;
+        // one that ended already throws, and is left so.
+        try {
+          if (alive > 0) process.kill(alive, "SIGKILL");
+        } catch {}
         rmSync(state, { force: true, recursive: true });
       }
     },

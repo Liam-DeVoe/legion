@@ -79,10 +79,10 @@
  *   start Chromium against `outside-edge-origin-stand-in.ts` in `outside-edge.test.ts`, six of them
  *   at once, on that developer box at a load average of about 1160 on 2026-11-21. 21.58 s x 3 =
  *   64.74 s, so 75 s.
- * - `outsideEdgeHold`, against 61.36 s: the hold of `outside-edge-hold.test.ts` that ends at its
- *   own 60 s, the longest of that file's eight holds, on that developer box at a load average of
- *   about 380 on 2026-11-21; the others, ended by release or refused, took 9.42 s or less.
- *   61.36 s x 3 = 184.08 s, so 190 s.
+ * - `outsideEdgeHold`, against 68.73 s: the hold of `outside-edge-hold.test.ts` that ends at its
+ *   own 60 s, the longest of that file's holds in two runs on that developer box at a load average
+ *   of about 380 on 2026-11-21 (61.36 s in the other); the holds ended by release or refused took
+ *   12.85 s or less. 68.73 s x 3 = 206.19 s, so 210 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a driver run against the stand-in origin after
@@ -132,7 +132,7 @@ export const bounds = Object.freeze({
   outsideEdgeBrowser: 75_000,
   /** One `hold` of the outside driver against a stand-in edge, which ends at its own 60 s at the
    *  longest: no browser, no stack. */
-  outsideEdgeHold: 190_000,
+  outsideEdgeHold: 210_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */

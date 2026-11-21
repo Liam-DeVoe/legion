@@ -875,15 +875,17 @@ a page names it.
 
 `hold` registers the session the run kept at the listener again and holds it live, for a check
 that acts as the person's session: it reads `OUTSIDE_EDGE_STATE`, `OUTSIDE_PROJECT`,
-`OUTSIDE_BROKER_URL` and `OUTSIDE_LISTENER_URL` and no link or peer, writes its pid to `held` and
-prints `HELD <session>` once the listener took the registration, and holds until SIGTERM or
+`OUTSIDE_BROKER_URL` and `OUTSIDE_LISTENER_URL` and no link or peer, writes its pid and its start
+(field 22 of `/proc/<pid>/stat`) to `held` and prints `HELD <session>` once the listener took the
+registration, and holds until SIGTERM or
 `OUTSIDE_EDGE_HOLD_SECONDS` (1200, from 60 to 3600). Then it unregisters the session, writes
 `released` (`unregistered`, or why not) and prints `RELEASED <session>`, exiting 2 where the
 unregister failed. A registration the listener refused is `UNKNOWN` with no `held`, and a held
 socket the listener closed is printed with its close code and not registered again, exit 2.
 `release`, with `OUTSIDE_EDGE_STATE` alone, sends the holder SIGTERM, waits up to 15 s, and prints
 `RELEASED <session>` only when `released` says `unregistered`; a holder still running then is
-sent SIGKILL, exit 2.
+sent SIGKILL, exit 2. A pid whose process did not start when `held` says is not signalled:
+`UNKNOWN: the held process is gone`, exit 2.
 
 `bun run test:harness e2e/__tests__/outside-edge.test.ts e2e/__tests__/outside-edge-limits.test.ts
 e2e/__tests__/outside-edge-hold.test.ts` drives it. The input rows run anywhere. The control rows
@@ -895,7 +897,8 @@ relay client's socket. Those that start Chromium skip where Playwright's Chromiu
 installed. The rows of `outside-edge-hold.test.ts` run `hold` and `release` against envoy-client's
 relay socket stand-in with a device login the real broker client made: held then released,
 held until its 60 s, a hold time out of range, a refused registration, a closed held socket, a
-failed unregister, nothing to release, and a holder that ignores SIGTERM. The stack rows start one
+failed unregister, nothing to release, a holder that ignores SIGTERM, and a held pid whose process
+started at another time, which is not signalled. The stack rows start one
 stack of the harness under `DISPATCH_E2E_SIGNIN=google` (`e2e/__tests__/outside-edge-stack.ts`),
 with an edge stand-in that serves the broker's device grant and the listener on envoy-client's
 relay socket stand-in (`e2e/__tests__/outside-edge-stand-in.ts`), and run the driver once per
