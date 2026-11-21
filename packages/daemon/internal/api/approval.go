@@ -51,21 +51,21 @@ type ClaimApproval struct {
 // once for each such answer, since its message cannot name the root whose spec it is.
 func (s *server) claimApproval(w http.ResponseWriter, r *http.Request) {
 	var req ClaimApprovalRequest
-	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
+	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
 		field{"claimToken", string(req.ClaimToken)}, field{"sessionId", req.SessionID}, field{"secret", req.Secret},
 	) {
 		return
 	}
 	m, held, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
 	if s.refuseIfStaleClaim(w, r, m.Claim()) {
 		return
 	}
 	if s.pool == nil || s.records == nil {
-		writeJSON(w, http.StatusInternalServerError, errorBody("the daemon keeps no records to read an approval from"))
+		s.refuse(w, r, http.StatusInternalServerError, "the daemon keeps no records to read an approval from")
 		return
 	}
 	var standing *record.StandingApproval
@@ -80,14 +80,14 @@ func (s *server) claimApproval(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.logRequestFailure(r, err, "api: the approval of a claim could not be read", "claim", req.ClaimToken, "session", req.SessionID)
-		writeJSON(w, http.StatusInternalServerError, errorBody("read the approval: "+err.Error()))
+		s.refuse(w, r, http.StatusInternalServerError, "read the approval: "+err.Error())
 		return
 	}
 	if standing != nil && standing.Carried && standing.Spec == "" {
 		s.log.Info("api: the approval route names a carried spec by its document, since its hand-over row names no root",
 			"claim", req.ClaimToken, "issue", standing.Root, "document", standing.ArtifactID, "version", standing.Version)
 	}
-	writeJSON(w, http.StatusOK, answer)
+	s.writeAnswer(w, r, AnswerClaimApproval, http.StatusOK, answer)
 }
 
 // ClaimApprovalOf is what POST /legion/v1/claims/approval answers a claim of role on issue, read in

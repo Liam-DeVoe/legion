@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"maps"
 	"reflect"
 	"slices"
@@ -10,12 +11,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
-
-// workHoldContract is the contract whose entry in version.go adds `why: held` to the state, below
-// which a caller is to be served the state without it. It is declared here alone until the
-// state's shaping for an older contract carries the word (the strip waits for the merge of main's
-// cybermonklabs/legion#3659, which rewrote that shaping), so these tests name the number they hold.
-const workHoldContract = 199
 
 // workHeldReason is the sentence of an issue the work hold holds, as the projection renders it.
 const workHeldReason = "Its phase is implementing, and the work hold holds the work of its tree LEGION-208 until every gated " +
@@ -40,53 +35,67 @@ func workHeldState(t *testing.T) State {
 	return state
 }
 
-// contract198Why is every word `why.state` takes at the contract before the work hold's: one word
-// more and that reader refuses the whole state (packages/contracts/src/legion-api.ts's
-// legionWhyView before contract 199).
-var contract198Why = []WhyState{WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted}
+// whyBeforeTheWorkHold is every word `why.state` takes at the contracts before the work hold's:
+// one word more and that reader refuses the whole state (packages/contracts/src/legion-api.ts's
+// legionWhyView before contract 203).
+var whyBeforeTheWorkHold = []WhyState{WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted}
 
 // H36, decision 16: a caller whose plugin is below the contract that added `why: held` reads the
 // state with no issue's `why` of that word, and the daemon's log says it was taken; every other
 // answer, of the held issue's neighbours and of every other key, is served as the source answered
-// it. A caller at the contract, a pod whose claims record none and a caller in no pod are served
-// the word. A caller below the contract that added `why` at all reads no `why` of any issue, and
-// no line of this contract, since there is nothing of it left to take. The state carries no
-// suspension source on any body a plugin reads (TestNoSessionFacingBodyCarriesSuspendedBy), so
-// `hold` reaches no such caller either.
+// it. A plugin from shapedAnswersContract on states its contract in its header, and one before it
+// states none and is placed by the claims of its pod, so a caller below the contract is read both
+// ways: a plugin stating the contract before, and a pod whose claims record a contract below
+// shapedAnswersContract. A caller stating the contract, a pod whose claims record none and a
+// caller in no pod are served the word. A caller below the contract that added `why` at all reads
+// no `why` of any issue, and no line of this contract, since there is nothing of it left to take.
+// The record route serves the held issue as the state does, at the contract before and at the
+// contract. The state carries no suspension source on any body a plugin reads
+// (TestNoSessionFacingBodyCarriesSuspendedBy), so `hold` reaches no such caller either.
+//
+// The contract is pinned rather than bounded, as supervise.PodUpdateContract is
+// (TestPodUpdateContractIsTheContractThatIntroducedTheOp): a renumber of version.go's entry that
+// left workHoldContract behind would serve the word to the readers of the contracts between.
 func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
-	if workHoldContract != 199 || workHoldContract > DaemonAPIVersion {
-		t.Fatalf("workHoldContract = %d, want 199, the contract whose entry in version.go added `why: held`, at or below DaemonAPIVersion %d",
+	if workHoldContract != 203 || workHoldContract > DaemonAPIVersion {
+		t.Fatalf("workHoldContract = %d, want 203, the contract whose entry in version.go added `why: held`, at or below DaemonAPIVersion %d",
 			workHoldContract, DaemonAPIVersion)
 	}
-	const dropped = "the issues' why where the work hold holds the issue"
-	full := issueViews(t, stateFrom(t, workHeldState(t), "192.0.2.1:41000", podClaims(workHoldContract-1)))
+	const dropped = droppedWhy
+	full := issueViews(t, stateFrom(t, workHeldState(t), "192.0.2.1:41000", podClaims(shapedAnswersContract-1)))
 	if held, _ := full["LEGION-214"]["why"].(map[string]any); held["state"] != string(WhyHeld) {
 		t.Fatalf("the fixture's held issue carries %v; this test proves nothing", full["LEGION-214"])
 	}
 	for _, tc := range []struct {
-		name     string
-		remote   string
-		contract int
-		held     bool
-		answers  bool
-		lines    []string
+		name   string
+		remote string
+		// claims is the contract the claims of the caller's pod record, and stated the contract
+		// the caller states in its header, 0 for none.
+		claims  int
+		stated  int
+		held    bool
+		answers bool
+		lines   []string
 	}{
-		{name: "a pod whose plugin is the contract before", remote: statePodAddr + ":41000", contract: workHoldContract - 1,
+		{name: "a plugin stating the contract before", remote: statePodAddr + ":41000", claims: DaemonAPIVersion,
+			stated: workHoldContract - 1, answers: true, lines: []string{dropped}},
+		{name: "a pod whose plugin states no contract", remote: statePodAddr + ":41000", claims: shapedAnswersContract - 1,
 			answers: true, lines: []string{dropped}},
-		{name: "a pod below the contract that added why", remote: statePodAddr + ":41000", contract: whyAndLineFieldsContract - 1},
-		{name: "a pod at the contract", remote: statePodAddr + ":41000", contract: workHoldContract, held: true, answers: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", contract: 0, held: true, answers: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", contract: workHoldContract - 1, held: true, answers: true},
+		{name: "a pod below the contract that added why", remote: statePodAddr + ":41000", claims: whyAndLineFieldsContract - 1},
+		{name: "a plugin stating the contract", remote: statePodAddr + ":41000", claims: DaemonAPIVersion, stated: workHoldContract,
+			held: true, answers: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: 0, held: true, answers: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: shapedAnswersContract - 1, held: true, answers: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body, narrowings := stateNarrowed(t, workHeldState(t), tc.remote, podClaims(tc.contract))
+			body, narrowings := stateNarrowedStating(t, workHeldState(t), tc.remote, podClaims(tc.claims), tc.stated)
 			served := issueViews(t, body)
 			for key, view := range served {
 				why, carries := view["why"].(map[string]any)
 				switch {
 				case carries && !tc.answers:
 					t.Errorf("%s carries why %v, which the reader before whyAndLineFieldsContract refuses", key, why)
-				case carries && !tc.held && !slices.Contains(contract198Why, WhyState(why["state"].(string))):
+				case carries && !tc.held && !slices.Contains(whyBeforeTheWorkHold, WhyState(why["state"].(string))):
 					t.Errorf("%s carries why %v, a word the reader before %d refuses", key, why, workHoldContract)
 				case tc.answers && key != "LEGION-214" && !reflect.DeepEqual(view["why"], full[key]["why"]):
 					t.Errorf("%s's why is %v, want the source's %v: only the held answer is taken", key, view["why"], full[key]["why"])
@@ -110,10 +119,28 @@ func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 		})
 	}
 
+	// The record route answers the issue the state holds for the same caller (shapeIssue): a caller
+	// stating the contract before reads the held issue with no `why`, and one at the contract reads
+	// the source's.
+	records := stateServer(t, workHeldState(t), podClaims(DaemonAPIVersion))
+	for _, contract := range []int{workHoldContract - 1, workHoldContract} {
+		var record map[string]any
+		if err := json.Unmarshal(recordOf(t, records, "192.0.2.1:41000", "LEGION-214", contract), &record); err != nil {
+			t.Fatalf("decode the record of LEGION-214 at contract %d: %v", contract, err)
+		}
+		if held := contract >= workHoldContract; (record["why"] != nil) != held ||
+			(held && !reflect.DeepEqual(record["why"], full["LEGION-214"]["why"])) {
+			t.Errorf("the record of LEGION-214 at contract %d carries why %v, want it served %v, as the source's %v",
+				contract, record["why"], held, full["LEGION-214"]["why"])
+		}
+	}
+
 	// The narrowing writes a copy: the next caller of the same daemon, at the contract, is served
 	// the answer the source gave.
-	handler := stateServer(t, workHeldState(t), podClaims(workHoldContract-1))
-	stateAsked(t, handler, statePodAddr+":41000")
+	handler := stateServer(t, workHeldState(t), podClaims(DaemonAPIVersion))
+	if served := issueViews(t, stateStating(t, handler, statePodAddr+":41000", workHoldContract-1)); served["LEGION-214"]["why"] != nil {
+		t.Fatalf("the caller stating %d is served the held issue's why %v; the copy below proves nothing", workHoldContract-1, served["LEGION-214"]["why"])
+	}
 	again := issueViews(t, stateAsked(t, handler, "192.0.2.1:41000"))
 	if !reflect.DeepEqual(again["LEGION-214"]["why"], full["LEGION-214"]["why"]) {
 		t.Fatalf("after a narrowed answer the next caller is served %v, want the source's %v", again["LEGION-214"]["why"], full["LEGION-214"]["why"])

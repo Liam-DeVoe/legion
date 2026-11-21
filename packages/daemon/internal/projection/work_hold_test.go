@@ -61,7 +61,7 @@ func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 		workHolds: []record.WorkHold{hold("LEGION-800", 1), hold("LEGION-900", 1), hold("LEGION-950", 1)},
 	}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

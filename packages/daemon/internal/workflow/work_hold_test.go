@@ -1186,7 +1186,8 @@ func projectHeld(t *testing.T, pool *pgxpool.Pool) api.State {
 	var state api.State
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		state, err = projection.Project(t.Context(), tx, record.NewStore(), "LEGION", config.DesignGateRootIssues.Steps(), nil, nil, nil, nil, holdNow)
+		state, err = projection.Project(t.Context(), projection.Inputs{Tx: tx, Store: record.NewStore(), Project: "LEGION",
+			Steps: config.DesignGateRootIssues.Steps(), Now: holdNow})
 		return err
 	})
 	return state
@@ -1219,7 +1220,10 @@ func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 
 // H36: a caller whose plugin is below the contract that added `why: held` reads the state without
 // it, through the state route's own narrowing, while a caller at the contract is served it. The
-// state is the one the record projects, served by the route the daemon serves it from.
+// state is the one the record projects, served by the route the daemon serves it from. A plugin
+// of either contract states it in its `Legion-Plugin-Contract` header, as every plugin from the
+// contract of the shaped answers (193) does, and the route places it by that; a caller in no pod
+// that states nothing, the operator's `legion state`, is served the daemon's own shape.
 func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 	rig := newHoldRig(t)
 	rig.close(rig.engine(config.HoldWork), 4)
@@ -1228,11 +1232,12 @@ func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		contract int
+		stated   bool
 		remote   string
 		held     bool
 	}{
-		{name: "a pod whose plugin is the contract before", contract: api.DaemonAPIVersion - 1, remote: podAddr + ":41000"},
-		{name: "a pod at the contract", contract: api.DaemonAPIVersion, remote: podAddr + ":41000", held: true},
+		{name: "a pod whose plugin is the contract before", contract: api.DaemonAPIVersion - 1, stated: true, remote: podAddr + ":41000"},
+		{name: "a pod at the contract", contract: api.DaemonAPIVersion, stated: true, remote: podAddr + ":41000", held: true},
 		{name: "a caller in no pod", contract: api.DaemonAPIVersion - 1, remote: "192.0.2.1:41000", held: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1247,6 +1252,9 @@ func TestWorkHoldStateKeepsOlderCallersReading(t *testing.T) {
 			})
 			request := httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil)
 			request.RemoteAddr = tc.remote
+			if tc.stated {
+				request.Header.Set("Legion-Plugin-Contract", fmt.Sprint(tc.contract))
+			}
 			recorder := httptest.NewRecorder()
 			server.Handler.ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusOK {
@@ -1280,6 +1288,7 @@ type projectedSource struct {
 }
 
 func (s projectedSource) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
-	state, err := projection.Project(ctx, tx, record.NewStore(), "LEGION", config.DesignGateRootIssues.Steps(), nil, s.claims, nil, nil, holdNow)
+	state, err := projection.Project(ctx, projection.Inputs{Tx: tx, Store: record.NewStore(), Project: "LEGION",
+		Steps: config.DesignGateRootIssues.Steps(), Claims: s.claims, Now: holdNow})
 	return state, s.claims, err
 }

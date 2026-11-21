@@ -421,14 +421,12 @@ type RequestReady struct {
 
 // RequestSuspend stops the claim's process and keeps its session. Reason is why, for the line the
 // suspension logs; By is who asks, which the suspended claim records (Claim.SuspendedBy) and every
-// suspension must name. Deadline, when set, is when a suspension held for a turn stops the process
-// mid-turn if the turn has not ended by then (holdSuspension); a daemon's suspension without one
-// waits for the turn however long it takes. The daemon sets one for a carried child's role still
-// running in its old tree, at the old root's linger expiry, where that tree's close would have
-// ended it (the daemon's outbox, stopElsewhere), and the work hold sets one 2 minutes after its
-// close message reached the claim (SuspendedByHold). Either is a time stored in the outbox row
-// that posts the stop, so the row posted again after a restart names the same moment. The
-// operator's suspension sets none: it is bounded at the stop timeout from its arrival.
+// suspension must name. For a daemon suspension or the work hold's (SuspendedByHold), Deadline,
+// when set, stops a hold at that moment when its turn has not ended (holdSuspension); without
+// one, the hold waits for the turn's end. The work hold sets one 2 minutes after its close message
+// reached the claim, a time stored in the outbox row that posts the stop, so the row posted again
+// after a restart names the same moment. An operator suspension always uses the stop timeout from
+// its arrival, whatever Deadline says.
 //
 // TurnAfter, when set, is when the message that asks the agent to end its turn reached the claim
 // (the work hold's close message), and it makes the stop of a claim with no turn and no launch in
