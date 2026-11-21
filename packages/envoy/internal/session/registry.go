@@ -1021,22 +1021,53 @@ func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epo
 	return false, nil
 }
 
+// readEntryFromLeader reads sessionID's newest message from the bucket's stream leader through kv
+// and classifies it as sessionID's registration, with the revision a write-back is fenced on (as
+// StoredByWriter classifies it, with the revision added): the decoded entry and the revision the
+// message is stored at, found true, when the leader's newest message is a writer's put DecodeEntry
+// binds to sessionID; and the zero entry, found false, for a key the stream holds no message for,
+// a delete or purge marker, a put the server wrote (bus.WrittenByServer), and a put DecodeEntry
+// refuses for sessionID - a record the server stored at the key's subject, a direct get's copy or
+// a RePublish among them, which no write of the entry may take for a writer's. A read the leader
+// refused or did not answer is the error, since no write may proceed over a key it could not read
+// from the leader.
+func readEntryFromLeader(ctx context.Context, kv bus.KeyValue, sessionID string) (entry SessionEntry, revision uint64, found bool, err error) {
+	newest, err := kv.NewestFromLeader(ctx, sessionID)
+	switch {
+	case errors.Is(err, nats.ErrKeyNotFound):
+		return SessionEntry{}, 0, false, nil
+	case err != nil:
+		return SessionEntry{}, 0, false, err
+	case newest.Operation() != nats.KeyValuePut, bus.WrittenByServer(newest):
+		return SessionEntry{}, newest.Revision(), false, nil
+	}
+	entry, decodeErr := DecodeEntry(sessionID, newest.Value())
+	if decodeErr != nil {
+		return SessionEntry{}, newest.Revision(), false, nil
+	}
+	return entry, newest.Revision(), true, nil
+}
+
 // rewriteStoredEntry is the change of sessionID's entry as the bucket holds it that
-// SetRepositoryGap, ClearRepositoryGap and RenewWithin share: the entry is read from the bucket
-// (readEntry), handed to change, and written back at the revision read when change reports it
-// changed (writeEntryAt), an update and never a create, so a registration or another write that
-// lands between the read and the write is never overwritten: the entry is read again and change
-// asked again, by writeEntryAt's stop rule. A key the bucket holds no entry under is missing,
-// the caller's error or nil, and a value no read decodes is an error. what names the change in
-// each error.
+// SetRepositoryGap, ClearRepositoryGap and RenewWithin share: the entry is read from the stream
+// leader (readEntryFromLeader), handed to change, and written back at the revision read when change
+// reports it changed (writeEntryAt), an update and never a create, so a registration or another
+// write that lands between the read and the write is never overwritten: the entry is read again and
+// change asked again, by writeEntryAt's stop rule. The leader read, never a direct get, is what a
+// bucket read by a stream message get (an edge listener's) needs so a record the server wrote is
+// never written back as a writer's: a direct get reports such a record at the key's true sequence
+// there, so a write fenced on it would land. A key the stream holds no writer's record for - absent,
+// a marker, a record the server wrote, or one that does not bind to the key - is missing, the
+// caller's error or nil, so no such record is rewritten. A read that did not answer is the error;
+// what names the change in each.
 func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, what string, missing error, change func(*SessionEntry) bool) error {
 	kv, epoch := r.watcher.Handle()
-	for retry := false; ; retry = true {
-		entry, revision, err := readEntry(ctx, kv, sessionID, retry)
+	for {
+		entry, revision, found, err := readEntryFromLeader(ctx, kv, sessionID)
 		if err != nil {
 			return fmt.Errorf("read session %s to %s: %w", sessionID, what, err)
 		}
-		if revision == 0 {
+		if !found {
 			return missing
 		}
 		if !change(&entry) {

@@ -162,3 +162,76 @@ func TestADirectGetAndTheLeaderReadCanReturnDifferentProjects(t *testing.T) {
 		t.Errorf("StoredByWriter returned projects %v, want the leader's [PRIV]; the role-claim refresh keeps these, not the direct get's [PRIV PUB]", confirmed.Projects)
 	}
 }
+
+// A RePublish of another stream stores, at an outside session's key, a body that reads as the
+// session's own record - its key, the edge's machine, a time, its projects and a repository gap
+// mark the writer chose - with that stream's headers, so StoredByWriter reads it as no writer's
+// record and the edge grants it no project. The edge's relay clears a gap mark with its own frame
+// (ClearRepositoryGap) and sets one when it withholds a GitHub event (SetRepositoryGap), each
+// through rewriteStoredEntry. On a client that reads the bucket by a stream message get, as the
+// edge's does (bus.WithStreamMessageReads), a direct get reports the RePublished record at its true
+// sequence, so a write fenced there would land; rewriteStoredEntry reads the key from the stream
+// leader instead, finds a message the server wrote, and writes nothing - the clear is nil and the
+// set is the missing error - so StoredByWriter stays false and the record is never laundered into a
+// writer's. The control is the same steps on a direct-get client (every in-house listener), which
+// refused the laundering write before this fix too.
+func TestAGapWriteDoesNotLaunderARepublishedRecordForTheEdge(t *testing.T) {
+	for _, edgeReads := range []bool{true, false} {
+		name := "direct gets"
+		if edgeReads {
+			name = "edge stream message reads"
+		}
+		t.Run(name, func(t *testing.T) {
+			options := []bus.ConnectOption{bus.WithReplicas(1)}
+			if edgeReads {
+				options = append(options, bus.WithStreamMessageReads())
+			}
+			client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, options...)
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			t.Cleanup(client.Close)
+			r := openBindingRegistry(t, client)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			const victim, mark = "ses_edge_launder", "mark-chosen-by-the-writer"
+			if err := r.PutWithin(ctx, victim, SessionEntry{MachineID: "edge-a", Projects: []string{"OUT"}, Delivery: DeliveryConsumer}); err != nil {
+				t.Fatalf("register %s: %v", victim, err)
+			}
+			body, err := json.Marshal(map[string]any{
+				"session_id": victim, "machine_id": "edge-a", "updated_at": time.Now().UnixMilli(),
+				"projects": []string{"OUT", "PRIV"}, "delivery": string(DeliveryConsumer), "repository_gap": mark,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored := testnats.RepublishesKey(t, client.Conn, bus.SessionBucket, victim, body)
+			awaitApplied(t, r, victim, stored)
+			if cached, err := r.Get(victim); err != nil || cached.RepositoryGap != mark {
+				t.Fatalf("the cache did not take the RePublished record's mark: %+v, %v", cached, err)
+			}
+			if _, own, err := r.StoredByWriter(ctx, victim); err != nil || own {
+				t.Fatalf("precondition: StoredByWriter over the RePublished record = %t, %v; want false", own, err)
+			}
+			// The clear reads a message the server wrote at the key, so it writes nothing: no error.
+			if err := r.ClearRepositoryGap(ctx, victim, mark); err != nil {
+				t.Fatalf("clear %s's gap over a RePublished record: %v", victim, err)
+			}
+			after, own, err := r.StoredByWriter(ctx, victim)
+			if err != nil {
+				t.Fatalf("StoredByWriter after the clear: %v", err)
+			}
+			if own || slices.Contains(after.Projects, "PRIV") {
+				t.Errorf("the gap clear laundered the RePublished record: StoredByWriter own=%t projects=%v, want false", own, after.Projects)
+			}
+			// The set over a server-written record is the missing error, so the relay gives its
+			// withheld event back rather than acknowledging it against a laundered record.
+			if err := r.SetRepositoryGap(ctx, victim, "a-new-mark"); !errors.Is(err, nats.ErrKeyNotFound) {
+				t.Errorf("SetRepositoryGap over a RePublished record = %v, want it refused as a missing entry", err)
+			}
+			if _, own, err := r.StoredByWriter(ctx, victim); err != nil || own {
+				t.Errorf("StoredByWriter after the set = own=%t, %v; want false, the record not laundered", own, err)
+			}
+		})
+	}
+}
