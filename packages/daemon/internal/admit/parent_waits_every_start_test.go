@@ -1272,6 +1272,57 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		}
 	})
 
+	// The same retry, delivered, and then the turn that took it ends before a child opens: the
+	// turn's end retires the claim's pending delivery (store's RetireDelivery), so the claim holds
+	// no task of the phase any more. The retry's task is still the one the implementer was given
+	// (dispatch://INFRA-3320 R9), so the pass holds implementing with it and not with the entry's
+	// own work, and the return starts implementing on it.
+	t.Run("a retry delivered to the implementer whose turn then ends, then a child opens: the held task and the return's task are the retry's", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := pwAdmission(t, 2)
+		spSeedParent(t, pool, spParent, phase.Implementing, true, nil)
+		pwPullRequest(t, pool, spParent, record.PullRequestOpen)
+		token := pwRoleToken(t, spParent, claim.RoleImplementer)
+		spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleImplementer, Claim: token, Entry: 3,
+			EntryTask: pwTask(spParent, phase.Implementing), EntryRaisedAt: fixedNow.Add(-time.Hour)})
+		pwApplied(t, pool, admission, "supervisor", "failed", intake.ClaimFailed{Issue: spParent, Role: claim.RoleImplementer,
+			Reason: "the launch budget ran out"})
+		pwApplied(t, pool, admission, "api", "retry", intake.RetryOrEscalate{Issue: spParent, Decision: intake.RetryDecision,
+			Reason: "the runner is back"})
+		retry := pnWorkerStart(t, pool, spParent, claim.RoleImplementer)
+		if retry.Entry != 3 || !strings.Contains(retry.Task, "Reason: the runner is back.") || retry.Task == pwTask(spParent, phase.Implementing) {
+			t.Fatalf("the retry's start = %+v; want the retry's own task on entry 3, not the entry's work", retry)
+		}
+		putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 1, supervise.StateIdle, "")
+		pwDeliver(t, pool, token, retry)
+		retired, err := pool.Exec(context.Background(), `delete from pending_task_deliveries where claim_token = $1 and delivery_id = 'outbox:delivered'`,
+			string(token))
+		if err != nil || retired.RowsAffected() != 1 {
+			t.Fatalf("retire the retry's delivery as the end of the turn that took it does = %d rows, %v; want the one delivery retired",
+				retired.RowsAffected(), err)
+		}
+		seedMirrorChild(t, pool, spChild, "todo", spParent)
+
+		spPass(t, pool, admission)
+
+		wait := pwHeld(t, pool, spParent, phase.Implementing, "the admission pass stopped the implementer's implementing phase", spChild+" (todo)")
+		if wait.Task != retry.Task {
+			t.Fatalf("the held task = %q, want the retry's task the implementer was given, %q, not its entry's, though the turn that took it has ended",
+				wait.Task, retry.Task)
+		}
+
+		pnChildMerged(t, pool, spChild, spParent, 51)
+		spPass(t, pool, admission)
+
+		if back := issue(t, pool, spParent); back.Phase != phase.Implementing || back.ChildrenWait != nil {
+			t.Fatalf("the parent after its child is done = phase %s, held start %+v; want implementing, the start it held", back.Phase, back.ChildrenWait)
+		}
+		work := retry.Task + " " + pnMergedChildren(spParent, pnMerged(spChild, 51)) + "."
+		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleImplementer || starts[0].task != work {
+			t.Fatalf("starts of %s = %+v, want one implementer start on the retry's task %q", spParent, starts, work)
+		}
+	})
+
 	// The phase's resume task, which the catch-up of the implementer's ready claim queues at no
 	// entry, the claim being level with the entry its phases row names (workflow's
 	// readyWorkerTask), delivered to that implementer before a child opens: it says to carry the

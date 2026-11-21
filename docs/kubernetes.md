@@ -2681,7 +2681,9 @@ Upgrade, and roll back, every daemon of one database in the same change.
 
 This release adds a phase, `awaiting_children`, in which an issue whose phases have started waits while a Dispatch child of it is open, holding no slot, and keeps the start it held until no child of it is open (dispatch://INFRA-3320 R9 to R13).
 Its migration `20261114232555_awaiting_children` adds the phase to `issues_phase_check` and adds six columns to `issues`: the held start, `children_wait_start`, `children_wait_task`, `children_wait_reason`, `children_wait_since` and `children_wait_children`, which the check `issues_children_wait_shape` ties to the phase, and `children_waited_at`, which outlives it.
-It adds one column to `phases` beside the phase entry, `entry_from`: the phase the move that raised a role's entry left, null where no move raised it (`record.PhaseRow.EntryFrom`), which the admission pass and the release of a hold read to leave a parent standing on an entry a role's move back raised out of `retro` or `merging` where it stands, and to restart such a held phase on it.
+It adds two columns to `phases` beside the phase entry.
+`entry_from` is the phase the move that raised a role's entry left, null where no move raised it (`record.PhaseRow.EntryFrom`), which the admission pass and the release of a hold read to leave a parent standing on an entry a role's move back raised out of `retro` or `merging` where it stands, and to restart such a held phase on it.
+`entry_retry_task` is the task of the last retry of a role's entry, `''` until a retry (`record.PhaseRow.EntryRetryTask`): this release's retry of a phase writes it beside `entry_task`, which keeps the work the entry was raised with, and the admission pass holds it for a parent whose worker it stops in the middle of its phase, after the turn that took the task has ended too.
 The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261119185013_outbox_kinds_with_the_basis_seeds`).
 That migration also keeps `phase_ended` in the kind check, and this release queues rows of it again: the message that tells a parent's worker that the admission pass ended its phase.
 The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
@@ -2693,6 +2695,9 @@ An earlier daemon reads this much of the release:
 
 - **`phases.entry_from`.**
   An earlier daemon names it in no statement: its inserts leave it null and its upserts leave it as it is, so an entry that release raises keeps the phase of the entry before it, which this release, rolled forward, would read as the move that raised the new entry.
+
+- **`phases.entry_retry_task`.**
+  An earlier daemon names it in no statement: its inserts leave it `''` and its upserts leave it as it is, so an entry that release raises keeps the retry task of the entry before it, which this release, rolled forward, would hold for a parent it stops on that entry in place of the entry's own work.
 
 - **The new notice kinds and the new supervise operation.**
   An earlier release refuses a notice of any of the four kinds (`unknown notice kind`, `validNoticeKind` in its `record/outbox.go`) and a supervise row whose op is `retire_task` (`unknown supervise operation`, `validSuperviseOp`).
@@ -2725,7 +2730,7 @@ Read it with:
 select count(*) from public.issues where phase = 'awaiting_children';
 ```
 
-Once it reads 0, everything below but the move out of `awaiting_children` is still needed: the outbox statements and the clear of `phases.entry_from`.
+Once it reads 0, everything below but the move out of `awaiting_children` is still needed: the outbox statements and the clears of `phases.entry_from` and `phases.entry_retry_task`.
 
 **Delete the rows an earlier release refuses, with every daemon of the database stopped, before the earlier image is pinned.**
 
@@ -2754,13 +2759,16 @@ update public.outbox
 
 What each costs: an architect is not told of one move into the wait, one end of a basis wait, one changes request on an ancestor or one root resting on its ancestor; a root's pending basis is read again by nobody, which the earlier release reads as a step registered and not approved; a re-parented root and its new parent's architect are not told of the move; a stopped worker keeps the task its claim held for the stopped phase and is not told that the phase ended; an implementer is not told that a move into the wait dropped the merge forward asked of it; and a catch-up tells its architect a step's state without the basis it rests on.
 
-**Clear `phases.entry_from` with the same daemons stopped, whichever path the rollback takes.**
+**Clear `phases.entry_from` and `phases.entry_retry_task` with the same daemons stopped, whichever path the rollback takes.**
 
 ```sql
 update public.phases set entry_from = null where entry_from is not null;
+update public.phases set entry_retry_task = '' where entry_retry_task <> '';
 ```
 
-What it costs: once this release is rolled forward, a parent whose phase's role stood on an entry a role's move back raised out of `retro` or `merging` before the rollback reads as standing on an entry no move raised, so the first admission pass that finds an open child of it, or a retry of its hold, moves it into `awaiting_children`, as it moves any parent of a phase before `retro`.
+What the first costs: once this release is rolled forward, a parent whose phase's role stood on an entry a role's move back raised out of `retro` or `merging` before the rollback reads as standing on an entry no move raised, so the first admission pass that finds an open child of it, or a retry of its hold, moves it into `awaiting_children`, as it moves any parent of a phase before `retro`.
+
+What the second costs: once this release is rolled forward, a parent whose worker was retried on the entry it stands on, and that the admission pass then stops in the middle of its phase, holds the work that entry was raised with rather than the retry's task, so the start the return gives back carries no word of the retry's reason.
 
 **Where the rollback cannot wait, move each issue out of `awaiting_children` before the earlier image is pinned, with every daemon of the database stopped.**
 The statement takes each one where this release's return would have taken it (workflow's `ReturnFromChildren`): a held start of `planning` or `implementing` goes back to that phase, and a held start of `testing`, `reviewing` or `accepting` goes to `testing`, since no round before the wait tested the head on a base that carries each needed child's merge.
@@ -3388,7 +3396,7 @@ The migrations recorded above this one are these.
 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
 20261114064234_design_gate_basis, of dispatch://INFRA-3320, adds the basis and kept-approval columns of `design_gates` and `issues.view_of`, and touches none of the six, so the block holds over it and leaves the columns standing, which the earlier release names in no statement ([Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open)).
-20261114232555_awaiting_children, of dispatch://INFRA-3320 too, adds the phase `awaiting_children` to `issues_phase_check`, six columns of `issues` and `phases.entry_from`, and touches none of the six, so the block holds over it; a rollback to a release before it takes the steps of that same section first.
+20261114232555_awaiting_children, of dispatch://INFRA-3320 too, adds the phase `awaiting_children` to `issues_phase_check`, six columns of `issues`, `phases.entry_from` and `phases.entry_retry_task`, and touches none of the six, so the block holds over it; a rollback to a release before it takes the steps of that same section first.
 20261115194357_project_pause, of dispatch://INFRA-3759, adds the tables `project_pauses`, `project_pause_stops` and `project_pause_pod_holds`, two columns of `pod_resumes` and one of `outbox`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the steps of its own section, [Rolling back the project pause](#rolling-back-the-project-pause), come before the earlier image is pinned.
 20261116144907_claim_sessions adds the table `claim_sessions`, which holds each name of a session to the claim that first recorded it, and fills it from each claim's session and the session it last abandoned; it touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement, and at the roll forward each boot holds again every name no row holds that a claim's row still records, its current session and file and the session it last abandoned (`HoldRecordedSessions`), not a session the earlier release recorded and then replaced.
 20261116165926_role_holders_publish adds `role_holders_publish` to `outbox_kind_check` and touches none of the six, so the block holds over it, and a rollback to a release before it needs no statement for it ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)).

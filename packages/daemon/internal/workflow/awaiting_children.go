@@ -45,12 +45,11 @@ type childrenHold struct {
 	Start phase.Phase
 	// Task is the task that start gives its worker, which the return carries
 	// (record.ChildrenWait.Task): the task a transition built, a retry's, the task a start
-	// written and not yet delivered carries, the task the stopped phase's worker was given
-	// (givenTask), or the work the stopped phase's entry was raised with
-	// (record.PhaseRow.EntryTask), each kept with no base-merge sentence (heldTask,
-	// withoutBaseMergeRun). The return starts it where the start goes back as it was held, and
-	// builds a testing task of its own where a held testing, reviewing or accepting comes back as
-	// testing (ReturnFromChildren).
+	// written and not yet delivered carries, or the task the stopped phase's worker was given for
+	// the entry the phase stands on, its last retry's or else the work the entry was raised with
+	// (entryWork), each kept with no base-merge sentence (heldTask, withoutBaseMergeRun). The
+	// return starts it where the start goes back as it was held, and builds a testing task of its
+	// own where a held testing, reviewing or accepting comes back as testing (ReturnFromChildren).
 	Task string
 	// Cause is what the start was for: the reason the notice the move replaces carried — a worker's
 	// own move back with its words — or else the completion, review, retry or stop that raised it
@@ -288,15 +287,17 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 //     owed its worker at its own generation: it holds that start with the task its queued row
 //     carries (queuedTask), and no role is told, since none has been given that phase;
 //   - a parent whose worker is in the middle of its phase: it holds that phase with the task its
-//     worker was given, the one its claim holds for the entry the phase stands on (givenTask) —
-//     after the architect's retry or the operator's restart, the retry's own — or else the work
-//     the phase entry was raised with (entryWork, as SendOwedEntry sends it), and that worker is
-//     told on its own topic that its phase ended (childrenHold.Ended, record.PhaseEnded), which
-//     wakes a pod the idle rule released.
+//     worker was given for the entry the phase stands on, as the role's phases row records it
+//     (entryWork) — after the architect's retry or the operator's restart, the retry's own
+//     (record.PhaseRow.EntryRetryTask), and otherwise the work the entry was raised with, as
+//     SendOwedEntry sends it — whether or not the turn that took that task has ended, and that
+//     worker is told on its own topic that its phase ended (childrenHold.Ended,
+//     record.PhaseEnded), which wakes a pod the idle rule released.
 //
-// Each of those tasks but the resume task entryWork builds was built for a worker, so a testing
-// task of a parent ends with the base-merge sentence, which the hold keeps none of
-// (withoutBaseMergeRun): the return adds it once to the testing task it starts (returnTask).
+// Each of those tasks but the resume task entryWork builds for a row that records no task was
+// built for a worker, so a testing task of a parent ends with the base-merge sentence, which the
+// hold keeps none of (withoutBaseMergeRun): the return adds it once to the testing task it starts
+// (returnTask).
 //
 // Every start the parent owes is finished in the same transaction (Store.FinishOutbox), so none
 // delivers later: the wait keeps its start on the record (record.ChildrenWait), and the return
@@ -353,9 +354,7 @@ func (e *Engine) StopForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 		}
 		hold.Cause = fmt.Sprintf("its start of %s was written and had not reached the %s", issue.Phase, role)
 	default:
-		if hold.Task, err = e.givenTask(ctx, tx, issue, role, entry); err != nil {
-			return false, err
-		}
+		hold.Task = entryWork(issue, entry)
 		hold.Cause, hold.Ended = fmt.Sprintf("the admission pass stopped the %s's %s phase", role, issue.Phase), role
 		if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "retire_task", Tree: issue.Tree, Role: role,
 			Generation: issue.Generation, Phase: issue.Phase, Entry: entry.Entry}); err != nil {
@@ -395,8 +394,8 @@ func acceptedEntry(row record.PhaseRow) bool {
 // queuedTask is the task the start row due carries for issue, read from its role's queued
 // supervise rows (Store.RoleRun): the very task that start would have delivered, which for the
 // retry of a held phase is the retry's own and not its entry's. A row no longer queued — its lane
-// finished it after the pass read it — leaves the work of entry, the role's phases row the caller
-// read (entryWork).
+// finished it after the pass read it — leaves the task entry records, the role's phases row the
+// caller read (entryWork), which for such a retry is the retry's too.
 func (e *Engine) queuedTask(ctx context.Context, tx pgx.Tx, issue record.Issue, due record.OwedStart, entry record.PhaseRow) (string, error) {
 	token, err := stepClaim(issue, issue.Key, due.Role)
 	if err != nil {
@@ -410,28 +409,6 @@ func (e *Engine) queuedTask(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		if queued.ID == due.ID && queued.Request.Task != "" {
 			return queued.Request.Task, nil
 		}
-	}
-	return entryWork(issue, entry), nil
-}
-
-// givenTask is the task the worker of the phase issue stands in was given for that phase, role
-// being its role and entry its phases row the caller read: the task the role's claim holds for
-// that phase, at issue's generation and at entry's own entry (Store.ClaimPhaseTask), which the
-// `retire_task` row StopForChildren writes takes back. After the architect's retry or the
-// operator's restart that is the retry's own task, with the reason it was given, which restart
-// delivers on the entry the row already names and does not write on the row
-// (record.PhaseRow.EntryTask). A claim that holds no such task leaves the work of entry
-// (entryWork): the turn that took it has ended, none reached the claim, or the task the claim
-// holds is of an earlier entry or of none, the phase's resume task, which a catch-up or a boot's
-// resume gives a claim level with its entry and which names none of that entry's work.
-func (e *Engine) givenTask(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, entry record.PhaseRow) (string, error) {
-	token, err := stepClaim(issue, issue.Key, role)
-	if err != nil {
-		return "", err
-	}
-	given, err := e.store.ClaimPhaseTask(ctx, tx, token, issue.Phase, issue.Generation, entry.Entry)
-	if err != nil || given != "" {
-		return given, err
 	}
 	return entryWork(issue, entry), nil
 }

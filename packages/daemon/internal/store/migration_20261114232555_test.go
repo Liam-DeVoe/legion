@@ -18,7 +18,9 @@ const awaitingChildrenVersion = 20261114232555
 // it the value is accepted with a full held start, the old values still pass, and the shape check
 // refuses a held start without the phase and the phase without a held start. It adds
 // phases.entry_from beside the phase entry as well, null on every row the upgrade finds, since no
-// row before it says which phase the move that raised its entry left, and never empty.
+// row before it says which phase the move that raised its entry left, and never empty, and
+// phases.entry_retry_task, the task of the entry's last retry, empty on every row the upgrade
+// finds, since no retry before it wrote one, and never null.
 func TestTheAwaitingChildrenPhaseAndItsHeldStart(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -58,6 +60,20 @@ func TestTheAwaitingChildrenPhaseAndItsHeldStart(t *testing.T) {
 	if _, err := store.Pool().Exec(ctx, `update phases set entry_from = '' where issue = 'LEGION-208' and role = 'implementer'`); err == nil ||
 		!strings.Contains(err.Error(), "constraint") {
 		t.Fatalf("an empty entry_from = %v, want a constraint to refuse it: an entry no move raised reads null", err)
+	}
+
+	// The phases row the upgrade found carries no retry's task, read as '', and the column refuses a null.
+	var retried string
+	if err := store.Pool().QueryRow(ctx, `select entry_retry_task from phases where issue = 'LEGION-208' and role = 'implementer'`).
+		Scan(&retried); err != nil {
+		t.Fatalf("read the implementer's retry task after the migration: %v", err)
+	}
+	if retried != "" {
+		t.Fatalf("the phases row the upgrade found reads entry_retry_task %q, want '': no retry before the column wrote one", retried)
+	}
+	if _, err := store.Pool().Exec(ctx, `update phases set entry_retry_task = null where issue = 'LEGION-208' and role = 'implementer'`); err == nil ||
+		!strings.Contains(err.Error(), "null") {
+		t.Fatalf("a null entry_retry_task = %v, want the column to refuse it: a row no retry wrote reads ''", err)
 	}
 
 	// The new value is accepted with a full held start, the children it waits on among it, and the

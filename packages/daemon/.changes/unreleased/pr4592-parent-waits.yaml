@@ -11,11 +11,13 @@ body: |-
   message, the kind #4464 stopped writing for a conflict, which migration
   `20261119185013_outbox_kinds_with_the_basis_seeds` keeps in the outbox's kind check. That
   worker's pending task for the phase is retired (the supervise op `retire_task`). The start held
-  for a worker stopped in the middle of its phase is the task its claim was given for the entry the
-  phase stands on, a retry's task included, and otherwise the work that entry was raised with,
-  never the bare resume task a catch-up or a boot gives. Where the move drops a merge forward
-  of the parent's pull request that has not landed, a stopped worker other than the
-  implementer is told to write and push nothing more, since the implementer may be merging
+  for a worker stopped in the middle of its phase is the task that worker was given for the entry
+  the phase stands on: after a retry, the retry's task, whether or not the worker's turn has
+  ended, which a retry now records on the role's phases row (`phases.entry_retry_task`), and
+  otherwise the work that entry was raised with, never the bare resume task a catch-up or a boot
+  gives. Where the move drops a merge forward of the parent's pull request that has not landed, a
+  stopped worker other than the implementer is told to write and push nothing more, since the
+  implementer may be merging
   in the workspace they share, and the implementer is told of the dropped merge forward, with
   its head and its base, in its own `phase_ended` message where the move ended its phase and
   otherwise in a `role_message`: one that has begun the merge
@@ -35,8 +37,9 @@ body: |-
   head merged with the tip of the pull request's base branch once it carries the children's
   merges, in a checkout of its own, and to record each result with that base commit. Migration
   `20261114232555_awaiting_children` adds the phase, the held start with `children_wait_children`,
-  `children_waited_at` and `phases.entry_from`. A caller below daemon API contract 212 is served
-  such a parent's `phase` as `admitted` and its held word as `children_first`. The first admission
+  `children_waited_at`, `phases.entry_from` and `phases.entry_retry_task`. A caller below daemon
+  API contract 212 is served such a parent's `phase` as `admitted` and its held word as
+  `children_first`. The first admission
   pass after the deploy moves every started parent of a running tree (in `planning` through
   `accepting`, its pull request not merged) that has an open Dispatch child into
   `awaiting_children`, an open child being one `record.ChildOpen` reads as open, a child filed in

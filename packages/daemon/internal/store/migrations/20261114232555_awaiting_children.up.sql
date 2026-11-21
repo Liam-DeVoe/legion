@@ -35,6 +35,20 @@
 -- release raises keeps the phase of the entry before it; the rollback section of
 -- docs/kubernetes.md named below clears the column for that reason.
 --
+-- phases.entry_retry_task is the task of the last retry of a role's entry
+-- (record.PhaseRow.EntryRetryTask): the architect's retry of a held phase, a todo on a held root
+-- and the operator's restart each hand the role the entry its row already names, with a task of
+-- their own that names the retry's reason, and this release's retry (workflow's restart) writes
+-- that task here, not in phases.entry_task, which stays the work the entry was raised with. The
+-- column is '' until a retry, and is cleared at every raise of the role's entry (workflow's
+-- enter) and at a generation's clear, beside entry_task. Its one reader is the admission pass's
+-- stop of a parent in the middle of its phase, which holds this task before the entry's own work
+-- (workflow's entryWork, StopForChildren), so the held start keeps the retry's words after the
+-- turn that took it has ended and the claim's pending delivery is gone. An earlier release names
+-- the column in no statement: its upserts leave it as it is, so an entry that release raises
+-- keeps the retry task of the entry before it; the rollback section of
+-- docs/kubernetes.md named below clears the column for that reason.
+--
 -- A daemon of an earlier release cannot run on this schema while a parent is in awaiting_children:
 -- it does not know the phase, and a write of such a row that leaves the phase without clearing the
 -- held-start columns fails the shape check below. It names children_wait_children and
@@ -69,3 +83,4 @@ alter table issues add constraint issues_children_wait_shape check (
 alter table issues add column children_waited_at timestamptz;
 
 alter table phases add column entry_from text check (entry_from <> '');
+alter table phases add column entry_retry_task text not null default '';

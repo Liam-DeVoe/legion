@@ -574,12 +574,26 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // whose turn then ended holds that entry as its given one and no pending delivery, so the entry
 // test alone would decline the retry's task and relaunch the worker with no prompt
 // (supervise.Machine.queue).
+//
+// The retry's task is written on that row first (record.PhaseRow.EntryRetryTask), beside the
+// entry's own work, which it leaves as the transition wrote it (record.PhaseRow.EntryTask): that
+// work is what a claim behind the entry is sent again (sendOwedEntry), and the reviewer's round
+// reads it (namingTheReviewRound, reviewedCommitStays). The column keeps the retry's task on the
+// record once the outbox row and the claim's pending delivery that carried it are gone, so the
+// admission pass's stop of a parent in the middle of its phase holds it after the turn that took
+// it has ended (entryWork, StopForChildren). It holds the text restart is given, before the queue
+// adds the reviewer's round sentences to a reviewer's task (queuedRow), so a held reviewing that
+// goes back to reviewing is given those sentences once, by the raise of its entry (enter).
 func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, freshSession bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
+		return err
+	}
+	row.EntryRetryTask = task
+	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
 	}
 	return e.started(ctx, tx, issue, role, task, row.Entry, startMarks{resend: true, freshSession: freshSession})
@@ -640,12 +654,18 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return e.started(ctx, tx, issue, role, work, row.Entry, marks)
 }
 
-// entryWork is the work row's entry was raised with (record.PhaseRow.EntryTask), and the phase's
-// resume task where the row carries none (ResumePhaseTask), as a claim behind its entry is sent it
-// (sendOwedEntry, whose doc says which rows carry none): what the admission pass holds for a phase
-// it stops in the middle (StopForChildren, queuedTask, givenTask). The resume task is built with
-// no base-merge sentence, which a held task keeps none of (withoutBaseMergeRun).
+// entryWork is the task the worker of row's entry was given for it: the task of that entry's last
+// retry (record.PhaseRow.EntryRetryTask, which restart writes), else the work the entry was
+// raised with (record.PhaseRow.EntryTask), and the phase's resume task where the row carries
+// neither (ResumePhaseTask), as a claim behind its entry is sent it (sendOwedEntry, whose doc says
+// which rows carry none). It is what the admission pass holds for a phase it stops in the middle
+// (StopForChildren, queuedTask), read from the row alone, so it holds the same task whether or
+// not the turn that took it has ended. The resume task is built with no base-merge sentence,
+// which a held task keeps none of (withoutBaseMergeRun).
 func entryWork(issue record.Issue, row record.PhaseRow) string {
+	if row.EntryRetryTask != "" {
+		return row.EntryRetryTask
+	}
 	if row.EntryTask != "" {
 		return row.EntryTask
 	}
@@ -954,7 +974,8 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // entry its role's phases row already names — the send of an owed entry (SendOwedEntry), the
 // sweep's start of a root architect behind its entry (SendArchitectStart), the held phase's retry
 // (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them moves
-// the row and a worker's in-flight completion is never refused for an entry it was never given.
+// the row's entry and a worker's in-flight completion is never refused for an entry it was never
+// given.
 //
 // The number counts the entries this role has been handed on this issue, which is why it is raised
 // here: this is the one place a role is handed work it was not on. It needs to be unique among
@@ -987,6 +1008,10 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // reads it to leave a parent whose entry a role's move back raised out of retro or merging where
 // it stands (record.PhaseRow.EntryFrom, StopForChildren).
 //
+// The task of the last retry of the entry before is cleared (record.PhaseRow.EntryRetryTask):
+// restart writes a retry's task for the entry it hands again, and the entry raised here is handed
+// the task written above.
+//
 // verbatim is whether the sweep's send of a root architect's entry again sends that task as
 // written (record.PhaseRow.EntryVerbatim), which only the resume of an answered root says. Every
 // raise writes it, so a raise that does not say it clears the mark an earlier entry's resume left.
@@ -999,7 +1024,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	}
 	movedBack := from == phase.AwaitingChildren || phase.MovesBack(from, issue.Phase)
 	row.Entry++
-	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack, row.EntryFrom = verbatim, e.now(), movedBack, from
+	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack, row.EntryFrom, row.EntryRetryTask = verbatim, e.now(), movedBack, from, ""
 	// The entry's sentence is named only while the row holds the task of that entry, as the row
 	// written here does: raised is that row, read for the sentences alone, and the row is given its
 	// task once, the text the worker is sent.
