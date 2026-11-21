@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
@@ -23,12 +25,12 @@ import (
 // minutes fails only a stuck run. The control reads the refusal and the answers under two locks:
 // PUB's daemon is admitted many times, and the test fails naming how many.
 func TestADecisionNeverMixesTwoRefreshes(t *testing.T) {
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}, {Kind: config.NATSDaemon, Account: otherDaemonAccount}}
 	var second atomic.Bool
 	access := func(_ context.Context, project, _ string) (projectaccess.Answer, error) {
 		switch {
 		case second.Load() && project == "OTHER":
-			return projectaccess.Answer{}, projectaccess.ErrBrokerRefused
+			return projectaccess.Answer{}, dispatchread.ErrBrokerRefused
 		case second.Load():
 			return projectaccess.Answer{Project: project, Visible: true}, nil
 		case project == "PUB":
@@ -92,7 +94,7 @@ func TestRunNeverOverlapsTwoRefreshes(t *testing.T) {
 		inflight.Add(-1)
 		return projectaccess.Answer{Project: project, Visible: true}, nil
 	}
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}}
 	h := newHeldAccess(Deps{Exchange: exchangeOf(map[string][]string{pubDaemonAccount: {"PUB"}}), Access: access}, services)
 	require.NotNil(t, h)
 	ctx, cancel := context.WithCancel(t.Context())

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natscred"
@@ -33,7 +34,7 @@ func TestAHeldDaemonHearsEveryRepositorysGitHubEvents(t *testing.T) {
 		create   = "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer + "." + family
 	)
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	exchange := map[string][]string{pubDaemonAccount: {"PUB"}}
 	dispatch := &dispatchAnswers{
