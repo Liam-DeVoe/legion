@@ -401,7 +401,11 @@ func leftDerived(ctx context.Context, tx pgx.Tx) (map[string][]derivedRows, erro
 // held_anywhere reads them: a column of a type that holds no text - a number, a time, a uuid - is
 // left out. Each comes with the key its table names a row by: its primary key, or where it has
 // none its first unique index over columns alone with no predicate, as artifact_versions'
-// (artifact_id, number) is.
+// (artifact_id, number) is. A partition is left out, because its parent's scan reads its rows
+// already: embeddings, partitioned by project (migration 20261120105330), lists each of its rows
+// once, under embeddings and by embeddings' own key (kind, id, project_key), and not a second
+// time under the partition the row is stored in, where derivedTables, which names the table its
+// writers write, does not know the row as the erased node's.
 func textColumns(ctx context.Context, tx pgx.Tx) ([]textColumn, error) {
 	rows, err := tx.Query(ctx, `
 		select c.table_schema, c.table_name, c.column_name, c.data_type, c.udt_name,
@@ -416,6 +420,7 @@ func textColumns(ctx context.Context, tx pgx.Tx) ([]textColumn, error) {
 		join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name
 		where t.table_type = 'BASE TABLE'
 		  and c.table_schema not in ('pg_catalog', 'information_schema') and c.table_schema not like 'pg_temp%'
+		  and not (select r.relispartition from pg_class r where r.oid = format('%I.%I', c.table_schema, c.table_name)::regclass)
 		  and c.data_type not in ('smallint', 'integer', 'bigint', 'numeric', 'real', 'double precision',
 		    'boolean', 'uuid', 'date', 'interval', 'time with time zone', 'time without time zone',
 		    'timestamp with time zone', 'timestamp without time zone', 'inet', 'cidr', 'macaddr',
