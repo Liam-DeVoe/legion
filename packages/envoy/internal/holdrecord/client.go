@@ -415,11 +415,15 @@ func (c *Client) Admit(ctx context.Context, holdID string, req Request, inputs m
 // pass, by a PutRecord at the record's `gen`. It returns ErrNoIntent unless the command's latest
 // entry is its `intent`. When Final holds for the record's workflow and the command, the same
 // write sets `complete` to true, with `hold_gen` the row's current `gen`, so a final command's
-// `done` entry and the completion are one write. `hold release` prints `hold_gen` and does not
-// compare it with the row's `gen`.
+// `done` entry and the completion are one write. Every other command's `done` entry sets it to
+// false, but `hold release`'s, which keeps it, as its intent did: the hold ended as the record
+// stood. `hold release` prints `hold_gen` and does not compare it with the row's `gen`.
 func (c *Client) AppendDone(ctx context.Context, holdID, command string, outputs map[string]string) error {
 	return c.appendEntry(ctx, holdID, command, func(d *Done) error {
 		d.Ops = append(d.Ops, Operation{Command: command, State: stateDone, Outputs: outputs})
+		if command == CommandRelease {
+			return nil
+		}
 		d.Complete = false
 		if Final(d.Workflow, command) {
 			row, err := c.Row(ctx)

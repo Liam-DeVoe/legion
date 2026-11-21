@@ -35,14 +35,20 @@ type rules struct {
 	// that differs otherwise, a census that cannot read a stream), and a command that cannot stop
 	// holds its intent pending for good: ErrBusy then refuses release and abort alike.
 	EveryCommandStoppable bool
+	// EndIsFinal: a done hold release or hold abort ends the journal, and Decide refuses every
+	// command after it. Admit reads the row before the journal, so a process can read the row
+	// held and another end the hold before its journal read; this rule makes that process's
+	// decision a refusal, and the journal's compare-and-swap refuses a write decided before it.
+	EndIsFinal bool
 }
 
 // currentRules are the hold's rules as its design stands: the frozen model's v62 (every fix, with
-// no account move) and the rules added since, WayOut and EveryCommandStoppable.
+// no account move) and the rules added since, WayOut, EveryCommandStoppable and EndIsFinal.
 var currentRules = rules{Name: "v63", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true,
 	AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true, AtomicAdmit: true, Serialize: true,
 	StopEntries: true, SetCommand: true, Step1Whole: true, ExpectedMap: true, ConvertStoppable: true,
-	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, WayOut: true, EveryCommandStoppable: true}
+	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, WayOut: true, EveryCommandStoppable: true,
+	EndIsFinal: true}
 
 var current = tableFor(currentRules)
 
@@ -186,6 +192,13 @@ type modelRequest struct {
 // Decide is the table's Decide.
 func (t table) Decide(d Done, req modelRequest) error {
 	w, c := d.Workflow, req.Command
+	if t.Rules.EndIsFinal {
+		for _, end := range []string{CommandRelease, CommandAbort} {
+			if hasDone(d.Ops, end) {
+				return wrap(ErrAlreadyDone, "the hold has ended: "+end+" is done")
+			}
+		}
+	}
 	if t.Rules.Serialize {
 		for _, p := range pending(d) {
 			if p != c {

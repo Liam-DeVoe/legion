@@ -930,6 +930,33 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 	})
 
+	// Admit reads the row before the journal, so a process can read the row held, and another end
+	// the hold before it reads the journal: the journal's done release ends it, and Decide refuses
+	// the command, so no intent is written after the hold ended. Release's done keeps the record's
+	// completion.
+	t.Run("a command whose row read came before another process's release is refused", func(t *testing.T) {
+		r := newRig(t)
+		a, b := r.client(t), r.client(t)
+		hold(t, a, "h-ended", holdrecord.WorkflowSelectionRecovery, nil)
+		run(t, a, "h-ended", cmd("create-bucket --after-loss"), nil, nil)
+		journalRead := func(req *http.Request) bool {
+			return req.Method == http.MethodGet && req.URL.Path == "/v1/nats-hold/records" && req.URL.Query().Get("kind") == "done"
+		}
+		fired := r.once(journalRead, func(http.ResponseWriter, *http.Request) bool {
+			release(t, a, "h-ended") // between b's row read and its journal read
+			return false
+		})
+		_, err := b.Admit(ctx, "h-ended", cmd("replay"), nil)
+		if !fired.Load() {
+			t.Fatal("the release between the row read and the journal read did not run")
+		}
+		refused(t, "replay admitted after another process's release", err, holdrecord.ErrAlreadyDone, "the hold has ended")
+		d, _ := journal(t, a, "h-ended")
+		if e := last(t, d); e.Command != holdrecord.CommandRelease || e.State != "done" || !d.Complete {
+			t.Fatalf("after the release the journal ends %+v with complete %v, want release's done and the completion kept", e, d.Complete)
+		}
+	})
+
 	// Not only the buckets commands: every command whose own check can refuse after its intent
 	// stops, recording what it left, and hold abort then ends the hold.
 	t.Run("a streams update that fails for good stops, and hold abort ends the hold", func(t *testing.T) {

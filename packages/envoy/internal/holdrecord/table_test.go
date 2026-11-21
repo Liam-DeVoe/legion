@@ -74,3 +74,38 @@ func TestEveryCommandHasAWayOut(t *testing.T) {
 	}
 	t.Logf("%d commands checked, %d stranded", checked, stranded)
 }
+
+// No command is admitted once the hold has ended: a done hold release or hold abort ends the
+// journal, and Decide refuses every command after it, so a process that read the row as held
+// before another process ended the hold writes no intent: the journal's compare-and-swap refuses
+// its write, and its second decision refuses the command. Fails if Decide reads a done release or
+// abort as an entry like any other: replay after a complete cutover and a done release is admitted.
+func TestNoCommandIsAdmittedAfterTheHoldEnded(t *testing.T) {
+	op := func(c, s string) Operation { return Operation{Command: c, State: s} }
+	set := []Operation{op(CommandSet, stateIntent), op(CommandSet, stateDone)}
+	cutover := append(append([]Operation{}, set...),
+		op("create-bucket", stateIntent), op("create-bucket", stateDone),
+		op("convert", stateIntent), op("convert", stateDone),
+		op("streams census", stateIntent), op("streams census", stateDone),
+		op(CommandRelease, stateIntent), op(CommandRelease, stateDone))
+	for _, complete := range []bool{true, false} {
+		d := Done{Workflow: WorkflowCutover, Ops: cutover, Complete: complete}
+		if err := Decide(d, Request{Command: "replay"}); !errors.Is(err, ErrAlreadyDone) {
+			t.Errorf("replay after a complete cutover and a done release (complete %v) answered %v, want ErrAlreadyDone", complete, err)
+		}
+	}
+	ended := 0
+	for _, w := range current.Workflows() {
+		for _, end := range []string{CommandRelease, CommandAbort} {
+			ops := append(append([]Operation{}, set...), op(end, stateIntent), op(end, stateDone))
+			d := Done{Workflow: w, Ops: ops, Complete: end == CommandAbort}
+			for _, c := range append([]string{CommandSet, CommandRelease}, Commands(w)...) {
+				ended++
+				if err := Decide(d, Request{Command: c}); !errors.Is(err, ErrAlreadyDone) {
+					t.Errorf("%s after a done %s: %q answered %v, want ErrAlreadyDone", w, end, c, err)
+				}
+			}
+		}
+	}
+	t.Logf("%d commands asked after a done release or abort", ended)
+}

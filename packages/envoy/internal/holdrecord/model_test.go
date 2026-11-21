@@ -69,7 +69,7 @@ var (
 	// they reproduce the bundle's counts.
 	v62 = func() rules {
 		r := currentRules
-		r.Name, r.WayOut, r.EveryCommandStoppable = "v62", false, false
+		r.Name, r.WayOut, r.EveryCommandStoppable, r.EndIsFinal = "v62", false, false, false
 		return r
 	}()
 )
@@ -1652,7 +1652,7 @@ var (
 // At every hub-restore state of the current rules the package's Step1, Proven, Epoch, Expected and
 // Moved read the record as the model does.
 func TestTheHoldJournalModel(t *testing.T) {
-	if currentRules.Name != "v63" || v62.WayOut || v62.EveryCommandStoppable {
+	if currentRules.Name != "v63" || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal {
 		t.Fatalf("the current rules are %q, and v62 carries a rule added since; the counts below are v62's and v63's", currentRules.Name)
 	}
 	for _, w := range tableFor(currentRules).Workflows() {
