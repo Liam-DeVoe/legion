@@ -4043,7 +4043,14 @@ operator connects with that inbox prefix, which sits under the one reply root `_
   snapshot and no stream create is in `released`: nats-server checks a snapshot's deliver subject
   for its syntax alone and sends every chunk there from the stream's own sender, and a create
   carries a republish or a source of the caller's choosing, so either writes any subject, a
-  protected bucket's key among them. Naming no write subject does not keep a grant from writing:
+  protected bucket's key among them. A stream create or update reads every stream of the account
+  through a source, and writes any KV bucket of the account through a RePublish whose destination
+  is a KV subject: the server checks only that the destination does not loop into the stream itself
+  (measured on 2.15.1 and 2.10.29 with a user holding exactly the measurement job's old grant), so
+  it writes chosen self-keyed records and a bucket's sentinel. The streams change (#4687) removes
+  stream creates and updates from every callout answer but the held operator's and narrows every
+  static user on a callout hub, so after the cutover the held operator is their only holder. Naming
+  no write subject does not keep a grant from writing:
   the boundary is one bus, a grant per connection, and every client in `$G`, and any grant that
   holds a JetStream API request can have the server store a JetStream answer on any subject a
   stream in `$G` captures, by naming it as the request's reply. The writers of a bucket by design
