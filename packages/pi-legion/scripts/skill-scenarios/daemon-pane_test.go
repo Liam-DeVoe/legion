@@ -17,9 +17,10 @@ import (
 )
 
 // The program's rule of an owner's launch answers daemon.OwnsPlan for the rig's claim of each role,
-// on the root issue of its tree and on a child under it, and its copy of a plan guidance is the file
-// config.WritePlanGuidance writes, so a change of either in the daemon fails here until the program
-// takes it.
+// on the root issue of its tree and on a child under it, its read of a guidance file answers what
+// config.ReadPlanGuidance answers, and its copy of a plan guidance is the file
+// config.WritePlanGuidance writes, so a change of any of them in the daemon fails here until the
+// program takes it.
 func TestTheToolRestatesTheDaemonsPlanGuidance(t *testing.T) {
 	compared := 0
 	for _, role := range claim.Roles {
@@ -50,6 +51,22 @@ func TestTheToolRestatesTheDaemonsPlanGuidance(t *testing.T) {
 	}
 	if got := planGuidanceCopy(rigProject, []byte(guidance)); got != string(written) {
 		t.Errorf("planGuidanceCopy(%q, %q) = %q, want the file config.WritePlanGuidance writes, %q", rigProject, guidance, got, written)
+	}
+
+	dir := t.TempDir()
+	files := map[string]string{"guidance": guidance, "blank": "\n  \n", "absent": ""}
+	for name, contents := range files {
+		file := dir + "/" + name + ".md"
+		if name != "absent" {
+			if err := os.WriteFile(file, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, gotErr := readPlanGuidance(file)
+		want, wantErr := config.ReadPlanGuidance(file)
+		if string(got) != string(want) || (gotErr == nil) != (wantErr == nil) || (gotErr != nil && gotErr.Error() != wantErr.Error()) {
+			t.Errorf("readPlanGuidance of the %s file = %q, %v; config.ReadPlanGuidance = %q, %v", name, got, gotErr, want, wantErr)
+		}
 	}
 }
 

@@ -78,8 +78,8 @@ func main() {
 // checkout of the daemon module, and that table has had more than one name (phase.HandoffFile,
 // then phase.Handoff). The program's other copies of the daemon, each carried for the same reason
 // and each saying so, are realGH, the join of rolePrompt, the write of systemPromptArgument,
-// ownsPlan and planGuidanceCopy; every other answer here is the daemon's own function
-// (daemon-pane.ts).
+// ownsPlan, readPlanGuidance and planGuidanceCopy; every other answer here is the daemon's own
+// function (daemon-pane.ts).
 var handoffWords = map[phase.Phase]string{
 	phase.Planning: "plan", phase.Implementing: "implement", phase.Testing: "test", phase.Reviewing: "review",
 }
@@ -97,6 +97,22 @@ func ownsPlan(c supervise.Claim) bool {
 // checkout.
 func planGuidanceCopy(project string, guidance []byte) string {
 	return "# Plan guidance of this deployment (" + project + ")\n\nLegion requires none of this guidance and refuses no plan for a step it lacks.\n\n" + string(guidance)
+}
+
+// readPlanGuidance reads a deployment's plan guidance file as the daemon's boot reads it, refusing
+// a file that cannot be read or that holds only blank lines, so the program prints no prompt that
+// no launch of the daemon is given: this program's own copy of config.ReadPlanGuidance, which a
+// checkout before the plan guidance lacks. daemon-pane_test.go holds it to the daemon's at this
+// checkout.
+func readPlanGuidance(path string) ([]byte, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("plan guidance file %s could not be read: %w", path, err)
+	}
+	if strings.TrimSpace(string(contents)) == "" {
+		return nil, fmt.Errorf("plan guidance file %s is empty", path)
+	}
+	return contents, nil
 }
 
 // planGuidanceKeyed is whether this checkout's daemon reads the key plan_guidance
@@ -170,8 +186,8 @@ func printPrompt(role claim.Role, root bool, guidanceFile string) error {
 			return errors.New("this checkout's daemon has no key plan_guidance, so no launch of it carries a plan guidance")
 		}
 		var err error
-		if guidance, err = os.ReadFile(guidanceFile); err != nil {
-			return fmt.Errorf("read the plan guidance: %w", err)
+		if guidance, err = readPlanGuidance(guidanceFile); err != nil {
+			return err
 		}
 	}
 	c, err := rigClaim(role, root)

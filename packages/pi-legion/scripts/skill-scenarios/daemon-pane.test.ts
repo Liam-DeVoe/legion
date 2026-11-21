@@ -306,6 +306,25 @@ test.skipIf(skip)(
   600_000
 );
 
+// A guidance file that holds only blank lines is refused, as the daemon's boot refuses it, so the
+// rig prints no prompt for any role that no launch of the daemon is given.
+test.skipIf(skip)(
+  "refuses a plan guidance file of blank lines, as the daemon's boot does",
+  () => {
+    const blank = path.join(rig, "plan-guidance-blank.md");
+    writeFileSync(blank, "\n  \n");
+    for (const [role, root] of [
+      ["architect", true],
+      ["reviewer", false],
+    ] as const) {
+      expect(() => composeRolePrompt(DAEMON_MODULE, role, root, { planGuidance: blank })).toThrow(
+        `daemon-pane prompt: plan guidance file ${blank} is empty`
+      );
+    }
+  },
+  600_000
+);
+
 // daemon-pane.go's own copies of the daemon's plan guidance — its rule of an owner's launch, its
 // copy of the guidance file and its join of a prompt — are held to the daemon's at this checkout
 // by daemon-pane_test.go, compiled with the program inside this daemon module. A test binary exits
