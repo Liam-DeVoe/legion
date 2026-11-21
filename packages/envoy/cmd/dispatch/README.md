@@ -4854,9 +4854,11 @@ Each item below names a path with its method and identity, then its purpose.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.
   A pair that did not change keeps its `recorded_at`.
   The actor must be the session `legion-daemon:<project>`, the key up to its first `-`, which is the session that the daemon of the issue's project writes as.
+  The daemon of another project writes the set too when its broker token names its project `P` and proves its session `legion-daemon:<P>`.
+  A daemon that runs a claim on another project's issue publishes that issue's set this way.
   Any other actor is `403 ROLE_HOLDER_FORBIDDEN`.
   Before the airlock, Dispatch takes the session that a bearer caller names as the caller names it.
-  So any caller whose Dispatch credential proves no session of its own can name the daemon's session and write the set: the deployment's shared token, and a person's own agent token whatever its scopes.
+  So any caller whose Dispatch credential proves no session of its own can name the session of the issue's project's daemon and write the set: the deployment's shared token, and a person's own agent token whatever its scopes.
   The airlock closes that case.
   A body without `holders`, a role that is not one of the six, a session that is not a session id or is longer than 256 bytes, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
   An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
