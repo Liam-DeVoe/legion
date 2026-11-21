@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -207,40 +208,125 @@ func TestAnEdgeHidesARepublishedRecordOnTheRegistryRoutes(t *testing.T) {
 	}
 }
 
-// R9: a Legion agent route answers the bus-unavailable 503 when its stored-record confirmation does
-// not answer, as the session list and the send route do. The fault is a cancelled context on the
-// confirmation read. Control: a working context answers 200 and lists the agent.
-func TestAnEdgeLegionAgentBusFaultAnswersBusUnavailable(t *testing.T) {
+// R1-T: a claim's 409 names the holder only when the leader read confirms its record
+// (namesHolderConfirmed). An in-house PRIV session holds a role; the outside claimant's soft claim
+// loses to it. Over a RePublished holder record the 409 names no holder; control: a confirmed holder
+// is named.
+func TestAnEdgeClaim409NamesNoRePublishedHolder(t *testing.T) {
 	rig := newEdgeRigServing(t, []string{"PRIV"})
-	const outside, inHouse, issue, roleToken = "ses_la_fault_outside", "ses_la_fault_in_house", "PRIV-9", "legion-priv-priv-9-tester"
-	rig.placeElsewhere(t, inHouse, "PRIV")
+	const claimant, holder, role = "ses_409_claimant", "ses_409_holder", "legion-priv-priv-7-tester"
+	token := rig.personToken(claimant, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, claimant), http.StatusOK, "the claimant's registration")
+	rig.placeElsewhere(t, holder, "PRIV")
+	if _, err := rig.deps.registry.SetRole(holder, "shared-listener", role, false); err != nil {
+		t.Fatalf("claim %s for %s: %v", role, holder, err)
+	}
+	named := func(when string) any {
+		t.Helper()
+		rec := rig.call(t, http.MethodPost, token, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, claimant, role))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s: the soft claim of %s: status %d (%s), want 409", when, role, rec.Code, rec.Body.String())
+		}
+		var answer map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+			t.Fatalf("%s: decode %s: %v", when, rec.Body.String(), err)
+		}
+		return answer["holder"]
+	}
+	if got := named("control"); got != holder {
+		t.Fatalf("control: the 409 names holder %v, want %s", got, holder)
+	}
+	republishSessionRecord(t, rig, holder, "PRIV")
+	if got := named("after the RePublish"); got != nil {
+		t.Errorf("after a RePublish of %s's record, the 409 names holder %v: namesHolderConfirmed took the cached entry unconfirmed", holder, got)
+	}
+}
+
+// R1-T: a role send's answer names the holder only when the leader read confirms its record
+// (roleSend.shownHolder). The send still forwards to the holder; over a RePublished holder record
+// the answer names no holder. Control: a confirmed holder is named.
+func TestAnEdgeRoleSendNamesNoRePublishedHolder(t *testing.T) {
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	const sender, holder, role = "ses_send_sender", "ses_send_holder", "legion-priv-priv-8-tester"
+	token := rig.personToken(sender, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, sender), http.StatusOK, "the sender's registration")
+	holderToken := rig.personToken(holder, "PRIV")
+	startSessionStandIn(t, rig.url, holder, answerDone)
+	requireStatus(t, rig.subscribe(t, holderToken, holder), http.StatusOK, "the holder's registration")
+	requireStatus(t, rig.call(t, http.MethodPost, holderToken, "/v1/roles/set",
+		fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, holder, role)), http.StatusOK, "the holder's claim")
+	topic := contracts.RoleSubject("PRIV", role)
+	named := func(when string) string {
+		t.Helper()
+		rec := rig.call(t, http.MethodPost, token, "/v1/messages/publish",
+			fmt.Sprintf(`{"topic":%q,"message":"for the holder","source":"agent","source_session":%q}`, topic, sender))
+		requireStatus(t, rec, http.StatusOK, when+": a publish to "+topic)
+		var answer listenerwire.PublishResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+			t.Fatalf("%s: decode %s: %v", when, rec.Body.String(), err)
+		}
+		return answer.Holder
+	}
+	if got := named("control"); got != holder {
+		t.Fatalf("control: the role send names holder %q, want %s", got, holder)
+	}
+	republishSessionRecord(t, rig, holder, "PRIV")
+	if got := named("after the RePublish"); got != "" {
+		t.Errorf("after a RePublish of %s's record, the role send names holder %q: shownHolder took the cached entry unconfirmed", holder, got)
+	}
+}
+
+// R9: the Legion agent replacement path confirms the replacement's session by the leader read. An
+// older agent is replaced by a newer of the same role token; the listing names the newer as the
+// older's replaced_by only when the newer's session is confirmed. Over a RePublished record for the
+// newer, the older's replaced_by is null; control: a confirmed newer is named.
+func TestAnEdgeShowsNoReplacementOverARepublishedRecord(t *testing.T) {
+	rig := newEdgeRigServing(t, []string{"PRIV"})
+	const outside, older, newer, issue, roleToken = "ses_repl_outside", "ses_repl_older", "ses_repl_newer", "PRIV-9", "legion-priv-priv-10-tester"
+	token := rig.personToken(outside, "PRIV")
+	requireStatus(t, rig.subscribe(t, token, outside), http.StatusOK, "the outside session's registration")
+	rig.placeElsewhere(t, older, "PRIV")
+	rig.placeElsewhere(t, newer, "PRIV")
 	raw, err := rig.harness.client.JS().KeyValue(bus.LegionAgentBucket)
 	if err != nil {
 		t.Fatalf("open %s: %v", bus.LegionAgentBucket, err)
 	}
-	entry := legionagents.Entry{SessionID: inHouse, LegionProject: "priv", Issue: issue, Role: "tester", RoleToken: roleToken,
-		Title: "Legion tester " + inHouse, Harness: "omp", StartedAt: "2026-11-20T00:00:00Z", RecordedAt: "2026-11-20T00:00:00Z"}
-	value, err := json.Marshal(entry)
-	if err != nil {
-		t.Fatalf("encode the agent entry: %v", err)
-	}
-	for _, key := range []string{"issue." + issue + "." + inHouse, "role." + roleToken + "." + inHouse, "session." + inHouse} {
-		if _, err := raw.Put(key, value); err != nil {
-			t.Fatalf("store %s: %v", key, err)
+	put := func(sessionID, startedAt string) {
+		entry := legionagents.Entry{SessionID: sessionID, LegionProject: "priv", Issue: issue, Role: "tester", RoleToken: roleToken,
+			Title: "t " + sessionID, Harness: "omp", StartedAt: startedAt, RecordedAt: startedAt}
+		value, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("encode %s: %v", sessionID, err)
+		}
+		for _, key := range []string{"issue." + issue + "." + sessionID, "role." + roleToken + "." + sessionID, "session." + sessionID} {
+			if _, err := raw.Put(key, value); err != nil {
+				t.Fatalf("store %s: %v", key, err)
+			}
 		}
 	}
-	handler := legionAgentsHandler(rig.deps)
-	path := "/v1/legion/agents?issue=" + issue
-	ok := httptest.NewRecorder()
-	handler.ServeHTTP(ok, edgeConfirmRequest(context.Background(), outside, []string{"PRIV"}, http.MethodGet, path, ""))
-	if ok.Code != http.StatusOK || !strings.Contains(ok.Body.String(), inHouse) {
-		t.Fatalf("control, with a working leader read: status %d (%s), want 200 listing %s", ok.Code, ok.Body.String(), inHouse)
+	put(older, "2026-11-20T00:00:00Z")
+	put(newer, "2026-11-20T01:00:00Z")
+	replacedBy := func(when string) *string {
+		t.Helper()
+		rec := rig.call(t, http.MethodGet, token, "/v1/legion/agents?issue="+issue, "")
+		requireStatus(t, rec, http.StatusOK, when+": the issue listing")
+		var answer listenerwire.LegionAgentList
+		if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+			t.Fatalf("%s: decode %s: %v", when, rec.Body.String(), err)
+		}
+		for _, e := range answer.Entries {
+			if e.SessionID == older {
+				return e.ReplacedBy
+			}
+		}
+		t.Fatalf("%s: the listing does not show %s: %s", when, older, rec.Body.String())
+		return nil
 	}
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	fault := httptest.NewRecorder()
-	handler.ServeHTTP(fault, edgeConfirmRequest(cancelled, outside, []string{"PRIV"}, http.MethodGet, path, ""))
-	if fault.Code != http.StatusServiceUnavailable {
-		t.Errorf("the Legion agent route with the confirmation read failing: status %d (%s), want 503", fault.Code, fault.Body.String())
+	if by := replacedBy("control"); by == nil || *by != newer {
+		t.Fatalf("control: %s's replaced_by is %v, want %s", older, by, newer)
+	}
+	republishSessionRecord(t, rig, newer, "PRIV")
+	if by := replacedBy("after the RePublish"); by != nil {
+		t.Errorf("after a RePublish of %s's record, %s's replaced_by is %v: the replacement took the cached entry unconfirmed", newer, older, *by)
 	}
 }
