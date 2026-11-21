@@ -193,7 +193,8 @@ const (
 	// fateUntouched is a section this pass does not convert: one a restore alone leaves for the
 	// conversion.
 	fateUntouched sectionFate = iota
-	// fateDecision is a section that cites no answered ask: it becomes a decision block.
+	// fateDecision is a section that becomes a decision block: one that cites no answered ask, one
+	// under `## Replaced`, or one the conversion could not place under one ask.
 	fateDecision
 	// fateReading is a section that cites an answered ask: its body becomes a reading in that
 	// ask's block.
@@ -212,9 +213,10 @@ const (
 )
 
 // convertedSection is one section of the decisions document and what becomes of it: its fate,
-// the ask it cites (fateReading, fateDropped, fateRemovedAsk), the block it becomes (fateDecision:
-// the decision, under decisionID), the author of its newest version, and the Keep a person
-// recorded on its heading.
+// the ask it cites (fateReading, fateDropped, fateRemovedAsk) or, for the decision of a section
+// under `## Replaced`, the answered ask that decision settles (its from_ask), the block it becomes
+// (fateDecision: the decision, under decisionID), the author of its newest version, and the Keep a
+// person recorded on its heading.
 type convertedSection struct {
 	section    decisionSection
 	fate       sectionFate
@@ -1081,27 +1083,30 @@ func (r *issueRestore) planSections(ctx context.Context, tree *pmdoc.Node) (map[
 }
 
 // planSection decides what becomes of one section (R9), and records the spec blocks it links as
-// the `shaped` pointers of the ask it restates.
+// the `shaped` pointers of the ask it restates. It is the one place that orders R9's rules.
 //
 // Every ask block the section holds, wherever in its body, moves into the spec first (the second
 // shape of the restore, which moves every ask block of the document: planDocumentMoves), and the
 // rest of the section converts by the rules below. The asks a section is about are the asks whose
-// blocks it held and the answered asks it cites. A section about one answered ask restates it
+// blocks it held and the answered asks it cites. A section that cites one answered ask a person
+// removed from its spec (removed: its node holds an asserted removed_by, or this pass declined to
+// restore it) is deleted by R9's rule for it (fateRemovedAsk): the person removed the decision it
+// reads, so no block takes its links or its words, which stay in the decisions document's
+// versions, and its heading moves to the ask itself (writeFacts). A section under `## Replaced`
+// otherwise becomes a decision with replaced="true" whichever ask it is about (planReplaced): that
+// rule comes before the reading rule. A section about one answered ask restates it
 // (planRestating): that ask's block - the one the restore writes into the spec, or the one a
 // document of the issue holds already (askBlockOf) - takes the section's links as `shaped`
 // pointers, and the section's body becomes a reading in it; a body that is the ask's answer and
 // nothing more, or nothing at all, is dropped, and writes no reading (the plain-answer rule). A
-// section that cites one answered ask a person removed from its spec (removed: its node holds an
-// asserted removed_by, or this pass declined to restore it) is deleted by R9's rule for it
-// (fateRemovedAsk): the person removed the decision it reads, so no block takes its links or its
-// words, which stay in the decisions document's versions, and its heading moves to the ask itself
-// (writeFacts). A section about no answered ask becomes a decision, and one that held one ask
-// block holding no answer and nothing else is dropped, its heading moving to that block.
+// section about no answered ask becomes a decision, and one that held one ask block holding no
+// answer and nothing else is dropped, its heading moving to that block.
 //
 // R9's further kinds each become a decision that waits for a person's review (planUnplaced): a
-// section about more than one answered ask, one whose answered ask has its block in no document
-// of the issue (an ask of the issue no block holds), and one whose body a reading cannot hold (a
-// reading holds paragraphs alone, and only in an answered ask: a reading reads an answer).
+// section about more than one answered ask, under `## Replaced` or not, one whose answered ask has
+// its block in no document of the issue (an ask of the issue no block holds), and one whose body a
+// reading cannot hold (a reading holds paragraphs alone, and only in an answered ask: a reading
+// reads an answer).
 //
 // A section whose body, the blocks that move taken out, still holds an ask block - one the
 // document's block index does not hold yet, which no move takes - is left where it is: a
@@ -1159,8 +1164,16 @@ func (r *issueRestore) planSection(ctx context.Context, converted *convertedSect
 	switch {
 	case len(answered) > 1:
 		unplaced.cause = unplacedAsks
+	case len(answered) == 1 && !slices.Contains(held, answered[0]) && r.removed[answered[0]]:
+		converted.fate = r.leftUnlessRestoring(unplaced.held)
+		if r.convert {
+			converted.fate, converted.ask = fateRemovedAsk, answered[0]
+		}
+		return nil
+	case section.replaced:
+		return r.planReplaced(ctx, converted, answered, body, unplaced.held)
 	case len(answered) == 1:
-		return r.planRestating(ctx, converted, answered[0], body, slices.Contains(held, answered[0]), unplaced)
+		return r.planRestating(ctx, converted, answered[0], body, unplaced)
 	case len(heldBlocks) == 0:
 		if !r.convert {
 			return nil
@@ -1176,16 +1189,10 @@ func (r *issueRestore) planSection(ctx context.Context, converted *convertedSect
 	return r.planUnplaced(ctx, converted, body, unplaced)
 }
 
-// planRestating decides what becomes of converted, a section about one answered ask, ask, whose
-// block it held where holds, and whose body, the blocks that move taken out, is body (planSection).
-func (r *issueRestore) planRestating(ctx context.Context, converted *convertedSection, ask string, body []*pmdoc.Node, holds bool, unplaced unplacedSection) error {
-	if !holds && r.removed[ask] {
-		converted.fate = r.leftUnlessRestoring(unplaced.held)
-		if r.convert {
-			converted.fate, converted.ask = fateRemovedAsk, ask
-		}
-		return nil
-	}
+// planRestating decides what becomes of converted, a section about one answered ask, ask, that no
+// rule before the reading rule took (planSection), and whose body, the blocks that move taken out,
+// is body.
+func (r *issueRestore) planRestating(ctx context.Context, converted *convertedSection, ask string, body []*pmdoc.Node, unplaced unplacedSection) error {
 	document, blockID, stands := r.askBlockOf(ask)
 	if !stands {
 		unplaced.cause = unplacedNoBlock
@@ -1230,6 +1237,25 @@ func (r *issueRestore) planRestating(ctx context.Context, converted *convertedSe
 		edits.readings[blockID] = append(edits.readings[blockID], reading)
 	}
 	return nil
+}
+
+// planReplaced makes converted, a section under `## Replaced` about at most one answered ask
+// (answered), a decision with replaced="true" (planDecision), whatever its body holds: R9's rule
+// for such a section comes before its reading rule. Its decision keeps the section's heading block
+// id and takes its links as `shaped`, as every section that becomes a decision does, and settles
+// the one answered ask it is about, where it is about one, as its from_ask. It writes no reading
+// under that ask and gives the ask none of the section's links, and its heading moves to the
+// decision, not to the ask (writeFacts). A restore alone writes no decision, and leaves the section
+// to the conversion.
+func (r *issueRestore) planReplaced(ctx context.Context, converted *convertedSection, answered []string, body []*pmdoc.Node, held bool) error {
+	if !r.convert {
+		converted.fate = r.leftUnlessRestoring(held)
+		return nil
+	}
+	if len(answered) == 1 {
+		converted.ask = answered[0]
+	}
+	return r.planDecision(ctx, converted, body, nil)
 }
 
 // unplacedSection is a section the conversion could not place under one ask: why (cause), the
@@ -1279,13 +1305,14 @@ func (r *issueRestore) leftUnlessRestoring(holds bool) sectionFate {
 
 // planDecision makes converted a decision block of the spec's `## Decisions` part: its words are
 // the section's body (body) with its heading as the first paragraph; a section under
-// `## Replaced` is replaced="true"; its links are its shaped pointers. It keeps the section's
-// heading block id where the spec holds no block under it. A section that cites no answered ask
-// (unplaced nil) takes its `Unsure:` paragraph as uncertainty="high", with the rest of it as
-// uncertainty_reason. One the conversion could not place under one ask takes uncertainty="high"
-// with the reason why (unplacedReason), keeps any `Unsure:` paragraph among its words, and closes
-// with a paragraph citing each ask it is about that its words do not cite (uncitedAsks); it takes
-// no from_ask, since it settles no one ask.
+// `## Replaced` is replaced="true", and from_ask names the answered ask its decision settles
+// (converted.ask, planReplaced), where it settles one; its links are its shaped pointers. It keeps
+// the section's heading block id where the spec holds no block under it. A section that cites no
+// answered ask, or one under `## Replaced` (unplaced nil), takes its `Unsure:` paragraph as
+// uncertainty="high", with the rest of it as uncertainty_reason. One the conversion could not
+// place under one ask takes uncertainty="high" with the reason why (unplacedReason), keeps any
+// `Unsure:` paragraph among its words, and closes with a paragraph citing each ask it is about
+// that its words do not cite (uncitedAsks); it takes no from_ask, since it settles no one ask.
 //
 // A block of the body a decision cannot hold is left out of it (holdableWords), and the decision
 // then ends with a citation of the section in the decisions document's last version that held it
@@ -1314,6 +1341,9 @@ func (r *issueRestore) planDecision(ctx context.Context, converted *convertedSec
 	}
 	if section.replaced {
 		attrs["replaced"] = true
+	}
+	if converted.ask != "" {
+		attrs["from_ask"] = refs.AskRef(text.Ref{IssueKey: r.issue, ID: converted.ask})
 	}
 	if len(converted.links) > 0 {
 		attrs[shapedAttribute] = r.specPointers(converted.links)

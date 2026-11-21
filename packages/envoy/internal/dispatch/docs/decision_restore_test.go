@@ -345,6 +345,142 @@ func TestTheConversionTurnsEachSectionIntoANodeOrARuleDeletesIt(t *testing.T) {
 	}
 }
 
+// A section under `## Replaced` becomes a decision with replaced="true" whichever ask it is about
+// (the spec's R9): that rule comes before the reading rule. A section under it that cites a
+// person's answered ask - whose block the spec holds, or whose block left the spec and the
+// restore returns - becomes a decision in the spec's `## Decisions` part that keeps the section's
+// heading block id, takes the section's links as shaped and the ask as its one from_ask; no
+// reading stands under the ask, the ask takes none of the section's links, and the heading's
+// moved_to reaches the decision, not the ask's block; a person's approval of the spec carries to
+// the conversion's version, whose one change is that decision under the heading it adds. One that
+// holds an open ask block and nothing else, which moves into the spec, becomes a decision too,
+// settling no ask, rather than being dropped onto that block. Each time the document retires and
+// the step owes nothing.
+func TestTheConversionMakesASectionUnderReplacedADecisionWhicheverAskItIsAbout(t *testing.T) {
+	const title = "microVM pods with a cgroup per command"
+	const words = "We first ran each command in a microVM pod with a cgroup of its own."
+	const asked = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n" +
+		":::ask{#q-pods urgency=\"high\" multiple=\"false\"}\nWhere does each command run?\n:::\n"
+	replacedCiting := func(ask string) string {
+		return "# Decisions\n\n## Replaced\n\n### " + title + "\n\n" + words + " The person ruled it in dispatch://DOC-1/ask/" + ask +
+			", which shapes dispatch://DOC-1/spec#b-r1.\n"
+	}
+	for _, test := range []struct {
+		name string
+		// prepare writes the decisions document and answers its id and the ask its section is
+		// about: the answered ask it cites, or the open ask whose block it holds.
+		prepare func(issue *restoreIssue) (string, string)
+		// settles is whether the decision settles that ask (from_ask), shaped the spec blocks it
+		// takes the section's links as, words what the spec's newest version holds of the section,
+		// restored how many asks the restore writes into the spec, and approval what becomes of
+		// the spec's approval ("" for a spec nobody approved).
+		settles  bool
+		shaped   []string
+		words    []string
+		restored int
+		approval string
+	}{
+		{
+			name: "a section citing an answered ask whose block the spec holds",
+			prepare: func(issue *restoreIssue) (string, string) {
+				ask := issue.answer(issue.spec, "q-pods", "Each command runs in a microVM pod.")
+				issue.approveLatest(issue.spec)
+				return issue.document("decisions-md", "decisions.md", false, "decisions", replacedCiting(ask)), ask
+			},
+			settles: true, shaped: []string{"r1"}, words: []string{words}, approval: "carried",
+		},
+		{
+			name: "a section citing an answered ask whose block left the spec",
+			prepare: func(issue *restoreIssue) (string, string) {
+				ask := issue.answer(issue.spec, "q-pods", "Each command runs in a microVM pod.")
+				issue.replace(issue.spec, "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+				return issue.document("decisions-md", "decisions.md", false, "decisions", replacedCiting(ask)), ask
+			},
+			settles: true, shaped: []string{"r1"}, words: []string{words}, restored: 1,
+		},
+		{
+			name: "a section holding an open ask block and nothing else",
+			prepare: func(issue *restoreIssue) (string, string) {
+				decisions := issue.document("decisions-md", "decisions.md", false, "decisions", "# Decisions\n\n## Replaced\n\n### "+title+"\n\n"+
+					":::ask{#q-region urgency=\"low\" multiple=\"false\"}\nWhich region went first?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n")
+				return decisions, blockAskOn(issue.t, issue.service, decisions, "q-region").ID
+			},
+			words: []string{title, "#q-region "}, restored: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			issue := newRestoreIssue(t, asked)
+			decisions, ask := test.prepare(issue)
+			heading := issue.headingID(decisions, title)
+
+			result := issue.run(true)
+			markdown := issue.latest(issue.spec)
+			tree, err := pmdoc.ParseRendering(markdown)
+			if err != nil {
+				t.Fatalf("read the spec's newest version: %v", err)
+			}
+			pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+				if node.Type == readingType {
+					t.Errorf("the spec's newest version holds the reading %v %q, want none: the section under `## Replaced` is a decision, not a reading of ask %s",
+						node.Attrs[pmdoc.BlockIDAttr], pmdoc.TextContent(node), ask)
+				}
+				return true
+			})
+			if result.Decisions != 1 || result.Readings != 0 || result.Dropped != 0 || result.Removed != 0 || result.Left != 0 ||
+				len(result.Restored) != test.restored || !result.Retired || result.SpecApproval != test.approval {
+				t.Errorf("the conversion did %+v, want the section a decision, %d asks restored, nothing else, the spec's approval %q, the document retired",
+					result, test.restored, test.approval)
+			}
+			decision := issue.refKey(issue.spec) + "#" + heading
+			if moved := issue.movedTo(decisions)[issue.refKey(decisions)+"#"+heading]; moved != decision {
+				t.Errorf("the heading %s moves to %q, want the decision %s that keeps its block id", heading, moved, decision)
+			}
+			if replaced := issue.value(decision, refs.ValueReplaced); replaced != "true" {
+				t.Errorf("the decision %s states replaced %q, want true", decision, replaced)
+			}
+			tuples, err := graphstore.CurrentOut(ctx, issue.database.Pool, refs.BlockNodeKind, decision, []string{refs.TupleShaped, refs.TupleFromAsk})
+			if err != nil {
+				t.Fatalf("read the ties of the decision %s: %v", decision, err)
+			}
+			var gotShaped, fromAsk []string
+			for _, tuple := range tuples {
+				switch {
+				case !tuple.Asserted:
+				case tuple.Kind == refs.TupleShaped:
+					gotShaped = append(gotShaped, tuple.ToID)
+				case tuple.Kind == refs.TupleFromAsk:
+					fromAsk = append(fromAsk, tuple.ToID)
+				}
+			}
+			var wantShaped, wantFrom []string
+			for _, block := range test.shaped {
+				wantShaped = append(wantShaped, issue.refKey(issue.spec)+"#"+block)
+			}
+			if test.settles {
+				wantFrom = []string{ask}
+			}
+			if !slices.Equal(gotShaped, wantShaped) || !slices.Equal(fromAsk, wantFrom) {
+				t.Errorf("the decision %s shaped %v and is from_ask %v, want shaped %v and from_ask %v", decision, gotShaped, fromAsk, wantShaped, wantFrom)
+			}
+			if tuples, err := graphstore.CurrentOut(ctx, issue.database.Pool, graphstore.KindAsk, ask, []string{refs.TupleShaped}); err != nil ||
+				slices.ContainsFunc(tuples, func(tuple graphstore.Tuple) bool { return tuple.Asserted }) {
+				t.Errorf("ask %s shaped %+v (%v), want nothing: the decision takes the section's links", ask, tuples, err)
+			}
+			fromAskAttribute := `from_ask="dispatch://DOC-1/ask/` + ask + `"`
+			for _, want := range append([]string{"#" + heading + " ", `replaced="true"`}, test.words...) {
+				if !strings.Contains(markdown, want) {
+					t.Errorf("the spec's newest version holds no %q:\n%s", want, markdown)
+				}
+			}
+			if strings.Contains(markdown, fromAskAttribute) != test.settles {
+				t.Errorf("the spec's newest version holding %q is %v, want %v:\n%s", fromAskAttribute, !test.settles, test.settles, markdown)
+			}
+			issue.requireRetiredAndOwedNothing(decisions)
+		})
+	}
+}
+
 // A standing Keep the conversion carries onto a decision's node is
 // written by the actor the Keep's own decision.kept event recorded, so the kept_by and the
 // kept_text_sum it becomes keep the Proven mark the Keep's credential gave it: a row derived from
