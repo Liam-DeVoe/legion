@@ -85,12 +85,29 @@ func (h *hub) connect(t *testing.T, inbox string, errs chan<- error) *natsgo.Con
 	return conn
 }
 
-// makeDeclared makes every protected stream of the declared set under settings as the admin.
+// makeDeclared makes every protected stream of the declared set under settings as the admin
+// (makeDeclaredOn).
 func (h *hub) makeDeclared(t *testing.T, settings streamset.Settings) {
 	t.Helper()
+	makeDeclaredOn(t, h.admin, h.js, settings)
+}
+
+// makeDeclaredOn makes every protected stream of the declared set under settings on admin. A copied
+// bucket (streamset.Stream.Copied) it creates directly, with admin's own KV create through js, as
+// the writer hold's bucket workflows do: no program of a deployment creates one, so
+// streamset.EnsureStreams, which opens it, is never what creates it. EnsureStreams then makes the
+// rest and opens the copied buckets as they are.
+func makeDeclaredOn(t *testing.T, admin *natsgo.Conn, js natsgo.JetStreamContext, settings streamset.Settings) {
+	t.Helper()
+	for _, stream := range streamset.Declared(settings) {
+		if stream.Copied {
+			_, err := js.CreateKeyValue(stream.Bucket)
+			require.NoError(t, err, "create the copied bucket %s", stream.Name)
+		}
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
-	require.NoError(t, streamset.EnsureStreams(ctx, h.admin, settings))
+	require.NoError(t, streamset.EnsureStreams(ctx, admin, settings))
 }
 
 // phase is a hold row that reads p.

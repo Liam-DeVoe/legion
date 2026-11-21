@@ -13,14 +13,15 @@
 // server's configuration (nats.conf); a later start on the same dir keeps them, so a restarted
 // server still answers to the brokers that read them.
 //
-// Behind the callout it also makes every protected stream of the declared set
-// (internal/streamset, EnsureStreams) once it accepts connections, as an admin user of its own
-// that only this process holds: the configuration names the admin's public key, made at each
-// start, and its seed never leaves this process's memory. The auth service answers no client but
-// the operator with a stream create or update (natsgrant.ForCallout), and the dev stack's listener
-// and Dispatch run beside it with ENVOY_STREAMS_OPERATOR_MADE=1 and only read their streams, so the
-// streams exist before any of them connects, as the operator's update makes them in a deployment.
-// The admin's connection closes once they are made.
+// Behind the callout it also makes every protected stream of the declared set (internal/streamset;
+// each copied bucket with its own KV create, the rest with EnsureStreams) once it accepts
+// connections, as an admin user of its own that only this process holds: the configuration names
+// the admin's public key, made at each start, and its seed never leaves this process's memory. The
+// auth service answers no client but the operator with a stream create or update
+// (natsgrant.ForCallout), and the dev stack's listener and Dispatch run beside it with
+// ENVOY_STREAMS_OPERATOR_MADE=1 and only read their streams, so the streams exist before any of
+// them connects, as the operator's update makes them in a deployment. The admin's connection
+// closes once they are made.
 //
 // It is a test fixture, not a product. Nothing deployed runs it: it listens on loopback only, has
 // no users but the callout's and its own admin's, keeps its JetStream store wherever the caller says and never cleans
@@ -133,7 +134,10 @@ const makeStreamsWait = time.Minute
 
 // makeStreams makes every protected stream of the declared set on the server at url as admin, at
 // one copy with no byte limit and the session bucket's own age, the settings the dev stack's
-// programs run with, and closes its connection.
+// programs run with, and closes its connection. A copied bucket (streamset.Stream.Copied) it
+// creates directly, with the admin's own KV create and only when the server has none, as the
+// writer hold's bucket workflows do: no program of a deployment creates one, so
+// streamset.EnsureStreams, which opens it, is never what creates it.
 func makeStreams(url string, admin nkeys.KeyPair) error {
 	adminKey, err := admin.PublicKey()
 	if err != nil {
@@ -146,6 +150,24 @@ func makeStreams(url string, admin nkeys.KeyPair) error {
 	defer conn.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), makeStreamsWait)
 	defer cancel()
+	js, err := conn.JetStream(nats.Context(ctx))
+	if err != nil {
+		return err
+	}
+	for _, stream := range streamset.Declared(streamset.Settings{}) {
+		if !stream.Copied {
+			continue
+		}
+		if _, err := js.KeyValue(stream.Bucket.Bucket); !errors.Is(err, nats.ErrBucketNotFound) {
+			if err != nil {
+				return fmt.Errorf("read the copied bucket %s as the admin user: %w", stream.Name, err)
+			}
+			continue
+		}
+		if _, err := js.CreateKeyValue(stream.Bucket); err != nil {
+			return fmt.Errorf("create the copied bucket %s as the admin user: %w", stream.Name, err)
+		}
+	}
 	if err := streamset.EnsureStreams(ctx, conn, streamset.Settings{}); err != nil {
 		return fmt.Errorf("make the declared streams as the admin user: %w", err)
 	}

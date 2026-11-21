@@ -95,7 +95,7 @@ func TestTheStreamsCommandWords(t *testing.T) {
 		admin, err := natsgo.Connect(url)
 		require.NoError(t, err)
 		defer admin.Close()
-		require.NoError(t, streamset.EnsureStreams(t.Context(), admin, streamset.Settings{}))
+		makeDeclaredOn(t, admin, js, streamset.Settings{})
 		measure, _ := streamset.Find(streamset.Declared(streamset.Settings{}), streamset.MeasureStream)
 		_, err = js.AddStream(&measure.Config)
 		require.NoError(t, err)
