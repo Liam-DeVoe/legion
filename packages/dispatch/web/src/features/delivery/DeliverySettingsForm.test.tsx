@@ -352,11 +352,12 @@ test("a save the reader stopped says it may have been made, not that it failed",
   }
 });
 
-// Save is disabled while its save is out and through the record's read, and Chromium takes the
-// focus off a button that turns disabled (`emulateChromiumFocusFixup`). The form stays the same
-// element through the read and fills its fields again from the stored record, so the page's
-// rescue gives the focus back to the same Save once it is enabled again: never to the form's first
-// field, out of view at the form's top, where the reader's next key would be typed.
+// Save is held while its save is out and through the record's read: by `aria-disabled`, not
+// `disabled`, which Chromium answers by taking the focus off the button
+// (`emulateChromiumFocusFixup`). So Save keeps the focus through the read. The form stays the
+// same element through the read and fills its fields again from the stored record, and the focus
+// stays on the same Save once it is let go: never on the form's first field, out of view at the
+// form's top, where the reader's next key would be typed.
 test("Save keeps the focus once the read draws the stored record, and no field takes it", async () => {
   const user = userEvent.setup();
   const stored: DeliverySettings = {
@@ -385,14 +386,14 @@ test("Save keeps the focus once the read draws the stored record, and no field t
 
     await waitFor(() => expect(getDeliverySettings).toHaveBeenCalledTimes(2));
     expect(putDeliverySettings).toHaveBeenCalledTimes(1);
-    // Save is held through the read, and the focus has left it for the page.
+    // Save is held through the read, and keeps the focus.
     await afterRescue();
-    expect((save as HTMLButtonElement).disabled).toBe(true);
-    expect(document.activeElement).toBe(document.body);
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).toHaveFocus();
 
     await act(async () => read.resolve(stored));
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
-    await waitFor(() => expect(save).toHaveFocus());
+    await waitFor(() => expect(save).not.toHaveAttribute("aria-disabled"));
     await afterRescue();
     expect(document.activeElement).toBe(save);
     expect(screen.getByRole("button", { name: "Save delivery settings" })).toBe(save);
@@ -407,13 +408,59 @@ test("Save keeps the focus once the read draws the stored record, and no field t
   }
 });
 
+// The save has its answer, and Save stays held while the Delivery page, which holds the record,
+// is still to draw it (`useHoldUntilDrawn`). Held, Save keeps the reader's focus: it is
+// `aria-disabled`, not `disabled`, which Chromium answers by taking the focus off the button
+// (`emulateChromiumFocusFixup`). A press of it then - Enter, a click, or the form's submit - sends
+// nothing.
+test("a held Save keeps the keyboard focus, and a press or a submit while it is held sends nothing", async () => {
+  const user = userEvent.setup();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue({
+    ...record,
+    updated_at: "2026-10-08T09:00:00Z",
+  });
+  const restoreFocus = emulateChromiumFocusFixup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RescuedMain>
+          <DeliverySettingsForm initial={record} />
+        </RescuedMain>
+      </QueryClientProvider>
+    );
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    act(() => save.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await afterRescue();
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).not.toBeDisabled();
+    expect(save).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    await user.click(save);
+    act(() => save.closest("form")?.requestSubmit());
+    await afterRescue();
+    expect(putDeliverySettings).toHaveBeenCalledTimes(1);
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).toHaveFocus();
+  } finally {
+    restoreFocus();
+    cleanup();
+    queryClient.clear();
+    putDeliverySettings.mockRestore();
+  }
+});
+
 // `DispatchQueryClient` answers the invalidation of the idle record after a save with the
 // record's own fetch, which TanStack pauses while the browser is offline, and no request deadline
 // runs while a fetch is paused. So Save's hold through that read has a timer of its own, the
-// request deadline (`REQUEST_DEADLINE_MS`): Save whose save landed offline is enabled again then,
-// and the form says the record is not read yet and why. Once the network returns, the record is
-// read and the note goes.
-test("offline, Save whose save landed is enabled again at the request deadline, and the form says why", async () => {
+// request deadline (`REQUEST_DEADLINE_MS`): Save whose save landed offline is let go then, and the
+// form says the record is not read yet and why. Once the network returns, the record is read and
+// the note goes.
+test("offline, Save whose save landed is let go at the request deadline, and the form says why", async () => {
   const online = onlineManager.isOnline();
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
   // The save's answer, held until the case moves the clock, so what it sets off runs in `act`.
@@ -436,14 +483,14 @@ test("offline, Save whose save landed is enabled again at the request deadline, 
     saved.resolve({ ...record, updated_at: "2026-10-08T09:00:00Z" });
     await tick(1_000);
     expect(queryClient.getQueryState(deliverySettingsQuery().queryKey)?.fetchStatus).toBe("paused");
-    expect(save).toBeDisabled();
+    expect(save).toHaveAttribute("aria-disabled", "true");
 
     // The save landed within the second before, which is when the hold's timer started.
     await tick(REQUEST_DEADLINE_MS - 2_000);
-    expect(save).toBeDisabled();
+    expect(save).toHaveAttribute("aria-disabled", "true");
 
     await tick(2_000);
-    expect(save).not.toBeDisabled();
+    expect(save).not.toHaveAttribute("aria-disabled");
     expect(getDeliverySettings).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("alert").textContent).toBe(
       "Couldn't load the delivery settings. Dispatch could not be reached."

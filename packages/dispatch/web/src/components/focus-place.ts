@@ -246,15 +246,6 @@ const MARK = 'input[type="checkbox"]';
  *  dialog or a panel (`DIALOG`), or the selection bar. */
 const PRESS_REGION = `${DIALOG}, [data-control="${CONTROL.selectionBar}"]`;
 
-/** How long the rescue waits for a control disabled under the focus - by a press, or by an update
- *  the reader did not cause - to be enabled again before it hands the focus on as if that control
- *  had gone: the app's write deadline, past which a write is late and a composer lets go of what
- *  it holds the reader to. A slow send never ends the wait before its composer's own take-back,
- *  and a control enabled again after the wait gets the focus back no more. After a loss the
- *  reader did not cause, the control gets the focus back only on the conditions `leaveUncaused`
- *  names. */
-const RESCUE_WAIT_MS = SEND_DEADLINE_MS;
-
 /** Whether the page draws `element`: under no `hidden` ancestor, and given a box. */
 function rendered(element: Element): boolean {
   return element.closest("[hidden]") === null && element.getClientRects().length > 0;
@@ -591,12 +582,12 @@ function onHeldControl(press: Press, target: Element): boolean {
  *  (`heldBefore`) - the pager's Next on its last page, a select or a trigger held while an
  *  earlier write is out - took the press without a write, so its hold keeps the press live no
  *  longer than a press on a control held by nothing. The hold's end is watched rather than
- *  polled, since a write's latency is the server's, and the watch ends at the write deadline
- *  (`RESCUE_WAIT_MS`) counted from the press's release - from the press itself for a pick's
- *  `change` or `input`, which has none - as the rescue's own wait does, so a hold that never ends
- *  keeps no watch over the page and no press live past it. A press past that is no cause, so an
- *  update after it - a live update taking the row away, a refetch emptying the selection bar - is
- *  a loss the reader did not cause. */
+ *  polled, since a write's latency is the server's, and the watch ends at the app's write
+ *  deadline (`SEND_DEADLINE_MS`), past which a write is late, counted from the press's release -
+ *  from the press itself for a pick's `change` or `input`, which has none - so a hold that never
+ *  ends keeps no watch over the page and no press live past it. A press past that is no cause, so
+ *  an update after it - a live update taking the row away, a refetch emptying the selection bar -
+ *  is a loss the reader did not cause. */
 function answerPress(press: Press): void {
   press.stop();
   press.live = true;
@@ -628,7 +619,7 @@ function answerPress(press: Press): void {
     const watcher = new MutationObserver(() => {
       if (!held()) end();
     });
-    const bound = window.setTimeout(end, RESCUE_WAIT_MS);
+    const bound = window.setTimeout(end, SEND_DEADLINE_MS);
     watcher.observe(document.body, {
       attributeFilter: ["aria-disabled", "disabled"],
       childList: true,
@@ -723,12 +714,12 @@ function landOnDialog(dialog: HTMLElement): void {
  *  dialog (`openModal`), which takes the focus itself as its own stop (`landOnDialog`), since a
  *  focus that leaves an open modal reaches the page behind it. The other is the control that held
  *  the focus: it gets the focus back, with no scroll, on three conditions. First, it comes back:
- *  disabled and enabled again within the rescue's wait (`RESCUE_WAIT_MS`, `useFocusRescue`'s
- *  `wait`), or hidden and drawn again before the rescue's first check (`check`). Second, the
- *  focus is still on the body when it comes back. Third, the reader has pressed nothing since the
- *  loss: any pointer press, and any key that is a press of theirs (`isPress`) - every key on the
- *  body, where the focus waits - ends that check or wait (`readerMoved`, `noteKey`), so `j` or `k`
- *  on the page leaves the focus there. This rule governs the rescue only where no component hands
+ *  disabled and enabled again, however long it stayed disabled (`useFocusRescue`'s `wait`), or
+ *  hidden and drawn again before the rescue's first check (`check`). Second, the focus is still
+ *  on the body when it comes back. Third, the reader has pressed nothing since the loss: any
+ *  pointer press, and any key that is a press of theirs (`isPress`) - every key on the body,
+ *  where the focus waits - ends that check or wait (`readerMoved`, `noteKey`), so `j` or `k` on
+ *  the page leaves the focus there. This rule governs the rescue only where no component hands
  *  the focus off. A component that hands a lost focus to its own region's stop may do so whoever
  *  caused the loss: AskCard to its own row or the reading column's stop (`handOffFocus`), the
  *  Inbox's reading column to its stop (`Inbox.tsx`). */
@@ -830,10 +821,10 @@ function rowPlacesOf(element: Element, region: Element): RowPlace[] {
  *  from the reader (`taken`: the element was disabled, hidden or taken away) rather than the
  *  reader moving off it, whether the reader left it (`left`), and - in a dialog - the loss the
  *  dialog was opened from (`opener`): the place the focus left for it, or null for a dialog the
- *  focus entered from the body. A loss kept only as a dialog's opener holds no spots, no arrivals,
- *  no item and no row places (`UNPLACED`): the hand-off reads only its element, region, place,
- *  path and opener. Nor does a loss the reader did not cause, which holds no place either (-1):
- *  it is answered without any of them (`leaveUncaused`). */
+ *  focus entered from the body. A loss kept only as a dialog's opener holds no spots, no arrivals
+ *  and no row places (`UNPLACED`): the hand-off reads only its element, region, place, item, path
+ *  and opener. A loss the reader did not cause holds none of these and no item, nor a place
+ *  (-1): it is answered without any of them (`leaveUncaused`). */
 interface Loss {
   /** The elements the page added from the moment the element went until the loss is answered,
    *  noted into it while its check or its wait is out - none the page only moved, which stood in
@@ -846,7 +837,9 @@ interface Loss {
   /** The item the element was in (`itemOf`), read as the loss is noted where the element is still
    *  in it, as its row places are, else the one it was in as it took the focus; null where it was
    *  in none and where nothing reads it (`UNPLACED`): what tells another item shown where the
-   *  element stood from what the reader's press drew there (`controlsInPlace`). */
+   *  element stood from what the reader's press drew there (`controlsInPlace`), and the one item
+   *  whose controls a walk back from the element's place may land on, beside controls in no item
+   *  (`handOn`). */
   readonly item: string | null;
   /** Whether the reader left the element (`record`): the focus went to nothing from it while it
    *  was enabled and drawn, and it still stood in the page so once the event that moved the focus
@@ -1019,14 +1012,20 @@ function itemOf(element: Element): string | null {
   return element.closest(SHOWN_ITEM)?.getAttribute(SHOWN_ITEM_ATTRIBUTE) ?? null;
 }
 
+/** Whether `element` is in another item than `item`: the item it is in (`itemOf`), where it is in
+ *  one, is not `item`. */
+function inAnotherItem(element: Element, item: string | null): boolean {
+  const own = itemOf(element);
+  return own !== null && own !== item;
+}
+
 /** Whether any of `elements` is in or holds another item than `item`: the item it is in
- *  (`itemOf`), where it is in one, or an item an element inside it names. Both, since the region
- *  can stay with its mark changed to the next item while only what it holds is drawn again, and
- *  what arrived in it then carries no mark of its own. */
+ *  (`inAnotherItem`), where it is in one, or an item an element inside it names. Both, since the
+ *  region can stay with its mark changed to the next item while only what it holds is drawn again,
+ *  and what arrived in it then carries no mark of its own. */
 function showsAnother(elements: readonly Element[], item: string | null): boolean {
   for (const element of elements) {
-    const own = itemOf(element);
-    if (own !== null && own !== item) return true;
+    if (inAnotherItem(element, item)) return true;
     for (const marked of element.querySelectorAll(SHOWN_ITEM)) {
       if (marked.getAttribute(SHOWN_ITEM_ATTRIBUTE) !== item) return true;
     }
@@ -1173,19 +1172,21 @@ export function inSightNow(element: Element, clips: Map<Element, boolean>): bool
  *  control is scrolled into view (`land`). Only where no row stands there, or that row draws no
  *  control to take it, does the focus walk back (`walkBack`): to the control the region now draws
  *  at its place, else the nearest one before it however many went together, passing over every
- *  control that takes typed text and every control the reader cannot see now (`inSightNow`),
- *  else the region itself, which is every region but the document, focused with no scroll. The
- *  walk takes only a control in sight, because a landing scrolls its control into view (`land`),
- *  and the nearest control before the lost place can lie far from it. Jump to latest on an
- *  agent's transcript goes once it has scrolled the transcript to its end, and the control before
- *  it is the transcript's last: in Chromium, landing there scrolled the transcript from its end,
- *  2515 px down, back to 1146 px. From a region that has gone - a dialog or a panel that closed,
- *  or one hidden while it stays mounted - the focus goes only back to the place it was opened
- *  from (its `opener`, or that region's own opener where it has gone too): that element, the
- *  control that opened it - a list's trigger - if it can still take the focus, scrolled into
- *  view, else the control now at its place, else the nearest one before it, by the same walk
- *  back. A dialog opened from the body hands the focus nowhere: the body is where the reader
- *  was. */
+ *  control that takes typed text, every control the reader cannot see now (`inSightNow`) and
+ *  every control of another item than the one the element was in (`inAnotherItem`), such as the
+ *  next question the Inbox's reading column draws in its place, else the region itself, which is
+ *  every region but the document, focused with no scroll. The walk takes only a control in sight,
+ *  because a landing scrolls its control into view (`land`), and the nearest control before the
+ *  lost place can lie far from it. Jump to latest on an agent's transcript goes once it has
+ *  scrolled the transcript to its end, and the control before it is the transcript's last: in
+ *  Chromium, landing there scrolled the transcript from its end, 2515 px down, back to 1146 px.
+ *  From a region that has gone - a dialog or a panel that closed, or one hidden while it stays
+ *  mounted - the focus goes only back to the place it was opened from (its `opener`, or that
+ *  region's own opener where it has gone too): that element, the control that opened it - a
+ *  list's trigger - if it can still take the focus, scrolled into view, else the control now at
+ *  its place, else the nearest one before it, by the same walk back, passing over the controls
+ *  of another item than the one that control was in. A dialog opened from the body hands the
+ *  focus nowhere: the body is where the reader was. */
 function handOn(loss: Loss, main: HTMLElement | null): void {
   const { caused, region } = loss;
   if (!caused) {
@@ -1193,6 +1194,9 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     return;
   }
   let back: HTMLElement[] = [];
+  // The item the walk's place was in: the element's, else its opener's. The walk lands on no
+  // control of another item.
+  let item = loss.item;
   if (present(region)) {
     const drawn = drawnIn(region, main);
     for (const control of controlsInPlace(loss, drawn)) {
@@ -1207,10 +1211,11 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     if (opener === null || opener.path !== loss.path) return;
     if (opener.element.isConnected && rendered(opener.element) && land(opener.element)) return;
     back = walkBack(drawnIn(opener.region, main), opener.index);
+    item = opener.item;
   }
   const clips = new Map<Element, boolean>();
   for (const candidate of back) {
-    if (!inSightNow(candidate, clips)) continue;
+    if (inAnotherItem(candidate, item) || !inSightNow(candidate, clips)) continue;
     if (land(candidate)) return;
   }
   if (!present(region) || region === document.body || !(region instanceof HTMLElement)) return;
@@ -1308,9 +1313,10 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * reader can go on, unpinning as Dismiss goes on to the next item. Only where no row stands
  * there - a block taken away with nothing in its place, or the last row - or that row draws no
  * control does the focus walk back, as `handOn` states, passing over every control that takes
- * typed text (`walkBack`) and every control out of the reader's sight (`inSightNow`), else to the
- * region's own stop with no scroll; that walk stays inside the region, so the page behind a modal
- * dialog is never reached. A loss the reader did not cause - an update of
+ * typed text (`walkBack`), every control out of the reader's sight (`inSightNow`) and every
+ * control of another item shown in the place (`inAnotherItem`), else to the region's own stop
+ * with no scroll; that walk stays inside the region, so the page behind a modal dialog is never
+ * reached. A loss the reader did not cause - an update of
  * the server's, which can draw a form of its own where the control stood, as a withdrawn
  * question's answer form gives way to a Reply form, or a live update taking a row away - is handed
  * nowhere (`leaveUncaused`): the focus stays on the body, as it did before the page had a rescue,
@@ -1322,23 +1328,25 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * takes away to its trigger; a dialog opened from the body - a single-key shortcut with nothing
  * focused - leaves the focus on the body, where the reader was, and never puts it in a text box
  * whose next key would be typed. An element disabled under the focus, itself or through the
- * fieldset around it, gets the focus back when it is enabled again, watched rather than polled,
- * since its write's latency is the server's; if it goes instead, or is still disabled after
- * `RESCUE_WAIT_MS`, the focus is handed on as from an element that went. So it is for a control
- * disabled by an update the reader did not cause, only on the conditions `leaveUncaused` names.
- * That settle too waits a frame and a task, so a component that watches the same control - the
- * Agents composer, giving its box the focus back - acts on the change first. A pointer press
- * anywhere while a check or a wait is out is the reader moving on - onto a control, or onto the
- * page itself - and ends it, so a control enabled again later never pulls back a focus the reader
- * left on the page. A key the reader presses ends the check or the wait of a loss they did not
- * cause too (`noteKey`), when it is a press of theirs (`isPress`): every key on the body, where
- * the focus waits, and in a field that takes typed text only a key that acts on the page. So `j`,
- * `k` or any other key on the page leaves the focus where the reader is using it, and the control
- * that comes back after that takes nothing. A key ends no check or wait of a loss the reader
- * caused. The reader's Escape also marks the loss it causes in its own task as the reader leaving
- * the control (`leaving`): a control it takes away or leaves - the issue title's editor, which it
- * closes - is not answered, and the focus stays where Escape left it rather than going to what is
- * drawn in its place, as the Inbox's and the Board's own Escape leave it on the page.
+ * fieldset around it, gets the focus back when it is enabled again, however long its hold lasts:
+ * the wait is on the hold itself, watched rather than polled, since its write's latency is the
+ * server's and a hold through a read can outlast the write deadline, and it keeps no deadline of
+ * its own. Where the element goes or is hidden instead, the focus is handed on as from an element
+ * that went. So it is for a control disabled by an update the reader did not cause, only on the
+ * conditions `leaveUncaused` names. That settle too waits a frame and a task, so a component
+ * that watches the same control - the Agents composer, giving its box the focus back - acts on
+ * the change first. Short of that, and of a new loss, a check or a wait ends only when the reader
+ * moves on, whoever caused its loss: a pointer press anywhere - onto a control, or onto the page
+ * itself - and a key that is a press of theirs (`isPress`, `readerMoved`, `noteKey`), which is
+ * every key on the body, where the focus waits, and in a field that takes typed text only a key
+ * that acts on the page. Once the reader acts, the focus is theirs, and their act's own action
+ * decides where it goes: so `j`, `k` or any other key on the page leaves the focus where the
+ * reader is using it, a control enabled again after that takes nothing back, and one that goes
+ * after it hands nothing on. The reader's Escape also marks the loss it causes in its own task as
+ * the reader leaving the control (`leaving`): a control it takes away or leaves - the issue
+ * title's editor, which it closes - is not answered, and the focus stays where Escape left it
+ * rather than going to what is drawn in its place, as the Inbox's and the Board's own Escape
+ * leave it on the page.
  * The control a loss the reader caused lands on in the row that moved up, or walks back to, is
  * scrolled into view (`land`), and so is a control given back after a loss they caused; what
  * stands where the element stood after a loss they caused, a control given back after a loss
@@ -1405,13 +1413,15 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     const unseen = (loss: Loss) => outOfSight(loss.element) && present(loss.region);
 
     /** Waits for `loss`'s element, disabled under the focus by the reader's press or by an update,
-     *  to be enabled again or to go, for `RESCUE_WAIT_MS` at most: the wait settles then, and a
-     *  control enabled again after that gets nothing back. Only `check` begins it, so a loss the
-     *  reader left (`left`) never has one. A control enabled again in time gets the focus back
-     *  while the focus is still lost; after a loss the reader did not cause, only on the
-     *  conditions `leaveUncaused` names. A pointer press, or a key that is a press of theirs
-     *  (`isPress`) - every key on the body - ends the wait (`readerMoved`, `noteKey`), so the
-     *  control enabled again after it gets nothing. */
+     *  to be enabled again, to go or to be hidden, however long that takes: the wait is on the hold
+     *  itself and keeps no deadline of its own, so a control held through a read that outlasts the
+     *  write deadline still gets the focus back once it is let go. Only `check` begins it, so a loss
+     *  the reader left (`left`) never has one. A control enabled again gets the focus back while the
+     *  focus is still lost; after a loss the reader did not cause, only on the conditions
+     *  `leaveUncaused` names. One that goes or is hidden is handed on (`handOn`). A pointer press,
+     *  or a key that is a press of the reader's (`isPress`) - every key on the body - ends the wait,
+     *  whoever caused the loss (`readerMoved`, `noteKey`), so the control enabled again after it
+     *  gets nothing, and one that goes after it hands nothing on. */
     const wait = (loss: Loss): (() => void) => {
       const { element } = loss;
       /** Cancels the settle once it is scheduled. */
@@ -1423,23 +1433,21 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
           leaveUnseen(loss);
           return;
         }
-        // The very control back, whoever caused the loss. After a loss the reader did not cause, a
-        // press of theirs since has ended this wait already (`noteKey`, `readerMoved`). Still
-        // disabled as the wait runs out, it takes no focus, and the loss is handed on as from a
-        // control that went.
+        // The very control back, whoever caused the loss: a press of the reader's since has ended
+        // this wait already (`noteKey`, `readerMoved`). One gone or hidden, or one that takes no
+        // focus, is handed on as from a control that went.
         if (element.isConnected && rendered(element)) {
           if (loss.caused ? land(element) : focusNoScroll(element)) return;
         }
         handOn(loss, main.current);
       };
-      // The element enabled again, gone, or the wait run out: settled a frame and a task later,
-      // as the first check is, so a component answering the same change - its own watcher,
-      // started after this one, such as the Agents composer's take-back, or an effect - moves
-      // the focus first. The first change of a burst schedules it, and the watching ends there.
+      // The element enabled again, gone or hidden: settled a frame and a task later, as the first
+      // check is, so a component answering the same change - its own watcher, started after this
+      // one, such as the Agents composer's take-back, or an effect - moves the focus first. The
+      // first change of a burst schedules it, and the watching ends there.
       const later = () => {
         if (settling !== undefined) return;
         watcher.disconnect();
-        window.clearTimeout(bound);
         settling = afterComponents(settle);
       };
       // The whole document is watched, not only the element's own `disabled` and its
@@ -1451,7 +1459,6 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
           element.closest("[hidden]") === null;
         if (!held) later();
       });
-      const bound = window.setTimeout(later, RESCUE_WAIT_MS);
       watcher.observe(document.body, {
         attributeFilter: ["disabled", "hidden"],
         childList: true,
@@ -1459,7 +1466,6 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       });
       return () => {
         watcher.disconnect();
-        window.clearTimeout(bound);
         settling?.();
       };
     };
@@ -1467,9 +1473,10 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     /** Answers `loss` a frame and a task after it, while the focus is still lost on the page it
      *  was lost on; a loss the reader left (`left`) it leaves where the reader put the focus. A
      *  control taken and back by then - hidden and drawn again, disabled and enabled again - gets
-     *  the focus back, whoever caused the loss. After a loss the reader did not cause, only on
-     *  the conditions `leaveUncaused` names; a pointer press, or a key that is a press
-     *  (`isPress`), since the loss has cancelled this check (`readerMoved`, `noteKey`). */
+     *  the focus back, whoever caused the loss; after a loss the reader did not cause, only on the
+     *  conditions `leaveUncaused` names. A pointer press after the loss, or a key after it that is
+     *  a press of the reader's (`isPress`), cancels this check, whoever caused the loss
+     *  (`readerMoved`, `noteKey`). */
     const check = (loss: Loss) => {
       pending = null;
       if (loss.left || window.location.pathname !== loss.path || !focusLost()) return;
@@ -1548,9 +1555,9 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       };
       // A focus going straight to another region is kept only as the place it left: the opener
       // of the dialog it is entering, whose spots, arrivals and row places the hand-off never
-      // reads.
+      // reads. The item it was in is read: a walk back from its place lands in no other (`handOn`).
       if (next instanceof Element) {
-        moving = { from: { ...fields, ...UNPLACED }, to: next };
+        moving = { from: { ...fields, ...UNPLACED, item: itemOf(element) }, to: next };
         return;
       }
       // What the page changed before this loss is none of what a press draws in its place: those
@@ -1727,16 +1734,16 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
      *  by when the commit it caused has run. */
     let leaving = false;
     /** A key the reader presses: noted as their press where it is one (`notePress`). A key that is
-     *  a press of theirs (`isPress`) also ends the check or the wait of a loss they did not cause,
-     *  as a pointer press does (`readerMoved`). That is every key on the body, where the focus
-     *  waits after such a loss, and in a field that takes typed text only a key that acts on the
-     *  page. So the control that held the focus, coming back after `j`, `k` or any other key on
-     *  the page, takes nothing. The check or the wait of a loss the reader caused goes on. Escape
-     *  also marks the reader leaving a control until the next task (`leaving`). */
+     *  a press of theirs (`isPress`) also ends any check or wait still out, whoever caused its
+     *  loss, as a pointer press does (`readerMoved`): once the reader acts, their key's own action
+     *  decides where the focus goes. That is every key on the body, where the focus waits after a
+     *  loss, and in a field that takes typed text only a key that acts on the page. So the control
+     *  that held the focus, coming back after `j`, `k` or any other key on the page, takes nothing,
+     *  and one that goes after it hands nothing on. Escape also marks the reader leaving a control
+     *  until the next task (`leaving`). */
     const noteKey = (event: KeyboardEvent) => {
-      const pressed = notePress(event);
-      if (pending?.loss.caused === false && pressed) {
-        pending.cancel();
+      if (notePress(event)) {
+        pending?.cancel();
         pending = null;
       }
       if (event.key !== "Escape") return;

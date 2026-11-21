@@ -163,17 +163,20 @@ export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): Re
   return <DeliverySettingsFields record={record} replacedByCaller={initial !== undefined} />;
 }
 
-/** The form's fields and its Save. Save is disabled, and the fields with it, while the save is
+/** The form's fields and its Save. Save is held, and the fields are disabled, while the save is
  *  out and until what it changes is drawn: through the record's own read, which fills these
  *  fields again from the stored record, or - where the caller holds the record
  *  (`replacedByCaller`), as the Delivery page's live view does, drawing the timeline in the
  *  form's place once its snapshot comes - until the caller replaces the form
- *  (`useHoldUntilDrawn`). The form and its Save stay the same elements through the read, so the
- *  page's rescue gives the focus back to Save once it is enabled again; a form the caller replaces
- *  goes while Save is held, so its going is still the press's doing (`causedByReader`). A record
- *  read that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) lets them go then,
- *  with the reason under the form (`useReadBound`). A refusal lets them go at once, with its
- *  reason under the form. */
+ *  (`useHoldUntilDrawn`). Save is held as every held control is (`held-press.ts`): by
+ *  `aria-disabled`, never `disabled`, so it keeps its Tab stop and the reader's focus through the
+ *  whole hold. Its press still submits the form, by a click or by Enter, and the form's submit
+ *  sends nothing while Save is held. The `refused:` variant paints a held Save as a disabled one.
+ *  The form and its Save stay the same elements through the read, so the focus stays on the Save
+ *  the reader pressed; a form the caller replaces goes while Save is held, so its going is still
+ *  the press's doing (`causedByReader`). A record read that has not settled by the request
+ *  deadline (`REQUEST_DEADLINE_MS`) lets them go then, with the reason under the form
+ *  (`useReadBound`). A refusal lets them go at once, with its reason under the form. */
 function DeliverySettingsFields({
   record,
   replacedByCaller,
@@ -228,6 +231,9 @@ function DeliverySettingsFields({
   const refused = useRefusalOfSubject(save, () => pressedOver === version);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    // A held Save is only `aria-disabled`, so its press still submits the form: that submit sends
+    // nothing.
+    if (held) return;
     submitGuard.guard(() => {
       setPressedOver(version);
       save.mutate({
@@ -385,8 +391,8 @@ function DeliverySettingsFields({
           </div>
         </fieldset>
         <button
+          aria-disabled={held || undefined}
           className={`justify-self-start ${settingsSubmitButton}`}
-          disabled={held}
           type="submit"
         >
           Save delivery settings

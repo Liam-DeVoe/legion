@@ -239,34 +239,42 @@ test("a control an update disabled gets no focus back once the reader has moved 
   });
 });
 
-// (br) Nor does that control get the focus back once the wait has run out: still disabled at the
-// write deadline (`RESCUE_WAIT_MS`), it is handed on as a control that went, which leaves the focus
-// on the page, and enabled again after that it takes nothing back, as (l) does inside the wait.
-test("a control an update disabled gets no focus back when it is enabled after the wait ran out", async () => {
+// (br) The rescue's wait keeps no deadline of its own: it lasts as long as the control's hold, which
+// a read held after the write can stretch past the write deadline. So a control disabled under the
+// focus for twice that deadline gets the focus back once it is enabled again, as one enabled within
+// it does (l). That holds after a loss the reader caused, by their Enter on the control, and after
+// one an update made.
+test("a control disabled under the focus for longer than the write deadline gets the focus back when it is enabled again", async () => {
   jest.useFakeTimers();
   try {
-    await withRescue(async () => {
-      const [, saving, after] = mainOf("Before", "Save", "After").buttons;
-      const button = saving as HTMLButtonElement;
-      button.focus();
-      button.blur();
-      button.disabled = true;
-      // The check, a frame and a task after the loss, begins the wait.
-      await frame();
-      jest.advanceTimersByTime(0);
-      // The wait runs out with the control still disabled, and settles a frame and a task on.
-      jest.advanceTimersByTime(SEND_DEADLINE_MS);
-      await frame();
-      jest.advanceTimersByTime(0);
-      expect(document.activeElement).toBe(document.body);
-      button.disabled = false;
-      await frame();
-      await frame();
-      jest.advanceTimersByTime(0);
-      expect(document.activeElement).toBe(document.body);
-      expect(button).not.toHaveFocus();
-      expect(after).not.toHaveFocus();
-    });
+    // Where the focus went after each loss, and where it belongs.
+    const landed: Record<string, string | null> = {};
+    const belongs: Record<string, string> = {};
+    for (const caused of [true, false]) {
+      const named = caused ? "after the reader's Enter" : "after an update";
+      await withRescue(async () => {
+        const button = mainOf("Before", "Save", "After").buttons[1] as HTMLButtonElement;
+        button.focus();
+        if (caused) enterPress(button);
+        button.blur();
+        button.disabled = true;
+        // The check, a frame and a task after the loss, begins the wait.
+        await frame();
+        jest.advanceTimersByTime(0);
+        // Twice the write deadline passes with the control still disabled.
+        jest.advanceTimersByTime(2 * SEND_DEADLINE_MS);
+        await frame();
+        jest.advanceTimersByTime(0);
+        expect(document.activeElement).toBe(document.body);
+        button.disabled = false;
+        await frame();
+        await frame();
+        jest.advanceTimersByTime(0);
+        landed[named] = document.activeElement === document.body ? "the page" : focusedName();
+      });
+      belongs[named] = "Save";
+    }
+    expect(landed).toEqual(belongs);
   } finally {
     jest.useRealTimers();
   }
@@ -569,6 +577,84 @@ test("a pointer press on the page during the wait leaves the focus there when th
     send.disabled = false;
     await settled();
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+// (ch) A press of the reader's ends the rescue's wait whoever caused the loss, as it does after a
+// loss an update made (p, bu): once the reader acts, the focus is theirs. Their Enter on Save
+// disables it under the press. Then a key on the page, or a pointer press there, comes before Save
+// is enabled again, and Save takes nothing back: the focus stays on the page.
+test("a key or a pointer press on the page ends the wait of a control the reader's own press disabled", async () => {
+  const moves: Readonly<Record<string, () => void>> = {
+    "j on the page": () => keyOnPage("j"),
+    "a pointer press on the page": () =>
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })),
+  };
+  // Where the focus went after each press, and where it belongs.
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const [name, move] of Object.entries(moves)) {
+    await withRescue(async () => {
+      const save = mainOf("Before", "Save", "After").buttons[1] as HTMLButtonElement;
+      save.focus();
+      enterPress(save);
+      save.blur();
+      save.disabled = true;
+      await settled();
+      move();
+      save.disabled = false;
+      await settled();
+      await settled();
+      landed[name] = document.activeElement === document.body ? "the page" : focusedName();
+    });
+    belongs[name] = "the page";
+  }
+  expect(landed).toEqual(belongs);
+});
+
+// (ci) Once the reader acts, their key's own action decides where the focus goes, and the rescue
+// hands nothing on after it. The reader's Enter on Reply, in a reading column that shows thread
+// one, disables Reply under the press. Then `j`, which the page binds to the next thread, draws
+// thread two in the column, and the disabled Reply goes with thread one. `j` moves no focus, so the
+// focus stays on the page. No walk-back runs once Reply has gone, onto thread two's "Release bot"
+// link or onto the control before the column, and nothing scrolls. In WebKit the wait ran on
+// through the key and walked back onto that link.
+test("a key the page acts on, pressed while the rescue waits on a control the reader's press disabled, leaves the focus where the key's action put it", async () => {
+  await scrollingNothing(async () => {
+    await withRescue(async () => {
+      const { main } = mainOf("Threads");
+      const column = document.createElement("section");
+      column.setAttribute(SHOWN_ITEM_ATTRIBUTE, "one");
+      const reply = buttonIn(column, "Reply");
+      main.append(column);
+      const nextThread = () => {
+        const link = document.createElement("a");
+        link.href = "/agents/release-bot";
+        link.textContent = "Release bot";
+        column.setAttribute(SHOWN_ITEM_ATTRIBUTE, "two");
+        column.replaceChildren(link);
+        buttonIn(column, "Reply");
+      };
+      const next = { id: "next", keys: "j", label: "Next thread", run: nextThread };
+      const keys = renderHook(() => useKeymap("global", [next]), { wrapper: KeymapProvider });
+      try {
+        reply.focus();
+        enterPress(reply);
+        reply.blur();
+        reply.disabled = true;
+        await settled();
+        expect(document.activeElement).toBe(document.body);
+        keyOnPage("j");
+        expect(reply.isConnected).toBe(false);
+        await settled();
+        await settled();
+        expect(document.activeElement === document.body ? "the page" : focusedName()).toBe(
+          "the page"
+        );
+      } finally {
+        keys.unmount();
+      }
+    });
   });
 });
 
@@ -1404,7 +1490,7 @@ test("a row removed after its pressed control's hold ended hands the focus to no
   });
 });
 
-// (ax) The hold ends at the write deadline (`RESCUE_WAIT_MS`), as the rescue's own wait does: a
+// (ax) The hold keeps its press live up to the write deadline (`SEND_DEADLINE_MS`) at most: a
 // control its press's write holds that stays held past it - a write that never answers - keeps
 // its press live no longer, so a live update taking its row away after that is no doing of the
 // reader's: the focus stays on the page, in no row, and nothing scrolls (ag).
@@ -1917,6 +2003,90 @@ test("a press whose region stays for the same item, drawing what it holds again,
       }
     }
   });
+});
+
+// (cj) A caused walk-back passes over every control of another item shown in the lost control's
+// place, as the landing on what stands there does (above). The reader's press on the Snooze of item
+// one, the last control of the main content, takes item one away. The region in its place shows
+// item two, drawn anew or kept with its mark changed, and holds item two's Send and Snooze at and
+// before the lost place. The walk passes over both to Before, the nearest control before the
+// region. By a pointer press and by Enter, with Chromium's `focusout` and without.
+test("a caused walk-back passes over the controls of the next item shown in the lost control's place", async () => {
+  // Where each press landed, and where it belongs.
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const kept of [false, true]) {
+    for (const [by, press] of Object.entries(PRESSES)) {
+      for (const withFocusout of [true, false]) {
+        const region = kept ? "kept, marked with item two" : "drawn anew for item two";
+        const named = `the region ${region}, by ${by}, ${withFocusout ? "with" : "without"} a focusout`;
+        await withRescue(async () => {
+          const { main } = mainOf("Before");
+          const shown = itemRegion("one");
+          main.append(shown.region);
+          shown.snooze.focus();
+          press(shown.snooze);
+          const next = itemRegion("two");
+          const redraw = kept
+            ? () => {
+                shown.region.setAttribute(SHOWN_ITEM_ATTRIBUTE, "two");
+                shown.region.replaceChildren(...next.region.children);
+              }
+            : () => {
+                shown.region.remove();
+                main.append(next.region);
+              };
+          if (withFocusout) lose(shown.snooze, redraw);
+          else redraw();
+          await settled();
+          landed[named] = document.activeElement === document.body ? "the page" : focusedName();
+        });
+        belongs[named] = "Before";
+      }
+    }
+  }
+  expect(landed).toEqual(belongs);
+});
+
+// (ck) So for a walk back from the place a list was opened from. The reader's pick in a list that
+// item one's Snooze opened takes the list away. Where the pick takes item one away too, and the
+// region shows item two in its place, the walk from the Snooze's place passes over item two's
+// controls to Before. Where it takes only the Snooze away, item one is still shown, and the walk
+// lands on item one's Send, the nearest control before that place. With Chromium's `focusout` and
+// without.
+test("a walk back from a list's trigger its pick took away passes over the controls of another item, and not of the trigger's own", async () => {
+  // Where each pick landed, and where it belongs.
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const itemGoes of [true, false]) {
+    for (const withFocusout of [true, false]) {
+      const taken = itemGoes ? "item one taken away" : "the Snooze alone taken away";
+      const named = `${taken}, ${withFocusout ? "with" : "without"} a focusout`;
+      await withRescue(async () => {
+        const { main } = mainOf("Before");
+        const shown = itemRegion("one");
+        main.append(shown.region);
+        const list = openListFrom(shown.snooze);
+        const next = itemRegion("two");
+        const commit = () => {
+          list.panel.remove();
+          if (itemGoes) {
+            shown.region.remove();
+            main.append(next.region);
+          } else {
+            shown.snooze.remove();
+          }
+        };
+        pointerPress(list.option);
+        if (withFocusout) lose(list.box, commit);
+        else commit();
+        await settled();
+        landed[named] = document.activeElement === document.body ? "the page" : focusedName();
+      });
+      belongs[named] = itemGoes ? "Before" : "Send";
+    }
+  }
+  expect(landed).toEqual(belongs);
 });
 
 // (ak) A press that takes its control away with nothing drawn in its place still walks back to
