@@ -20,6 +20,7 @@ const REASONS = {
   7: "7. At 760 px and below the box's lines say their shorter placeholder words (`place.phone`), and that is all a width changes: the composer stays mounted at its address, with its draft and its send, so no width moves a draft.",
   8: "8. The box is drawn whenever the writer edits a comment (`useComposerShown`), so this section never hides a mounted edit line: it hides the box only once the edit has ended, which takes the edit line off the page, the edit rows.",
   9: "9. `place` tells the edit line where to put the reader once the edit ends, and its placeholder's words; neither moves the edit's address, which its comment names (`edit`), nor its draft.",
+  10: "10. While the box writes a criterion, this `div` hides the write line and unmounts nothing (`hidden`), so the write line's composer stays mounted at its address with its draft and its send, and shows again as it was once the criterion's line ends (`clear`). No row offers Write a criterion before the page reads the issue's tree (`takesCriterion`), so no row of this file can aim the box at one.",
 } as const;
 
 /** The census's text of the write line's look, as `WriteLine` hands it to the composer. */
@@ -103,6 +104,12 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers(
     "IssueComposer | WriteLine | conditional | <div hidden={!writing}>",
     cells(`${HOST} · an answer opened, then ended`)
+  ),
+  ...answers(
+    "IssueComposer | WriteLine | conditional | <div hidden={writer.criterion !== undefined}>",
+    {
+      reason: REASONS[10],
+    }
   ),
   ...answers(
     "IssueComposer | WriteLine | conditional | <section hidden={!shown}>",
