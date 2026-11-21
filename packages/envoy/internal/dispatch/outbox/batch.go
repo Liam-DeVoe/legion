@@ -46,12 +46,13 @@ import (
 // waiting is that wait, written once the role's holder is known (resolveRoleHolders), and the
 // same mark a copy bound for a session the owner's own work names carries while an attempt of
 // the comment that names no session yet, and whose role the batch could name no holder for, may
-// yet be pinned to that session (destinations.addWorkingSession), and the mark of a copy bound
-// for a session only a document credits whose copy a mention of the comment may yet decide
-// (creditWaits, destinations.waitForCredits): the destination makes no send this read and holds
-// its key against the owner's later events instead, the way an event that is not due holds a
-// key it has not reached, and against no copy of its own event (planChains), and the event is
-// marked mentionPending so that it is read again.
+// yet be pinned to that session (destinations.addWorkingSession), and the mark of a new
+// comment's copy bound for a session only a document credits whose copy a mention of the
+// comment may yet decide (creditWaits, destinations.waitForCredits): the destination makes no
+// send this read and holds its key against the owner's later events instead, the way an event
+// that is not due holds a key it has not reached, and against no copy of its own event
+// (planChains), and the event is marked mentionPending so that it is read again. The copy of a
+// comment's edit that waits that way is no destination of its list at all, and holds nothing.
 //
 // heldAsARow is the end of that wait for the one copy whose wait has no bound of its own: a
 // role route's forward held for an attempt of the comment that names no session yet and that
@@ -308,16 +309,18 @@ type chain struct {
 // the comment that names no session yet and whose role this read could name no holder for
 // (destinations.addWorkingSession): that mention may be pinned to another session, and then
 // nothing but this copy delivers the comment here, so a later event let past it would overtake
-// the comment at that session. The copy of a session only a document credits, on an event that
-// leaves such a session out, waits for the mention of the comment that decides whether it goes
-// (creditWaits): one such an attempt may yet be pinned to, and for the comment's edit one whose
-// mention of the comment, or the comment's copy that follows it, is still to settle; should that
-// mention fail, this copy is that session's one copy of the event. Neither wait runs past
+// the comment at that session. The copy of a session only a document credits, on a new comment
+// that leaves such a session out, waits for the mention of the comment that decides whether it
+// goes (creditWaits): one such an attempt may yet be pinned to; should that mention fail, this
+// copy is that session's one copy of the event. That wait runs no further than
 // unnamedForwardBound, but for a live attempt's own lease: past it, and where the batch resolved
-// the attempt's role to another session, a new comment's copy of such a session is no
+// the attempt's role to another session, or to this one past the attempt's lease, the copy is no
 // destination of the list at all but a credit's comment_fallback_copies row, which holds nothing
-// back (creditHeldAsARow, destinations.holdForCredits), and the edit's is decided without the
-// wait (mentionDeliveries.editCreditCopyOf).
+// back (creditHeldAsARow, destinations.holdForCredits). The copy of the comment's edit bound for
+// such a session waits on the same bound, for a mention of the comment, or the comment's copy
+// that follows it, still to settle, but outside the edit's list, holding no key: what the rule
+// decides for an edit is whether the session gets it, not when, so none of the owner's later
+// events waits on it (destinations.waitForCredits, mentionDeliveries.editCreditCopyOf).
 //
 // A copy a comment_fallback_copies row has taken over (destination.heldAsARow) is the other
 // side of that: it goes on no chain, sends nothing and holds nothing, the row being another

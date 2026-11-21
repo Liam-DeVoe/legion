@@ -9,11 +9,16 @@ body: |-
   the events that read it, for one read's wait. Every read Dispatch makes of the Envoy listener
   takes its answer whole: one whose body stops after its headers or is cut short counts as the
   listener not answering, never as its answer. A session the reply names, whose mention failed,
-  still gets the reply and the person's edit of it, also where the mention was a role's that names
-  the session only after the batch read it, after the forward's bound, or after the outbox read the
-  role as another session's. An edit reads the reply's mentions from the store, and reaches a
-  session that got the reply through a failed mention after the reply does, so that session never
-  holds the reply's old words. A copy kept for a session that only a document credits no longer
-  holds a later reply back from that session once it claims the issue or the issue is routed to it.
-  Dispatch fetches the identity token it presents to the listener within the call's own window, so a
-  metadata server that does not answer no longer holds a registry read past that window.
+  still gets the reply, also where the mention was a role's that names the session only after the
+  batch read it, after the forward's bound, or after the outbox read the role as another session's.
+  The person's edit of the reply reads the reply's mentions from the store, and waits for a mention
+  of the reply still to settle no longer than that bound. It then goes to each session that got, or
+  is owed, the reply through a failed mention, and to no other session that only a document
+  credits. A session that gets the reply only later, once a role's mention pinned to it fails, gets
+  every earlier edit of the reply right after the reply, so it never keeps the reply's first words;
+  a session that does not get the reply gets no edit of it. A copy of the edit that waits holds back
+  none of the issue's later events, so a person's later comment reaches that session without
+  waiting for the edit. A copy kept for a session that only a document credits no longer holds a
+  later reply back from that session once it claims the issue or the issue is routed to it.
+  Dispatch fetches the identity token it presents to the listener within the call's own window, so
+  a metadata server that does not answer no longer holds a registry read past that window.

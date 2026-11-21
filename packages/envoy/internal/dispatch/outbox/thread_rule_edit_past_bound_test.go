@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -75,5 +76,76 @@ func TestAnEditOfAReplyWhoseLateRoleMentionOfACreditFailsReachesIt(t *testing.T)
 	if len(copiesOf(publisher.all(), edited, issue.a.ID)) == 0 {
 		t.Fatalf("A, named by the reply, whose mention failed, got the reply and not the person's edit of it (the edit reached %v): it holds the reply's first words",
 			agentTopics(readEventRow(t, database, edited.ID).destinations))
+	}
+}
+
+// The other side of TestAnEditOfAReplyWhoseLateRoleMentionOfACreditFailsReachesIt: the settle of
+// a credit's row sends the session the reply's edits only where it sends that session the reply
+// (decideFallbackCopy, creditRowEdits). The person's reply in B's thread (B live) names @role:R,
+// whose listener lookup went unanswered and whose claim the outbox cannot read; the sender holds
+// the attempt past unnamedForwardBound, so A's copy of the reply is a credit's row
+// (creditHeldAsARow), and the person's edit, read past the bound, leaves A out. The sender then
+// pins the attempt to A and the send lands, or pins it to C and the send lands: no mention of the
+// reply failed to reach A, so A's row settles with nothing sent, and A gets neither the outbox's
+// copy of the reply nor the edit.
+func TestACreditRowThatSettlesWithNothingSentSendsNoEditOfTheReply(t *testing.T) {
+	for _, pinned := range []string{"A", "C"} {
+		t.Run("the mention pinned to "+pinned+" and sent", func(t *testing.T) {
+			ctx := context.Background()
+			database := storetest.Open(t)
+			broker := events.NewBroker()
+			issue := seedThreadRuleIssue(t, database)
+			target := "role:legion-reviewer-t1"
+			root := seedThreadComment(t, database, "T-1", "", issue.b, nil)
+			reply := seedThreadComment(t, database, "T-1", "", issue.person, &root)
+			seedDelivery(t, database, reply, target, "", "pending")
+			agedUnnamedAttempts(t, database, reply, unnamedForwardBound+30*time.Second)
+			created := appendEvent(t, database, broker, model.Event{
+				IssueKey: new("T-1"), Type: "comment.created", Actor: issue.person,
+				Payload: model.CommentEventPayload{Comment: model.Comment{
+					ID: reply, IssueKey: new("T-1"), Author: issue.person, ReplyTo: &root,
+					Mentions: []model.Mention{{Target: target, Delivery: "steer"}},
+				}},
+			})
+			edited := appendEvent(t, database, broker, model.Event{
+				IssueKey: new("T-1"), Type: "comment.edited", Actor: issue.person,
+				Payload: model.CommentEventPayload{Comment: model.Comment{
+					ID: reply, IssueKey: new("T-1"), Author: issue.person, ReplyTo: &root, Body: "Edited.",
+					Mentions: []model.Mention{},
+				}},
+			})
+			publisher := &recordingPublisher{}
+			deps := Deps{
+				Store: database, Publisher: publisher, Broker: events.NewBroker(),
+				Registry:   newFakeRegistry(map[string]registryAnswer{issue.b.ID: {state: envoy.StateLive}}),
+				RoleClaims: unreadableRoleClaims{}, Sessions: heldRoles{},
+			}
+			o := holding(t, deps)
+			if _, err := scanBatch(ctx, deps, unfenced{}, o.instance); err != nil {
+				t.Fatalf("scan batch: %v", err)
+			}
+			session := issue.a.ID
+			if pinned == "C" {
+				session = issue.c.ID
+			}
+			if _, err := database.Pool.Exec(ctx, `
+				update comment_deliveries set session_id = $3, state = 'sent'
+				where comment_id = $1 and target = $2
+			`, reply, target, session); err != nil {
+				t.Fatalf("land the mention pinned to %s: %v", session, err)
+			}
+			settleLater(t, database, deps, o.instance)
+			if row := readHeldCopy(t, database, reply, contracts.LegacyAgentSubject(issue.a.ID)); !row.settled || row.published {
+				t.Errorf("A's credit row is settled %v and published %v, want it settled with nothing sent: no mention of the reply failed to reach A",
+					row.settled, row.published)
+			}
+			if got := copiesOf(publisher.all(), created, issue.a.ID); len(got) != 0 {
+				t.Errorf("A, which no failed mention of the reply names, got %d copies of the reply from the outbox, want none", len(got))
+			}
+			if got := copiesOf(publisher.all(), edited, issue.a.ID); len(got) != 0 {
+				t.Errorf("A, whose credit row settled with nothing sent, got %d copies of the person's edit, want none: the row sends the edit only where it sends the reply",
+					len(got))
+			}
+		})
 	}
 }

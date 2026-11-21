@@ -1080,23 +1080,25 @@ func readDestinations(ctx context.Context, deps Deps, event *batchEvent, look lo
 // comment is the new comment whose mention attempts a settle or a hold of one of its copies writes
 // through, and delivered the destinations the event reached before this read. mentions is what
 // the event's mentions did (a new comment's alone), and mentionPending whether a session's copy
-// was held back for a mention still being sent (leftTo), or waits in the list for one
-// (waitForCredits). waitingCredits are the copies of sessions only a document credits that wait
-// for a mention of the comment (creditWaits), which the list takes last (end), and heldCredits
-// the sessions only a document credits whose copies are held as credits' rows instead
-// (creditHeldAsARow), which are held last too (holdCreditRow). failed holds the settles and the
-// holds of held-back copies that failed, which end no list: each backs the event off once the
-// destinations the list does name are sent (err).
+// was held back for a mention still being sent (leftTo), or waits for one (waitForCredits).
+// waitingCredits are the copies of sessions only a document credits that wait in the list for a
+// mention of a new comment (creditWaits), which the list takes last (end), waitingEditCredits the
+// subjects of such sessions whose copies of a comment's edit wait outside the list and hold
+// nothing, which the list reads last too, and heldCredits the sessions only a document credits
+// whose copies are held as credits' rows instead (creditHeldAsARow), which are held last as well
+// (holdCreditRow). failed holds the settles and the holds of held-back copies that failed, which
+// end no list: each backs the event off once the destinations the list does name are sent (err).
 type destinations struct {
-	list           []destination
-	seen           map[string]struct{}
-	comment        mentionComment
-	delivered      map[string]struct{}
-	mentions       mentionDeliveries
-	mentionPending bool
-	waitingCredits []destination
-	heldCredits    []string
-	failed         []error
+	list               []destination
+	seen               map[string]struct{}
+	comment            mentionComment
+	delivered          map[string]struct{}
+	mentions           mentionDeliveries
+	mentionPending     bool
+	waitingCredits     []destination
+	waitingEditCredits []string
+	heldCredits        []string
+	failed             []error
 }
 
 func (d *destinations) add(subject, label, id string) {
@@ -1193,15 +1195,28 @@ func (d *destinations) addSessions(sessionIDs []string, label string) {
 
 // waitForCredits holds the copy bound for each session's own topic, a session only a document
 // credits whose copy a mention of the comment may yet decide (creditWaits), named by label and the
-// session: the copy is in the event's list marked waiting, so it makes no send this read, holds
-// its key against the owner's later events and is owed (destination.waiting, planChains,
-// owedKeys), and the event is read again, which decides the copy then (creditFilter). The list
-// takes these copies last (end), so a route that reaches such a session for a reason of its own -
-// a member of the thread, a follower of the ask - gives it the copy that route sends instead.
-func (d *destinations) waitForCredits(sessionIDs []string, label string) {
+// session: it makes no send this read, and the event is marked mentionPending, so it is read
+// again, which decides the copy then (creditFilter). The list takes these copies last (end), so a
+// route that reaches such a session for a reason of its own - a member of the thread, a follower
+// of the ask - gives it the copy that route sends instead, and nothing waits.
+//
+// A new comment's copy waits in the event's list, marked waiting: it holds its key against the
+// owner's later events and is owed (destination.waiting, planChains, owedKeys), since should the
+// mention fail it is the comment's one road to that session, and a later event let past it would
+// reach the session first. Where edit is set the copies are of a comment's edit, and each waits
+// outside the list and holds nothing, as a copy left to a mention does (destinations.leftTo): no
+// later event of the owner waits on it, a person's later comment among them, since what the rule
+// decides for an edit is whether the session gets it, not when it arrives
+// (mentionDeliveries.editCreditCopyOf).
+func (d *destinations) waitForCredits(sessionIDs []string, label string, edit bool) {
 	for _, sessionID := range sessionIDs {
+		subject := contracts.LegacyAgentSubject(sessionID)
+		if edit {
+			d.waitingEditCredits = append(d.waitingEditCredits, subject)
+			continue
+		}
 		d.waitingCredits = append(d.waitingCredits, destination{
-			subject: contracts.LegacyAgentSubject(sessionID),
+			subject: subject,
 			label:   label,
 			id:      sessionID,
 			waiting: true,
@@ -1226,11 +1241,12 @@ func (d *destinations) holdForCredits(sessionIDs []string) {
 // names no session yet, which is what marks the row as a credit's for the pass that decides it
 // (unpinnedRoleMentions.creditTarget, fallbackCopy.creditOf, decideFallbackCopy). It holds none
 // where this event reached that topic already, where the list reaches it, and where a row owns
-// it. The row is written beside the reading as leftTo writes the rows it holds, and marked a
-// credit's there (mentionDeliveries.creditRows), so that the edit of the comment read in the same
-// batch waits for it (mentionDeliveries.editCreditCopyOf). An insert that fails leaves the copy
-// out of the list and backs the event off, so it is read again, as a held-back copy's does
-// (destinations.leftTo).
+// it. The row is written beside the reading as leftTo writes the rows it holds, so that the edit
+// of the comment read in the same batch waits for it within unnamedForwardBound
+// (mentionDeliveries.unsettled, mentionDeliveries.editCreditCopyOf), and marked a credit's there
+// (mentionDeliveries.creditRows), so that the reading says of the row what the store does. An
+// insert that fails leaves the copy out of the list and backs the event off, so it is read again,
+// as a held-back copy's does (destinations.leftTo).
 func (d *destinations) holdCreditRow(sessionID string) {
 	subject := contracts.LegacyAgentSubject(sessionID)
 	if _, reached := d.delivered[subject]; reached {
@@ -1264,9 +1280,10 @@ func (d *destinations) err(cause error) error {
 // end is what eventDestinations answers once the list ends, with cause where a lookup or a route
 // ended it (err): the list, with the copies of credits that wait for a mention (waitingCredits)
 // added after every route that may reach those sessions, each once, none the event reached
-// already, and whether a copy of the event waits on a mention, which every such copy it adds is.
-// The credits' rows are held then too (heldCredits, holdCreditRow), after every route that may
-// reach those sessions.
+// already, and whether a copy of the event waits on a mention, which every such copy it adds is,
+// and so is every copy of an edit that waits outside the list (waitingEditCredits) for a session
+// neither the list nor the event reached already. The credits' rows are held then too
+// (heldCredits, holdCreditRow), after every route that may reach those sessions.
 func (d *destinations) end(cause error) ([]destination, bool, error) {
 	for _, dest := range d.waitingCredits {
 		if _, reached := d.delivered[dest.subject]; reached {
@@ -1275,6 +1292,13 @@ func (d *destinations) end(cause error) ([]destination, bool, error) {
 		before := len(d.list)
 		d.addDestination(dest)
 		if len(d.list) > before {
+			d.mentionPending = true
+		}
+	}
+	for _, subject := range d.waitingEditCredits {
+		_, reached := d.delivered[subject]
+		_, listed := d.seen[subject]
+		if !reached && !listed {
 			d.mentionPending = true
 		}
 	}
@@ -1288,10 +1312,10 @@ func (d *destinations) end(cause error) ([]destination, bool, error) {
 // topic (item.item.Topic), then - for an event that notifies and is not a targeted message - its
 // owner's route, its claimant route, its primary document's sessions and its author routes, then
 // its follower routes and the previous claimant's notice. mentionPending reports a session's copy
-// held back for a mention still being sent (destinations.leftTo), or one that waits in the list
-// for a mention (destination.waiting). The mention deliveries of a new
-// comment that names a mention at all (payloadHasMentions) are read before anything else, so a
-// lookup of them that fails
+// held back for a mention still being sent (destinations.leftTo), one that waits in the list for
+// a mention (destination.waiting), or a copy of an edit that waits outside it
+// (destinations.waitForCredits). The mention deliveries of a new comment that names a mention at
+// all (payloadHasMentions) are read before anything else, so a lookup of them that fails
 // leaves the event with no destination. Any other lookup that fails, or a route that does not
 // parse, ends the list there: the destinations before it are returned with the error, which backs
 // the event off once they are sent. So a recipient read the batch has no answer for
@@ -1517,7 +1541,7 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 		}
 	}
 	d.addSessions(targets, "publish primary document author route to")
-	d.waitForCredits(waiting, "publish primary document author route to")
+	d.waitForCredits(waiting, "publish primary document author route to", credits.edit)
 	d.holdForCredits(held)
 	return nil
 }
@@ -1572,10 +1596,11 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // the document itself. A credit whose copy a mention may yet decide - one an attempt that names
 // no session yet may be pinned to, and for an edit one whose mention of the comment, or the
 // comment's copy that follows it, is still to settle - is neither kept nor left out: its copy
-// waits in the list until that is decided (creditWaits, destinations.waitForCredits), and past
-// the bound of that wait, or for an attempt whose role the batch resolved to another session, or
-// to this one past the attempt's lease, a new comment's copy is held as a credit's row the
-// fallback pass decides instead (creditHeldAsARow, destinations.holdForCredits).
+// waits until that is decided, a new comment's in the list and an edit's outside it, holding
+// nothing (creditWaits, destinations.waitForCredits), and past the bound of that wait, or for an
+// attempt whose role the batch resolved to another session, or to this one past the attempt's
+// lease, a new comment's copy is held as a credit's row the fallback pass decides instead
+// (creditHeldAsARow, destinations.holdForCredits).
 func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destinations) error {
 	filter := newRecipientFilter(event)
 	// credits is whether this event leaves the credits of a document out, and which of them it
@@ -1700,7 +1725,7 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 	}
 
 	d.addSessions(targets, "publish author route to")
-	d.waitForCredits(waiting, "publish author route to")
+	d.waitForCredits(waiting, "publish author route to", credits.edit)
 	d.holdForCredits(held)
 	return nil
 }

@@ -518,9 +518,11 @@ func registryUnanswered(err error) bool {
 // attempt be pinned to that session and fail (creditHeldAsARow, mentionDeliveries.creditCopyOf).
 // The comment's edit follows the comment's copy: it reaches such a session where that session's
 // mention failed, and waits while that mention, or the comment's copy that follows it, is still
-// to be decided - within that same bound, but for a credit's row, which it waits out past the
-// bound too (mentionDeliveries.editCreditCopyOf). addPrimaryDocumentAuthors and addAuthorRoutes
-// both ask it.
+// to be decided, within that same bound and holding nothing of the owner's later events; past
+// the bound it reaches the session that got, or is owed, the comment's copy by the failed-mention
+// rule, and no other credit (mentionDeliveries.editCreditCopyOf), and a session whose copy of the
+// comment is a credit's row gets the edit from that row, sent right after the comment should the
+// row publish it (creditRowEdits). addPrimaryDocumentAuthors and addAuthorRoutes both ask it.
 type creditFilter struct {
 	leavesOut bool
 	// mentions is what the comment's mentions did, as the batch read them: the reading the
@@ -541,9 +543,10 @@ const (
 	// session's own topic does (destinations.addSession).
 	creditKept
 	// creditWaits: a mention of the comment that is still to settle, or still to name a session,
-	// decides whether that session gets the copy. The copy stays in the event's list marked
-	// waiting, makes no send this read, holds its key against the owner's later events, and the
-	// event is read again (destinations.waitForCredits, destination.waiting, planChains).
+	// decides whether that session gets the copy. The copy makes no send this read and the event
+	// is read again; a new comment's stays in the event's list marked waiting and holds its key
+	// against the owner's later events, and an edit's waits outside the list and holds nothing
+	// (destinations.waitForCredits, destination.waiting, planChains).
 	creditWaits
 	// creditHeldAsARow: an attempt of the comment that names no session yet still owes a send,
 	// past the bound the copy waits such an attempt out for, or with its role resolved to another
