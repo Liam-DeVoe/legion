@@ -121,8 +121,9 @@ type releasedName struct {
 	expires    time.Time
 	secretType string
 	// gitHubValue is the github.value of the GitHub profile the name is served as
-	// (policy.ValueInstallations or policy.ValueToken), "" for any other name: with the type,
-	// what says how the value takes apart into slots (airlockSplitOf).
+	// (githubname.ValueInstallations or githubname.ValueToken), "" for any other name: with the
+	// type, what says how the value takes apart into slots (airlockSplitOf), and what the value
+	// is to a give-back (GiveBack).
 	gitHubValue string
 	// leftOut is, for a github-app profile, each entry the cut of its permissions to what an
 	// installation holds left out, by account (secrets.Minted.LeftOut); nil for any other name
@@ -188,7 +189,8 @@ func gitHubValueOf(served policy.Secret) string {
 }
 
 // giveBack hands each value in read that a type's minter made back to that type's upstream
-// (Machine.GiveBacks), for a release that minted it and hands it to nobody: one that failed, or a
+// (Machine.GiveBacks), with the value form of the GitHub profile it was minted for
+// (gitHubValue), for a release that minted it and hands it to nobody: one that failed, or a
 // name the airlock holds back, whose session gets placeholders (heldBack). A stored value, and a
 // value of a type with no GiveBack, is left as it is. It runs in the background, detached from
 // ctx, and the release answers at once: nothing the release answers depends on it, and a
@@ -197,13 +199,13 @@ func gitHubValueOf(served policy.Secret) string {
 // revokes; one a stopping broker cuts short leaves its token to lapse, as before the give-back.
 func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
 	type minted struct {
-		giveBack    GiveBack
-		name, value string
+		giveBack          GiveBack
+		name, value, form string
 	}
 	var back []minted
 	for _, released := range read {
 		if giveBack := m.GiveBacks[released.secretType]; giveBack != nil && released.value != "" {
-			back = append(back, minted{giveBack, released.name, released.value})
+			back = append(back, minted{giveBack, released.name, released.value, released.gitHubValue})
 		}
 	}
 	if len(back) == 0 {
@@ -214,7 +216,7 @@ func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
 	go func() {
 		defer m.givingBack.Done()
 		for _, each := range back {
-			each.giveBack(detached, each.name, each.value)
+			each.giveBack(detached, each.name, each.value, each.form)
 		}
 	}()
 }

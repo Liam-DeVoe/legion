@@ -1,10 +1,10 @@
-package secrets_test
+package githubname_test
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 )
 
 // TestValidLoginHoldsWhatAGitHubLoginCanBe: up to 39 ASCII letters, digits, hyphens and
@@ -16,7 +16,7 @@ func TestValidLoginHoldsWhatAGitHubLoginCanBe(t *testing.T) {
 		"": false, strings.Repeat("a", 40): false, "-ada": false, "_ada": false, "ada ada": false,
 		"ada/proofs": false, "ada.": false, "\u212Aelvin": false,
 	} {
-		if got := secrets.ValidLogin(login); got != want {
+		if got := githubname.ValidLogin(login); got != want {
 			t.Errorf("ValidLogin(%q) = %t; want %t", login, got, want)
 		}
 	}
@@ -30,7 +30,7 @@ func TestValidRepositoryNameHoldsWhatGitHubCanHold(t *testing.T) {
 		"": false, ".": false, "..": false, strings.Repeat("r", 101): false, "ada/proofs": false,
 		"two words": false, "caf\u00e9": false,
 	} {
-		if got := secrets.ValidRepositoryName(name); got != want {
+		if got := githubname.ValidRepositoryName(name); got != want {
 			t.Errorf("ValidRepositoryName(%q) = %t; want %t", name, got, want)
 		}
 	}
@@ -40,7 +40,7 @@ func TestValidRepositoryNameHoldsWhatGitHubCanHold(t *testing.T) {
 // the empty one among them, at 0, below read.
 func TestLevelRankOrdersTheLevelsGitHubGives(t *testing.T) {
 	for level, want := range map[string]int{"read": 1, "write": 2, "admin": 3, "": 0, "Read": 0, "owner": 0} {
-		if got := secrets.LevelRank(level); got != want {
+		if got := githubname.LevelRank(level); got != want {
 			t.Errorf("LevelRank(%q) = %d; want %d", level, got, want)
 		}
 	}
@@ -52,7 +52,7 @@ func TestValidPermissionNameHoldsWhatAPermissionIsNamed(t *testing.T) {
 		"contents": true, "pull_requests": true, "organization_administration": true,
 		"": false, "Contents": false, "pull-requests": false, "issues2": false, "contents:read": false,
 	} {
-		if got := secrets.ValidPermissionName(name); got != want {
+		if got := githubname.ValidPermissionName(name); got != want {
 			t.Errorf("ValidPermissionName(%q) = %t; want %t", name, got, want)
 		}
 	}
@@ -61,9 +61,9 @@ func TestValidPermissionNameHoldsWhatAPermissionIsNamed(t *testing.T) {
 // TestWriteOnlyPermissionNamesWhatGitHubGrantsAtWriteAlone: workflows and profile, and no other.
 func TestWriteOnlyPermissionNamesWhatGitHubGrantsAtWriteAlone(t *testing.T) {
 	for permission, want := range map[string]bool{
-		"workflows": true, "profile": true, "contents": false, secrets.MetadataPermission: false, "": false,
+		"workflows": true, "profile": true, "contents": false, githubname.MetadataPermission: false, "": false,
 	} {
-		if got := secrets.WriteOnlyPermission(permission); got != want {
+		if got := githubname.WriteOnlyPermission(permission); got != want {
 			t.Errorf("WriteOnlyPermission(%q) = %t; want %t", permission, got, want)
 		}
 	}

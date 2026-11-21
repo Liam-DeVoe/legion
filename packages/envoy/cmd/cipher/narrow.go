@@ -17,8 +17,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
 // narrowingRules is each field of a narrowing (narrowingError's Field) as its refusal says it: the
@@ -27,7 +27,7 @@ import (
 // credential in the wrong place puts it (valueNotPrinted).
 var narrowingRules = map[string]string{
 	"owner":        "--github-owner names one GitHub login " + valueNotPrinted,
-	"repositories": fmt.Sprintf("--github-repo names at least one and at most %d of the owner's repositories, each by its name alone, in ASCII letters, digits, '.', '-' and '_' %s", secrets.MaxNarrowedRepositories, valueNotPrinted),
+	"repositories": fmt.Sprintf("--github-repo names at least one and at most %d of the owner's repositories, each by its name alone, in ASCII letters, digits, '.', '-' and '_' %s", githubname.MaxNarrowedRepositories, valueNotPrinted),
 }
 
 // githubNarrowing is the narrowing the flags ask for, nil when they ask for none, checked and in
@@ -76,7 +76,7 @@ func (e *narrowingError) Error() string {
 // parseGitHubNarrowing checks one release's narrowing of its GitHub App tokens as a caller wrote
 // it and answers it in its canonical form: owner one GitHub login (policy.ParseGitHubLogin, once
 // white space around it is trimmed), lowercased, and repositories names GitHub can hold, without
-// the owner, at most secrets.MaxNarrowedRepositories, sorted and each once. Repositories nil names
+// the owner, at most githubname.MaxNarrowedRepositories, sorted and each once. Repositories nil names
 // none, so the token reaches every repository of the installation; present but empty is refused,
 // since a caller that built it from a list that matched nothing would otherwise get that widest
 // token. It answers its refusal as a *narrowingError, typed rather than error, so githubNarrowing
@@ -91,8 +91,8 @@ func parseGitHubNarrowing(owner string, repositories []string, readOnly bool) (G
 	if repositories != nil && len(repositories) == 0 {
 		return GitHubNarrowing{}, &narrowingError{"repositories", "is empty: name at least one repository, or leave it out for every repository of the installation"}
 	}
-	if len(repositories) > secrets.MaxNarrowedRepositories {
-		return GitHubNarrowing{}, &narrowingError{"repositories", fmt.Sprintf("names %d repositories; the broker takes at most %d", len(repositories), secrets.MaxNarrowedRepositories)}
+	if len(repositories) > githubname.MaxNarrowedRepositories {
+		return GitHubNarrowing{}, &narrowingError{"repositories", fmt.Sprintf("names %d repositories; the broker takes at most %d", len(repositories), githubname.MaxNarrowedRepositories)}
 	}
 	for _, name := range repositories {
 		if !gitHubRepositoryName.MatchString(name) || name == "." || name == ".." {

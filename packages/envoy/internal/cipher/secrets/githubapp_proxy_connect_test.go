@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
@@ -103,7 +104,7 @@ func TestATokenRequestWhoseProxyRefusedItsTunnelIsSentAgain(t *testing.T) {
 					err, secrets.MintErrorClass(err), minted.Load())
 			}
 			if !check {
-				app.GiveBack(t.Context(), "APP_KEY", result.Value)
+				app.GiveBack(t.Context(), "APP_KEY", result.Value, githubname.ValueInstallations)
 			}
 		})
 	}

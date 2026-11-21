@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
@@ -203,12 +204,12 @@ var ErrGitHubOwnersComma = errors.New(`github-owners separates GitHub logins wit
 var ErrGitHubOwnersLogin = errors.New("github-owners names GitHub logins: up to 39 ASCII letters, digits, hyphens and underscores, starting with a letter or digit")
 
 // ParseGitHubLogin reads one GitHub account login, as written: up to 39 ASCII letters, digits,
-// hyphens and underscores, starting with a letter or digit (secrets.ValidLogin), and not the word
-// none (ErrGitHubOwnersLogin). It answers it lowercased, since GitHub compares logins without
+// hyphens and underscores, starting with a letter or digit (githubname.ValidLogin), and not the
+// word none (ErrGitHubOwnersLogin). It answers it lowercased, since GitHub compares logins without
 // regard to case. White space is no part of a login, so "ada ada" is refused rather than read as
 // one.
 func ParseGitHubLogin(raw string) (string, error) {
-	if !secrets.ValidLogin(raw) {
+	if !githubname.ValidLogin(raw) {
 		return "", fmt.Errorf("%w, not %q", ErrGitHubOwnersLogin, raw)
 	}
 	login := strings.ToLower(raw)

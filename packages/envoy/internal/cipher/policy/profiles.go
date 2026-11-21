@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/rulehost"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
 // Profiles is the deployment's profiles file, BROKER_PROFILES_FILE, as ParseProfiles read it: the
@@ -67,17 +67,9 @@ type GitHubBlock struct {
 	Repositories []string `json:"repositories,omitempty"`
 	// Permissions maps each GitHub App permission to its level: read, write or admin.
 	Permissions map[string]string `json:"permissions"`
-	// Value is ValueInstallations or ValueToken.
+	// Value is githubname.ValueInstallations, the default, or githubname.ValueToken.
 	Value string `json:"value"`
 }
-
-// The two forms a GitHub profile's value takes (GitHubBlock.Value), secrets' own: today's JSON of
-// one entry per account, with its installation_id, token and expires_at, which is the default, or
-// the bare token of the one account in effect.
-const (
-	ValueInstallations = secrets.ValueInstallations
-	ValueToken         = secrets.ValueToken
-)
 
 // GoogleBlock is a google-service-account profile's scope: the scopes its token carries, each the
 // part after https://www.googleapis.com/auth/ (ParseScopes), sorted.
@@ -124,12 +116,12 @@ const maxGuidanceRunes = 2000
 // a name a caller can ask for, held once; a source of that form; a tier of agent or human;
 // requesters of a person's or a service's shape, and never an empty list, which would serve the
 // profile to nobody; a maxGrant of at least a second; a github block of GitHub logins, repositories
-// of those accounts, at most secrets.MaxNarrowedRepositories of them and, where it names any, one
-// of each account at least, and permissions at levels GitHub gives, metadata at read among them; a
-// google block of scope names; never both; and a proxy block whose hosts are in the one grammar a
-// rules host is written in (rulehost.Refusal), which proxyrules.Validate, the Lean model's answer,
-// accepts, and whose guidance the judge reads whole. Each refusal names the profile by its index
-// and name and the field it refuses.
+// of those accounts, at most githubname.MaxNarrowedRepositories of them and, where it names any,
+// one of each account at least, and permissions at levels GitHub gives, metadata at read among
+// them; a google block of scope names; never both; and a proxy block whose hosts are in the one
+// grammar a rules host is written in (rulehost.Refusal), which proxyrules.Validate, the Lean
+// model's answer, accepts, and whose guidance the judge reads whole. Each refusal names the
+// profile by its index and name and the field it refuses.
 //
 // It reads no secret: whether a profile fits its source, and is no looser than it, is the policy
 // load's question. Nor does it read the deployment's services: CheckRequesters does, at the boot.
@@ -215,7 +207,7 @@ func (b *GitHubBlock) read() *GitHubBlock {
 	if b == nil {
 		return nil
 	}
-	read := &GitHubBlock{Permissions: maps.Clone(b.Permissions), Value: cmp.Or(b.Value, ValueInstallations)}
+	read := &GitHubBlock{Permissions: maps.Clone(b.Permissions), Value: cmp.Or(b.Value, githubname.ValueInstallations)}
 	for _, account := range b.Accounts {
 		read.Accounts = append(read.Accounts, loginOrAsWritten(account))
 	}
@@ -334,10 +326,10 @@ func (e profileEntry) checkRequesters(refuse func(field, why string) error) erro
 }
 
 // check holds a github block to its shape: accounts that are GitHub logins, each once whatever
-// its case; repositories, when present, at least one and at most secrets.MaxNarrowedRepositories,
-// each account/name of an account the block names, and at least one of each account it names; and
-// permissions, at least one, each a permission's name at a level GitHub gives it, and metadata at
-// read among them (secrets.MetadataPermission).
+// its case; repositories, when present, at least one and at most
+// githubname.MaxNarrowedRepositories, each account/name of an account the block names, and at
+// least one of each account it names; and permissions, at least one, each a permission's name at
+// a level GitHub gives it, and metadata at read among them (githubname.MetadataPermission).
 func (b *GitHubBlock) check(refuse func(field, why string) error) error {
 	if b == nil {
 		return nil
@@ -367,22 +359,22 @@ func (b *GitHubBlock) check(refuse func(field, why string) error) error {
 		level := b.Permissions[permission]
 		field := "github.permissions." + permission
 		switch {
-		case !secrets.ValidPermissionName(permission):
+		case !githubname.ValidPermissionName(permission):
 			return refuse("github.permissions", fmt.Sprintf("names %q, which is no GitHub App permission's name: lowercase letters and underscores", permission))
-		case secrets.LevelRank(level) == 0:
+		case githubname.LevelRank(level) == 0:
 			return refuse(field, fmt.Sprintf("is %q, not a level GitHub gives: read, write or admin", level))
-		case secrets.WriteOnlyPermission(permission) && level != "write":
+		case githubname.WriteOnlyPermission(permission) && level != "write":
 			return refuse(field, fmt.Sprintf("is %q, but GitHub grants %s at write alone", level, permission))
 		}
 	}
-	switch level, named := b.Permissions[secrets.MetadataPermission]; {
+	switch level, named := b.Permissions[githubname.MetadataPermission]; {
 	case !named:
 		return refuse("github.permissions", `names no metadata: GitHub grants "metadata": "read" with every installation token, and the broker refuses a token holding a permission its profile does not name, so a profile that leaves it out never mints; add "metadata": "read"`)
 	case level != "read":
-		return refuse("github.permissions."+secrets.MetadataPermission, fmt.Sprintf("is %q, but metadata is read alone: every endpoint it covers needs read, and GitHub grants it at read with every installation token", level))
+		return refuse("github.permissions."+githubname.MetadataPermission, fmt.Sprintf("is %q, but metadata is read alone: every endpoint it covers needs read, and GitHub grants it at read with every installation token", level))
 	}
-	if b.Value != "" && b.Value != ValueInstallations && b.Value != ValueToken {
-		return refuse("github.value", fmt.Sprintf("%q is neither %s nor %s", b.Value, ValueInstallations, ValueToken))
+	if b.Value != "" && b.Value != githubname.ValueInstallations && b.Value != githubname.ValueToken {
+		return refuse("github.value", fmt.Sprintf("%q is neither %s nor %s", b.Value, githubname.ValueInstallations, githubname.ValueToken))
 	}
 	return nil
 }
@@ -399,8 +391,8 @@ func checkRepositories(repositories, accounts []string, refuse func(field, why s
 		return nil
 	case len(repositories) == 0:
 		return refuse("github.repositories", "is empty; leave it out for every repository the installation reaches")
-	case len(repositories) > secrets.MaxNarrowedRepositories:
-		return refuse("github.repositories", fmt.Sprintf("names %d repositories; a token takes at most %d", len(repositories), secrets.MaxNarrowedRepositories))
+	case len(repositories) > githubname.MaxNarrowedRepositories:
+		return refuse("github.repositories", fmt.Sprintf("names %d repositories; a token takes at most %d", len(repositories), githubname.MaxNarrowedRepositories))
 	}
 	named := make([]string, 0, len(repositories))
 	for j, repository := range repositories {
@@ -416,7 +408,7 @@ func checkRepositories(repositories, accounts []string, refuse func(field, why s
 		if !slices.Contains(accounts, login) {
 			return refuse(field, fmt.Sprintf("%q is a repository of %s, which github.accounts does not name", repository, login))
 		}
-		if !secrets.ValidRepositoryName(name) {
+		if !githubname.ValidRepositoryName(name) {
 			return refuse(field, fmt.Sprintf("%q names a repository GitHub cannot hold: a name is ASCII letters, digits, '.', '-' and '_', and neither . nor ..", repository))
 		}
 		named = append(named, login)

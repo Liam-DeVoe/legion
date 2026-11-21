@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -114,7 +114,7 @@ func newProfileGitHub(t *testing.T) *profileGitHub {
 // at the level asked or above.
 func heldAll(held, asked map[string]string) bool {
 	for permission, level := range asked {
-		if secrets.LevelRank(held[permission]) < secrets.LevelRank(level) {
+		if githubname.LevelRank(held[permission]) < githubname.LevelRank(level) {
 			return false
 		}
 	}
@@ -204,7 +204,7 @@ func asGitHubAnswers(installation string, body []byte) (int, any) {
 // profile names, on accounts, every repository the installation reaches, released as today's
 // JSON of installations.
 func readScope(accounts ...string) *secrets.GitHubScope {
-	return &secrets.GitHubScope{Accounts: accounts, Permissions: map[string]string{"contents": "read", "metadata": "read"}, Value: policy.ValueInstallations}
+	return &secrets.GitHubScope{Accounts: accounts, Permissions: map[string]string{"contents": "read", "metadata": "read"}, Value: githubname.ValueInstallations}
 }
 
 // TestAProfileMintAsksForItsPermissionsCutToTheInstallation: a profile's token is asked for with
@@ -236,7 +236,7 @@ func TestAProfileMintAsksForItsPermissionsCutToTheInstallation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			github.take()
 			minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: &secrets.GitHubScope{
-				Accounts: []string{"ada"}, Repositories: tc.repositories, Permissions: profile, Value: policy.ValueInstallations,
+				Accounts: []string{"ada"}, Repositories: tc.repositories, Permissions: profile, Value: githubname.ValueInstallations,
 			}})
 			if err != nil {
 				t.Fatalf("Mint: %v", err)
@@ -264,7 +264,7 @@ func TestAProfileMintAsksForItsPermissionsCutToTheInstallation(t *testing.T) {
 
 	github.take()
 	whole, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: &secrets.GitHubScope{
-		Accounts: []string{"acme-org"}, Permissions: map[string]string{"contents": "write", "issues": "read"}, Value: policy.ValueInstallations,
+		Accounts: []string{"acme-org"}, Permissions: map[string]string{"contents": "write", "issues": "read"}, Value: githubname.ValueInstallations,
 	}})
 	if err != nil || whole.LeftOut != nil {
 		t.Fatalf("Mint of a profile the installation holds whole = LeftOut %v, %v; want nothing left out", whole.LeftOut, err)
@@ -376,7 +376,7 @@ func TestATokenPastTheRequestIsRefusedAndRevokedForEveryProfile(t *testing.T) {
 			t.Run(profile.name, func(t *testing.T) {
 				seen := len(service.Requests())
 				minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: &secrets.GitHubScope{
-					Accounts: []string{"ada"}, Repositories: []string{"ada/lean"}, Permissions: profile.permissions, Value: policy.ValueInstallations,
+					Accounts: []string{"ada"}, Repositories: []string{"ada/lean"}, Permissions: profile.permissions, Value: githubname.ValueInstallations,
 				}})
 				if minted.Value != "" || secrets.MintErrorClass(err) != "upstream" {
 					t.Fatalf("Mint of a widened token = %q, %v (class %s), want nothing released and class upstream", minted.Value, err, secrets.MintErrorClass(err))
@@ -404,7 +404,7 @@ func TestATokenPastTheRequestIsRefusedAndRevokedForEveryProfile(t *testing.T) {
 		}
 	}
 	scope := func(permissions map[string]string, repositories ...string) *secrets.GitHubScope {
-		return &secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: repositories, Permissions: permissions, Value: policy.ValueInstallations}
+		return &secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: repositories, Permissions: permissions, Value: githubname.ValueInstallations}
 	}
 	// Every value a wider answer below holds that the request did not, so that no error quotes one.
 	gitHubValues := []string{"administration", "secrets", `"all"`, "SECRETS", "admin"}
@@ -478,7 +478,7 @@ func TestATokenPastTheRequestIsRefusedAndRevokedForEveryProfile(t *testing.T) {
 	}
 }
 
-// TestAValueTokenProfileReleasesTheBareToken: a profile whose value is policy.ValueToken releases
+// TestAValueTokenProfileReleasesTheBareToken: a profile whose value is githubname.ValueToken releases
 // the one account's token itself, not today's JSON of installations, with that token's expiry.
 func TestAValueTokenProfileReleasesTheBareToken(t *testing.T) {
 	key, err := testAppKey()
@@ -488,7 +488,7 @@ func TestAValueTokenProfileReleasesTheBareToken(t *testing.T) {
 	github := newProfileGitHub(t)
 	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
 	minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHub: &secrets.GitHubScope{
-		Accounts: []string{"ada"}, Permissions: map[string]string{"contents": "read"}, Value: policy.ValueToken,
+		Accounts: []string{"ada"}, Permissions: map[string]string{"contents": "read"}, Value: githubname.ValueToken,
 	}})
 	if err != nil || minted.Value != "token-2" {
 		t.Fatalf("Mint of a value-token profile = %q, %v; want ada's token alone", minted.Value, err)
@@ -498,10 +498,13 @@ func TestAValueTokenProfileReleasesTheBareToken(t *testing.T) {
 	}
 }
 
-// TestAValueTokenProfileWithTwoAccountsIsRefused: the bare token is one account's, so a
-// value-token scope of more than one account is refused as the caller's scope
-// (ErrMintNarrowingRefused), naming the accounts, before GitHub is asked anything.
-func TestAValueTokenProfileWithTwoAccountsIsRefused(t *testing.T) {
+// TestAValueTokenScopeOfTwoInstalledAccountsGetsNoToken: the bare token is one account's, and the
+// broker refuses a value-token scope of more than one account before any release reaches the
+// minter (requests' gitHubScope, the one place that rule is written). A scope that reached it
+// anyway still gets no token: the App's installations on its two accounts are more than the one
+// a bare token is, so it is refused from the installations listing (ErrMintSeveralInstallations,
+// inside ErrMintNarrowingRefused), naming both, and GitHub is asked for no token.
+func TestAValueTokenScopeOfTwoInstalledAccountsGetsNoToken(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -509,13 +512,13 @@ func TestAValueTokenProfileWithTwoAccountsIsRefused(t *testing.T) {
 	github := newProfileGitHub(t)
 	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
 	minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHub: &secrets.GitHubScope{
-		Accounts: []string{"acme-org", "ada"}, Permissions: map[string]string{"contents": "read"}, Value: policy.ValueToken,
+		Accounts: []string{"acme-org", "ada"}, Permissions: map[string]string{"contents": "read"}, Value: githubname.ValueToken,
 	}})
-	if minted.Value != "" || !errors.Is(err, secrets.ErrMintNarrowingRefused) || !strings.Contains(err.Error(), "acme-org") || !strings.Contains(err.Error(), "ada") {
-		t.Fatalf("Mint of a value-token profile of two accounts = %q, %v; want ErrMintNarrowingRefused naming both accounts", minted.Value, err)
+	if minted.Value != "" || !errors.Is(err, secrets.ErrMintSeveralInstallations) || !strings.Contains(err.Error(), "Acme-Org") || !strings.Contains(err.Error(), "ada") {
+		t.Fatalf("Mint of a value-token scope of two installed accounts = %q, %v; want ErrMintSeveralInstallations naming both installations", minted.Value, err)
 	}
-	if requests, _ := github.take(); requests != 0 {
-		t.Fatalf("GitHub received %d requests, want none", requests)
+	if _, tokens := github.take(); len(tokens) != 0 {
+		t.Fatalf("GitHub received %d token requests, want none", len(tokens))
 	}
 }
 
@@ -552,7 +555,7 @@ func TestAValueTokenProfileOfAnAccountWithTwoInstallationsIsRefusedBeforeAnyToke
 	}
 
 	bare := readScope("ada")
-	bare.Value = policy.ValueToken
+	bare.Value = githubname.ValueToken
 	for _, check := range []bool{false, true} {
 		minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: bare, Check: check})
 		if minted.Value != "" || !errors.Is(err, secrets.ErrMintSeveralInstallations) || !errors.Is(err, secrets.ErrMintNarrowingRefused) || !strings.Contains(err.Error(), "ada") || !strings.Contains(err.Error(), "more than one installation") {
@@ -608,7 +611,7 @@ func TestAProfileOfRepositoriesOfTwoAccountsMintsEachAccountWithItsOwn(t *testin
 	value := githubAppValue(t, "123456", key)
 
 	minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: &secrets.GitHubScope{
-		Accounts: []string{"acme-org", "ada"}, Repositories: []string{"acme-org/proofs", "ada/lean"}, Permissions: map[string]string{"contents": "read"}, Value: policy.ValueInstallations,
+		Accounts: []string{"acme-org", "ada"}, Repositories: []string{"acme-org/proofs", "ada/lean"}, Permissions: map[string]string{"contents": "read"}, Value: githubname.ValueInstallations,
 	}})
 	if err != nil {
 		t.Fatalf("Mint of repositories of two accounts: %v", err)
@@ -630,7 +633,7 @@ func TestAProfileOfRepositoriesOfTwoAccountsMintsEachAccountWithItsOwn(t *testin
 	}
 
 	refused, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: &secrets.GitHubScope{
-		Accounts: []string{"acme-org", "ada"}, Repositories: []string{"ada/lean"}, Permissions: map[string]string{"contents": "read"}, Value: policy.ValueInstallations,
+		Accounts: []string{"acme-org", "ada"}, Repositories: []string{"ada/lean"}, Permissions: map[string]string{"contents": "read"}, Value: githubname.ValueInstallations,
 	}})
 	if refused.Value != "" || !errors.Is(err, secrets.ErrMintNarrowingRefused) || !strings.Contains(err.Error(), "acme-org") {
 		t.Fatalf("Mint of an account holding none of the scope's repositories = %q, %v; want ErrMintNarrowingRefused naming acme-org", refused.Value, err)
@@ -689,7 +692,7 @@ func TestGitHubsRefusalOfAProfilesTokenNamesTheLikelyCause(t *testing.T) {
 		scope    *secrets.GitHubScope
 		mentions []string
 	}{
-		{"repositories", &secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: []string{"ada/proofs", "ada/widgets"}, Permissions: map[string]string{"contents": "read"}, Value: policy.ValueInstallations},
+		{"repositories", &secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: []string{"ada/proofs", "ada/widgets"}, Permissions: map[string]string{"contents": "read"}, Value: githubname.ValueInstallations},
 			[]string{"422", "ada", "proofs, widgets"}},
 		{"every repository", readScope("ada"), []string{"422", "ada", "contents: read"}},
 	} {
@@ -727,7 +730,7 @@ func TestGitHubAppMintKeepsARateLimited422Upstream(t *testing.T) {
 	retry, clock, _ := testRetry(atTheTop)
 	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client(), Retry: retry}
 	value := githubAppValue(t, "123456", key)
-	scope := &secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: []string{"ada/proofs"}, Permissions: map[string]string{"contents": "read"}, Value: policy.ValueInstallations}
+	scope := &secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: []string{"ada/proofs"}, Permissions: map[string]string{"contents": "read"}, Value: githubname.ValueInstallations}
 
 	for _, tc := range []struct {
 		name    string
@@ -838,7 +841,7 @@ func TestGitHubAppMintReadsARetriedRevokesRefusalAsRevoked(t *testing.T) {
 // TestGitHubAppMintReadsTheAnswerToAScopeAtTheMaximum: GitHub's answer to a token naming
 // repositories carries a full repository object for each repository, about 5 KB, and GitHub has
 // minted the token by the time it answers, so an answer Mint could not read whole would leave a
-// token neither released nor revoked. At secrets.MaxNarrowedRepositories, with each object eight
+// token neither released nor revoked. At githubname.MaxNarrowedRepositories, with each object eight
 // times GitHub's size (an answer over 4 MiB, past the 1 MiB other calls read to), Mint reads it,
 // checks it and releases the token.
 func TestGitHubAppMintReadsTheAnswerToAScopeAtTheMaximum(t *testing.T) {
@@ -856,13 +859,13 @@ func TestGitHubAppMintReadsTheAnswerToAScopeAtTheMaximum(t *testing.T) {
 		return status, answer
 	})
 	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client()}
-	names := make([]string, secrets.MaxNarrowedRepositories)
+	names := make([]string, githubname.MaxNarrowedRepositories)
 	for i := range names {
 		names[i] = fmt.Sprintf("ada/repo-%03d", i)
 	}
 
 	release, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHub: &secrets.GitHubScope{
-		Accounts: []string{"ada"}, Repositories: names, Permissions: map[string]string{"contents": "read"}, Value: policy.ValueInstallations,
+		Accounts: []string{"ada"}, Repositories: names, Permissions: map[string]string{"contents": "read"}, Value: githubname.ValueInstallations,
 	}})
 	if err != nil || !strings.Contains(release.Value, "token-2") {
 		t.Fatalf("Mint naming %d repositories = %q, %v; want ada's token", len(names), release.Value, err)

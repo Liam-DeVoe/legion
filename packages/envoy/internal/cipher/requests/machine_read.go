@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -247,7 +248,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 		// compares on every release, either one ends a grant decided under the other's entry; such
 		// a grant is simply asked for again.
 		if held := set.Secrets[g.name].ProfileDigest; held != g.profileDigest {
-			return grantRelease{}, m.endGrant(ctx, grantID, fmt.Errorf("%w: %s's profile changed since this grant was decided", ErrGrantNotLive, g.name))
+			return grantRelease{}, m.endGrant(ctx, grantID, profileChanged(g.name))
 		}
 	}
 	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set}, nil
@@ -407,6 +408,13 @@ func sourceMoved(name string) error {
 	return fmt.Errorf("%w: %w: %s is now served from another source than this grant's", ErrGrantNotLive, errSourceMoved, name)
 }
 
+// profileChanged is the refusal of a granted name whose profile is not the one its request
+// recorded (requestedSecret.profileDigest against policy.Secret.ProfileDigest), which ends the
+// grant for good: at its release (checkRelease) and at Create's reuse of it (reuseLiveGrant).
+func profileChanged(name string) error {
+	return fmt.Errorf("%w: %s's profile changed since this grant was decided", ErrGrantNotLive, name)
+}
+
 // requesterNotListed is the refusal of a granted name whose requesters tag no longer names the
 // session's person or its pod's service, which ends the grant for good (errRequesterNotListed).
 func requesterNotListed(name string) error {
@@ -428,10 +436,11 @@ const GrantEndedActor = "broker:release-recheck"
 // row naming GrantEndedActor and why (reason's text), then answers reason, an ErrGrantNotLive. A
 // release ends a grant this way when what it was granted cannot come back: its frozen source is
 // not the one served now (a type change), its lifetime is longer than the secret's max-grant
-// now, or the name's profile is not the one the request recorded. A secret the policy
-// merely stops serving (no value, a malformed tag) pauses its grants instead, which release
-// again once it is served. A grant another writer revoked first is left as it is, with no second
-// audit row.
+// now, or the name's profile is not the one the request recorded; Create's reuse of a live grant
+// ends one for that last reason too, rather than hand back a grant whose release would end it
+// (reuseLiveGrant). A secret the policy merely stops serving (no value, a malformed tag) pauses
+// its grants instead, which release again once it is served. A grant another writer revoked
+// first is left as it is, with no second audit row.
 func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) error {
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -569,16 +578,24 @@ func mintRequest(name, secretType string, served policy.Secret, value string, sc
 // a name that is no GitHub profile. Its repositories are account/name entries, as the profiles
 // file writes them (secrets.GitHubScope), so the minter sends each account its own.
 //
-// With no target it is the profile's own accounts, repositories, permissions and value form. A
-// profile that names repositories mints for the accounts they belong to, so an account the
-// profile lists but names no repository of reaches none and is not minted for.
+// With no target it is the profile's own accounts, repositories, permissions and value form.
+// policy.ParseProfiles refuses a profile that lists an account none of its repositories names,
+// so each account in effect has a repository of its own; were one built some other way, the
+// minter refuses its scope rather than reach the account whole (secrets.GitHubScope's refusal).
+// A value-token profile, whose release is one account's bare token, is refused with no target
+// while it names more than one account (ErrTargetRefused, telling the caller to name one with
+// --target): this is the one place that rule is written, for Create (checkTarget) and every
+// release alike, so the minter is never asked for such a token.
 //
 // A target narrows the profile and never widens it: its one account, which the profile must
 // name, with the target's repositories, each one the profile names where it names any, or, for an
-// account target, the profile's repositories of that account. A target outside the profile, an
-// account the profile names no repository of among them, and a target on a name with no github
-// block, are refused (ErrTargetRefused), naming the profile's accounts and repositories: Create
-// answers that refusal before anybody is asked (checkTarget), and a release mints nothing for it.
+// account target, the profile's repositories of that account. A target's repository matches the
+// profile's without regard to case, as GitHub matches repository names (secrets' heldBy), and the
+// scope names it as the profiles file writes it, so the minter is asked for the profile's own
+// words; for a profile that names no repository it names it as the target does. A target outside
+// the profile and a target on a name with no github block are refused (ErrTargetRefused), naming
+// the profile's accounts and repositories: Create answers that refusal before anybody is asked
+// (checkTarget), and a release mints nothing for it.
 func gitHubScope(name string, profile *policy.Profile, account string, repositories []string) (*secrets.GitHubScope, error) {
 	if profile == nil || profile.GitHub == nil {
 		if account != "" {
@@ -589,17 +606,9 @@ func gitHubScope(name string, profile *policy.Profile, account string, repositor
 	block := profile.GitHub
 	scope := &secrets.GitHubScope{Accounts: block.Accounts, Permissions: block.Permissions, Value: block.Value}
 	if account == "" {
-		if block.Repositories == nil {
-			return scope, nil
+		if block.Value == githubname.ValueToken && len(block.Accounts) > 1 {
+			return nil, fmt.Errorf("%w: %s releases one account's bare token, and the profile names %s: name one with --target ACCOUNT[/REPOSITORY]", ErrTargetRefused, name, profileWords(block))
 		}
-		scope.Accounts = nil
-		for _, repository := range block.Repositories {
-			owner, _, _ := strings.Cut(repository, "/")
-			if !slices.Contains(scope.Accounts, owner) {
-				scope.Accounts = append(scope.Accounts, owner)
-			}
-		}
-		slices.Sort(scope.Accounts)
 		scope.Repositories = block.Repositories
 		return scope, nil
 	}
@@ -611,23 +620,37 @@ func gitHubScope(name string, profile *policy.Profile, account string, repositor
 			reached = append(reached, repository)
 		}
 	}
-	// The target's repositories as account/name entries: record.AuthorizationDetail.Target has
-	// sorted the names and they share one account, so the entries are sorted too.
-	targeted := make([]string, len(repositories))
-	for i, repository := range repositories {
-		targeted[i] = account + "/" + repository
+	outside := func() error {
+		return fmt.Errorf("%w: %s: the target %s is outside the profile, which names %s", ErrTargetRefused, name, targetWords(account, repositories), profileWords(block))
 	}
-	outside := !slices.Contains(block.Accounts, account) ||
-		block.Repositories != nil && len(reached) == 0 ||
-		block.Repositories != nil && slices.ContainsFunc(targeted, func(r string) bool { return !slices.Contains(reached, r) })
-	if outside {
-		return nil, fmt.Errorf("%w: %s: the target %s is outside the profile, which names %s", ErrTargetRefused, name, targetWords(account, repositories), profileWords(block))
+	// An account the profile names no repository of is refused too. ParseProfiles refuses such a
+	// profile, so this guards only one built some other way, and it must: an empty reached is the
+	// nil Repositories of a scope of every repository, so without it such a target would widen.
+	if !slices.Contains(block.Accounts, account) || block.Repositories != nil && len(reached) == 0 {
+		return nil, outside()
 	}
 	scope.Accounts = []string{account}
 	scope.Repositories = reached
-	if len(repositories) > 0 {
-		scope.Repositories = targeted
+	if len(repositories) == 0 {
+		return scope, nil
 	}
+	// The target's repositories as account/name entries, each the profile's own entry for it
+	// where the profile names repositories. Two names of the target that differ only in case give
+	// the profile's one entry, so the entries are sorted again and each kept once.
+	scope.Repositories = make([]string, 0, len(repositories))
+	for _, repository := range repositories {
+		entry := account + "/" + repository
+		if block.Repositories != nil {
+			at := slices.IndexFunc(reached, func(r string) bool { return strings.EqualFold(r, entry) })
+			if at < 0 {
+				return nil, outside()
+			}
+			entry = reached[at]
+		}
+		scope.Repositories = append(scope.Repositories, entry)
+	}
+	slices.Sort(scope.Repositories)
+	scope.Repositories = slices.Compact(scope.Repositories)
 	return scope, nil
 }
 
@@ -1264,6 +1287,12 @@ func writtenBeforeMigration13(alias string) string {
 // again when the entry comes back. The exception is a grant whose secret's requesters tag names
 // the person: the secret no longer lists the requester, so the grant is ended for good, as the
 // paragraph above says (errRequesterNotListed).
+// A grant of which a granted name's profile is not the one its request recorded is ended for
+// good here too, whatever the policy's version, as its release ends it, in the release's order:
+// after that name's re-check, so a name the policy merely stops serving still only pauses the
+// grant (checkRelease, profileChanged). It was decided under the old entry, and handing it back
+// would answer Create with a grant whose first release fails. Create goes on to ask for the names
+// afresh under the entry served now, and putting the old entry back does not revive the grant.
 // No live grant holds a withheld name, or a profile of a withheld source, nobody approved: the
 // withhold ended each one (withhold).
 // The lookup reads the requests row's own enrollment_id, which an adoption rewrites, so a session
@@ -1293,12 +1322,15 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 		if err := m.Store.Pool.QueryRow(ctx, `select rules_version, coalesce(decided_by, '') from requests where id=$1`, match.requestID).Scan(&rulesVersion, &decidedBy); err != nil {
 			return Request{}, false, err
 		}
-		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr) {
-			requester, err := m.requester(ctx, m.Store.Pool, enr)
-			if err != nil {
+		recheck := rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr)
+		var requester policy.Requester
+		if recheck {
+			if requester, err = m.requester(ctx, m.Store.Pool, enr); err != nil {
 				return Request{}, false, err
 			}
-			for _, g := range granted {
+		}
+		for _, g := range granted {
+			if recheck {
 				err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
 				switch {
 				case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret):
@@ -1315,6 +1347,15 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 				case err != nil:
 					return Request{}, false, err
 				}
+			}
+			// The entry this name was granted under is not the one served now, which every
+			// release of the grant would end it for (checkRelease): end it here, as that
+			// release would, and answer no reusable grant.
+			if set.Secrets[g.name].ProfileDigest != g.profileDigest {
+				if ended := m.endGrant(ctx, match.grantID, profileChanged(g.name)); !errors.Is(ended, ErrGrantNotLive) {
+					return Request{}, false, ended
+				}
+				return Request{}, false, nil
 			}
 		}
 		r, err := m.Get(ctx, match.requestID)

@@ -40,6 +40,38 @@ func refuseGitHubApp(w http.ResponseWriter, field json.RawMessage) bool {
 	return true
 }
 
+// writeProfileRefusal answers the refusals of a GitHub profile that POST /v1/requests and the
+// release route share, and reports true, so neither route can answer the same refusal
+// differently. Each route asks it before its own arms: neither class is ever wrapped in an
+// error another arm answers.
+//
+// 400 TARGET_REFUSED is a target the profile cannot serve (requests.ErrTargetRefused): outside
+// the profile, on a name with no github block, or missing on a value-token profile of several
+// accounts. Its message names the profile's accounts and repositories, so the caller names a
+// target inside them.
+//
+// 422 PROFILE_MINT_REFUSED is a scope the minter refused (secrets.ErrMintNarrowingRefused): its
+// permissions cut to what an installation holds leave none but metadata, a bare token of more
+// than one installation, or GitHub refused a repository it names; the message says which, and the
+// profiles file or the caller's target fixes it. So is an App with no installation on an account
+// the scope names (secrets.ErrMintNoInstallation) that Create's check mint found before anybody
+// was asked; a release wraps that same refusal in requests.ErrMintFailed and answers it 502
+// MINT_FAILED, as it answers every failed mint, so it is not answered here.
+//
+// Either way Create wrote nothing and asked nobody, and a release released nothing.
+func writeProfileRefusal(w http.ResponseWriter, err error) bool {
+	switch {
+	case errors.Is(err, requests.ErrTargetRefused):
+		writeError(w, http.StatusBadRequest, "TARGET_REFUSED", err.Error())
+	case errors.Is(err, secrets.ErrMintNarrowingRefused),
+		errors.Is(err, secrets.ErrMintNoInstallation) && !errors.Is(err, requests.ErrMintFailed):
+		writeError(w, http.StatusUnprocessableEntity, "PROFILE_MINT_REFUSED", err.Error())
+	default:
+		return false
+	}
+	return true
+}
+
 // createRequestBody is POST /v1/requests's exact shape: a signed request object plus one optional,
 // unsigned field, session_id (wake-only). The v8 "secrets"/"reason"/"issue" top-level fields are
 // gone — they now live inside the signed request object itself.
@@ -113,6 +145,9 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		return
 	}
 	req, err := s.deps.Machine.Create(r.Context(), enrollmentID, body.Request, derefOr(body.SessionID, ""))
+	if writeProfileRefusal(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, record.ErrRequestInvalid):
 		writeError(w, http.StatusBadRequest, "REQUEST_INVALID", err.Error())
@@ -126,13 +161,6 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		return
 	case errors.Is(err, requests.ErrRequestPending):
 		writeError(w, http.StatusConflict, "REQUEST_PENDING", err.Error())
-		return
-	case errors.Is(err, requests.ErrTargetRefused):
-		// The target the request's signed locations name is one its profile cannot serve: outside
-		// the profile, on a name with no github block, or missing on a value-token profile of
-		// several accounts. The message names the profile's accounts and repositories, so the
-		// caller names a target inside them; nobody was asked and nothing was written.
-		writeError(w, http.StatusBadRequest, "TARGET_REFUSED", err.Error())
 		return
 	case errors.Is(err, requests.ErrSessionIDInvalid):
 		writeError(w, http.StatusBadRequest, "SESSION_ID_INPUT", err.Error())
@@ -157,15 +185,6 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		// A secret `agent-secrets secret create` made and has not yet filled: not final, unlike
 		// UNKNOWN_SECRET, so the caller may ask again once the owner stores the value.
 		writeError(w, http.StatusBadRequest, "PENDING_VALUE", err.Error())
-		return
-	case errors.Is(err, secrets.ErrMintNarrowingRefused) || errors.Is(err, secrets.ErrMintNoInstallation):
-		// Create's check mint refused a GitHub profile the request names before anybody was asked
-		// to approve it: its permissions cut to what the installation holds leave none but
-		// metadata, GitHub refused a repository it names, or the App has no installation on an
-		// account in effect. The release route answers the first two alike and not the last: it
-		// wraps that refusal in requests.ErrMintFailed and answers it 502 MINT_FAILED, as it
-		// answers every refused mint. So this arm is the request route's own.
-		writeError(w, http.StatusUnprocessableEntity, "PROFILE_MINT_REFUSED", err.Error())
 		return
 	case errors.Is(err, pgx.ErrNoRows):
 		// The proof was verified moments ago against a live enrollment, but it was revoked (or
@@ -476,6 +495,9 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 		return
 	}
 	release, err := s.deps.Machine.Values(r.Context(), id, enrollmentID, requests.ReleaseCall{Command: body.Command, Reason: body.Reason})
+	if writeProfileRefusal(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, requests.ErrNotYours):
 		writeError(w, http.StatusForbidden, "NOT_YOURS", err.Error())
@@ -489,26 +511,12 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	case errors.Is(err, requests.ErrSecretNotInStore):
 		writeError(w, http.StatusNotFound, "SECRET_NOT_IN_STORE", err.Error())
 		return
-	case errors.Is(err, requests.ErrTargetRefused):
-		// The target the grant's request recorded is outside the live profile, which an approval
-		// a broker bound to an entry edited since the request leaves (Create and an approval
-		// refuse it now). The message names the profile's accounts and repositories, and nothing
-		// was minted or released.
-		writeError(w, http.StatusBadRequest, "TARGET_REFUSED", err.Error())
-		return
 	case errors.Is(err, requests.ErrMintFailed):
 		// The type's upstream (GitHub or Google) refused or failed a mint the profile's scope is
 		// not at fault for: an App with no installation, a Google login that needs a new sign-in,
 		// an upstream that could not be asked. Its message says why and never holds the stored
 		// value.
 		writeError(w, http.StatusBadGateway, "MINT_FAILED", err.Error())
-		return
-	case errors.Is(err, secrets.ErrMintNarrowingRefused):
-		// The release's mint refused a GitHub profile's scope: its permissions cut to what the
-		// installation holds leave none but metadata, or GitHub refused a repository it names.
-		// The message says which; the profiles file or the caller's target fixes it, and nothing
-		// was released.
-		writeError(w, http.StatusUnprocessableEntity, "PROFILE_MINT_REFUSED", err.Error())
 		return
 	case err != nil:
 		writeInternal(w, "read grant values", err)

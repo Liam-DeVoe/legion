@@ -15,8 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 )
 
@@ -95,9 +95,9 @@ func cut(profile, held map[string]string) (asked map[string]string, leftOut []st
 	for _, permission := range slices.Sorted(maps.Keys(profile)) {
 		level, holds := profile[permission], held[permission]
 		switch {
-		case LevelRank(holds) == 0:
+		case githubname.LevelRank(holds) == 0:
 			leftOut = append(leftOut, permission)
-		case LevelRank(holds) < LevelRank(level):
+		case githubname.LevelRank(holds) < githubname.LevelRank(level):
 			asked[permission] = holds
 			leftOut = append(leftOut, permission+":"+level)
 		default:
@@ -114,7 +114,7 @@ func cut(profile, held map[string]string) (asked map[string]string, leftOut []st
 // does none of what the profile asks, after the check before an approval had let a person be
 // asked for it. A profile that names metadata alone asks for nothing more, and its cut is whole.
 func emptyCut(profile, asked map[string]string) bool {
-	_, kept := asked[MetadataPermission]
+	_, kept := asked[githubname.MetadataPermission]
 	return len(asked) == 0 || (kept && len(asked) == 1 && len(profile) > 1)
 }
 
@@ -174,15 +174,14 @@ func permissionWords(permissions map[string]string) string {
 	return strings.Join(words, ", ")
 }
 
-// refusal is the scope's own refusal, before anything is asked of GitHub: a bare token is one
-// account's, so a value-token scope of more than one account is refused, which the caller fixes
-// by naming one account with --target; and a scope that names repositories, of which an account
-// in effect holds none, is refused naming that account, since that account's token would name no
-// repository and so reach every one its installation does.
+// refusal is the scope's own refusal, before anything is asked of GitHub: a scope that names
+// repositories, of which an account in effect holds none, is refused naming that account, since
+// that account's token would name no repository and so reach every one its installation does.
+// A value-token scope of more than one account is the caller's to refuse, where it can tell the
+// session to name one with --target (requests' gitHubScope, the one place that rule is written):
+// every scope the broker mints is built there, so the rule is not written a second time here.
+// Mint still releases no bare token of more than one installation (ErrMintSeveralInstallations).
 func (s *GitHubScope) refusal(appID string) error {
-	if len(s.Accounts) > 1 && s.Value == ValueToken {
-		return fmt.Errorf("%w: github app %s: the profile releases one account's bare token, and %s are in effect: name one with --target", ErrMintNarrowingRefused, appID, strings.Join(s.Accounts, ", "))
-	}
 	if s.Repositories == nil {
 		return nil
 	}
@@ -206,11 +205,11 @@ const githubRepositoryAnswerBound = 64 << 10
 
 // accessTokensResponseLimit caps what Mint reads of a token answer, which names every repository
 // a token of named repositories reaches: the common cap plus githubRepositoryAnswerBound for each
-// of MaxNarrowedRepositories. GitHub has minted the token by the time the answer arrives, and an
-// answer read in part cannot be released, and its revoke is sent only where the part read names
-// the token (giveBackUnusable), so the cap admits whole every answer a scope within the maximum
-// can get.
-const accessTokensResponseLimit = mintResponseLimit + MaxNarrowedRepositories*githubRepositoryAnswerBound
+// of githubname.MaxNarrowedRepositories. GitHub has minted the token by the time the answer
+// arrives, and an answer read in part cannot be released, and its revoke is sent only where the
+// part read names the token (giveBackUnusable), so the cap admits whole every answer a scope
+// within the maximum can get.
+const accessTokensResponseLimit = mintResponseLimit + githubname.MaxNarrowedRepositories*githubRepositoryAnswerBound
 
 // refusal is err, GitHub's answer to the token request for owner, unless it is the 422 GitHub
 // gives a token request it cannot serve: that is the caller's scope (ErrMintNarrowingRefused),
@@ -250,7 +249,7 @@ func heldBy(token githubInstallationToken, repositories []string, asked map[stri
 		if !named {
 			return errors.New("GitHub's token holds a permission the request did not name")
 		}
-		if LevelRank(level) == 0 || LevelRank(level) > LevelRank(want) {
+		if githubname.LevelRank(level) == 0 || githubname.LevelRank(level) > githubname.LevelRank(want) {
 			return errors.New("GitHub's token holds a permission at a level past the request")
 		}
 	}
@@ -455,21 +454,24 @@ func (m GitHubApp) revokeUnreleased(ctx context.Context, mint *mintRetry, minted
 // answered it, which the caller minted for the secret name and hands to nobody
 // (requests.Machine.GiveBacks): the broker's release of a grant that failed after this name was
 // minted, or that holds this name behind the airlock, whose session gets placeholders while the
-// proxy mints a value of its own. The release is a JSON object of installations, or, for a
-// value-token profile, the one account's bare token, which is any value that is no JSON and holds
-// no white space. Each revoke runs under the detached bound a release's revoke has, whatever ctx
-// does, in one attempt (startOnce): nobody waits on it, and a retry would draw on the process-wide
-// budget the mints a caller waits on retry from, which a GitHub outage leaves short while every
-// airlock release of a github-app name gives a token back. A revoke GitHub does not confirm is
-// logged with name= (revokedUnreleasedMessage) and leaves its token live until it lapses. A value
-// that is neither names no token, and is left alone.
-func (m GitHubApp) GiveBack(ctx context.Context, name, value string) {
+// proxy mints a value of its own. form is the github.value of the profile the value was minted
+// for, which says what the value is, so nothing is read off the value's text: for
+// githubname.ValueToken the one account's bare token, and for every other form a JSON object of
+// installations, which a value that does not decode as one is not, and names no token to revoke.
+// Each revoke runs under the detached bound a release's revoke has, whatever ctx does, in one
+// attempt (startOnce): nobody waits on it, and a retry would draw on the process-wide budget the
+// mints a caller waits on retry from, which a GitHub outage leaves short while every airlock
+// release of a github-app name gives a token back. A revoke GitHub does not confirm is logged
+// with name= (revokedUnreleasedMessage) and leaves its token live until it lapses.
+func (m GitHubApp) GiveBack(ctx context.Context, name, value, form string) {
 	var minted githubMintedInstallations
-	if json.Unmarshal([]byte(value), &minted) != nil {
-		if value == "" || json.Valid([]byte(value)) || strings.ContainsFunc(value, unicode.IsSpace) {
-			return
-		}
+	switch {
+	case value == "":
+		return
+	case form == githubname.ValueToken:
 		minted.Installations = map[string]githubMintedInstallation{"": {Token: value}}
+	case json.Unmarshal([]byte(value), &minted) != nil:
+		return
 	}
 	m.revokeUnreleased(ctx, m.Retry.startOnce(typeGitHubApp), minted, "name", name)
 }
@@ -507,11 +509,12 @@ type installationMint struct {
 // form it cannot use (giveBackUnusable), and on a failed release the tokens of the installations
 // it minted for before the failure (revokeUnreleased). A revoke GitHub does not confirm is
 // logged, and its token stays live until it lapses. The release is today's JSON of
-// installations, or, for a value-token profile, the bare token of its one account
-// (GitHubScope.refusal refuses more), which is refused (ErrMintNarrowingRefused) before any token
-// request where the App has more than one installation on that account, logins that differ only
-// in case: a token minted for each would leave all but the one released live with nobody holding
-// them.
+// installations, or, for a value-token profile, the bare token of its one account (the caller
+// holds such a scope to one account, requests' gitHubScope), which is refused
+// (ErrMintSeveralInstallations, inside ErrMintNarrowingRefused) before any token request where
+// the scope reaches more than one installation, as the App's installations on one account under
+// logins that differ only in case do: a token minted for each would leave all but the one
+// released live with nobody holding them.
 //
 // With req.Check it finds out whether that release could be served without serving it, and it
 // releases no token: it makes the release's calls in the same order, but for a token request
@@ -593,10 +596,11 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 		// this sentinel alone.
 		return Minted{}, fmt.Errorf("%w: github app %s has no installation on %s", ErrMintNoInstallation, secret.AppID, strings.Join(scope.Accounts, " or "))
 	}
-	if scope.Value == ValueToken && len(each) > 1 {
-		// GitHubScope.refusal has held a value-token scope to one account, so these are that
-		// account's installations, whose logins differ only in case: the release hands over one
-		// bare token, and minting each would leave the others live with nobody holding them.
+	if scope.Value == githubname.ValueToken && len(each) > 1 {
+		// The caller holds a value-token scope to one account (requests' gitHubScope), so these
+		// are that account's installations, whose logins differ only in case: the release hands
+		// over one bare token, and minting each would leave the others live with nobody holding
+		// them. A scope of several accounts that came here anyway is refused the same way.
 		owners := make([]string, 0, len(each))
 		for _, one := range each {
 			owners = append(owners, fmt.Sprintf("%s (installation %d)", one.owner, one.installation.ID))
@@ -666,10 +670,9 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 		// below holds no verdict a check could miss by returning here.
 		return Minted{}, nil
 	}
-	if scope.Value == ValueToken {
-		// GitHubScope.refusal has refused a value-token scope of more than one account, and the
-		// check above one of more than one installation, so the one installation minted is the
-		// release.
+	if scope.Value == githubname.ValueToken {
+		// The check above has refused a value-token scope of more than one installation, so the
+		// one installation minted is the release.
 		return Minted{Value: minted.Installations[each[0].owner].Token, Expires: expires, LeftOut: leftOut}, nil
 	}
 	encoded, err := json.Marshal(minted)

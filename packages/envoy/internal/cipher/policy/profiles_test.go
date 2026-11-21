@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
 // githubRead is a profile the broker serves: a GitHub App's reads on one account, as a bare token
@@ -78,7 +78,7 @@ func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
 		{"an account no repository names", githubWrite(`{"accounts": ["example-org", "Ada"], "repositories": ["example-org/legion"], "permissions": {"contents": "read", "metadata": "read"}}`), "github.accounts[1]", []string{"names ada", "github.repositories names no repository of it"}},
 		{"a repository name GitHub cannot hold", githubWrite(`{"accounts": ["example-org"], "repositories": ["example-org/a b"], "permissions": {"contents": "read"}}`), "github.repositories[0]", []string{"letters, digits"}},
 		{"the repository name ..", githubWrite(`{"accounts": ["example-org"], "repositories": ["example-org/.."], "permissions": {"contents": "read"}}`), "github.repositories[0]", []string{"letters, digits"}},
-		{"more repositories than a token takes", githubWrite(`{"accounts": ["example-org"], "repositories": ` + repositories(secrets.MaxNarrowedRepositories+1) + `, "permissions": {"contents": "read"}}`), "github.repositories", []string{fmt.Sprint(secrets.MaxNarrowedRepositories + 1), fmt.Sprint(secrets.MaxNarrowedRepositories)}},
+		{"more repositories than a token takes", githubWrite(`{"accounts": ["example-org"], "repositories": ` + repositories(githubname.MaxNarrowedRepositories+1) + `, "permissions": {"contents": "read"}}`), "github.repositories", []string{fmt.Sprint(githubname.MaxNarrowedRepositories + 1), fmt.Sprint(githubname.MaxNarrowedRepositories)}},
 		{"a github block with no permissions", githubWrite(`{"accounts": ["example-org"]}`), "github.permissions", []string{"required"}},
 		{"an empty permissions object", githubWrite(`{"accounts": ["example-org"], "permissions": {}}`), "github.permissions", []string{"required"}},
 		{"a permission name in upper case", githubWrite(`{"accounts": ["example-org"], "permissions": {"Contents": "read"}}`), "github.permissions", []string{`"Contents"`}},
@@ -211,7 +211,7 @@ func TestParseProfilesReadsEachFieldAsTheBrokerServesIt(t *testing.T) {
 			Accounts:     []string{"ada", "example-org"},
 			Repositories: []string{"ada/proofs", "example-org/legion", "example-org/widgets"},
 			Permissions:  map[string]string{"contents": "write", "metadata": "read", "workflows": "write"},
-			Value:        policy.ValueInstallations,
+			Value:        githubname.ValueInstallations,
 		},
 	}
 	if got := profiles.Lookup("GITHUB_WRITE"); !reflect.DeepEqual(got, wantWrite) {
@@ -446,7 +446,7 @@ func TestDecodeProfilesReadsAFileTheRulesRefuse(t *testing.T) {
 	if pat := profiles.Lookup("GITHUB_ADMIN_PAT"); pat == nil || pat.Proxy == nil || pat.Proxy.Judge == nil || *pat.Proxy.Judge != 1800 {
 		t.Errorf("Lookup(GITHUB_ADMIN_PAT) = %+v, want its proxy block's judge of 1800", pat)
 	}
-	if write := profiles.Lookup("GITHUB_WRITE"); write == nil || !reflect.DeepEqual(write.GitHub.Accounts, []string{"example-org"}) || write.GitHub.Value != policy.ValueInstallations {
+	if write := profiles.Lookup("GITHUB_WRITE"); write == nil || !reflect.DeepEqual(write.GitHub.Accounts, []string{"example-org"}) || write.GitHub.Value != githubname.ValueInstallations {
 		t.Errorf("Lookup(GITHUB_WRITE) = %+v, want its account lowercased and value installations", write)
 	}
 	for name, file := range map[string]string{

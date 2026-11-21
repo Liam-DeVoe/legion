@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
@@ -262,7 +263,7 @@ func TestTheProxyMintsTheProfilesScopeForTheTargetSlot(t *testing.T) {
 		name, value, slot string
 	}{
 		{"installations", "", requests.SlotGitHubPrefix + "ada"},
-		{"token", policy.ValueToken, requests.SlotValue},
+		{"token", githubname.ValueToken, requests.SlotValue},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			pr := newProfileRig(t, readProfile(c.value, readOnly, `[{"method": "GET", "pathPrefix": "/repos/"}]`), Options{})
@@ -304,7 +305,7 @@ func TestTheProxyMintsTheProfilesScopeForTheTargetSlot(t *testing.T) {
 // The named revert: drop the proxy block's allow list on its way into the rules
 // (policy.Profiles.ProxyRules), and the refused calls are carried with the token, so this fails.
 func TestTheProxySwapsAProfileTokenOnlyIntoAllowedRequests(t *testing.T) {
-	pr := newProfileRig(t, readProfile(policy.ValueToken, readOnly, `[{"method": "GET", "pathPrefix": "/repos/ada/"}]`), Options{})
+	pr := newProfileRig(t, readProfile(githubname.ValueToken, readOnly, `[{"method": "GET", "pathPrefix": "/repos/ada/"}]`), Options{})
 	_, released := pr.grant(t)
 	placeholder := placeholderOf(t, released, requests.SlotValue)
 	client := pr.client(released.ProxyPassword)
@@ -372,7 +373,7 @@ func TestTheProxySwapsAProfileTokenOnlyIntoAllowedRequests(t *testing.T) {
 // call is then carried with the old token, so this fails.
 func TestAnEditedProfileEndsTheProxysHeldToken(t *testing.T) {
 	allow := `[{"method": "GET", "pathPrefix": "/repos/"}]`
-	pr := newProfileRig(t, readProfile(policy.ValueToken, readOnly, allow), Options{})
+	pr := newProfileRig(t, readProfile(githubname.ValueToken, readOnly, allow), Options{})
 	grantID, released := pr.grant(t)
 	placeholder := placeholderOf(t, released, requests.SlotValue)
 	client := pr.client(released.ProxyPassword)
@@ -380,7 +381,7 @@ func TestAnEditedProfileEndsTheProxysHeldToken(t *testing.T) {
 		t.Fatalf("the first call = %d %s; want 200", answer.StatusCode, body)
 	}
 
-	pr.roll(t, readProfile(policy.ValueToken, `{"contents": "read", "metadata": "read", "pull_requests": "read"}`, allow))
+	pr.roll(t, readProfile(githubname.ValueToken, `{"contents": "read", "metadata": "read", "pull_requests": "read"}`, allow))
 	sent, minted, refusals := len(pr.requests()), len(pr.mintsAsked(t)), len(pr.logs.refusals())
 	answer, body := pr.get(client, "https://"+boundHost+profileRepository, "Authorization", "Bearer "+placeholder)
 	if answer.StatusCode != http.StatusProxyAuthRequired {
@@ -410,7 +411,7 @@ func TestAnEditedProfileEndsTheProxysHeldToken(t *testing.T) {
 // (airlock.substitute) and re-encodes it, so the service reads x-access-token and the minted
 // token, a token of the target's repository, and no placeholder.
 func TestAGitBasicAuthPlaceholderIsSwappedForAProfileToken(t *testing.T) {
-	pr := newProfileRig(t, readProfile(policy.ValueToken, readOnly, `[{"method": "GET", "pathPrefix": "/ada/proofs.git/"}]`), Options{})
+	pr := newProfileRig(t, readProfile(githubname.ValueToken, readOnly, `[{"method": "GET", "pathPrefix": "/ada/proofs.git/"}]`), Options{})
 	_, released := pr.grant(t)
 	placeholder := placeholderOf(t, released, requests.SlotValue)
 	client := pr.client(released.ProxyPassword)
