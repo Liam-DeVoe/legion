@@ -1,7 +1,8 @@
 package api
 
-// decode_v2.go is the one reader of a /api/v2 route's request (R4 of dispatch://INFRA-4071/spec).
-// A route's row declares the types its query and its body are read into
+// decode_v2.go is the one reader of a /api/v2 route's request (R4 of dispatch://INFRA-4071/spec),
+// and of the /api/v1 path of a row served in both versions (apiRoute.decoded, R2). A route's row
+// declares the types its query and its body are read into
 // (routeRow.Query, routeRow.Body), and decodeV2Request reads them from those types alone: a query
 // key the type does not declare is refused 400 QUERY_KEY_UNKNOWN before any lookup or write, and a
 // body member it does not declare is ignored, as decodeJSON ignores one. The handler takes what
@@ -62,10 +63,9 @@ package api
 // actingPerson and resolveIDPrefixes read the session it names through requestSession, the decoded
 // request's on such a route, and the raw query's on every other.
 //
-// register refuses to mount a table whose /api/v2 rows declare a query or a body the decoder
-// cannot read, or whose row served at /api/v1 too declares a query or a body at all, since /api/v1
-// mounts no decoder (undecodableRoutes), so a wrong tag or a wrong Versions fails the server's
-// start and every test, never a request.
+// register refuses to mount a table whose rows declare a query or a body the decoder cannot read,
+// or an authority rule that could never hold (undecodableRoutes), so a wrong tag fails the
+// server's start and every test, never a request.
 
 import (
 	"bytes"
@@ -159,7 +159,7 @@ type uploadFile struct {
 	Content     []byte
 }
 
-// v2Request is what the decoder read of one request to a route it reads (apiRoute.v2Bound).
+// v2Request is what the decoder read of one request to a route it reads (apiRoute.decoded).
 // register's decoding layers put it on the request's context, the query layer first and each
 // later layer a copy with its own part added, and the handler and the layers behind them read it
 // through v2Query, v2Body, v2BodyArm, v2Upload and requestSession.
@@ -187,8 +187,8 @@ type v2Request struct {
 // v2RequestKey is the request-context key of the *v2Request.
 type v2RequestKey struct{}
 
-// decodedV2 is what the decoder read of r, and false on a route it does not read: a /api/v1
-// route, a test hook, a row of the INFRA-979 tree.
+// decodedV2 is what the decoder read of r, and false on a route it does not read: a route of the
+// v1 table, a test hook, a row of the INFRA-979 tree.
 func decodedV2(r *http.Request) (*v2Request, bool) {
 	decoded, ok := r.Context().Value(v2RequestKey{}).(*v2Request)
 	return decoded, ok
@@ -199,13 +199,13 @@ func withDecodedV2(r *http.Request, decoded *v2Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), v2RequestKey{}, decoded))
 }
 
-// v2Query is the decoded query of a request to a /api/v2 route, as the row's Query type T. A
-// handler that asks for another type than its row declares, or a route the decoder does not read,
-// is a mistake in the table that the route's tests meet at once, so it panics naming both.
+// v2Query is the decoded query of a request to a route the decoder reads, as the row's Query type
+// T. A handler that asks for another type than its row declares, or a route the decoder does not
+// read, is a mistake in the table that the route's tests meet at once, so it panics naming both.
 func v2Query[T any](r *http.Request) T {
 	decoded, ok := decodedV2(r)
 	if !ok {
-		panic(fmt.Sprintf("v2Query[%T]: the decoder read no query of %s %s: only a /api/v2 route's handler reads one", *new(T), r.Method, r.Pattern))
+		panic(fmt.Sprintf("v2Query[%T]: the decoder read no query of %s %s: only the handler of a route it reads reads one", *new(T), r.Method, r.Pattern))
 	}
 	query, ok := decoded.query.(T)
 	if !ok {
@@ -214,9 +214,10 @@ func v2Query[T any](r *http.Request) T {
 	return query
 }
 
-// v2Body is the decoded body of a request to a /api/v2 route, as T: the row's Body.Type, or on a
-// union the arm the request's discriminating member picked (a handler that serves several arms
-// switches on v2BodyArm instead). It panics, as v2Query does, for a type the request's body is not.
+// v2Body is the decoded body of a request to a route the decoder reads, as T: the row's
+// Body.Type, or on a union the arm the request's discriminating member picked (a handler that
+// serves several arms switches on v2BodyArm instead). It panics, as v2Query does, for a type the
+// request's body is not.
 func v2Body[T any](r *http.Request) T {
 	body, ok := v2BodyArm(r).(T)
 	if !ok {
@@ -225,19 +226,19 @@ func v2Body[T any](r *http.Request) T {
 	return body
 }
 
-// v2BodyArm is the decoded body of a request to a /api/v2 route as it was decoded: a value of the
-// row's Body.Type, or of the union arm its discriminating member picked, for the handler of a
-// union to switch on. It panics on a route whose body the decoder has not read.
+// v2BodyArm is the decoded body of a request to a route the decoder reads as it was decoded: a
+// value of the row's Body.Type, or of the union arm its discriminating member picked, for the
+// handler of a union to switch on. It panics on a route whose body the decoder has not read.
 func v2BodyArm(r *http.Request) any {
 	decoded, ok := decodedV2(r)
 	if !ok || !decoded.bodyRead {
-		panic(fmt.Sprintf("v2BodyArm: the decoder read no body of %s %s: only a /api/v2 route that declares one has one", r.Method, r.Pattern))
+		panic(fmt.Sprintf("v2BodyArm: the decoder read no body of %s %s: only a route it reads that declares one has one", r.Method, r.Pattern))
 	}
 	return decoded.body
 }
 
-// v2Upload is the file part of an upload to a /api/v2 route, and nil for an upload sent as the
-// JSON object its row's Body.Type describes. Its declared fields are v2Body's.
+// v2Upload is the file part of an upload to a route the decoder reads, and nil for an upload sent
+// as the JSON object its row's Body.Type describes. Its declared fields are v2Body's.
 func v2Upload(r *http.Request) *uploadFile {
 	decoded, ok := decodedV2(r)
 	if !ok || !decoded.bodyRead {
@@ -247,8 +248,8 @@ func v2Upload(r *http.Request) *uploadFile {
 }
 
 // requestSession is the session r names in its `session` query parameter, trimmed, "" where it
-// names none: on a route the decoder reads, the one it decoded (R4); on every other - a /api/v1
-// route, a test hook, a row of the INFRA-979 tree - the raw query's, as it always was
+// names none: on a route the decoder reads, the one it decoded (R4); on every other - a route of
+// the v1 table, a test hook, a row of the INFRA-979 tree - the raw query's, as it always was
 // (actingPerson, resolveIDPrefixes).
 func requestSession(r *http.Request) string {
 	if request, decoded := decodedV2(r); decoded {
@@ -259,11 +260,24 @@ func requestSession(r *http.Request) string {
 
 // v2Bound reports whether the rules of /api/v2 bind route: a routeRow's mount at /api/v2, but a
 // row of the INFRA-979 tree (OfINFRA979), which that tree's own spec decides, and a test hook,
-// which no rule of the parent's binds (dispatch://INFRA-2946/spec, R1). Only such a route is read
-// by the decoder (R4), held to the authorities its row declares (R1.8) and keyed on every write
-// method (R8, keyedMethod).
+// which no rule of the parent's binds (dispatch://INFRA-2946/spec, R1). Only such a route is
+// keyed on every write method (R8, keyedMethod) and carries the v2 document's members of a row
+// (openAPIV2Members). The decoder reads it and the authority gate holds it, as they do every
+// route decoded names.
 func (route apiRoute) v2Bound() bool {
-	return route.Version == apiV2 && route.columns && !route.OfINFRA979
+	return route.Version == apiV2 && route.decoded()
+}
+
+// decoded reports whether the decoder reads route's request (R4) and the authority gate holds it
+// to the authorities its row declares (R1.8): every mount of a routeRow outside the INFRA-979
+// tree, at /api/v2 and at /api/v1 alike. A routeRow is mounted at /api/v1 only where it is served
+// in both versions, so the /api/v1 mounts it names are such a row's: one a later change adds has
+// no older /api/v1 answer to keep, and its one declaration is read, gated and answered at both
+// paths as at /api/v2 (R2). Its /api/v1 PUT and DELETE take no Idempotency-Key, as every /api/v1
+// route's (keyedMethod reads v2Bound). A route of the v1 table, a test hook and a row of the
+// INFRA-979 tree read their request as /api/v1 wrote it.
+func (route apiRoute) decoded() bool {
+	return route.columns && !route.OfINFRA979
 }
 
 // v2Decoder is a route's query and body declarations, read once when the route is mounted.
@@ -1177,20 +1191,17 @@ func uploadFields(typ reflect.Type, values map[string][]string) ([]byte, error) 
 	return json.Marshal(object)
 }
 
-// undecodableRoutes names every route whose request declarations the decoder cannot read, and
-// every row that declares at a mount the decoder does not read what only the decoder holds a
-// request to: a /api/v2 route's query type or body type (newV2Decoder), its authority rules
-// (authorityFaults), a row served at /api/v1 too that declares authorities, which /api/v1, reading
-// no decoded request, could not hold to them, and a routeRow served at /api/v1 too that declares a
-// query or a body, which its handler reads through v2Query, v2Body or v2Upload, each of which
-// panics on a request the decoder did not read (v1DecodedDeclarations). register refuses to mount
-// a table it names anything in.
+// undecodableRoutes names every route the decoder reads (apiRoute.decoded), at /api/v2 and at a
+// both-version row's /api/v1 path alike, whose query type or body type it cannot read
+// (newV2Decoder) or whose authority rule could never hold (authorityFaults), and every other route
+// that declares authorities, which no gate would hold a request to: the authority gate holds only
+// a request the decoder read. register refuses to mount a table it names anything in.
 func undecodableRoutes(routes []apiRoute) []string {
 	var faults []string
 	for _, route := range routes {
 		name := route.Method + " " + route.Pattern
-		switch declared := v1DecodedDeclarations(route); {
-		case route.v2Bound():
+		switch {
+		case route.decoded():
 			decoder, err := newV2Decoder(route)
 			if err != nil {
 				faults = append(faults, name+": "+err.Error())
@@ -1200,29 +1211,9 @@ func undecodableRoutes(routes []apiRoute) []string {
 				faults = append(faults, name+": "+fault)
 			}
 		case len(route.Authorities) > 0:
-			faults = append(faults, name+": declares Authorities, which only the /api/v2 decoder's gate holds a request to; serve the row at /api/v2 alone (Versions: onlyV2)")
-		case declared != "":
-			faults = append(faults, name+": declares "+declared+", which only the /api/v2 decoder reads, and /api/v1 mounts no decoder, so its handler's v2Query, v2Body or v2Upload would panic there; serve the row at /api/v2 alone (Versions: onlyV2), or declare neither")
+			faults = append(faults, name+": declares Authorities, which the authority gate holds only on a route the decoder reads, and it reads no row of the INFRA-979 tree, route of the v1 table or test hook")
 		}
 	}
 	slices.Sort(faults)
 	return faults
-}
-
-// v1DecodedDeclarations is what route, the /api/v1 mount of a routeRow, declares that only the
-// decoder reads - "a Query", "a Body" or both - and "" for any other route: a /api/v2 mount, a
-// route of the v1 table or a test hook, which declare neither, and a row of the INFRA-979 tree,
-// whose handler reads its request as /api/v1 wrote it (OfINFRA979).
-func v1DecodedDeclarations(route apiRoute) string {
-	if route.Version != apiV1 || !route.columns || route.OfINFRA979 {
-		return ""
-	}
-	var declared []string
-	if route.Query != nil {
-		declared = append(declared, "a Query")
-	}
-	if route.Body.Kind != bodyNone {
-		declared = append(declared, "a Body")
-	}
-	return strings.Join(declared, " and ")
 }

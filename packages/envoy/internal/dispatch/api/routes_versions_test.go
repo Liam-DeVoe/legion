@@ -55,7 +55,7 @@ func v1OnlyRowsOutside(rows []v1Row, frozen map[string]bool) []string {
 		name := row.Method + " " + row.Pattern
 		held[name] = true
 		if _, listed := frozen[name]; !listed {
-			outside = append(outside, name+": /api/v1 alone serves it, and "+v1OnlyRoutesList+" does not hold it; write it as a routeRow of its group's v2_<group>.go, which both versions serve, or /api/v2 alone (Versions: onlyV2) where it declares a Query or a Body")
+			outside = append(outside, name+": /api/v1 alone serves it, and "+v1OnlyRoutesList+" does not hold it; write it as a routeRow of its group's v2_<group>.go, which both versions serve")
 		}
 	}
 	for name := range frozen {
@@ -308,9 +308,10 @@ func madeUpRow() routeRow {
 }
 
 // A row a later change adds says nothing about versions and is served in both, at /api/v1 and at
-// /api/v2 (R2: "a row added after this change is served in both versions by one declaration");
-// one that names onlyV2 is served at /api/v2 alone, as a row that declares a Query or a Body must
-// be (TestABothVersionRowThatDeclaresARequestRefusesToMount). Each mount carries the row's columns.
+// /api/v2 (R2: "a row added after this change is served in both versions by one declaration"),
+// each path decoded and gated alike (TestABothVersionRowIsDecodedAndGatedAtBothPaths); one that
+// names onlyV2, as a row that answers for v1Rows which keep their own answer does, is served at
+// /api/v2 alone. Each mount carries the row's columns.
 func TestARowWithNoVersionsIsServedInBothVersions(t *testing.T) {
 	mounts := func(row routeRow) []string {
 		var got []string

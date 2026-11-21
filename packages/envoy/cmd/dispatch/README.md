@@ -5374,13 +5374,13 @@ Each item below names a status and code, then its meaning.
 
 - `400 QUERY_KEY_UNKNOWN`
 
-  `/api/v2` alone: the query names a key the route does not declare, a misspelt filter among them.
+  On `/api/v2`, and on the `/api/v1` path of a row served in both versions: the query names a key the route does not declare, a misspelt filter among them.
   The body is `{code, error, key, declared}`, `key` the key and `declared` every key the route declares, sorted, `session` among them; nothing is read or written.
-  The `/api/v1` routes still ignore a key they do not read.
+  Every other `/api/v1` route still ignores a key it does not read.
 
 - `400 INVALID_QUERY`, `400 INVALID_LIMIT`, `400 INVALID_OFFSET`
 
-  On `/api/v2`, a query value outside what its key takes, named with the key and what it takes: a value no `enum` lists, a boolean that is not `true` or `false`, a time that is not RFC 3339, an integer outside its bounds, a `sort` field the route does not sort by, a key given twice that takes one value;
+  On `/api/v2`, and on the `/api/v1` path of a row served in both versions, a query value outside what its key takes, named with the key and what it takes: a value no `enum` lists, a boolean that is not `true` or `false`, a time that is not RFC 3339, an integer outside its bounds, a `sort` field the route does not sort by, a key given twice that takes one value;
   a `limit` outside the route's bounds (`INVALID_LIMIT`, naming the bound), or an `offset` that is no integer of 0 or more (`INVALID_OFFSET`).
 
 - `400 POSITION_INVALID`
@@ -5389,7 +5389,7 @@ Each item below names a status and code, then its meaning.
 
 - `400 STATE_INVALID`, `400 INVALID_KIND`
 
-  On `/api/v2`, a body keyed by `state` (a `PUT` to a `…/state` route) whose `state` names no state the route takes, or none, and a mark whose `kind` names no kind it takes, each naming the ones it takes.
+  On `/api/v2`, and on the `/api/v1` path of a row served in both versions, a body keyed by `state` (a `PUT` to a `…/state` route) whose `state` names no state the route takes, or none, and a mark whose `kind` names no kind it takes, each naming the ones it takes.
 
 - `404 NO_ROUTE`
 

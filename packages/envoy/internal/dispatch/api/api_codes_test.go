@@ -22,10 +22,16 @@ import (
 // v1CodeExceptions are the pairs a constant renders under /api/v1 that testdata/v1-codes.txt does
 // not hold, each with why.
 var v1CodeExceptions = map[string]string{
-	"API_V1_ENDED 410":   "R3.4's end code, new",
-	"ORIGIN_REFUSED 403": "R3.2's code for the cookie-origin guard, new",
-	"HOST_MISMATCH 421":  "a routes code of c8a44f97, which answers every path in dev sign-in mode, unchanged",
+	"API_V1_ENDED 410":      "R3.4's end code, new",
+	"ORIGIN_REFUSED 403":    "R3.2's code for the cookie-origin guard, new",
+	"HOST_MISMATCH 421":     "a routes code of c8a44f97, which answers every path in dev sign-in mode, unchanged",
+	"QUERY_KEY_UNKNOWN 400": bothVersionRowCode,
+	"STATE_INVALID 400":     bothVersionRowCode,
 }
+
+// bothVersionRowCode is why /api/v1 answers the decoder's two codes no route of c8a44f97 answered.
+const bothVersionRowCode = "only a both-version routeRow's /api/v1 mount answers it, which none of c8a44f97's routes is " +
+	"(R2 of dispatch://INFRA-4071/spec: a new row is served in both versions by one declaration)"
 
 // v1Pair is the line of testdata/v1-codes.txt that names what code renders under /api/v1.
 func v1Pair(code apicode.Code) string {
@@ -96,14 +102,14 @@ func v1CodeMismatches(codes []apicode.Code, listed map[string]bool) []string {
 
 // /api/v1 answers every code and status it answered at c8a44f97 and no other (R3): every constant
 // that renders under /api/v1 renders a pair c8a44f97 wrote, or a later merge on main added, or one
-// of the three named exceptions, and every such pair is still some constant's. A v2-only code
-// renders nothing under /api/v1, so a new code cannot reach a v1 client.
+// of the named exceptions, and every such pair is still some constant's. A v2-only code renders
+// nothing under /api/v1, so a new code cannot reach a v1 client.
 func TestV1CodesAreTheCodesOfC8a44f97(t *testing.T) {
 	listed := readV1Codes(t)
 	for _, mismatch := range v1CodeMismatches(apicode.All(), listed) {
 		t.Error(mismatch)
 	}
-	for _, code := range []apicode.Code{apicode.NoRoute, apicode.QueryKeyUnknown, apicode.PositionInvalid, apicode.AskNotFound} {
+	for _, code := range []apicode.Code{apicode.NoRoute, apicode.PositionInvalid, apicode.AskNotFound} {
 		if code.InV1() {
 			t.Errorf("%s renders under /api/v1, which never answered it", code)
 		}
@@ -270,9 +276,9 @@ func TestWriteErrorAnswersTheRequestsVersion(t *testing.T) {
 		},
 		{
 			what:  "a v2-only code",
-			write: func(w http.ResponseWriter, r *http.Request) { writeError(w, r, apicode.QueryKeyUnknown, "no such key") },
+			write: func(w http.ResponseWriter, r *http.Request) { writeError(w, r, apicode.NoRoute, "no such route") },
 			v1:    writtenRefusal{status: http.StatusInternalServerError, code: "INTERNAL"},
-			v2:    writtenRefusal{status: http.StatusBadRequest, code: "QUERY_KEY_UNKNOWN"},
+			v2:    writtenRefusal{status: http.StatusNotFound, code: "NO_ROUTE"},
 		},
 		{
 			what:  "a v1-only code",

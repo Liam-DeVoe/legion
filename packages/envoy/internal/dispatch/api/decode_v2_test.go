@@ -11,11 +11,13 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // widgetQuery is a made-up row's query, one field of each kind the decoder reads.
@@ -398,8 +400,9 @@ func TestTheV2DecoderIgnoresAnUndeclaredBodyMember(t *testing.T) {
 }
 
 // A row whose query or body the decoder cannot read, or whose authority rule could never hold,
-// is refused at mount (undecodableRoutes), naming what is wrong; so is a row served at /api/v1 too
-// that declares authorities, which /api/v1 reads no decoded request to hold.
+// is refused at mount (undecodableRoutes), naming what is wrong; so is a row the decoder does not
+// read that declares authorities, which no gate would hold a request to: one of the INFRA-979
+// tree, at either of its mounts.
 func TestARowTheV2DecoderCannotReadRefusesToMount(t *testing.T) {
 	if faults := undecodableRoutes(slices.Concat(mountRow(madeUpRow()), []apiRoute{widgetListRoute(listBounds{}), madeUpStateRoute()})); len(faults) > 0 {
 		t.Fatalf("well-formed rows were refused: %q", faults)
@@ -473,56 +476,111 @@ func TestARowTheV2DecoderCannotReadRefusesToMount(t *testing.T) {
 		}
 	}
 
-	both := madeUpRow()
-	both.Body = requestBody{Kind: bodyJSON, Type: widgetBody{}}
-	both.Authorities = []authorityRule{{Where: authorityWhere{In: partBody, Name: "owner"}, Scopes: person}}
-	faults := undecodableRoutes(mountRow(both))
-	if len(faults) != 1 || !strings.HasPrefix(faults[0], "GET /api/v1/widgets: declares Authorities") {
-		t.Fatalf("a row served at /api/v1 too that declares authorities was answered %q, want its /api/v1 mount refused", faults)
+	infra979 := madeUpRow()
+	infra979.OfINFRA979 = true
+	infra979.Body = requestBody{Kind: bodyJSON, Type: widgetBody{}}
+	infra979.Authorities = []authorityRule{{Where: authorityWhere{In: partBody, Name: "owner"}, Scopes: person}}
+	faults := undecodableRoutes(mountRow(infra979))
+	if len(faults) != 2 || !strings.HasPrefix(faults[0], "GET /api/v1/widgets: declares Authorities") ||
+		!strings.HasPrefix(faults[1], "GET /api/v2/widgets: declares Authorities") {
+		t.Fatalf("a row of the INFRA-979 tree that declares authorities was answered %q, want both of its mounts refused", faults)
 	}
 }
 
-// A routeRow served in both versions that declares a query or a body is refused at mount
-// (undecodableRoutes), at its /api/v1 mount alone and naming what it declares: /api/v1 mounts no
-// decoder, so the v2Query, v2Body or v2Upload its handler reads them with would panic there and
-// drop the connection. The same row served at /api/v2 alone mounts.
-func TestABothVersionRowThatDeclaresARequestRefusesToMount(t *testing.T) {
-	for _, declares := range []struct {
-		what    string
-		names   string
-		declare func(*routeRow)
-	}{
-		{"a query", "a Query", func(row *routeRow) { row.Query = widgetQuery{} }},
-		{"a JSON body", "a Body", func(row *routeRow) { row.Body = requestBody{Kind: bodyJSON, Type: widgetBody{}} }},
-		{"an upload", "a Body", func(row *routeRow) { row.Body = requestBody{Kind: bodyUpload, Type: widgetUpload{}} }},
-		{"a union", "a Body", func(row *routeRow) {
-			row.Body = requestBody{Kind: bodyStateUnion, Arms: map[string]any{"resolved": widgetResolved{}}}
-		}},
-		{"a query and a body", "a Query and a Body", func(row *routeRow) {
-			row.Query, row.Body = widgetQuery{}, requestBody{Kind: bodyJSON, Type: widgetBody{}}
-		}},
-	} {
-		row := madeUpRow()
-		row.Method = http.MethodPost
-		declares.declare(&row)
-		faults := undecodableRoutes(mountRow(row))
-		if len(faults) != 1 || !strings.HasPrefix(faults[0], "POST /api/v1/widgets: declares "+declares.names+",") ||
-			!strings.Contains(faults[0], "Versions: onlyV2") {
-			t.Errorf("a row served in both versions that declares %s was answered %q, want its /api/v1 mount refused once, naming %s and onlyV2",
-				declares.what, faults, declares.names)
+// widgetEcho is what the made-up row of TestABothVersionRowIsDecodedAndGatedAtBothPaths answers:
+// what its handler read of the request through v2Query and v2Body.
+type widgetEcho struct {
+	State   string   `json:"state"`
+	Days    int      `json:"days"`
+	Include []string `json:"include"`
+	Title   string   `json:"title"`
+	Owner   *string  `json:"owner"`
+}
+
+// A routeRow with no Versions that declares a query, a body and an authority rule is served at
+// both paths by its one declaration (R2), and each path reads, gates and answers it as /api/v2
+// does (apiRoute.decoded): register mounts it (undecodableRoutes refuses nothing of it); a request
+// both paths admit is answered alike, by a handler that reads its query and its body through
+// v2Query and v2Body; a query key the row does not declare is 400 QUERY_KEY_UNKNOWN; and a body
+// value that needs a scope the credential lacks is refused by the authority gate. Neither refusal
+// runs the handler.
+func TestABothVersionRowIsDecodedAndGatedAtBothPaths(t *testing.T) {
+	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	row := madeUpRow()
+	row.Method, row.Pattern, row.Kind = http.MethodPatch, "/widgets/{id}", kindItem
+	row.Scope = scopeDeployment
+	row.Query = widgetQuery{}
+	row.Body = requestBody{Kind: bodyJSON, Type: widgetBody{}}
+	row.Authorities = []authorityRule{{Where: authorityWhere{In: partBody, Name: "owner"}, Scopes: routeScopeSet{model.ScopePerson}}}
+	var runs atomic.Int32
+	row.Handler = func(w http.ResponseWriter, r *http.Request) {
+		runs.Add(1)
+		if decoded, read := decodedV2(r); !read || !decoded.bodyRead {
+			WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "the decoder read no query or no body of " + r.Pattern})
+			return
 		}
-		row.Versions = onlyV2
-		if faults := undecodableRoutes(mountRow(row)); len(faults) > 0 {
-			t.Errorf("a row served at /api/v2 alone that declares %s was refused: %q", declares.what, faults)
+		query, body := v2Query[widgetQuery](r), v2Body[widgetBody](r)
+		WriteJSON(w, http.StatusOK, widgetEcho{State: query.State, Days: query.Days, Include: query.Include, Title: body.Title, Owner: body.Owner})
+	}
+
+	mounts := mountRow(row)
+	if faults := undecodableRoutes(mounts); len(faults) > 0 {
+		t.Fatalf("the row served in both versions was refused: %q", faults)
+	}
+	mux := http.NewServeMux()
+	var paths []string
+	for _, route := range mounts {
+		mux.HandleFunc(route.Method+" "+route.Pattern, served.routeHandler(route))
+		paths = append(paths, strings.Replace(route.Pattern, "{id}", "w1", 1))
+	}
+	if want := []string{"/api/v1/widgets/w1", "/api/v2/widgets/w1"}; !slices.Equal(paths, want) {
+		t.Fatalf("the row is mounted at %q, want %q", paths, want)
+	}
+	scopeless := personalTokenOwnedBy(t, database, "alice")
+	personOnly := personalTokenOwnedBy(t, database, "alice", model.ScopePerson)
+
+	var answers []string
+	for _, path := range paths {
+		admitted := tokenRequest(t, mux, http.MethodPatch, path+"?days=3&include=thread", map[string]any{"title": "Renamed"}, scopeless, "")
+		echo := decodeBody[widgetEcho](t, admitted)
+		if admitted.Code != http.StatusOK || echo.State != "open" || echo.Days != 3 || !slices.Equal(echo.Include, []string{"thread"}) ||
+			echo.Title != "Renamed" || echo.Owner != nil {
+			t.Errorf("%s: a request the row admits was answered %d %s, want 200 the query and the body as the decoder read them",
+				path, admitted.Code, admitted.Body.String())
 		}
+		answers = append(answers, admitted.Body.String())
+
+		withScope := tokenRequest(t, mux, http.MethodPatch, path, map[string]any{"owner": "bob"}, personOnly, "")
+		if owner := decodeBody[widgetEcho](t, withScope).Owner; withScope.Code != http.StatusOK || owner == nil || *owner != "bob" {
+			t.Errorf("%s: a member that needs person, with it, was answered %d %s, want 200 naming the owner", path, withScope.Code, withScope.Body.String())
+		}
+
+		before := runs.Load()
+		unknown := tokenRequest(t, mux, http.MethodPatch, path+"?zz_undeclared=1", map[string]any{"title": "Renamed"}, scopeless, "")
+		refusal := decodeBody[queryKeyUnknownBody](t, unknown)
+		if unknown.Code != http.StatusBadRequest || refusal.Code != "QUERY_KEY_UNKNOWN" || refusal.Key != "zz_undeclared" ||
+			!slices.Equal(refusal.Declared, widgetQueryDeclares) {
+			t.Errorf("%s: a query key the row does not declare was answered %d %s, want 400 QUERY_KEY_UNKNOWN naming it and %v",
+				path, unknown.Code, unknown.Body.String(), widgetQueryDeclares)
+		}
+		assertGateRefused(t, path+": a member that needs person",
+			tokenRequest(t, mux, http.MethodPatch, path, map[string]any{"title": "Renamed", "owner": "bob"}, scopeless, ""),
+			model.ScopePerson, "the member owner")
+		if ran := runs.Load() - before; ran != 0 {
+			t.Errorf("%s: the handler ran %d times behind the two refusals, want none", path, ran)
+		}
+	}
+	if answers[0] != answers[1] {
+		t.Errorf("one request was answered %s at /api/v1 and %s at /api/v2, want one answer", answers[0], answers[1])
 	}
 }
 
 // Every route the server's table mounts, test hooks included, is one undecodableRoutes refuses
-// nothing of, and no /api/v1 mount of a routeRow outside the INFRA-979 tree declares a query or a
-// body: each row that declares one is served at /api/v2 alone. The INFRA-979 tree's rows, which
-// that tree's spec decides and whose handlers read their request as /api/v1 wrote it, are left out
-// and named.
+// nothing of, and both mounts of every routeRow served in both versions outside the INFRA-979
+// tree are ones the decoder reads and the authority gate holds (apiRoute.decoded): its /api/v1
+// path reads, gates and answers its one declaration as its /api/v2 path does (R2). The INFRA-979
+// tree's rows, which that tree's spec decides and whose handlers read their request as /api/v1
+// wrote it, are left out and named by their /api/v1 mounts.
 func TestEveryRowTheTableMountsIsDecodable(t *testing.T) {
 	served := &server{deps: Deps{TestHooksEnabled: true}}
 	routes := served.routes()
@@ -530,16 +588,18 @@ func TestEveryRowTheTableMountsIsDecodable(t *testing.T) {
 		t.Fatalf("%d route(s) the table mounts are undecodable:\n%s", len(faults), strings.Join(faults, "\n"))
 	}
 	var infra979 []string
-	for _, route := range servedAt(apiV1, routes) {
-		if !route.columns {
+	for _, route := range routes {
+		if !route.columns || route.Versions == onlyV2 {
 			continue
 		}
 		if route.OfINFRA979 {
-			infra979 = append(infra979, route.Method+" "+route.Pattern)
+			if route.Version == apiV1 {
+				infra979 = append(infra979, route.Method+" "+route.Pattern)
+			}
 			continue
 		}
-		if route.Query != nil || route.Body.Kind != bodyNone {
-			t.Errorf("%s %s is a routeRow served at /api/v1 that declares a query or a body; serve it at /api/v2 alone (Versions: onlyV2)", route.Method, route.Pattern)
+		if !route.decoded() {
+			t.Errorf("%s %s mounts a row served in both versions, and the decoder does not read it", route.Method, route.Pattern)
 		}
 	}
 	if rows := len(served.v2Infra979Rows()); len(infra979) != rows {

@@ -868,12 +868,11 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table holds a route whose id the prefix layer cannot decide: " + strings.Join(undecided, "; "))
 	}
 	if undecodable := undecodableRoutes(routes); len(undecodable) > 0 {
-		// A /api/v2 route whose query or body the decoder cannot read, an authority rule that
-		// could never hold, or a /api/v1 mount of a routeRow that declares a query or a body,
-		// which reaches a handler that reads them from a decoder /api/v1 does not mount, would
-		// refuse, admit or drop requests by a declaration nothing reads as written, so the table
-		// is refused rather than mounted (decode_v2.go).
-		panic("api.Register: the route table holds a route whose request declarations the /api/v2 decoder cannot read: " + strings.Join(undecodable, "; "))
+		// A route whose query or body the decoder cannot read, an authority rule that could
+		// never hold, or authorities declared on a route the decoder does not read, which no gate
+		// holds a request to, would refuse, admit or drop requests by a declaration nothing reads
+		// as written, so the table is refused rather than mounted (decode_v2.go).
+		panic("api.Register: the route table holds a route whose request declarations the decoder cannot read: " + strings.Join(undecodable, "; "))
 	}
 	s.routeIndex = routeIndexEntries(servedAt(apiV1, routes))
 	s.routeIndexV2 = routeIndexV2Entries(servedAt(apiV2, routes))
@@ -903,12 +902,19 @@ func (s *server) routeHandler(route apiRoute) http.HandlerFunc {
 	// reaches the error writers on the request (withMountedRoute) and the drain from here, its
 	// replay and its body bound, its owner's closed state, its write class and the object its
 	// path names, the session its path names, its id facts, its scopes and whether a read-only
-	// token may call it, and on a route the rules of /api/v2 bind its query and body types and
-	// its authorities. The route itself rides the request too, for the code behind the layers
+	// token may call it, and on a route the decoder reads its query and body types and its
+	// authorities. The route itself rides the request too, for the code behind the layers
 	// that reads a fact of it: whose documents a slug names (loadArtifactForRequest) and the
 	// route a write's advice logs (routeName).
+	//
+	// The decoder and the authority gate hold every route apiRoute.decoded names, a row served
+	// in both versions at its /api/v1 path as at its /api/v2 path, so that path reads, gates and
+	// answers the row's one declaration as /api/v2 does (R2). The keyed layer does not follow
+	// them: keyedMethod keys a PUT and a DELETE on a route the rules of /api/v2 bind alone
+	// (apiRoute.v2Bound), since on /api/v1 neither takes an Idempotency-Key
+	// (packages/envoy/cmd/dispatch/README.md, "Keyed writes").
 	var decoder *v2Decoder
-	if route.v2Bound() {
+	if route.decoded() {
 		decoder = mustV2Decoder(route)
 	}
 	handler := route.Handler

@@ -514,17 +514,24 @@ var (
 	AskClosed = renamed("ASK_CLOSED", http.StatusConflict, "ASK_ANSWERED")
 )
 
+// The decoder's codes that no route of c8a44f97 answered (decode_v2.go). /api/v1 answers them only
+// at the /api/v1 path of a row served in both versions, which the decoder reads as it reads the
+// row's /api/v2 path (R2 of dispatch://INFRA-4071/spec: a new row is served in both versions by
+// one declaration); every other /api/v1 route ignores a key it does not read, as it always did.
+var (
+	// QueryKeyUnknown is a query key the route does not declare.
+	QueryKeyUnknown = both("QUERY_KEY_UNKNOWN", http.StatusBadRequest)
+	// StateInvalid is a state body whose `state` names no state its route takes, or none at all:
+	// the decoder of a union keyed by `state` names the states it takes.
+	StateInvalid = both("STATE_INVALID", http.StatusBadRequest)
+)
+
 // The codes only /api/v2 answers.
 var (
 	// NoRoute is a path under /api/v2 that no route serves.
 	NoRoute = v2Only("NO_ROUTE", http.StatusNotFound)
-	// QueryKeyUnknown is a query key the route does not declare.
-	QueryKeyUnknown = v2Only("QUERY_KEY_UNKNOWN", http.StatusBadRequest)
 	// PositionInvalid is a position parameter that is not one of the route's position field.
 	PositionInvalid = v2Only("POSITION_INVALID", http.StatusBadRequest)
-	// StateInvalid is a state body whose `state` names no state its route takes, or none at all:
-	// the decoder of a union keyed by `state` names the states it takes.
-	StateInvalid = v2Only("STATE_INVALID", http.StatusBadRequest)
 
 	// The objects a v2 path names that have no not-found code of their own under /api/v1, each
 	// the 404 of a path whose object does not exist (dispatch://INFRA-4071/spec R7). The broker's

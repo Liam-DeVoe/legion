@@ -422,7 +422,7 @@ func openAPIRequestBodyTypes(routes []apiRoute) (map[reflect.Type]bool, []reflec
 				reach(carried, response, nil)
 			}
 		}
-		if route.v2Bound() {
+		if route.decoded() {
 			// The decoder's refusal of an undeclared query key, which every such route answers
 			// (responses).
 			openAPIReach(reflect.TypeFor[queryKeyUnknownBody](), response, nil)
@@ -443,11 +443,12 @@ func openAPIRequestBodyTypes(routes []apiRoute) (map[reflect.Type]bool, []reflec
 	return request, bothDirections
 }
 
-// openAPIUnionArms are the arms of a /api/v2 route's union body, in the order of the values that
-// pick them, and nil for every other route: apiRoute.shape leaves a union's arms out of its
-// Request, since they are the v2 document's to describe (unionBody).
+// openAPIUnionArms are the arms of the union body of a route the decoder reads, in the order of the
+// values that pick them, and nil for every other route: apiRoute.shape leaves a union's arms out of
+// its Request, since the document describes them from Body.Arms (unionBody), as the decoder reads
+// them at /api/v2 and at a both-version row's /api/v1 path alike.
 func openAPIUnionArms(route apiRoute) []any {
-	if !route.v2Bound() || (route.Body.Kind != bodyStateUnion && route.Body.Kind != bodyKindUnion) {
+	if !route.decoded() || (route.Body.Kind != bodyStateUnion && route.Body.Kind != bodyKindUnion) {
 		return nil
 	}
 	arms := make([]any, 0, len(route.Body.Arms))
@@ -1152,8 +1153,8 @@ func openAPICamel(segment string) string {
 
 // parameters are the row's path parameters, in the pattern's own order, then the keys the shape's
 // query struct declares, in the struct's own order, then the `session` parameter every operation
-// carries. A /api/v2 row's keys are its Query type's as the decoder reads them
-// (v2QueryParameters).
+// carries. The keys of a route the decoder reads, at /api/v2 or at a both-version row's /api/v1
+// path, are its row's Query type's as the decoder reads them (v2QueryParameters).
 func (e *openAPIEmitter) parameters(
 	route apiRoute,
 	shape routeShape,
@@ -1171,7 +1172,7 @@ func (e *openAPIEmitter) parameters(
 	var query []openapi31.ParameterOrReference
 	var err error
 	switch {
-	case route.v2Bound():
+	case route.decoded():
 		query, err = v2QueryParameters(route)
 	case shape.Params != nil:
 		query, err = e.queryParameters(shape.Params)
@@ -1245,9 +1246,9 @@ func (e *openAPIEmitter) queryParameters(params any) ([]openapi31.ParameterOrRef
 	return parameters, nil
 }
 
-// v2QueryParameters are the keys a /api/v2 row's Query type declares, as the decoder reads them
-// (compileV2Query), in the type's own order, an embedded struct's keys where it embeds them: each
-// with the type its values are read as and what holds them - an enum, an integer's bounds, a
+// v2QueryParameters are the keys the Query type of a row the decoder reads declares, as it reads
+// them (compileV2Query), in the type's own order, an embedded struct's keys where it embeds them:
+// each with the type its values are read as and what holds them - an enum, an integer's bounds, a
 // list's limit bounds (the row's List) - and the value a query that leaves the key out is read as,
 // so the document says what the decoder accepts and refuses (400 INVALID_QUERY, INVALID_LIMIT,
 // INVALID_OFFSET) and what it reads an absent key as. None is required and none can be null. The
@@ -1282,7 +1283,7 @@ func v2QueryParameters(route apiRoute) ([]openapi31.ParameterOrReference, error)
 	return parameters, nil
 }
 
-// openAPIQueryFieldSchema is the schema of one key of a /api/v2 query, as the decoder reads it
+// openAPIQueryFieldSchema is the schema of one key of a query the decoder reads, as it reads it
 // (queryField.decode).
 func openAPIQueryFieldSchema(field queryField, bounds listBounds) map[string]any {
 	switch field.kind {
@@ -1398,14 +1399,14 @@ func (e *openAPIEmitter) requestBody(shape routeShape, name string) (*openapi31.
 	return body, nil
 }
 
-// unionBody is the body of a /api/v2 route whose body is a union (Body.Arms): a state body, keyed
-// by its `state` member, and a mark, keyed by its `kind` (decode_v2.go, armOf). Each distinct arm
-// type is one member of the union, holding the values of the key that pick it, so a body that
-// names a value matches the one arm it is decoded into, and the discriminator maps each value to
-// its arm's schema (R6: each transition body is a union keyed by state). Where the route's path
-// holds the key - PATCH /api/v2/me/marks/{kind}/{id} - the body carries no member to discriminate
-// by, so the union is the arms alone, and x-discriminator names the path parameter whose value
-// picks the arm.
+// unionBody is the body of a route the decoder reads whose body is a union (Body.Arms): a state
+// body, keyed by its `state` member, and a mark, keyed by its `kind` (decode_v2.go, armOf). Each
+// distinct arm type is one member of the union, holding the values of the key that pick it, so a
+// body that names a value matches the one arm it is decoded into, and the discriminator maps each
+// value to its arm's schema (R6: each transition body is a union keyed by state). Where the
+// route's path holds the key - PATCH /api/v2/me/marks/{kind}/{id} - the body carries no member to
+// discriminate by, so the union is the arms alone, and x-discriminator names the path parameter
+// whose value picks the arm.
 func (e *openAPIEmitter) unionBody(route apiRoute) (*openapi31.RequestBody, error) {
 	key := "state"
 	if route.Body.Kind == bodyKindUnion {
@@ -1545,9 +1546,10 @@ type openAPIAnswer struct {
 
 // responses are every answer the row gives: its success with the shapes that ride it, each of the
 // row's other answers, each refusal richer than errorBody, and the default answer every other
-// refusal writes. A /api/v2 row's operation also answers the decoder's refusal of an undeclared
-// query key at 400, and each of its refusal statuses answers errorBody beside the richer bodies it
-// declares, since other refusals share that status: its schemas are closed (closeObject), so a
+// refusal writes. The operation of a route the decoder reads, at /api/v2 or at a both-version
+// row's /api/v1 path, also answers its refusal of an undeclared query key at 400. Each refusal
+// status of a /api/v2 row's operation answers errorBody beside the richer bodies it declares,
+// since other refusals share that status: the v2 document's schemas are closed (closeObject), so a
 // status that named the richer body alone would refuse every errorBody answered at it.
 func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31.Responses, error) {
 	answers := map[int]*openAPIAnswer{}
@@ -1612,7 +1614,7 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 			return nil, err
 		}
 	}
-	if route.v2Bound() {
+	if route.decoded() {
 		if err := add(http.StatusBadRequest, queryKeyUnknownBody{}); err != nil {
 			return nil, err
 		}

@@ -16,9 +16,9 @@ package api
 //     with a version-free pattern, and every fact a wrapper of register or a reader of the route
 //     reads is one of its named columns. It is served at /api/v2 and, unless its Versions says
 //     otherwise, at /api/v1 too: a row a later change adds is served in both versions by one
-//     declaration (R2). A row that declares a Query or a Body is served at /api/v2 alone
-//     (Versions: onlyV2), since its handler reads them from the decoder and /api/v1 mounts none;
-//     register refuses such a row served in both (undecodableRoutes).
+//     declaration (R2), and the decoder and the authority gate read and hold its Query, its Body
+//     and its Authorities at both paths (apiRoute.decoded). A row that answers for /api/v1 rows
+//     which keep their own answer is served at /api/v2 alone (Versions: onlyV2).
 //   - A testHookRow (testHookRows) is a test hook, served at its /api/v1 path and at
 //     /api/v2/_test/<that path without /api/v1 and /_test>, both only when Deps.TestHooksEnabled.
 //     Its facts are its side-map entries, as a v1Row's are.
@@ -45,7 +45,8 @@ const (
 	// bothVersions serves the row at /api/v1<Pattern> and at /api/v2<Pattern>.
 	bothVersions routeVersions = iota
 	// onlyV2 serves the row at /api/v2<Pattern> alone: a route of the new shape, which answers
-	// what the v1Rows that name it as their Successor answered.
+	// what the v1Rows that name it as their Successor answered, while those rows keep their own
+	// answer at /api/v1. A row with no older /api/v1 answer takes the zero value instead.
 	onlyV2
 )
 
@@ -391,14 +392,16 @@ type routeRow struct {
 	Description string
 	// Handler answers the route.
 	Handler http.HandlerFunc
-	// Versions is which versions serve the row; its zero value is both. A row that declares a
-	// Query or a Body names onlyV2, which register holds it to (undecodableRoutes).
+	// Versions is which versions serve the row; its zero value is both, and a row served in both
+	// is decoded and gated at both paths (apiRoute.decoded). A row that answers for v1Rows which
+	// keep their own answer at /api/v1 names onlyV2; a row a later change adds, which has no older
+	// /api/v1 answer to keep, takes the zero value and is served at both by its one declaration.
 	Versions routeVersions
 	// OfINFRA979 marks a row of the INFRA-979 tree, which v2Infra979Rows declares and marks each
 	// of, and which that tree's own spec decides. The parent's shape rules bind none of them
 	// (dispatch://INFRA-2946/spec, R1): the shape test, the decoder, the v2 document's contract,
 	// the code list and the keyed writes of /api/v2 leave out every route mounted from a row it
-	// marks, at either version (v2Bound, v1DecodedDeclarations).
+	// marks, at either version (v2Bound, decoded).
 	OfINFRA979 bool
 
 	// Resource is the noun the route's path names what it serves by (R1.1): a plural for a
@@ -527,8 +530,8 @@ func (route apiRoute) sideMapName() string {
 
 // shape is what the route takes and answers, as the OpenAPI emitter and the mount guards read it:
 // for a route of the v1 table its routeShapes entry, and for the mount of a routeRow its Shape
-// with its Query and Body as the request. A union's arms are the v2 document's to describe
-// (Body.Arms), so they leave Request nil here.
+// with its Query and Body as the request. A union's arms are the document's to describe from
+// Body.Arms (openAPIUnionArms, unionBody), so they leave Request nil here.
 func (route apiRoute) shape() routeShape {
 	shape := route.Shape
 	if !route.columns {
