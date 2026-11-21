@@ -318,6 +318,14 @@ type coldFold struct {
 // fold that fails fails the room, as a failed room load does, and reaches each read as
 // ErrServiceUnavailable, unless the history does not decode or parks past a room's cap
 // (parkedPastRoomCaps), which is ErrDocumentUnloadable, the state a rebuild repairs.
+//
+// A read whose context carries a grant its caller holds - a transaction's, which the context Join
+// returned carries, or a write's - folds on its own goroutine under that grant instead, sharing
+// no fold (carriesLoadGrant): a grant serves its holder's goroutine alone, and a fold shared with
+// other reads would take it on another goroutine, and, while the transaction holds a fork, for
+// those reads too. It waits for its fold whatever its context does, within the cache's timeout,
+// and a fold the pool refused busy - a transaction holding a fork takes more of its grant only
+// where the pool gives it at once (loadSlots) - fails no room: the document is sound.
 func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRead, *pmdoc.Node, error) {
 	stamp, err := s.persistence.DocumentStamp(ctx, artifactID)
 	if err != nil {
@@ -333,27 +341,32 @@ func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRea
 	if read := s.reads.get(artifactID, stamp); read != nil {
 		return read, nil, nil
 	}
-	key := artifactID + "@" + strconv.FormatInt(stamp.Version, 10) + "/" + stamp.Row
-	flight := s.reads.flights.DoChan(key, func() (any, error) {
-		fold, err := s.foldDocument(ctx, artifactID)
-		if err != nil {
+	fold := func() (any, error) {
+		cold, err := s.foldDocument(ctx, artifactID)
+		if err != nil && !refusedBusy(err) {
 			s.failRoom(artifactID, err)
 		}
-		return fold, err
-	})
-	select {
-	case <-ctx.Done():
-		return nil, nil, ctx.Err()
-	case result := <-flight:
-		if result.Err != nil {
-			if errors.Is(result.Err, ErrDocumentUnloadable) {
-				return nil, nil, result.Err
-			}
-			return nil, nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, result.Err)
-		}
-		fold := result.Val.(coldFold)
-		return fold.read, fold.tree, fold.treeErr
+		return cold, err
 	}
+	var result singleflight.Result
+	if carriesLoadGrant(ctx) {
+		result.Val, result.Err = fold()
+	} else {
+		key := artifactID + "@" + strconv.FormatInt(stamp.Version, 10) + "/" + stamp.Row
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case result = <-s.reads.flights.DoChan(key, fold):
+		}
+	}
+	if result.Err != nil {
+		if errors.Is(result.Err, ErrDocumentUnloadable) {
+			return nil, nil, result.Err
+		}
+		return nil, nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, result.Err)
+	}
+	folded := result.Val.(coldFold)
+	return folded.read, folded.tree, folded.treeErr
 }
 
 // foldDocument loads artifactID's stored history decoded once (LoadDocument), reads its tree and

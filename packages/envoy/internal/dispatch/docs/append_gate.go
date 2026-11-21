@@ -262,15 +262,17 @@ func updateAge(observed time.Time) time.Duration {
 //
 // The decodes that check makes share one grant of the pod's load concurrency, taken under ctx
 // (storedHistoryHolds), which waits for its bytes on the room's persistence worker
-// (StoreUpdateStored) as in a transaction's flush of a room (AppendRoomUpdatesTx). The worker holds
-// the document's lock and a connection of the room-appends pool while it waits. One holder of the
-// pool waits for that lock: a joined transaction that holds the grant its first document's fork
-// took and waits for its second document's advisory lock (joinLiveWrite, readFork), so the worker
-// can wait for bytes that transaction holds while the transaction waits for the worker's lock.
-// Nothing in that pair gives way; Join's WriteRequestBound ends the transaction's wait for a
-// caller's request, which is answered 503 and gives its grant back, the transaction's own deadline
-// ends it at the latest for the close's sweep and the ask repair, which roll back, and the worker
-// then takes its bytes (loadSlots,
+// (StoreUpdateStored). In a transaction's flush of a room (AppendRoomUpdatesTx) the grant is the
+// transaction's own (withLoadSlot), so while a fork of the transaction stands under it the check
+// takes more of it only where the pool gives it at once and is refused busy otherwise (loadSlots).
+// The worker holds the document's lock and a connection of the room-appends pool while it waits.
+// One holder of the pool waits for that lock: a transaction that holds the grant its first
+// document's fork took and waits for its later document's advisory lock (joinLiveWrite,
+// readFork), though never for more of the pool, so the worker can wait for bytes that transaction
+// holds while the transaction waits for the worker's lock. Nothing in that pair gives way; Join's
+// WriteRequestBound ends the transaction's wait for a caller's request, which is answered 503 and
+// gives its grant back, the transaction's own deadline ends it at the latest for the close's sweep
+// and the ask repair, which roll back, and the worker then takes its bytes (loadSlots,
 // TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound). No other holder waits
 // for the lock or the connection: a heavy apply gives its grant back before its commit reaches the
 // room's queue of updates to store, which this worker alone reads (weighPeerUpdate). The fold

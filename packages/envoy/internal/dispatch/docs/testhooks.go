@@ -62,6 +62,16 @@ func (s *Service) AfterSettleLockForTest(hook func(room string)) {
 	s.afterSettleLock = hook
 }
 
+// AfterForkReadForTest sets the hook every operation of a transaction runs once it holds its
+// write's fork (forkLive), with the id of the document it writes. Tests in package api grow a
+// later document of the transaction there, once its first document's fork holds the
+// transaction's grant, so the later document's fork weighs more than the transaction weighed it
+// before its first fork (Service.forksAhead). It is set before the transaction under test begins,
+// since a write reads it unlocked.
+func (s *Service) AfterForkReadForTest(hook func(room string)) {
+	s.afterForkRead = hook
+}
+
 // ResumeOwedSettlementsForTest runs one pass of the settlement resumption
 // (resumeOwedSettlements): it arms the settlement of at most settlementResumeBatch documents whose
 // pending-settlement row is at least age old, those no pass has tried first, as
@@ -832,9 +842,10 @@ func CallerRequestSinceForTest(ctx context.Context, ago time.Duration) context.C
 }
 
 // LoadPoolForTest is a load concurrency of one slot that UseOneLoadSlotForTest made the process's,
-// which a test in package api fills around a joined transaction's grant so that a room's
-// persistence worker waits for the pool in its gate's fold while it holds the document's lock,
-// the wait loadSlots names as the one a joined transaction's second document can meet.
+// which a test in package api fills around a transaction's grant: so that a room's persistence
+// worker waits for the pool in its gate's fold while it holds the document's lock, the wait
+// loadSlots names as the one a transaction's later document can meet, or so that a later
+// document's fork finds none of the pool free past that grant and is refused busy.
 type LoadPoolForTest struct {
 	slots *loadSlots
 }

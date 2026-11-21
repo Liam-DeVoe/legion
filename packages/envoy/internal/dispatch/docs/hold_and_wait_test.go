@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,14 +24,15 @@ import (
 // This file tests the pod's load concurrency's rule that no holder of a grant waits for more of
 // the pool while it holds it (loadSlots, loadSlot.take): each holder that needs more takes it at
 // once, gives its grant back and takes the total whole, does its work again under the whole
-// grant, or refuses busy, and a joined transaction's second document alone waits. The pool serves
-// its waiters in order (semaphore.Weighted), so most tests queue a taker for more of the pool than
-// is free beside the holder under test and then have that holder need more: a holder that queued
-// behind the taker for the difference would wait for it, while the taker waits for the bytes the
-// holder holds, and the test fails at holdAndWaitBound naming that wait. With take put back to
-// wait for the difference while it holds, every test here but the leak's and the joined
-// transaction's fails: at that bound, or at the state answer's own WriteWaitBound, which refuses
-// it.
+// grant, or refuses busy, and no holder is excepted - a transaction holds one grant for its forks
+// and its reads (Ledger.forkSlot, withLoadSlot), and every take of it after its first fits at once
+// or is refused busy. The pool serves its waiters in order (semaphore.Weighted), so most tests
+// queue a taker for more of the pool than is free beside the holder under test and then have that
+// holder need more: a holder that queued behind the taker for the difference would wait for it,
+// while the taker waits for the bytes the holder holds, and the test fails at holdAndWaitBound
+// naming that wait. With take put back to wait for the difference while it holds, every test here
+// but the leak's and the up-front take's fails: at that bound, or at the state answer's own
+// WriteWaitBound, which refuses it.
 
 // holdAndWaitBound bounds each wait here for a holder that needs more of the pool. The work each
 // does once it has its bytes is a fold or a decode of a few hundred kilobytes, or none, and takes
@@ -415,71 +417,449 @@ func TestAFirstForksCoverGivesItsReadsGrantBackRatherThanQueueForMoreWhileItHold
 	}
 }
 
-// A joined transaction's second document is the one holder that waits for more of the pool while
-// it holds (loadSlot.joinedBy): its fork weighs more than the grant its first document's fork
-// holds, which that fork keeps from being given back, so its cover waits for the difference and
-// the write lands once the pool has it. Without the mark the cover would be refused at once, and
-// the write with it.
-func TestAJoinedTransactionsSecondForkWaitsForWhatItWeighsPastTheFirstsAndLands(t *testing.T) {
+// joinedTransaction begins a transaction on service's store and joins it (Service.Join), as an
+// API write's handler does, and answers the context its operations run with, its ledger, and what
+// ends it: the ledger discarded and the transaction rolled back, once, which the test's end runs
+// too. A committed transaction is ended the same way.
+func joinedTransaction(t *testing.T, ctx context.Context, service *Service) (context.Context, *Ledger, func()) {
+	t.Helper()
+	tx, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin a transaction: %v", err)
+	}
+	joined, ledger := service.Join(ctx, tx)
+	end := sync.OnceFunc(func() {
+		ledger.Discard()
+		_ = tx.Rollback(context.Background())
+	})
+	t.Cleanup(end)
+	return joined, ledger, end
+}
+
+// requireGrantShort fails the test unless err, what answered, is the pool's refusal of a take it
+// does not give at once while its holder holds some (errGrantShort), which the API answers 503
+// DOC_SERVICE_UNAVAILABLE (ErrServiceUnavailable).
+func requireGrantShort(t *testing.T, err error, what string) {
+	t.Helper()
+	if !errors.Is(err, errGrantShort) || !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("%s was answered %v, want it refused busy: %v", what, err, errGrantShort)
+	}
+}
+
+// residentGrantDocuments creates one document on each of the issues numbered, its stored history
+// grantTestState's of the bytes given for it, and loads a room of each, so a write's fork of it
+// is the room cloned and weighs what a copy of the room weighs (copyOfRoom). It answers the
+// documents and their weights, in the order given.
+func residentGrantDocuments(t *testing.T, service *Service, issues []int, bytes []int) ([]string, []int64) {
+	t.Helper()
+	documents, weights := make([]string, len(issues)), make([]int64, len(issues))
+	for index, issue := range issues {
+		documents[index] = createIssueDocument(t, service.store, issue, "Written whole by this test.")
+		storeHistory(t, service, documents[index], grantTestState(t, bytes[index]))
+		if err := loadRoomOf(service, documents[index]); err != nil {
+			t.Fatalf("load room %s: %v", documents[index], err)
+		}
+		weights[index] = service.copyOfRoom(service.srv.GetDoc(documents[index]))
+	}
+	return documents, weights
+}
+
+// grantEdit is the write the tests below make of each document: its heading replaced.
+var grantEdit = []model.EditOp{{Op: "replace", Find: grantWriteHeading, With: "Written"}}
+
+// applyGrantEdit makes grantEdit to artifactID in the transaction joined is joined to, on a
+// goroutine of its own, and answers what the write answers.
+func applyGrantEdit(service *Service, joined context.Context, artifactID string) <-chan error {
+	answered := make(chan error, 1)
+	go func() {
+		_, err := service.ApplyOps(joined, artifactID, grantEdit, grantWriter, nil)
+		answered <- err
+	}()
+	return answered
+}
+
+// A transaction's later document takes what its fork weighs past the grant its first document's
+// fork holds only where the pool gives it at once (loadSlot.take): refused busy while the pool
+// lacks the difference, which leaves both documents as they were, and landed once the pool has it
+// free. Before, the cover waited for the difference holding the first fork's grant
+// (loadSlot.joinedBy), so the write here was answered by nothing while the pool lacked it.
+func TestAJoinedTransactionsSecondForkTakesWhatItWeighsPastTheFirstsAtOnceOrIsRefusedBusy(t *testing.T) {
 	ctx := context.Background()
 	service, _ := newTestService(t)
 	service.settle = time.Hour
-	first := createIssueDocument(t, service.store, 31, "Written whole by this test.")
-	second := createIssueDocument(t, service.store, 32, "Written whole by this test.")
-	storeHistory(t, service, first, grantTestState(t, 16<<10))
-	storeHistory(t, service, second, grantTestState(t, 64<<10))
-	for _, room := range []string{first, second} {
-		if err := loadRoomOf(service, room); err != nil {
-			t.Fatalf("load room %s: %v", room, err)
-		}
-	}
-	firstWeight, secondWeight := service.copyOfRoom(service.srv.GetDoc(first)), service.copyOfRoom(service.srv.GetDoc(second))
+	documents, weights := residentGrantDocuments(t, service, []int{31, 32}, []int{16 << 10, 64 << 10})
+	first, second := documents[0], documents[1]
+	firstWeight, secondWeight := weights[0], weights[1]
 	if secondWeight <= firstWeight {
 		t.Fatalf("the second room's copy weighs %d and the first's %d, want the second heavier, or nothing here is tested", secondWeight, firstWeight)
 	}
 	pool := useLoadSlots(t, newLoadSlots(1))
-	waits := poolWaits(pool)
-	tx, err := service.store.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(context.Background())
-	joined, ledger := service.Join(ctx, tx)
-	defer ledger.Discard()
-	edit := []model.EditOp{{Op: "replace", Find: grantWriteHeading, With: "Written"}}
-	if _, err := service.ApplyOps(joined, first, edit, grantWriter, nil); err != nil {
+	joined, _, end := joinedTransaction(t, ctx, service)
+	if err := <-applyGrantEdit(service, joined, first); err != nil {
 		t.Fatalf("the transaction's write of the first document: %v", err)
 	}
 	if held := pool.held.Load(); held != firstWeight {
 		t.Fatalf("the pool holds %d bytes once the first document's fork is built, want its %d", held, firstWeight)
 	}
 	filler := fillPoolBut(t, pool, secondWeight-firstWeight-1)
-	answered := make(chan error, 1)
-	go func() {
-		_, err := service.ApplyOps(joined, second, edit, grantWriter, nil)
-		answered <- err
-	}()
-	select {
-	case <-waits:
-	case err := <-answered:
-		t.Fatalf("the write of the second document was answered (%v) while the pool lacked what its fork weighs past the first's, want it to wait for that holding the first fork's grant", err)
-	case <-time.After(holdAndWaitBound):
-		t.Fatalf("the write of the second document neither waited for the pool nor was answered within %s", holdAndWaitBound)
+	err := answeredWithin(t, applyGrantEdit(service, joined, second), "the transaction's write of the second document")
+	requireGrantShort(t, err, "the transaction's write of the second document, while the pool lacked one byte of what its fork weighs past the first's")
+	if held := pool.held.Load(); held != filler.bytes+firstWeight {
+		t.Fatalf("the pool holds %d bytes once the second document's fork was refused, want the first fork's %d beside the test's %d", held, firstWeight, filler.bytes)
+	}
+	end()
+	requireHeading(t, service, first, true)
+	requireHeading(t, service, second, true)
+	if held := pool.held.Load(); held != filler.bytes {
+		t.Fatalf("the pool holds %d bytes once the refused transaction ended, want the test's %d alone", held, filler.bytes)
 	}
 	filler.release()
-	if err := answeredWithin(t, answered, "the transaction's write of the second document"); err != nil {
-		t.Fatalf("the transaction's write of the second document: %v", err)
+
+	retried, ledger, endRetry := joinedTransaction(t, ctx, service)
+	for _, document := range documents {
+		if err := <-applyGrantEdit(service, retried, document); err != nil {
+			t.Fatalf("the retry's write of %s, the pool free: %v", document, err)
+		}
 	}
 	if held := pool.held.Load(); held != secondWeight {
-		t.Fatalf("the pool holds %d bytes once the second document's fork is built, want the grant raised to its %d", held, secondWeight)
+		t.Fatalf("the pool holds %d bytes once the retry's second fork is built, want the grant raised to its %d", held, secondWeight)
 	}
 	if err := ledger.Commit(ctx); err != nil {
-		t.Fatalf("commit the transaction: %v", err)
+		t.Fatalf("commit the retry: %v", err)
 	}
+	endRetry()
 	requireHeading(t, service, first, false)
 	requireHeading(t, service, second, false)
 	if held := pool.held.Load(); held != 0 {
-		t.Fatalf("the pool holds %d bytes once the transaction committed, want none", held)
+		t.Fatalf("the pool holds %d bytes once the retry committed, want none", held)
+	}
+}
+
+// Two transactions, each holding its first document's fork and each needing, for a second
+// document's fork, more than the pool has free - bytes only the other's grant would free - both
+// finish: the first is refused busy at once and rolls back, which frees what the second needs, so
+// the second lands, and the first's retry lands after it. Before, a later fork waited for the
+// difference holding its first fork's grant (loadSlot.joinedBy): the first queued for bytes the
+// second held, the second queued behind it for bytes the first held, and neither was served
+// until this test's bound.
+func TestTwoJoinedTransactionsEachNeedingWhatTheOthersGrantHoldsBothFinish(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	documents, weights := residentGrantDocuments(t, service, []int{33, 34, 35, 36}, []int{16 << 10, 64 << 10, 16 << 10, 64 << 10})
+	// Transaction one writes documents 0 and 1, transaction two documents 2 and 3.
+	needOne, needTwo := weights[1]-weights[0], weights[3]-weights[2]
+	free := min(needOne, needTwo) - 1
+	if needOne <= 0 || needTwo <= 0 || needTwo > free+weights[0] || needOne > free+weights[2] {
+		t.Fatalf("the documents weigh %v, so the two transactions do not each need what only the other's grant frees, and nothing here is tested", weights)
+	}
+	pool := useLoadSlots(t, newLoadSlots(1))
+	waits := poolWaits(pool)
+	one, _, endOne := joinedTransaction(t, ctx, service)
+	two, ledgerTwo, endTwo := joinedTransaction(t, ctx, service)
+	for _, write := range []struct {
+		joined   context.Context
+		document string
+	}{{one, documents[0]}, {two, documents[2]}} {
+		if err := <-applyGrantEdit(service, write.joined, write.document); err != nil {
+			t.Fatalf("a transaction's write of its first document: %v", err)
+		}
+	}
+	filler := fillPoolBut(t, pool, free)
+	for len(waits) > 0 {
+		<-waits
+	}
+	answeredOne := applyGrantEdit(service, one, documents[1])
+	var err error
+	select {
+	case err = <-answeredOne:
+	case <-waits:
+		// The first transaction queued for bytes the second's grant holds: the second's write of
+		// its own second document then queues behind it for bytes the first's holds.
+		answeredTwo := applyGrantEdit(service, two, documents[3])
+		select {
+		case err = <-answeredOne:
+		case err = <-answeredTwo:
+		case <-time.After(holdAndWaitBound):
+			t.Fatalf("neither transaction's write of its second document was answered within %s: each queued for more of the pool holding its first fork's grant, for bytes only the other's grant would free", holdAndWaitBound)
+		}
+		t.Fatalf("the first transaction's write of its second document queued for more of the pool holding its first fork's grant, and a write was answered (%v) only after", err)
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the first transaction's write of its second document neither waited for the pool nor was answered within %s", holdAndWaitBound)
+	}
+	requireGrantShort(t, err, "the first transaction's write of its second document, which needs what the second's grant holds")
+	endOne()
+	if held := pool.held.Load(); held != filler.bytes+weights[2] {
+		t.Fatalf("the pool holds %d bytes once the first transaction ended, want the second's %d beside the test's %d", held, weights[2], filler.bytes)
+	}
+	if err := <-applyGrantEdit(service, two, documents[3]); err != nil {
+		t.Fatalf("the second transaction's write of its second document, once the first gave its grant back: %v", err)
+	}
+	if err := ledgerTwo.Commit(ctx); err != nil {
+		t.Fatalf("commit the second transaction: %v", err)
+	}
+	endTwo()
+	requireHeading(t, service, documents[0], true)
+	requireHeading(t, service, documents[1], true)
+	requireHeading(t, service, documents[2], false)
+	requireHeading(t, service, documents[3], false)
+
+	retried, ledger, endRetry := joinedTransaction(t, ctx, service)
+	for _, document := range documents[:2] {
+		if err := <-applyGrantEdit(service, retried, document); err != nil {
+			t.Fatalf("the first transaction's retry of %s: %v", document, err)
+		}
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		t.Fatalf("commit the first transaction's retry: %v", err)
+	}
+	endRetry()
+	requireHeading(t, service, documents[0], false)
+	requireHeading(t, service, documents[1], false)
+	filler.release()
+	if held := pool.held.Load(); held != 0 {
+		t.Fatalf("the pool holds %d bytes once both transactions committed, want none", held)
+	}
+}
+
+// A transaction holding its first document's fork, beside a waiter queued for bytes that fork's
+// grant holds, whose second document's fork weighs more past that grant than the pool has free,
+// finishes: refused busy at once, since a take on a held grant never queues (loadSlot.take), and
+// the waiter is served once the transaction gives its grant back. Before, the cover queued for the
+// difference behind the waiter (loadSlot.joinedBy), which waited for the bytes the transaction
+// held, until this test's bound.
+func TestAJoinedTransactionBesideAWaiterForItsGrantFinishesAndTheWaiterGoesOn(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	documents, weights := residentGrantDocuments(t, service, []int{37, 38}, []int{16 << 10, 64 << 10})
+	need := weights[1] - weights[0]
+	if need <= 0 {
+		t.Fatalf("the documents weigh %v, want the second heavier, or nothing here is tested", weights)
+	}
+	pool := useLoadSlots(t, newLoadSlots(1))
+	waits := poolWaits(pool)
+	joined, _, end := joinedTransaction(t, ctx, service)
+	if err := <-applyGrantEdit(service, joined, documents[0]); err != nil {
+		t.Fatalf("the transaction's write of the first document: %v", err)
+	}
+	filler := fillPoolBut(t, pool, need-1)
+	// The waiter needs more than is free beside the transaction's grant, and no more than is free
+	// once that grant is given back.
+	served := queueTaker(t, waits, need)
+	err := answeredWithin(t, applyGrantEdit(service, joined, documents[1]), "the transaction's write of the second document, beside the waiter")
+	requireGrantShort(t, err, "the transaction's write of the second document, beside a waiter for its grant's bytes")
+	end()
+	requireServed(t, served)
+	requireHeading(t, service, documents[0], true)
+	requireHeading(t, service, documents[1], true)
+	filler.release()
+	if held := pool.held.Load(); held != 0 {
+		t.Fatalf("the pool holds %d bytes once the transaction ended and the waiter was served, want none", held)
+	}
+}
+
+// An issue's ask-state write knows its documents before its first fork (WriteIssueAskStates), so
+// its first fork takes what both documents' forks weigh, summed (Service.forksAhead,
+// liveWrite.coverFork), and the second fork takes nothing more: the pool records one take, of
+// both weights, for the whole transaction. Before, the first fork took its own weight and the
+// second the difference past it, a second take that a pool short of it refuses busy.
+func TestAnIssuesAskStateWriteTakesBothDocumentsWeightsAtItsFirstForkAndNeverAgain(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	_, weights := residentGrantDocuments(t, service, []int{41, 41}, []int{16 << 10, 64 << 10})
+	sum := weights[0] + weights[1]
+	pool := useLoadSlots(t, newLoadSlots(1))
+	var taken slotsHeld
+	pool.taken = taken.record
+	joined, _, end := joinedTransaction(t, ctx, service)
+	if _, err := service.WriteIssueAskStates(joined, "DOC-41", nil, grantWriter, true); err != nil {
+		t.Fatalf("write the issue's ask states: %v", err)
+	}
+	if takes := taken.all(); len(takes) != 1 || takes[0] != sum {
+		t.Fatalf("the pool recorded takes leaving it holding %v for the transaction's two forks, want one take of both weights, %d and %d, summed: %d", takes, weights[0], weights[1], sum)
+	}
+	if held := pool.held.Load(); held != sum {
+		t.Fatalf("the pool holds %d bytes once both forks are built, want their %d", held, sum)
+	}
+	end()
+	if held := pool.held.Load(); held != 0 {
+		t.Fatalf("the pool holds %d bytes once the transaction ended, want none", held)
+	}
+}
+
+// A read of a stored document under a transaction holding a fork takes on the transaction's
+// grant, which Join's context carries (withLoadSlot, transactionGrant): what it weighs past the
+// fork's grant, at once, so the pool holds one grant, the transaction's, raised to the read's
+// weight, and no second grant is taken. The pool here has free what the read weighs past the
+// fork's grant and not the read's whole weight, so a read that took a grant of its own waited for
+// it holding the fork's grant, as it did before, until this test's bound.
+func TestAStoredReadUnderATransactionTakesOnTheTransactionsGrant(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	documents, weights := residentGrantDocuments(t, service, []int{43}, []int{16 << 10})
+	stored := createIssueDocument(t, service.store, 44, "Written whole by this test.")
+	state := grantTestState(t, 64<<10)
+	storeHistory(t, service, stored, state)
+	if service.srv.GetDoc(stored) != nil {
+		t.Fatal("a room holds the stored document, so its read would read the room")
+	}
+	storedWeight := storedCopyWeight(state)
+	if storedWeight <= weights[0] {
+		t.Fatalf("the stored document weighs %d and the fork %d, want the stored one heavier, or nothing here is tested", storedWeight, weights[0])
+	}
+	pool := useLoadSlots(t, newLoadSlots(1))
+	waits := poolWaits(pool)
+	joined, ledger, end := joinedTransaction(t, ctx, service)
+	if err := <-applyGrantEdit(service, joined, documents[0]); err != nil {
+		t.Fatalf("the transaction's write: %v", err)
+	}
+	filler := fillPoolBut(t, pool, storedWeight-weights[0])
+	read := make(chan error, 1)
+	var tree *pmdoc.Node
+	go func() {
+		var err error
+		tree, err = service.storedTree(joined, stored)
+		read <- err
+	}()
+	if err := answeredWithin(t, read, "the stored read under the transaction"); err != nil || tree == nil {
+		t.Fatalf("the stored read under the transaction answered %v with a tree %t", err, tree != nil)
+	}
+	if len(waits) > 0 {
+		t.Fatal("a taker waited for the pool during the read: the read took a grant of its own beside the transaction's")
+	}
+	if grant, held := ledger.forks.slot.bytes, pool.held.Load(); grant != storedWeight || held != filler.bytes+storedWeight {
+		t.Fatalf("the transaction's grant holds %d bytes and the pool %d once the stored read returned, want the transaction's one grant raised to the read's %d beside the test's %d",
+			grant, held, storedWeight, filler.bytes)
+	}
+	end()
+	if held := pool.held.Load(); held != filler.bytes {
+		t.Fatalf("the pool holds %d bytes once the transaction ended, want the test's %d alone", held, filler.bytes)
+	}
+}
+
+// twoRowDocument creates a document on issue number whose stored history is two rows -
+// grantTestState's of bytes and an empty update after it - so a read of it folds them in memory
+// under a slot of the buffered folds (foldRead), and answers it with what those rows weigh, which
+// the fold takes before it decodes them.
+func twoRowDocument(t *testing.T, service *Service, number, bytes int) (string, int64) {
+	t.Helper()
+	document := createIssueDocument(t, service.store, number, "Written whole by this test.")
+	state := grantTestState(t, bytes)
+	storeHistory(t, service, document, state)
+	if _, err := service.persistence.AppendUpdate(context.Background(), document, emptyUpdate); err != nil {
+		t.Fatalf("append the second row of %s: %v", document, err)
+	}
+	if service.srv.GetDoc(document) != nil {
+		t.Fatalf("a room holds %s, so its read would fold nothing", document)
+	}
+	return document, storedCopyWeight(state, emptyUpdate)
+}
+
+// A transaction holding its first document's fork whose cold read of a later document finds every
+// slot of the buffered folds held, by a fold waiting for the bytes the transaction holds, is
+// refused busy at once (foldRead, errFoldSlotsBusy), and the fold goes on once the transaction
+// gives its grant back. Before, the read waited for the slot holding its grant, and the fold for
+// the grant's bytes, until this test's bound.
+func TestAJoinedTransactionsColdReadBesideHeldFoldSlotsIsRefusedBusyAndTheFoldGoesOn(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	written, weights := residentGrantDocuments(t, service, []int{45}, []int{16 << 10})
+	later, _ := twoRowDocument(t, service, 46, 16<<10)
+	folding, foldingWeight := twoRowDocument(t, service, 47, 64<<10)
+	versioned, ok := service.persistence.(*PgVersioned)
+	if !ok {
+		t.Fatalf("the service reads through %T, whose fold slots this test cannot hold", service.persistence)
+	}
+	versioned.foldSlots = make(chan struct{}, 1)
+	pool := useLoadSlots(t, newLoadSlots(1))
+	waits := poolWaits(pool)
+	joined, _, end := joinedTransaction(t, ctx, service)
+	if err := <-applyGrantEdit(service, joined, written[0]); err != nil {
+		t.Fatalf("the transaction's write of its first document: %v", err)
+	}
+	// The other fold takes the one slot and then waits for its rows' weight, which the pool has
+	// free only once the transaction gives its grant back.
+	filler := fillPoolBut(t, pool, foldingWeight-1)
+	if foldingWeight-1+weights[0] < foldingWeight {
+		t.Fatal("the transaction's grant would not free what the other fold waits for, so nothing here is tested")
+	}
+	folded := make(chan error, 1)
+	go func() {
+		_, err := versioned.Load(ctx, folding)
+		folded <- err
+	}()
+	select {
+	case <-waits:
+	case err := <-folded:
+		t.Fatalf("the other fold finished (%v) while the pool lacked its rows' weight, want it waiting for that holding the fold slot", err)
+	case <-time.After(holdAndWaitBound):
+		t.Fatalf("the other fold never came to wait for the pool within %s", holdAndWaitBound)
+	}
+	err := answeredWithin(t, applyGrantEdit(service, joined, later), "the transaction's write of its later document, a cold read beside a held fold slot")
+	if !errors.Is(err, errFoldSlotsBusy) || !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("the transaction's cold read beside a held fold slot was answered %v, want it refused busy: %v", err, errFoldSlotsBusy)
+	}
+	end()
+	if err := answeredWithin(t, folded, "the other fold, once the transaction gave its grant back"); err != nil {
+		t.Fatalf("the other fold: %v", err)
+	}
+	requireHeading(t, service, written[0], true)
+	filler.release()
+	if held := pool.held.Load(); held != 0 {
+		t.Fatalf("the pool holds %d bytes once the transaction ended and the fold finished, want none", held)
+	}
+}
+
+// A transaction holding its first document's fork reads a later document no room holds here, while
+// the pool is filled so that a room's load would queue behind a waiter that needs the bytes the
+// transaction holds: it loads no room, reads the stored document on its own grant and finishes
+// (docTree, transactionHolds), and the waiter goes on once the transaction ends. Before, it loaded
+// the room (roomBudget.openServerRoom), whose load took a grant of its own on ygo's load goroutine
+// and queued behind the waiter, while the transaction waited for the load, until this test's bound.
+func TestAJoinedTransactionsReadOfADocumentNoRoomHoldsLoadsNoRoom(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newTestService(t)
+	service.settle = time.Hour
+	written, weights := residentGrantDocuments(t, service, []int{48}, []int{16 << 10})
+	stored := createIssueDocument(t, service.store, 49, "Written whole by this test.")
+	state := grantTestState(t, 8<<10)
+	storeHistory(t, service, stored, state)
+	if service.srv.GetDoc(stored) != nil {
+		t.Fatal("a room holds the stored document, so its read loads nothing")
+	}
+	if storedCopyWeight(state) > weights[0] {
+		t.Fatalf("the stored document weighs %d, past the fork's %d, so its read would take more and nothing here is tested", storedCopyWeight(state), weights[0])
+	}
+	pool := useLoadSlots(t, newLoadSlots(1))
+	waits := poolWaits(pool)
+	joined, _, end := joinedTransaction(t, ctx, service)
+	if err := <-applyGrantEdit(service, joined, written[0]); err != nil {
+		t.Fatalf("the transaction's write: %v", err)
+	}
+	filler := fillPoolBut(t, pool, 0)
+	served := queueTaker(t, waits, weights[0])
+	read := make(chan error, 1)
+	var tree *pmdoc.Node
+	go func() {
+		var err error
+		tree, err = service.docTree(joined, stored)
+		read <- err
+	}()
+	if err := answeredWithin(t, read, "the transaction's read of a document no room holds"); err != nil || tree == nil {
+		t.Fatalf("the transaction's read of a document no room holds answered %v with a tree %t", err, tree != nil)
+	}
+	if slices.Contains(service.srv.Rooms(), stored) {
+		t.Fatal("the transaction's read loaded a room of the stored document")
+	}
+	end()
+	requireServed(t, served)
+	filler.release()
+	if held := pool.held.Load(); held != 0 {
+		t.Fatalf("the pool holds %d bytes once the transaction ended and the waiter was served, want none", held)
 	}
 }
 

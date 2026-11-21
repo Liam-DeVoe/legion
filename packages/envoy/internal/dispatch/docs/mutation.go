@@ -1210,16 +1210,24 @@ func (s *Service) heldTree(ctx context.Context, artifactID string) (tree *pmdoc.
 	if live == nil {
 		return nil, false, nil
 	}
+	tree, err = s.residentTree(ctx, artifactID, live)
+	return tree, true, err
+}
+
+// residentTree is the tree of live, the room resident for artifactID, older than neither the
+// stored head nor the room (heldTree): the room's own as of one moment (liveTree), or, where the
+// room stands behind that head, the stored document merged with the updates only the room holds
+// (storedWithUpdates, unstoredParts). It loads nothing, which is why a transaction holding its
+// grant reads a resident room through it (docTree, transactionHolds).
+func (s *Service) residentTree(ctx context.Context, artifactID string, live *crdt.Doc) (*pmdoc.Node, error) {
 	head, err := s.readStoredHead(ctx, artifactID)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if !s.roomHoldsHead(live, head) {
-		tree, err := s.storedWithUpdates(ctx, artifactID, s.unstoredParts(artifactID, live))
-		return tree, true, err
+		return s.storedWithUpdates(ctx, artifactID, s.unstoredParts(artifactID, live))
 	}
-	tree, err = s.liveTree(artifactID, live)
-	return tree, true, err
+	return s.liveTree(artifactID, live)
 }
 
 // loadTree is the tree of the document a socket's admission check reads (heldTree, else the stored
@@ -2218,15 +2226,21 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 	// and a document no room holds has no in-flight credit of its own to list
 	// (withoutInflight). The opening is taken without waiting for one, since this runs inside
 	// the caller's write transaction and holds one of the shared pool's connections.
+	// A transaction whose grant holds bytes loads no room (transactionHolds, allowApply): it reads
+	// the room where one is resident here, and the stored document otherwise, on its own grant.
+	holding := transactionHolds(ctx)
 	fromStore := false
-	if !s.roomHeld(room) {
+	switch {
+	case holding:
+		fromStore = s.srv.GetDoc(room) == nil
+	case !s.roomHeld(room):
 		if s.budget.openServerRoom(room) {
 			defer s.budget.closeServerRoom()
 		} else {
 			fromStore = true
 		}
 	}
-	if !fromStore {
+	if !fromStore && !holding {
 		if err := s.warmLiveDocument(ctx, room); err != nil {
 			return renderedTree{}, authorCapture{}, err
 		}
@@ -2365,7 +2379,9 @@ func (s *Service) captureWrite(ctx context.Context, tx pgx.Tx, room string, writ
 }
 
 // storedTree is the tree of artifactID's stored document at its head, for a version whose room
-// stands behind that head (captureLiveTextAndAuthors, prevalidationTree with no room resident).
+// stands behind that head (captureLiveTextAndAuthors, prevalidationTree with no room resident),
+// and for a read no room holds where the room budget has no opening (docTree). Under a
+// transaction it takes on the transaction's grant, as storedWithUpdates says.
 func (s *Service) storedTree(ctx context.Context, artifactID string) (*pmdoc.Node, error) {
 	return s.storedWithUpdates(ctx, artifactID, nil)
 }
@@ -2393,11 +2409,13 @@ func (s *Service) storedTree(ctx context.Context, artifactID string) (*pmdoc.Nod
 // refusal of it.
 //
 // The load, the merge, its apply and the tree share one grant of the pod's load concurrency
-// (withLoadSlot): the grant ctx carries, a socket admission's for one (loadTree), or one of its
-// own, given back once the tree is built. The load takes it on the rows it folds and the state it
-// decodes and leaves it held (LoadDocument), so the document it hands back is counted while
-// unstored is merged and applied to it and its tree is built (treeOf). The merge decodes every
-// struct of every update it merges (crdt.MergeUpdatesV1), so where any of them is heavy the grant
+// (withLoadSlot): the grant ctx carries, a socket admission's for one (loadTree); the grant of the
+// transaction the caller is joined to (Join, transactionGrant), given back once the tree is built
+// where no fork of the transaction holds it; or one of its own, given back once the tree is built.
+// The load takes it on the rows it folds and the state it decodes and leaves it held
+// (LoadDocument), so the document it hands back is counted while unstored is merged and applied
+// to it and its tree is built (treeOf). The merge decodes every struct of every update it merges
+// (crdt.MergeUpdatesV1), so where any of them is heavy the grant
 // first takes what their decodes cost, summed (mergeWeight), on top of what the load left it
 // holding; the apply then decodes what the merge made, and where that is heavy
 // (heavyUpdateWeight) - many light updates can merge into one that is not - the grant takes what
@@ -2411,11 +2429,14 @@ func (s *Service) storedTree(ctx context.Context, artifactID string) (*pmdoc.Nod
 // to that total takes nothing. The totals are counted from what the first load left the grant
 // holding, so a history that grew past it before a later pass is refused rather than counted
 // short: its load's own take on the held grant answers errGrantShort, the 503 the caller retries.
-// A grant ctx carries that already held bytes as this began is never given back here, and a take
-// past it is refused the same way. A wait ctx ends is ctx's error. The wait holds nothing of the
-// pool and nothing the load took: by then the load has ended its read transaction and given back
-// its buffered fold's slot (foldRead), and what the caller holds - the connection and the owner's
-// lock of the transaction it is joined to (joinRead), docTree's opening of the room budget, and a
+// A grant that already held bytes as this began - a transaction's, whose fork stands under it -
+// is never given back here, and a take past it is refused the same way: a read under a
+// transaction holding a fork takes what it weighs past the fork's grant only where the pool gives
+// it at once, never a grant of its own beside it, which it would wait for holding the fork's
+// (loadSlots). A wait ctx ends is ctx's error. The wait holds nothing of the pool and nothing the
+// load took: by then the load has ended its read transaction and given back its buffered fold's
+// slot (foldRead), and what the caller holds - the connection and the owner's lock of the
+// transaction it is joined to (joinRead), docTree's opening of the room budget, and a
 // socket admission's count on its room's state (holdForAdmission), which nothing waits for - it
 // held across the load's first take as well. docTree takes unstored inside the room's Apply and
 // calls this only once that Apply has returned, so no wait here holds the room. A version's

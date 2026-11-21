@@ -181,11 +181,12 @@ func (s *Service) recordPublishedLoss(write *liveWrite) {
 // grant, connection or locks, and the state's read has ended its own transaction (loadStored).
 // What it holds is this write's writer slot, and the writer slots of the transaction's documents
 // not yet published, until each publish returns (finishLiveWrite). A waiter for a writer slot
-// holds nothing of the pool but for a joined transaction's second document, which waits for it
-// holding the grant its first document's fork took (joinLiveWrite, openLiveWrite; joinRead,
-// awaitLiveWriter): the exception loadSlots names. The bound is what keeps the two from waiting
-// on each other for good: Join's WriteRequestBound ends the transaction's wait for a caller's
-// request alone, and publishedLossTimeout ends this one whoever wrote the transaction.
+// holds nothing of the pool but for a transaction's later document, which waits for it holding
+// the grant its first document's fork took, though never for more of the pool (joinLiveWrite,
+// openLiveWrite; joinRead, awaitLiveWriter): the exception loadSlots names. The bound is what
+// keeps the two from waiting on each other for good: Join's WriteRequestBound ends the
+// transaction's wait for a caller's request alone, and publishedLossTimeout ends this one whoever
+// wrote the transaction.
 func (s *Service) lostAtStoredHead(ctx context.Context, rooms Queryer, write *liveWrite, others bool) ([]int, error) {
 	room := write.artifactID
 	if live := s.srv.GetDoc(room); live != nil {

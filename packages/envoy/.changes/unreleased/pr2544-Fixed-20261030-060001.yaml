@@ -163,7 +163,15 @@ body: |-
     read of an update whose apply takes nothing, such as a keystroke, takes nothing either, so typing
     waits on the pool neither as it is applied nor as it is saved. The second copy a room builds
     from a stored state takes its bytes only where the pool has them free at once, and otherwise
-    runs beside its holders.
+    runs beside its holders. A write that already holds its first document's fork and needs more -
+    its transaction's next document, or a read it makes beside the fork - takes it only where the
+    pool has it free at once and is otherwise answered `503 DOC_SERVICE_UNAVAILABLE` for its caller
+    to retry, since waiting for more while it holds could wait on a waiter that needs what it holds.
+    The same write takes a slot to fold a stored history in only where one is free at once, and
+    loads no room: it reads a document no room holds from the store, on what it already holds. An
+    issue's close, reopen, sweep and ask repair weigh all of the issue's documents before their
+    first fork and take that whole sum there, so they meet that refusal only where a document grew
+    in between or the pool's fold slots are all taken.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone, 512 of them whatever their

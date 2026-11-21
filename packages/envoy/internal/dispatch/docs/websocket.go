@@ -649,6 +649,26 @@ func (s *Service) refuseIfRebuilding(room string) error {
 	return nil
 }
 
+// allowApply is ygo's OnInject: allowInject, and first the refusal of a room's load to a
+// transaction whose grant holds bytes (transactionHolds) where no room of the document is resident
+// here, a load in flight included. The load would take a grant of its own on ygo's load goroutine,
+// waiting for the pool, while the transaction waited for that load holding its own grant, so the
+// transaction would wait on another holder's wait for the pool (loadSlots). Its reads of such a
+// document read the stored document on its own grant instead (docTree, captureLiveTextAndAuthors,
+// VerifyMark); this refusal is what an Apply meets where the room went between their look and the
+// Apply, the 503 the caller retries (errRoomLoadUnderGrant). A resident room is no load, and is
+// applied as before.
+func (s *Service) allowApply(ctx context.Context, info websocket.InjectInfo) error {
+	if transactionHolds(ctx) && s.srv.GetDoc(info.Room) == nil {
+		return errRoomLoadUnderGrant
+	}
+	return s.allowInject(ctx, info)
+}
+
+// errRoomLoadUnderGrant refuses the load of a room a transaction holding its grant would have
+// waited for (allowApply). It is ErrServiceUnavailable, the API's 503 DOC_SERVICE_UNAVAILABLE.
+var errRoomLoadUnderGrant = fmt.Errorf("%w: a transaction holding its grant of the pod's load concurrency loads no room, and this document's room is not resident", ErrServiceUnavailable)
+
 // allowInject decides whether ygo may apply an injection to a room. Its issue read goes
 // through the shared pool for a caller that need hold no connection of its own (the unmark of
 // a settled room's expired marks, unmarkExpired), and that is outside the pool's deadlock

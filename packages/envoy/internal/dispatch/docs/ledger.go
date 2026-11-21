@@ -101,9 +101,10 @@ type Ledger struct {
 	// per document (flushThrough), which its commit marks stored.
 	flushes []*RoomFlush
 	// forks is this transaction's grant of the pod's load concurrency, shared by every live
-	// write it opens and taken on the first (forkSlot, liveWrite.coverFork): one grant for all
-	// its forks, so a transaction writing two documents never waits for bytes a fork of its own
-	// holds.
+	// write it opens and every read made under its context, and taken on the first of them
+	// (forkSlot, transactionGrant, liveWrite.coverFork): one grant for all its forks and reads, so
+	// a transaction writing two documents never waits for bytes a fork of its own holds, nor for a
+	// second grant beside its own (loadSlots).
 	forks *forkSlot
 	// queue is the transaction's write phase (WriteStep): every write its operations and its
 	// caller made, in the order they made them, which Commit sends as one batch before it commits.
@@ -905,6 +906,12 @@ var errUnjoined = errors.New("docs: the operation needs a transaction joined wit
 // the one door every write of a request comes through, so one deadline here bounds the waits and
 // the work alike. The ledger holds what releases that deadline's timer, and Discard, which every
 // caller defers, releases it.
+//
+// The context carries the transaction's one grant of the pod's load concurrency too, through the
+// ledger (forkSlot, transactionGrant): every fork the operations make takes on it, and so does
+// every decode a read under the context makes (withLoadSlot), so the transaction never waits for
+// a second grant while it holds one, and every take after its first that the pool cannot give at
+// once while a fork stands is refused busy (loadSlots).
 func (s *Service) Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
 	ledger := &Ledger{service: s, tx: tx, writer: tx}
 	bounded, release := boundWriteRequest(ctx)
@@ -1600,12 +1607,13 @@ func (l *Ledger) publish() {
 	}
 }
 
-// forkSlot is this transaction's grant of the pod's load concurrency, made on its first live
-// write (forks). A caller already holding one hands it over in ctx, and the transaction's forks
-// take that one rather than a second: a document socket's admission holds a whole slot from
-// before the budget weighs it until its room has loaded (ServeHTTP), and reads the document
-// inside it, so a fork made under that read would wait for bytes its own holder will not give
-// back until the read returns - at the calibration, whose pool is that one slot, for ever.
+// forkSlot is this transaction's grant of the pod's load concurrency (forks), made on its first
+// live write or on the first read under the context Join returned (transactionGrant). A caller
+// already holding one hands it over in ctx, and the transaction's forks take that one rather than
+// a second: a document socket's admission holds a whole slot from before the budget weighs it
+// until its room has loaded (ServeHTTP), and reads the document inside it, so a fork made under
+// that read would wait for bytes its own holder will not give back until the read returns - at
+// the calibration, whose pool is that one slot, for ever.
 func (l *Ledger) forkSlot(ctx context.Context) *forkSlot {
 	if l.forks == nil {
 		held, carried := ctx.Value(loadSlotKey{}).(*loadSlot)
@@ -1615,6 +1623,19 @@ func (l *Ledger) forkSlot(ctx context.Context) *forkSlot {
 		l.forks = &forkSlot{slot: held, carried: carried}
 	}
 	return l.forks
+}
+
+// transactionGrant is the grant of the transaction Join joined ctx to (forkSlot), and nil for a
+// context Join did not return: a settlement's or the block-id backfill's own transaction, whose
+// one document's write takes its grant at its fork (openLiveWrite), and every context outside a
+// transaction. withLoadSlot hands it to each read made under the transaction, so the transaction
+// holds one grant for its forks and its reads alike.
+func transactionGrant(ctx context.Context) *forkSlot {
+	ledger := ledgerFrom(ctx)
+	if ledger == nil || ledger.tx == nil {
+		return nil
+	}
+	return ledger.forkSlot(ctx)
 }
 
 // fail fails the rooms a transaction wrote when its commit returned an error. The commit may

@@ -230,7 +230,12 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 	updates := make(chan struct{}, 1)
 	var unsubscribe func()
 	watch, booked := true, false
-	if !s.roomHeld(artifactID) {
+	switch {
+	case transactionHolds(ctx):
+		// A transaction whose grant holds bytes loads no room (allowApply): it watches a resident
+		// room, and reads the stored document of one no room holds here (docTree).
+		watch = s.srv.GetDoc(artifactID) != nil
+	case !s.roomHeld(artifactID):
 		booked = s.budget.openServerRoom(artifactID)
 		watch = booked
 	}

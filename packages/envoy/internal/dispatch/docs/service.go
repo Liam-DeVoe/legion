@@ -1072,7 +1072,7 @@ func New(deps Deps) *Service {
 	}
 	srv.Authorize = service.authorize
 	srv.OnTokenAuthContext = service.authorizeSchemaVersion
-	srv.OnInject = service.allowInject
+	srv.OnInject = service.allowApply
 	srv.OnPeerUpdate = service.weighPeerUpdate
 	// What a browser's frame parks is no part of the document until it lands: the room relays,
 	// answers and stores what each apply integrated, and nothing it parked (leaveParkedOut, which

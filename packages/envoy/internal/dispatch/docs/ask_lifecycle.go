@@ -120,6 +120,12 @@ func isLifecycleWrite(ctx context.Context) bool {
 // pending author, leaves the authors already pending and the document's latest edit source as they
 // were, and writes no version: the settlement it leaves owed versions it, and none whose markdown
 // repeats the latest version is written. A document it changes nothing in is written nothing.
+//
+// It knows every document it writes before its first fork, so it weighs them all first and its
+// first fork takes their sum of the pod's load concurrency (Service.forksAhead): each document's
+// fork after the first then takes nothing more, where it would otherwise take what it weighs past
+// the first fork's grant only at once or be refused busy, the 503 a transaction holding a fork
+// meets in place of a wait for more (loadSlots).
 func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
@@ -139,6 +145,9 @@ func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks
 	documents, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
 		return nil, fmt.Errorf("list the issue's documents: %w", err)
+	}
+	if err := s.forksAhead(ctx, tx, documents); err != nil {
+		return nil, err
 	}
 	ctx = withLifecycleWrite(withOwnerVerified(ctx))
 	owner := artifactOwner{IssueKey: &issueKey}

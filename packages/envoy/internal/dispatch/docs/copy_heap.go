@@ -56,9 +56,11 @@ import (
 // replica held no state (coldFork, rebuildFork, buildForkHeld) - through the trees its
 // operations read off it and the markdown they render, until the fork is dropped
 // (liveWrite.releaseFork). A write never gives its grant back while it holds a fork, and the
-// decodes it makes inside the grant it already holds take nothing more, but for the decode-cap
-// count's copy of a room that grew since the fork, which takes the difference where the pool has
-// it free at once and is refused otherwise (withLoadSlot, holdLoad, leavesRoomPastDecodeCap).
+// decodes it makes inside the grant it already holds take nothing more, but where they weigh more
+// than it holds - the decode-cap count's copy of a room that grew since the fork, a later fork of
+// the same transaction, which shares its grant, and a read the transaction makes beside its fork
+// - each of which takes the difference where the pool has it free at once and is refused
+// otherwise (withLoadSlot, holdLoad, leavesRoomPastDecodeCap, liveWrite.coverFork).
 //
 // The third is one apply of a browser's update over unslottedApplyBytes, or declaring more than
 // unslottedApplyStructs structs, held from before the hook reads the update until the room's
@@ -198,14 +200,22 @@ const loadSlotsName = "load"
 // (storedHistoryHolds). A write's decode-cap count holds the write's fork, which it cannot give
 // back, so the one total it cannot have at once refuses the write busy (leavesRoomPastDecodeCap).
 //
-// The one holder that waits for more while it holds is a joined transaction's second document
-// (joinedBy): its fork, and the read a cold fork of it makes, wait for what that document weighs
-// past the grant the first document's fork holds, which cannot be given back while that fork
-// stands. That wait can close a cycle with the queue's order - the transaction queued behind a
-// waiter that needs the bytes the first fork holds - which nothing but its bound ends:
-// WriteWaitBound for the fork's own cover (coverFork), Join's WriteRequestBound for the read
-// before it, and for the server's two such transactions their own deadline (below), at which
-// the transaction is answered 503 and gives its grant back.
+// A transaction holds one grant, whichever documents it forks and reads (Ledger.forkSlot). Join's
+// context carries it, so each fork of the transaction covers itself on it (liveWrite.coverFork),
+// and so does each decode a read under the transaction makes (withLoadSlot), rather than wait for
+// a grant of its own beside the one the transaction holds. Its first take waits holding nothing
+// of the pool, as every first take does: the first fork's cover, which, where the pool does not
+// give it what it weighs past what the fork's own read took, gives that back and takes the fork's
+// weight whole (retake), or a read's while no fork stands, which gives the grant back as it ends.
+// Every take after that while a fork stands - a later document's fork and the cold read that
+// builds it, a read of another document, the decode-cap count's copy - takes the difference at
+// once or is refused busy (errGrantShort), the 503 its caller retries. None of them gives the
+// grant back to take it whole: a fork stands under it, and the bytes that fork holds would go
+// uncounted while it waited. A transaction that knows, before its first fork, every document it
+// is about to write - an issue's close, reopen, sweep and repair, which write its ask states into
+// each of its documents in turn (Docs.WriteIssueAskStates) - weighs them all first, and its first
+// fork takes their sum, capped at one slot as every weight is (Service.forksAhead), so a later
+// fork takes nothing more unless its document grew between the weighing and the fork.
 //
 // A decode's grant, held between its take and its release, decodes, renders or reads the rows of
 // the transaction it already holds, takes no lock held across a wait, takes no pooled connection
@@ -220,19 +230,27 @@ const loadSlotsName = "load"
 //
 //   - its own transaction, its owner row and the document's advisory lock, all taken before the
 //     grant, and its writer slot, also taken before it (openLiveWrite): a waiter for a writer
-//     slot holds nothing of the pool, since it has not forked yet. A joined transaction's second
-//     document is the exception: its owner row, its writer slot and its advisory lock are waited
-//     for while the transaction holds the grant its first document's fork took (forkSlot,
-//     joinLiveWrite, readFork). A waiter of the pool can hold that advisory lock - another live
-//     write of the document waiting for its fork's bytes (warmFork), or the room's persistence
-//     worker in its gate's fold (AppendRoomFlush, storedHistoryHolds) - so the transaction can
-//     wait for a lock whose holder waits for the bytes it holds. Join's WriteRequestBound ends
-//     that wait for a caller's request: the transaction is answered 503 and gives its grant back
+//     slot holds nothing of the pool, since it has not forked yet. A transaction's later document
+//     is the exception: its owner row, its writer slot and its advisory lock are waited for while
+//     the transaction holds the grant its first document's fork took (forkSlot, joinLiveWrite,
+//     readFork), though never more of the pool (above). A waiter of the pool can hold that
+//     advisory lock - another live write of the document waiting for its fork's bytes
+//     (warmFork), or the room's persistence worker in its gate's fold (AppendRoomFlush,
+//     storedHistoryHolds) - so the transaction can wait for a lock whose holder waits for the
+//     bytes it holds. Join's WriteRequestBound ends that wait for a caller's request: the
+//     transaction is answered 503 and gives its grant back
 //     (TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound). The server's own
 //     two such transactions, the close's sweep and each issue's of the ask repair, run under a
 //     deadline of their own, WriteRequestBound from their begin, which ends it for them at the
 //     latest: each rolls back and gives its grant back, and the ask repair's next pass takes up
 //     what it left (api's sweepClosedIssueAsks, repairIssueAsksOf).
+//   - a slot of the buffered folds (foldSlots) and a room's load, neither of which it waits for
+//     while its grant holds bytes. A holder of a fold slot, and a room's load, can wait for the
+//     pool, so the transaction takes a fold slot only where one is free at once (foldRead,
+//     errFoldSlotsBusy), and loads no room: a read under it of a document no room holds here reads
+//     the stored document on the transaction's own grant (docTree, captureLiveTextAndAuthors,
+//     storedTree), and an Apply that would load one is refused (allowApply,
+//     errRoomLoadUnderGrant), each the 503 its caller retries (transactionHolds).
 //   - the room replica's lock, waited for to clone the replica (warmFork). Nothing under that
 //     lock waits for the pool: the one decode there takes what it needs where the pool has room
 //     at once and otherwise runs beside its holders (renderedReplica.start, holdFreeLoad).
@@ -254,36 +272,37 @@ const loadSlotsName = "load"
 // (StoreUpdateStored, AppendUpdatesWithCredit), its gate's decodes of a history replaced under the
 // room (storedHistoryHolds) and its compaction as it exits (servicePersistenceAdapter.Compact).
 // Its gate's decodes wait holding the document's lock and a connection of the room-appends pool
-// (AppendRoomFlush), and one holder of the pool waits for that lock: a joined transaction that
-// holds the grant its first document's fork took and waits for its second document's advisory
-// lock (joinLiveWrite, readFork), so the worker can wait for bytes that transaction holds while
-// the transaction waits for the worker's lock. Nothing in that pair gives way; Join's
-// WriteRequestBound ends the transaction's wait for a caller's request, which is answered 503 and
-// gives its grant back, the transaction's own deadline ends it at the latest for the server's two
-// such transactions, and the worker then takes its bytes (above). No other holder waits on the
-// worker: an apply holds no grant by the time its commit reaches that queue, a live write
-// publishes once its transaction has given its grant back (Ledger.publish), and a server write's
-// decode-cap copy gives its grant back before the write commits (structsAfter). Before it gives
-// its grant back, the room's observer waits for the replica's lock, and no holder of that lock
-// waits for the pool (renderedReplica.start, holdFreeLoad, above), so that wait ends.
+// (AppendRoomFlush), and one holder of the pool waits for that lock: a transaction that holds the
+// grant its first document's fork took and waits for its later document's advisory lock
+// (joinLiveWrite, readFork), though never for more of the pool, so the worker can wait for bytes
+// that transaction holds while the transaction waits for the worker's lock. Nothing in that pair
+// gives way; Join's WriteRequestBound ends the transaction's wait for a caller's request, which is
+// answered 503 and gives its grant back, the transaction's own deadline ends it at the latest for
+// the server's two such transactions, and the worker then takes its bytes (above). No other
+// holder waits on the worker: an apply holds no grant by the time its commit reaches that queue, a
+// live write publishes once its transaction has given its grant back (Ledger.publish), and a
+// server write's decode-cap copy gives its grant back before the write commits (structsAfter).
+// Before it gives its grant back, the room's observer waits for the replica's lock, and no holder
+// of that lock waits for the pool (renderedReplica.start, holdFreeLoad, above), so that wait ends.
 //
 // No holder takes a second grant: a decode under a context carrying one covers itself on that one
 // (withLoadSlot), so a room load's fold, its copy's decode and the load hook's decode into the
 // room share the load's, and a write's fork decode and its decode-cap copy share the write's;
-// and one transaction's live writes share one grant (forkSlot), so a transaction writing two
-// documents never waits for the bytes its own other fork holds.
+// and one transaction's forks and reads share one grant (forkSlot), which Join's context carries,
+// so a transaction writing two documents, or reading one beside its fork of another, never waits
+// for the bytes its own fork holds, nor for a grant of its own beside them.
 //
 // A waiter may hold anything - a write's transaction, its owner row and advisory lock, a
 // compaction's advisory lock and connection, a connection of the rooms pool or of the shared
 // pool, a slot of a buffered fold (foldSlots), a replica's lock, a loading room's ready barrier, a
 // room's persistence worker's session lock on its document, its connection of the room-appends
 // pool and its place as its room's one reader of updates to store - since no holder waits for any
-// of them, and so every holder finishes and gives its bytes back. The one exception is a joined
-// transaction's second document, whose owner row, writer slot and advisory lock it waits for
-// holding its first document's grant, as it waits for its own fork's bytes past that grant
-// (above), and which Join's WriteRequestBound bounds, or the transaction's own deadline for the
-// server's two such transactions (above). A waiter whose request ends returns its context's error
-// holding nothing.
+// of them, and so every holder finishes and gives its bytes back. The one exception is a
+// transaction's later document, whose owner row, writer slot and advisory lock it waits for
+// holding the grant its first document's fork took (above), and which Join's WriteRequestBound
+// bounds, or the transaction's own deadline for the server's two such transactions (above); a fold
+// slot and a room's load it takes only at once or not at all (above). A waiter whose request ends
+// returns its context's error holding nothing.
 type loadSlots struct {
 	// size is how many slots the pool is sized from, always set by whoever built it
 	// (newLoadSlots): the process's MemoryBounds.LoadSlots, or a test's.
@@ -349,25 +368,21 @@ func newLoadSlot() *loadSlot {
 // admitted on its own. A holder of nothing waits for them within ctx.
 //
 // A holder that already holds a grant keeps it and takes only the difference, where this copy
-// weighs more than the grant covers: one transaction's forks share the first fork's grant
-// (forkSlot) and every decode made under a carried one covers itself on it (withLoadSlot), so
-// without the difference a transaction that wrote a small document and then a large one was
-// charged the small one alone - measured at 32,676 bytes of the pool for a pair whose second
-// fork weighed 32,148,200, which Docs.WriteIssueAskStates does on every issue close, reopen and
-// sweep (dispatch://INFRA-179, review 5820480859's finding 10). The difference is given back with
-// the rest, so the grant always covers the heaviest copy held under it.
+// weighs more than the grant covers: one transaction's forks and reads share one grant (forkSlot)
+// and every decode made under a carried one covers itself on it (withLoadSlot), so without the
+// difference a transaction that wrote a small document and then a large one was charged the
+// small one alone - measured at 32,676 bytes of the pool for a pair whose second fork weighed
+// 32,148,200, which Docs.WriteIssueAskStates does on every issue close, reopen and sweep
+// (dispatch://INFRA-179, review 5820480859's finding 10). The difference is given back with the
+// rest, so the grant always covers the heaviest copy held under it.
 //
 // It never waits for the difference while it holds: it takes it only where the pool gives it at
 // once, which is also only while nobody is queued for the pool (semaphore.Weighted.TryAcquire),
 // and otherwise answers errGrantShort and leaves the grant as it was (loadSlots says why). Its
 // caller then gives the grant back and takes the total whole where it holds nothing it built
 // under it (retake), does its work again under the whole grant where it does (redoWhole), or
-// refuses. The one exception is a joined transaction's second document, whose context says so
-// (joinedBy): its fork and its cold fork's read wait within ctx for the difference past the grant
-// its first document's fork holds, bounded by WriteWaitBound for the fork's own cover
-// (liveWrite.coverFork) and by Join's WriteRequestBound for the rest, or by the transaction's own
-// deadline for the server's two such transactions; that wait can close a cycle with the queue's
-// order, which only that bound ends (loadSlots).
+// refuses. No holder is excepted: a transaction whose fork stands under its grant has its later
+// forks and reads refused busy rather than wait (loadSlots).
 //
 // A wait ctx ends returns ctx's error and leaves the grant exactly as it was: a holder keeps what
 // it already held, since the copies it covers are built and a caller refused here abandons the
@@ -378,14 +393,10 @@ func (g *loadSlot) take(ctx context.Context, bytes int64) error {
 			return nil
 		}
 		more := bytes - g.bytes
-		if !g.joinedIn(ctx) {
-			if !g.slots.semaphore().TryAcquire(more) {
-				return errGrantShort
-			}
-			g.slots.held.Add(more)
-		} else if err := g.acquire(ctx, more); err != nil {
-			return err
+		if !g.slots.semaphore().TryAcquire(more) {
+			return errGrantShort
 		}
+		g.slots.held.Add(more)
 		g.bytes = bytes
 		if g.slots.taken != nil {
 			g.slots.taken(g.slots.held.Load())
@@ -409,9 +420,12 @@ func (g *loadSlot) take(ctx context.Context, bytes int64) error {
 // the pool does not give it at once: a holder waits for no more of the pool while it holds some
 // (loadSlots). It is ErrServiceUnavailable, the API's 503 DOC_SERVICE_UNAVAILABLE, wherever it
 // reaches a caller: a write whose decode-cap count meets it while the write holds its fork
-// (leavesRoomPastDecodeCap), and a read of a room behind the stored head whose stored history
-// grew between two passes of its work (storedWithUpdates, redoWhole). Every other holder that can
-// meet it gives its grant back and takes the total whole instead (retake, redoWhole).
+// (leavesRoomPastDecodeCap); a transaction's later fork, the cold read that builds it, or a read
+// the transaction makes beside a fork that stands, each of which takes on the transaction's
+// grant (liveWrite.coverFork, withLoadSlot); and a read of a room behind the stored head whose
+// stored history grew between two passes of its work (storedWithUpdates, redoWhole). Every other
+// holder that can meet it gives its grant back and takes the total whole instead (retake,
+// redoWhole).
 var errGrantShort = fmt.Errorf("%w: a holder of the pod's load concurrency needs more of it than is free at once, and waits for no more while it holds some", ErrServiceUnavailable)
 
 // retake makes g hold bytes as take does, for a holder that holds nothing it built under g's
@@ -459,22 +473,6 @@ func (g *loadSlot) redoWhole(ctx context.Context, work func(take func(total int6
 	}
 }
 
-// joinedKey marks a context of a joined transaction's second document (joinedBy).
-type joinedKey struct{}
-
-// joinedBy is ctx marking g as the grant of a transaction one of whose forks holds it while the
-// transaction reads another document for a fork of its own (forkLive): the one holder whose take
-// waits for the difference while it holds (take).
-func (g *loadSlot) joinedBy(ctx context.Context) context.Context {
-	return context.WithValue(ctx, joinedKey{}, g)
-}
-
-// joinedIn reports whether ctx marks g as a joined transaction's grant (joinedBy).
-func (g *loadSlot) joinedIn(ctx context.Context) bool {
-	joined, _ := ctx.Value(joinedKey{}).(*loadSlot)
-	return joined == g
-}
-
 // ownedKey marks a context whose grant its scope holds alone (ownedBy).
 type ownedKey struct{}
 
@@ -483,8 +481,8 @@ type ownedKey struct{}
 // replaced history (storedHistoryHolds) - and ctx as it is otherwise. Whatever g holds under such
 // a scope then covers what the scope builds alone, so a decode in it that holds nothing it built
 // may give the grant back and take what it needs whole (holdUnbuiltLoad). A grant held as the
-// scope begins may cover a copy another holder built - a joined transaction's first fork - and is
-// never marked.
+// scope begins may cover a copy another holder built - a transaction's fork, beside which the
+// transaction reads - and is never marked.
 func (g *loadSlot) ownedBy(ctx context.Context) context.Context {
 	if g.held {
 		return ctx
@@ -493,9 +491,9 @@ func (g *loadSlot) ownedBy(ctx context.Context) context.Context {
 }
 
 // acquire takes bytes of the pool for g, waiting within ctx and telling a test's hook as the wait
-// begins, and counts them as held. It is the one place the pool's semaphore is waited on, so a
-// first take and a joined transaction's second document's difference are admitted the same way
-// and in the same order as every other waiter (semaphore.Weighted).
+// begins, and counts them as held. It is the one place the pool's semaphore is waited on, and only
+// a holder of nothing waits on it (take), so every first take is admitted the same way and in the
+// same order as every other waiter (semaphore.Weighted).
 func (g *loadSlot) acquire(ctx context.Context, bytes int64) error {
 	slots := g.slots.semaphore()
 	if !slots.TryAcquire(bytes) {
@@ -550,16 +548,52 @@ func (g *loadSlot) carriedBy(ctx context.Context) context.Context {
 	return context.WithValue(ctx, loadSlotKey{}, g)
 }
 
-// withLoadSlot is ctx carrying a grant, and the grant: the one ctx already carries, which its
-// owner releases, with a done that releases nothing, or a new one, with a done that releases it.
-// A decode under ctx covers itself on that grant (holdLoad), so the decodes one holder makes in
-// turn share the one grant rather than wait for a second inside the first.
+// withLoadSlot is ctx carrying a grant, the grant, and what ends this scope's use of it: the grant
+// ctx already carries, which its owner releases, with a done that releases nothing; the grant of
+// the transaction Join joined ctx to (transactionGrant), with a done that gives it back where no
+// fork of the transaction holds it, so a read under the transaction holds its bytes no longer than
+// a grant of its own would have; or a new one, with a done that releases it. A decode under ctx
+// covers itself on that grant (holdLoad), so the decodes one holder makes in turn share the one
+// grant rather than wait for a second inside the first.
 func withLoadSlot(ctx context.Context) (context.Context, *loadSlot, func()) {
 	if slot, ok := ctx.Value(loadSlotKey{}).(*loadSlot); ok {
 		return ctx, slot, func() {}
 	}
+	if grant := transactionGrant(ctx); grant != nil {
+		return grant.slot.carriedBy(ctx), grant.slot, grant.releaseUnforked
+	}
 	slot := newLoadSlot()
 	return slot.carriedBy(ctx), slot, slot.release
+}
+
+// carriesLoadGrant reports whether a decode under ctx covers itself on a grant its caller holds
+// (withLoadSlot) rather than on one of its own: a grant ctx carries, or the grant of the
+// transaction Join joined ctx to, made or not.
+func carriesLoadGrant(ctx context.Context) bool {
+	if _, carried := ctx.Value(loadSlotKey{}).(*loadSlot); carried {
+		return true
+	}
+	_, joined := txFromContext(ctx)
+	return joined
+}
+
+// transactionHolds reports whether ctx is joined to a transaction whose grant holds bytes of the
+// pool (Ledger.forkSlot): a fork of the transaction stands under it, or a read of the transaction
+// holds what it took. Such a transaction waits for nothing another holder of the pool can hold
+// while it waits for the pool (loadSlots): it takes more of its grant only at once (take), takes a
+// slot of the buffered folds only at once (foldRead), and loads no room (allowApply, docTree,
+// captureLiveTextAndAuthors, VerifyMark).
+func transactionHolds(ctx context.Context) bool {
+	ledger := ledgerFrom(ctx)
+	return ledger != nil && ledger.tx != nil && ledger.forks != nil && ledger.forks.slot.held
+}
+
+// refusedBusy reports whether err is a holder's refusal of what it would otherwise have waited for
+// holding its grant (transactionHolds): more of the pool (errGrantShort), a slot of the buffered
+// folds (errFoldSlotsBusy) or a room's load (errRoomLoadUnderGrant). Each is the 503 its caller
+// retries and none is the document's own failure, so no room is failed for it.
+func refusedBusy(err error) bool {
+	return errors.Is(err, errGrantShort) || errors.Is(err, errFoldSlotsBusy) || errors.Is(err, errRoomLoadUnderGrant)
 }
 
 // holdLoad covers a whole-document decode on the grant ctx carries, or on one of its own of
