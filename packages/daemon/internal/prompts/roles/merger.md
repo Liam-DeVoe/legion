@@ -63,7 +63,26 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
    Act on the `reason` of the last removal after the newest entry:
 
    - `merged`: GitHub merged the pull request. This is not a removal. The daemon closes the issue on the merge.
-   - `failed_checks`: the queue's own `merge_group` checks failed. That is work to fix. Send the issue back with `request_backward_move` (step 6).
+   - `failed_checks`: a required check of the queue's group commit for this entry failed, or never reported. First find that group commit. It is the `beforeCommit` of the removal. Where that is empty, it is the `after` of the newest `gh-readonly-queue/` branch the queue made for this pull request before the removal. This command lists those branches, newest first:
+
+     ```bash
+     gh api --paginate 'repos/<o>/<r>/activity?activity_type=branch_creation&time_period=day&per_page=100' --jq '.[] | select(.ref | test("^refs/heads/gh-readonly-queue/.+/pr-<n>-[0-9a-f]+$")) | [.timestamp, .after] | @tsv'
+     ```
+
+     If that command lists no branch, tell the architect with `envoy_publish` to its encoded role token, and quote its output. Otherwise count the `legion-verdict` runs on the group commit:
+
+     ```bash
+     gh api 'repos/<o>/<r>/commits/<group commit>/check-runs?check_name=legion-verdict' --jq .total_count
+     ```
+
+     - `0`: no `legion-verdict` run reached the group commit. The daemon writes that check on each group commit, so it wrote none while the queue waited, because it was down or its write failed, and the queue removed the entry when the check timed out. That is no work to fix, so send nothing back. Each head gets one such enqueue. Read your own `dispatch comment`s on the issue first. If one already records such an enqueue of this head, enqueue nothing: tell the architect with `envoy_publish` to its encoded role token, name the head and both group commits, and quote the two reads above. Otherwise read the check on the head itself, where `<slug>` is your App's login with `[bot]` taken off:
+
+       ```bash
+       gh api 'repos/<o>/<r>/commits/<head>/check-runs?check_name=legion-verdict' --jq '[.check_runs[] | select(.app.slug == "<slug>") | .conclusion]'
+       ```
+
+       When it reads `success`, enqueue the same head again (step 4), and record that enqueue in a `dispatch comment` on the issue that names the group commit. When it reads no run, read it again on your own backoff for up to five minutes. Then tell the architect with `envoy_publish` to its encoded role token, and quote both reads. When it reads `failure`, the head's verdict no longer stands: send the issue back with `request_backward_move` (step 6).
+     - Any other count: the queue's own `merge_group` checks failed. That is work to fix. Send the issue back with `request_backward_move` (step 6).
    - `merge_conflict`: each head gets one further enqueue after a `merge_conflict` removal. Read your own `dispatch comment` on the issue to know if you already used it for this head. Do not use the timeline for this, because `beforeCommit` is empty on some removals. If you already used it, send the issue back with `request_backward_move` (step 6). If not, run the watch again. Decide by the `mergeStateStatus` that it reads now:
      - `DIRTY`: the head conflicts with the base. Merge and enqueue nothing: the daemon asks the implementer to merge the base forward while the issue stays in `merging`, and tells you so (step 6).
      - `UNKNOWN`: run the watch again on your own backoff for up to five minutes. Then decide in the same way by the state that it reads.

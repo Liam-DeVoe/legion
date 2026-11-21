@@ -42,6 +42,10 @@ func TestGithubEnvelopeGoldens(t *testing.T) {
 		{name: "workflow-run-completed", event: "workflow_run"},
 		// A sub-issue added to an issue, on its parent's topic.
 		{name: "sub-issues-added", event: "sub_issues"},
+		// A merge queue's group asking for its checks, on the repository's merge_group topic: the
+		// Legion daemon writes legion-verdict on the group's commit from the pull request its
+		// head_ref names.
+		{name: "merge-group-checks-requested", event: "merge_group"},
 	}
 
 	for _, fixture := range fixtures {

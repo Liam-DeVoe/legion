@@ -44,9 +44,10 @@ const (
 // R4, R19): the repositories its configuration names under verdict_repositories, the heads a fact
 // asked it to write on that it has not written yet, and what the merge-state reads of an issue wait
 // on. A fact that can change a head's verdict asks for the write on its commit
-// (workflow.Config.WriteVerdict, queueVerdictWrite), and one goroutine writes them one at a time
-// (writeVerdicts), so a fact's transaction waits on no GitHub call and two writes of one head never
-// both make a run. A write a fact asked for is held in memory, and a restart loses one not made:
+// (workflow.Config.WriteVerdict, queueVerdictWrite), a merge group's asks for one on the group's
+// commit (queueMergeGroupWrite), and one goroutine writes them one at a time (writeVerdicts), so a
+// fact's transaction waits on no GitHub call and two writes of one head never both make a run. A
+// write a fact asked for is held in memory, and a restart loses one not made:
 // the writers' sweep, at boot and every 10 minutes, writes each head whose verdict the record holds
 // and GitHub shows no run of this daemon's on.
 type verdictWriter struct {
@@ -76,12 +77,17 @@ type verdictWriter struct {
 
 // verdictTarget is one head a write of legion-verdict is asked for: the pull request's repository
 // and number, the head, and the issue whose merge-state reads wait on the write ("" for a pull
-// request no Legion issue owns).
+// request no Legion issue owns). A merge group's write (queueMergeGroupWrite) names the group's
+// commit as group, which it writes on, and no head: it decides the pull request at the head that
+// stands when the write is made (writeMergeGroup). overForeign is writeDecided's: the writers'
+// sweep's ask to put failure over another writer's run or status where no verdict stands.
 type verdictTarget struct {
-	issue      string
-	repository ghrepo.Repository
-	number     int
-	head       string
+	issue       string
+	repository  ghrepo.Repository
+	number      int
+	head        string
+	group       string
+	overForeign bool
 }
 
 func newVerdictWriter(entries []config.VerdictRepository) *verdictWriter {
@@ -269,29 +275,42 @@ func (w *workflowRuntime) writeVerdicts(ctx context.Context) {
 				return
 			}
 		}
-		if err := w.writeVerdict(ctx, target.repository, target.number, target.head); err != nil && ctx.Err() == nil {
-			w.log.Warn(verdictWriteFailed,
-				"repository", target.repository.String(), "pull_request", target.number, "head", target.head, "issue", target.issue, "error", err)
+		var err error
+		if target.group != "" {
+			err = w.writeMergeGroup(ctx, target)
+		} else {
+			err = w.writeVerdictOver(ctx, target.repository, target.number, target.head, target.overForeign)
+		}
+		if err != nil && ctx.Err() == nil {
+			w.log.Warn(verdictWriteFailed, "repository", target.repository.String(), "pull_request", target.number, "head", target.head,
+				"group", target.group, "issue", target.issue, "error", err)
 		}
 		w.verdicts.done(target)
 	}
 }
 
 // writeVerdict writes legion-verdict on head of pull request number of repository from the
+// verdict the daemon records at that head, as a fact asks (writeVerdictOver).
+func (w *workflowRuntime) writeVerdict(ctx context.Context, repository ghrepo.Repository, number int, head string) error {
+	return w.writeVerdictOver(ctx, repository, number, head, false)
+}
+
+// writeVerdictOver writes legion-verdict on head of pull request number of repository from the
 // verdict the daemon records at that head (verdict.Decide): success where it stands, failure where a
-// refusal stands, and nothing where neither does, so the head cannot merge (spec R4). It writes
-// only on a repository its verdict_repositories names, and on a legion/<KEY> head only of its own
-// project: another project's issue branch is that project's daemon's to write, and is logged once
-// per pull request. A repository is named under the name GitHub serves it under now as well as the
-// one a record keeps (verdictEntry). It creates its own check run or updates the one its record
-// holds, and writes its conclusion over each run and status of the one App its record does not
-// hold (spec R19, writeDecided).
+// refusal stands, and nothing where neither does, so the head cannot merge (spec R4); with
+// overForeign, the writers' sweep's ask, failure over another writer's run or status there
+// (writeDecided). It writes only on a repository its verdict_repositories names, and on a
+// legion/<KEY> head only of its own project: another project's issue branch is that project's
+// daemon's to write, and is logged once per pull request. A repository is named under the name
+// GitHub serves it under now as well as the one a record keeps (verdictEntry). It creates its own
+// check run or updates the one its record holds, and writes its conclusion over each run and
+// status of the one App its record does not hold (spec R19, writeDecided).
 //
 // Once a Legion head's success stands, the issue's merge state is read once more, a ladder's wait
 // later (mergeStateWait): GitHub can answer the read the write held (verdictWriter.await) with
 // `blocked` while it has not yet counted the new run, an answer that ends the climb, and no other
 // fact asks again, since Envoy leaves the one App's runs out of the CI record.
-func (w *workflowRuntime) writeVerdict(ctx context.Context, repository ghrepo.Repository, number int, head string) error {
+func (w *workflowRuntime) writeVerdictOver(ctx context.Context, repository ghrepo.Repository, number int, head string, overForeign bool) error {
 	entry, ok := w.verdictEntry(repository)
 	if !ok {
 		return nil
@@ -316,7 +335,7 @@ func (w *workflowRuntime) writeVerdict(ctx context.Context, repository ghrepo.Re
 			decided.conclusion = verdict.Failure
 		}
 	}
-	if err := w.writeDecided(ctx, target, decided, false); err != nil {
+	if err := w.writeDecided(ctx, target, decided, overForeign); err != nil {
 		return err
 	}
 	if decided.conclusion == verdict.Success && decided.issue != "" {
@@ -355,9 +374,15 @@ type verdictDecision struct {
 	otherIssue string
 }
 
+// currentHead, as decideVerdict's head, asks it to decide the pull request at the head it stands at
+// now, which a merge group's write does (writeMergeGroup): the group's event names the pull request
+// and its own commit, not the head.
+const currentHead = ""
+
 // decideVerdict decides head of pull request number of repository, entry being the repository's
-// verdict entry. A pull request the project's records hold is a Legion head of the issue that owns
-// it, decided from the tester's completion, the reviewer's verdict at the head and the reviews
+// verdict entry, or, for currentHead, the head the pull request stands at now: the record's, or the
+// one GitHub shows. A pull request the project's records hold is a Legion head of the issue that
+// owns it, decided from the tester's completion, the reviewer's verdict at the head and the reviews
 // delivered at the head (legionInputs); one another project's records hold is that project's.
 // Every other pull request is an outside one, decided from its reviews and, where the entry takes
 // them, its side reviewer's verdict (outsideInputs). A pull request no record holds yet - one
@@ -385,15 +410,21 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 				decided.otherIssue = pr.Issue
 				return err
 			}
+			if head == currentHead {
+				head = pr.HeadSHA
+			}
 			in, err := w.legionInputs(ctx, tx, *issue, *pr, head)
 			decided = verdictDecision{conclusion: verdict.Decide(in), kind: headLegion, issue: issue.Key}
 			return err
 		}
-		_, found, err := store.OutsidePullRequestTx(ctx, tx, repository, number)
+		outside, found, err := store.OutsidePullRequestTx(ctx, tx, repository, number)
 		if err != nil || !found {
 			return err
 		}
 		known = true
+		if head == currentHead {
+			head = outside.Head
+		}
 		in, err := outsideInputs(ctx, tx, entry, repository, number, head)
 		decided = verdictDecision{conclusion: verdict.Decide(in), kind: headOutside}
 		return err
@@ -413,6 +444,9 @@ func (w *workflowRuntime) decideVerdict(ctx context.Context, entry config.Verdic
 		}
 		// A head of this project's issue that no record holds has no verdict here.
 		return verdictDecision{kind: headLegion}, nil
+	}
+	if head == currentHead {
+		head = pull.Head.SHA
 	}
 	err = pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		if _, err := store.RecordOutsidePullRequestTx(ctx, tx, store.OutsidePullRequest{Repository: repository, Number: number,
