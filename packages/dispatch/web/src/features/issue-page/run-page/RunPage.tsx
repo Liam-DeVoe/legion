@@ -49,14 +49,14 @@ export function RunPage(): ReactNode {
   useDocumentTitle(`${RUN_WORD} · Dispatch`, !notFound);
   // A retry of a read that holds no answer takes its failure away as it starts, and the focus
   // on its Retry would fall to the page's body with it, where no keyboard action may leave it.
-  // So the line of a Retry the reader pressed stays drawn, its Retry disabled, until the read that
-  // Retry sent ends. An answer then replaces the line and the focus goes to the page's heading, as
-  // the history's Retry hands it to its own (`IssueHistory.tsx`); a read that fails again leaves
-  // the line, and its Retry has the focus; a read the server answers 400 or 404 draws the
-  // not-found page, and the focus goes to its link. Only a focus left on the body moves. Once a
-  // Retry was pressed, the not-found page is drawn inside a wrapper the effect finds its link
-  // through, and the wrapper stays, so the page is not drawn anew when `pressed` clears; a first
-  // read's 404 draws the page bare.
+  // So the line of a Retry the reader pressed stays drawn, its Retry busy and keeping the focus,
+  // until the read that Retry sent ends. An answer then replaces the line and the focus goes to
+  // the page's heading, as the history's Retry hands it to its own (`IssueHistory.tsx`); a read
+  // that fails again leaves the line, and its Retry has the focus; a read the server answers 400
+  // or 404 draws the not-found page, and the focus goes to its link. Only a focus left on the
+  // body moves. Once a Retry was pressed, the not-found page is drawn inside a wrapper the effect
+  // finds its link through, and the wrapper stays, so the page is not drawn anew when `pressed`
+  // clears; a first read's 404 draws the page bare.
   const [pressed, setPressed] = useState(false);
   const [retried, setRetried] = useState(false);
   const retrying = pressed && query.isFetching;

@@ -242,14 +242,14 @@ test("a Retry the reader pressed keeps its line until the read lands, then hands
   await user.keyboard("{Enter}");
   await waitFor(() => expect(getReferences).toHaveBeenCalledTimes(asked + 1));
 
-  // The read is out: the line and its Retry stay, the Retry disabled and holding the focus, and
-  // no loading line stands in their place.
+  // The read is out: the line and its Retry stay, the Retry busy and holding the focus, and no
+  // loading line stands in their place.
   expect(screen.getByRole("alert"), "the line went while its retry was out").toHaveTextContent(
     ANSWER_LINES.run_unreadable
   );
   expect(retry, "Retry went while the read it sent was out").toBeInTheDocument();
-  expect(retry, "Retry is not disabled while the read it sent is out").toBeDisabled();
-  expect(document.activeElement, "Retry lost the focus while its read was out").toBe(retry);
+  expect(retry).toHaveAttribute("aria-busy", "true");
+  expect(retry).toHaveFocus();
   expect(screen.queryByText(ANSWER_LINES.loading_older)).toBeNull();
 
   // The read answers: the answer replaces the line, and the focus goes to the page's heading.
@@ -258,7 +258,7 @@ test("a Retry the reader pressed keeps its line until the read lands, then hands
   });
   const heading = await screen.findByRole("heading", { level: 1, name: RUN_WORD });
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(document.activeElement, "the answer left the focus off the page's heading").toBe(heading);
+  expect(heading).toHaveFocus();
 });
 
 // A Retry whose read the server answers 404 draws the not-found page in place of the line and

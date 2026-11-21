@@ -1,8 +1,8 @@
 import { GOING_RUN_HEADER } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import type { IssueTreeAnswer } from "../web/src/api/client";
 import { type Body, type Result, routeUrl } from "../web/src/api/paths";
+import type { IssueTreeRead } from "../web/src/api/types";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   ANSWER_LINES,
@@ -287,6 +287,6 @@ export async function treeRunServed(key: string): Promise<boolean> {
     await response.body?.cancel();
     return false;
   }
-  const tree = (await response.json()) as IssueTreeAnswer;
-  return tree.nodes.some((node) => node.supertag === "interaction");
+  const tree = (await response.json()) as IssueTreeRead;
+  return (tree.nodes ?? []).some((node) => node.supertag === "interaction");
 }

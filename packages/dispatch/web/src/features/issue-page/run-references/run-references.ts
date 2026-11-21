@@ -3,30 +3,36 @@ import { useMemo } from "react";
 
 import type { GraphEdge, IssueDetails } from "../../../api/types";
 import type { ExtraReferenceRow } from "../../refs/ReferencedBy";
+import { standsFailed } from "../../refs/reference-target";
 import { buildRunPath } from "../../refs/routes";
+import { retryRead } from "../details-error";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
 import { plainWords } from "../tree-drafts";
 import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 
 /**
  * The command bar runs that changed the issue or a node of it, as rows of Details' Referenced by.
- * A run writes one `changed_by_run` tuple from each node it created or changed to itself, and the
- * tree read answers the run as a node of the `interaction` supertag with the asker's whole
- * question as its text. Only the asker's tree read answers a run at all, so another reader's tree
- * holds none and draws no row.
+ * A run writes one `changed_by_run` tuple from each node it created or changed to itself, an end
+ * of the store kind `interaction` named by the run's id. The tree read answers each run such a
+ * tuple of a node it holds names as a context node of that kind and of the `interaction`
+ * supertag, by the run's id, with the asker's whole question as its text (`issue_tree_read.go`'s
+ * `readContext`). Only the asker may see a run, so another reader's tree holds none and draws no
+ * row.
  */
 
-/** The supertag the tree read answers a command bar run with. */
-const RUN_SUPERTAG = "interaction";
+/** The store kind a `changed_by_run` tuple names a command bar run by, and the supertag the tree
+ *  read answers the run's node with. */
+const RUN = "interaction";
 
 /** The tuple kind from a node a run created or changed to that run. */
 const CHANGED_BY_RUN: GraphEdge["kind"] = "changed_by_run";
 
 const NO_ROWS: readonly ExtraReferenceRow[] = [];
 
-/** When `run` was made, as a time that orders; a time that does not parse orders as the oldest. */
+/** When `run` was made, as a time that orders; a run with no time, or a time that does not parse,
+ *  orders as the oldest. */
 function madeAt(run: TreeAnswerNode): number {
-  const time = Date.parse(run.made_at);
+  const time = run.made_at === null ? Number.NaN : Date.parse(run.made_at);
   return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
 }
 
@@ -41,11 +47,12 @@ function newestFirst(a: DatedRun, b: DatedRun): number {
 }
 
 /** The row of one run: its kind and its edge in the page's words, its question read to plain
- *  words, and the run's own page. Only the key and the link hold the run's id. */
+ *  words, when it was made - no time where the read answers none - and the run's own page. Only
+ *  the key and the link hold the run's id. */
 function runRow(run: TreeAnswerNode): ExtraReferenceRow {
   const excerpt = plainWords(run.text);
   return {
-    at: run.made_at,
+    at: run.made_at ?? "",
     edge: NODE_REFERENCES_WORDS.edges.changed_by_run,
     ...(excerpt.trim() === "" ? {} : { excerpt }),
     href: buildRunPath(run.id),
@@ -54,19 +61,20 @@ function runRow(run: TreeAnswerNode): ExtraReferenceRow {
   };
 }
 
-/** One row for each run of `tree` that changed a node of it, once however many nodes it changed,
- *  newest first. A run no `changed_by_run` tuple points at draws no row, and nor does a tree
- *  not read yet. */
+/** One row for each run of `tree` that a `changed_by_run` tuple names (`tuple.to`), once however
+ *  many nodes it changed, newest first. A run no such tuple names draws no row, and nor does a
+ *  tree not read yet. */
 export function runRows(tree: TreeAnswer | undefined): readonly ExtraReferenceRow[] {
   if (tree === undefined) return NO_ROWS;
   const changed = new Set<string>();
-  for (const tuple of tree.tuples) {
-    if (tuple.kind === CHANGED_BY_RUN) changed.add(tuple.to);
+  for (const tuple of tree.tuples ?? []) {
+    if (tuple.kind === CHANGED_BY_RUN && tuple.to.kind === RUN) changed.add(tuple.to.id);
   }
+  if (changed.size === 0) return NO_ROWS;
   const runs: DatedRun[] = [];
-  for (const node of tree.nodes) {
+  for (const node of tree.nodes ?? []) {
     // Taking the id out of the set as its node is taken keeps one run to one row.
-    if (node.supertag === RUN_SUPERTAG && changed.delete(node.id)) {
+    if (node.supertag === RUN && changed.delete(node.id)) {
       runs.push({ run: node, time: madeAt(node) });
     }
   }
@@ -74,17 +82,24 @@ export function runRows(tree: TreeAnswer | undefined): readonly ExtraReferenceRo
   return runs.sort(newestFirst).map(({ run }) => runRow(run));
 }
 
-/** The run rows of the issue's tree read, and how far that read has got. */
+/** The run rows of the issue's tree read, and how that read stands, as Details says a read of
+ *  its own failed (`DetailsErrorLine`). */
 export interface RunRowsRead {
-  /** The rows (`runRows`), the same value until the read's answer changes. */
+  /** The rows (`runRows`), the same value until the read's answer changes; none while the read
+   *  holds no answer. */
   readonly rows: readonly ExtraReferenceRow[];
-  /** Whether the read holds an answer or has failed: until then the rows are not yet known. */
+  /** Whether the rows are known: the read holds an answer, or stands failed. */
   readonly settled: boolean;
-  /** Whether the read failed. */
+  /** Whether the read stands failed (`standsFailed`): it holds no answer, and a read of it has
+   *  failed. It stays so while a read sent again is out. A refresh that fails over an answer the
+   *  read holds is no such failure, and the rows that answer drew stay. */
   readonly failed: boolean;
-  /** Reads the tree again. */
+  /** Which failure the read's line says (`DetailsErrorLine`'s `failure`): the read's
+   *  `errorUpdateCount`. */
+  readonly failure: number;
+  /** Reads the tree again, joining a read that is out (`retryRead`). */
   readonly retry: () => void;
-  /** Whether a retry is out while the read has failed. */
+  /** Whether a read is out while the read stands failed: its Retry reads busy. */
   readonly retrying: boolean;
 }
 
@@ -96,19 +111,19 @@ export interface RunRowsRead {
  */
 export function useRunRows(issue: IssueDetails): RunRowsRead {
   const read = useQuery({ ...issueTreeQuery(issue.key), enabled: false, select: runRows });
-  const { data: rows = NO_ROWS, isError, isSuccess, refetch } = read;
-  // `isFetching` is read only while the read has failed, the one time its Retry is drawn.
-  const retrying = isError && read.isFetching;
+  const { data: rows, errorUpdateCount, refetch } = read;
+  const failed = standsFailed(read);
+  // `isFetching` is read only while the read stands failed, the one time its Retry is drawn.
+  const retrying = failed && read.isFetching;
   return useMemo(
     () => ({
-      failed: isError,
-      retry: () => {
-        void refetch();
-      },
+      failed,
+      failure: errorUpdateCount,
+      retry: retryRead({ refetch }),
       retrying,
-      rows,
-      settled: isSuccess || isError,
+      rows: rows ?? NO_ROWS,
+      settled: rows !== undefined || failed,
     }),
-    [isError, isSuccess, refetch, retrying, rows]
+    [errorUpdateCount, failed, refetch, retrying, rows]
   );
 }

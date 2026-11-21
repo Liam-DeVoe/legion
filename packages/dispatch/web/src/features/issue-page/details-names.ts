@@ -22,8 +22,10 @@ export function blockedByControlName(issueKey: string, blockerCount: number): st
 }
 
 /** The text and name of Referenced by's control: its label, and how many rows the list it opens
- *  shows (`listedEdges`) once that list has been read; undefined before then, when the control
- *  reads its label alone. A count of zero is the fact Details draws in place of a control. */
+ *  shows - its own (`listedEdges`) and the reader's command bar runs (`useRunRows`) - once both
+ *  reads have answered; undefined before then, when the control reads its label alone. Details
+ *  draws the control at every count, zero included: a run is in no reader's
+ *  `referenced_by_count`. */
 export function referencedByControlName(count: number | undefined): string {
   return count === undefined
     ? PROPERTY_LABELS.referenced_by
