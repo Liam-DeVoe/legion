@@ -169,8 +169,9 @@ func EdgeInboxPrefix(machineID string) string {
 
 // EdgeRelayReplyPrefix is the receipt family of the edge listener of machine machineID:
 // bus.RelayReplyPrefix followed by the machine id, under which its session relay names a relay
-// frame's receipt subject (that family, then a nuid, the session id and a token). Edge subscribes only its own
-// machine's family, so no edge machine subscribes another machine's receipts, and since it can
+// frame's receipt subject (that family, then a nuid, the session id and a token). Edge subscribes
+// only its own machine's family, so no edge machine subscribes another machine's receipts, and
+// since it can
 // change no stream's subjects, no stream it reads captures them. It publishes every edge
 // machine's (bus.RelayReplyPrefix): the listener serving a session's relay socket may be another
 // edge machine than the one holding the session's consumer, and it publishes the receipt on the
@@ -199,7 +200,7 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //   - the relay subjects (bus.DeliverSubjectPrefix): a frame to a session whose consumer it holds;
 //   - every edge machine's relay receipts (bus.RelayReplyPrefix), which the listener serving a
 //     session's relay socket publishes a frame's receipt on, on the family of the machine that
-//     holds the session's consumer (EdgeRelayReplyPrefix): the relay socket of #4658
+//     holds the session's consumer (EdgeRelayReplyPrefix): the relay socket of #4819
 //     (cmd/listener's relay_socket.go). No program at this head publishes one;
 //   - the resume lane (bus.SessionResumeSubjectPrefix): where a deleted session consumer stopped;
 //   - the exception lanes (bus.ExceptionTopicPrefix) of the agent subjects and of each project's
@@ -250,7 +251,7 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // the server delivers it no other client's replies; every session's relay subject
 // (bus.DeliverSubject), which the listener serving a session's relay socket subscribes for that
 // session; and its own machine's relay receipts (EdgeRelayReplyPrefix), which its session relay
-// takes its receipts under once #4658 names them there. Both subscriptions are #4658's: at this
+// takes its receipts under once #4819 names them there. Both subscriptions are #4819's: at this
 // head no program makes either, and the edge's session relay names its receipts under its inbox
 // prefix, which no session's grant publishes (Session publishes _INBOX.>), so at this head alone
 // no session answers an edge listener's relay frame over NATS. It subscribes no role lane, so it

@@ -102,7 +102,7 @@ func newEdgeLiveRigWithBuckets(t *testing.T, edge natsgrant.Permissions, buckets
 		// relay names its receipts under its inbox prefix, so the observer publishes there: reach no
 		// rendered grant holds, since Session publishes _INBOX.> and Edge no inbox. The receipt
 		// family the edge's own grant publishes (natsgrant.EdgeRelayReplyPrefix) is the relay
-		// socket's of #4658.
+		// socket's of #4819.
 		"observer": {Publish: []string{natsgo.InboxPrefix + ">", natsgrant.EdgeInboxPrefix(edgeLiveMachine) + ".>"}, Subscribe: []string{bus.DeliverSubjectPrefix + "*"}},
 	}
 	var static []testnats.StaticUser
