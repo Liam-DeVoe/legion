@@ -16,6 +16,7 @@ import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { settled, until } from "@legion/test-fixtures/wait"
 import { buildBundles } from "../scripts/build"
+import { runTeardown } from "./teardown"
 
 // The answers hook as Claude Code runs it: the bundle `hooks.json` names
 // (`dist/session-hook.js answers`), its whole environment given, its input on stdin. One stand-in
@@ -45,9 +46,7 @@ const COMMAND_TOKEN = fixtureSecret("dsp")
 const BEFORE_TOKEN = fixtureSecret("dsp")
 
 const cleanup: (() => Promise<void>)[] = []
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step()
-})
+afterEach(() => runTeardown(cleanup))
 
 type Route =
   | { readonly kind: "list"; readonly items: readonly SessionAnswer[] }

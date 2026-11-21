@@ -6,11 +6,12 @@ import { jsonLineRecord } from "@legion/envoy-client/json-line-record"
  * ended it, from the server's own record rather than from a clock: the settings it dialled NATS
  * with (`dial`), each status event nats.js reported on that connection (`status`), each
  * registration the listener answered on consumer delivery with the epoch it named (`registered`),
- * each Envoy event the session was shown (`shown`), and, on the way out, its start with the bound
- * it holds the whole way to (`shutdown`), each step of the way with what ended it and, where the
- * step has a bound of its own, the delay it armed (`wait`), and how the way ended (`shutdown`).
- * The lines are in the order the server took the steps, which is what a test reads of when each
- * happened. Unset, as Claude Code runs the server, nothing is written.
+ * each Envoy event the session was shown (`shown`), each write of a role the session took, when it
+ * was queued on the registry chain and when the chain made it (`roleWrite`), and, on the way out,
+ * its start with the bound it holds the whole way to (`shutdown`), each step of the way with what
+ * ended it and, where the step has a bound of its own, the delay it armed (`wait`), and how the way
+ * ended (`shutdown`). The lines are in the order the server took the steps, which is what a test
+ * reads of when each happened. Unset, as Claude Code runs the server, nothing is written.
  */
 export const CHANNEL_RECORD_FILE = "ENVOY_CHANNEL_RECORD_FILE"
 
@@ -18,9 +19,10 @@ export const CHANNEL_RECORD_FILE = "ENVOY_CHANNEL_RECORD_FILE"
  * One step of the way out, in the order the shutdown takes them (`./way-out`): `drain`, the NATS
  * drain; `close`, the drained connection's close; `settle`, the registration writes still in
  * flight, against the shutdown's settle budget; `deregister`, the DELETE of the session's record;
- * `state` and `turns`, the last writes of the state and turn records; `mod`, the mod link's close;
- * `start-drain` and `start-close`, the drain and close of a connection whose start failed before
- * a session came up; `server`, the MCP server's close.
+ * `state` and `turns`, the last writes of the state and turn records; `bind`, the mod link's bind,
+ * which a stop can find still running; `mod`, the mod link's close; `start-drain` and
+ * `start-close`, the drain and close of a connection whose start failed before a session came up;
+ * `server`, the MCP server's close.
  */
 export type ShutdownWait =
   | "drain"
@@ -29,6 +31,7 @@ export type ShutdownWait =
   | "deregister"
   | "state"
   | "turns"
+  | "bind"
   | "mod"
   | "start-drain"
   | "start-close"
@@ -55,6 +58,14 @@ export type ChannelRecordLine =
       /** The Envoy event the session was shown (the mod's `session.message` `eventId`): no text
        *  of the message, which may be a person's own. */
       readonly shown: string
+    }
+  | {
+      /** A role's record write (`ChannelSession.rememberRole`): `queued`, put on the registry
+       *  chain, behind whatever the chain holds; `made`, the chain's turn came and the write was
+       *  made. */
+      readonly roleWrite: "queued" | "made"
+      /** The role the record names. */
+      readonly role: string
     }
   | {
       /** One step of the way out (`ShutdownWait`). */

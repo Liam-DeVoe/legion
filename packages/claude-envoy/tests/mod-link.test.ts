@@ -20,6 +20,7 @@ import {
 } from "../hooks/mod-protocol"
 import { type ModLink, startModLink } from "../src/mod-link"
 import { type ModSession, modSession } from "../src/mod-session"
+import { runTeardown } from "./teardown"
 
 /** Where the socket homes are made. A mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and that
  *  whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a deep
@@ -32,8 +33,12 @@ const links: ModLink[] = []
 afterEach(async () => {
   // A case that failed while the fake clock ran leaves the next one the real clock.
   jest.useRealTimers()
-  for (const link of links.splice(0)) await link.close()
-  for (const dir of scratch.splice(0)) await rm(dir, { recursive: true, force: true })
+  // Every link is closed and every directory removed even where one step throws; the links
+  // close before the directories their sockets are in go (`runTeardown` runs the last first).
+  await runTeardown([
+    ...scratch.splice(0).map((dir) => () => rm(dir, { recursive: true, force: true })),
+    ...links.splice(0).map((link) => () => link.close()),
+  ])
 })
 
 /** A scratch directory to put sockets in, under {@link SOCKET_ROOT} so the path stays under the

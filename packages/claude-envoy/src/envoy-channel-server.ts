@@ -2245,7 +2245,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       return turns?.messageOf(row)
     },
     async rememberRole(role) {
+      record?.({ roleWrite: "queued", role })
       await serialized(async () => {
+        record?.({ roleWrite: "made", role })
         heldRole = role
         await writeRoleRecord(roleStateFile(options.stateDirectory, identity.id), role)
       })
@@ -3005,7 +3007,9 @@ export async function runEnvoyChannelServer(): Promise<void> {
     // under way makes `stop` a no-op.
     stop()
     await stopped.promise
-    await linking
+    // A bind still running is waited for, and named while it runs: a link it binds now is closed
+    // by the step after it.
+    await way.step("bind", linking)
     await way.step("mod", modLink?.close() ?? Promise.resolve())
     if (session === undefined && connection !== undefined) {
       await closeUnstartedConnection(connection, way)

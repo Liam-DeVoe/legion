@@ -10,6 +10,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { settled } from "@legion/test-fixtures/wait"
 import { phaseStallFile } from "../src/legion-phase-hook"
 import { FakeNatsServer } from "./fake-nats-server"
+import { runTeardown } from "./teardown"
 
 /** One scripted reply's blocks: the shape `Block` has in `@legion/pi-shared/test/omp-harness`. */
 type Block =
@@ -220,9 +221,7 @@ const QUIET_LIMITS: Record<string, string> = {
 
 /** What each case undoes afterwards, run last first. */
 const cleanup: (() => Promise<void>)[] = []
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step()
-})
+afterEach(() => runTeardown(cleanup))
 
 /** One hook Claude Code ran, as its `--debug` log records it: the matcher it logs the hook under
  * (`PostToolUse:Bash`), the event, and the answer it parsed out of the hook's output. */

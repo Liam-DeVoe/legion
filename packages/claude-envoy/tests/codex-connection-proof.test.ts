@@ -19,15 +19,14 @@ import {
   startCodexServer,
   until,
 } from "./codex-server-process"
+import { runTeardown } from "./teardown"
 
 const stops: (() => Promise<void> | void)[] = []
 // Registered before the directories' removal below, which bun runs after it: a server still alive
 // in its directory slows that removal. A server's stop waits for its exit on SIGTERM
 // (`CodexServer.stop`), and a server that has not exited by this hook's deadline fails it, naming
-// that exit, and is killed.
-afterEach(async () => {
-  for (const stop of stops.splice(0).reverse()) await stop()
-})
+// that exit, and is killed. Every stop runs, the stand-ins' too, whichever of them throws.
+afterEach(() => runTeardown(stops))
 const makeDirectory = temporaryDirectories("codex-connection-proof")
 
 /** One part of a compact JWS as JSON. */

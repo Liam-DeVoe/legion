@@ -472,7 +472,7 @@ CLAUDE_ENVOY_BUILD = reads(
 CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         (".github/actions/install-claude-code/**", at("claude-envoy", "./.github/actions/install-claude-code")),
         (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
-                             "packages/claude-envoy/tests/answers-claude.test.ts:316,345 runs"),
+                             "packages/claude-envoy/tests/answers-claude.test.ts:315,344 runs"),
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:12-26 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
         ("packages/pi-shared/test/image-manifest.ts", "packages/claude-envoy/tests/legion-tool.test.ts:9 imports @legion/pi-shared/test/image-manifest"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:53-54, legion-pane-mcp.test.ts:20-21, legion-tool.test.ts:14-15"),

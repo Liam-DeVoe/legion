@@ -9,15 +9,14 @@ import { join } from "node:path"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import { codexHomes, recordFor, startCodexServer, until } from "./codex-server-process"
+import { runTeardown } from "./teardown"
 
 const stops: (() => Promise<void> | void)[] = []
 // Registered before the directories' removal below, which bun runs after it: a server still alive
 // in its directory slows that removal. A server's stop waits for its exit on SIGTERM
 // (`CodexServer.stop`), and a server that has not exited by this hook's deadline fails it, naming
-// that exit, and is killed.
-afterEach(async () => {
-  for (const stop of stops.splice(0).reverse()) await stop()
-})
+// that exit, and is killed. Every stop runs, the stand-in's too, whichever of them throws.
+afterEach(() => runTeardown(stops))
 const makeDirectory = temporaryDirectories("codex-prints-no-secret")
 
 /** The refusal the broker's own library writes for a subject token minted for another audience,

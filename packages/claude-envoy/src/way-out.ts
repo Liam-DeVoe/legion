@@ -8,10 +8,10 @@ import type { ChannelRecord, ShutdownWait } from "./channel-record"
  * A step waits for its fact unless the product decides to go on without it: the bounds of
  * `SHUTDOWN_BOUNDS`, each a wait whose end the next step makes moot (a drain the close ends, the
  * registration writes the DELETE goes out past). The last state and turn writes, the DELETE, the
- * connection's close, the mod link's and the MCP server's waits have no bound of their own: a
- * write still running there is one a correct shutdown completes, so the way waits for it, and a
- * write that never ends is ended by `SHUTDOWN_EXIT_MS` alone, which says so on stderr, naming the
- * steps it drops, and exits 1.
+ * connection's close, the mod link's bind and close and the MCP server's close have no bound of
+ * their own: a write still running there is one a correct shutdown completes, so the way waits
+ * for it, and a write that never ends is ended by `SHUTDOWN_EXIT_MS` alone, which says so on
+ * stderr, naming the steps it drops, and exits 1.
  */
 
 /**

@@ -8,6 +8,7 @@ import { renderSessionAnswers } from "@legion/envoy-client/session-answers"
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { settled } from "@legion/test-fixtures/wait"
+import { runTeardown } from "./teardown"
 
 // What people wrote to a session, on the real Claude Code (hooks/session-hook.ts
 // `answers`): Claude Code keeps a hook's additionalContext where only the requests it
@@ -35,9 +36,7 @@ const SUBAGENT_PROMPT = "Run a subagent."
 const DISPATCH_TOKEN = fixtureSecret("dsp")
 
 const cleanup: (() => Promise<void>)[] = []
-afterEach(async () => {
-  for (const step of cleanup.splice(0).reverse()) await step()
-})
+afterEach(() => runTeardown(cleanup))
 
 /** One content block of a stand-in reply. */
 type Block =

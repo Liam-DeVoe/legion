@@ -16,6 +16,7 @@ import {
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
 import { waitFor } from "./channel-session-harness"
+import { dialTimerPreload } from "./dial-timer"
 import { FakeNatsServer } from "./fake-nats-server"
 import { type NatsGate, natsGate } from "./nats-gate"
 
@@ -146,6 +147,9 @@ export interface ReopenServerOptions {
   /** Whether the gate in front of the hub starts open (the default), or shut: the server's first
    *  dial is then refused, and dialed again, until the row opens it. */
   readonly gateOpen?: boolean
+  /** Whether the server runs with `./dial-timer`'s preload, for a row that reads which way its
+   *  NATS dials ended (`ReopenServer.dialTimerRecord`). */
+  readonly recordDialTimer?: boolean
 }
 
 export interface ReopenServer {
@@ -153,6 +157,8 @@ export interface ReopenServer {
   readonly gate: NatsGate
   readonly server: Bun.Subprocess<"pipe", "ignore", "pipe">
   readonly stateDirectory: string
+  /** The server's dial-timer record (`./dial-timer`), where the row asked for one. */
+  readonly dialTimerRecord: string | undefined
   /** Every listener call, as `METHOD path`. */
   readonly requests: readonly string[]
   /** Each registration's session id and delivery request, in arrival order. */
@@ -228,13 +234,16 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     await broker.stop()
     await rm(stateDirectory, { recursive: true, force: true })
   }
+  let dialTimer: { readonly preload: string; readonly record: string } | undefined
   try {
     await options.prepare?.(stateDirectory)
+    if (options.recordDialTimer === true) dialTimer = await dialTimerPreload(stateDirectory)
   } catch (error) {
     await cleanUp()
     throw error
   }
-  const server = Bun.spawn(["bun", entry, ...(options.args ?? [])], {
+  const preload = dialTimer === undefined ? [] : ["--preload", dialTimer.preload]
+  const server = Bun.spawn(["bun", ...preload, entry, ...(options.args ?? [])], {
     cwd: stateDirectory,
     env: {
       PATH: process.env["PATH"] ?? "",
@@ -300,6 +309,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     gate,
     server,
     stateDirectory,
+    dialTimerRecord: dialTimer?.record,
     requests,
     sessions,
     deliveries,

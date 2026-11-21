@@ -405,6 +405,7 @@ describe.skipIf(!envoyStackEnabled)(
           "deregister",
           "state",
           "turns",
+          "bind",
           "mod",
           "server",
         ])
