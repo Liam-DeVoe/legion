@@ -221,7 +221,9 @@ export const viewQuery = (key: string, filter: TreeFilter) =>
  *  they are. The state is the tree read's own. */
 export interface TreeBlocksRead {
   readonly data: TreeBlock[] | undefined;
+  readonly errorUpdateCount: number;
   readonly isError: boolean;
+  readonly isFetching: boolean;
   readonly isSuccess: boolean;
   readonly refetch: () => Promise<unknown>;
 }
@@ -277,6 +279,7 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     data: answer,
     errorUpdateCount,
     isError,
+    isFetching,
     isPending,
     isSuccess,
     refetch,
@@ -286,8 +289,18 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     [answer, issue]
   );
   const blocksOf = useMemo(
-    () => byRole((role): TreeBlocksRead => ({ data: blocks(role), isError, isSuccess, refetch })),
-    [blocks, isError, isSuccess, refetch]
+    () =>
+      byRole(
+        (role): TreeBlocksRead => ({
+          data: blocks(role),
+          errorUpdateCount,
+          isError,
+          isFetching,
+          isSuccess,
+          refetch,
+        })
+      ),
+    [blocks, errorUpdateCount, isError, isFetching, isSuccess, refetch]
   );
   return useMemo(
     () => ({
