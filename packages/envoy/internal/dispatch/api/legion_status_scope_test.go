@@ -920,9 +920,12 @@ func TestACascadeThatWritesALegionIssueIsRefusedWhole(t *testing.T) {
 }
 
 // TestNoMintHoldsLegionStatus: no credential mints a personal token that holds legion-status,
-// alone or beside person, and no edit gives it to one: each is 400 TOKEN_SCOPES_INPUT and changes
-// no token. The table's own check refuses a row that holds it, so a write that passes the API
-// cannot store one either.
+// alone or beside person, and no edit gives it to one, and no such call changes a token. A
+// credential that may mint (a browser sign-in, a personal token holding approve) is refused 400
+// TOKEN_SCOPES_INPUT. A broker token scoped to a person holds person alone and never approve
+// (brokerTokenActor), so the mint route's own scope refuses it first, 403 OAUTH_SCOPE_REQUIRED.
+// The table's own check refuses a row that holds it, so a write that passes the API cannot store
+// one either.
 func TestNoMintHoldsLegionStatus(t *testing.T) {
 	rig := newLegionStatusRig(t, true)
 	personal := personalTokenHolding(t, rig.database, model.ScopePerson, model.ScopeApprove)
@@ -930,12 +933,15 @@ func TestNoMintHoldsLegionStatus(t *testing.T) {
 	minters := []struct {
 		name string
 		send func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder
+		// status and code are the refusal the minter gets for each mint and edit.
+		status int
+		code   string
 	}{
-		{signIn.name, signIn.send},
+		{signIn.name, signIn.send, http.StatusBadRequest, codeTokenScopesInput},
 		{"a personal token holding person and approve", func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
 			return rig.serve(brokerRequest(t, method, path, body, "Bearer "+personal, ""))
-		}},
-		{personScoped.name, personScoped.send},
+		}, http.StatusBadRequest, codeTokenScopesInput},
+		{personScoped.name, personScoped.send, http.StatusForbidden, codeScopeRequired},
 	}
 	tokens := func(t *testing.T) int64 {
 		t.Helper()
@@ -960,7 +966,7 @@ func TestNoMintHoldsLegionStatus(t *testing.T) {
 			for _, scopes := range [][]string{{model.ScopeLegionStatus}, {model.ScopePerson, model.ScopeLegionStatus}} {
 				before := tokens(t)
 				response := minter.send(t, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "probe", "scopes": scopes})
-				requireRefused(t, response, http.StatusBadRequest, codeTokenScopesInput)
+				requireRefused(t, response, minter.status, minter.code)
 				if after := tokens(t); after != before {
 					t.Errorf("a mint of %q: the person holds %d tokens after it, want %d", scopes, after, before)
 				}
@@ -969,7 +975,7 @@ func TestNoMintHoldsLegionStatus(t *testing.T) {
 			edited := minter.send(t, http.MethodPatch, "/api/v1/me/agent-tokens/"+held, map[string]any{
 				"scopes": []string{model.ScopePerson, model.ScopeLegionStatus},
 			})
-			requireRefused(t, edited, http.StatusBadRequest, codeTokenScopesInput)
+			requireRefused(t, edited, minter.status, minter.code)
 			if after := heldScopes(t); !slices.Equal(after, before) {
 				t.Errorf("an edit to person and legion-status left the token holding %q, want %q", after, before)
 			}
