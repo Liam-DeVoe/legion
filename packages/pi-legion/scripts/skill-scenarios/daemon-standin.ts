@@ -52,7 +52,7 @@ import {
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import pkg from "../../package.json";
 import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
-import { RIG_OWNER, RIG_WORLD } from "./rig-world";
+import { RIG_WORLD } from "./rig-world";
 
 const GRANT_TTL_MS = 60_000;
 const [portArg, logFile, bootTokenFile, project, issue, role, phaseArg] = Bun.argv.slice(2);
@@ -92,8 +92,8 @@ const [PHASE = "", HANDOFF_WORD = ""] =
  * (rig-world.json's, which the pane's addressing names).
  * `capabilities` is the deployment's capability report, `strandedClaims` the claims nothing will
  * wake, `heldOutboxRows` the lifecycle rows held behind their issues' running ones, `consumers`
- * the lag of the daemon's durable consumers and `repositories` the project's mapping, each of
- * which the reader requires;
+ * the lag of the daemon's durable consumers and `repositories` the repositories the live records
+ * name, each of which the reader requires;
  * the rig has no deployment to report on, its one claim runs, it has no outbox and no NATS, so
  * the first four are the empty lists the daemon's MarshalJSON emits when there is none.
  * `wakesWaiting`, the wakes the pacing holds until their turn, is optional to the reader; the rig
@@ -121,9 +121,7 @@ const STATE = LegionStateResponse.parse({
   wakesWaiting: [],
   capabilities: [],
   repositories: {
-    owners: [RIG_OWNER],
-    mapped: [{ repo: RIG_WORLD.repository, default: true }],
-    refused: [],
+    live: [{ repo: RIG_WORLD.repository, apps: { implement: true, review: true } }],
     withoutWebhookApp: [],
     caches: [],
   },
