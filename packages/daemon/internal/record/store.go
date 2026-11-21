@@ -2872,8 +2872,9 @@ func (s *Postgres) RefenceFactRows(ctx context.Context, tx pgx.Tx) error {
 		if err != nil {
 			return fmt.Errorf("read the fence %s stands at when its fact commits: %w", issue, err)
 		}
-		// Each part is set again only where the stamp filled it: a reparented notice names the
-		// run alone (entryFenced), so its settle gives it no entry.
+		// Each part is set again only where the stamp filled it: a gate's seed, the branch and
+		// the production check's rows name the run alone (entryFenced), so a settle gives them no
+		// entry.
 		entries, generations := []int64{}, []int64{}
 		for _, row := range byIssue[issue] {
 			if row.stamp.entry {

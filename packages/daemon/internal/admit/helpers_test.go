@@ -244,6 +244,9 @@ func unfenced(payload record.OutboxPayload) record.OutboxPayload {
 	case record.Notice:
 		value.Generation, value.Entry = 0, 0
 		return value
+	case record.ControllerNotice:
+		value.Generation, value.Entry = 0, 0
+		return value
 	case record.RoleMessage:
 		value.Generation, value.Entry = 0, 0
 		return value

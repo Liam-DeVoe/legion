@@ -743,7 +743,11 @@ func parkedDecisions(t *testing.T, pool *store.Pool) []record.ControllerNotice {
 		if err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		got = append(got, payload.(record.ControllerNotice))
+		// The run and the phase entry a parked-decision notice names are its row's fence
+		// (record.Fence), not what it tells the controller.
+		notice := payload.(record.ControllerNotice)
+		notice.Generation, notice.Entry = 0, 0
+		got = append(got, notice)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the parked decisions: %v", err)

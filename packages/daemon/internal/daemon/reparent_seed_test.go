@@ -160,11 +160,12 @@ func TestAReparentTellsTheOwnOldAndNewArchitectOnce(t *testing.T) {
 	}
 }
 
-// A change of parent is told at whatever phase entry the issue stands (R18 of
-// dispatch://INFRA-3320), as the re-parent seed that queues its notices is: the issue moving into
-// a new phase entry between the seed's read and the notices' delivery fences none of them. A
-// notice of another kind queued at the earlier entry is not delivered, which is what tells the
-// two apart (record.Fence, decision 10 of dispatch://INFRA-4730).
+// A change of parent is told at whatever phase entry of its run the issue stands (R18 of
+// dispatch://INFRA-3320), as every notice is (record.LateAt, the architect's ruling of 2026-11-21
+// on dispatch://INFRA-3320): the issue moving into a new phase entry between the seed's read and
+// the notices' delivery fences none of them, and none of a notice of another kind queued at the
+// earlier entry either. A notice of an earlier run is what is not delivered, which
+// TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing holds.
 func TestAReparentedNoticeIsToldAtWhateverPhaseEntryTheIssueStands(t *testing.T) {
 	ctx := context.Background()
 	client := &reparentDispatch{}
@@ -208,10 +209,14 @@ func TestAReparentedNoticeIsToldAtWhateverPhaseEntryTheIssueStands(t *testing.T)
 			reparentIssue, got, reparentIssue, reparentOldParent, reparentNewParent)
 	}
 	_, delivered := rig.publisher.snapshot()
+	finished := 0
 	for _, published := range delivered {
 		if notice := published.payload.(record.Notice); notice.Kind == "phase-finished" {
-			t.Fatalf("the phase-finished notice of the earlier entry was published %+v, want it fenced out", notice)
+			finished++
 		}
+	}
+	if finished != 1 {
+		t.Fatalf("the phase-finished notice of the earlier entry was published %d times, want once: a notice of an earlier phase entry of its run is delivered", finished)
 	}
 }
 

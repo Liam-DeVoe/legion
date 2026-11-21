@@ -484,11 +484,17 @@ func setFenceField(field reflect.Value) bool {
 // The defaults are the plan's of dispatch://INFRA-4730 ("Lists written before the code"): a kind
 // that acts on one issue's run is fenced by all three, the pod's UID for a kind that stops,
 // suspends, saves or releases a pod and the role's claim for a message to one role; the
-// publications of current state and merge_queue_read act on no run; controller_notice is the
-// project's; the production check's kinds and the gate's carry the generation and no entry, since
-// the check follows the close and the gate belongs to the run across a stop (R17); and
-// linger_close, like workspace_remove, which only a linger's expiry writes, is written by no
-// daemon after its first boot on this release.
+// publications of current state and merge_queue_read act on no run; the production check's kinds
+// and the gate's carry the generation and no entry, since the check follows the close and the gate
+// belongs to the run across a stop (R17); and linger_close, like workspace_remove, which only a
+// linger's expiry writes, is written by no daemon after its first boot on this release.
+//
+// What delivery checks is a second decision of each kind (record.LateAt): every kind that carries
+// an entry is late at a later phase entry of its run as well as in a later run, but for the kinds
+// that only tell somebody something (reportOnly, the architect's ruling of 2026-11-21 on
+// dispatch://INFRA-3320), an architect's notice and a controller's, which name their entry and
+// are late in a later run alone. A kind added there or taken away from it fails here until
+// somebody decides it, so no kind that acts is fenced by its run alone.
 func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
 	const (
@@ -515,8 +521,10 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 		OutboxKindNotice: {carries("Generation"), carries("Entry"),
 			lacks("its architect is read when it is delivered, by R18's owner walk, so a notice names no claim when it is queued"),
 			Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}},
-		OutboxKindControllerNotice: {lacks("it is the project's, told to the project's controller"), lacks("it is the project's, told to the project's controller"),
-			lacks("it is the project's, told to the project's controller"), nil},
+		// The project's controller notice names the run and the entry of the issue its row is
+		// keyed by, the first fence for a row keyed by the project (FirstFence).
+		OutboxKindControllerNotice: {carries("Generation"), carries("Entry"), lacks("it is told to the project's controller topic, which no claim of the issue's holds"),
+			ControllerNotice{Kind: TickNotice}},
 		OutboxKindSupervise: {carries("Generation"), carries("Entry"), carries(podUIDField),
 			SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer}},
 		OutboxKindGateSeed: {carries("Generation"), lacks(gateAcrossStop), lacks(readsAndApplies),
@@ -582,6 +590,10 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 		OutboxKindStepRecord: {lacks(history), lacks(history), lacks(history), nil},
 		OutboxKindPlanRecord: {lacks(history), lacks(history), lacks(history), nil},
 	}
+	// The kinds whose delivery reads the run alone, and why: every other kind that carries an entry
+	// is late at a later entry of its run too (record.LateAt).
+	const tellsOnly = "it only tells somebody something, and a telling of an earlier phase entry of the run is still news (the architect's ruling of 2026-11-21 on dispatch://INFRA-3320)"
+	reportOnly := map[OutboxKind]string{OutboxKindNotice: tellsOnly, OutboxKindControllerNotice: tellsOnly}
 	declared := declaredOutboxKinds(t)
 	for _, kind := range slices.Sorted(maps.Keys(declared)) {
 		if _, ok := decided[kind]; !ok {
@@ -636,6 +648,23 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 		if _, err := NewOutboxRow("LEGION-208", whole.Interface().(OutboxPayload), now); err != nil {
 			t.Errorf("%s: NewOutboxRow refuses a payload that carries its whole fence: %v", kind, err)
 			continue
+		}
+		// What delivery checks of the fence (LateAt): a later run makes every kind it fences late,
+		// and a later phase entry of the same run every kind that names one but the reports. A
+		// kind whose run its own executor reads (a re-parent seed's) is no kind LateAt fences.
+		queued, fencedAtDelivery := FenceOf(whole.Interface().(OutboxPayload))
+		if fencedAtDelivery && fence.generation.field != "" && !LateAt(Fence{Generation: queued.Generation + 1, Entry: queued.Entry}, whole.Interface().(OutboxPayload)) {
+			t.Errorf("%s: a row of run %d is delivered in run %d, want it late: it does nothing to a later run", kind, queued.Generation, queued.Generation+1)
+		}
+		if fence.entry.field != "" {
+			why, report := reportOnly[kind]
+			late := LateAt(Fence{Generation: queued.Generation, Entry: queued.Entry + 1}, whole.Interface().(OutboxPayload))
+			switch {
+			case report && late:
+				t.Errorf("%s: a row of entry %d is late at entry %d of the same run, want it delivered: %s", kind, queued.Entry, queued.Entry+1, why)
+			case !report && !late:
+				t.Errorf("%s: a row of entry %d still acts at entry %d of the same run, want it late: a kind that acts is fenced by its run and its entry", kind, queued.Entry, queued.Entry+1)
+			}
 		}
 		// Each part the kind carries is taken away in turn: the generation and the entry must be
 		// refused, the pod UID taken empty. A claim the payload names by its role is the row's own
@@ -1156,7 +1185,8 @@ func TestATickNoticeCarriesItsOpenCapabilitiesThroughTheRow(t *testing.T) {
 		{"a slot-free wake", ControllerNotice{Kind: SlotFreeNotice}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			row, err := NewOutboxRow("LEGION", tc.payload, now)
+			payload := Fenced(tc.payload, FirstFence)
+			row, err := NewOutboxRow("LEGION", payload, now)
 			if err != nil {
 				t.Fatalf("NewOutboxRow: %v", err)
 			}
@@ -1167,8 +1197,8 @@ func TestATickNoticeCarriesItsOpenCapabilitiesThroughTheRow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("DecodeOutboxPayload: %v", err)
 			}
-			if !reflect.DeepEqual(got, tc.payload) {
-				t.Fatalf("payload = %#v, want %#v", got, tc.payload)
+			if !reflect.DeepEqual(got, payload) {
+				t.Fatalf("payload = %#v, want %#v", got, payload)
 			}
 		})
 	}

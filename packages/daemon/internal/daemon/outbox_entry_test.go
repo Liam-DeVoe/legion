@@ -808,14 +808,17 @@ func suspendedItsClaim(t *testing.T, rig oneStartRig, _ record.OutboxRow, err er
 }
 
 // Every effect the daemon queues for an issue names the run and the phase entry it was queued at
-// (record.Fence), and one that runs after its issue was handed a later entry or a later run does
-// nothing to it (R17 and R20 of dispatch://INFRA-3320). One case for each fenced kind of
+// (record.Fence), and one that acts and runs after its issue was handed a later entry or a later
+// run does nothing to it (R17 and R20 of dispatch://INFRA-3320). One case for each fenced kind of
 // record's fence inventory (TestEveryOutboxKindNamesItsRunOrSaysWhyNot): queued at the issue's
 // generation G and entry N, it acts when it runs there; delivered after the issue's entry was
 // raised to N+1 (as a return to work raises it) and after its generation was raised to G+1 (a new
-// run), it does nothing. The pod's suspension is TestACleanupDeletesOnlyItsOwnIssuesPod's, which
-// reads the pod it acts on beside the fence; an idle release's save, role stop and teardown cancel
-// the release they belong to rather than acting (the outbox's podStands and release arms).
+// run), it does nothing. A notice, an architect's or the controller's, only tells, and its
+// delivery reads the run alone (the architect's ruling of 2026-11-21 on dispatch://INFRA-3320): it
+// is delivered at N+1 and does nothing in G+1. The pod's suspension is
+// TestACleanupDeletesOnlyItsOwnIssuesPod's, which reads the pod it acts on beside the fence; an
+// idle release's save, role stop and teardown cancel the release they belong to rather than acting
+// (the outbox's podStands and release arms).
 func TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing(t *testing.T) {
 	ctx := context.Background()
 	opened := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
@@ -824,6 +827,7 @@ func TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing(t *testing.T) {
 		{"dispatch_message", record.MessagePost{Body: "A message of the run."}, false, reachedItsEffect},
 		{"claim_release", record.ClaimRelease{}, false, reachedItsEffect},
 		{"notice", record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, Phase: phase.Planning}, false, reachedItsEffect},
+		{"controller_notice", record.ControllerNotice{Kind: record.TriageNotice}, false, reachedItsEffect},
 		{"role_message", record.RoleMessage{Role: "legion-legion-legion-208-implementer", Body: "The checks of the head settled."}, false, reachedItsEffect},
 		{"phase_ended", record.PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.AwaitingChildren, Reason: "LEGION-209 (todo) is open"}, false, reachedItsEffect},
 		{"hook_prompt", record.HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Say what the round missed."}, false, reachedItsEffect},
@@ -902,8 +906,10 @@ func TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing(t *testing.T) {
 				when.move(t, rig)
 				err := runner.execute(ctx, queued)
 				// A kind that is the run's alone (the gate's seeds, the branch, the production
-				// check's rows) acts at any phase entry of its run (R17).
-				want := when.name == later[0].name || effect.runOnly && when.name == later[1].name
+				// check's rows) acts at any phase entry of its run (R17), and so is a notice
+				// delivered at any (reports).
+				reports := map[string]bool{"notice": true, "controller_notice": true}
+				want := when.name == later[0].name || (effect.runOnly || reports[effect.name]) && when.name == later[1].name
 				if acted := effect.acted(t, rig, queued, err); acted != want {
 					t.Fatalf("the %s row %s acted = %t (run error %v), want %t: an effect does nothing to a later phase entry or run than its own",
 						effect.name, when.name, acted, err, want)

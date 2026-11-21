@@ -62,10 +62,12 @@ func architectClaimOn(t *testing.T, sup *supervisor, issue string, state supervi
 	}
 }
 
-// queuedNotices is every queued notice row, as "<kind> on <issue>" with its payload.
+// queuedNotices is every queued notice row, as "<issue> <payload>", the payload without the run and
+// the phase entry it names (record.Fence), which are the row's and not what it says: a copy's
+// fence is queuedFence's to read.
 func queuedNotices(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), "select issue, payload::text from outbox where kind = 'notice' order by id")
+	rows, err := pool.Query(context.Background(), "select issue, (payload - 'generation' - 'entry')::text from outbox where kind = 'notice' order by id")
 	if err != nil {
 		t.Fatalf("read notice rows: %v", err)
 	}
@@ -81,13 +83,39 @@ func queuedNotices(t *testing.T, pool *store.Pool) []string {
 	return got
 }
 
+// queuedFence is the run and the phase entry each queued notice row names (record.Fence), in the
+// rows' order.
+func queuedFence(t *testing.T, pool *store.Pool) []record.Fence {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), "select payload from outbox where kind = 'notice' order by id")
+	if err != nil {
+		t.Fatalf("read notice rows: %v", err)
+	}
+	defer rows.Close()
+	fences := []record.Fence{}
+	for rows.Next() {
+		row := record.OutboxRow{Kind: record.OutboxKindNotice}
+		if err := rows.Scan(&row.Payload); err != nil {
+			t.Fatalf("scan notice row: %v", err)
+		}
+		fence, _ := record.FenceOf(mustDecode(t, row))
+		fences = append(fences, fence)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate the notice rows: %v", err)
+	}
+	return fences
+}
+
 // A notice the listener accepted but could not forward to the owning architect's session is queued
 // again, counted as one re-send and published under the key of the row it copies, so a session that
 // did get the forward recognises the copy. Every report is queued, a late receipt from the claim's
 // own session too: a Go relaunch resumes the session id, so that report may come from the stopped
 // process. The first copy is due at once when the architect's agent has said it is ready
 // (supervise.SaidReady), whichever session the forward went to, since that ready will not come
-// again to release it; otherwise it waits the first re-send delay.
+// again to release it; otherwise it waits the first re-send delay. The reported notice names no
+// fence, as a row a release before this one queued names none, so the copy takes the run and
+// the phase entry its issue stands at (record.NewFencedRow).
 func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
 	for _, tc := range []struct {
 		name, reason       string
@@ -128,6 +156,9 @@ func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
 			want := `LEGION-2 {"kind": "pr-blocked", "role": "architect", "reason": "review_round_cap", "resends": 1, "resend_of": 7}`
 			if got := queuedNotices(t, pool); len(got) != 1 || got[0] != want || !nextAt.Equal(clock.Add(tc.due).Truncate(time.Microsecond)) {
 				t.Fatalf("queued %v due %s; want %s, counted as one re-send, copying row 7, due %s", got, nextAt, want, clock.Add(tc.due))
+			}
+			if fences := queuedFence(t, pool); len(fences) != 1 || fences[0] != record.FirstFence {
+				t.Fatalf("the copy names the fence %+v, want the one LEGION-2 stands at, %+v", fences, record.FirstFence)
 			}
 
 			if tc.due > 0 {

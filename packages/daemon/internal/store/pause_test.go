@@ -72,7 +72,7 @@ func pauseNoticeRow(kind record.NoticeKind) func(Pause) (PauseRow, error) {
 		if kind == record.ProjectResumedNotice {
 			account = &record.ProjectPause{ID: p.ID, By: record.PauseActor{Kind: string(p.EndedBy.Kind), Session: p.EndedBy.Session}, At: p.EndedAt}
 		}
-		row, err := record.NewOutboxRow(p.Project, record.ControllerNotice{Kind: kind, Pause: account}, p.Since)
+		row, err := record.NewOutboxRow(p.Project, record.Fenced(record.ControllerNotice{Kind: kind, Pause: account}, record.FirstFence), p.Since)
 		if err != nil {
 			return PauseRow{}, err
 		}
@@ -260,7 +260,7 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tick, err := record.NewOutboxRow("LEGION", record.ControllerNotice{Kind: record.TickNotice}, pausedAt)
+	tick, err := record.NewOutboxRow("LEGION", record.Fenced(record.ControllerNotice{Kind: record.TickNotice}, record.FirstFence), pausedAt)
 	if err != nil {
 		t.Fatal(err)
 	}

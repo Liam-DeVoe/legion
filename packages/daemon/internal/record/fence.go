@@ -12,9 +12,10 @@ import (
 // Fence is the run and the phase entry of one issue that a queued effect is for, and the pod it
 // acts on (R17 and R20 of dispatch://INFRA-3320; decision 10 of dispatch://INFRA-4730): every
 // effect the daemon queues for an issue names the fence the issue stood at, and its executor
-// checks it against the fence the issue stands at where the effect commits, so a late effect of
-// an earlier run or phase entry does nothing to a later one, and a cleanup does nothing to a pod
-// the issue no longer runs.
+// checks it against the fence the issue stands at where the effect commits (LateAt), so a late
+// effect that acts does nothing in a later run or at a later phase entry, a late notice tells
+// nobody of a later run (the architect's ruling of 2026-11-21 on dispatch://INFRA-3320), and a
+// cleanup does nothing to a pod the issue no longer runs.
 //
 // Generation is the issue's run (Issue.Generation; 1 for a record written with none, the first
 // run every writer of this release starts). Entry is the issue's phase entry: one more than the
@@ -86,6 +87,38 @@ func OutlivesPod(queued, pod string) bool {
 	return queued != "" && pod != "" && queued != pod
 }
 
+// ReportOnly says whether payload's kind only tells somebody something: an architect's notice
+// (Notice) or the project's controller's (ControllerNotice). It names the run and the phase entry
+// it was queued at, as every effect does (R17 of dispatch://INFRA-3320), and NewOutboxRow stamps
+// and requires both; its delivery is fenced by the run alone (the architect's ruling of
+// 2026-11-21 on dispatch://INFRA-3320): a notice of an earlier phase entry of the run its issue
+// stands in is still delivered, and one of an earlier run is not. Every other kind acts — it
+// changes a claim, a pod, Dispatch or GitHub — and does nothing at a later phase entry either.
+// A notice starts and resumes no claim: its delivery waits for an architect claim a stop
+// suspended, and wakes only one an idle release suspended (the daemon's deliverNotice).
+func ReportOnly(payload OutboxPayload) bool {
+	switch payload.(type) {
+	case Notice, ControllerNotice:
+		return true
+	}
+	return false
+}
+
+// LateAt says whether payload, an effect queued at the fence it names (FenceOf), does nothing to an
+// issue standing at now when its executor runs: the one statement of what delivery checks. A
+// report (ReportOnly) is late in a later run alone; every other fenced kind in a later run or at
+// another phase entry (Fence.Outlives). A kind that carries no fence is late at nothing.
+func LateAt(now Fence, payload OutboxPayload) bool {
+	queued, carries := FenceOf(payload)
+	if !carries {
+		return false
+	}
+	if ReportOnly(payload) {
+		queued.Entry = 0
+	}
+	return now.Outlives(queued)
+}
+
 // Stops says whether the request stops a claim of its issue's run: a suspend (a stop or an
 // interrupted run), an issue close, or an idle release's role stop. Each is fenced by its issue's
 // run, its phase entry and the pod its claim ran in (SuperviseRequest.Entry, PodUID); a start
@@ -104,6 +137,8 @@ func FenceOf(payload OutboxPayload) (Fence, bool) {
 	case MessagePost:
 		return Fence{Generation: value.Generation, Entry: value.Entry}, true
 	case Notice:
+		return Fence{Generation: value.Generation, Entry: value.Entry}, true
+	case ControllerNotice:
 		return Fence{Generation: value.Generation, Entry: value.Entry}, true
 	case SuperviseRequest:
 		if !value.Stops() {
@@ -161,15 +196,13 @@ func actsOnPod(payload OutboxPayload) bool {
 
 // entryFenced says whether payload's kind names the phase entry it was queued at: every kind
 // FenceOf fences but the gate's seeds, which belong to the run across a stop, the branch, which
-// is the run's, the production check's rows, which follow the close (R17 of
-// dispatch://INFRA-3320), and R18's reparented notice, which tells a change of parent at
-// whatever phase entry the issue stands, as the re-parent seed that queues it does.
+// is the run's, and the production check's rows, which follow the close (R17 of
+// dispatch://INFRA-3320). A notice names its entry too, as every effect does; what its delivery
+// checks of it is LateAt's.
 func entryFenced(payload OutboxPayload) bool {
-	switch value := payload.(type) {
+	switch payload.(type) {
 	case GateSeed, PendingBasisSeed, IssueBranch, CheckWakeDue, CheckLook, CheckBound:
 		return false
-	case Notice:
-		return value.Kind != ReparentedNotice
 	}
 	_, carries := FenceOf(payload)
 	return carries
@@ -218,9 +251,11 @@ func fenced(payload OutboxPayload, fence Fence) (OutboxPayload, fenceStamp) {
 		return value, stamp
 	case Notice:
 		generation(&value.Generation)
-		if entryFenced(value) {
-			entry(&value.Entry)
-		}
+		entry(&value.Entry)
+		return value, stamp
+	case ControllerNotice:
+		generation(&value.Generation)
+		entry(&value.Entry)
 		return value, stamp
 	case SuperviseRequest:
 		if !value.Stops() {

@@ -48,6 +48,8 @@ func registerControllerFor(t *testing.T, pool *pgxpool.Pool, project string) {
 // (record.DecodeOutboxPayload, which the executor does before it publishes), so a payload the
 // rules refused would fail here rather than reach the controller; the JSON is read beside it
 // because a field a notice does not carry is absent from the row, which no decoded value shows.
+// The notice is returned without the run and the phase entry its row names (unfenced), which are
+// the row's fence and not what the tick tells.
 func tickNoticeOf(t *testing.T, pool *pgxpool.Pool, project string) (record.ControllerNotice, string) {
 	t.Helper()
 	var row record.OutboxRow
@@ -61,7 +63,7 @@ func tickNoticeOf(t *testing.T, pool *pgxpool.Pool, project string) (record.Cont
 	if err != nil {
 		t.Fatalf("the controller notice of %s does not pass the validator: %v", project, err)
 	}
-	notice, ok := payload.(record.ControllerNotice)
+	notice, ok := unfenced(payload).(record.ControllerNotice)
 	if !ok {
 		t.Fatalf("the controller notice of %s decoded to %T, want a controller notice", project, payload)
 	}

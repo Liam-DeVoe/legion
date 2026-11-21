@@ -714,7 +714,8 @@ func TestAStatusWriteWhoseAnswerWasLostStillTellsTheArchitectItsRefusedReason(t 
 }
 
 // A controller notice row goes to the controller topic of the daemon's own project, the one its
-// controller subscribes to, and to no issue topic, under the row's own key, as the Notice it is.
+// controller subscribes to, and to no issue topic, under the row's own key, as the Notice it is,
+// with the run and the phase entry its row was queued at (record.Fence).
 func TestOutboxControllerNoticeGoesToTheControllerTopicAlone(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-2", record.ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now())
 	row.ID = 57
@@ -729,15 +730,17 @@ func TestOutboxControllerNoticeGoesToTheControllerTopicAlone(t *testing.T) {
 	if got := publisher.keys(); fmt.Sprint(got) != "[legion-outbox:57]" {
 		t.Fatalf("controller notice keys = %v, want the row's own key", got)
 	}
-	if got, want := publisher.payloads()[0], (record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}); !reflect.DeepEqual(got, want) {
+	want := record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Generation: record.FirstFence.Generation, Entry: record.FirstFence.Entry}
+	if got := publisher.payloads()[0]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("controller notice payload = %+v, want the notice %+v", got, want)
 	}
 }
 
+// A publish the listener fails is the notice's failure, returned for the row's backoff.
 func TestOutboxNoticeReturnsPublisherFailure(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-2", Title: "Root", Phase: phase.Planning, Generation: 1, Status: "in_progress"})
+	putChainIssue(t, pool, records, record.Issue{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-2", Title: "Root", Phase: phase.Planning, Generation: 1, Status: "in_progress", HoldsGate: true})
 	row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning}, time.Now()))
 	publisher := &outboxPublisher{err: errors.New("listener unavailable")}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())

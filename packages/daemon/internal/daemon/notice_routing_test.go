@@ -112,14 +112,14 @@ func (p *holderPublisher) keptCopies() []outboxPublish {
 
 // noticeTree records a root, its child and the child's child, each with its copy row
 // (putChainIssue), so the Dispatch chain the notices are routed on runs LEGION-3, LEGION-2,
-// LEGION-1. lingers stands the root at done, its run closed, out of Legion's work.
-func noticeTree(t *testing.T, pool *store.Pool, records record.Store, lingers bool) {
+// LEGION-1. closed stands the root at done, its run closed (R24 of dispatch://INFRA-3320), out of
+// Legion's work.
+func noticeTree(t *testing.T, pool *store.Pool, records record.Store, closed bool) {
 	t.Helper()
 	root, child := "LEGION-1", "LEGION-2"
 	rootIssue := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Title: "Root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", HoldsGate: true}
-	if lingers {
-		until := time.Now().Add(time.Hour)
-		rootIssue.Phase, rootIssue.Status, rootIssue.LingerUntil = phase.Done, "done", &until
+	if closed {
+		rootIssue.Phase, rootIssue.Status = phase.Done, "done"
 	}
 	putChainIssue(t, pool, records, rootIssue)
 	putChainIssue(t, pool, records, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Parent: &root, Title: "Child", Phase: phase.Planning, Generation: 1, Status: "in_progress"})
@@ -792,7 +792,11 @@ func TestAHeldChildCloseHoldsTheArchitectsLaterNotices(t *testing.T) {
 // dispatch://INFRA-3320) — waits for it: the row is kept, and nothing is sent. One for a claim
 // that failed or retired, or that this daemon does not supervise, ends undelivered (R18). A notice
 // whose owner walk meets a chain the copy cannot show to its top waits too, whoever runs above the
-// gap, and is delivered once a reading of Dispatch writes the missing row.
+// gap, and is delivered once a reading of Dispatch writes the missing row. A notice starts and
+// resumes no claim a stop suspended: one queued at an entry the return then raises waits through
+// it, and is delivered once the return's start brings the claim back, since a notice's delivery
+// reads its run alone (the architect's ruling of 2026-11-21 on dispatch://INFRA-3320). Its
+// delivery wakes only a claim an idle release suspended, which keeps its phase and task.
 func TestANoticeWaitsOrEndsByTheClaimsState(t *testing.T) {
 	childClosed := record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}
 	for _, tc := range []struct {
@@ -855,6 +859,110 @@ func TestANoticeWaitsOrEndsByTheClaimsState(t *testing.T) {
 		}
 		if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != architectTopic(t, "LEGION-1") {
 			t.Fatalf("delivered %+v once the chain is known, want the notice to LEGION-1's architect", delivered)
+		}
+	})
+
+	// stoppedOrReleased is LEGION-1's architect claim suspended by by, with the session a resume
+	// brings back, and the runner that delivers its notices, with the store a wake is taken in.
+	stoppedOrReleased := func(t *testing.T, by supervise.SuspendSource) (*store.Pool, record.Store, *fake.Runtime, *supervise.Machine, *outbox, *holderPublisher) {
+		t.Helper()
+		ctx := context.Background()
+		pool := isolatedOutboxPool(t)
+		st, err := store.Open(ctx, pool.Config().ConnString())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(st.Close)
+		records := record.NewStore()
+		noticeTree(t, pool, records, false)
+		sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+		machine, _, err := sup.Create(ctx, supervise.Claim{Token: mustClaimToken(t, "LEGION-1", claim.RoleArchitect), Project: "legion", Tree: "LEGION-1",
+			Issue: "LEGION-1", Role: claim.RoleArchitect, State: supervise.StateSuspended, SuspendedBy: by, Generation: 1,
+			Session: "ses-architect", SessionFile: "/tmp/architect.jsonl"}, "")
+		if err != nil {
+			t.Fatalf("create the architect claim of LEGION-1: %v", err)
+		}
+		machine.Wait()
+		// The suspended claim's session is gone, so the listener finds no holder of its role.
+		publisher := &holderPublisher{}
+		publisher.setAbsent(architectTopic(t, "LEGION-1"))
+		runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, trees: st,
+			project: "legion", now: time.Now}
+		return pool, records, rt, machine, runner, publisher
+	}
+	resumes := func(rt *fake.Runtime) int {
+		count := 0
+		for _, call := range rt.Calls() {
+			if call.Method == "Resume" || call.Method == "Spawn" {
+				count++
+			}
+		}
+		return count
+	}
+
+	t.Run("of an earlier entry, for a claim a stop suspended, until the return starts it", func(t *testing.T) {
+		ctx := context.Background()
+		pool, records, rt, machine, runner, publisher := stoppedOrReleased(t, supervise.SuspendedByDaemon)
+		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "design-approved", Version: 2}, time.Now()))
+		queued, _ := record.FenceOf(mustDecode(t, row))
+		// The return raises the issue's phase entry (workflow.ReturnToWork) in the run it stands in.
+		architect := rolePhaseRow(t, pool, "LEGION-1", claim.RoleArchitect)
+		architect.Issue, architect.Role = "LEGION-1", claim.RoleArchitect
+		architect.Entry++
+		var now record.Fence
+		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := records.PutPhase(ctx, tx, architect); err != nil {
+				return err
+			}
+			var err error
+			now, err = record.ReadFence(ctx, tx, records, "LEGION-1", false)
+			return err
+		}); err != nil {
+			t.Fatalf("raise the entry of LEGION-1: %v", err)
+		}
+		if now.Generation != queued.Generation || now.Entry <= queued.Entry {
+			t.Fatalf("LEGION-1 stands at %+v and its notice was queued at %+v, want a later entry of the same run", now, queued)
+		}
+		if err := runner.execute(ctx, row); !errors.Is(err, errNoticeWaits) {
+			t.Fatalf("executing the notice while the stop holds LEGION-1's architect = %v, want it to wait", err)
+		}
+		if _, delivered := publisher.snapshot(); len(delivered) != 0 || resumes(rt) != 0 || machine.Claim().State != supervise.StateSuspended {
+			t.Fatalf("delivered %+v, %d launches, claim %s; want nothing sent and the claim left suspended: a notice starts no claim a stop suspended",
+				delivered, resumes(rt), machine.Claim().State)
+		}
+		// The return's start brings the claim back by rule, as the start executor hands it.
+		if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: machine.Claim().Token, Reason: "the return's start"}); err != nil {
+			t.Fatalf("resume LEGION-1's architect: %v", err)
+		}
+		machine.Wait()
+		// The resumed session holds the role again once its relaunch has claimed it.
+		publisher.setAbsent()
+		if err := runner.execute(ctx, row); err != nil {
+			t.Fatalf("executing the notice once the return started LEGION-1's architect: %v", err)
+		}
+		if _, delivered := publisher.snapshot(); fmt.Sprint(deliveredKinds(t, delivered)) != "[design-approved to LEGION-1]" {
+			t.Fatalf("delivered %v once the return started the claim, want the notice of the earlier entry to LEGION-1's architect", deliveredKinds(t, delivered))
+		}
+	})
+
+	t.Run("for a claim an idle release suspended, which its delivery wakes", func(t *testing.T) {
+		ctx := context.Background()
+		pool, records, rt, machine, runner, publisher := stoppedOrReleased(t, supervise.SuspendedByReleased)
+		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "design-approved", Version: 2}, time.Now()))
+		if err := runner.execute(ctx, row); !errors.Is(err, errNoticeWaits) {
+			t.Fatalf("executing the notice for the released architect of LEGION-1 = %v, want it to wait for the woken claim", err)
+		}
+		machine.Wait()
+		// The woken session holds the role again once its relaunch has claimed it.
+		publisher.setAbsent()
+		if _, delivered := publisher.snapshot(); len(delivered) != 0 || resumes(rt) != 1 || machine.Claim().State == supervise.StateSuspended {
+			t.Fatalf("delivered %+v, %d launches, claim %s; want nothing sent yet and the released claim woken by the delivery", delivered, resumes(rt), machine.Claim().State)
+		}
+		if err := runner.execute(ctx, row); err != nil {
+			t.Fatalf("executing the notice once the claim was woken: %v", err)
+		}
+		if _, delivered := publisher.snapshot(); fmt.Sprint(deliveredKinds(t, delivered)) != "[design-approved to LEGION-1]" {
+			t.Fatalf("delivered %v once the claim was woken, want the notice to LEGION-1's architect", deliveredKinds(t, delivered))
 		}
 	})
 }

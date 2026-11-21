@@ -529,8 +529,8 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 			registerController(t, pool)
 			// The wake this release wrote and had not sent when the daemon stopped.
 			inTx(t, pool, func(tx pgx.Tx) {
-				row, err := record.NewOutboxRow(settled, record.ControllerNotice{Kind: record.ArchitectStalledNotice,
-					Role: claim.RoleArchitect, Reason: record.ArchitectTookNothing.Words() + ": unsent when the daemon stopped"}, fixedNow)
+				row, err := record.NewOutboxRow(settled, record.Fenced(record.ControllerNotice{Kind: record.ArchitectStalledNotice,
+					Role: claim.RoleArchitect, Reason: record.ArchitectTookNothing.Words() + ": unsent when the daemon stopped"}, record.FirstFence), fixedNow)
 				if err != nil {
 					t.Fatalf("build the unsent architect wake of %s: %v", settled, err)
 				}

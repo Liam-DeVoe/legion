@@ -774,15 +774,13 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	r.writeDocument(carriedRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(carriedParent.Key, "p2")}}))
 	// R registers before P's architect registers P's gate, as in steps 5 and 6: R holds no step of
 	// its own until it registers one, so P's open gate would start it first (R19). R's first
-	// phase then starts at P's registration, a later phase entry than the one its opening's
-	// notices were queued at, which fences them (decision 10 of dispatch://INFRA-4730), so R's
-	// notices are held in the outbox until every read of the opening is made.
-	held.hold(carriedRoot.Key, record.OutboxKindNotice)
+	// phase then starts at P's registration, a later phase entry of the run its opening's notices
+	// were queued in, which they are delivered at all the same (the architect's ruling of
+	// 2026-11-21 on dispatch://INFRA-3320): the reads find them as production delivers them.
 	r.registerBasis(carriedGrant(), carriedRoot, 1, carriedParent, carried.Version, reason)
 	r.registerApprovedGate(carriedParent.Key, carriedParent.PrimaryArtifactID, carried.Version, carriedParentGrant)
 	t.Logf("Dispatch carried the person's approval of version %d of %s to version %d, and %s registered on it", before.Version, carriedParent.Key, carried.Version, carriedRoot.Key)
 	r.readAncestorOpening(ancestorOpening{root: carriedRoot, parent: carriedParent, rootVersion: 1, approval: carried, reason: reason, parentLive: true})
-	held.release(carriedRoot.Key)
 
 	// 9b. P labelled and on the backlog: no live tree while R opens, so no resting-root row and no
 	// architect of P, whose start task at its admission names R.
@@ -814,12 +812,10 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	olderParentGrant := r.admit(olderParent.Key)
 	r.linkUnder(olderRoot, olderParent, true)
 	r.writeDocument(olderRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(olderParent.Key, "p2")}}))
-	held.hold(olderRoot.Key, record.OutboxKindNotice)
 	r.registerBasis(olderGrant(), olderRoot, fourth, olderParent, olderApproval.Version, reason)
 	r.registerApprovedGate(olderParent.Key, olderParent.PrimaryArtifactID, olderApproval.Version, olderParentGrant)
 	r.readAncestorOpening(ancestorOpening{root: olderRoot, parent: olderParent, rootVersion: fourth, approval: olderApproval, reason: reason, parentLive: true,
 		ownApproval: second})
-	held.release(olderRoot.Key)
 	t.Logf("%s, holding the person's approval of version %d and at version %d, opened at %d on %s's approval, and no reader names version %d",
 		olderRoot.Key, second, fourth, fourth, olderParent.Key, second)
 }

@@ -128,7 +128,7 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 	if waiting {
 		return RelayKept, nil
 	}
-	row, err := NewOutboxRow(issue, ControllerNotice{Kind: ParkedDecisionNotice, Decision: decision.Decision, Root: root.Key,
+	row, err := NewFencedRow(ctx, tx, store, issue, ControllerNotice{Kind: ParkedDecisionNotice, Decision: decision.Decision, Root: root.Key,
 		Ref: decision.Ref, Actor: decision.Actor, Version: version, Reason: reason}, decision.At)
 	if err != nil {
 		return RelayNone, err

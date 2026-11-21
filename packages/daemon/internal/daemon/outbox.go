@@ -1633,11 +1633,15 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // running the row is the wake only if the architect is given the catch-up to read.
 //
 // A notice that is no catch-up is of the run and phase entry its issue stood at when it was
-// queued (record.Notice's fence), and one of an earlier one tells no architect anything of the
-// issue as it stands now: it finishes here, unpublished and unrouted (outlived). A catch-up is
-// judged by its own supersession instead (deliverNotice), against its run and its architect's
-// launch, since it names what the issue is owed whatever entry it stands at and what it claims is
-// handed over only by that rule.
+// queued (record.Notice's fence), and its delivery reads the run alone (record.LateAt, the
+// architect's ruling of 2026-11-21 on dispatch://INFRA-3320): one of an earlier phase entry of the
+// run the issue stands in is still news for its architect and is delivered, while one of an
+// earlier run tells no architect anything of the issue as it stands now and finishes here,
+// unpublished and unrouted (outlived). Its delivery starts and resumes no claim: it waits for an
+// architect claim a stop suspended, and wakes only one an idle release suspended (deliverNotice).
+// A catch-up is judged by its own supersession instead (deliverNotice), against its run and its
+// architect's launch, since it names what the issue is owed whatever entry it stands at and what
+// it claims is handed over only by that rule.
 func (r *outbox) notice(ctx context.Context, row record.OutboxRow, payload record.Notice) error {
 	if payload.CatchUp == nil {
 		if late, err := r.outlived(ctx, row, payload); err != nil || late {
@@ -2273,8 +2277,14 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 
 // controllerNotice publishes a controller notice row to the controller topic of the daemon's own
 // project, the one its controller subscribes to, and to nothing else: the Notice it is, under the
-// row's own key.
+// row's own key. It is of the run and phase entry of the row's issue when it was queued, as an
+// architect's notice is, and its delivery reads the run alone (record.LateAt): one of an earlier
+// run finishes here unpublished (outlived). A row keyed by the project, or by an issue the daemon
+// records nothing of, names the first fence and is never late.
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
+	if late, err := r.outlived(ctx, row, payload); err != nil || late {
+		return err
+	}
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
@@ -3947,19 +3957,20 @@ func (r *outbox) fenceOf(ctx context.Context, issue string, withPod bool) (recor
 }
 
 // outlived says whether payload, row's effect, queued at the fence it names (record.FenceOf),
-// does nothing to its issue as the record holds it now: an effect of an earlier run or phase
-// entry (record.Fence.Outlives), which finishes without acting (R17 and R20 of
-// dispatch://INFRA-3320). It logs the finish. A kind that carries no fence, and a row that names
-// none (one a release before this one queued), is outlived by nothing, and so is every row of an
-// outbox with no store (a test's, as an outbox with no supervisor publishes as before): it holds
-// no record to read a fence from.
+// does nothing to its issue as the record holds it now (record.LateAt), which finishes without
+// acting (R17 and R20 of dispatch://INFRA-3320): an effect that acts, of an earlier run or phase
+// entry, and a notice of an earlier run, since a notice's delivery reads its run alone (the
+// architect's ruling of 2026-11-21 on dispatch://INFRA-3320). It logs the finish. A kind that
+// carries no fence, and a row that names none (one a release before this one queued), is
+// outlived by nothing, and so is every row of an outbox with no store (a test's, as an outbox
+// with no supervisor publishes as before): it holds no record to read a fence from.
 func (r *outbox) outlived(ctx context.Context, row record.OutboxRow, payload record.OutboxPayload) (bool, error) {
 	queued, carries := record.FenceOf(payload)
 	if !carries || queued.Generation == 0 && queued.Entry == 0 || r.pool == nil {
 		return false, nil
 	}
 	now, err := r.fenceOf(ctx, row.Issue, false)
-	if err != nil || !now.Outlives(queued) {
+	if err != nil || !record.LateAt(now, payload) {
 		return false, err
 	}
 	r.log.Info("outbox row of an earlier run or phase entry of its issue; finished without acting", "row", row.ID,
