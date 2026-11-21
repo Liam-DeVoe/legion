@@ -88,6 +88,14 @@ File an issue only when a person asks you to, for a clear defect no running tree
 
 Post it on your first turn of each UTC day: `skill://legion-controller/references/daily-report.md`.
 
+## Side reviews
+
+A pull request no Legion tree opened, on a repository whose verdict entry takes side reviews, gets its verdict from a reviewer you name:
+
+1. `pull_request_reviewer`: name, at its current head, a running reviewer (its claim's `session`) whose tree did not write the change and is on the reviewed repository.
+2. `envoy_publish` the pull request and head to `notifications.role.<its claim>`.
+3. `pull_request_verdict`: relay only a verdict whose Envoy sender (`from`) is the session you named for that pull request and head.
+
 ## Deployment instructions
 
 The deployment instructions in your system prompt override this skill and may narrow what you label. They never hand Legion work.

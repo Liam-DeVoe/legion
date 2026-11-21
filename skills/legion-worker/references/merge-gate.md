@@ -53,6 +53,13 @@ After a forward merge of the base, read the merge (`skill://legion-worker/refere
 gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
 ```
 
+## Side reviews
+
+A controller can name you the side reviewer of a pull request no Legion tree opened, at one head. Review that head as this page says, then:
+
+1. Post your findings as a `COMMENT` review; it decides nothing.
+2. `envoy_publish` `approve` or `changes`, with the pull request and the head you read, to the controller's role topic (its message's `reply_role`).
+
 ## The production check after the close
 
 - `projects.<KEY>.production_check` in `legion.yaml` is `tester` (the default) or `off`. Under `off` the close opens no check at all. A check keeps the role it opened with, and only that role may report on it (`CHECK_ROLE_MISMATCH`).

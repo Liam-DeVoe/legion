@@ -39,6 +39,8 @@ import {
   LegionProjectPauseResponse,
   LegionProjectResumeRequest,
   LegionProjectResumeResponse,
+  LegionPullRequestReviewerRequest,
+  LegionPullRequestVerdictRequest,
   LegionReadyForUpdateRequest,
   LegionReadyRequest,
   LegionRegisterResponse,
@@ -170,6 +172,14 @@ const schemas: Record<string, z.ZodType> = {
   "handoff-complete-request-reviewer.json": LegionHandoffCompleteRequest,
   "review-verdict-request.json": LegionReviewVerdictRequest,
   "review-verdict.json": LegionEmptyResponse,
+  // The controller's side review: its naming of a side reviewer
+  // (`api.PullRequestReviewerRequest`) and the verdict it relays from that reviewer
+  // (`api.PullRequestVerdictRequest`), each with its empty answer. Written by `internal/api`'s
+  // TestSideReviewBodiesGolden.
+  "pull-request-reviewer-request.json": LegionPullRequestReviewerRequest,
+  "pull-request-reviewer.json": LegionEmptyResponse,
+  "pull-request-verdict-request.json": LegionPullRequestVerdictRequest,
+  "pull-request-verdict.json": LegionEmptyResponse,
   // Nor this one: the daemon's verdict on each case of a rating, which internal/api's
   // TestPlanRatingCasesGolden posts as its raw body to the completion that ends a retro and writes
   // down as the route answered it, so that the case "the request schema takes exactly the ratings
