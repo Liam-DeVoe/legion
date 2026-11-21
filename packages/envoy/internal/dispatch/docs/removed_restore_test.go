@@ -113,7 +113,7 @@ func TestTheRestoreTakesBackOnlyWhatNoPersonRemoved(t *testing.T) {
 	if len(sections) != 2 {
 		t.Fatalf("the decisions document holds %d sections, want two", len(sections))
 	}
-	heading := storeBlockAddress(issue.refKey(decisions), sections[0].headingID())
+	heading := refs.BlockAddress(issue.refKey(decisions), sections[0].headingID())
 
 	step := NewDecisionStep(issue.database, "", nil)
 	step.UseDocuments(issue.service)
@@ -307,7 +307,7 @@ func TestAPersonsBrowserDeletionOfAnAnsweredAskStaysThroughTheRestore(t *testing
 	}
 	result := issue.restoreWith([]graphcensus.RestoreWork{{
 		Shape: graphcensus.RestoreReturns, Issue: "DOC-1", Ask: ask, BlockID: "q-own",
-		Address: storeBlockAddress(issue.refKey(issue.spec), "q-own"), Spec: issue.refKey(issue.spec),
+		Address: refs.BlockAddress(issue.refKey(issue.spec), "q-own"), Spec: issue.refKey(issue.spec),
 	}}, false)
 	if len(result.Restored) != 0 || result.SpecVersion != 0 {
 		t.Fatalf("the restore over the ask's work did %+v, want nothing written: alice removed q-own", result)

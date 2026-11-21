@@ -90,9 +90,7 @@ func (s *server) standingDecisionsDocument(ctx context.Context, key string) (*st
 	var primary bool
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select a.issue_key, coalesce(a.project_key, ''), a.session_id, a.slug, a.kind, a.is_primary
-		from decisions_documents() d join artifacts a on a.id = d.id
-		where d.issue_key = $1 order by a.created_at, a.id limit 1
-	`, key).Scan(&issueKey, &project, &session, &slug, &kind, &primary)
+		`+refs.DecisionsDocumentOf("$1"), key).Scan(&issueKey, &project, &session, &slug, &kind, &primary)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -478,7 +476,7 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 			if entry.Node.Kind == refs.BlockNodeKind {
 				place.BlockID = strings.TrimPrefix(entry.Node.ID, refKey+"#")
 			}
-			place.Block = refKey + "#" + place.BlockID
+			place.Block = refs.BlockAddress(refKey, place.BlockID)
 			if place.BlockID != "" {
 				entry.Document = &place
 			}
@@ -874,18 +872,38 @@ func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model
 // version that last changed the decision's text (readDecisionNode).
 //
 // It writes as the store's writers do: the issue's owner lock first, under which it reads the
-// node's current keepers, and then one write-phase batch (store.RunWrite), so the transaction holds
-// its id only for that batch: the person's node (one the store already holds moves nothing), the
-// projection row, the decision.kept event, and last the tuples, under that event
-// (graphstore.QueueNodes, graphstore.QueueCaused over graphstore.LatestEvent). The event's
-// changed_version is the one the row is written with, which no statement of the batch reads back.
+// decision again and the node's current keepers, and then one write-phase batch (store.RunWrite),
+// so the transaction holds its id only for that batch: the person's node (one the store already
+// holds moves nothing), the projection row, the decision.kept event, and last the tuples, under
+// that event (graphstore.QueueNodes, graphstore.QueueCaused over graphstore.LatestEvent). The
+// event's changed_version is the one the row is written with, which no statement of the batch
+// reads back.
+//
+// keepDecision read decision on the pool, holding no lock, and an agent's write of the document
+// takes the same owner lock: one that committed while the Keep waited for it would leave the Keep
+// recording a sum the decision no longer has, or keeping a decision now replaced. So the decision
+// is read again under the lock, as keepDecisionHeading reads its section: one the store no longer
+// holds, or holds replaced, is 404 TARGET_NOT_FOUND, and one whose text sum is no longer the one
+// it was read at is 409 DECISION_CHANGED, each with nothing written.
 func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, error) {
 	own := issueOwner(*document.IssueKey)
 	if err := s.deps.Events.LockOwners(ctx, tx, own.event("", actor, nil)); err != nil {
 		return model.DecisionKeep{}, model.Event{}, err
 	}
+	current, found, err := s.readDecisionNode(ctx, tx, actor, document, decision.BlockID)
+	if err != nil {
+		return model.DecisionKeep{}, model.Event{}, err
+	}
+	if !found || current.Replaced {
+		return model.DecisionKeep{}, model.Event{}, errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", decision.BlockID, document.Name)
+	}
+	if current.TextSHA256 != decision.TextSHA256 {
+		return model.DecisionKeep{}, model.Event{}, errorf(http.StatusConflict, "DECISION_CHANGED",
+			"the decision changed since it was read; read it again and keep what it says now")
+	}
+	decision = current
 	login := model.CanonicalLogin(actor.ID)
-	address := decisionNodeAddress(document, decision.BlockID)
+	address := refs.BlockAddress(document.RefKey, decision.BlockID)
 	// The tuple's time is the projection row's, to the microsecond a timestamptz holds.
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	earlier, err := graphstore.CurrentOut(ctx, tx, refs.BlockNodeKind, address, []string{refs.TupleKeptBy})
@@ -976,12 +994,6 @@ func (s *server) keptDecision(ctx context.Context, who model.Actor, document mod
 	}, false, nil
 }
 
-// decisionNodeAddress is the address of the node of block blockID of document, as the block
-// index keys it: a U+0000 reads as U+FFFD, as the rendering writes it.
-func decisionNodeAddress(document model.Artifact, blockID string) string {
-	return document.RefKey + "#" + strings.ReplaceAll(blockID, "\x00", "\uFFFD")
-}
-
 // readDecisionNode is the agent's decision whose node is block blockID of document, a document
 // of an issue, as who reads it, and whether the store holds such a node: a node of the `decision`
 // supertag at that block's address, at any state but gone. It is read through
@@ -994,7 +1006,7 @@ func (s *server) readDecisionNode(ctx context.Context, q queryer, who model.Acto
 		return model.Decision{}, false, nil
 	}
 	decisions, err := decisionread.Decisions(ctx, q, who,
-		[]decisionread.Node{{Kind: refs.BlockNodeKind, ID: decisionNodeAddress(document, blockID)}})
+		[]decisionread.Node{{Kind: refs.BlockNodeKind, ID: refs.BlockAddress(document.RefKey, blockID)}})
 	if err != nil || len(decisions) == 0 || decisions[0].Kind != "agent" {
 		return model.Decision{}, false, err
 	}

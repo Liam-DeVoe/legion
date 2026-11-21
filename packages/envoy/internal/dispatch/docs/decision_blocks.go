@@ -72,7 +72,7 @@ func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, 
 	}
 	addresses := make([]string, len(decisions))
 	for index, decision := range decisions {
-		addresses[index] = storeBlockAddress(refKey, decision.id)
+		addresses[index] = refs.BlockAddress(refKey, decision.id)
 	}
 	kinds := make([]string, len(server))
 	for index, attribute := range server {
