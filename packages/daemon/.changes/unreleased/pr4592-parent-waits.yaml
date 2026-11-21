@@ -33,7 +33,7 @@ body: |-
   head merged with the tip of the pull request's base branch once it carries the children's
   merges, in a checkout of its own, and to record each result with that base commit. Migration
   `20261114232555_awaiting_children` adds the phase, the held start with `children_wait_children`,
-  `children_waited_at` and `phases.entry_from`. A caller below daemon API contract 207 is served
+  `children_waited_at` and `phases.entry_from`. A caller below daemon API contract 212 is served
   such a parent's `phase` as `admitted` and its held word as `children_first`. The first admission
   pass after the deploy moves every started parent of a running tree (in `planning` through
   `accepting`, its pull request not merged) that has an open Dispatch child into
