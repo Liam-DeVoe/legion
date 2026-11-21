@@ -173,12 +173,9 @@ interface MarkComposeRequest {
 }
 
 /** A mark compose as the margin holds it open: the request, and when the margin opened it, which
- *  is when the compose took its words. A kind switch moves it to another mark over the same words,
- *  and keeps the time. Its composer takes the time however often it mounts while the compose
- *  stays open (`MentionComposer`'s `openedAt`), so one that mounts again as the reader comes back
- *  to the document weighs the document's text read since against when the words were taken, not
- *  against its mount (`useQuoteInDocument`). */
-interface OpenedCompose extends MarkComposeRequest {
+ *  is when the compose took its words; a kind switch keeps it. Its composer takes it as its own
+ *  time (`MentionComposer`'s `openedAt`). */
+interface TimedMarkCompose extends MarkComposeRequest {
   readonly openedAt: number;
 }
 
@@ -187,7 +184,7 @@ interface OpenedCompose extends MarkComposeRequest {
  *  is kept past that compose's Send and its cancel: a held send's composer is the compose that
  *  sent it, by that number (`MarginSheet` keys the composer by it). */
 export interface DocumentCompose {
-  readonly open: OpenedCompose | undefined;
+  readonly open: TimedMarkCompose | undefined;
   readonly seq: number;
 }
 
@@ -234,7 +231,7 @@ export function marginReplySendKey(key: string): MutationKey {
 
 /** A mark compose the reader has open on one document: what it is about, when it opened, and the
  *  editor's promise it settles. */
-interface OpenCompose extends OpenedCompose {
+interface OpenCompose extends TimedMarkCompose {
   reject(reason: Error): void;
   resolve(): void;
 }

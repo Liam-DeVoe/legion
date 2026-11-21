@@ -578,8 +578,7 @@ export function MentionComposer({
   // at its mount - unless the field took a draft written for those words, a held send's or one
   // kept for them, whose compose took them before: a composer that mounts again at its words, as
   // one does when the reader comes back to the document, goes on with that compose's words, and
-  // keeps its time (`MountDraft.anchoredAt`). One that mounts again with an empty field took no
-  // draft, and keeps the time of the compose it is still in (`openedAt`).
+  // keeps its time (`MountDraft.anchoredAt`).
   const [anchoredAt] = useState(() =>
     anchor === undefined ? undefined : (initial.anchoredAt ?? openedAt ?? Date.now())
   );

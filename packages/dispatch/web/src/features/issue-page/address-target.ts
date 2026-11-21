@@ -362,13 +362,13 @@ export function useAddressFallback({
   const retrying = state?.fetchStatus === "fetching";
   const failures = state?.errorUpdateCount ?? 0;
   const failedBefore = before?.failedBefore ?? (readKey === undefined ? undefined : failures);
-  const refused = ambiguousItems(state?.error);
+  const refused = landing?.kind === "pending" ? ambiguousItems(state?.error) : undefined;
   const settled: Following["settled"] =
-    landing?.kind !== "pending"
-      ? landing
-      : refused !== undefined
-        ? { candidates: refused, kind: "ambiguous" }
-        : before?.settled;
+    refused !== undefined
+      ? { candidates: refused, kind: "ambiguous" }
+      : landing?.kind === "pending"
+        ? before?.settled
+        : landing;
   const target = address.target;
   const named =
     address.document === undefined && (target?.kind === "block" || target?.kind === "children")
