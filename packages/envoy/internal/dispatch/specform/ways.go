@@ -2,6 +2,8 @@ package specform
 
 import (
 	"fmt"
+	"iter"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
@@ -29,10 +31,17 @@ var pastNote = fmt.Sprintf("Dispatch offers ways out for the first %d findings o
 var wholeNote = fmt.Sprintf("Dispatch offers ways out for the first %d findings of a text that ste-lint reads as more than one line, so it offers none for this one, though one can exist",
 	maxJudgedInSentence)
 
+// elsewhereNote is what the detail of a finding says whose words stand in more than
+// maxJudgedInSentence sentences of its text where the finding does not stand (wayJudge.alsoAt), so
+// the writer knows that Dispatch offers no way out of it, not that none exists.
+var elsewhereNote = fmt.Sprintf("Dispatch offers ways out of words that stand in at most %d other sentences of the text, so it offers none for this one, though one can exist",
+	maxJudgedInSentence)
+
 // offer is the ways out that a judge offers a finding (ways), and what the finding says of the ways
 // out that the judge did not read (note): pastNote for a finding past the first
 // maxJudgedInSentence findings of its sentence, wholeNote for one past those of a text that the
-// judge reads whole, or nothing.
+// judge reads whole, elsewhereNote for one whose words stand in too many other sentences, or
+// nothing.
 type offer struct {
 	ways [maxWays]wayOut
 	note string
@@ -56,16 +65,20 @@ func (o offer) said(ways string) string {
 // it gives, so a way out that changes only what another finding offers gives no new finding. So no
 // refusal suggests a form that another rule refuses: "that" before a clause can make an
 // instruction of 21 words, and a space after a stop can make a statement of three sentences. A way
-// out changes one sentence, so the judge reads that sentence alone, by each rule that judges a text
-// of its kind: the form rules, with the other sentences of the text and of its footnotes in the
-// count of a statement, and the reference rules. The sentence is one of the text's words as the
-// form rules read them, code font and all, also for a finding of the words that the page shows
-// (sentencePlaces). In that count each stop with no space after it but the finding's own ends a
-// sentence, as the space that its own finding asks for makes it end one, so the ways out of one
-// finding do not change with the white space after the stop of another. One finding stands for
-// each place of its words, and the writer changes the words at each place, so the judge offers a
-// way out only where it passes in the sentence of each place, with the way out written at each
-// place of the finding's words in that sentence: it first takes each place (survey), then judges.
+// out changes one sentence and keeps where it ends, so the judge reads that sentence alone, by each
+// rule that judges a text of its kind: the form rules, with the other sentences of the text and of
+// its footnotes in the count of a statement, and the reference rules. A way out whose sentence no
+// longer ends at a stop of its own, and so runs on into the next one, or that ends where it did
+// not, writes a text that this reading does not read, so it is no way out (passes). The sentence
+// is one of the text's words as the form rules read them, code font and all, also for a finding of
+// the words that the page shows (sentencePlaces), and each finding hands it to the judge as the
+// text holds it, white space and all, never rebuilt from its words. In that count each stop with
+// no space after it but the finding's own ends a sentence, as the space that its own finding asks
+// for makes it end one, so the ways out of one finding do not change with the white space after
+// the stop of another. One finding stands for each place of its words, and the writer changes the
+// words at each place, so the judge offers a way out only where it passes in the sentence of each
+// place, with the way out written at each place of the finding's words in that sentence: it first
+// takes each place (survey), then judges.
 // A rule that reads more than one sentence, such as synonym-rotation, which reads the text whole,
 // the judge reads in the whole text that the way out writes at each place (wholeText). A nil judge
 // offers each way out unjudged: the judge's own reading of a sentence is one.
@@ -97,11 +110,13 @@ type wayJudge struct {
 	elsewhere func(before, after ste.Verbs) bool
 }
 
-// unitKey is a sentence that the judge reads, or the address of a link or an image (address),
-// which the reference rules read as an address and no form rule reads.
+// unitKey is a place of a finding as the judge reads it: a sentence of the text, as the text holds
+// it; the address of a link or an image (address), which the reference rules read as an address
+// and no form rule reads; or a sentence of a title (title), which is no sentence of the text, so the
+// whole text that a way out writes holds none of its words (wholeText.passes).
 type unitKey struct {
-	text    string
-	address bool
+	text           string
+	address, title bool
 }
 
 // place is a finding, by the words that its ways out change, at one unit that holds it.
@@ -112,11 +127,12 @@ type place struct {
 
 // judgedUnit is a unit as the judge reads it alone: how many sentences of the text stand outside
 // it (others), each stop with no space after it there ending one, how many such stops it holds
-// (joined), and each finding by its rule and detail, with how many times it stands, read with the
-// stops of the finding whose ways out the judge reads left out of the count (findings, by how many
-// those are).
+// (joined), whether its last sentence ends at a stop of its own (ends, endsWithStop), and each
+// finding by its rule and detail, with how many times it stands, read with the stops of the
+// finding whose ways out the judge reads left out of the count (findings, by how many those are).
 type judgedUnit struct {
 	others, joined int
+	ends           bool
 	findings       map[int]map[findingKey]int
 }
 
@@ -182,7 +198,7 @@ func (j *wayJudge) survey(find func()) {
 }
 
 // offered is the offer of ways, the ways out of a finding of rule whose ways out change from in
-// unit, the sentence that holds it, or the address that holds it (address), with a zero wayOut in
+// unit, the place that holds it, with a zero wayOut in
 // place of each that passes no reading (passes) at some place of the finding (survey), or that the
 // whole text that it writes at each place refuses (wholeText.passes). A finding
 // past maxJudgedInSentence of the findings of a unit that holds it gives none, and its offer says
@@ -190,13 +206,13 @@ func (j *wayJudge) survey(find func()) {
 // reads whole (wholeNote); so does one whose sentence is not known at some place (unit ""), with no
 // word of it, and one that survey did not see. A nil judge offers ways as they are, and so does
 // each judge a finding that gives none.
-func (j *wayJudge) offered(unit string, address bool, rule Rule, from string, ways [maxWays]wayOut) offer {
+func (j *wayJudge) offered(unit unitKey, rule Rule, from string, ways [maxWays]wayOut) offer {
 	if j == nil || ways == ([maxWays]wayOut{}) {
 		return offer{ways: ways}
 	}
 	key := wayKey{rule, from}
 	if j.surveying {
-		j.take(place{key, unitKey{unit, address}})
+		j.take(place{key, unit})
 		return offer{}
 	}
 	if given, ok := j.given[key]; ok {
@@ -215,23 +231,37 @@ func (j *wayJudge) offered(unit string, address bool, rule Rule, from string, wa
 	if len(places) == 0 {
 		given.ways = [maxWays]wayOut{}
 	}
-	for _, at := range places {
+	// The writer changes the words at each place where they stand (strings.ReplaceAll), also where
+	// the finding does not stand: in a name that ends a sentence there ("Web.Config." beside
+	// "Web.Config"), which is a finding of its own, or in an address that a colon makes a remote
+	// path there ("deploy@build.example.com:."), which is none. So the judge reads the way out in
+	// those sentences too (also), where it must give no new finding, and the finding's own rule
+	// need not give fewer. It reads at most maxJudgedInSentence of them, so that the work of a
+	// way out stays in proportion to the sentences of its finding.
+	var also []unitKey
+	if given.ways != ([maxWays]wayOut{}) {
+		if also = j.alsoAt(from, places); len(also) > maxJudgedInSentence {
+			given.ways, given.note = [maxWays]wayOut{}, elsewhereNote
+		}
+	}
+	for at, holds := range j.eachPlace(places, also) {
 		if given.ways == ([maxWays]wayOut{}) {
 			break
 		}
 		state := j.unit(at)
 		for index, way := range given.ways {
-			if way != (wayOut{}) && !j.passes(state, at, rule, way) {
+			if way != (wayOut{}) && !j.passes(state, at, rule, way, holds) {
 				given.ways[index] = wayOut{}
 			}
 		}
 	}
 	if j.whole != nil {
+		written := slices.Concat(places, also)
 		for index, way := range given.ways {
 			if way == (wayOut{}) {
 				continue
 			}
-			passed, read := j.whole.passes(key, way, places)
+			passed, read := j.whole.passes(key, way, written)
 			if !read {
 				given.ways, given.note = [maxWays]wayOut{}, wholeNote
 				break
@@ -262,8 +292,8 @@ func (j *wayJudge) take(at place) {
 	j.places[at.way] = append(j.places[at.way], at.unit)
 }
 
-// unit is the judge's reading of unit, read once: how many sentences of the text stand outside it
-// and how many stops with no space after them it holds.
+// unit is the judge's reading of unit, read once: how many sentences of the text stand outside it,
+// how many stops with no space after them it holds, and whether it ends at a stop of its own.
 func (j *wayJudge) unit(unit unitKey) *judgedUnit {
 	if state, ok := j.units[unit]; ok {
 		return state
@@ -273,6 +303,7 @@ func (j *wayJudge) unit(unit unitKey) *judgedUnit {
 		sentences := sentencesOf(unit.text)
 		state.joined = joinedIn(sentences)
 		state.others = max(0, j.count+j.joined-len(sentences)-state.joined)
+		state.ends = endsWithStop(unit.text)
 	}
 	if j.units == nil {
 		j.units = map[unitKey]*judgedUnit{}
@@ -318,17 +349,21 @@ func (j *wayJudge) read(unit unitKey, outside int) map[findingKey]int {
 
 // passes reports whether way, a way out of a finding of rule in the unit that state reads, written
 // at each place of its words in the unit, as the writer who follows the finding writes it, writes a
-// unit that gives no finding that the unit does not give as many times, and fewer findings of rule.
-// Each stop with no space after it of another finding ends a sentence in the count of both
+// unit that keeps where its last sentence ends (endsWithStop), gives no finding that the unit does
+// not give as many times, and, where the finding stands in the unit (holds), gives fewer findings
+// of rule. Each stop with no space after it of another finding ends a sentence in the count of both
 // readings: in the unit before the way out, all but the finding's own, which are the stops that the
 // way out takes away at each place; after it, each that is left.
-func (j *wayJudge) passes(state *judgedUnit, unit unitKey, rule Rule, way wayOut) bool {
-	changed := unitKey{strings.ReplaceAll(unit.text, way.from, way.to), unit.address}
+func (j *wayJudge) passes(state *judgedUnit, unit unitKey, rule Rule, way wayOut, holds bool) bool {
+	changed := unitKey{strings.ReplaceAll(unit.text, way.from, way.to), unit.address, unit.title}
 	if changed.text == unit.text {
 		return false
 	}
 	stops, outside := 0, state.others
 	if prose(j.kind) && !unit.address {
+		if endsWithStop(changed.text) != state.ends {
+			return false
+		}
 		left := joinedIn(sentencesOf(changed.text))
 		outside += left
 		if rule == ruleStopNoSpace {
@@ -350,7 +385,35 @@ func (j *wayJudge) passes(state *judgedUnit, unit unitKey, rule Rule, way wayOut
 			own += count
 		}
 	}
-	return ownAfter < own
+	return !holds || ownAfter < own
+}
+
+// alsoAt is each sentence of the text, as the judge names a place (unitKey), that holds from where
+// no place of places stands, maxJudgedInSentence+1 at most: a place of the words of a finding where
+// the finding does not stand (offered). A judge told no text (told) knows no sentence beside
+// places.
+func (j *wayJudge) alsoAt(from string, places []unitKey) []unitKey {
+	if j.whole == nil {
+		return nil
+	}
+	return j.whole.holding(from, places, maxJudgedInSentence)
+}
+
+// eachPlace is each unit of places, where the finding stands (true), then each of also, where only
+// its words stand (false).
+func (j *wayJudge) eachPlace(places, also []unitKey) iter.Seq2[unitKey, bool] {
+	return func(yield func(unitKey, bool) bool) {
+		for _, at := range places {
+			if !yield(at, true) {
+				return
+			}
+		}
+		for _, at := range also {
+			if !yield(at, false) {
+				return
+			}
+		}
+	}
 }
 
 // sentencePlaces finds the sentence that holds a place of a finding, for the judge of the ways out
@@ -358,10 +421,12 @@ func (j *wayJudge) passes(state *judgedUnit, unit unitKey, rule Rule, way wayOut
 // code font and all (sentencesOf), which take each byte of words once. A place is an offset of
 // shown, the words that the reference rules read: the words as the page shows them (Held.Shown),
 // which are words with the marks of code font taken out, so each byte of shown stands at the next
-// byte of words that equals it; or words itself, for a text with no Shown and for a title. One
-// cursor walks shown and words once, and one the sentences, for places asked in the order of shown.
+// byte of words that equals it; or words itself, for a text with no Shown and for a title, whose
+// places say so (title). One cursor walks shown and words once, and one the sentences, for places
+// asked in the order of shown.
 type sentencePlaces struct {
 	words, shown     string
+	title            bool
 	sentences        []sentence
 	read             bool
 	at               int
@@ -369,9 +434,9 @@ type sentencePlaces struct {
 }
 
 // of is the sentence of words that holds the place of shown at offset, at or after the last place
-// asked for, where name stands; or "" where words writes name at no such place, as for a name that
-// the marks of code font cut, or holds no sentence there.
-func (p *sentencePlaces) of(offset int, name string) string {
+// asked for, where name stands; or a unit of no text where words writes name at no such place, as
+// for a name that the marks of code font cut, or holds no sentence there.
+func (p *sentencePlaces) of(offset int, name string) unitKey {
 	if !p.read {
 		p.sentences, p.read = sentencesOf(p.words), true
 	}
@@ -385,13 +450,13 @@ func (p *sentencePlaces) of(offset int, name string) string {
 		p.wordsAt++
 	}
 	if p.shownAt < offset || !strings.HasPrefix(p.words[p.wordsAt:], name) {
-		return ""
+		return unitKey{title: p.title}
 	}
 	for p.at < len(p.sentences) && p.sentences[p.at].end <= p.wordsAt {
 		p.at++
 	}
 	if p.at == len(p.sentences) {
-		return ""
+		return unitKey{title: p.title}
 	}
-	return p.sentences[p.at].in(p.words)
+	return unitKey{text: p.sentences[p.at].in(p.words), title: p.title}
 }

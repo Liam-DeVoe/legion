@@ -37,9 +37,12 @@ type sentence struct {
 }
 
 // in is the sentence's text in line, the line that sentencesOf read it from, as the bytes that it
-// takes without the white space around them: its words with what code font holds among them.
+// takes without the white space around them, as ste-lint reads white space (ste.Strip, which takes
+// \x1c to \x1f too): its words with what code font holds among them, from its first word to its
+// last. So a way out that changes this text changes no white space between it and the sentence
+// before it.
 func (s sentence) in(line string) string {
-	return strings.TrimSpace(line[s.start:s.end])
+	return ste.Strip(line[s.start:s.end])
 }
 
 // sentencesOf is each sentence of line, as its words, that a rule of the form counts. It is the
@@ -125,9 +128,35 @@ func isAddress(word string) bool {
 }
 
 // stopNoSpaceWays is the two ways out of the rule stop-no-space for word: a space after each such
-// stop (spacedStops), or the word in code font.
+// stop (spacedStops), or the name in code font, with the stops and closing marks that end its
+// sentence after the code font (nameAndEnd). So the sentence still ends where it ended: the code
+// font of "file1.Name." is "`file1.Name`.", where "`file1.Name.`" would end no sentence, as nothing
+// in code font is a word, and the sentence would run on into the next one.
 func stopNoSpaceWays(word string) [maxWays]wayOut {
-	return [maxWays]wayOut{{word, spacedStops(word)}, {word, "`" + word + "`"}}
+	name, end := nameAndEnd(word)
+	return [maxWays]wayOut{{word, spacedStops(word)}, {word, "`" + name + "`" + end}}
+}
+
+// nameAndEnd is word cut where the end of the sentence that it ends starts (endsSentence): the
+// name, and the stops and the closing marks after them. A word that ends no sentence is all name.
+func nameAndEnd(word string) (string, string) {
+	if !endsSentence(word) {
+		return word, ""
+	}
+	name := strings.TrimRightFunc(strings.TrimRight(word, closingMarks), isStop)
+	return name, word[len(name):]
+}
+
+// endsWithStop reports whether the last word of line, as the rules of the form read it (ste.Words,
+// with nothing in code font a word), ends a sentence (endsSentence): whether the last sentence of
+// line ends at a stop of its own, and not only where the line ends.
+func endsWithStop(line string) bool {
+	pieces := ste.Words(line)
+	if len(pieces) == 0 {
+		return false
+	}
+	last := pieces[len(pieces)-1]
+	return endsSentence(last[len(last)-1].Text)
 }
 
 // stopNoSpaceBreak is the break of the rule stop-no-space for word: the place, and the words of

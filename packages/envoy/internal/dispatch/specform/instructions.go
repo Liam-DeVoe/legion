@@ -80,7 +80,9 @@ var (
 // object there; and, after a condition at the start, the condition as a sentence of its own
 // (conditionSentence), for a list of verbs in the condition. Where the split would change what the
 // sentence means, the finding says what the sentences must keep, and gives no split. It gives only
-// the ways out that judge passes in the sentence (wayJudge).
+// the ways out that judge passes in the sentence (wayJudge), the sentence as line holds it, white
+// space and all (each way out changes those bytes, and writes the words of the change with one
+// space between them), so that the whole-text reading finds it among the sentences of line.
 func instructionBreaks(line string, judge *wayJudge) []broken {
 	var found []broken
 	coded, spans := codeAsWords(line)
@@ -93,17 +95,17 @@ func instructionBreaks(line string, judge *wayJudge) []broken {
 		}
 		second := starts[1]
 		said := func(words []string) string { return spans.Replace(strings.Join(words, " ")) }
-		original := said(sentence)
+		held := spans.Replace(each.in(coded))
 		var ways [maxWays]wayOut
 		keep := splitKeepsMeaning(words, commas, starts)
 		if len(keep) == 0 {
-			ways[0] = wayOut{original, said(splitInstructions(sentence, words, starts))}
+			ways[0] = wayOut{held, said(splitInstructions(sentence, words, starts))}
 		}
-		ways[1] = wayOut{original, said(slices.Insert(slices.Clone(sentence), second+1, "that"))}
+		ways[1] = wayOut{held, said(slices.Insert(slices.Clone(sentence), second+1, "that"))}
 		if condition, ok := conditionSentence(sentence, words, commas); ok {
-			ways[2] = wayOut{original, said(condition)}
+			ways[2] = wayOut{held, said(condition)}
 		}
-		given := judge.offered(original, false, ruleInstructions, original, ways)
+		given := judge.offered(unitKey{text: held}, ruleInstructions, held, ways)
 		quoted := strings.TrimRight(said(sentence[second:min(len(sentence), second+instructionQuote)]), ".!?")
 		found = append(found, broken{rule: ruleInstructions, ways: given.ways,
 			detail:   fmt.Sprintf("a sentence gives two instructions, and a sentence of a procedure gives one: %q", quoted),

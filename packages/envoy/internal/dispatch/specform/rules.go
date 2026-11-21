@@ -352,7 +352,7 @@ func heldBreaks(c Context, people [][]string, body string, held Held, judge *way
 		line := oneLine(title)
 		var places *sentencePlaces
 		if judge != nil {
-			places = &sentencePlaces{words: line, shown: line}
+			places = &sentencePlaces{words: line, shown: line, title: true}
 		}
 		found = append(found, referenceBreaks(c, people, line, false, judge, places)...)
 	}
@@ -467,7 +467,7 @@ func formBreaks(kind Kind, line string, noted footnotesHeld, judge *wayJudge) ([
 	var found []broken
 	for _, sentence := range sentences {
 		for _, word := range sentence.stopsWithNoSpace() {
-			found = append(found, stopNoSpaceBreak(word, judge.offered(sentence.in(line), false, ruleStopNoSpace, word, stopNoSpaceWays(word))))
+			found = append(found, stopNoSpaceBreak(word, judge.offered(unitKey{text: sentence.in(line)}, ruleStopNoSpace, word, stopNoSpaceWays(word))))
 		}
 	}
 	if count := len(sentences) + noted.count; kind == KindStatement && (count < 1 || count > maxSentences) {
@@ -655,11 +655,11 @@ func referenceBreaks(c Context, people [][]string, line string, address bool, ju
 		names = personNames(people, line, references)
 	}
 	for _, each := range names {
-		name, unit := line[each.start:each.end], line
+		name, unit := line[each.start:each.end], unitKey{text: line, address: address}
 		if judge != nil && !address {
 			unit = places.of(each.start, name)
 		}
-		found = append(found, personBreak(name, judge.offered(unit, address, rulePerson, name, personWays(name))))
+		found = append(found, personBreak(name, judge.offered(unit, rulePerson, name, personWays(name))))
 	}
 	return found
 }

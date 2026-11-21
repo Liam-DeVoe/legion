@@ -172,8 +172,10 @@ func isWord(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsNumber(r) || r == '_'
 }
 
-// strip is Python's str.strip with no argument.
-func strip(s string) string {
+// Strip is Python's str.strip with no argument: s without the white space that ste-lint reads
+// (isSpace) at its two ends. A caller that cuts a line into sentences names each by it, so a
+// sentence starts at its first word and ends at its last.
+func Strip(s string) string {
 	return strings.TrimFunc(s, isSpace)
 }
 
@@ -333,7 +335,7 @@ func splitTableRow(line string) ([]segment, bool) {
 	for index, cell := range raw {
 		trimmed := strings.TrimLeftFunc(cell, isSpace)
 		leading := runes(cell) - runes(trimmed)
-		cells[index] = segment{text: strip(cell), column: column + leading, start: at + len(cell) - len(trimmed)}
+		cells[index] = segment{text: Strip(cell), column: column + leading, start: at + len(cell) - len(trimmed)}
 		column += runes(cell) + 1
 		at += len(cell) + 1
 	}
@@ -385,7 +387,7 @@ func eachSegment(lines []string, starts []int, visit func(line int, from segment
 	tables := tableCells(lines)
 	inFence := false
 	for index, raw := range lines {
-		if isFence(strip(raw)) {
+		if isFence(Strip(raw)) {
 			inFence = !inFence
 			continue
 		}
@@ -474,12 +476,6 @@ type located struct {
 	Finding
 }
 
-// synonymHit is where a member of a synonym group first stands, and its text there.
-type synonymHit struct {
-	line, column int
-	match        string
-}
-
 // columns is the column ste-lint gives a byte offset of a segment's text: the 1-based character
 // index in the segment's line. It counts the characters from the offset it last answered, so a
 // walk over offsets in increasing order counts each character of the text once, and an offset
@@ -515,7 +511,8 @@ func LintVerbs(text string) ([]Finding, Verbs) {
 	add := func(line, column int, rule, match string) {
 		found = append(found, located{line: line, column: column, Finding: Finding{Rule: rule, Match: match}})
 	}
-	seen := map[[2]int]synonymHit{}
+	seen := map[[2]int]bool{}
+	var hits []Hit
 	eachSegment(lines, starts, func(line int, from segment, text string) {
 		column := columns{text: text, start: from.column}
 		for index, char := range text {
@@ -531,27 +528,7 @@ func LintVerbs(text string) ([]Finding, Verbs) {
 				add(line, column.at(span[0]), rule.name, text[span[0]:span[1]])
 			}
 		}
-		// The first place of each member that has none yet, its column counted in the order of
-		// the line.
-		type first struct {
-			member [2]int
-			span   [2]int
-		}
-		var firsts []first
-		for group, members := range rules.synonyms {
-			for member, pattern := range members {
-				if _, ok := seen[[2]int{group, member}]; ok {
-					continue
-				}
-				if spans := boundedMatches(pattern, text, true); len(spans) > 0 {
-					firsts = append(firsts, first{[2]int{group, member}, spans[0]})
-				}
-			}
-		}
-		sort.Slice(firsts, func(a, b int) bool { return firsts[a].span[0] < firsts[b].span[0] })
-		for _, hit := range firsts {
-			seen[hit.member] = synonymHit{line: line, column: column.at(hit.span[0]), match: text[hit.span[0]:hit.span[1]]}
-		}
+		hits = append(hits, firstHits(text, line, &column, seen)...)
 		for _, piece := range sentencePieces(text) {
 			if words := len(fields(piece)); words > rules.maxWords {
 				add(line, from.column+1, "long-sentence", fmt.Sprintf("%d words", words))
@@ -559,29 +536,18 @@ func LintVerbs(text string) ([]Finding, Verbs) {
 		}
 	})
 	// A synonym rotation is each member of a group after the first one to stand in the text, at
-	// its first place, ordered as Python orders its (line, column, match) tuples. Each member that
-	// stands in the text is one of its verbs.
+	// its first place, in ste-lint's order of the places (Hit.Less). Each member that stands in the
+	// text is one of its verbs.
 	var verbs Verbs
-	for group, members := range rules.synonyms {
-		var present []synonymHit
-		for member := range members {
-			if hit, ok := seen[[2]int{group, member}]; ok {
-				present = append(present, hit)
-				verbs |= 1 << (rules.first[group] + member)
-			}
-		}
-		sort.Slice(present, func(a, b int) bool {
-			x, y := present[a], present[b]
-			if x.line != y.line {
-				return x.line < y.line
-			}
-			if x.column != y.column {
-				return x.column < y.column
-			}
-			return x.match < y.match
-		})
-		for index := 1; index < len(present); index++ {
-			add(present[index].line, present[index].column, "synonym-rotation", present[index].match)
+	present := make([][]Hit, len(rules.synonyms))
+	for _, hit := range hits {
+		present[hit.Group] = append(present[hit.Group], hit)
+		verbs |= hit.Verb()
+	}
+	for _, each := range present {
+		sort.Slice(each, func(a, b int) bool { return each[a].Less(each[b]) })
+		for index := 1; index < len(each); index++ {
+			add(each[index].Line, each[index].Column, "synonym-rotation", each[index].Match)
 		}
 	}
 	found = append(found, danglingConjunctions(lines)...)
@@ -606,6 +572,51 @@ type Hit struct {
 	Match                       string
 }
 
+// Less reports whether h comes before other in ste-lint's order of the first places of the
+// members of a synonym group, the order whose first member gives no finding of the rule
+// synonym-rotation: by line, then column, then words, as Python orders its (line, column, match)
+// tuples. LintVerbs orders the places of one text by it, and a caller that reads a line as
+// several texts orders the places of each text by it.
+func (h Hit) Less(other Hit) bool {
+	if h.Line != other.Line {
+		return h.Line < other.Line
+	}
+	if h.Column != other.Column {
+		return h.Column < other.Column
+	}
+	return h.Match < other.Match
+}
+
+// firstHits is the first place in kept, the text of a segment of line without its inline code,
+// of each member of a synonym group that seen does not hold yet, in the order of the segment; it
+// puts each such member in seen. It is the one scan of the synonym groups: LintVerbs and SpreadOf
+// read the members through it alone.
+func firstHits(kept string, line int, column *columns, seen map[[2]int]bool) []Hit {
+	type first struct {
+		member [2]int
+		span   [2]int
+	}
+	var firsts []first
+	for group, members := range rules.synonyms {
+		for member, pattern := range members {
+			if seen[[2]int{group, member}] {
+				continue
+			}
+			if spans := boundedMatches(pattern, kept, true); len(spans) > 0 {
+				firsts = append(firsts, first{[2]int{group, member}, spans[0]})
+			}
+		}
+	}
+	sort.Slice(firsts, func(a, b int) bool { return firsts[a].span[0] < firsts[b].span[0] })
+	hits := make([]Hit, len(firsts))
+	for index, hit := range firsts {
+		seen[hit.member] = true
+		hits[index] = Hit{Group: hit.member[0], Member: hit.member[1], Line: line,
+			Column: column.at(hit.span[0]), Match: kept[hit.span[0]:hit.span[1]]}
+	}
+	return hits
+}
+
 // Spread is what LintVerbs reads in a text of one line that the text around it can change, for a
 // caller that reads such a line as the sentences that make it, each one text: the first place of
 // each member of a synonym group (Hits, in the order of the text), the words of each sentence
@@ -628,27 +639,7 @@ func SpreadOf(text string) Spread {
 	last := rune(-1)
 	eachSegment(lines, starts, func(line int, from segment, kept string) {
 		column := columns{text: kept, start: from.column}
-		type first struct {
-			member [2]int
-			span   [2]int
-		}
-		var firsts []first
-		for group, members := range rules.synonyms {
-			for member, pattern := range members {
-				if seen[[2]int{group, member}] {
-					continue
-				}
-				if spans := boundedMatches(pattern, kept, true); len(spans) > 0 {
-					firsts = append(firsts, first{[2]int{group, member}, spans[0]})
-				}
-			}
-		}
-		sort.Slice(firsts, func(a, b int) bool { return firsts[a].span[0] < firsts[b].span[0] })
-		for _, hit := range firsts {
-			seen[hit.member] = true
-			spread.Hits = append(spread.Hits, Hit{Group: hit.member[0], Member: hit.member[1], Line: line,
-				Column: column.at(hit.span[0]), Match: kept[hit.span[0]:hit.span[1]]})
-		}
+		spread.Hits = append(spread.Hits, firstHits(kept, line, &column, seen)...)
 		for _, piece := range sentencePieces(kept) {
 			spread.Pieces = append(spread.Pieces, len(fields(piece)))
 		}
@@ -718,7 +709,7 @@ func Neutral(text string) string {
 // EndsInConjunction reports whether text, as Neutral writes it, ends in "and" or "or", the end
 // of a list item that the rule dangling-conjunction refuses.
 func EndsInConjunction(text string) bool {
-	return conjunctionEnd(strip(Neutral(text))) >= 0
+	return conjunctionEnd(Strip(Neutral(text))) >= 0
 }
 
 // Rotations is the verbs of each synonym group that a text breaks the rule synonym-rotation in with
@@ -809,7 +800,7 @@ func asciiOnly(s string) string {
 }
 
 func listContinuation(line string, contentIndent int) bool {
-	if strip(line) == "" {
+	if Strip(line) == "" {
 		return true
 	}
 	if listItemStart.MatchString(line) {
@@ -831,7 +822,7 @@ func danglingConjunctions(lines []string) []located {
 	inFence := false
 	for index := 0; index < len(lines); {
 		line := lines[index]
-		if isFence(strip(line)) {
+		if isFence(Strip(line)) {
 			inFence = !inFence
 			index++
 			continue
@@ -851,7 +842,7 @@ func danglingConjunctions(lines []string) []located {
 		itemFence := false
 		for ; next < len(lines); next++ {
 			candidate := lines[next]
-			if isFence(strip(candidate)) {
+			if isFence(Strip(candidate)) {
 				itemFence = !itemFence
 				continue
 			}
@@ -865,7 +856,7 @@ func danglingConjunctions(lines []string) []located {
 		}
 		var last *itemLine
 		for _, item := range items {
-			if cleaned := strip(inlineCode.ReplaceAllString(item.text, " CODE ")); cleaned != "" {
+			if cleaned := Strip(inlineCode.ReplaceAllString(item.text, " CODE ")); cleaned != "" {
 				last = &itemLine{item.index, cleaned}
 			}
 		}

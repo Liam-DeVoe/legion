@@ -252,6 +252,36 @@ func TestEachWayOutOfARefusalPasses(t *testing.T) {
 		inNote("1", noted(KindStatement, "Dispatch checks each record.", "It calls Foo.Validate at boot.")),
 		inNote("1", noted(KindClaim, "Dispatch confirms each record.", "It checks Foo.Validate at boot.")),
 		inNote("1", noted(KindClaim, "Dispatch keeps each record.", "It checks Foo.Validate at boot."), claimNamed("c-other", "Dispatch confirms the log.")),
+		// A name with a stop and no space at the end of a sentence: its code font leaves the stop
+		// that ends the sentence after it ("`file1.Name`."), so the sentence ends where it did, and
+		// a way out that runs it on into the next sentence is none.
+		own(procedureOf("Keep each record of file1.Name. If the run fails, read the log.")),
+		own(procedureOf("Read the log of file1.Name. Send the report to the team of the build after each run of the nightly merge test.")),
+		own(statement("Dispatch reads W1.Config. It changes the log. It keeps the file. It reads the size.")),
+		// A name that stands inside one sentence and ends another: the writer changes it at each
+		// place, also in the sentence where only the name with its stop is a finding, so a way out
+		// is read there too, where it would change the words that the finding of two instructions
+		// quotes.
+		own(procedureOf("Run the test of Foo.Validate before the merge. Read the log and run each record to Foo.Validate.")),
+		// A sentence that holds two spaces between two words is read in the whole text as the text
+		// holds it, where "that" before the clause makes a piece of ste-lint of 26 words.
+		own(procedureOf(`Run the merge test of the night build with "make check." Read the log and record the time of  each run of the merge test.`)),
+		own(procedureOf(`Run the merge test of the night build with "make check." Read the log and record the time of each run of the merge test.`)),
+		// One address twice in one sentence of a procedure, whose bound of 20 words is below
+		// ste-lint's 25: only the judge of the sentence counts the words that a way out writes at
+		// both places.
+		own(procedureOf("Send the report to deploy@build.example.com: and the log to deploy@build.example.com: each night after the tests of the merge pass.")),
+		own(procedureOf("Send the report to ada@example.com and the log to ada@example.com after each run of the nightly merge.")),
+		// A piece of ste-lint across sentences, which only the whole-text reading counts: from two
+		// sentences before the changed one, on through two after it, across two changed sentences
+		// that one piece joins, and with the address twice in the changed sentence.
+		own(claimOf(`He said "Stop." "Go." Then the job copies the log to ada@example.com and the report to ada@example.com each night at ten.`)),
+		own(claimOf(`He said "Stop." "Go." Then the job copies each report of the night build to ada@example.com and keeps a copy for a week.`)),
+		own(claimOf(`The job copies each report of the night build to ada@example.com and says "Done." "Ok." Then it stops for the rest of the night.`)),
+		own(claimOf(`He said "Send it to ada@example.com." Then the job copies the log to ada@example.com each night after the build ends.`)),
+		// The first instruction ends at a comma, so a condition after that comma governs the
+		// instruction after it, and the split, which would cut it off, is no way out.
+		own(procedureOf("Read the log, when the run ends, send the report.")),
 	} {
 		c := planted()
 		texts := row.read(t)
@@ -373,6 +403,28 @@ func TestAWayOutStaysWhereTheOtherFindingsStayAsTheyWere(t *testing.T) {
 		{inNote("1", noted(KindClaim, "Dispatch confirms each record.", "It checks Foo.Validate at boot.")), map[Rule]int{ruleStopNoSpace: 1}},
 		{inNote("1", noted(KindClaim, "Dispatch keeps each record.", "It checks Foo.Validate at boot."), claimNamed("c-other", "Dispatch confirms the log.")),
 			map[Rule]int{ruleStopNoSpace: 2}},
+		{own(procedureOf("Keep each record of file1.Name. If the run fails, read the log.")), map[Rule]int{ruleStopNoSpace: 2}},
+		{own(procedureOf("Read the log of file1.Name. Send the report to the team of the build after each run of the nightly merge test.")),
+			map[Rule]int{ruleStopNoSpace: 2}},
+		{own(procedureOf("Run the test of Foo.Validate before the merge. Read the log and run each record to Foo.Validate.")), map[Rule]int{ruleInstructions: 2}},
+		{own(procedureOf(`Run the merge test of the night build with "make check." Read the log and record the time of  each run of the merge test.`)),
+			map[Rule]int{ruleInstructions: 1}},
+		{own(procedureOf(`Run the merge test of the night build with "make check." Read the log and record the time of each run of the merge test.`)),
+			map[Rule]int{ruleInstructions: 1}},
+		{own(procedureOf("Send the report to deploy@build.example.com: and the log to deploy@build.example.com: each night after the tests of the merge pass.")),
+			map[Rule]int{rulePerson: 2}},
+		{own(procedureOf("Send the report to ada@example.com and the log to ada@example.com after each run of the nightly merge.")), map[Rule]int{rulePerson: 2}},
+		{own(claimOf(`He said "Stop." "Go." Then the job copies the log to ada@example.com and the report to ada@example.com each night at ten.`)),
+			map[Rule]int{rulePerson: 2}},
+		{own(claimOf(`He said "Stop." "Go." Then the job copies each report of the night build to ada@example.com and keeps a copy for a week.`)),
+			map[Rule]int{rulePerson: 2}},
+		{own(claimOf(`He said to stop. Then the job copies each report of the night build to ada@example.com and keeps a copy for a week.`)),
+			map[Rule]int{rulePerson: 3}},
+		{own(claimOf(`The job copies each report of the night build to ada@example.com and says "Done." "Ok." Then it stops for the rest of the night.`)),
+			map[Rule]int{rulePerson: 2}},
+		{own(claimOf(`He said "Send it to ada@example.com." Then the job copies the log to ada@example.com each night after the build ends.`)),
+			map[Rule]int{rulePerson: 2}},
+		{own(procedureOf("Read the log, when the run ends, send the report.")), map[Rule]int{ruleInstructions: 1}},
 	} {
 		got := map[Rule]int{}
 		for _, each := range judgedAll(planted(), test.row.read(t)) {
@@ -409,7 +461,7 @@ func TestAWayOutThatKeepsItsFindingIsNoWayOut(t *testing.T) {
 		{stopNoSpaceWays("Web.Config")[0], true},
 		{stopNoSpaceWays("Web.Config")[1], true},
 	} {
-		if got := judge.passes(state, unit, ruleStopNoSpace, test.way); got != test.want {
+		if got := judge.passes(state, unit, ruleStopNoSpace, test.way, true); got != test.want {
 			t.Errorf("%q: the judge passes %q to %q: %v, want %v", line, test.way.from, test.way.to, got, test.want)
 		}
 	}
@@ -545,5 +597,35 @@ func TestAFindingPastTheEighthOfATextReadWholeIsRefusedWithNoWayOutOffered(t *te
 	}
 	if eighth := ways[last-1]; strings.Contains(eighth, note) || eighth == "" || details[last-1] != stopNoSpace(words[last-1]) {
 		t.Errorf("%q: the %dth finding is %q with the ways out %q, want its ways out and no note", body, maxJudgedInSentence, details[last-1], eighth)
+	}
+}
+
+// The judge reads a way out also in each sentence where the finding's words stand and the finding
+// does not, as the name that ends another sentence (wayJudge.alsoAt), and reads at most
+// maxJudgedInSentence such sentences, so the work of a way out stays in proportion to the sentences
+// of its finding. A finding whose words stand in more is still refused and named, and the words of
+// its ways out say that Dispatch offers no way out of it, not that none exists (elsewhereNote).
+// Control: the same name ending eight other sentences gives its ways out.
+func TestAFindingWhoseWordsEndMoreThanEightOtherSentencesIsRefusedWithNoWayOutOffered(t *testing.T) {
+	const note = "Dispatch offers ways out of words that stand in at most 8 other sentences of the text, so it offers none for this one, though one can exist"
+	for _, others := range []int{maxJudgedInSentence, maxJudgedInSentence + 1} {
+		body := "Dispatch reads Web.Config at boot."
+		for index := 1; index <= others; index++ {
+			body += fmt.Sprintf(" Step %d logs Web.Config.", index)
+		}
+		ways, found := "", false
+		for _, each := range Check(planted(), Input{Texts: []Text{claimOf(body)}}) {
+			if each.Rule == ruleStopNoSpace && each.Detail == stopNoSpace("Web.Config") {
+				ways, found = each.Ways, true
+			}
+		}
+		switch {
+		case !found:
+			t.Errorf("%q: no finding of %s names \"Web.Config\"", body, ruleStopNoSpace)
+		case others > maxJudgedInSentence && ways != note:
+			t.Errorf("%q: the finding of Web.Config gives the ways out %q, want %q", body, ways, note)
+		case others <= maxJudgedInSentence && (ways == "" || strings.Contains(ways, note)):
+			t.Errorf("%q: the finding of Web.Config gives the ways out %q, want its ways out and no note", body, ways)
+		}
 	}
 }

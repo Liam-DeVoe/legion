@@ -3,6 +3,7 @@ package specform
 import (
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
@@ -47,9 +48,16 @@ type wholeText struct {
 	line string
 	// spans is the bytes of each sentence of the line, from the end of the one before it, so that
 	// they write the line whole (sentencesOf); at is the sentences of each sentence's text
-	// (sentence.in), as the judge names a place (unitKey).
-	spans []string
-	at    map[string][]int
+	// (sentence.in), as the judge names a place (unitKey); and opened is whether a backtick that
+	// nothing closes stands before each sentence, an odd count of backticks in the line before it:
+	// ste-lint cuts code font from a backtick to the next one, so a backtick that a way out writes
+	// in that sentence would close it, and code font would take the words of each sentence between.
+	spans  []string
+	at     map[string][]int
+	opened []bool
+	// bare is the sentences that each word of the line stands in, by its bare form (bareWord), read
+	// the first time that a finding asks where its words stand (holding).
+	bare map[string][]int
 	// held is the verbs of each footnote that the text holds (footnotesHeld.verbs). elsewhere, for
 	// the text of a footnote, reports whether a way out that changes the verbs of its words from
 	// one set to another gives a finding of the rule synonym-rotation of the footnotes and the
@@ -100,11 +108,72 @@ type wholeWay struct {
 // elsewhere for the text of a footnote (nil for a text).
 func newWholeText(line string, held []ste.Verbs, elsewhere func(before, after ste.Verbs) bool) *wholeText {
 	w := &wholeText{line: line, held: held, elsewhere: elsewhere, at: map[string][]int{}, lines: ste.Lines(line) > 1}
+	ticks := 0
 	for index, each := range sentencesOf(line) {
-		w.spans = append(w.spans, line[each.start:each.end])
+		span := line[each.start:each.end]
+		w.spans = append(w.spans, span)
 		w.at[each.in(line)] = append(w.at[each.in(line)], index)
+		w.opened = append(w.opened, ticks%2 == 1)
+		ticks += strings.Count(span, "`")
 	}
 	return w
+}
+
+// bareWord is word without the characters at its two ends that are no letter or digit: its marks,
+// stops, colons and code font.
+func bareWord(word string) string {
+	return strings.TrimFunc(word, func(letter rune) bool { return !isLetterOrDigit(letter) })
+}
+
+// holding is each sentence of the line, as the judge names a place (unitKey), where a writer who
+// changes words at each place where they stand (strings.ReplaceAll) changes them and no place of
+// places stands, each once, and at most most+1 of them. words is a word with no white space, the
+// words of a stop with no space after it or of an email address, which stands in a word of the line
+// whose bare form (bareWord) is its own: "Web.Config" stands in "Web.Config.", "`Web.Config`" and
+// "(Web.Config)", and "ada@example.com" in "ada@example.com:.". The words of the line are read
+// once, by their bare forms (bare), so each finding's look reads the sentences that hold its bare
+// form, not the line. Words with white space in them, the sentence of a finding of instructions
+// or a person's name, stand in no word, and so in no sentence that holding names; a sentence that
+// holds the same text is one of places already (at).
+func (w *wholeText) holding(words string, places []unitKey, most int) []unitKey {
+	if words == "" || strings.ContainsFunc(words, unicode.IsSpace) {
+		return nil
+	}
+	if w.bare == nil {
+		w.bare = map[string][]int{}
+		for index, span := range w.spans {
+			for _, word := range strings.Fields(span) {
+				key := bareWord(word)
+				if list := w.bare[key]; len(list) == 0 || list[len(list)-1] != index {
+					w.bare[key] = append(list, index)
+				}
+			}
+		}
+	}
+	read := map[int]bool{}
+	mark := func(text string) {
+		for _, index := range w.at[text] {
+			read[index] = true
+		}
+	}
+	for _, place := range places {
+		if !place.address && !place.title {
+			mark(place.text)
+		}
+	}
+	var units []unitKey
+	for _, index := range w.bare[bareWord(words)] {
+		if read[index] || !strings.Contains(w.spans[index], words) {
+			continue
+		}
+		text := ste.Strip(w.spans[index])
+		mark(text)
+		units = append(units, unitKey{text: text})
+		if len(units) > most {
+			break
+		}
+	}
+	return units
 }
 
 // load reads each sentence of the text once, the first time that a way out asks: its Spread, the
@@ -150,7 +219,7 @@ func (w *wholeText) load() {
 	}
 	w.before, w.verbs = w.rotations(nil)
 	if count > 0 {
-		w.pieces(0, count-1, nil, func(words int) { addLong(w.before, words, 1) })
+		w.pieces(0, count-1, nil, false, func(words int) { addLong(w.before, words, 1) })
 	}
 	w.dangles = w.dangling(nil)
 }
@@ -160,26 +229,36 @@ func (w *wholeText) load() {
 // read more than one sentence that the text does not give as many times (wholeText), and whether
 // the judge read it (read): a text that the judge reads whole it reads for the ways out of the
 // first maxJudgedInSentence findings that ask, and no more. A place that is no sentence of the
-// text, such as an address or a title, changes none of its words.
+// text, an address or a sentence of a title, changes none of its words. A place of the text that
+// is no sentence of the line, which this reading cannot write, refuses the way out, and so does a
+// way out that writes a backtick in a sentence after a backtick that nothing closes (opened),
+// which would take the sentences between into code font, and one that makes ste-lint read a
+// sentence as more lines than it did (ste.Lines), which would end a piece and a list item where
+// this reading does not: none passes unread.
 func (w *wholeText) passes(finding wayKey, way wayOut, places []unitKey) (passed, read bool) {
 	key := wholeWay{finding, way}
 	if passed, ok := w.passed[key]; ok {
 		return passed, true
 	}
+	ticks := strings.Count(way.to, "`") != strings.Count(way.from, "`")
 	changed := map[int]writtenSentence{}
+	passed = true
 	for _, place := range places {
-		if place.address {
+		if place.address || place.title {
 			continue
 		}
-		for _, index := range w.at[place.text] {
+		indexes, ok := w.at[place.text]
+		passed = passed && ok
+		for _, index := range indexes {
+			passed = passed && !(ticks && w.opened[index])
 			if _, ok := changed[index]; !ok {
 				text := strings.ReplaceAll(w.spans[index], way.from, way.to)
+				passed = passed && (w.lines || ste.Lines(text) == ste.Lines(w.spans[index]))
 				changed[index] = writtenSentence{text, ste.SpreadOf(text)}
 			}
 		}
 	}
-	passed = true
-	if len(changed) > 0 {
+	if passed && len(changed) > 0 {
 		if w.lines && !w.readFor[finding] {
 			if len(w.readFor) >= maxJudgedInSentence {
 				return false, false
@@ -229,8 +308,13 @@ func (w *wholeText) writesNoNewFinding(changed map[int]writtenSentence) bool {
 		}
 	}
 	for _, run := range w.changedRuns(changed) {
-		w.pieces(run[0], run[1], nil, func(words int) { addLong(after, words, -1) })
-		w.pieces(run[0], run[1], changed, func(words int) { addLong(after, words, 1) })
+		// The piece that starts the sentence after the run is part of what both readings count
+		// where either runs on into it (next), so that the count after the way out holds it as a
+		// piece of its own where the way out ends the piece that ran on into it, and the count
+		// before it where the way out makes a piece run on into it.
+		next := w.spreads[run[1]].Open || w.spread(changed, run[1]).Open
+		w.pieces(run[0], run[1], nil, next, func(words int) { addLong(after, words, -1) })
+		w.pieces(run[0], run[1], changed, next, func(words int) { addLong(after, words, 1) })
 	}
 	if !noneNew(after, w.before) {
 		return false
@@ -310,18 +394,13 @@ func (w *wholeText) rotations(changed map[int]writtenSentence) (map[findingKey]i
 	}
 	found := map[findingKey]int{}
 	for _, present := range groups {
+		// The sentences in order, and the places of one sentence in ste-lint's order (Hit.Less).
 		sort.Slice(present, func(a, b int) bool {
 			x, y := present[a], present[b]
 			if x.sentence != y.sentence {
 				return x.sentence < y.sentence
 			}
-			if x.hit.Line != y.hit.Line {
-				return x.hit.Line < y.hit.Line
-			}
-			if x.hit.Column != y.hit.Column {
-				return x.hit.Column < y.hit.Column
-			}
-			return x.hit.Match < y.hit.Match
+			return x.hit.Less(y.hit)
 		})
 		for _, each := range present[1:] {
 			found[findingKeyOf(steBreak(each.hit.Rotation()))]++
@@ -375,7 +454,9 @@ func (w *wholeText) changedRuns(changed map[int]writtenSentence) [][2]int {
 // pieces calls emit with the words of each piece of ste-lint that the sentences from to through
 // take part in, each sentence as changed writes it, with the words of the piece that runs on into
 // from from the sentences before it (left), and from through into the sentences after it (runs).
-func (w *wholeText) pieces(from, through int, changed map[int]writtenSentence, emit func(int)) {
+// Where next asks for the piece that starts the sentence after through and through, as changed
+// writes it, does not run on into it, that piece is emitted alone, as ste-lint reads it then.
+func (w *wholeText) pieces(from, through int, changed map[int]writtenSentence, next bool, emit func(int)) {
 	open := w.left[from]
 	for index := from; index <= through; index++ {
 		each := w.spread(changed, index)
@@ -394,8 +475,11 @@ func (w *wholeText) pieces(from, through int, changed map[int]writtenSentence, e
 			open = 0
 		}
 	}
-	if w.spread(changed, through).Open {
+	switch {
+	case w.spread(changed, through).Open:
 		emit(open + w.runs[through+1])
+	case next:
+		emit(w.runs[through+1])
 	}
 }
 
