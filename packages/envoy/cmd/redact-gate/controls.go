@@ -115,8 +115,8 @@ const (
 )
 
 // leakBaseRefs is the refspec of origin's leak-row base refs, which hold the earlier heads of
-// #4368 a leak row is red at (redact-leak-row-base-c40c4751f9 and redact-leak-row-base-ee316f783d);
-// main's commits a clone has.
+// #4368 a leak row is red at, each as redact-leak-row-base-<its first ten hex digits> (one for
+// each leak row's base, gate.leaks[].base); main's commits a clone has.
 const leakBaseRefs = "+refs/heads/redact-leak-row-base-*:refs/remotes/origin/redact-leak-row-base-*"
 
 const (
