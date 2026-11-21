@@ -178,6 +178,10 @@ func TestADispatchConnectionsNameAddsTheGenerationsItNames(t *testing.T) {
 		{"dispatch-token", "dispatch-intake", natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{})},
 		{"dispatch-token", "dispatch", natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{})},
 		{"dispatch-token", "dispatch-intake/listener-m2/Gen1", natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{})},
+		// The listener beside Dispatch: its own machine's generation, and none for a name naming another.
+		{"dispatch-token", natsgrant.ListenerIntakeConnection("example-dispatch", "Gen1", "Gen0"),
+			natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{ListenerMachine: "example-dispatch", Generation: "Gen1", Old: "Gen0"})},
+		{"dispatch-token", natsgrant.ListenerIntakeConnection("m2", "Gen1", ""), natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{})},
 		{"listener-token", intake, natsgrant.Listener("example-hub")},
 	} {
 		req := serviceRequest(row.token)

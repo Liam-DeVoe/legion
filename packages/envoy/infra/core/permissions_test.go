@@ -107,9 +107,23 @@ var sessionConsumerPublish = []string{
 	"$JS.ACK.ENVOY_NOTIFICATIONS.*.>",
 }
 
+// selectionBucketPublish are the session consumers' selection bucket's reads and writes, which the
+// fresh consumer naming mode keeps and the operator alone creates: KVWrite of the bucket without its
+// stream's create and update (natsgrant.KVWriteExisting), which ListenerPermissions adds after the
+// session consumers' calls.
+var selectionBucketPublish = []string{
+	"$JS.API.STREAM.INFO.KV_envoy_session_consumers",
+	"$JS.API.DIRECT.GET.KV_envoy_session_consumers.>",
+	"$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers",
+	"$KV.envoy_session_consumers.>",
+	"$JS.API.CONSUMER.CREATE.KV_envoy_session_consumers.>",
+	"$JS.API.CONSUMER.DELETE.KV_envoy_session_consumers.>",
+	"$JS.FC.KV_envoy_session_consumers.>",
+}
+
 // listenerPublish is the listener's own publish grant: the base grant, then the session consumers'
-// calls.
-var listenerPublish = append(append([]string{}, listenerBasePublish...), sessionConsumerPublish...)
+// calls, then the selection bucket's.
+var listenerPublish = append(append(append([]string{}, listenerBasePublish...), sessionConsumerPublish...), selectionBucketPublish...)
 
 // listenerSubscribe is the listener's subscribe grant for example-host-a: reply inboxes, then the
 // role lanes in the machine's queue group and in the one every listener shares.
@@ -238,7 +252,8 @@ func TestHostPermissionsKeepTheSubscribeToEveryTopicTheSessionsLost(t *testing.T
 }
 
 // Dispatch's user is built on the same base grant, so it holds its own durables' per-durable
-// entries and no session consumer's call.
+// entries and no session consumer's call; for the listener beside it, the selection bucket's get
+// and its own listener durable's key alone.
 func TestDispatchPermissions(t *testing.T) {
 	dispatchPublish := append(append([]string{}, listenerBasePublish...),
 		"$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS.delivery-events",
@@ -259,6 +274,8 @@ func TestDispatchPermissions(t *testing.T) {
 		"$JS.API.CONSUMER.DELETE.KV_envoy_webhook_redelivery.>",
 		"$JS.FC.KV_envoy_webhook_redelivery.>",
 		"agentstream.*.control",
+		"$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers",
+		"$KV.envoy_session_consumers.durable.listener-example-host-a",
 	)
 	want := core.Permissions{
 		Publish: core.Rules{Allow: dispatchPublish},

@@ -3855,8 +3855,9 @@ a listener of an earlier release subscribes in and a listener refused the shared
 to.
 
 After those entries, and in `ListenerPermissions` and `ListenerHostPermissions` alone, come the
-calls of the session consumers, one durable pull consumer per session named `s-<session id>`
-(`bus.SessionConsumers`), on any consumer of the stream: `$JS.API.CONSUMER.CREATE` (with and
+calls of the session consumers, one durable pull consumer per session named `s-<session id>` in the
+default fixed naming mode and `session~<nuid>` in the fresh one (`bus.SessionConsumers`), on any
+consumer of the stream: `$JS.API.CONSUMER.CREATE` (with and
 without a filter subject in its subject), `INFO`, `DELETE` and `MSG.NEXT` on
 `ENVOY_NOTIFICATIONS.*`, the acknowledgements `$JS.ACK.ENVOY_NOTIFICATIONS.*.>`, and the stream's
 consumer list `$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS`, which a listener that starts relaying
@@ -3870,6 +3871,16 @@ own durable alone; the server refuses its consumer calls, so it refuses every re
 asks for consumer delivery `503 no_grant` (one probe and one refusal per ten-minute
 episode), writing nothing, and a session registering through it is not registered at all and
 receives nothing until that user's grant carries the session consumers.
+
+Last in those two sets come the reads and writes of the session consumers' selection bucket,
+`envoy_session_consumers`, which a listener in the fresh consumer naming mode
+(`ENVOY_CONSUMER_NAMES=fresh`) keeps each session's current consumer name in, and which a listener
+in the default fixed mode reads once at its start to refuse a bucket the cutover converted: the
+stream info, direct and stream message gets of `KV_envoy_session_consumers`, writes to
+`$KV.envoy_session_consumers.>`, its watchers' consumer create and delete, and their flow-control
+replies (`natsgrant.KVWriteExisting`). They hold no create or update of the bucket's stream, so no
+listener makes the bucket, or makes it again empty after a loss: the operator's create-bucket does,
+and every session-consumer call of the fresh mode refuses until it has.
 
 `SessionPermissions()` is what any agent session needs, with `*` for the session id. It publishes
 to `_INBOX.>`, for the replies to a session consumer's
@@ -3943,8 +3954,12 @@ this set; its seed belongs to the daemon, not to a host or session.
 `ListenerPermissions(machineID)`, the session consumers' left out, the info, filtered create,
 delete and acknowledgements of Dispatch's `delivery-events` and `delivery-jobs`
 durables; the key-value calls for `envoy_webhook_redelivery`; publication of every session's
-agent-stream control subject; and subscription to every session's agent-stream frames. A
-`gcp:NatsHub` user with `dispatchMachineId` holds it. No session shares the user, so it holds none
+agent-stream control subject; for the listener beside it, the selection bucket's stream message
+get (`$JS.API.STREAM.MSG.GET.KV_envoy_session_consumers`, which reads the bucket's sentinel and that
+listener's record, and, taking the key in its body, any other key) and the write of that one
+listener's record alone, `$KV.envoy_session_consumers.durable.<listener-<machine id>>`
+(`consumernames.DurableKey`), never the bucket's wildcard; and subscription to every session's
+agent-stream frames. A `gcp:NatsHub` user with `dispatchMachineId` holds it. No session shares the user, so it holds none
 of `SessionPermissions`: it is a direct publish to a session's agent-stream frames, or a read of a session's relay subject, that is refused.
 Whatever holds its seed, `envoy-dispatch` or the listener beside it, can still read every session's
 frames and send control to any session; its filtered create on `delivery-events` lets it create
@@ -3955,6 +3970,16 @@ client on the server gets, other listeners' durable push deliveries included. Th
 `envoy-dispatch` runs under that grant against nats-server 2.10 and 2.15.1 in
 `core/dispatch_permissions_live_test.go`, which also checks Dispatch's own user is refused a
 publish to a session's frames.
+
+The auth service grants a Dispatch connection more by the connection's own name
+(`natsgrant.ParseDispatchConnection`), for the fresh consumer names (`ENVOY_CONSUMER_NAMES=fresh`):
+`dispatch-intake/<durable>/<generation>[/<old generation>]` the create, info and acknowledgements
+of `<durable>~<generation>` and the info and delete of `<durable>~<old generation>`, for
+`delivery-events` or `delivery-jobs`; `dispatch-cleanup/<durable>/<generation>` the info and delete
+of that one generation; and `listener-intake/<machine id>/<generation>[/<old generation>]` the same
+calls on the generations of its own listener's durable, `listener-<machine id>~<generation>`, but
+only when the name's machine id is the one the auth service's entry grants: a name never chooses
+the machine. Every other name, and a hub's static user, holds the set above alone.
 
 A plugin release builds the sets from Envoy's names at its own commit, so a listener built from a
 later commit that publishes or subscribes to a subject those names lacked needs a hub rendered by
