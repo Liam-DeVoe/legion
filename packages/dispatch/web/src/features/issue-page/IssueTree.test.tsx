@@ -6627,6 +6627,49 @@ test("on a phone a branch's counted line opens its nodes in place", async () => 
   expect(view.container.querySelector("[data-crumb]")).toBeNull();
 });
 
+// The counted line goes as its press opens it. A press that put the focus on it would lose that
+// focus as it went, and the page's rescue would answer the loss with the first row drawn in its
+// place, which would then draw its body and change its length in the view (decision 261). So the
+// press takes no focus, and the focus stays where it was: here, on the head's own row.
+test("on a phone a press on a branch's counted line leaves the focus where it was", async () => {
+  setViewport(390);
+  const user = userEvent.setup();
+  const turn = (id: string, children: TreeNode[] = []) =>
+    node({
+      children,
+      held: children.reduce((total, child) => total + child.held + 1, 0),
+      id,
+      reference: buildDispatchReference({ id, key: KEY, kind: "comment" }),
+      text: `Turn ${id}.`,
+      type: "comment",
+    });
+  const root = node({
+    children: [turn("head", [turn("first", [turn("second", [turn("third")])])])],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  const [headRow] = rowsFor(view.container, "head");
+  const unfold = headRow?.querySelector<HTMLButtonElement>('button[aria-label="Unfold"]');
+  if (headRow === undefined || unfold === null || unfold === undefined) {
+    throw new Error("the head has no row with an Unfold");
+  }
+  await user.click(unfold);
+  const open = await waitFor(() => {
+    const found = view.container.querySelector<HTMLElement>("[data-branch-more] button");
+    if (found === null) throw new Error("no branch is one line counting its nodes");
+    return found;
+  });
+  await act(async () => headRow.focus());
+  expect(document.activeElement).toBe(headRow);
+
+  await user.click(open);
+  await waitFor(() => expect(rowsFor(view.container, "first")).toHaveLength(1));
+  expect(document.activeElement, "the press took the focus, and lost it as the line went").toBe(
+    headRow
+  );
+});
+
 // A row's key is the path from the issue down to it, and it holds the pin, the open body
 // and the tree's one tab stop. The whole tree drawn from a zoomed node keyed its rows from
 // that node, so a zoom re-keyed every row below it: a pin made before the zoom closed as the
