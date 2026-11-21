@@ -455,10 +455,10 @@ var searchTermQueueErasedDrop = `delete from search_term_queue q where ` +
 // be the erased words, still stored. So once tx commits no lexeme the erase removed stands in the
 // statistics of any project, and no queue row carrying one stands either. Counting each project
 // again from its items would hold that too, but it reads every item of the project
-// (searchTermStatsRebuild) while every writer of the node's issue or document waits on the erase's
-// locks, and all it adds is the other items' counts of the lexemes taken out, which the caller
-// counts once tx has committed, outside the locks (RefreshSearchTermStats). Each statement here is
-// bounded by the erase's own rows instead:
+// (searchTermStatsRebuild) while the erase still holds its owner locks (grapherase's
+// lockInStoreOrder), and all it adds is the other items' counts of the lexemes taken out, which
+// the caller counts once tx has committed, outside the locks (RefreshSearchTermStats). Each
+// statement here is bounded by the erase's own rows instead:
 //
 //   - the projects are those the queue rows of the erased items name (searchTermErasedProjects);
 //   - each project's totals row is claimed, locked and its snapshot cleared, in key order
