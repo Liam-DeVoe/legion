@@ -270,8 +270,9 @@ var (
 	// family than the store's own (NewKVStore, NewPGStore): a missing sentinel, as ErrNoSentinel.
 	ErrSentinelFamily = errors.New("consumer names: the sentinel names another store's family")
 	// ErrUnexpectedConsumer is an operation's candidate the server holds that is not as the family
-	// creates it: a start or a setting no update can change differs from what the operation
-	// reserved (Names.adoptable). Such a candidate is refused, naming it, and never published.
+	// creates it: its start differs from what the operation reserved, or a setting no correction in
+	// place reaches from what the family's create gives (Names.adoptable, Config.Adopt). Such a
+	// candidate is refused, naming it, and never published.
 	ErrUnexpectedConsumer = errors.New("consumer names: the consumer is not as its family creates it")
 )
 

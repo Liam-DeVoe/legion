@@ -97,14 +97,13 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 		Metadata: func(sessionID string) map[string]string {
 			return map[string]string{consumernames.LogicalMetadataKey: sessionID, SessionIDMetadataKey: sessionID}
 		},
-		// The ack policy is the one setting of a session consumer no update changes besides its
-		// start, which Names checks; the filters and every other setting are corrected in place by
-		// the call that adopted it (adopted) before it delivers.
-		Adopt: func(_ context.Context, _ string, info *jetstream.ConsumerInfo) error {
-			if info.Config.AckPolicy != jetstream.AckExplicitPolicy {
-				return fmt.Errorf("its ack policy is %s, not explicit", info.Config.AckPolicy)
-			}
-			return nil
+		// Every setting a session consumer's create gives that no correction reaches, which the
+		// server's own answer shows (ConsumerAdoptable): a pull consumer at the server's default
+		// max waiting, explicit acks, instant replay, whole messages and no heartbeat among them. Its
+		// start Names checks, and the filters and the settings an update changes are corrected in
+		// place by the call that adopted it (published) before it delivers.
+		Adopt: func(ctx context.Context, _ string, info *jetstream.ConsumerInfo) error {
+			return s.client.ConsumerAdoptable(ctx, info.Name, false)
 		},
 	})
 	return fresh
@@ -350,7 +349,8 @@ func (s *SessionConsumers) freshFirst(sessionID string, startSeq uint64, lowered
 // this call created it; else the current as Names adopted it (Step 0, or a create whose outcome
 // was unknown), whose settings and filters are first corrected in place to this call's (update), so
 // nothing is delivered from it under a filter or a setting this call did not give it. Names
-// adopted it only with its owner, start and ack policy as the family creates them.
+// adopted it only with its owner and start as the family creates them, and every setting no update
+// corrects as the family's create gives it (ConsumerAdoptable).
 func (s *SessionConsumers) published(ctx context.Context, sel consumernames.Selection, result SessionConsumerStart, filters []string) (SessionConsumerStart, error) {
 	if result.Name == sel.Record.Current {
 		return result, nil

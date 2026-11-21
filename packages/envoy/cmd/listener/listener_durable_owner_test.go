@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
@@ -67,6 +69,70 @@ func TestADurableRecordNamingAnotherOwnersConsumerIsRefused(t *testing.T) {
 			}
 			if _, err := durableInfo(ctx, r.client, r.durable); !errors.Is(err, consumernames.ErrMalformedRecord) {
 				t.Fatalf("durableInfo over another's consumer = %v, want ErrMalformedRecord", err)
+			}
+		})
+	}
+}
+
+// A candidate an open create of the listener's durable names that someone else made, with the
+// durable's own metadata and start, is adopted only as the listener creates it. One with a setting
+// the listener's create never gives and no correction reaches (headers only, replay at the
+// original rate, a deliver subject that is no reply inbox, no deliver subject at all) is the
+// listener's refusal of the durable (errListenerDurableRefused), an ErrUnexpectedConsumer naming
+// it and that setting, and is neither published nor bound. Today's adoption checked only push, the
+// heartbeat and the ack policy, so it bound the first three, and refused the pull one with an
+// error the bind retried until its deadline. The control is the candidate as the listener makes
+// it, adopted and bound.
+func TestAPrecreatedDurableCandidateIsAdoptedOnlyAsTheListenerCreatesIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		made    func(*natsgo.ConsumerConfig)
+		setting string
+	}{
+		{name: "headers only", made: func(c *natsgo.ConsumerConfig) { c.HeadersOnly = true }, setting: "headers only"},
+		{name: "replay at the original rate", made: func(c *natsgo.ConsumerConfig) { c.ReplayPolicy = natsgo.ReplayOriginalPolicy }, setting: "replay policy original"},
+		{name: "a deliver subject that is no reply inbox", made: func(c *natsgo.ConsumerConfig) { c.DeliverSubject = "elsewhere.deliver" }, setting: `deliver subject "elsewhere.deliver"`},
+		{name: "no deliver subject", made: func(c *natsgo.ConsumerConfig) { c.DeliverSubject = "" }, setting: `deliver subject ""`},
+		{name: "control: as the listener creates it", made: func(*natsgo.ConsumerConfig) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newDurableRig(t, consumernames.ModeFresh)
+			ctx := context.Background()
+			js, err := r.conn.JetStream()
+			if err != nil {
+				t.Fatal(err)
+			}
+			name := r.durable + "~PRECREATEDBYAPRINCIPAL"
+			made := listenerDurableConfig(name, bus.StreamSubjects())
+			made.DeliverPolicy, made.OptStartSeq = natsgo.DeliverByStartSequencePolicy, 1
+			made.Metadata = map[string]string{consumernames.LogicalMetadataKey: r.durable}
+			tc.made(&made)
+			if _, err := js.AddConsumer(bus.Stream, &made); err != nil {
+				t.Fatal(err)
+			}
+			op := &consumernames.Op{Kind: consumernames.OpCreate, Owner: "another process", Candidate: name, ReservedAt: time.Now().Add(-time.Minute)}
+			if _, err := r.client.SelectionStore().Write(ctx, consumernames.DurableKey(r.durable), consumernames.Record{Start: 1, Op: op}, 0); err != nil {
+				t.Fatal(err)
+			}
+			sub, err := startListenerSubscription(r.client, r.durable, func(msg *natsgo.Msg) { _ = msg.Ack() })
+			if sub != nil {
+				t.Cleanup(func() { _ = sub.Unsubscribe() })
+			}
+			if tc.setting == "" {
+				if err != nil || r.current(t) != name {
+					t.Fatalf("control: the bind = %v, current %q; want %s adopted and bound", err, r.current(t), name)
+				}
+				return
+			}
+			if !errors.Is(err, errListenerDurableRefused) || !errors.Is(err, consumernames.ErrUnexpectedConsumer) ||
+				!strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), tc.setting) {
+				t.Fatalf("the bind over %s = %v; want the listener's refusal, ErrUnexpectedConsumer naming it and %s", name, err, tc.setting)
+			}
+			if current := r.current(t); current != "" {
+				t.Fatalf("the refused candidate was published: current %q", current)
+			}
+			if info, err := js.ConsumerInfo(bus.Stream, name); err != nil || info.PushBound {
+				t.Fatalf("the refused candidate = %+v, %v; want it held and bound to no one", info, err)
 			}
 		})
 	}

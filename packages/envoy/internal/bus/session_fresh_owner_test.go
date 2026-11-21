@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -91,18 +92,27 @@ func TestARecordNamingAnotherSessionsConsumerNeverHandsItToItsKey(t *testing.T) 
 
 // A candidate an open create names that someone else made, with the session's owner metadata and
 // start (the deep review's pre-created next NUID), is adopted only as the family creates it, and
-// its filters are corrected to the call's own before Ensure returns: one with an ack policy the
-// family never gives is refused as ErrUnexpectedConsumer naming it and never published, and one
-// that filters on another session's subject filters on this session's alone once adopted. The
-// control for the filter row is the candidate as it was made, filtering on the other session.
+// its filters are corrected to the call's own before Ensure returns. One with a setting the
+// family's create never gives and no correction reaches (an ack policy of all, headers only, a push
+// deliver subject, another replay policy, memory storage, another max waiting) is refused as
+// ErrUnexpectedConsumer naming it and that setting, left as it was made and never published: today's
+// adoption published the headers-only one, whose session then got empty payloads, and the push
+// one, whose every pull the server answered 409. One that filters on another session's subject
+// filters on this session's alone once adopted. The control for the filter row is the candidate as
+// it was made, filtering on the other session.
 func TestAPrecreatedCandidateIsAdoptedOnlyAsTheFamilyCreatesIt(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
-		ack     natsgo.AckPolicy
-		adopted bool
+		made    func(*natsgo.ConsumerConfig)
+		setting string
 	}{
-		{name: "an ack policy of all", ack: natsgo.AckAllPolicy},
-		{name: "explicit acks, another session's filter", ack: natsgo.AckExplicitPolicy, adopted: true},
+		{name: "an ack policy of all", made: func(c *natsgo.ConsumerConfig) { c.AckPolicy = natsgo.AckAllPolicy }, setting: "ack policy all"},
+		{name: "headers only", made: func(c *natsgo.ConsumerConfig) { c.HeadersOnly = true }, setting: "headers only"},
+		{name: "a push deliver subject", made: func(c *natsgo.ConsumerConfig) { c.DeliverSubject = "elsewhere.deliver" }, setting: `deliver subject "elsewhere.deliver"`},
+		{name: "replay at the original rate", made: func(c *natsgo.ConsumerConfig) { c.ReplayPolicy = natsgo.ReplayOriginalPolicy }, setting: "replay policy original"},
+		{name: "memory storage", made: func(c *natsgo.ConsumerConfig) { c.MemoryStorage = true }, setting: "memory storage"},
+		{name: "another max waiting", made: func(c *natsgo.ConsumerConfig) { c.MaxWaiting = 1 }, setting: "max waiting 1"},
+		{name: "explicit acks, another session's filter", made: func(*natsgo.ConsumerConfig) {}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			owner, consumers, store := freshSessionConsumersOnStream(t)
@@ -111,21 +121,23 @@ func TestAPrecreatedCandidateIsAdoptedOnlyAsTheFamilyCreatesIt(t *testing.T) {
 			publishStored(t, owner, contracts.LegacyAgentSubject(session), "one")
 			const candidate = SessionConsumerNamePrefix + "~PRECREATEDBYAPRINCIPAL"
 			foreign := []string{contracts.LegacyAgentSubject(other)}
-			if _, err := owner.JS().AddConsumer(Stream, &natsgo.ConsumerConfig{
+			made := natsgo.ConsumerConfig{
 				Durable:        candidate,
 				DeliverPolicy:  natsgo.DeliverByStartSequencePolicy,
 				OptStartSeq:    1,
-				AckPolicy:      tc.ack,
+				AckPolicy:      natsgo.AckExplicitPolicy,
 				FilterSubjects: foreign,
 				Metadata:       map[string]string{consumernames.LogicalMetadataKey: session, SessionIDMetadataKey: session},
-			}); err != nil {
+			}
+			tc.made(&made)
+			if _, err := owner.JS().AddConsumer(Stream, &made); err != nil {
 				t.Fatal(err)
 			}
 			op := &consumernames.Op{Kind: consumernames.OpCreate, Owner: "another process", Candidate: candidate, ReservedAt: time.Now().Add(-time.Minute)}
 			if _, err := store.Write(ctx, session, consumernames.Record{Start: 1, Op: op}, 0); err != nil {
 				t.Fatal(err)
 			}
-			before, err := consumers.info(ctx, candidate)
+			before, err := owner.JS().ConsumerInfo(Stream, candidate)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -134,16 +146,19 @@ func TestAPrecreatedCandidateIsAdoptedOnlyAsTheFamilyCreatesIt(t *testing.T) {
 			}
 
 			start, err := consumers.Ensure(ctx, session, []string{contracts.LegacyAgentSubject(session)}, 0)
-			after, infoErr := consumers.info(ctx, candidate)
+			after, infoErr := owner.JS().ConsumerInfo(Stream, candidate)
 			if infoErr != nil {
 				t.Fatal(infoErr)
 			}
-			if !tc.adopted {
-				if !errors.Is(err, consumernames.ErrUnexpectedConsumer) || !strings.Contains(err.Error(), candidate) {
-					t.Fatalf("Ensure over %s = %+v, %v; want ErrUnexpectedConsumer naming it", candidate, start, err)
+			if tc.setting != "" {
+				if !errors.Is(err, consumernames.ErrUnexpectedConsumer) || !strings.Contains(err.Error(), candidate) || !strings.Contains(err.Error(), tc.setting) {
+					t.Fatalf("Ensure over %s = %+v, %v; want ErrUnexpectedConsumer naming it and %s", candidate, start, err, tc.setting)
 				}
 				if record := selectionRecord(t, store, session); record.Current != "" {
 					t.Fatalf("the refused candidate was published: %+v", record)
+				}
+				if !reflect.DeepEqual(after.Config, before.Config) {
+					t.Fatalf("the refused candidate was changed: %+v, made as %+v", after.Config, before.Config)
 				}
 				return
 			}

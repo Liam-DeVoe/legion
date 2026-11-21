@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -169,10 +170,13 @@ func selectCall(ctx context.Context, names *Names, h *harness) error {
 // Step 0 adopts a candidate the server holds only when it is as the operation reserved it: a start
 // by sequence no later than the saved start (a clamp to an earlier sequence can only deliver
 // again), and what the family's own check requires (Config.Adopt). Any other is refused as
-// ErrUnexpectedConsumer naming it, left on the server and never published. The controls are a
-// candidate at the saved start and one clamped earlier, each adopted.
+// ErrUnexpectedConsumer naming it, left on the server and never published. A family check that
+// cannot read the candidate refuses nothing: the call fails with the read's own error, the
+// operation left open, where today's adoption called that read a refused candidate. The controls
+// are a candidate at the saved start and one clamped earlier, each adopted.
 func TestStep0AdoptsOnlyACandidateAsItsOperationReservedIt(t *testing.T) {
 	const key = "ses-1"
+	errRead := errors.New("the family's read of the candidate timed out")
 	for _, tc := range []struct {
 		name    string
 		created Start
@@ -181,7 +185,8 @@ func TestStep0AdoptsOnlyACandidateAsItsOperationReservedIt(t *testing.T) {
 	}{
 		{name: "a start past the saved start", created: Start{Seq: 20}},
 		{name: "a native deliver new for a create by sequence", created: Start{Native: NativeNew}},
-		{name: "a setting the family's check refuses", created: Start{Seq: 9}, family: errors.New("its ack policy is all")},
+		{name: "a setting the family's check refuses", created: Start{Seq: 9}, family: fmt.Errorf("%w: session~N has ack policy all", ErrUnexpectedConsumer)},
+		{name: "a read of the family's check that fails", created: Start{Seq: 9}, family: errRead},
 		{name: "control: the saved start", created: Start{Seq: 9}, adopted: true},
 		{name: "control: a start clamped earlier", created: Start{Seq: 5}, adopted: true},
 	} {
@@ -196,17 +201,21 @@ func TestStep0AdoptsOnlyACandidateAsItsOperationReservedIt(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			sel, err := names.Select(ctx, key, h.server.create(key))
-			if tc.adopted {
+			switch {
+			case tc.adopted:
 				if err != nil || sel.Record.Current != "session~N" {
 					t.Fatalf("Step 0 = %q, %v; want session~N adopted", sel.Record.Current, err)
 				}
 				return
-			}
-			if !errors.Is(err, ErrUnexpectedConsumer) || !strings.Contains(err.Error(), "session~N") {
+			case tc.family == errRead:
+				if !errors.Is(err, errRead) || errors.Is(err, ErrUnexpectedConsumer) {
+					t.Fatalf("Step 0 over a failed read = %v, want the read's error and no refused candidate", err)
+				}
+			case !errors.Is(err, ErrUnexpectedConsumer) || !strings.Contains(err.Error(), "session~N"):
 				t.Fatalf("Step 0 = %v, want ErrUnexpectedConsumer naming session~N", err)
 			}
 			if record := h.store.record(t, key); record.Current != "" || record.Op == nil || !h.server.holds("session~N") {
-				t.Fatalf("the refused candidate was published or removed: record %+v, held %t", record, h.server.holds("session~N"))
+				t.Fatalf("the candidate was published or removed: record %+v, held %t", record, h.server.holds("session~N"))
 			}
 		})
 	}

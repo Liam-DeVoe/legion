@@ -78,19 +78,19 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 		CheckKey: consumernames.CheckDurableKey,
 		Metadata: func(string) map[string]string { return map[string]string{consumernames.LogicalMetadataKey: durable} },
 		Owner:    fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
-		// What no update of the durable changes beside its start, which Names checks: it is a
-		// push consumer, and carries no idle heartbeat and no ack policy but explicit
-		// (listenerDurableRefusal). Its filters and other settings are corrected in place before
-		// the bind (ensureFreshDurable).
+		// Every setting the durable's create gives that no correction reaches, which the server's
+		// own answer shows (bus.Client.ConsumerAdoptable): a push consumer delivering to a reply
+		// inbox, explicit acks, instant replay, whole messages and no idle heartbeat among them. Its
+		// start Names checks, and its filters and the settings an update changes are corrected in
+		// place before the bind (ensureFreshDurable). A refusal is the listener's refusal of the
+		// durable (errListenerDurableRefused), since no retry gets past a candidate only an
+		// operator can repair.
 		Adopt: func(ctx context.Context, _ string, adopted *jetstream.ConsumerInfo) error {
-			info, err := client.JS().ConsumerInfo(bus.Stream, adopted.Name, nats.Context(ctx))
-			if err != nil {
-				return err
+			err := client.ConsumerAdoptable(ctx, adopted.Name, true)
+			if errors.Is(err, consumernames.ErrUnexpectedConsumer) {
+				return fmt.Errorf("%w: %w", errListenerDurableRefused, err)
 			}
-			if info.Config.DeliverSubject == "" {
-				return errors.New("it delivers to no subject, as no push consumer does")
-			}
-			return listenerDurableRefusal(info.Name, info.Config)
+			return err
 		},
 	})
 }
