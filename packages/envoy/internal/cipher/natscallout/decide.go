@@ -238,11 +238,14 @@ func decideOperator(ctx context.Context, deps Deps, entry ServiceEntry, expiry t
 // is answered with natsgrant.Session of the session its live token names, once its proof verifies
 // over req's nonce; a service with its kind's grant, held to its projects (scopeGrant), once its
 // platform token verifies and lives no longer than a token login may (an hour, beside the proof
-// clock skew) and its account is listed in services. The operator entry's grant is the writer
-// hold's phase's (decideOperator), and every other client it would admit is refused while the hold
-// row cannot be read (outsideTheHold); either reads the row once, after the credential verified,
-// so a client refused for its credential costs the broker's Postgres nothing. The grant it answers
-// is not yet checked: every answer passes the guard in admit (callout.go), whatever decided it.
+// clock skew) and its account is listed in services. Each grant but the operator's is answered
+// without any stream create, update, delete or restore (natsgrant.ForCallout; scopeGrant,
+// sessionScope), so no connection it admits but the operator's makes, changes or removes a stream.
+// The operator entry's grant is the writer hold's phase's (decideOperator), and every other client
+// it would admit is refused while the hold row cannot be read (outsideTheHold); either reads the
+// row once, after the credential verified, so a client refused for its credential costs the
+// broker's Postgres nothing. The grant it answers is not yet checked: every answer passes the guard
+// in admit (callout.go), whatever decided it.
 func Decide(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 	switch credentialKind(req) {
 	case credentialSession:
@@ -319,7 +322,7 @@ func decideSession(ctx context.Context, deps Deps, req Request) (Decision, error
 	if err != nil {
 		return Decision{}, refuse(labelBadSessionID, "session id is not one subject token")
 	}
-	return Decision{Name: sessionNamePrefix + caller.Session, Grant: grant, Expires: time.Unix(answer.ExpiresAt, 0)}, nil
+	return Decision{Name: sessionNamePrefix + caller.Session, Grant: sessionScope(grant), Expires: time.Unix(answer.ExpiresAt, 0)}, nil
 }
 
 // longestServiceToken is the longest life a service's platform token may have from its issue: a
