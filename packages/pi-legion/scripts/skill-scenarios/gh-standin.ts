@@ -1436,6 +1436,46 @@ async function publish(run: string, envelope: unknown): Promise<Published> {
   }
 }
 
+/** What a call's record holds beside its moment, its command and its argv. */
+type Recorded = Partial<{
+  request: string;
+  stdin: string;
+  body: string;
+  published: Published;
+}> & {
+  files: Record<string, string>;
+  route: string | null;
+};
+
+/** The record of one call to `<run>/calls.jsonl`, made at `at` as `as` with `args`. */
+function recorder(run: string, as: string, args: string[], at: Date) {
+  /** Records the call with the status it exits with, or with none (`null`) for a call that waits
+   * until it is killed (a `watch` reply), so the record is written however the call ends;
+   * `unmodeled` marks a request the rig does not model, which the scorer takes for a rig error. */
+  function recordCall(status: number | null, record: Recorded, unmodeled = false) {
+    const { request, files, stdin, route, body, published } = record;
+    appendFileSync(
+      `${run}/calls.jsonl`,
+      `${JSON.stringify({ at: at.toISOString(), as, argv: args, request, files, stdin, route, ...(unmodeled ? { unmodeled: true } : {}), body, published, exit: status })}\n`
+    );
+  }
+  /** Records the call with the status it exits with, then exits. */
+  function exit(status: number, record: Recorded, unmodeled = false): never {
+    recordCall(status, record, unmodeled);
+    process.exit(status);
+  }
+  /** Refuses this call as a request the rig does not model, and records it so. */
+  function refuse(record: Recorded): never {
+    console.error(
+      as === "gh"
+        ? `rig: request not modeled: gh ${args.join(" ")}`
+        : `unknown command: ${args.join(" ")}`
+    );
+    return exit(1, record, true);
+  }
+  return { recordCall, exit, refuse };
+}
+
 /** The process around parseCall and answer: the run's fixtures lock from the read of
  * fixtures.json to the write of what the call changed there, and no longer (the arguments, and
  * any stdin they name, are read before it is taken, so a call whose stdin never closes holds no
@@ -1463,39 +1503,7 @@ async function main(): Promise<never> {
     process.exit(0);
   }
   const at = new Date();
-  type Recorded = Partial<{
-    request: string;
-    stdin: string;
-    body: string;
-    published: Published;
-  }> & {
-    files: Record<string, string>;
-    route: string | null;
-  };
-  /** Records the call with the status it exits with, or with none (`null`) for a call that waits
-   * until it is killed (a `watch` reply), so the record is written however the call ends;
-   * `unmodeled` marks a request the rig does not model, which the scorer takes for a rig error. */
-  function recordCall(status: number | null, record: Recorded, unmodeled = false) {
-    const { request, files, stdin, route, body, published } = record;
-    appendFileSync(
-      `${run}/calls.jsonl`,
-      `${JSON.stringify({ at: at.toISOString(), as, argv: args, request, files, stdin, route, ...(unmodeled ? { unmodeled: true } : {}), body, published, exit: status })}\n`
-    );
-  }
-  /** Records the call with the status it exits with, then exits. */
-  function exit(status: number, record: Recorded, unmodeled = false): never {
-    recordCall(status, record, unmodeled);
-    process.exit(status);
-  }
-  /** Refuses this call as a request the rig does not model, and records it so. */
-  function refuse(record: Recorded): never {
-    console.error(
-      as === "gh"
-        ? `rig: request not modeled: gh ${args.join(" ")}`
-        : `unknown command: ${args.join(" ")}`
-    );
-    return exit(1, record, true);
-  }
+  const { recordCall, exit, refuse } = recorder(run, as, args, at);
   if (as !== "gh") return refuse({ files: {}, route: null });
   // The stdin is read once, the first time the call names it; a call that names none never reads
   // it, so one whose stdin never closes holds nothing up.
