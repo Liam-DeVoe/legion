@@ -25,15 +25,15 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/envoy/brokeraddr"
-	"github.com/sjawhar/envoy/brokerclient"
+	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/cipherclient"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -853,13 +853,13 @@ const dispatchCredentialLine = "legion daemon's Dispatch credential"
 // it, the daemon's own pod identity, which getenv names as it does for every machine client of the
 // broker (daemonBrokerClient), is traded at the secrets broker for a token of the session
 // legion-daemon:<PROJECT> (dispatch.DaemonSession), presented as `Authorization: DPoP` beside a
-// proof of the request's own URL (brokerclient.NewTokenTransport), and renewed ahead of its expiry
+// proof of the request's own URL (cipherclient.NewTokenTransport), and renewed ahead of its expiry
 // with no restart by the client's own renewal loop, off the request path, for as long as ctx lives
 // (renewDispatchCredential). Those reads and the first trade are boot's alone, never
 // `legion config check`'s (readBoot; dispatch://INFRA-4425 R1).
 //
 // The first trade runs here, at the boot gate's pacing (readinessRetry): a refusal no retry cures
-// (brokerclient.RefusedError.Permanent) refuses the boot in the broker's words, and any other
+// (cipherclient.RefusedError.Permanent) refuses the boot in the broker's words, and any other
 // failure is logged and tried again. Then Dispatch's reading of the token, GET /api/v1/whoami,
 // waited out as the boot waits out a Dispatch that does not answer (dispatch.Unreachable), must
 // name the daemon's session, its project and a person (checkDaemonCaller). After boot, a failed
@@ -882,7 +882,7 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 		return nil, err
 	}
 	session := dispatch.DaemonSession(cfg.Project)
-	var held *brokerclient.Token
+	var held *cipherclient.Token
 	err = bootprobe.Run(ctx, "daemon's Dispatch credential trade", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
 		var err error
 		held, err = client.Token(ctx)
@@ -891,7 +891,7 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 	if err != nil {
 		return nil, fmt.Errorf("dispatch_token_broker: the daemon's Dispatch credential, a token of the session %s, cannot be traded at %s: %w", session, broker, err)
 	}
-	transport := brokerclient.NewTokenTransport(client, http.DefaultTransport)
+	transport := cipherclient.NewTokenTransport(client, http.DefaultTransport)
 	daemonDispatch := daemonDispatchClient(cfg, transport)
 	var caller dispatch.Caller
 	err = bootprobe.Run(ctx, "Dispatch whoami of the daemon's credential", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
@@ -930,14 +930,14 @@ func daemonDispatchClient(cfg config.Config, transport http.RoundTripper) *dispa
 
 // renewDispatchCredential renews the daemon's Dispatch token off the request path until ctx ends,
 // so a Dispatch call presents the token in hand while it is still good, without trading for the
-// next one or waiting on that trade (brokerclient.NewTokenTransport). Boot has just traded for
-// held, so the loop starts when held comes due for renewal (brokerclient.Client.RenewalAt) rather
-// than trade again at once. The loop is the client's own (brokerclient.Client.Run): it trades
+// next one or waiting on that trade (cipherclient.NewTokenTransport). Boot has just traded for
+// held, so the loop starts when held comes due for renewal (cipherclient.Client.RenewalAt) rather
+// than trade again at once. The loop is the client's own (cipherclient.Client.Run): it trades
 // RenewBefore ahead of each token's expiry, and waits out a broker that does not answer from 15 s
 // doubling to 5 minutes. A refusal no retry cures ends it, logged once at Error; the transport then
 // trades on the call that finds no token still good, as it would with no loop, and that call
 // answers the refusal.
-func renewDispatchCredential(ctx context.Context, client *brokerclient.Client, held *brokerclient.Token, session string, log *slog.Logger) {
+func renewDispatchCredential(ctx context.Context, client *cipherclient.Client, held *cipherclient.Token, session string, log *slog.Logger) {
 	due := time.NewTimer(time.Until(client.RenewalAt(held)))
 	defer due.Stop()
 	select {
@@ -945,52 +945,52 @@ func renewDispatchCredential(ctx context.Context, client *brokerclient.Client, h
 		return
 	case <-due.C:
 	}
-	if err := client.Run(ctx, func(context.Context, *brokerclient.Token) error { return nil }); err != nil {
+	if err := client.Run(ctx, func(context.Context, *cipherclient.Token) error { return nil }); err != nil {
 		log.Error("legion daemon's Dispatch credential renewal stopped", "session", session, "error", err)
 	}
 }
 
 // daemonBrokerClient is the broker client of the daemon's own pod identity, and the broker it
 // trades at: the identity getenv names as it does for every machine client of the broker
-// (brokerclient.MachineIdentity), at the broker AGENT_SECRETS_URL names, proving
-// brokerclient.MachineKey's key, under the daemon's session (dispatch.DaemonSession), and declining
+// (cipherclient.MachineIdentity), at the broker AGENT_SECRETS_URL names, proving
+// cipherclient.MachineKey's key, under the daemon's session (dispatch.DaemonSession), and declining
 // the launcher credential, since the daemon enrols nothing with this identity. A variable the
 // identity needs and does not have is refused by name: AGENT_SECRETS_MACHINE_IDENTITY, the
 // variables the identity it names reads (MachineIdentity's own words), and AGENT_SECRETS_URL.
-func daemonBrokerClient(cfg config.Config, getenv func(string) string, log *slog.Logger) (*brokerclient.Client, brokeraddr.Address, error) {
-	identity, err := brokerclient.MachineIdentity(getenv)
+func daemonBrokerClient(cfg config.Config, getenv func(string) string, log *slog.Logger) (*cipherclient.Client, cipheraddr.Address, error) {
+	identity, err := cipherclient.MachineIdentity(getenv)
 	if err != nil {
-		return nil, brokeraddr.Address{}, fmt.Errorf("dispatch_token_broker is set, so the daemon trades its own pod identity for its Dispatch credential: %w", err)
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker is set, so the daemon trades its own pod identity for its Dispatch credential: %w", err)
 	}
 	if identity == nil {
-		return nil, brokeraddr.Address{}, fmt.Errorf("dispatch_token_broker is set, so the daemon's Dispatch credential is its own pod identity traded at the secrets broker, and %s names none: a daemon pod sets it to %s, with %s naming its projected service-account token",
-			brokerclient.IdentityVar, brokerclient.IdentityKubernetes, brokerclient.MachineTokenFileVar)
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker is set, so the daemon's Dispatch credential is its own pod identity traded at the secrets broker, and %s names none: a daemon pod sets it to %s, with %s naming its projected service-account token",
+			cipherclient.IdentityVar, cipherclient.IdentityKubernetes, cipherclient.MachineTokenFileVar)
 	}
-	broker := brokeraddr.New(strings.TrimSpace(getenv(brokerclient.BrokerURLVar)))
+	broker := cipheraddr.New(strings.TrimSpace(getenv(cipherclient.BrokerURLVar)))
 	if broker.Empty() {
-		return nil, brokeraddr.Address{}, fmt.Errorf("dispatch_token_broker is set, so the daemon trades its own pod identity for its Dispatch credential, and %s names no secrets broker to trade it at",
-			brokerclient.BrokerURLVar)
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker is set, so the daemon trades its own pod identity for its Dispatch credential, and %s names no secrets broker to trade it at",
+			cipherclient.BrokerURLVar)
 	}
-	key, err := brokerclient.MachineKey(getenv)
+	key, err := cipherclient.MachineKey(getenv)
 	if err != nil {
-		return nil, brokeraddr.Address{}, fmt.Errorf("dispatch_token_broker: the key the daemon's trade proves: %w", err)
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker: the key the daemon's trade proves: %w", err)
 	}
-	client, err := brokerclient.New(brokerclient.Config{
+	client, err := cipherclient.New(cipherclient.Config{
 		BrokerURL: broker, Key: key, Subject: identity, Session: dispatch.DaemonSession(cfg.Project),
-		NoLauncherCredential: true, HTTP: brokerclient.HTTPClient(), Log: log,
+		NoLauncherCredential: true, HTTP: cipherclient.HTTPClient(), Log: log,
 	})
 	if err != nil {
-		return nil, brokeraddr.Address{}, fmt.Errorf("dispatch_token_broker: %w", err)
+		return nil, cipheraddr.Address{}, fmt.Errorf("dispatch_token_broker: %w", err)
 	}
 	return client, broker, nil
 }
 
 // tradeTransient is every failed trade but a refusal no retry cures
-// (brokerclient.RefusedError.Permanent): a broker that did not answer or answered 5xx, its 429, a
+// (cipherclient.RefusedError.Permanent): a broker that did not answer or answered 5xx, its 429, a
 // DPoP refusal, a pod session it holds no registration for yet, and an identity this pod could not
 // read yet, such as a projected token the kubelet has not written.
 func tradeTransient(err error) bool {
-	var refused *brokerclient.RefusedError
+	var refused *cipherclient.RefusedError
 	return !(errors.As(err, &refused) && refused.Permanent())
 }
 
@@ -1166,9 +1166,9 @@ type plan struct {
 	plugins       *runtime.PluginInstall
 	pluginsSource string
 	// secretsLogin is the same login's client, read-only, for the state route to show its
-	// current status (source.State, agentsecrets.Client.LoginStatus); nil when the deployment
+	// current status (source.State, cipher.Client.LoginStatus); nil when the deployment
 	// enrolls no pod.
-	secretsLogin *agentsecrets.Client
+	secretsLogin *cipher.Client
 	// strandedReported is overrides.strandedReported; nil runs nothing.
 	strandedReported func()
 	// beforeServingLatched is overrides.beforeServingLatched; nil runs nothing.
@@ -3107,7 +3107,7 @@ type source struct {
 	now func() time.Time
 	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
 	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
-	secretsLogin *agentsecrets.Client
+	secretsLogin *cipher.Client
 	// dispatchSession is the session the daemon's own Dispatch calls run under
 	// (dispatch.DaemonSession), and dispatchTokens the Sandbox runtime's counts of the Dispatch
 	// tokens its launches hand out (sandbox.Runtime.DispatchTokens), which State serves together
@@ -3471,7 +3471,26 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, s.experiments, claims, stranded, s.reports(), now)
+	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
+	// a launch waits in its claim's machine, in memory alone, since no store holds one and a
+	// restart raises the wave again through its own paths; a paced catch-up waits on its
+	// outbox row, read here in the snapshot every other durable fact of this state is read from.
+	//
+	// The two are read before the projection and handed to it, so the state's `wakesWaiting` and
+	// each claim view's own `wake` are set from one list. Each read is of this one snapshot.
+	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	var held []supervise.WaitingWake
+	if s.wakes != nil {
+		held = s.wakes()
+	}
+	state, err := projection.Project(ctx, projection.Inputs{
+		Tx: tx, Store: records, Project: s.project, Steps: s.gatedSteps, Experiments: s.experiments,
+		Claims: claims, Stranded: stranded, Reports: s.reports(),
+		Wakes: api.WakesWaitingOf(held, paced), Now: now,
+	})
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -3493,19 +3512,6 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 			}
 		}
 	}
-	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
-	// a launch waits in its claim's machine, in memory alone, since no store holds one and a
-	// restart raises the wave again through its own paths; a paced catch-up waits on its
-	// outbox row, read here in the snapshot every other durable fact of this state is read from.
-	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	var held []supervise.WaitingWake
-	if s.wakes != nil {
-		held = s.wakes()
-	}
-	state.WakesWaiting = api.WakesWaitingOf(held, paced)
 	state.ClaimsToRefresh = claimsToRefresh(claims, s.noPluginInstall)
 	// The project's pause, read through tx as every other durable fact here (api.PauseStateTx):
 	// `paused` with the roles it waits on and the rows it holds while the project is paused, and

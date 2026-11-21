@@ -1,6 +1,6 @@
 // release_broker_test.go drives an operator's release of a claim's names (`legion claims
 // release-names`, supervise.Machine.ReleaseNames) under a daemon whose agent-secrets client reaches
-// the real secrets broker (packages/envoy's brokertest rig, which holds POST
+// the real secrets broker (packages/envoy's ciphertest rig, which holds POST
 // /v1/oauth/exchange/pod-sessions/release) through a proxy, with the daemon's store on the test
 // database and the operator's route wired as the daemon wires it. Each test skips without
 // BROKER_TEST_DATABASE_URL (the rig's own skip), except on GitHub Actions, where the daemon's test
@@ -33,12 +33,12 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
-	"github.com/sjawhar/envoy/brokeraddr"
-	"github.com/sjawhar/envoy/brokerclient"
-	"github.com/sjawhar/envoy/brokertest"
+	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/cipherclient"
+	"github.com/sjawhar/envoy/ciphertest"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -63,15 +63,15 @@ const (
 	releaseWarning = "supervise: the secrets broker did not release a claim's session names; they stay held"
 )
 
-// newBrokerRig is brokertest.NewRig, failing rather than skipping on GitHub Actions when
+// newBrokerRig is ciphertest.NewRig, failing rather than skipping on GitHub Actions when
 // BROKER_TEST_DATABASE_URL is unset: ci.yaml's daemon-go job names its Postgres service there, and
 // a silent skip would let these tests stop running unnoticed.
-func newBrokerRig(t *testing.T) *brokertest.Rig {
+func newBrokerRig(t *testing.T) *ciphertest.Rig {
 	t.Helper()
 	if os.Getenv("BROKER_TEST_DATABASE_URL") == "" && os.Getenv("GITHUB_ACTIONS") == "true" {
 		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's daemon-go job names its Postgres service")
 	}
-	return brokertest.NewRig(t)
+	return ciphertest.NewRig(t)
 }
 
 // releaseProxy stands between the daemon's agent-secrets client and the rig's broker: it passes
@@ -162,7 +162,7 @@ func (c *sleepClock) waits() []time.Duration {
 type releaseRig struct {
 	t           *testing.T
 	ctx         context.Context
-	broker      *brokertest.Rig
+	broker      *ciphertest.Rig
 	proxy       *releaseProxy
 	st          *store.Store
 	token       claim.Token
@@ -207,14 +207,14 @@ func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
 	server := httptest.NewServer(proxy)
 	t.Cleanup(server.Close)
 	tokenFile := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(tokenFile, []byte(broker.MintAccountToken(t, brokertest.DaemonAccount, time.Hour)), 0o600); err != nil {
+	if err := os.WriteFile(tokenFile, []byte(broker.MintAccountToken(t, ciphertest.DaemonAccount, time.Hour)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	secrets := config.AgentSecretsConfig{URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets"}
 	if exchange {
 		secrets.ExchangeAudience = "legion-broker-exchange"
 	}
-	registrar := newRegistrar(secrets, &agentsecrets.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()})
+	registrar := newRegistrar(secrets, &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()})
 	if (registrar != nil) != exchange {
 		t.Fatalf("newRegistrar with exchange_audience %q answered %v", secrets.ExchangeAudience, registrar)
 	}
@@ -245,7 +245,7 @@ func newReleaseRig(t *testing.T, exchange bool) *releaseRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	podToken := broker.MintAccountPodToken(t, brokertest.ExchangeRolesAccount, releasePod, time.Hour)
+	podToken := broker.MintAccountPodToken(t, ciphertest.ExchangeRolesAccount, releasePod, time.Hour)
 	conn := fake.NewConn()
 	conn.SetAgentSecretsToken(podToken)
 	conns.Register(token, conn)
@@ -295,18 +295,18 @@ func keyThumbprint(t *testing.T, key *ecdsa.PrivateKey) string {
 }
 
 // trade is the pod's trade at the broker under releaseSession, with the pod's exchange token in
-// the file a pod's broker client reads it from (brokerclient.MachineIdentity), proved with the
+// the file a pod's broker client reads it from (cipherclient.MachineIdentity), proved with the
 // role's own key.
 func (r *releaseRig) trade() error {
 	r.t.Helper()
-	subject, err := brokerclient.MachineIdentity(getenvOf(map[string]string{
-		brokerclient.IdentityVar:         brokerclient.IdentityKubernetes,
-		brokerclient.MachineTokenFileVar: writeSecret(r.t, "exchange-token", r.broker.MintSubjectToken(r.t, brokertest.ExchangeRolesAccount, releasePod)),
+	subject, err := cipherclient.MachineIdentity(getenvOf(map[string]string{
+		cipherclient.IdentityVar:         cipherclient.IdentityKubernetes,
+		cipherclient.MachineTokenFileVar: writeSecret(r.t, "exchange-token", r.broker.MintSubjectToken(r.t, ciphertest.ExchangeRolesAccount, releasePod)),
 	}))
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokeraddr.New(r.broker.URL), Key: r.key, Session: releaseSession, Subject: subject})
+	client, err := cipherclient.New(cipherclient.Config{BrokerURL: cipheraddr.New(r.broker.URL), Key: r.key, Session: releaseSession, Subject: subject})
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -369,7 +369,7 @@ func TestAReleaseTellsTheBrokerBeforeItFreesTheNames(t *testing.T) {
 		t.Fatalf("after the release the store still holds %s for the claim", releaseSession)
 	}
 	err := r.trade()
-	var refused *brokerclient.RefusedError
+	var refused *cipherclient.RefusedError
 	if !errors.As(err, &refused) || refused.Code != "invalid_grant" || !strings.Contains(refused.Description, releaseSession) {
 		t.Fatalf("after the release, the pod's trade under %s = %v, want it refused invalid_grant naming %s: the broker still honours the daemon's registration of the session it freed", releaseSession, err, releaseSession)
 	}

@@ -101,7 +101,7 @@ var ErrReleaseUnanswered = errors.New("the secrets broker did not answer that it
 // the release frees nothing, and a run again answers the same until the refusal is fixed.
 var ErrReleaseRefused = errors.New("the secrets broker refused to release the claim's session names")
 
-// RouteUnservedError is a broker answer that it serves no such route (agentsecrets'
+// RouteUnservedError is a broker answer that it serves no such route (cipher's
 // APIError.RouteUnserved, a 404 or a 405): a broker of a build before the route, which may be one
 // replica of several while the broker rolls, so a release reads it as no answer, never as a
 // refusal for good.
@@ -113,7 +113,7 @@ type RouteUnservedError interface{ RouteUnserved() bool }
 const releaseAttempts = 3
 
 // UnlistedCarryError is an answer of the secrets broker's too long for the daemon to read whole
-// (agentsecrets' CarriedAnswerTooLargeError): the broker answered, and an answer that long names
+// (cipher's CarriedAnswerTooLargeError): the broker answered, and an answer that long names
 // at least one enrollment, so a release reads it as a carry it cannot list (NamesCarriedError's
 // Unlisted), never as an outage (side review of #4355).
 type UnlistedCarryError interface{ UnlistedCarry() bool }

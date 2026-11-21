@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/brokerclient"
-	"github.com/sjawhar/envoy/brokertest"
+	"github.com/sjawhar/envoy/cipherclient"
+	"github.com/sjawhar/envoy/ciphertest"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -464,17 +464,17 @@ func TestTheBootLogNamesTheDispatchCredential(t *testing.T) {
 // when boot's comes due, with no Dispatch call made, so the first call after that presents a new
 // token that the broker issued before the call was sent: no call traded for it. The broker's
 // tokens live 40 s, so boot's comes due 20 s in, and the transport would still present it until
-// 10 s before it lapses (brokerclient's liveMargin); the call goes between the two.
+// 10 s before it lapses (cipherclient's liveMargin); the call goes between the two.
 func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
 	const lifetime = 40 * time.Second
 	if os.Getenv("BROKER_TEST_DATABASE_URL") == "" && os.Getenv("GITHUB_ACTIONS") == "true" {
 		t.Fatal("BROKER_TEST_DATABASE_URL is unset on GitHub Actions: ci.yaml's daemon-go job names its Postgres service")
 	}
-	rig := brokertest.NewRig(t, brokertest.WithAccessLifetime(lifetime))
+	rig := ciphertest.NewRig(t, ciphertest.WithAccessLifetime(lifetime))
 	dispatchServer := newCredentialDispatch(t, daemonWhoami("EXAMPLE"))
 	env := map[string]string{
-		brokerclient.BrokerURLVar: rig.URL, brokerclient.IdentityVar: brokerclient.IdentityKubernetes,
-		brokerclient.MachineTokenFileVar: writeSecret(t, "daemon-exchange-token", rig.MintSubjectToken(t, brokertest.DaemonExchangeAccount, "daemon-pod-uid")),
+		cipherclient.BrokerURLVar: rig.URL, cipherclient.IdentityVar: cipherclient.IdentityKubernetes,
+		cipherclient.MachineTokenFileVar: writeSecret(t, "daemon-exchange-token", rig.MintSubjectToken(t, ciphertest.DaemonExchangeAccount, "daemon-pod-uid")),
 	}
 	booted := time.Now()
 	transport, err := dispatchCredential(t.Context(), brokerConfig(dispatchServer.URL), "", getenvOf(env), quietLogger())

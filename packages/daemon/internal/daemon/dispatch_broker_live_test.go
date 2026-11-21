@@ -5,7 +5,7 @@
 // real Dispatch and the real clients. scripts/e2e/dispatch-broker.sh runs it.
 //
 // Nothing of the credential path is stood in for. The broker is packages/envoy's own
-// (brokertest.NewRig, its real handlers on a real Postgres), with the exchange accounts that rig
+// (ciphertest.NewRig, its real handlers on a real Postgres), with the exchange accounts that rig
 // lists. Dispatch is the real server this checkout builds (startScratchDispatchOn), on a database of
 // its own, reading each broker token back through that broker's introspection with the token of
 // the account the rig lists for Dispatch (DISPATCH_AGENT_SECRETS_URL and
@@ -15,7 +15,7 @@
 // DISPATCH_PROOF_ORIGINS names the proxy's address, so a proof's htu names an origin Dispatch was
 // told it is reached at. The proxy is the run's request log: each request's time, route,
 // Authorization scheme, a digest of its token and the answer's status and code. Each broker token
-// it sees is read back once at the broker's introspection (brokertest.Rig.Introspect), for the
+// it sees is read back once at the broker's introspection (ciphertest.Rig.Introspect), for the
 // expiry the tables print beside the write.
 //
 // What is stood in for lies outside the credential path, each as the real one with nothing to
@@ -75,12 +75,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/sjawhar/envoy/brokeraddr"
-	"github.com/sjawhar/envoy/brokerclient"
-	"github.com/sjawhar/envoy/brokertest"
+	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/cipherclient"
+	"github.com/sjawhar/envoy/ciphertest"
 	"github.com/sjawhar/envoy/steprecord"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -90,8 +90,8 @@ import (
 // The rig's two projects: P, which every account of the rig's exchange names but one, and Q, the
 // project of that one, OtherProjectAccount. Both are Dispatch projects the rig makes.
 const (
-	rigP = brokertest.ExchangeProject
-	rigQ = brokertest.OtherProject
+	rigP = ciphertest.ExchangeProject
+	rigQ = ciphertest.OtherProject
 )
 
 // rigServerURL is the rig's Dispatch's DISPATCH_SERVER_URL: a public-looking origin nothing
@@ -117,7 +117,7 @@ type dispatchBrokerRig struct {
 	dir  string
 	// broker is the real broker. dispatch is the real Dispatch, which only the setup below calls
 	// directly; every client calls it through proxy.
-	broker   *brokertest.Rig
+	broker   *ciphertest.Rig
 	dispatch *scratchDispatch
 	proxy    *recordingProxy
 	// url is the proxy's address, the one every client calls and DISPATCH_PROOF_ORIGINS names;
@@ -142,8 +142,8 @@ type dispatchBrokerRig struct {
 }
 
 // rigToken is what the broker's introspection answers for one of its access tokens
-// (brokertest.Introspection).
-type rigToken brokertest.Introspection
+// (ciphertest.Introspection).
+type rigToken ciphertest.Introspection
 
 // expiry is when the token stops being live, the zero time where the broker named none.
 func (k rigToken) expiry() time.Time {
@@ -155,7 +155,7 @@ func (k rigToken) expiry() time.Time {
 
 // newDispatchBrokerRig starts the broker with access tokens that live lifetime, Dispatch behind
 // the proxy, and the projects and issues. A prerequisite that is missing fails the test, never
-// skips it: brokertest.NewRig skips without BROKER_TEST_DATABASE_URL and testdb without
+// skips it: ciphertest.NewRig skips without BROKER_TEST_DATABASE_URL and testdb without
 // LEGION_TEST_PG_DSN, and a skip reads as a pass.
 func newDispatchBrokerRig(t *testing.T, lifetime time.Duration) *dispatchBrokerRig {
 	t.Helper()
@@ -184,7 +184,7 @@ func newDispatchBrokerRig(t *testing.T, lifetime time.Duration) *dispatchBrokerR
 		t: t, root: root, dir: t.TempDir(), launch: launchVariables(t), tokens: map[string]rigToken{},
 		direct: &http.Client{Timeout: 30 * time.Second},
 	}
-	r.broker = brokertest.NewRig(t, brokertest.WithAccessLifetime(lifetime))
+	r.broker = ciphertest.NewRig(t, ciphertest.WithAccessLifetime(lifetime))
 	r.proxy = newRecordingProxy()
 	at := httptest.NewServer(r.proxy.at("proxy"))
 	t.Cleanup(at.Close)
@@ -199,7 +199,7 @@ func newDispatchBrokerRig(t *testing.T, lifetime time.Duration) *dispatchBrokerR
 		"DISPATCH_SERVER_URL=" + rigServerURL,
 		"DISPATCH_AGENT_SECRETS_URL=" + r.broker.URL,
 		// UIToken is the token of the account the rig's BROKER_API_ACCOUNTS lists as the caller
-		// "dispatch" (brokertest's APIAccount): the account Dispatch presents to the broker.
+		// "dispatch" (ciphertest's APIAccount): the account Dispatch presents to the broker.
 		"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=" + r.file("dispatch-account-token", r.broker.UIToken),
 		"DISPATCH_PROOF_ORIGINS=" + r.url,
 		"ENVOY_URL=" + listener.URL,
@@ -208,7 +208,7 @@ func newDispatchBrokerRig(t *testing.T, lifetime time.Duration) *dispatchBrokerR
 		"DISPATCH_GITHUB_API_BASE=" + github.URL,
 	}})
 	r.proxy.forward(r.dispatch.base)
-	r.registrar = r.file("daemon-account-token", r.broker.MintAccountToken(t, brokertest.DaemonAccount, time.Hour))
+	r.registrar = r.file("daemon-account-token", r.broker.MintAccountToken(t, ciphertest.DaemonAccount, time.Hour))
 	r.setUp()
 	t.Logf("broker %s; Dispatch %s (DISPATCH_SERVER_URL %s), reached through the proxy %s, which DISPATCH_PROOF_ORIGINS names, and %s, which it does not; issues %s and %s of %s, %s of %s",
 		r.broker.URL, r.dispatch.base, rigServerURL, r.url, r.outside, r.pIssue, r.pDaemon, rigP, r.qIssue, rigQ)
@@ -464,7 +464,7 @@ func (r *dispatchBrokerRig) during(do func()) []proxyRecord {
 	return records
 }
 
-// introspect asks the broker what the token of digest is (brokertest.Rig.Introspect). A token
+// introspect asks the broker what the token of digest is (ciphertest.Rig.Introspect). A token
 // already read is not read again.
 func (r *dispatchBrokerRig) introspect(digest string) rigToken {
 	r.t.Helper()
@@ -506,7 +506,7 @@ func (r *dispatchBrokerRig) newRole(name, session, pod string) *rigRole {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(role.keyDir, brokerclient.RoleKeyFile), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(role.keyDir, cipherclient.RoleKeyFile), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
 		r.t.Fatal(err)
 	}
 	role.key = key
@@ -523,18 +523,18 @@ func (role *rigRole) writeSubject(t *testing.T, token string) {
 
 // registeredRole is a role of an ExchangeRolesAccount pod of P, whose session the daemon's own
 // account registered for that pod at the broker with the thumbprint of the role's key
-// (RegisterPodSession), as internal/agentsecrets/contract_test.go registers one.
+// (RegisterPodSession), as internal/cipher/contract_test.go registers one.
 func (r *dispatchBrokerRig) registeredRole(name string) *rigRole {
 	r.t.Helper()
 	suffix := strings.ToLower(randomSuffix(r.t)[:6])
 	role := r.newRole(name, "rig-"+name+"-"+suffix, "rig-pod-"+name+"-"+suffix)
 	thumbprint := keyThumbprint(r.t, role.key)
-	registrar := &agentsecrets.Client{URL: r.broker.URL, TokenFile: r.registrar}
-	podToken := r.broker.MintAccountPodToken(r.t, brokertest.ExchangeRolesAccount, role.pod, time.Hour)
+	registrar := &cipher.Client{URL: r.broker.URL, TokenFile: r.registrar}
+	podToken := r.broker.MintAccountPodToken(r.t, ciphertest.ExchangeRolesAccount, role.pod, time.Hour)
 	if _, err := registrar.RegisterPodSession(context.Background(), role.pod, podToken, role.session, thumbprint, 1); err != nil {
 		r.t.Fatalf("the daemon's registration of %s for %s: %v", role.session, role.pod, err)
 	}
-	role.writeSubject(r.t, r.broker.MintSubjectToken(r.t, brokertest.ExchangeRolesAccount, role.pod))
+	role.writeSubject(r.t, r.broker.MintSubjectToken(r.t, ciphertest.ExchangeRolesAccount, role.pod))
 	return role
 }
 
@@ -542,8 +542,8 @@ func (r *dispatchBrokerRig) registeredRole(name string) *rigRole {
 // project Q, with a key of its own.
 func (r *dispatchBrokerRig) otherProjectRole() *rigRole {
 	r.t.Helper()
-	role := r.newRole("other", brokertest.OtherProjectSession, "rig-pod-other")
-	role.writeSubject(r.t, r.broker.MintSubjectToken(r.t, brokertest.OtherProjectAccount, role.pod))
+	role := r.newRole("other", ciphertest.OtherProjectSession, "rig-pod-other")
+	role.writeSubject(r.t, r.broker.MintSubjectToken(r.t, ciphertest.OtherProjectAccount, role.pod))
 	return role
 }
 
@@ -560,10 +560,10 @@ func (r *dispatchBrokerRig) environment(role *rigRole, sharedTokenFile string) [
 	values := map[string]string{
 		"DISPATCH_URL":                   r.url,
 		"DISPATCH_TOKEN_BROKER":          r.launch["DISPATCH_TOKEN_BROKER"],
-		brokerclient.BrokerURLVar:        r.broker.URL,
-		brokerclient.IdentityVar:         r.launch[brokerclient.IdentityVar],
-		brokerclient.MachineTokenFileVar: role.subject,
-		brokerclient.KeyDirVar:           role.keyDir,
+		cipherclient.BrokerURLVar:        r.broker.URL,
+		cipherclient.IdentityVar:         r.launch[cipherclient.IdentityVar],
+		cipherclient.MachineTokenFileVar: role.subject,
+		cipherclient.KeyDirVar:           role.keyDir,
 	}
 	env := []string{
 		"DISPATCH_SESSION_ID=" + role.session, "DISPATCH_HOST=omp", "HOME=" + role.home, "PATH=" + os.Getenv("PATH"),
@@ -632,7 +632,7 @@ func (r *dispatchBrokerRig) command(role *rigRole, env []string, args ...string)
 func (r *dispatchBrokerRig) daemonSubject() (string, string) {
 	r.t.Helper()
 	pod := "rig-daemon-pod-" + strings.ToLower(randomSuffix(r.t)[:6])
-	return r.file("daemon-exchange-token-"+pod, r.broker.MintSubjectToken(r.t, brokertest.DaemonExchangeAccount, pod)), pod
+	return r.file("daemon-exchange-token-"+pod, r.broker.MintSubjectToken(r.t, ciphertest.DaemonExchangeAccount, pod)), pod
 }
 
 // daemonClient is the daemon's Dispatch client of project P as boot builds it under
@@ -644,8 +644,8 @@ func (r *dispatchBrokerRig) daemonClient(subject string) (*dispatch.HTTPClient, 
 	r.t.Helper()
 	cfg := config.Config{Project: rigP, DispatchURL: r.url, DispatchTokenBroker: true}
 	transport, err := dispatchCredential(context.Background(), cfg, "", getenvOf(map[string]string{
-		brokerclient.BrokerURLVar: r.broker.URL, brokerclient.IdentityVar: brokerclient.IdentityKubernetes,
-		brokerclient.MachineTokenFileVar: subject,
+		cipherclient.BrokerURLVar: r.broker.URL, cipherclient.IdentityVar: cipherclient.IdentityKubernetes,
+		cipherclient.MachineTokenFileVar: subject,
 	}), quietLogger())
 	if err != nil {
 		r.t.Fatalf("the daemon's boot under dispatch_token_broker: %v", err)
@@ -666,30 +666,30 @@ func (r *dispatchBrokerRig) sharedDaemonClient(sharedTokenFile string) *dispatch
 	return daemonDispatchClient(cfg, transport)
 }
 
-// otherProjectDaemonClient is the daemon's client built from the same pieces (brokerclient's
+// otherProjectDaemonClient is the daemon's client built from the same pieces (cipherclient's
 // client and token transport, dispatch.New) over OtherProjectAccount's pod identity, whose entry
 // fixes the session OtherProjectSession of project Q: K4's control, a token of another project.
 // Every write names that session (dispatch.WritesAs), the one its token proves.
 func (r *dispatchBrokerRig) otherProjectDaemonClient() *dispatch.HTTPClient {
 	r.t.Helper()
-	subject := r.file("other-project-daemon-token", r.broker.MintSubjectToken(r.t, brokertest.OtherProjectAccount, "rig-pod-other-daemon"))
-	getenv := getenvOf(map[string]string{brokerclient.IdentityVar: brokerclient.IdentityKubernetes, brokerclient.MachineTokenFileVar: subject})
-	identity, err := brokerclient.MachineIdentity(getenv)
+	subject := r.file("other-project-daemon-token", r.broker.MintSubjectToken(r.t, ciphertest.OtherProjectAccount, "rig-pod-other-daemon"))
+	getenv := getenvOf(map[string]string{cipherclient.IdentityVar: cipherclient.IdentityKubernetes, cipherclient.MachineTokenFileVar: subject})
+	identity, err := cipherclient.MachineIdentity(getenv)
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	key, err := brokerclient.MachineKey(getenv)
+	key, err := cipherclient.MachineKey(getenv)
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	client, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: brokeraddr.New(r.broker.URL), Key: key, Subject: identity, Session: brokertest.OtherProjectSession,
-		NoLauncherCredential: true, HTTP: brokerclient.HTTPClient(), Log: quietLogger(),
+	client, err := cipherclient.New(cipherclient.Config{
+		BrokerURL: cipheraddr.New(r.broker.URL), Key: key, Subject: identity, Session: ciphertest.OtherProjectSession,
+		NoLauncherCredential: true, HTTP: cipherclient.HTTPClient(), Log: quietLogger(),
 	})
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	return dispatch.New(r.url, brokerclient.NewTokenTransport(client, http.DefaultTransport), dispatch.WritesAs(brokertest.OtherProjectSession))
+	return dispatch.New(r.url, cipherclient.NewTokenTransport(client, http.DefaultTransport), dispatch.WritesAs(ciphertest.OtherProjectSession))
 }
 
 // rigClients is scripts/e2e/dispatch-broker-clients.ts running in a role's environment: the
@@ -1410,7 +1410,7 @@ const k3Lifetime = 420 * time.Second
 
 // k3Writes are the times after its start each client of K3 writes at: twice inside the first
 // token's renewal window (renewed 120 s after it is traded, k3Lifetime less
-// brokerclient.DefaultRenewBefore, token-client.ts's DEFAULT_RENEW_BEFORE_MS), once past it, and
+// cipherclient.DefaultRenewBefore, token-client.ts's DEFAULT_RENEW_BEFORE_MS), once past it, and
 // once past the first token's expiry.
 var k3Writes = []time.Duration{0, 60 * time.Second, 200 * time.Second, 450 * time.Second}
 
