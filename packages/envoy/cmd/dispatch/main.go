@@ -34,7 +34,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
-	"github.com/sjawhar/envoy/internal/dispatch/busprojects"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/dashboard"
@@ -236,7 +235,7 @@ type bootConfig struct {
 	// PrivateHubs, in the order given (privateListenersSetting), every replica of which each proof
 	// reads. Each serves one of PrivateHubs and each of PrivateHubs is served by one at least, or
 	// the start is refused.
-	PrivateListeners []busprojects.ListenerTarget
+	PrivateListeners []privateListener
 	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API; empty means the
 	// credential-request feature is off. AgentSecretsTokenFile is
 	// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
@@ -656,11 +655,11 @@ func main() {
 	// busprojects.HubAdmission, whose hub-admission clients this tree does not build yet, so
 	// admission stays nil, every switch to private is 409 PRIVATE_PROJECTS_UNAVAILABLE and the
 	// outbox holds nothing. Each proof reads every replica of the listeners that serve its hubs
-	// (boot.PrivateListeners), with the bearer every Envoy listener call presents; a nil proof is
-	// given none, and GET /private-readiness (dispatchHandler) serves its report, the empty one
-	// while there is none.
+	// (boot.PrivateListeners), each read presenting Dispatch's own token for that listener's
+	// audience; a nil proof is given none, and GET /private-readiness (dispatchHandler) serves its
+	// report, the empty one while there is none.
 	var admission hubAdmission
-	giveListeners(admission, boot.PrivateListeners, listenerHTTP(envoyListenerBearer(boot)))
+	giveListeners(admission, listenerTargets(boot.PrivateListeners), listenerHTTP(boot.PrivateListeners))
 	switchAdmission, privateHubsReady := startHubAdmission(ctx, boot, admission)
 	built.HubAdmission = switchAdmission
 	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))

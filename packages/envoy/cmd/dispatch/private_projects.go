@@ -65,21 +65,31 @@ func privateHubsSetting(value string) []string {
 	return hubs
 }
 
+// privateListener is one entry of DISPATCH_PRIVATE_LISTENERS: the listener workload each proof
+// reads (busprojects.ListenerTarget) and TokenFile, the file holding Dispatch's own projected
+// token for that listener's audience, which each read of its replicas presents: every listener
+// verifies a token for its own audience alone (listenerHTTP).
+type privateListener struct {
+	busprojects.ListenerTarget
+	TokenFile string `json:"token_file"`
+}
+
 // privateListenersSetting reads DISPATCH_PRIVATE_LISTENERS against hubs, DISPATCH_PRIVATE_HUBS as
 // privateHubsSetting read it: a JSON list of the listener workloads that serve those hubs, in the
-// order given, every replica of which each proof reads (busprojects.HubAdmission.SetListeners).
-// It refuses the start, naming the entry, for an entry that is malformed (a field missing or
-// unknown, instances that are not host:port, a name an earlier entry has) or that serves a hub
-// hubs does not name, and naming the hub for a hub of hubs no entry serves: a hub proven without
-// reading the listeners that serve it would let a project go private while a listener there still
-// reads it as public. A value holding an nkey seed is refused before anything of it is quoted.
-// Unset or blank with no hub is no listener at all.
-func privateListenersSetting(value string, hubs []string) ([]busprojects.ListenerTarget, error) {
+// order given, every replica of which each proof reads (busprojects.HubAdmission.SetListeners),
+// each with its token file. It refuses the start, naming the entry, for an entry that is
+// malformed (a field missing or unknown, a source that is not the broker's base URL, instances
+// that are not host:port, a name or a host an earlier entry has) or that serves a hub hubs does
+// not name, and naming the hub for a hub of hubs no entry serves: a hub proven without reading the
+// listeners that serve it would let a project go private while a listener there still reads it as
+// public. A value holding an nkey seed is refused before anything of it is quoted. Unset or blank
+// with no hub is no listener at all. The token files are read at each read, never here.
+func privateListenersSetting(value string, hubs []string) ([]privateListener, error) {
 	value = strings.TrimSpace(value)
 	if bus.HoldsSeed(value) {
 		return nil, errors.New("DISPATCH_PRIVATE_LISTENERS holds an nkey seed (not echoed): it names listener workloads and holds no credential")
 	}
-	var listeners []busprojects.ListenerTarget
+	var listeners []privateListener
 	if value != "" {
 		decoder := json.NewDecoder(strings.NewReader(value))
 		decoder.DisallowUnknownFields()
@@ -88,7 +98,7 @@ func privateListenersSetting(value string, hubs []string) ([]busprojects.Listene
 			err = errors.New("text follows the list")
 		}
 		if err != nil {
-			return nil, fmt.Errorf("DISPATCH_PRIVATE_LISTENERS is not a JSON list of listener entries, each {name, hub, source, host, instances}: %v", err)
+			return nil, fmt.Errorf("DISPATCH_PRIVATE_LISTENERS is not a JSON list of listener entries, each {name, hub, source, host, instances, token_file}: %v", err)
 		}
 	}
 	served := map[string]bool{}
@@ -97,7 +107,7 @@ func privateListenersSetting(value string, hubs []string) ([]busprojects.Listene
 			return nil, fmt.Errorf("DISPATCH_PRIVATE_LISTENERS entry %d has no name", index+1)
 		}
 		entry := fmt.Sprintf("DISPATCH_PRIVATE_LISTENERS entry %d (%s)", index+1, listener.Name)
-		if earlier := slices.IndexFunc(listeners[:index], func(other busprojects.ListenerTarget) bool { return other.Name == listener.Name }); earlier >= 0 {
+		if earlier := slices.IndexFunc(listeners[:index], func(other privateListener) bool { return other.Name == listener.Name }); earlier >= 0 {
 			return nil, fmt.Errorf("%s has the name of entry %d: the go-live report names each workload by its name", entry, earlier+1)
 		}
 		for _, field := range []struct{ name, value string }{{"hub", listener.Hub}, {"source", listener.Source}, {"host", listener.Host}} {
@@ -116,6 +126,12 @@ func privateListenersSetting(value string, hubs []string) ([]busprojects.Listene
 		}
 		if !slices.Contains(hubs, listener.Hub) {
 			return nil, fmt.Errorf("%s serves the hub %s, which DISPATCH_PRIVATE_HUBS does not name", entry, listener.Hub)
+		}
+		if strings.TrimSpace(listener.TokenFile) == "" {
+			return nil, fmt.Errorf("%s has no token_file: each read of a replica presents Dispatch's own token for that listener's audience, which the file holds", entry)
+		}
+		if earlier := slices.IndexFunc(listeners[:index], func(other privateListener) bool { return other.Host == listener.Host }); earlier >= 0 {
+			return nil, fmt.Errorf("%s has the host of entry %d: each read presents the token of the entry its host names", entry, earlier+1)
 		}
 		served[listener.Hub] = true
 	}

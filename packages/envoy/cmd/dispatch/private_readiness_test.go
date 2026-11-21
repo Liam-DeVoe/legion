@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -214,6 +215,58 @@ func TestDispatchStartsAllPublicWithNoPrivateHub(t *testing.T) {
 	body, _ := io.ReadAll(response.Body)
 	if response.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != emptyReadinessReport {
 		t.Fatalf("GET /private-readiness of an all-public deployment = %d %s, want 200 %s", response.StatusCode, body, emptyReadinessReport)
+	}
+}
+
+// TestEachListenerReadPresentsThatListenersToken: the client each proof reads the listener replicas
+// with (listenerHTTP) presents, on each read, the token of the entry whose host the read carries,
+// read from that entry's token_file: each listener verifies a token for its own audience, so one
+// token for every listener would be refused by all but one. A read whose Host names no entry, or
+// whose entry's file cannot be read, sends nothing. Control: one token for every read; the second
+// listener's read carries the first one's token, and the test names it.
+func TestEachListenerReadPresentsThatListenersToken(t *testing.T) {
+	seen := make(chan string, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Host + " " + r.Header.Get("Authorization")
+	}))
+	t.Cleanup(server.Close)
+	file := func(name, token string) string { return writeFile(t, name, token+"\n") }
+	listeners := []privateListener{
+		{ListenerTarget: busprojects.ListenerTarget{Name: "one", Host: "one.example.invalid"}, TokenFile: file("one", "token-for-one")},
+		{ListenerTarget: busprojects.ListenerTarget{Name: "two", Host: "two.example.invalid"}, TokenFile: file("two", "token-for-two")},
+		{ListenerTarget: busprojects.ListenerTarget{Name: "gone", Host: "gone.example.invalid"}, TokenFile: filepath.Join(t.TempDir(), "missing")},
+	}
+	client := listenerHTTP(listeners)
+	read := func(host string) error {
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+busprojects.ReadinessPath, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Host = host
+		response, err := client.Do(request)
+		if err == nil {
+			response.Body.Close()
+		}
+		return err
+	}
+	for _, listener := range listeners[:2] {
+		if err := read(listener.Host); err != nil {
+			t.Fatalf("the read of %s: %v", listener.Name, err)
+		}
+		want := listener.Host + " Bearer token-for-" + listener.Name
+		if got := <-seen; got != want {
+			t.Errorf("the read of %s carried %q, want %q: each listener takes a token for its own audience alone", listener.Name, got, want)
+		}
+	}
+	for _, host := range []string{"gone.example.invalid", "stranger.example.invalid"} {
+		if err := read(host); err == nil {
+			t.Errorf("a read with Host %s was sent, want it refused before it is sent", host)
+		}
+	}
+	select {
+	case got := <-seen:
+		t.Errorf("a refused read reached the listener: %q", got)
+	default:
 	}
 }
 

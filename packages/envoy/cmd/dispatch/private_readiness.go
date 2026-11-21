@@ -2,9 +2,11 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/busprojects"
@@ -115,34 +117,47 @@ func giveListeners(admission hubAdmission, listeners []busprojects.ListenerTarge
 	admission.SetListeners(listeners, client)
 }
 
+// listenerTargets is the workloads of listeners, as the proof reads them.
+func listenerTargets(listeners []privateListener) []busprojects.ListenerTarget {
+	targets := make([]busprojects.ListenerTarget, len(listeners))
+	for index, listener := range listeners {
+		targets[index] = listener.ListenerTarget
+	}
+	return targets
+}
+
 // listenerHTTP is the client each proof reads the listener replicas' GET /v1/privacy-readiness
-// with: it presents bearer's token, read at each request, as every call Dispatch makes to an Envoy
-// listener presents it, so a listener that admits Dispatch's calls answers its reads. A token it
-// cannot read sends no request. It sets no timeout of its own: each proof bounds its reads by its
-// own context.
-func listenerHTTP(bearer func() (string, error)) *http.Client {
-	return &http.Client{Transport: bearerTransport{base: http.DefaultTransport, bearer: bearer}}
+// with: each read presents Dispatch's own projected token for the audience of the listener its
+// Host names, from that entry's token_file, read through brokertoken.AccountToken, which reads the
+// file again once its copy is AccountTokenCacheTTL old, since the kubelet rewrites it in place.
+// Each listener verifies a token for its own audience alone, so one token for every listener would
+// be refused by all but one. A read whose Host names no entry, or whose token cannot be read, sends
+// no request. It sets no timeout of its own: each proof bounds its reads by its own context.
+func listenerHTTP(listeners []privateListener) *http.Client {
+	tokens := make(map[string]*brokertoken.AccountToken, len(listeners))
+	for _, listener := range listeners {
+		tokens[listener.Host] = brokertoken.NewAccountToken(listener.TokenFile)
+	}
+	return &http.Client{Transport: listenerTokenTransport{base: http.DefaultTransport, tokens: tokens}}
 }
 
-// bearerTransport sets each request's Authorization to bearer's token, none when it is empty.
-type bearerTransport struct {
+// listenerTokenTransport sets each request's Authorization to the token of the listener its Host
+// names.
+type listenerTokenTransport struct {
 	base   http.RoundTripper
-	bearer func() (string, error)
+	tokens map[string]*brokertoken.AccountToken
 }
 
-func (t bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	token, err := t.bearer()
+func (t listenerTokenTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	account, ok := t.tokens[r.Host]
+	if !ok {
+		return nil, fmt.Errorf("no entry of DISPATCH_PRIVATE_LISTENERS names the host %q, so no token is presented and nothing is sent", r.Host)
+	}
+	token, err := account.Read()
 	if err != nil {
 		return nil, err
 	}
-	if token != "" {
-		r = r.Clone(r.Context())
-		r.Header.Set("Authorization", "Bearer "+token)
-	}
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+token)
 	return t.base.RoundTrip(r)
-}
-
-// envoyListenerBearer is the bearer every Envoy listener call of boot's presents: ENVOY_TOKEN.
-func envoyListenerBearer(boot bootConfig) func() (string, error) {
-	return func() (string, error) { return boot.EnvoyToken, nil }
 }
