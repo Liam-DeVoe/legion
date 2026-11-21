@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -529,18 +530,25 @@ func resolveGitHubApp(app GitHubApp, field string) (GitHubApp, error) {
 }
 
 // executePrivateKeyCommand runs command and returns its trimmed stdout. Its stderr goes to the
-// daemon's own stderr as it is written, so an operator sees what `agent-secrets` prints while it
-// waits for a person's grant (the request's id), and is kept for the failure's message.
+// daemon's own stderr a line at a time as it is written, so an operator sees what `agent-secrets`
+// prints while it waits for a person's grant (the request's id), and is kept for the failure's
+// message. Both print it by providerkeys.go's rule (keyCommandShown): a word of the command that
+// can be a secret's name, or the secret pasted in its place, stands as keyCommandWordShown, and a
+// line, or the whole stderr in the refusal, that still holds part of one, or a PEM block's first
+// line, is not printed, its length printed instead.
 func executePrivateKeyCommand(command, field string) (string, error) {
 	keyCommand := exec.Command("sh", "-c", command)
 	keyCommand.Env = runtime.WithoutNATSSeeds(os.Environ())
+	words := keyCommandWords(command)
 	var stderr strings.Builder
-	keyCommand.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	live := &keyCommandLines{out: os.Stderr, field: field, words: words}
+	keyCommand.Stderr = io.MultiWriter(live, &stderr)
 	result, err := keyCommand.Output()
+	live.flush()
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			exit.Stderr = []byte(stderr.String())
+			exit.Stderr = []byte(keyCommandStderr(stderr.String(), words))
 		}
 		return "", commandError(field, err)
 	}
@@ -549,6 +557,106 @@ func executePrivateKeyCommand(command, field string) (string, error) {
 		return "", fmt.Errorf("%s produced empty output", field)
 	}
 	return key, nil
+}
+
+// keyCommandWordShown stands for a word of private_key_command in what its stderr prints.
+const keyCommandWordShown = "[a word of the command]"
+
+// keyCommandWords are the words of command after its first, of heldRun characters or more, with
+// any quote around them taken off, the longest first so a word holding another is replaced whole:
+// where an operator names the secret the command reads (a secretsd key, a variable), and where the
+// key itself lands when it is pasted into the command in its name's place.
+func keyCommandWords(command string) []string {
+	fields := strings.Fields(command)
+	var words []string
+	for i, field := range fields {
+		if word := strings.Trim(field, `'"`); i > 0 && len(word) >= heldRun {
+			words = append(words, word)
+		}
+	}
+	slices.SortStableFunc(words, func(a, b string) int { return len(b) - len(a) })
+	return words
+}
+
+// keyCommandShown is text, private_key_command's stderr or a line of it, as the daemon prints it:
+// stderrShown's rule with each of words in the key name's place, replaced by keyCommandWordShown,
+// and ok false, nothing of it to be printed, when what is left still holds heldRun characters in a
+// row of one of words, compared without case, or a PEM block's first line, which is the private
+// key itself.
+func keyCommandShown(text string, words []string) (shown string, ok bool) {
+	if strings.Contains(text, "-----BEGIN") {
+		return "", false
+	}
+	for _, word := range words {
+		text = strings.ReplaceAll(text, word, keyCommandWordShown)
+	}
+	folded := strings.ToLower(text)
+	for _, word := range words {
+		lower := strings.ToLower(word)
+		for i := 0; i+heldRun <= len(lower); i++ {
+			if strings.Contains(folded, lower[i:i+heldRun]) {
+				return "", false
+			}
+		}
+	}
+	return text, true
+}
+
+// keyCommandStderr is private_key_command's whole stderr as its refusal quotes it
+// (keyCommandShown), or the words that say it is withheld.
+func keyCommandStderr(stderr string, words []string) string {
+	text := strings.TrimSpace(stderr)
+	if shown, ok := keyCommandShown(text, words); ok {
+		return shown
+	}
+	return fmt.Sprintf("its stderr (%d bytes) holds part of the command or a private key, so it is not printed", len(text))
+}
+
+// keyCommandLines writes private_key_command's stderr to out a line at a time, each line as
+// keyCommandShown prints it, or the words that say it is withheld; every line of a PEM block, its
+// first line to its last (`-----END`), is withheld, since only its first line says it is one. flush
+// writes what is left of a line the command did not end.
+type keyCommandLines struct {
+	out     io.Writer
+	field   string
+	words   []string
+	partial []byte
+	inPEM   bool
+}
+
+func (l *keyCommandLines) Write(p []byte) (int, error) {
+	l.partial = append(l.partial, p...)
+	for {
+		end := bytes.IndexByte(l.partial, '\n')
+		if end < 0 {
+			return len(p), nil
+		}
+		l.line(string(l.partial[:end]))
+		l.partial = l.partial[end+1:]
+	}
+}
+
+func (l *keyCommandLines) flush() {
+	if len(l.partial) > 0 {
+		l.line(string(l.partial))
+		l.partial = nil
+	}
+}
+
+func (l *keyCommandLines) line(text string) {
+	if strings.Contains(text, "-----BEGIN") {
+		l.inPEM = true
+	}
+	shown, ok := keyCommandShown(text, l.words)
+	if l.inPEM {
+		ok = false
+		l.inPEM = !strings.Contains(text, "-----END")
+	}
+	if ok {
+		fmt.Fprintln(l.out, shown)
+		return
+	}
+	fmt.Fprintf(l.out, "%s: a line of its stderr (%d bytes) holds part of the command or a private key, so it is not printed\n", l.field, len(text))
 }
 
 // resolvePrivateKeySecret is an App's private key read from the secretsd key name names. No refusal

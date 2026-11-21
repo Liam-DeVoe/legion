@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -786,6 +787,47 @@ func TestLoadRefusesAPrivateKeyCommandASignalEndedNamingTheSignal(t *testing.T) 
 
 	if want := "github_apps.implement.private_key_command failed (signal: killed): dying"; err == nil || err.Error() != want {
 		t.Errorf("Load error = %v, want %q", err, want)
+	}
+}
+
+// A private_key_command's stderr is quoted by providerkeys.go's rule: a word of the command of 10
+// characters or more (here a made-up secretsd key name, which can be the key itself pasted in its
+// place) stands as `[a word of the command]`, and a stderr that still holds part of one, or a PEM
+// block's first line, is not quoted at all; the live lines it writes to the daemon's stderr keep the
+// same rule a line at a time.
+func TestAPrivateKeyCommandsStderrQuotesNoWordOfItOrAPrivateKey(t *testing.T) {
+	const name = "madeUp_App_Key_Name_0123456789"
+	for _, tc := range []struct{ name, command, want string }{
+		{"the name echoed whole", "echo \"no secret named " + name + "\" >&2; exit 3 # " + name,
+			"github_apps.implement.private_key_command failed (exit 3): no secret named [a word of the command]"},
+		{"the name echoed folded", "echo \"no secret named $(echo " + name + " | tr a-z A-Z)\" >&2; exit 3 # " + name,
+			"github_apps.implement.private_key_command failed (exit 3): its stderr (46 bytes) holds part of the command or a private key, so it is not printed"},
+		{"a private key on stderr", "printf '%s\\n' '-----BEGIN'' PRIVATE KEY-----' madeUpKeyBody0123456789 '-----END PRIVATE KEY-----' >&2; exit 1",
+			"github_apps.implement.private_key_command failed (exit 1): its stderr (77 bytes) holds part of the command or a private key, so it is not printed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(minimalFile, "private_key: implement-test-key", fmt.Sprintf("private_key_command: %q", tc.command), 1)
+			_, err := Load(writeConfigFile(t, body), noEnv)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("Load error = %v, want %q", err, tc.want)
+			}
+			for _, secret := range []string{strings.ToLower(name), "madeUpKeyBody0123456789"} {
+				if strings.Contains(strings.ToLower(err.Error()), strings.ToLower(secret[:10])) {
+					t.Fatalf("the refusal %q holds %q", err, secret[:10])
+				}
+			}
+		})
+	}
+	var live bytes.Buffer
+	lines := &keyCommandLines{out: &live, field: "github_apps.implement.private_key_command", words: keyCommandWords("agent-secrets " + name + " --value")}
+	_, _ = lines.Write([]byte("waiting for approval of " + name + " (request r-1)\n-----BEGIN" + " PRIVATE KEY-----\nmadeUpBody0123456789xyz\n-----END PRIVATE KEY-----\ngranted, unended"))
+	lines.flush()
+	withheld := func(n int) string {
+		return fmt.Sprintf("github_apps.implement.private_key_command: a line of its stderr (%d bytes) holds part of the command or a private key, so it is not printed\n", n)
+	}
+	if want := "waiting for approval of [a word of the command] (request r-1)\n" + withheld(27) + withheld(23) + withheld(25) +
+		"granted, unended\n"; live.String() != want {
+		t.Fatalf("the live lines = %q, want %q", live.String(), want)
 	}
 }
 
