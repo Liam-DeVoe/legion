@@ -1,3 +1,9 @@
+// These rows run the hub's auth service (natscallout), whose package reaches the whole cipher
+// tree; the server-change soak (serverchange) neither needs them nor should rebuild on every
+// change to that tree, so it leaves them out. Every untagged go test of the package runs them.
+
+//go:build !serverchange
+
 package main
 
 import (
