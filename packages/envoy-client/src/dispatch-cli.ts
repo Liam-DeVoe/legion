@@ -1,5 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { sleep } from "@legion/contracts";
+import { AIRLOCK_RESULTS_VAR } from "./airlock-credential";
 import {
   askgateState,
   bytesDigest,
@@ -17,6 +18,7 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
+import { checkCIJobResultCall, ciJobResultCommand } from "./dispatch-commands/ci-job-result";
 import { defined } from "./dispatch-commands/context";
 import { specCheckResultCommand } from "./dispatch-commands/issues";
 import { type ActiveDispatchConfig, ownIdentityDispatch } from "./dispatch-config";
@@ -71,8 +73,8 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
-  /** The one bound of a CI job's `dispatch result --project` (`RESULT_BOUND` by default), which a
-   *  test shortens to run it on the real clock. */
+  /** The one bound of a CI job's `dispatch result`, `--project` or `--issue` (`RESULT_BOUND` by
+   *  default), which a test shortens to run it on the real clock. */
   readonly resultBound?: ResultBound;
   /** Which of `names` this process's nearest ancestor runs as; `/proc` by default, a seam for a
    *  test of a shell that carries two hosts' variables. */
@@ -113,13 +115,16 @@ function outcomeCode(error: unknown): string {
 }
 
 /**
- * `dispatch result --project`, a CI job's record of its result of a check of the spec files. The
- * job runs it under `agent-secrets result-grant`, and writes with the airlock's placeholder of its
- * run alone (`ownIdentityDispatch`): no host, no session, no envoy.json, no AskGate and no
- * listener, since a job has none of them, no bearer or person's sign-in, since the result must
- * carry the identity the airlock authenticated, and no trade, since the broker holds the run's
- * token. The call's own argument check runs first, as for every command, so a refused call sends
- * nothing. It prints the stored result as JSON and exits 0, or prints Dispatch's refusal as
+ * `dispatch result` as a CI job writes it, in its two forms: `--project`, its result of a check
+ * of the spec files, and `--issue`, its result of the check of an issue's Verification document
+ * that the check's ci_check gives to the job (`ciJobResultCommand`). The job runs it under
+ * `agent-secrets result-grant`, and writes with the airlock's placeholder of its run alone
+ * (`ownIdentityDispatch`): no host, no session, no envoy.json, no AskGate and no listener, since a
+ * job has none of them, no bearer or person's sign-in, since the result must carry the identity
+ * the airlock authenticated, and no trade, since the broker holds the run's token. The call's own
+ * argument check runs first, as for every command (`checkCIJobResultCall` for `--issue`, which
+ * takes the job's flags alone), so a refused call sends nothing. It prints the stored result as
+ * JSON and exits 0, or prints Dispatch's refusal as
  * `<CODE>: <message>` and exits 1. A write that landed with its answer lost prints
  * `{"landed_without_answer": <code>}`, the details the session path records for the same case,
  * and exits 0: the result is stored, and a results token reads nothing back. A write that may
@@ -149,13 +154,15 @@ async function ownIdentityResult(
   refuse: (text: string, code: number, tool?: string) => number
 ): Promise<number> {
   const resolution = ownIdentityDispatch(env);
-  const checked = await checkDispatchCall({
+  const projectForm = parsed.args.project !== undefined;
+  const check = {
     tool: parsed.tool,
     args: parsed.args,
     cwd: io.cwd,
     env,
     serverUrls: resolution.enabled ? dispatchServerUrls(resolution) : [],
-  });
+  };
+  const checked = projectForm ? await checkDispatchCall(check) : await checkCIJobResultCall(check);
   if (checked.problems.length > 0) {
     return refuse(
       new ToolInputError(parsed.tool, checked.problems.map(printable)).message,
@@ -192,7 +199,10 @@ async function ownIdentityResult(
   });
   for (;;) {
     try {
-      print(printableJson((await specCheckResultCommand(client, checked.args)).text));
+      const written = projectForm
+        ? await specCheckResultCommand(client, checked.args)
+        : await ciJobResultCommand(client, checked.args);
+      print(printableJson(written.text));
       return OK;
     } catch (error) {
       // A write that landed with its answer lost is done. A program reads the job's output, so it
@@ -251,16 +261,21 @@ async function ownIdentityResult(
 }
 
 /**
- * Whether `argv` is a CI job's `dispatch result --project` (`ownIdentityResult`): the command
- * `result` with a `--project` flag, as `--project <KEY>` or `--project=<KEY>`. The parser reads a
- * word that starts with `--` as a flag and never as a value, so this is the call the parser
- * reads, and it is known before the parse, for an argv the parser refuses too.
+ * Whether `argv` is a CI job's `dispatch result` (`ownIdentityResult`): the command `result` with
+ * a `--project` flag, as `--project <KEY>` or `--project=<KEY>`, or any `result` call whose
+ * environment holds the airlock's placeholder (`AIRLOCK_RESULTS_VAR`), which only `agent-secrets
+ * result-grant` gives, and so only a CI job's step: its `--issue` form records the job's result
+ * of the check its ci_check names. A session never holds that variable, so its `dispatch result
+ * --issue` stays a role's record. The parser reads a word that starts with `--` as a flag and
+ * never as a value, so this is the call the parser reads, and it is known before the parse, for
+ * an argv the parser refuses too.
  */
-function isJobResult(argv: readonly string[]): boolean {
+function isJobResult(argv: readonly string[], env: Readonly<Record<string, string>>): boolean {
   const [command, ...words] = argv;
   return (
     command === "result" &&
-    words.some((word) => word === "--project" || word.startsWith("--project="))
+    (env[AIRLOCK_RESULTS_VAR] !== undefined ||
+      words.some((word) => word === "--project" || word.startsWith("--project=")))
   );
 }
 
@@ -308,13 +323,14 @@ const RESULT_BOUND: ResultBound = {
 };
 
 /**
- * The one bound of a CI job's `dispatch result --project` (`ownIdentityResult`). The whole call
- * ends `totalMs` after it starts: one timeout, made where the call starts, is the signal every
- * await of it runs under — each write with the asks the write client makes again under its key,
- * and each wait after an answer that says "not now" (`notNow`) — since the write client takes that
- * signal as its deadline. No round starts, and the write client asks nothing again, in its last
- * `reserveMs`, the time a last attempt has to be answered before the bound ends it. A job's step
- * of many checks still ends, and the wait of one call stays far below a job's timeout.
+ * The one bound of a CI job's `dispatch result`, `--project` or `--issue` (`ownIdentityResult`).
+ * The whole call ends `totalMs` after it starts: one timeout, made where the call starts, is the
+ * signal every await of it runs under — each write with the asks the write client makes again
+ * under its key, and each wait after an answer that says "not now" (`notNow`) — since the write
+ * client takes that signal as its deadline. No round starts, and the write client asks nothing
+ * again, in its last `reserveMs`, the time a last attempt has to be answered before the bound
+ * ends it. A job's step of many checks still ends, and the wait of one call stays far below a
+ * job's timeout.
  */
 export interface ResultBound {
   readonly totalMs: number;
@@ -445,8 +461,9 @@ export function fitOutput(
  * an outer session left there. Memory a long-lived host kept across calls lives in the session's
  * state directory.
  *
- * The one call that runs as no session is a CI job's `dispatch result --project`
- * (`ownIdentityResult`), which reads none of the above.
+ * The one call that runs as no session is a CI job's `dispatch result`, `--project`, or any
+ * `result` call under `agent-secrets result-grant` (`ownIdentityResult`), which reads none of the
+ * above.
  */
 /**
  * The host this command runs under. `DISPATCH_HOST` names it, else Claude Code's
@@ -530,7 +547,7 @@ export async function runDispatchCli(
   // A CI job's call prints into its runner's log, a refusal of its argv included: a problem can
   // repeat a word of the argv, such as an unknown flag or a file it could not read, so each is
   // printed as `printable` text (`ownIdentityResult`).
-  const job = isJobResult(argv);
+  const job = isJobResult(argv, env);
   let parsed: ParsedCommand;
   try {
     parsed = parseCommand(argv, io);

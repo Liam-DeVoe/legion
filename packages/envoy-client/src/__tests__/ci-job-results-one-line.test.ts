@@ -13,35 +13,16 @@ setDefaultTimeout(fileLimit(60_000 + ROW_MARGIN_MS));
 // line, by runnerlog.Printable's rule (runner-log.ts), when the check id or Dispatch's refusal holds
 // a line break or `::error`. A job's log that `dispatch results --issue` prints follows the same
 // rule: the whole log is one line, its line breaks written as `\n`, and no line is a workflow
-// command. The real entry runs as a child process against stubs of the runner, the broker and
-// Dispatch.
+// command. The real entry runs as a child process against a stub of Dispatch, as `agent-secrets
+// result-grant` starts it: with the airlock's placeholder of the run and nothing else.
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const entry = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
 let answer: () => Response = () => Response.json({}, { status: 500 });
 
-const runner = Bun.serve({
-  port: 0,
-  hostname: "127.0.0.1",
-  fetch: () => Response.json({ count: 1, value: "job.oidc.token" }),
-});
-const broker = Bun.serve({
-  port: 0,
-  hostname: "127.0.0.1",
-  // The broker's answer of a trade, built as dispatch-cli.test.ts builds it.
-  fetch: () =>
-    Response.json(
-      Object.fromEntries([
-        ["access_token", "broker-results-token"],
-        ["issued_token_type", "urn:ietf:params:oauth:token-type:access_token"],
-        ["token_type", "DPoP"],
-        ["expires_in", 600],
-      ])
-    ),
-});
 const dispatch = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => answer() });
 afterAll(() => {
-  for (const stub of [runner, broker, dispatch]) stub.stop(true);
+  dispatch.stop(true);
 });
 
 /** A fresh home for each run, which the fixture removes after the test that made it. */
@@ -73,13 +54,10 @@ async function run(
   return `${stdout}${stderr}`.replace(/\n$/, "").split("\n");
 }
 
-/** A CI job's own identity: the runner's token endpoint and the broker. */
+/** A CI job's command as `agent-secrets result-grant` starts it: the airlock's placeholder of its
+ *  run, which the command presents alone. */
 const asJob = (): Record<string, string> => ({
-  AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
-  AGENT_SECRETS_MACHINE_IDENTITY: "github-actions",
-  AGENT_SECRETS_MACHINE_AUDIENCE: "example-audience",
-  ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${runner.port}/_apis/idtoken?api-version=2.0`,
-  ACTIONS_ID_TOKEN_REQUEST_TOKEN: fixtureSecret("runner"),
+  DISPATCH_RESULTS_TOKEN: `agent-secrets-placeholder-result-${fixtureSecret("run")}`,
 });
 
 const record = (check: string) => [

@@ -594,8 +594,9 @@ describe("the dispatch command surface", () => {
 
   // The job's `dispatch result --issue` form takes `--commit` as the project form does: a CI job's
   // step writes `--commit "$SHA"`, and an empty one would reach Dispatch only for its refusal,
-  // after the job's trade at the secrets broker. So it is refused there too, as `--commit=` is on
-  // the project form, and the same calls with a commit are calls. The rows above hold the rest.
+  // after `agent-secrets result-grant` traded the run's token. So it is refused there too, as
+  // `--commit=` is on the project form, and the same calls with a commit are calls. The rows above
+  // hold the rest.
   test("an empty --commit of dispatch result --issue, or --commit= of --project, is refused, naming the flag", () => {
     const commit = "a".repeat(40);
     for (const argv of [

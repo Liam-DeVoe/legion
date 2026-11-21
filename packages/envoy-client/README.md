@@ -1198,8 +1198,10 @@ be written, the result still prints, with one line saying so.
 
 A CI job records its result of a check of the spec files with `dispatch result --project`, the
 one call that is no session's, run under `agent-secrets result-grant`, which gives it the airlock's
-placeholder of its run and no Dispatch credential; a session reads those results with `dispatch
-results --project`: [`docs/ci-results.md`](docs/ci-results.md) says how each works.
+placeholder of its run and no Dispatch credential, and its result of a check its `ci_check` names
+with `dispatch result --issue` under the same placeholder; a session reads those results with
+`dispatch results --project` and `dispatch results --issue`: [`docs/ci-results.md`](docs/ci-results.md)
+says how each works.
 A session's `dispatch result` prints the id of the result it recorded as `Result <id>`, the form
 `dispatch results` prints, which `dispatch result --retract` takes.
 

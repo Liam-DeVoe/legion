@@ -3618,6 +3618,224 @@ describe("dispatch result --project, as a CI job writes it", () => {
       `?commit=${SPEC_COMMIT}&check=p-1`,
     ]);
   });
+
+  // The same job records its result of a check of an issue's Verification document whose
+  // ci_check names it, on --issue, under the same `agent-secrets result-grant`: the airlock's
+  // placeholder in its environment makes the call the job's, and the body it sends names what the
+  // run observed and nothing about who the job is, which Dispatch reads from the results token the
+  // proxy puts in the placeholder's place, and from GitHub.
+  const issueRecord = [
+    "result",
+    "--issue",
+    "DSP-1",
+    "--check",
+    "c1",
+    "--verdict",
+    "pass",
+    "--commit",
+    SPEC_COMMIT,
+  ];
+  /** The issue route's answer for the job's result of c1, held to the route's declared answer
+   *  (`routeAnswer`). */
+  const recordedOnIssue = routeAnswer(
+    "POST /api/v1/issues/{key}/results",
+    {
+      line: `- Check c1 (before_merge): pass at ${SPEC_COMMIT}, recorded by ci. ok`,
+      result: {
+        id: "00000000-0000-4000-8000-000000000051",
+        check_block_id: "c1",
+        role: "ci",
+        verdict: "pass",
+        commit_sha: SPEC_COMMIT,
+        branch: "legion/DSP-1",
+      },
+    },
+    201
+  );
+
+  test("under the placeholder, --issue posts {check, commit, verdict, observed} to the issue's results route with the placeholder alone", async () => {
+    dispatchAnswer = () => storedAnswer(recordedOnIssue);
+    // A person's bearer and a session in the job's environment are not what the job writes with.
+    const env = { ...jobEnvironment(), ...omp, DISPATCH_TOKEN: fixtureSecret("person") };
+    const withObserved = await runJob([...issueRecord, "--observed", "ok"], env);
+    expect(withObserved.code, withObserved.stdout).toBe(0);
+    expect(JSON.parse(withObserved.stdout)).toEqual(recordedOnIssue);
+    const bare = await runJob(issueRecord, env);
+    expect(bare.code, bare.stdout).toBe(0);
+
+    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
+      ["POST", "/api/v1/issues/DSP-1/results"],
+      ["POST", "/api/v1/issues/DSP-1/results"],
+    ]);
+    expect(written.map((seen) => seen.body)).toStrictEqual([
+      { check: "c1", commit: SPEC_COMMIT, verdict: "pass", observed: "ok" },
+      { check: "c1", commit: SPEC_COMMIT, verdict: "pass" },
+    ]);
+    expect(written.map((seen) => [seen.authorization, seen.dpop])).toEqual([
+      [`DPoP ${PLACEHOLDER}`, null],
+      [`DPoP ${PLACEHOLDER}`, null],
+    ]);
+    // The job trades nothing, and the session's own Dispatch is sent nothing.
+    expect({ runner: runnerAsked, trades, session: requests }).toEqual({
+      runner: [],
+      trades: [],
+      session: [],
+    });
+  });
+
+  // The control of the row above: the same call with no placeholder in its environment is a
+  // session's role record, which the job's argument check does not judge, so it is refused for
+  // its missing role and sends the job's route nothing.
+  test("without the placeholder, --issue is a session's record and not the job's", async () => {
+    const { DISPATCH_RESULTS_TOKEN: _placeholder, ...noPlaceholder } = jobEnvironment();
+    const ran = await runJob(issueRecord, { ...noPlaceholder, ...omp });
+    expect(ran.code, ran.stdout).toBe(2);
+    expect(ran.stdout).not.toContain("a CI job's result");
+    expect(written).toEqual([]);
+  });
+
+  test("under the placeholder, an argument of a role's record is refused on --issue, naming its flag, before any request", async () => {
+    for (const [flag, value] of [
+      ["--role", "tester"],
+      ["--surface", "api"],
+      ["--run", "go test ./..."],
+      ["--negative-control", "The test without its check."],
+      ["--failed", "0"],
+      ["--skipped", "0"],
+      ["--excluded", "0"],
+      ["--screenshot", "dispatch://DSP-1/artifact/shot-png"],
+      ["--retract", "00000000-0000-4000-8000-000000000041"],
+    ] as const) {
+      const { code, stdout } = await runJob([...issueRecord, flag, value], jobEnvironment());
+      expect(code, `${flag}: ${stdout}`).toBe(2);
+      expect(stdout, flag).toContain(`This call also carries ${flag}.`);
+    }
+    const missing = await runJob(
+      issueRecord.filter((word, at) => word !== "--verdict" && issueRecord[at - 1] !== "--verdict"),
+      jobEnvironment()
+    );
+    expect(missing.code, missing.stdout).toBe(2);
+    expect(missing.stdout).toContain("a CI job's result needs --verdict.");
+    sentNothing();
+  });
+
+  test("under the placeholder, --issue sends what a result keeps of observed: its start and its end around the note", async () => {
+    dispatchAnswer = () => storedAnswer(recordedOnIssue);
+    const first = "=== RUN   TestX\n";
+    const last = "--- FAIL: TestX (0.01s)\n";
+    const log = join(stateDir, "observed-issue-failing.txt");
+    writeFileSync(log, `${first}${"x\n".repeat((10_000 - first.length - last.length) / 2)}${last}`);
+    const ran = await runJob([...issueRecord, "--observed-file", log], jobEnvironment());
+    expect(ran.code, ran.stdout).toBe(0);
+    const body = written[0]?.body as { observed?: string } | undefined;
+    const sent = body?.observed ?? "";
+    expect({
+      characters: [...sent].length,
+      first: sent.startsWith(first),
+      last: sent.endsWith(last),
+      note: sent.includes(SPEC_CHECK_OBSERVED_CUT_NOTE),
+    }).toEqual({ characters: SPEC_CHECK_OBSERVED_MAX, first: true, last: true, note: true });
+  });
+
+  // A job's step writes `--issue "$ISSUE" --check "$CHECK" --commit "$SHA"`, and an empty variable
+  // is the honest way to send one empty: the issue form refuses it before any write, naming the
+  // flag, as the project form does.
+  test("under the placeholder, an empty --issue, --check or --commit is refused before any request, naming the flag", async () => {
+    for (const [flag, noun] of [
+      ["--issue", "issue"],
+      ["--check", "check"],
+      ["--commit", "commit"],
+    ] as const) {
+      const emptied = [...issueRecord];
+      emptied[emptied.indexOf(flag) + 1] = "";
+      const { code, stdout, stderr } = await runJob(emptied, jobEnvironment());
+      expect({ code, stderr, lines: stdout.split("\n").slice(0, 2) }, flag).toEqual({
+        code: 2,
+        stderr: "",
+        lines: [
+          "dispatch result was not called: 1 problem",
+          `- ${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`,
+        ],
+      });
+    }
+    sentNothing();
+  });
+
+  // The issue form reads its answer as the project form does: an answer that names the write's
+  // key back is Dispatch's to this write, so such a 201 prints the stored result, or a landing
+  // where its body gives none once the asking under the key is spent (ANSWER_LOST), and such a
+  // 409 KEY_COMMITTED prints a landing. An answer that names no key back, or another request's,
+  // is no answer of Dispatch's to it, and leaves the outcome unknown: the result may be stored,
+  // and a second run is safe. The rows that name the key back are the controls of the rest.
+  for (const [name, answer, echo, code, printed] of [
+    ["a 201 with the stored result that names the key back", "result", "this", 0, recordedOnIssue],
+    [
+      "a 201 with the stored result that names no key back",
+      "result",
+      "none",
+      1,
+      { write_outcome_unknown: "HTTP_201" },
+    ],
+    [
+      "a 201 with the stored result that names another request's key back",
+      "result",
+      "other",
+      1,
+      { write_outcome_unknown: "HTTP_201" },
+    ],
+    [
+      "a 201 of {} that names the key back",
+      "{}",
+      "this",
+      0,
+      { landed_without_answer: "ANSWER_LOST" },
+    ],
+    [
+      "a 409 KEY_COMMITTED that names the key back",
+      "committed",
+      "this",
+      0,
+      { landed_without_answer: "KEY_COMMITTED" },
+    ],
+    [
+      "a 409 KEY_COMMITTED that names no key back",
+      "committed",
+      "none",
+      1,
+      { write_outcome_unknown: "HTTP_409" },
+    ],
+  ] as const) {
+    const prints =
+      "write_outcome_unknown" in printed
+        ? "write_outcome_unknown"
+        : "landed_without_answer" in printed
+          ? "landed_without_answer"
+          : "the stored result";
+    test(`under the placeholder, --issue answered ${name} prints ${prints} and exits ${code}`, async () => {
+      // The stand-in answers behind the keyed layer, which names the write's key back (`this`),
+      // as no keyed layer answers (`none`), or naming another request's key itself (`other`).
+      const other = echo === "other" ? "another-request-key" : undefined;
+      unkeyed = echo === "none";
+      dispatchAnswer = () =>
+        answer === "committed"
+          ? keyCommitted(other)
+          : Response.json(answer === "result" ? recordedOnIssue : {}, {
+              status: 201,
+              headers: other === undefined ? {} : { [IDEMPOTENCY_KEY_HEADER]: other },
+            });
+      const ran = await onFakeClock(issueRecord, jobEnvironment(), undefined, eachWait);
+      expect(
+        { code: ran.code, stderr: ran.stderr, printed: JSON.parse(ran.stdout) },
+        ran.stdout
+      ).toEqual({ code, stderr: "", printed });
+      const results = written.filter((seen) => seen.path === "/api/v1/issues/DSP-1/results");
+      expect({
+        posted: results.length >= 1,
+        allPosts: results.every((seen) => seen.method === "POST"),
+        placeholder: results.every((seen) => seen.authorization === `DPoP ${PLACEHOLDER}`),
+      }).toEqual({ posted: true, allPosts: true, placeholder: true });
+    }, 30_000);
+  }
 });
 
 describe("the dispatch CLI's envoy.json", () => {

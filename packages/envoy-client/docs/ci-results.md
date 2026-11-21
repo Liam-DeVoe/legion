@@ -88,6 +88,15 @@ own or names a workflow command. A refusal that starts with `::` has that first 
 `\x3a`.
 `dispatch results --project <KEY> --commit <sha> [--check <id>]` is a session's read of those
 results, one line each, newest first, or the stored results as JSON with `--json`.
+`dispatch result --issue <KEY> --check <id> --verdict pass|fail --commit <sha> [--observed …]`
+under the same `agent-secrets result-grant -- …` is the same job's result of the check of an
+issue's Verification document that the check's `ci_check` gives to it. The placeholder in
+`DISPATCH_RESULTS_TOKEN` makes any `dispatch result` call the job's, since only
+`agent-secrets result-grant` gives it and a session never holds it: the same credential, cut,
+waits, outcome lines and printing rule, an empty `--issue`, `--check` or `--commit` refused the
+same way, and `--issue`, `--check`, `--verdict`, `--commit` and `--observed` alone
+(`dispatch-commands/ci-job-result.ts`). Without the placeholder, `dispatch result --issue` is a
+session's record of a role's result.
 `dispatch results --issue <KEY>` prints every string of Dispatch's answer by the same rule
 (`printableStrings`): a result's reading, a CI job's log among them, is one line, its line breaks
 written as `\n`, so no line of a log names a workflow command or reads as a line of the command's
@@ -126,12 +135,13 @@ The broker needs its result-workflow entry, the existing airlock proxy and certi
 {
   "secrets": [
     {"name": "DISPATCH_RESULTS_TOKEN", "kind": "dpop", "hosts": ["dispatch.example.com"],
-     "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}]}
+     "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"},
+                                            {"method": "POST", "pathPrefix": "/api/v1/issues/"}]}
   ]
 }
 ```
 
-The rule carries the placeholder only in `Authorization`, and the proxy sends only the requests its allow list names. The broker refuses to start with a result-workflow entry and no such rule: of kind `dpop`, binding a host, with a non-empty allow list and `Authorization` as its one header. The rule does not grant a project or choose a run: the broker derives those from the verified GitHub identity and its result-workflow entry. A workflow authorized only for ordinary credentials cannot obtain a placeholder through this endpoint. Use HTTPS outside the isolated loopback test environment.
+The rule carries the placeholder only in `Authorization`, and the proxy sends only the requests its allow list names: a job's `--project` write goes under `/api/v1/projects/`, and its `--issue` write under `/api/v1/issues/`, where Dispatch's own gate refuses a results token on every route but the results route. The broker refuses to start with a result-workflow entry and no such rule: of kind `dpop`, binding a host, with a non-empty allow list and `Authorization` as its one header. The rule does not grant a project or choose a run: the broker derives those from the verified GitHub identity and its result-workflow entry. A workflow authorized only for ordinary credentials cannot obtain a placeholder through this endpoint. Use HTTPS outside the isolated loopback test environment.
 
 A failure to prove the job, trade its token or obtain the required scope runs no child command. The producer prints one safe diagnostic. A failure after the child sends its result follows the normal keyed-write rules: matching successful answers settle the call, a committed write with a lost answer is a landing, and an uncertain write must be read back before a new command uses another key.
 

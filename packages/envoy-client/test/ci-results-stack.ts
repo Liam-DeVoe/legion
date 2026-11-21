@@ -318,7 +318,13 @@ export async function startCIResultsStack(options: {
             kind: "dpop",
             hosts: [tls.host],
             headers: ["Authorization"],
-            allow: [{ method: "POST", pathPrefix: "/api/v1/projects/" }],
+            // The two results routes a results token writes: a check of the spec files, and the
+            // check of an issue's Verification document whose ci_check names the job. Dispatch's
+            // own gate refuses the token on every other route under the second prefix.
+            allow: [
+              { method: "POST", pathPrefix: "/api/v1/projects/" },
+              { method: "POST", pathPrefix: "/api/v1/issues/" },
+            ],
           },
         ],
       })
@@ -557,6 +563,19 @@ async function wholeStack(): Promise<void> {
     console.log(`${result} --check ${PROBE_CHECK} --commit ${tested}`);
     console.log(
       `env -u AGENT_SECRETS_URL DISPATCH_HOST=omp DISPATCH_SESSION_ID=ci-results-try DISPATCH_TOKEN=${shellWord(stack.dispatch.token)} ${CLI} results --project ${stack.project} --commit ${tested}`
+    );
+    // A run of the same job on a push of the issue's own branch, whose head is the tested commit.
+    const branch = `legion/${stack.issue}`;
+    stack.setBranch(branch, tested);
+    const onBranch = stack.jobEnv({ ...run, ref: `refs/heads/${branch}`, checkRunId: 3 });
+    console.log(
+      `# The issue's try line: the job's result of ${CI_CHECK}, which its ci_check names, on a push of ${branch}, then a session's read of it:`
+    );
+    console.log(
+      `ACTIONS_ID_TOKEN_REQUEST_TOKEN=${shellWord(onBranch.ACTIONS_ID_TOKEN_REQUEST_TOKEN ?? "")} ${shellWord(stack.agentSecrets)} result-grant -- ${CLI} result --issue ${stack.issue} --check ${CI_CHECK} --verdict pass --commit ${tested}`
+    );
+    console.log(
+      `env -u AGENT_SECRETS_URL DISPATCH_HOST=omp DISPATCH_SESSION_ID=ci-results-try DISPATCH_TOKEN=${shellWord(stack.dispatch.token)} ${CLI} results --issue ${stack.issue}`
     );
     console.log("# Each control is refused:");
     console.log(`${result} --check ${PROBE_CHECK} --commit ${other}   # another commit`);

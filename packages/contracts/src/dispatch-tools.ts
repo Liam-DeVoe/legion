@@ -1854,9 +1854,9 @@ export const dispatchToolSpecs = [
       `${CHECK_PROVED_BY_CI}. ` +
       "A run of that CI job records such a check's result through the secrets broker, and no " +
       "role does: a record from a role is 409 CHECK_PROVED_BY_CI, which names the check and the " +
-      "job. With AGENT_SECRETS_MACHINE_IDENTITY=github-actions, the job's own identity, the " +
-      "command trades the run's OIDC token at the secrets broker as the project form below " +
-      "does, and sends issue, check, verdict, commit and observed alone. Dispatch takes the " +
+      "job. The job runs the command under agent-secrets result-grant, as the project form below " +
+      "does: it presents the airlock's placeholder of its run (DISPATCH_RESULTS_TOKEN) alone and " +
+      "trades nothing, and sends issue, check, verdict, commit and observed alone. Dispatch takes the " +
       "recorder, the commit and the branch of the push from the token and from GitHub, and the " +
       "command sends what a result keeps of observed, as the project form does. " +
       "A pass that counts a failed, a skipped or an excluded case contradicts itself, and is " +
