@@ -300,11 +300,9 @@ const EXPECTED: string[] = [
   "",
 ];
 
+// The fixture's store also holds a schema named for the reader, with empty tables of the same
+// names (set up above), so a run that read them bare would report no session, and this would fail.
 test("the run reports the fixture's waits, line by line", () => {
   expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
   expect(printed).toEqual(EXPECTED);
-});
-
-test("a schema named for the reader, holding empty tables of the same names, is not what the run reads", () => {
-  expect(printed[0]).toBe(EXPECTED[0]);
 });
