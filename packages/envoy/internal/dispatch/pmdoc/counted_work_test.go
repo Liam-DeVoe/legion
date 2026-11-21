@@ -244,6 +244,7 @@ var countedRows = map[string]func() []countedShape{
 	"TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinParseStepsPerCharacter": heavyBodyParseShapes,
 	"TestHeavyBodiesAtTheBodyCapParseAndEncodeInWorkProportionalToTheirLength":   heavyBodyWriteShapes,
 	"TestParseRefusesAMebibyteOfQuotesInBoundedTime":                             quoteMarkerShapes,
+	"TestParseWrittenRefusesEmphasisNested4000DeepInBoundedWork":                 nestedEmphasisShapes,
 	"TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly":                  nestedDirectiveShapes,
 	"TestParseResolvesUnmatchedReferencesWithoutComparingEveryDefinition":        unmatchedReferenceShapes,
 }
