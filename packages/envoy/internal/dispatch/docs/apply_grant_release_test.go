@@ -67,26 +67,32 @@ func fillPoolBut(t *testing.T, pool *loadSlots, leave int64) *loadSlot {
 	return filler
 }
 
-// observerGate is the first commit of a room to reach the room's update observer once the gate
-// is armed (beforeObserveUpdate): the apply has integrated and passed its check, the document is
-// released, the apply still holds its grant, which it gives back as the room's observer ends, and
-// the commit's persistence observer, which ygo runs after the room's own, has not run. reached
-// closes as that commit arrives there; release lets a held commit go on.
+// observerGate is the first commit of a room to reach the room's update observer
+// (beforeObserveUpdate) once the gate is armed (arm): the apply has integrated and passed its
+// check, the document is released, the apply still holds its grant, which it gives back as the
+// room's observer ends, and the commit's persistence observer, which ygo runs after the room's own,
+// has not run. reached closes as that commit arrives there; release lets a held commit go on.
 type observerGate struct {
+	armed   atomic.Bool
 	reached chan struct{}
 	release func()
 }
 
-// holdNextObserver arms an observerGate on artifactID's room, holding the commit there until
-// released where hold is set, and releasing it as the test ends in any case.
-func holdNextObserver(t *testing.T, service *Service, artifactID string, hold bool) *observerGate {
+// installObserverGate installs an observerGate on artifactID's room, unarmed, holding the commit
+// it takes there until released where hold is set, and releasing it as the test ends in any case.
+// The room's update observer reads the hook with no lock, on the goroutine of whatever commit it
+// observes, so a test installs the gate before anything commits to the room and arms it once the
+// commits it lets by are made: the commit fill leaves waiting on the room's full queue has read the
+// hook already, on a goroutine the test never waits for, and a hook assigned after it races with
+// that read.
+func installObserverGate(t *testing.T, service *Service, artifactID string, hold bool) *observerGate {
 	t.Helper()
 	gate := &observerGate{reached: make(chan struct{})}
 	proceed := make(chan struct{})
 	gate.release = sync.OnceFunc(func() { close(proceed) })
 	var first atomic.Bool
 	service.beforeObserveUpdate = func(room string) {
-		if room != artifactID || !first.CompareAndSwap(false, true) {
+		if room != artifactID || !gate.armed.Load() || !first.CompareAndSwap(false, true) {
 			return
 		}
 		close(gate.reached)
@@ -97,6 +103,9 @@ func holdNextObserver(t *testing.T, service *Service, artifactID string, hold bo
 	t.Cleanup(gate.release)
 	return gate
 }
+
+// arm makes the next commit to reach the room's update observer the gate's.
+func (g *observerGate) arm() { g.armed.Store(true) }
 
 // holdNextAppend holds artifactID's persistence worker at its next store of a browser's update
 // (beforeRoomAppend), before the store decodes or takes anything, until release; reached closes
@@ -471,6 +480,22 @@ func (o *observerOrder) recorded() []string {
 func TestTheRoomsUpdateObserverRunsBeforeThePersistenceObserverSoTheWorkersReadBackGetsTheGrant(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	// The room's observer records its step for the commit the gate takes, the first once it is
+	// armed; both hooks go in before anything commits to the room (installObserverGate).
+	const roomObserver, persistenceObserver = "the room's update observer", "the persistence observer"
+	var order observerOrder
+	observer := installObserverGate(t, service, artifactID, false)
+	gate := service.beforeObserveUpdate
+	service.beforeObserveUpdate = func(room string) {
+		if room == artifactID && observer.armed.Load() {
+			select {
+			case <-observer.reached:
+			default:
+				order.record(roomObserver)
+			}
+		}
+		gate(room)
+	}
 	live, update, grant := loadedRoom(t, service, artifactID, "First.\n")
 	pool, waited := poolOfOneSlot(t, nil)
 	fillPoolBut(t, pool, grant)
@@ -481,20 +506,7 @@ func TestTheRoomsUpdateObserverRunsBeforeThePersistenceObserverSoTheWorkersReadB
 			len(first), declaredStructs(first), weight, heavy, grant)
 	}
 
-	const roomObserver, persistenceObserver = "the room's update observer", "the persistence observer"
-	var order observerOrder
-	observer := holdNextObserver(t, service, artifactID, false)
-	reached := service.beforeObserveUpdate
-	service.beforeObserveUpdate = func(room string) {
-		if room == artifactID {
-			select {
-			case <-observer.reached:
-			default:
-				order.record(roomObserver)
-			}
-		}
-		reached(room)
-	}
+	observer.arm()
 	stopAfter := live.OnUpdate(func(_ []byte, origin any) {
 		if _, heavy := origin.(*int); heavy {
 			order.record(persistenceObserver)
@@ -540,6 +552,7 @@ const heldCommitKeys = 2 * unslottedApplyStructs
 func TestTheWorkersReadBackWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	observer := installObserverGate(t, service, artifactID, false)
 	live, update, grant := loadedRoom(t, service, artifactID, "First.\n")
 	pool, waited := poolOfOneSlot(t, nil)
 	fillPoolBut(t, pool, grant)
@@ -549,7 +562,7 @@ func TestTheWorkersReadBackWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 		t.Fatalf("the commit the worker holds is %d bytes declaring %d structs, weighed at %d (heavy: %t), want a heavy update weighed within the apply's %d-byte grant",
 			len(first), declaredStructs(first), weight, heavy, grant)
 	}
-	observer := holdNextObserver(t, service, artifactID, false)
+	observer.arm()
 	heavy := applyHeavy(service, artifactID, live, update)
 	awaitHeavyApply(t, observer, heavy)
 
@@ -576,13 +589,14 @@ func TestTheWorkersReadBackWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 func TestTheWorkersWaitForTheDocumentsLockEndsOnceAHeavyApplyGaveItsGrantBack(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	observer := installObserverGate(t, service, artifactID, false)
 	live, update, grant := loadedRoom(t, service, artifactID, "First.\n")
 	forkWaits := make(chan struct{})
 	pool, waited := poolOfOneSlot(t, sync.OnceFunc(func() { close(forkWaits) }))
 	fillPoolBut(t, pool, grant+grant/2)
 	before := storedHead(t, service.store, artifactID)
 	_, releaseWorker := holdWorkerBehindAFullQueue(t, service, artifactID, live, 1)
-	observer := holdNextObserver(t, service, artifactID, false)
+	observer.arm()
 	heavy := applyHeavy(service, artifactID, live, update)
 	awaitHeavyApply(t, observer, heavy)
 	if need := service.copyOfRoom(live); need <= grant/2 || need > grant+grant/2 {
@@ -628,12 +642,16 @@ func TestTheWorkersWaitForTheDocumentsLockEndsOnceAHeavyApplyGaveItsGrantBack(t 
 // (beforeClosingCompaction), then drains into the room's replica, gives its grant back as the
 // room's observer ends, and hands its update to ygo's stranded persistence, which waits for the
 // worker to exit (persistStranded). beforeClose, where it is not nil, runs once the apply's commit
-// is held and before the shutdown begins. It answers the shutdown's error and the hook's.
+// is held and before the shutdown begins. It answers the shutdown's error and the hook's. It
+// installs the gate on the room's observer and arms it at once (installObserverGate): no commit is
+// in flight, since its callers' writes to the room ran on the test's goroutine and have landed,
+// and no settlement runs.
 func closeBehindAHeavyApply(t *testing.T, service *Service, artifactID string, live *crdt.Doc, update []byte, beforeClose func()) (closed, applied <-chan error) {
 	t.Helper()
 	compacting := make(chan struct{})
 	service.beforeClosingCompaction = onFirst(artifactID, func() { close(compacting) })
-	observer := holdNextObserver(t, service, artifactID, true)
+	observer := installObserverGate(t, service, artifactID, true)
+	observer.arm()
 	heavy := applyHeavy(service, artifactID, live, update)
 	awaitHeavyApply(t, observer, heavy)
 	if beforeClose != nil {
@@ -758,9 +776,10 @@ const joinedWriteTimeLeft = 10 * time.Second
 // folds a history replaced under the room (AppendRoomFlush, storedHistoryHolds) and waits for the
 // pool, so the transaction can wait for a lock whose holder waits for the bytes it holds. Join's
 // WriteRequestBound ends that wait: the transaction is answered within the bound, with an error
-// the API answers 503 DOC_SERVICE_UNAVAILABLE (ErrServiceUnavailable or its request's end,
-// writeHandlerError), and gives its grant back, and the room then stores what it held. This tests
-// a bound, not a fix: nothing in this package breaks the wait, so no revert makes it fail.
+// the API answers 503 DOC_SERVICE_UNAVAILABLE (ErrServiceUnavailable, or the end of that bound or
+// of its request: api's writeHandlerError, WriteRequestBoundPassed), and gives its grant back, and
+// the room then stores what it held. This tests a bound, not a fix: nothing in this package breaks
+// the wait, so no revert makes it fail.
 func TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -831,7 +850,7 @@ func TestAJoinedTransactionsWaitForItsSecondDocumentsLockEndsAtTheWriteBound(t *
 			t.Fatal("the write of the second document went through while the document's lock was held")
 		}
 		if !errors.Is(err, ErrServiceUnavailable) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-			t.Fatalf("the write of the second document was answered %v, want ErrServiceUnavailable or its request's end, which the API answers 503", err)
+			t.Fatalf("the write of the second document was answered %v, want ErrServiceUnavailable or the end of its write's bound or of its request, which the API answers 503", err)
 		}
 		if elapsed > WriteRequestBound+joinedWriteBoundMargin {
 			t.Fatalf("the write of the second document was answered %s after its request began, past WriteRequestBound %s and %s beside it", elapsed, WriteRequestBound, joinedWriteBoundMargin)

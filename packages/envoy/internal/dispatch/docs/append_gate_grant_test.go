@@ -55,6 +55,9 @@ func TestTheWorkersGateFoldWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 			database := storetest.Open(t)
 			artifactID := createDocument(t, database, "before")
 			service, server := newTestServiceInstance(t, database)
+			// The gate the heavy apply's commit reaches goes in before anything commits to the
+			// room, and is armed once the room's queue is full (installObserverGate).
+			observer := installObserverGate(t, service, artifactID, false)
 			seedServiceText(t, service, artifactID, "before")
 			waitForLandedAppends(t, service, artifactID)
 			appends, ok := service.persistence.(*PgVersioned)
@@ -97,7 +100,7 @@ func TestTheWorkersGateFoldWaitsForAPoolAHeavyApplyGaveBack(t *testing.T) {
 			pool, waited := poolOfOneSlot(t, nil)
 			fillPoolBut(t, pool, grant)
 			newRoomCommitter(t, live).fill(t)
-			observer := holdNextObserver(t, service, artifactID, false)
+			observer.arm()
 			heavy := applyHeavy(service, artifactID, live, update)
 			awaitHeavyApply(t, observer, heavy)
 			if err := holder.Commit(ctx); err != nil {
