@@ -551,6 +551,63 @@ func TestARecordBelowTheFloorReadsAsUnknown(t *testing.T) {
 	}
 }
 
+// A record's floor rises only from a record whose signature verifies: an unsigned record a
+// database writer stores at gen 999999 raises nothing (its read is the client's to refuse, by its
+// signature), so the genuine record, put back, still reads afterwards. Fails if the floor rises from
+// what the GET read: the genuine record reads 409 below_floor.
+func TestAnUnverifiedRecordRaisesNoFloor(t *testing.T) {
+	rig := newHoldRig(t)
+	op := rig.operator()
+	rig.bootstrap()
+	rig.move(1, "prepare", "hold-v")
+	rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-v", "done", "hold", 0, `{"ops":[]}`)).require(t, "the journal's insert", http.StatusOK, "")
+	var genuine, genuineSig string
+	if err := rig.pool.QueryRow(context.Background(), `select value::text, sig from nats_hold_records where hold_id = 'hold-v' and kind = 'done'`).Scan(&genuine, &genuineSig); err != nil {
+		t.Fatal(err)
+	}
+	const journal = "/v1/nats-hold/records?hold_id=hold-v&kind=done"
+	if _, err := rig.pool.Exec(context.Background(), `update nats_hold_records set gen = 999999, sig = '' where hold_id = 'hold-v' and kind = 'done'`); err != nil {
+		t.Fatal(err)
+	}
+	rig.do(http.MethodGet, journal, op, nil).require(t, "GET the unsigned journal at gen 999999", http.StatusOK, "")
+	if _, err := rig.pool.Exec(context.Background(), `update nats_hold_records set value = $1::jsonb, gen = 1, sig = $2 where hold_id = 'hold-v' and kind = 'done'`, genuine, genuineSig); err != nil {
+		t.Fatal(err)
+	}
+	again := rig.do(http.MethodGet, journal, op, nil)
+	var records []map[string]json.RawMessage
+	if again.status != http.StatusOK || json.Unmarshal(again.fields["records"], &records) != nil || len(records) != 1 || string(records[0]["gen"]) != "1" {
+		t.Fatalf("after an unsigned record at gen 999999, the genuine journal put back answered %d %s, want 200 and the record at gen 1", again.status, again.body)
+	}
+}
+
+// A record the floor has seen reads as unknown once it is absent: a database writer's delete is no
+// route's, so GET answers 409 below_floor rather than an empty list, which the client would read
+// as no record. A record the route deleted (the cohort's, at the gen it signed) is absent as it
+// should be. Fails if the floor checks only the records present: the deleted journal reads as
+// absent.
+func TestASeenRecordDeletedOutsideTheRoutesReadsAsUnknown(t *testing.T) {
+	rig := newHoldRig(t)
+	op := rig.operator()
+	rig.bootstrap()
+	rig.move(1, "prepare", "hold-t")
+	rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-t", "done", "hold", 0, `{"ops":[]}`)).require(t, "the journal's insert", http.StatusOK, "")
+	rig.do(http.MethodPut, "/v1/nats-hold/records", op, rig.recordBody("hold-t", "cohort", "cohort", 0, `{"threshold":3}`)).require(t, "the cohort's insert", http.StatusOK, "")
+	const journal = "/v1/nats-hold/records?hold_id=hold-t&kind=done"
+	rig.do(http.MethodGet, journal, op, nil).require(t, "GET the journal", http.StatusOK, "")
+	if _, err := rig.pool.Exec(context.Background(), `delete from nats_hold_records where hold_id = 'hold-t' and kind = 'done'`); err != nil {
+		t.Fatal(err)
+	}
+	gone := rig.do(http.MethodGet, journal, op, nil)
+	if gone.status != http.StatusConflict || gone.str("error") != "below_floor" {
+		t.Fatalf("the seen journal deleted by SQL answered %d %s, want 409 below_floor", gone.status, gone.body)
+	}
+	rig.do(http.MethodDelete, rig.signedDelete("hold-t", "cohort", "cohort", 1), op, nil).require(t, "the cohort's signed delete", http.StatusNoContent, "")
+	cohort := rig.do(http.MethodGet, "/v1/nats-hold/records?hold_id=hold-t&kind=cohort", op, nil).require(t, "GET the deleted cohort", http.StatusOK, "")
+	if string(cohort.fields["records"]) != "[]" {
+		t.Fatalf("the cohort the route deleted lists %s, want none", cohort.fields["records"])
+	}
+}
+
 // holdTables is every row of the hold's four tables, as text, for a test that requires a refused
 // call to change none.
 func (r *holdRig) holdTables() string {

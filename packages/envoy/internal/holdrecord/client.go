@@ -215,7 +215,8 @@ func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.Ope
 }
 
 // Records reads and verifies the hold's records of one kind, through `/v1/nats-hold/records`. A
-// record the broker answers below its floor, an older signed record put back, is ErrUnknown.
+// read the broker answers below its floor (an older signed record put back, or a record it has seen
+// now missing, deleted outside the routes) is ErrUnknown.
 func (c *Client) Records(ctx context.Context, holdID, kind string) ([]Record, error) {
 	var answer struct {
 		Records []recordWire `json:"records"`
@@ -224,7 +225,7 @@ func (c *Client) Records(ctx context.Context, holdID, kind string) ([]Record, er
 	if err := c.call(ctx, http.MethodGet, recordsPath, query, nil, &answer); err != nil {
 		var refusal *RouteError
 		if errors.As(err, &refusal) && refusal.Code == codeBelowFloor {
-			return nil, wrap(ErrUnknown, fmt.Sprintf("the broker answers hold %s's %s records below their floor: an older record put back", holdID, kind))
+			return nil, wrap(ErrUnknown, fmt.Sprintf("the broker answers hold %s's %s records below their floor: an older record put back, or a record it has seen deleted outside the routes", holdID, kind))
 		}
 		return nil, err
 	}
