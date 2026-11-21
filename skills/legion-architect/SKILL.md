@@ -99,7 +99,6 @@ read, against the goal, every check and requirement in `skill://legion-architect
 Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
 Accept only when a pass stands for every `before_merge` check at the last step's head, every requirement has a check, and none is unmet or read narrower than written:
 post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
-Otherwise `request_backward_move` with `to` the phase (`implementing`, `testing`) of an earlier step of the task, and a `reason` naming the check's block id.
 Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check.
 Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
