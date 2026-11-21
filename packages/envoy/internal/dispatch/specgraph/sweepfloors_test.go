@@ -11,25 +11,28 @@ import (
 
 // sweepFloors is, for each sweep and each base (sweepBases), the count of inputs that sweepAgainst
 // judged when the table was written, by what the reader did with each: read it, as the base or as
-// another state, or refused it, and the digest of the base's files and of each judged input's files
-// and kind, in the order of the inputs (sweepFloor, sweepCount.judged). The sweeps are the tree
+// another state, or refused it, and the digest of the bytes that the reader read of the base and of
+// each judged input, with each input's kind and right, in the order of the inputs (sweepFloor,
+// sweepCount.judged). The sweeps are the tree
 // sweep (TestNoInputThatSaysNothingMovesAStateTowardTrue), the members added
 // (TestAddingAMemberMovesNoStateTowardTrue), the texts inside a block and the attributes left out
 // (TestNoNameOfNothingInsideABlockMovesAStateTowardTrue), and the refusals added
 // (TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults). A sweep that judges
 // fewer inputs of a base of either kind fails by name (atFloor), and so does a sweep whose inputs of
-// a base hold, in their order, other bytes or read as other kinds than the digest's, and a base
+// a base hold, in their order, other bytes, read as other kinds or are judged by other rights than
+// the digest's, and a base
 // with no floor or a floor of no base (floorsCover). So a fault that drops inputs, of a sweep's
 // meaning or of its writers, a sweep that builds inputs and does not derive them or drops an input
 // from its judgment, a fault that moves inputs from one kind to the other, as many each way as it
 // likes, and a change of the form of an input that keeps its kind (two spaces for one) cannot pass.
 // The floors count what the reader did with an input, not what the judgment found: a judgment that
 // stops reporting an input that moves a state toward true, and counts it as read, meets them. That
-// judgment fails by its known positive (knownPositive), which each sweep judges at silent-leg and
-// must report, and which no floor counts. A base, a scenario, a sweep or a reader that adds, takes
-// out, moves or writes otherwise an input changes the digest, so the table is written again, on
-// purpose, from a run of the sweeps. It is a function that gives a new table at each call, so that
-// no writer can lower a floor (sweepMaps).
+// judgment fails by its known positives (knownPositives), one for each kind of move that it
+// reports, at silent-leg and wait-cycle, which each sweep must report with the lines that each is
+// built to move, and which no floor counts. A base, a scenario, a sweep or a reader that adds, takes
+// out, moves or writes otherwise an input, or judges it by another right, changes the digest, so the
+// table is written again, on purpose, from a run of the sweeps. It is a function that gives a new
+// table at each call.
 func sweepFloors() map[string]map[string]sweepFloor {
 	return map[string]map[string]sweepFloor{
 		"tree": {
