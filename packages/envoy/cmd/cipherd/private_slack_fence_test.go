@@ -136,7 +136,7 @@ func TestAFreshPodWithDeclaredPrivateProjectsFencesBeforeAnyPrivateAnswer(t *tes
 	request.Header.Set("Authorization", "Bearer "+placeholder)
 	reply, err := client.Do(request)
 	if err != nil {
-		t.Fatalf("the pod's first read of %s through the airlock: %v; want 403 PRIVATE_CHANNEL from the proxy, with nothing carried towards Slack", privChannel, err)
+		t.Fatalf("the pod's first read of %s through the airlock: %v; want 403 PRIVATE_CHANNEL from the proxy at once: a read with no answer was carried towards Slack, to %s, where nothing answers", privChannel, err, slackAddress)
 	}
 	body, _ := io.ReadAll(reply.Body)
 	reply.Body.Close()
