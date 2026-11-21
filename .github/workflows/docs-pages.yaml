@@ -261,6 +261,7 @@ on:
       - 'packages/envoy/internal/cipher/natshold/*'
       - 'packages/envoy/internal/bus/signedrecord/*'
       - 'packages/envoy/natsgrant/*'
+      - 'packages/envoy/consumernames/*'
       - 'packages/envoy/natscred/*'
       - 'packages/envoy/internal/cipher/wire/*'
       - 'packages/envoy/internal/ciphertoken/*'
