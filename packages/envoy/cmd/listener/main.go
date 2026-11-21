@@ -1475,12 +1475,18 @@ func main() {
 	if !edgeMode(cfg) {
 		wakes = newWakeReporter(wakesCtx, client)
 	}
+	// An edge listener holds its delivery handlers to its own grant: no kept role lane, and no
+	// delivery exception on a lane the grant leaves out (edgeGrant).
+	var edge *edgeGrant
+	if edgeMode(cfg) {
+		edge = newEdgeGrant(cfg.MachineID, cfg.EdgeProjects, met)
+	}
 
 	// Phase 6: Open the role lane and /v1 onto the stores, then bind the durable consumer.
 	deliveryConfig := listenerDeliveryHandlerConfig{
 		client:            client,
 		wakes:             wakes,
-		noWakeReports:     edgeMode(cfg),
+		edge:              edge,
 		forwardRole:       startRoleForward(client),
 		registry:          registry,
 		sessions:          sessions,
@@ -1740,7 +1746,8 @@ func main() {
 	// them, on the reapers' cadence and under their context, with a pass as the listener starts.
 	// It costs one stream read a pass while no role has a kept lane (startKeptRoleSweep,
 	// role_keep_sweep.go), and its cadence is the interval the repeated wake report is named by
-	// (roleWakeInterval).
+	// (roleWakeInterval). An edge listener runs none, since its grant writes no kept lane: the
+	// shared listeners' sweeps hand over the lanes of roles held at the edge too.
 	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, roleWakeInterval))
 
 	// Phase 6b0a: Free the slot every session consumer whose session ended without deregistering

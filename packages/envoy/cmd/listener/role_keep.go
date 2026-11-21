@@ -634,8 +634,15 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // queue - opts out on the publish route's own request field instead (keep false, read by
 // roleSend.noHolder), which is the one give-up a sender can address: nothing publishes a raw role
 // message it would redeliver, so the role lane always keeps.
+//
+// An edge listener keeps nothing (cfg.edge): its grant publishes no kept role lane
+// (natsgrant.Edge), so its give-up is the one a keep that kept nothing leaves, the publish route's
+// 404 with its refusal's exception.
 func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, bool) {
 	if !roles.Valid(role) {
+		return keptRoleCopy{}, false
+	}
+	if cfg.edge != nil {
 		return keptRoleCopy{}, false
 	}
 	kept, ok := keepRoleMessage(cfg, role, item)
@@ -769,7 +776,14 @@ func roleKeepDrainBackoff(last time.Duration) time.Duration {
 // role inside this listener run one after the other and the sweep can tell that a role's lane is
 // being handed over here already without waiting for it (roleKeepGuards.tryHold). A handover
 // whose context ended while it waited gives that wait up and walks nothing (roleKeepGuards.hold).
+//
+// An edge listener hands no lane over (cfg.edge): a handover writes the lane's drain cursor, which
+// its grant may not publish (natsgrant.Edge). The shared listeners' sweeps hand the lane of a role
+// held at the edge to its holder's agent subject (startKeptRoleSweep), as they hand every lane.
 func drainKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, now func() time.Time) error {
+	if cfg.edge != nil {
+		return nil
+	}
 	release, taken := cfg.roleKeepDrains.hold(ctx, role)
 	if !taken {
 		return nil
