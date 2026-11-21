@@ -126,6 +126,11 @@ func TestTheBlockEraseLeavesASiblingThatRepeatsItsWords(t *testing.T) {
 	if held := versionsOf(t, database, document); len(held) != 2 {
 		t.Fatalf("the document holds the versions %v before the erase, want the sibling's and the erased block's", held)
 	}
+	// The uploads owe the document a settlement (doc_settlements_pending), which runs after the
+	// settle delay. Run after the erase, it would write a version of its own from the live text the
+	// erase left - a version 2 holding the marker, with its event - so the erase is read against
+	// the settled document, which nothing writes to again.
+	waitForSettlementOwed(t, database, document, false)
 	events := documentEvents(t, database, document)
 	if len(events) == 0 {
 		t.Fatalf("no event about %s holds its versions, so the event check proves nothing", document)
@@ -135,6 +140,9 @@ func TestTheBlockEraseLeavesASiblingThatRepeatsItsWords(t *testing.T) {
 	if err != nil || !erasure.Applied {
 		t.Fatalf("erase %s: applied %t, %v", block, erasure != nil && erasure.Applied, err)
 	}
+	// Whatever the document still owes runs before the checks below, so a settlement left owed
+	// across the erase is seen writing, not missed because it ran after them.
+	waitForSettlementOwed(t, database, document, false)
 	text := eraseDocumentText(t, server, document)
 	if !strings.Contains(text, sibling) {
 		t.Errorf("the sibling's line is not in the live text after the erase, which reads %q", text)
