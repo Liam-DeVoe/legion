@@ -109,12 +109,16 @@ const CommandProve = "hold prove"
 // ErrBusy while another command's `intent` is pending. Outside `hub-restore` it is admitted only
 // once a command's latest entry is a `stop`, a command that stopped and has not run again since,
 // and refused ErrOutOfOrder ("no command has stopped") otherwise, so it is the way out of a failed
-// command, not a way to end a workflow that is going well. In `hub-restore` it keeps its own
-// rules: a `done` CommandProve entry excludes it, so a census that stops after a done prove is not
-// ended by abort, but by another prove and census, the restore's own way on. It moves the row to
-// `released` before its `done` entry, which completes the record; its `intent` carries each stop's
-// record of what its command left (Admit). It is refused after completion. From `prepare` it
-// deletes the cohort (DeleteCohort) and moves the row, and writes no entry.
+// command, not a way to end a workflow that is going well. In `hub-restore` a `done` CommandProve
+// entry excludes it until, after the latest done prove, a command's latest entry is a `stop` (a
+// census that fails for good, say), or until its own intent is pending, a rerun after a crash; a
+// stop from before the prove lifts nothing. Its disk check there passes only with each target's
+// disk its step-1 one, since it never releases over a restored disk: after a restore, the operator
+// puts each step-1 disk back before abort can release. Release stays refused, since hub-restore's
+// completion is its clean census. It moves the row to `released` before its `done` entry, which
+// completes the record; its `intent` carries each stop's record of what its command left (Admit).
+// It is refused after completion. From `prepare` it deletes the cohort (DeleteCohort) and moves
+// the row, and writes no entry.
 const CommandAbort = "hold abort"
 
 // LeftUnchanged is what a stop records (AppendStopLeft) when no run of its command in this hold
@@ -305,6 +309,13 @@ func cutRun(ops []Operation, command string) bool {
 		open = o.State == stateIntent
 	}
 	return false
+}
+
+// stoppedSinceProve reports whether, among the entries after the latest done hold prove (Epoch),
+// some command's latest entry is a stop.
+func stoppedSinceProve(d Done) bool {
+	_, ents, ok := Epoch(d)
+	return ok && anyStopped(ents)
 }
 
 // anyStopped reports whether some command's latest entry is a `stop`: a command that stopped and

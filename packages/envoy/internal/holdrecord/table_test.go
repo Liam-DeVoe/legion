@@ -25,10 +25,9 @@ func admittedOps(w Workflow, c string) []Operation {
 
 // No command strands a hold. For every workflow and every command, once the command's intent is
 // written and the command can never succeed, its own stop is admitted (it is Stoppable), and after
-// that stop hold abort is admitted, but in hub-restore after a done hold prove, whose own rule
-// excludes abort (a stopped census there is ended by another prove and census, or not at all); and
-// while any other command's intent is pending, abort is refused ErrBusy. Fails if a command a check
-// can refuse after its intent is not Stoppable: the count of stranded commands is not 0.
+// that stop hold abort is admitted, in hub-restore after a done hold prove too; and while any other
+// command's intent is pending, abort is refused ErrBusy. Fails if a command a check can refuse after
+// its intent is not Stoppable: the count of stranded commands is not 0.
 func TestEveryCommandHasAWayOut(t *testing.T) {
 	stranded, checked := 0, 0
 	for _, w := range current.Workflows() {
@@ -49,14 +48,7 @@ func TestEveryCommandHasAWayOut(t *testing.T) {
 				continue
 			}
 			stopped := Done{Workflow: w, Ops: append(append([]Operation{}, live.Ops...), Operation{Command: c, State: stateStop})}
-			_, proved := Proven(stopped)
-			err := Decide(stopped, Request{Command: CommandAbort})
-			switch {
-			case w == WorkflowHubRestore && proved:
-				if !errors.Is(err, ErrExcluded) {
-					t.Errorf("hub-restore's %q stopped after a done prove: abort answered %v, want hub-restore's own rule, ErrExcluded", c, err)
-				}
-			case err != nil:
+			if err := Decide(stopped, Request{Command: CommandAbort}); err != nil {
 				t.Errorf("%s's %q stopped: abort answered %v, want admitted", w, c, err)
 			}
 			for _, x := range Commands(w) {
@@ -175,5 +167,33 @@ func TestDecideRefusesInItsDocumentedOrder(t *testing.T) {
 		if err := Decide(x.d, Request{Command: x.command}); !errors.Is(err, x.want) || !strings.Contains(err.Error(), x.names) {
 			t.Errorf("%s: Decide(%q) answered %v, want %v naming %q", x.name, x.command, err, x.want, x.names)
 		}
+	}
+}
+
+// In hub-restore, after a done hold prove, hold abort is admitted once a command's latest entry
+// after that prove is a stop, as in every other workflow, and hold release stays refused:
+// hub-restore's completion includes its clean census. With no stop since the prove, a done prove
+// still excludes abort, and abort's own stop from before the prove counts for nothing: the model
+// found a hold stranded when it did (abort admitted on it, crashed, its rerun then excluded). Fails
+// if the exclusion stands after a stop: abort answers ErrExcluded; and if any stop lifts it: the
+// stale stop admits abort.
+func TestHubRestoreAbortFollowsAStopAfterAProve(t *testing.T) {
+	op := func(c, s string) Operation { return Operation{Command: c, State: s} }
+	proved := []Operation{op(CommandSet, stateIntent), op(CommandSet, stateDone), op(CommandProve, stateIntent), op(CommandProve, stateDone)}
+	stopped := Done{Workflow: WorkflowHubRestore, Ops: append(append([]Operation{}, proved...), op("streams census", stateIntent),
+		Operation{Command: "streams census", State: stateStop, Outputs: map[string]string{stopLeftKey: "UNKNOWN: a stream's info cannot be read"}})}
+	if err := Decide(stopped, Request{Command: CommandAbort}); err != nil {
+		t.Errorf("abort after a done prove and a stopped census answered %v, want admitted", err)
+	}
+	if err := Decide(stopped, Request{Command: CommandRelease}); !errors.Is(err, ErrOutOfOrder) {
+		t.Errorf("release after a done prove and a stopped census answered %v, want ErrOutOfOrder", err)
+	}
+	if err := Decide(Done{Workflow: WorkflowHubRestore, Ops: proved}, Request{Command: CommandAbort}); !errors.Is(err, ErrExcluded) {
+		t.Errorf("abort after a done prove and no stop answered %v, want ErrExcluded", err)
+	}
+	stale := Done{Workflow: WorkflowHubRestore, Ops: []Operation{op(CommandSet, stateIntent), op(CommandSet, stateDone),
+		op(CommandAbort, stateIntent), op(CommandAbort, stateStop), op(CommandProve, stateIntent), op(CommandProve, stateDone)}}
+	if err := Decide(stale, Request{Command: CommandAbort}); !errors.Is(err, ErrExcluded) {
+		t.Errorf("abort after its own stop from before a done prove answered %v, want ErrExcluded", err)
 	}
 }

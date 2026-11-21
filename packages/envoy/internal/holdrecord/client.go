@@ -17,12 +17,13 @@
 // intent and records what the command left. `hold release` follows only a complete record or one
 // whose stops all left nothing changed (LeftUnchanged), and `hold abort` is every workflow's way
 // out once a command has stopped and no intent is pending, so a command that can never succeed
-// cannot hold the hold. The one exception is hub-restore's own rule: after a done `hold prove`
-// abort is excluded, so a census that stops there is ended by another prove and census. The
-// workflow table and Decide are the ones model_test.go explores: every workflow from its true
-// start, with crashes between any two writes, two operator processes, restores landing outside the
-// hold, the row lost and restored, and any command of a workflow but hub-restore failing for good
-// after its intent.
+// cannot hold the hold. In hub-restore a done `hold prove` excludes abort until a command stops
+// after it; abort then passes only with each target's disk its step-1 one, since it never releases
+// over a restored disk, so the operator puts each step-1 disk back before running it. The workflow
+// table and Decide are the ones model_test.go explores: every workflow from its true start, with
+// crashes between any two writes, two operator processes, restores landing outside the hold, the
+// row lost and restored, and any command failing for good after its intent, in hub-restore the
+// census and a prove after a done prove.
 package holdrecord
 
 import (

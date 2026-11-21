@@ -703,6 +703,47 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 	})
 
+	// After a done prove, a census that stops (UNKNOWN) admits hold abort, its intent carrying the
+	// census's record of what it left; hold release stays refused, since hub-restore's completion is
+	// its clean census. Abort's disk check, outside the journal, passes once the operator has put
+	// each step-1 disk back; its row move and done entry then end the hold.
+	t.Run("hub-restore: after a done prove, a stopped census admits hold abort, which ends the hold", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-hubstop", holdrecord.WorkflowHubRestore, twoDisks)
+		run(t, c, "h-hubstop", cmd(holdrecord.CommandProve), map[string]string{"restored.A": "disk-7"}, map[string]string{"disk.A": "disk-7", "disk_id.A": "7"})
+		if _, err := c.Admit(ctx, "h-hubstop", cmd("streams census"), nil); err != nil {
+			t.Fatal(err)
+		}
+		const left = "UNKNOWN: KV_envoy_roles' info cannot be read"
+		if err := c.AppendStopLeft(ctx, "h-hubstop", "streams census", "the run is not clean", left); err != nil {
+			t.Fatalf("the census's stop: %v", err)
+		}
+		_, err := c.Admit(ctx, "h-hubstop", cmd(holdrecord.CommandRelease), nil)
+		refused(t, "hold release after the census's stop", err, holdrecord.ErrOutOfOrder, "not complete")
+		if _, err := c.Admit(ctx, "h-hubstop", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("hold abort after a done prove and the census's stop: %v", err)
+		}
+		d, _ := journal(t, c, "h-hubstop")
+		abort, carried := last(t, d), false
+		for _, v := range abort.Inputs {
+			carried = carried || v == "streams census: "+left
+		}
+		if abort.Command != holdrecord.CommandAbort || abort.State != "intent" || !carried {
+			t.Fatalf("the journal ends %+v, want hold abort's intent carrying the census's record %q", abort, "streams census: "+left)
+		}
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, "h-hubstop", "aborted after the step-1 disks were put back"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendDone(ctx, "h-hubstop", holdrecord.CommandAbort, nil); err != nil {
+			t.Fatal(err)
+		}
+		if d, _ := journal(t, c, "h-hubstop"); !d.Complete {
+			t.Fatal("hold abort's done entry did not complete the record")
+		}
+	})
+
 	t.Run("a pending convert makes every other command busy until its rerun finishes", func(t *testing.T) {
 		r := newRig(t)
 		c := r.client(t)

@@ -15,15 +15,16 @@ package holdrecord
 // snapshot or another one, and in every workflow the row may be lost and restored `held` at a new
 // gen (a database admin deletes it, and the operator restores it). A prove names any non-empty set
 // of targets, its done entry records those alone, and the step-1 map is what hold set's reads gave
-// it. For the rules added since the frozen bundle, any command of a workflow but hub-restore may
-// also fail for good after its intent, before its change or after it, and every later run of it
-// fails again; the record keeps each stop, as the code writes it, and a stop records what every run
-// of its command in the hold left (LeftUnchanged's rule), so a rerun that changes nothing itself
-// still records an earlier run's change. Hold abort, admitted in every workflow once a command has
-// stopped and no intent is pending, ends the hold; hold release never moves the row on a record
-// that is not complete while a run's change outside the journal stands. hub-restore keeps its own
-// rule: after a done prove abort is excluded, and a stopped census is ended by another prove and
-// census.
+// it. For the rules added since the frozen bundle, any command may also fail for good after its
+// intent, before its change or after it, and every later run of it fails again: in hub-restore the
+// census and a prove after a done prove, and every command of the other workflows. The record
+// keeps each stop, as the code writes it, and a stop records what every run of its command in the
+// hold left (LeftUnchanged's rule), so a rerun that changes nothing itself still records an earlier
+// run's change. Hold abort, admitted in every workflow once a command has stopped and no intent is
+// pending (in hub-restore after a done prove, once a command stopped after it), ends the hold; once
+// a command has failed for good the operator may put a target's step-1 disk back, the one way
+// hub-restore's abort passes its disk check after a restore. Hold release never moves the row on a
+// record that is not complete while a run's change outside the journal stands.
 //
 // It explores every reachable state breadth-first, for every workflow, with two operator
 // processes. An admission is what the code does: with AtomicAdmit, one compare-and-swap step that
@@ -72,7 +73,7 @@ var (
 	// they reproduce the bundle's counts.
 	v62 = func() rules {
 		r := currentRules
-		r.Name, r.WayOut, r.EveryCommandStoppable, r.EndIsFinal, r.BackupCommand = "v62", false, false, false, false
+		r.Name, r.WayOut, r.EveryCommandStoppable, r.EndIsFinal, r.BackupCommand, r.HubAbortAfterStop = "v62", false, false, false, false, false
 		return r
 	}()
 )
@@ -162,19 +163,22 @@ func modelProfiles() []modelProfile {
 		out = append(out, modelProfile{rules: r, Want: a.want})
 	}
 	// The current rules, with a command that fails for good modeled, and their controls: the same
-	// rules without WayOut, and without EveryCommandStoppable (the buckets commands alone
-	// Stoppable), each of which strands the hold, and the same rules with each stop recording its
-	// own run alone (OwnRunOnly), under which hold release moves the row over an earlier run's
-	// change.
+	// rules without WayOut, without EveryCommandStoppable (the buckets commands alone Stoppable),
+	// and without HubAbortAfterStop (a done prove excludes abort for good), each of which strands
+	// the hold, and the same rules with each stop recording its own run alone (OwnRunOnly), under
+	// which hold release moves the row over an earlier run's change.
 	noWayOut := currentRules
 	noWayOut.Name, noWayOut.WayOut = currentRules.Name+"-WayOut", false
 	bucketsAlone := currentRules
 	bucketsAlone.Name, bucketsAlone.EveryCommandStoppable = currentRules.Name+"-EveryCommandStoppable", false
+	proveExcludes := currentRules
+	proveExcludes.Name, proveExcludes.HubAbortAfterStop = currentRules.Name+"-HubAbortAfterStop", false
 	ownRun := currentRules
 	ownRun.Name = currentRules.Name + "-OwnRunOnly"
 	return append(out, modelProfile{rules: currentRules, Fail: true},
 		modelProfile{rules: noWayOut, Want: []string{classWayOut}, Fail: true},
 		modelProfile{rules: bucketsAlone, Want: []string{classWayOut}, Fail: true},
+		modelProfile{rules: proveExcludes, Want: []string{classWayOut}, Fail: true},
 		modelProfile{rules: ownRun, Want: []string{classEveryRun}, Fail: true, OwnRunOnly: true})
 }
 
@@ -678,6 +682,21 @@ func next(r rules, t modelTable, sc modelScenario, s modelState, bound int) []mo
 				}
 			}
 		}
+		// Once a command has failed for good under Fail, the operator may put a target's step-1
+		// disk back, the one way hold abort's disk check passes after a restore landed: abort never
+		// releases over a restored disk, so after a done prove whose census fails for good, the hold
+		// ends by putting each step-1 disk back and running abort. The step is the operator's, so
+		// liveness may use it, and A1 holds it out of the window between abort's or release's disk
+		// check and its row move, as it holds a restore.
+		if sc.Fail && s.Doomed != "" && !window {
+			for tg, n := range targets {
+				if s.Step1[tg].ID != 0 && s.Cur[tg] != s.Step1[tg] {
+					ns := s
+					ns.Cur[tg] = s.Step1[tg]
+					out = append(out, modelEdge{to: ns, label: "operator: puts target " + n + "'s step-1 disk back", op: true})
+				}
+			}
+		}
 	}
 	return out
 }
@@ -797,7 +816,7 @@ func refuseLeft(r rules, t modelTable, sc modelScenario, s modelState, k int, wh
 // it: in every rule set with a rule added since the frozen bundle. The bundle's profiles leave the
 // stops out, as the bundle did, so their counts stay the bundle's.
 func stopsRecorded(r rules) bool {
-	return r.WayOut || r.EveryCommandStoppable || r.EndIsFinal || r.BackupCommand
+	return r.WayOut || r.EveryCommandStoppable || r.EndIsFinal || r.BackupCommand || r.HubAbortAfterStop
 }
 
 // transient lists the refusals the hold's design states for a command, whose way out is the
@@ -1043,6 +1062,11 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 		return out
 	case c == CommandProve:
 		if sl.Step == 1 { // restart and check
+			// Under Fail a prove after a done prove may fail for good, as hub-restore's other
+			// command after a prove, the census, may: it changes nothing outside the journal.
+			if sc.Fail && s.Doomed == c {
+				return []modelEdge{refuseLeft(r, t, sc, s, k, "fails again, nothing more changed", false, 'U')}
+			}
 			if lacks() {
 				return []modelEdge{refuse(r, t, sc, s, k, "UNKNOWN, a target the step-1 map lacks", false)}
 			}
@@ -1073,17 +1097,40 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 			ns.Slots[k].Checked = [2]int{s.Cur[0].ID, s.Cur[1].ID}
 			e := adv(ns, c+": check passes")
 			e.unsafe = u
-			return []modelEdge{e}
+			out := []modelEdge{e}
+			if sc.Fail && s.Proved && s.Doomed == "" {
+				ds := s
+				ds.Doomed = c
+				out = append(out, refuseLeft(r, t, sc, ds, k, "fails for good before any change", false, 'U'))
+			}
+			return out
 		}
 		return []modelEdge{{to: finish(t, sc, ns, k), label: c + ": done", op: true}}
 	case c == "streams census":
 		if sl.Step == 1 { // a run that is not clean is Stoppable here, and the epoch's rerun is the way out
-			return []modelEdge{adv(ns, c+": read and removals"), refuse(r, t, sc, s, k, "refuses, the run is not clean", true)}
+			// Under Fail the census, which runs only after a done prove, may fail for good, before
+			// its removals or after them, and every later run of it fails again.
+			if sc.Fail && s.Doomed == c {
+				return []modelEdge{refuseLeft(r, t, sc, s, k, "fails again, nothing more changed", false, leftOf(sc, s, c, 'U'))}
+			}
+			out := []modelEdge{adv(ns, c+": read and removals"), refuse(r, t, sc, s, k, "refuses, the run is not clean", true)}
+			if sc.Fail && s.Doomed == "" {
+				ds := s
+				ds.Doomed = c
+				out = append(out, refuseLeft(r, t, sc, ds, k, "fails for good before any change", false, leftOf(sc, ds, c, 'U')))
+			}
+			return out
 		}
 		if r.PendingBlocksComplete && otherPendingAdmitted(r, t, sc, s, c) {
 			return []modelEdge{{to: idle(ns, k), label: c + ": refuses to complete, another command's intent has no done", op: true}}
 		}
-		return []modelEdge{{to: finish(t, sc, ns, k), label: c + ": done, complete", op: true}}
+		out := []modelEdge{{to: finish(t, sc, ns, k), label: c + ": done, complete", op: true}}
+		if sc.Fail && s.Doomed == "" {
+			ds := s
+			ds.Doomed = c
+			out = append(out, refuseLeft(r, t, sc, ds, k, "fails for good after its change", false, 'C'))
+		}
+		return out
 	case c == CommandAbort:
 		moveRow := func(ns modelState) ([]modelEdge, bool) {
 			if s.RowGen != sl.Gen {
@@ -1691,22 +1738,24 @@ var (
 )
 
 // pinnedBound2 is this model's run at bound 2 of the rules added since the bundle, with a command
-// that fails for good modeled: the current rules and their three controls, the rules without
-// WayOut, without EveryCommandStoppable, and with each stop recording its own run alone.
+// that fails for good modeled: the current rules and their four controls, the rules without WayOut,
+// without EveryCommandStoppable, without HubAbortAfterStop, and with each stop recording its own
+// run alone.
 var pinnedBound2 = map[string]modelCount{
-	"v63":                       {209838, 0, nil},
-	"v63-WayOut":                {190142, 14517, map[string]int{classWayOut: 14517}},
-	"v63-EveryCommandStoppable": {164344, 7058, map[string]int{classWayOut: 7058}},
-	"v63-OwnRunOnly":            {219577, 144, map[string]int{classEveryRun: 144}},
+	"v63":                       {530922, 0, nil},
+	"v63-WayOut":                {511226, 14517, map[string]int{classWayOut: 14517}},
+	"v63-EveryCommandStoppable": {485428, 7058, map[string]int{classWayOut: 7058}},
+	"v63-HubAbortAfterStop":     {503298, 228792, map[string]int{classWayOut: 228792}},
+	"v63-OwnRunOnly":            {540661, 144, map[string]int{classEveryRun: 144}},
 }
 
 // The current rules' runs by workflow, pinned from this model at bounds 2 and 3.
 var (
 	pinnedCurrentBound2 = map[string]int{"cutover": 55228, "rollback": 6625, "selection-recovery": 9415, "buckets-create": 922,
-		"buckets-recreate": 2730, "buckets-restore": 4117, "streams-update": 922, "streams-census": 1302, "hub-restore": 128577}
+		"buckets-recreate": 2730, "buckets-restore": 4117, "streams-update": 922, "streams-census": 1302, "hub-restore": 449661}
 	pinnedCurrentBound3 = map[string]int{"cutover": 78968, "rollback": 9216, "selection-recovery": 12992, "buckets-create": 1270,
-		"buckets-recreate": 3750, "buckets-restore": 5658, "streams-update": 1270, "streams-census": 1799, "hub-restore": 765341}
-	pinnedCurrentBound3Total = 880264
+		"buckets-recreate": 3750, "buckets-restore": 5658, "streams-update": 1270, "streams-census": 1799, "hub-restore": 2985437}
+	pinnedCurrentBound3Total = 3100360
 )
 
 // The model of the hold's workflows, run on this package's journal and table. The frozen bundle's
@@ -1714,16 +1763,17 @@ var (
 // (31,948 states) and at three (139,812), and every earlier rule set and every rule set with one of
 // v62's fixes removed is a control that finds a counterexample of each class it names, asserted by
 // the class's name, with the bundle's counts. The current rules add WayOut, EveryCommandStoppable,
-// EndIsFinal and BackupCommand, and are run with a command of any workflow but hub-restore that
-// fails for good after its intent: they find no counterexample, at bounds 2 and 3, with pinned
-// state counts. Their controls without WayOut and without EveryCommandStoppable find the stranded
-// hold (classWayOut), the first in every workflow but hub-restore and the second in every workflow
-// that runs no buckets command; their control in which a stop records its own run alone
-// (OwnRunOnly) finds hold release moving the row over an earlier run's change (classEveryRun). At
-// every hub-restore state of the current rules the package's Step1, Proven, Epoch, Expected and
-// Moved read the record as the model does.
+// EndIsFinal, BackupCommand and HubAbortAfterStop, and are run with a command that fails for good
+// after its intent (in hub-restore the census, or a prove after a done prove): they find no
+// counterexample, at bounds 2 and 3, with pinned state counts. Their controls without WayOut,
+// without EveryCommandStoppable and without HubAbortAfterStop find the stranded hold
+// (classWayOut): the first in every workflow but hub-restore, the second in every workflow that
+// runs no buckets command, the third in hub-restore. Their control in which a stop records its own
+// run alone (OwnRunOnly) finds hold release moving the row over an earlier run's change
+// (classEveryRun). At every hub-restore state of the current rules the package's Step1, Proven,
+// Epoch, Expected and Moved read the record as the model does.
 func TestTheHoldJournalModel(t *testing.T) {
-	if currentRules.Name != "v63" || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal || v62.BackupCommand {
+	if currentRules.Name != "v63" || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal || v62.BackupCommand || v62.HubAbortAfterStop {
 		t.Fatalf("the current rules are %q, and v62 carries a rule added since; the counts below are v62's and v63's", currentRules.Name)
 	}
 	for _, w := range tableFor(currentRules).Workflows() {
@@ -1791,6 +1841,11 @@ func TestTheHoldJournalModel(t *testing.T) {
 				}
 				t.Logf("control %s found %d counterexamples of its class %s, in %v, the shortest (%s): %s", p.Name, n, c,
 					got.classIn[c], got.shortest[c].Workflow, strings.Join(got.shortest[c].Trace, " -> "))
+			}
+			if p.Name == currentRules.Name+"-HubAbortAfterStop" && got.classIn[classWayOut]["hub-restore"] == 0 {
+				// Without the rule a done prove excludes abort for good, so a census that fails for
+				// good after a prove strands hub-restore.
+				t.Errorf("control %s found no %s in hub-restore", p.Name, classWayOut)
 			}
 			if p.Name == currentRules.Name+"-EveryCommandStoppable" {
 				// The fix is every command's stop, not the buckets commands' alone: without it the
