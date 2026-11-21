@@ -16,13 +16,14 @@
  *  - `keyed` serves this checkout's build too, and sweeps a target project keyed as the route
  *    index's example issue key.
  *
- *  Every write goes through the server's routes as a person or an agent makes it, but three the
+ *  Every write goes through the server's routes as a person or an agent makes it, but four the
  *  stack has no route for: bob's member kind, which the outside sign-in writes and this stack does
  *  not have; a merged pull request of TGT's repository, which the delivery reconcile writes from
- *  GitHub; and the project bob's own session worked in, which the event log records only for a
- *  session a broker-issued token proved, and this stack's agents hold the shared bearer. Each is
- *  written as its writer writes it (`restricted-member.e2e.ts` and `acceptance/project-access.sh`
- *  write the first two, `events.queueSessionProject` the third). */
+ *  GitHub; and the project bob's own session worked in and the person it acts for, which the event
+ *  log and the server record only for a session a broker-issued token proved, and this stack's
+ *  agents hold the shared bearer. Each is written as its writer writes it
+ *  (`restricted-member.e2e.ts` and `acceptance/project-access.sh` write the first two,
+ *  `events.queueSessionProject` the third, `access.TieSession` the fourth). */
 
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -441,8 +442,10 @@ async function seed(
   });
   // bob's own session works in OWN: it comments on OWN's issue, and the project it acted in is
   // recorded as the event log records it for a proved session, so bob sees the session and the
-  // live check's control message to it reaches bob's feed. A build that records no session's
-  // projects (the control's, which holds no read check) has no table to write it to.
+  // live check's control message to it reaches bob's feed. It is tied to bob, as the server ties a
+  // session its person's broker-issued token proved, so its conversation, the direct message
+  // bob's control sends it among it, is bob's to read (the session content rule). A build that
+  // records neither (the control's, which holds no read check) has no table to write them to.
   await send(origin, agent, "POST", "/api/v1/issues/OWN-1/comments", 201, {
     body: "An agent remark of bob's own session.",
     actor: { kind: "session", id: ownSession },
@@ -451,6 +454,9 @@ async function seed(
     "do $$ begin if to_regclass('public.session_projects') is not null then " +
       "execute 'insert into session_projects (session_id, project_key) values ($1, $2)' " +
       `using '${ownSession}', 'OWN'; end if; end $$`,
+    "do $$ begin if to_regclass('public.session_owners') is not null then " +
+      "execute 'insert into session_owners (session_id, login) values ($1, $2)' " +
+      `using '${ownSession}', '${bob}'; end if; end $$`,
   ]);
   await send(origin, asCarol, "POST", `/api/v1/issues/${first}/asks`, 201, {
     question: "Is this the right plan?",
