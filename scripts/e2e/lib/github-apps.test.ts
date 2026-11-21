@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { appCredentialSources } from "./app-logins";
+import { libRowBoundMs, rowWaits } from "./row-waits";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 import {
   appPrivateKey,
@@ -28,6 +29,9 @@ import {
 } from "./stand-in-github-fixtures";
 
 const { url: standIn, seen, dir } = standInGitHub("github-apps-test");
+// The refresher row waits for the refresher's next mint, which a loaded host can deliver late, until
+// 20 s before the row's bound (lib/row-waits.ts), and names what it waited for if it never comes.
+const waits = rowWaits(libRowBoundMs);
 // The home every child of this file runs under, so none of them reads the caller's.
 const home = join(dir, "home");
 
@@ -677,8 +681,9 @@ echo "key before $(stat -c '%i %s %Y' -- "$key")"
 app_token_refresh_seconds=1
 start_app_token_refresher "$TOKEN_DIR"
 printf '%s' '${release({ sjawhar: "ghs_rotated" })}' >"$STORE/IMPLEMENT_APP"
-for _ in $(seq 50); do
-  grep -q ghs_rotated "$TOKEN_DIR/implement/sjawhar.read.json" && break
+end=$((SECONDS + ${waits.secondsLeft()}))
+until grep -q ghs_rotated "$TOKEN_DIR/implement/sjawhar.read.json"; do
+  [ "$SECONDS" -lt "$end" ] || { stop_app_token_refresher; fail "the refresher wrote no rotated release by the end of the row's waits"; }
   sleep 0.1
 done
 pid=$app_token_refresher

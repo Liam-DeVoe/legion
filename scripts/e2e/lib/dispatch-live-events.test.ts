@@ -3,8 +3,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixtureSecret } from "../../../packages/test-fixtures/src/fixture-secret";
+import { libRowBoundMs, rowWaits } from "./row-waits";
 
 const probe = join(import.meta.dir, "dispatch-live-events.ts");
+// A row whose probe waits for an answer the stand-in Dispatch sends (a matching event, a refusal)
+// gives it the end of the row's waits as its --timeout (lib/row-waits.ts): how soon the frames
+// reach the probe is a loaded host's, and the probe then exits on the answer, not on its timeout.
+// The row whose subject is the timeout itself keeps a short one.
+const waits = rowWaits(libRowBoundMs);
+const untilTheRowsEnd = () => String(waits.secondsLeft());
 const servers: Server<undefined>[] = [];
 const scratchDirectories: string[] = [];
 
@@ -95,7 +102,7 @@ test("the live event probe resumes after rotation and stops once an event matche
     "--until",
     "needle",
     "--timeout",
-    "5"
+    untilTheRowsEnd()
   );
 
   expect(result.code).toBe(0);
@@ -164,7 +171,7 @@ test("the live event probe subscribes again from its cursor when Dispatch ends t
     "--until",
     "needle",
     "--timeout",
-    "2"
+    untilTheRowsEnd()
   );
 
   expect(result.code).toBe(0);
@@ -231,7 +238,7 @@ test("the live event probe writes a duplicate once and no event lowers its curso
     "--until",
     "needle",
     "--timeout",
-    "5"
+    untilTheRowsEnd()
   );
 
   expect(result.code).toBe(0);
@@ -308,7 +315,7 @@ test("the live event probe takes every events_start as its cursor, below what it
     "--until",
     "needle",
     "--timeout",
-    "2"
+    untilTheRowsEnd()
   );
 
   expect(result.code).toBe(0);
@@ -358,7 +365,7 @@ test("the live event probe prints Dispatch's refusal of the feed and exits 1", a
     "--user",
     "alice@example.com",
     "--timeout",
-    "2"
+    untilTheRowsEnd()
   );
 
   expect(result.code).toBe(1);
@@ -451,7 +458,9 @@ test("--from-whoami resumes the feed from whoami's event_head under the cookie i
     "--subscribe-after",
     "0.2",
     "--until",
-    "committed while loading"
+    "committed while loading",
+    "--timeout",
+    untilTheRowsEnd()
   );
 
   expect(result.code).toBe(0);

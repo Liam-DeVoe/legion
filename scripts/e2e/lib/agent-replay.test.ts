@@ -7,6 +7,7 @@ import {
 } from "../../../packages/envoy-client/test/fake-dispatch";
 
 import { readAgentReplay } from "./agent-replay";
+import { libRowBoundMs, rowWaits } from "./row-waits";
 
 // readAgentReplay runs in the page in dispatch-user-turns.sh's `count`, where Playwright's
 // `page.evaluate` sends the page its source alone (`toString()`) and the page evaluates that. These
@@ -14,9 +15,12 @@ import { readAgentReplay } from "./agent-replay";
 // module or agent-replay.ts is reachable, so a helper it names from outside the function fails a
 // row here as it would fail in the page. They run it against a stand-in for Dispatch's live socket
 // that answers the agent view's subscribe as the script tells it to. Its two waits are its own
-// real timers, read against real socket traffic, so these rows give it short ones (`emptyAfterMs`
-// 300 ms, and a 1 s timeout where the timeout is the point) rather than faking a clock the socket's
-// delivery does not run on.
+// real timers, read against real socket traffic, which no fake clock drives: each row gives both the
+// end of the row's waits (lib/row-waits.ts), so a row ends on the frame it waits for however late a
+// loaded host delivers it, and gives a short one only to the timer that is its subject (`emptyAfterMs`
+// 300 ms where the empty replay is the point, a 1 s timeout where the timeout is). Each timer ends
+// the read with a message of its own, so the message says which ended it.
+const waits = rowWaits(libRowBoundMs);
 
 const SESSION = "01a0e0c1-0000-7000-8000-00000000beef";
 const SUB = "dispatch-user-turns";
@@ -40,19 +44,14 @@ function dispatchAnswering(
   return dispatch;
 }
 
-/** How long `promise` takes to settle, and its value or its error's message. */
-async function timed(
+/** What `promise` settles to: its value, or its error's message. */
+async function settled(
   promise: Promise<unknown>
-): Promise<{ readonly ms: number; readonly value?: unknown; readonly error?: string }> {
-  const started = Date.now();
+): Promise<{ readonly value?: unknown; readonly error?: string }> {
   try {
-    const value = await promise;
-    return { ms: Date.now() - started, value };
+    return { value: await promise };
   } catch (error) {
-    return {
-      error: error instanceof Error ? error.message : String(error),
-      ms: Date.now() - started,
-    };
+    return { error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -63,8 +62,16 @@ async function timed(
 const evaluateInGlobalScope = eval;
 const inPage = evaluateInGlobalScope(`(${readAgentReplay.toString()})`) as typeof readAgentReplay;
 
-const read = (url: string, timeoutMs = 10_000) =>
-  inPage({ emptyAfterMs: 300, sessionId: SESSION, timeoutMs, url });
+// read gives each of the read's timers the end of the row's waits, but for the one a row names.
+const read = (url: string, timers: { emptyAfterMs?: number; timeoutMs?: number } = {}) => {
+  const left = Math.max(1, waits.end() - performance.now());
+  return inPage({
+    emptyAfterMs: timers.emptyAfterMs ?? left,
+    sessionId: SESSION,
+    timeoutMs: timers.timeoutMs ?? left,
+    url,
+  });
+};
 
 test("a responding session's replay is the answer", async () => {
   const dispatch = dispatchAnswering((socket) => {
@@ -77,16 +84,15 @@ test("a responding session's replay is the answer", async () => {
   ]);
 });
 
-test("a responding session with no replay ends at once, saying its replay is empty", async () => {
+test("a responding session with no replay ends on its empty-replay timer, saying its replay is empty", async () => {
   const dispatch = dispatchAnswering((socket) => socket.send(responder(true)));
-  const result = await timed(read(dispatch.wsUrl));
+  const result = await settled(read(dispatch.wsUrl, { emptyAfterMs: 300 }));
   expect(result.error).toBe(
     "the session's replay is empty: Dispatch said the session is responding and sent no replay"
   );
-  expect(result.ms).toBeLessThan(5_000);
 });
 
-test("a refused agent view ends at once, naming Dispatch's refusal", async () => {
+test("a refused agent view ends on the refusal, naming it", async () => {
   const dispatch = dispatchAnswering((socket) =>
     socket.send(
       JSON.stringify({
@@ -98,20 +104,18 @@ test("a refused agent view ends at once, naming Dispatch's refusal", async () =>
       })
     )
   );
-  const result = await timed(read(dispatch.wsUrl));
+  const result = await settled(read(dispatch.wsUrl));
   expect(result.error).toBe(
     "Dispatch refused the agent view: OAUTH_SCOPE_REQUIRED: this socket's credential does not hold the person scope, which watching an agent's conversation requires"
   );
-  expect(result.ms).toBeLessThan(5_000);
 });
 
 test("a view Dispatch ends before its replay says so", async () => {
   const dispatch = dispatchAnswering((socket) =>
     socket.send(JSON.stringify({ reason: "dropped", sub: SUB, type: "ended" }))
   );
-  const result = await timed(read(dispatch.wsUrl));
+  const result = await settled(read(dispatch.wsUrl));
   expect(result.error).toBe("Dispatch ended the agent view before its replay (dropped)");
-  expect(result.ms).toBeLessThan(5_000);
 });
 
 test("a session that answers a re-arm after not responding still gives its replay", async () => {
@@ -126,7 +130,7 @@ test("a session that answers a re-arm after not responding still gives its repla
 
 test("a session that never answers ends at the timeout, saying it is not responding", async () => {
   const dispatch = dispatchAnswering((socket) => socket.send(responder(false)));
-  const result = await timed(read(dispatch.wsUrl, 1_000));
+  const result = await settled(read(dispatch.wsUrl, { timeoutMs: 1_000 }));
   expect(result.error).toBe(
     "the session did not answer Dispatch's replay request within 1s (responding: false), so the agent view has no replay"
   );
@@ -134,7 +138,7 @@ test("a session that never answers ends at the timeout, saying it is not respond
 
 test("a socket closed before the replay says so", async () => {
   const dispatch = dispatchAnswering((socket) => socket.close(1011, "internal error"));
-  const result = await timed(read(dispatch.wsUrl));
+  const result = await settled(read(dispatch.wsUrl));
   expect(result.error).toBe(
     "the live socket closed before the session's replay (1011 internal error)"
   );

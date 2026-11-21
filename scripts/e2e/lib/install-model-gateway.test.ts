@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { libRowBoundMs, rowWaits, untilTrue } from "./row-waits";
 
 // The key command install-model-gateway.sh writes, against a fake hawk-token first on PATH. The
 // fake appends its pid to FAKE_MINT_LOG (one line per mint), sleeps FAKE_MINT_SLEEP seconds, then
@@ -10,6 +11,9 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // killed by a signal (killed).
 const lib = import.meta.dir;
 const dir = temporaryDirectory("install-model-gateway-test");
+// The outlast row waits for the first call's mint to start before it starts the second, until 20 s
+// before the row's bound (lib/row-waits.ts).
+const waits = rowWaits(libRowBoundMs);
 const bin = join(dir, "bin");
 const operatorHome = join(dir, "operator-home");
 beforeAll(() => {
@@ -97,18 +101,31 @@ function install(fake: Fake = {}) {
   return { run, dest, cache, mints, keyCommand: result.stdout.toString().trim() };
 }
 
-// call runs the key command as Oh My Pi does, in a pane's own working directory.
+// call runs the key command as Oh My Pi does, in a pane's own working directory, and answers how
+// long the call lived from the start of its process, the moment the key command keeps its own
+// deadline from: the kernel's record of that start (/proc/<pid>/stat field 22, in 1/100 s ticks
+// since boot), not the moment this test asked Bun to spawn it, which a loaded host can put a second
+// or more before the process exists. A start that cannot be read makes ms NaN, which no bound holds.
 async function call(keyCommand: string, cwd: string, mints: string, fake: Fake = {}) {
   mkdirSync(cwd, { recursive: true });
-  const started = performance.now();
   const child = Bun.spawn(["/bin/sh", "-c", `exec ${keyCommand}`], {
     cwd,
     env: env(mints, fake),
     stdout: "pipe",
     stderr: "pipe",
   });
+  let startedAt = Number.NaN;
+  try {
+    const ticks = Number(
+      readFileSync(`/proc/${child.pid}/stat`, "utf8")
+        .replace(/^[\s\S]*\) /, "")
+        .split(" ")[19]
+    );
+    const uptimeMs = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]) * 1000;
+    startedAt = performance.now() - (uptimeMs - ticks * 10);
+  } catch {}
   const [code, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-  return { code, stdout: stdout.trim(), ms: performance.now() - started };
+  return { code, stdout: stdout.trim(), ms: performance.now() - startedAt };
 }
 
 function unserved(...args: string[]) {
@@ -272,12 +289,17 @@ describe("the model gateway key command", () => {
     const { run, dest, mints, keyCommand } = install();
     const since = now();
     // Real time throughout: the deadline under test is the key command's own wall clock, in another
-    // process, which no fake timer reaches. The second caller starts 300 ms after the first, so it
-    // can take the lock the first releases when its mint is stopped with only a few hundred
-    // milliseconds left: too little to mint.
+    // process, which no fake timer reaches. The second caller starts once the first's mint has
+    // started, so the first holds the lock: the second waits behind it and takes the lock the first
+    // releases when its mint is stopped, with only a few hundred milliseconds left: too little to
+    // mint.
+    const first = call(keyCommand, join(run, "pane-1"), mints, { sleep: 12 });
+    await untilTrue("the first call's mint to start", waits.end(), () =>
+      existsSync(mints) && mintCount(mints) >= 1 ? true : "no mint has started"
+    );
     const calls = await Promise.all([
-      call(keyCommand, join(run, "pane-1"), mints, { sleep: 12 }),
-      Bun.sleep(300).then(() => call(keyCommand, join(run, "pane-2"), mints, { sleep: 12 })),
+      first,
+      call(keyCommand, join(run, "pane-2"), mints, { sleep: 12 }),
     ]);
 
     expect(mintCount(mints)).toBe(1);
@@ -288,7 +310,7 @@ describe("the model gateway key command", () => {
     const notes = unserved("--notes", dest, since, "outlast").stdout;
     expect(notes).toContain(": timeout: the mint ran past the call's 9500 ms");
     expect(notes).toContain("for another call's mint");
-  }, 30_000);
+  });
 
   test("exempts the installer's preflight mint from the deadline, for hawk-token's first-run build", () => {
     // Real time: the deadline is the key command's own wall clock, in another process.

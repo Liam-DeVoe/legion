@@ -6,6 +6,7 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { connect, type NatsConnection } from "nats";
 import { readLast } from "./nats-stream";
+import { rowWaits } from "./row-waits";
 
 // The NATS server these rows read is a container this file starts, so a host with no docker runs
 // none of them.
@@ -18,7 +19,11 @@ const config = join(configDirectory, "envoy.json");
 const subjectCount = 10_000;
 const publishBatchSize = 25;
 const publishTimeoutMilliseconds = 30_000;
-const budgetSeconds = 5;
+// A read that must find its message gets the end of the row's waits as its budget (lib/row-waits.ts):
+// how soon a loaded host's server answers is not the row's subject, and readLast's own deadline then
+// bounds it. A read whose subject is its deadline gets a short one, under a second.
+const rowBoundMs = 120_000;
+const waits = rowWaits(rowBoundMs);
 const subsecondBudgetSeconds = 0.1;
 let serverUrl = "";
 let expectedSequence = 0;
@@ -75,7 +80,7 @@ async function startNats(): Promise<void> {
   }
 }
 
-function runLast(subject: string, seconds = budgetSeconds) {
+function runLast(subject: string, seconds: number) {
   // PATH, a home of the test's own and the config this run wrote: no NATS_NKEY_SEED or
   // NATS_NKEY_SEED_FILE of the caller's reaches the child, which this server would refuse.
   const env = {
@@ -115,9 +120,10 @@ async function runReadLast(subject: string, seconds: number) {
   }
 }
 
-function expectWithinBudget(elapsedMilliseconds: number, seconds: number) {
-  expect(elapsedMilliseconds).toBeLessThanOrEqual(seconds * 1_000 + 500);
-}
+// readLast asks the server's fetch to expire no sooner than 1 s, so a read that waited out the fetch
+// rather than its own sub-second deadline ends at that expiry: a read that ends before it ended at
+// its own deadline.
+const fetchExpiryMilliseconds = 1_000;
 
 async function cleanup(): Promise<void> {
   try {
@@ -166,49 +172,64 @@ afterAll(async () => {
 }, 120_000);
 
 describe.skipIf(skip)("nats-stream last", () => {
-  test("reads the newest matching message without draining every subject", () => {
-    const result = runLast("events.>");
-    if (result.exitCode !== 0) {
-      throw new Error(
-        `last exited ${result.exitCode} after ${Math.round(result.elapsedMilliseconds)}ms: ${result.stderr}`
-      );
-    }
-    expect(result.stderr).toBe("");
-    expect(JSON.parse(result.stdout)).toEqual({
-      subject: "events.newest",
-      time: expect.any(String),
-      seq: expectedSequence,
-    });
-    console.info(
-      `nats-stream last ${subjectCount + 1} subjects: ${Math.round(result.elapsedMilliseconds)}ms`
-    );
-  }, 120_000);
-
-  test("reports the existing no-message error for an unmatched filter", () => {
-    const result = runLast("events.missing.>", subsecondBudgetSeconds);
-    expect(result.exitCode).toBe(1);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toBe(
-      `nats-stream: stream ${stream} holds no message on events.missing.>\n`
-    );
-  }, 120_000);
-
-  test("returns the newest matching message within its budget", async () => {
-    const read = await runReadLast("events.>", budgetSeconds);
-    expect(read.result).toEqual({
-      message: {
+  test(
+    "reads the newest matching message without draining every subject",
+    () => {
+      const result = runLast("events.>", waits.secondsLeft());
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `last exited ${result.exitCode} after ${Math.round(result.elapsedMilliseconds)}ms: ${result.stderr}`
+        );
+      }
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toEqual({
         subject: "events.newest",
         time: expect.any(String),
         seq: expectedSequence,
-      },
-      timedOut: false,
-    });
-    expectWithinBudget(read.elapsedMilliseconds, budgetSeconds);
-  }, 120_000);
+      });
+      console.info(
+        `nats-stream last ${subjectCount + 1} subjects: ${Math.round(result.elapsedMilliseconds)}ms`
+      );
+    },
+    rowBoundMs
+  );
 
-  test("finishes an unmatched sub-second read at its deadline", async () => {
-    const read = await runReadLast("events.missing.>", subsecondBudgetSeconds);
-    expect(read.result).toEqual({ message: undefined, timedOut: true });
-    expectWithinBudget(read.elapsedMilliseconds, subsecondBudgetSeconds);
-  }, 120_000);
+  test(
+    "reports the existing no-message error for an unmatched filter",
+    () => {
+      const result = runLast("events.missing.>", subsecondBudgetSeconds);
+      expect(result.exitCode).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe(
+        `nats-stream: stream ${stream} holds no message on events.missing.>\n`
+      );
+    },
+    rowBoundMs
+  );
+
+  test(
+    "returns the newest matching message within its budget",
+    async () => {
+      const read = await runReadLast("events.>", waits.secondsLeft());
+      expect(read.result).toEqual({
+        message: {
+          subject: "events.newest",
+          time: expect.any(String),
+          seq: expectedSequence,
+        },
+        timedOut: false,
+      });
+    },
+    rowBoundMs
+  );
+
+  test(
+    "finishes an unmatched sub-second read at its deadline",
+    async () => {
+      const read = await runReadLast("events.missing.>", subsecondBudgetSeconds);
+      expect(read.result).toEqual({ message: undefined, timedOut: true });
+      expect(read.elapsedMilliseconds).toBeLessThan(fetchExpiryMilliseconds);
+    },
+    rowBoundMs
+  );
 });
