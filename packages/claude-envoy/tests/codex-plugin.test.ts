@@ -150,7 +150,7 @@ describe("the built Codex plugin", () => {
     expect(sessionHooks.length).toBeGreaterThan(0)
     for (const command of sessionHooks) expect(command).toEndWith("--host codex")
     expect(commands.some((command) => command.endsWith('codex-hook.js" session-end'))).toBe(true)
-    // The time a Codex hook gives `ps` is what this timeout leaves it (`hookPsTimeoutMs`), so the
+    // The time a Codex hook gives each step is what this timeout leaves it (`hookDeadline`), so the
     // constants it reads are this file's.
     const timeoutOf = (ending: string): number[] =>
       Object.values(hooks.hooks)

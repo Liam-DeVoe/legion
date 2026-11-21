@@ -128,10 +128,14 @@ const SYSTEM_PROBE: ProcessProbe = {
     // nothing either way (`serverAlive`), so a slow `ps` never judges a live server gone.
     if (!reading.has(pid)) {
       reading.add(pid)
-      void processStartedLater(pid).then((started) => {
-        reading.delete(pid)
-        if (started !== undefined) startedOf.set(pid, started)
-      })
+      void processStartedLater(pid)
+        .then((started) => {
+          if (started !== undefined) startedOf.set(pid, started)
+        })
+        .catch(() => {
+          // A start not read says nothing either way; the next look asks again.
+        })
+        .finally(() => reading.delete(pid))
     }
     return undefined
   },

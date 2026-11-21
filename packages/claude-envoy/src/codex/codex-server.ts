@@ -272,6 +272,21 @@ export async function runCodexEnvoyServer(): Promise<void> {
   let runtime: ChannelToolRuntime | undefined
   let notReady = "this session's Envoy side starts at its first prompt"
   const stopping = new AbortController()
+  /** Settles once this server is asked to stop. */
+  const stopAsked = Promise.withResolvers<undefined>()
+  stopping.signal.addEventListener("abort", () => stopAsked.resolve(undefined), { once: true })
+  /** `fact` (one of the reads of a process above, whose `ps` may never answer), or undefined once
+   *  this server is asked to stop or `ms` has passed: a `ps` that hangs holds neither a stop nor a
+   *  caller past its own deadline. */
+  const within = async <T>(fact: Promise<T>, ms?: number): Promise<T | undefined> => {
+    const timer = Promise.withResolvers<undefined>()
+    const id = ms === undefined ? undefined : setTimeout(() => timer.resolve(undefined), ms)
+    try {
+      return await Promise.race([fact, stopAsked.promise, timer.promise])
+    } finally {
+      clearTimeout(id)
+    }
+  }
 
   const server = new Server(MCP_SERVER_INFO, {
     capabilities: { tools: {} },
@@ -301,11 +316,16 @@ export async function runCodexEnvoyServer(): Promise<void> {
     if (!parsed.success)
       return `dispatch: the tool takes args (a list of strings) and an optional stdin\n[exit 2]`
     // The record, read now when the server has not seen it yet: the hook writes it before the turn's
-    // first request, and the server reads it on a poll.
-    const shared = await sharedness
+    // first request, and the server reads it on a poll. The facts it needs are waited for no longer
+    // than this call may run; one still unknown reads as the shared app server's, which has no
+    // record to fall back on, and as no start a record could name.
+    const shared = (await within(sharedness, DISPATCH_TOOL_TIMEOUT_MS)) ?? true
     const read = shared ? undefined : (record ?? (await readCodexSessionRecord(recordFile)))
     const current =
-      read !== undefined && recordOfProcess(read, await codexStarted) ? read : undefined
+      read !== undefined &&
+      recordOfProcess(read, await within(codexStarted, DISPATCH_TOOL_TIMEOUT_MS))
+        ? read
+        : undefined
     // A Codex that names no thread on the call (older than 0.154.0) acts as the record's session,
     // which is the one session of a process this plugin registers; under the shared app server
     // there is no such session to fall back on.
@@ -373,7 +393,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
   process.once("SIGHUP", stop)
   await server.connect(new StdioServerTransport())
 
-  if (await sharedness) {
+  if (await within(sharedness)) {
     notReady = SHARED_APP_SERVER_NOTE
     warn(SHARED_APP_SERVER_NOTE)
     await stopped.promise
@@ -387,7 +407,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
   const owning = await waitForOwnership(
     serversDirectory,
     process.pid,
-    (await processStartedLater(process.pid)) ?? null,
+    (await within(processStartedLater(process.pid))) ?? null,
     stopping.signal,
     (entry) => {
       self = entry

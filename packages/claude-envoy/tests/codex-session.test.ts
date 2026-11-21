@@ -81,8 +81,9 @@ describe("the Codex session record", () => {
     const shared = Bun.spawn(["sh", "-c", "sleep 5; :", "app-server"])
     const own = Bun.spawn(["sh", "-c", "sleep 5; :"])
     try {
-      expect(sharedAppServer(shared.pid, 5_000)).toBe(true)
-      expect(sharedAppServer(own.pid, 5_000)).toBe(false)
+      // Where there is no /proc, `ps` gets the row's own minute, so no shorter timer decides it.
+      expect(sharedAppServer(shared.pid, 60_000)).toBe(true)
+      expect(sharedAppServer(own.pid, 60_000)).toBe(false)
       expect(await sharedAppServerLater(shared.pid)).toBe(true)
       expect(await sharedAppServerLater(own.pid)).toBe(false)
     } finally {
