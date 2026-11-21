@@ -431,7 +431,7 @@ func onExpectedDisks(ctx context.Context, op *Operator, d holdrecord.Done) error
 // server with its proof, the meta barrier and the census inside it, and the report; then its done
 // entry. A refusal after its intent writes a stop entry, so `hold set`'s rerun, `hold abort` in
 // hub-restore, or `hold release` with nothing changed is admitted. A rerun that finds the row held
-// under its hold id runs the held steps again.
+// under its hold id is admitted again (Set), writes a new intent and runs the held steps again.
 func set(ctx context.Context, records *holdrecord.Client, op *Operator, o options, now func() time.Time, stdout io.Writer) error {
 	if err := PreflightMinters(ctx, op.Hub.Client, o.MintersReport, now); err != nil {
 		return err
@@ -471,8 +471,12 @@ func restoreInputs(o options) map[string]string {
 }
 
 // Set runs hold set's steps on the hold holdID, prepared already, and returns the report's clean
-// reading. inputs are its intent's (hub-restore's restore inputs). `envoy-infra buckets` runs it
-// for the hold of its one command.
+// reading. inputs are its intent's (hub-restore's restore inputs). `envoy-infra buckets` and the
+// streams words run it for the hold of their one command. Unless its own intent is pending (the
+// rerun of a set that crashed), it is admitted through holdrecord.Admit before anything changes,
+// whatever the row's phase: the first run with the row prepare, and the rerun after its own stop
+// with the row held, so the rerun takes the one-command lock and writes a new intent before it
+// restarts any server, and its done entry follows that intent. A set already done is refused there.
 func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, reason string, inputs map[string]string) (*ReportReading, error) {
 	row, err := records.Row(ctx)
 	if err != nil {
@@ -526,13 +530,13 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 	}
 	present := presentStreams(streams)
 
-	if row.Phase == natsgrant.OperatorPhasePrepare {
-		if !pending {
-			if _, err := records.Admit(ctx, holdID, holdrecord.Request{Command: holdrecord.CommandSet}, inputs); err != nil {
-				return nil, err
-			}
-			pending = true
+	if !pending {
+		if _, err := records.Admit(ctx, holdID, holdrecord.Request{Command: holdrecord.CommandSet}, inputs); err != nil {
+			return nil, err
 		}
+		pending = true
+	}
+	if row.Phase == natsgrant.OperatorPhasePrepare {
 		if _, err := records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseHeld, holdID, reason); err != nil {
 			return nil, stop(err)
 		}

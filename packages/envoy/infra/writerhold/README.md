@@ -85,6 +85,12 @@ that writes the hold takes `--signing-key-secret`. `set` and `prove` also need:
 6. The report: every connection left is the caller's or the auth service's, read through `/connz`
    paged past 1,024.
 
+`hold set` writes its intent before the row moves, and a step that refuses after it writes a stop.
+Its rerun, `hold set --hold ID`, goes through the hold's admission like every command: it takes
+the one-command lock and writes a new intent before it restarts anything, then runs the steps
+again, and its done entry follows that intent. A buckets or streams command given `--hold` of a
+hold whose `hold set` is not done runs that rerun first.
+
 ## Workflows and their commands
 
 A hold has one workflow. Its journal admits only that workflow's commands, in order
