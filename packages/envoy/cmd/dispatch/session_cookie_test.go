@@ -188,6 +188,12 @@ func (w *cookieWalk) ceremonyCookie(response *httptest.ResponseRecorder) *http.C
 //     who signed in, not as the one whose cookie it held;
 //   - the sign-out clears both names, at either origin.
 //
+// Google's sign-in is the canonical origin's alone, and the outside origin's host at another port
+// is no canonical origin: a browser sends that host's cookies there, and the router reads and
+// issues them there by the outside origin's one name. So at the outside host on another port
+// Google's start and callback answer 404 and set no session cookie, a callback carrying a code the
+// issuer gave for a sign-in begun at the canonical origin included.
+//
 // The census reads the writers from the code: the functions of the module (its non-test files)
 // that reach a session-cookie writer of package auth, called or passed as a value, and that
 // nothing else of their package calls - the router's handlers. They are this walk's handlers, so a
@@ -203,7 +209,9 @@ func (w *cookieWalk) ceremonyCookie(response *httptest.ResponseRecorder) *http.C
 // `dsession` where the cookie is Secure, and every Secure sign-in row fails; let the outside
 // origin's sign-ins skip the outside mark, and their rows under the setting fail; leave out the
 // clear of the other name, and every sign-in row fails; clear one name alone at the sign-out, and
-// its rows fail.
+// its rows fail; refuse Google's sign-in at the outside origin by host and port (atOutside), and
+// the row of the outside host's other port fails, its callback signing the person in with
+// `__Host-dsession`.
 func TestEverySessionCookieTheServerWritesIsHostOnlyAtTheRoot(t *testing.T) {
 	root := filepath.Join("..", "..")
 	var want []string
@@ -307,6 +315,24 @@ func TestEverySessionCookieTheServerWritesIsHostOnlyAtTheRoot(t *testing.T) {
 					}
 				})
 			}
+			t.Run("Google's sign-in at the outside host on another port", func(t *testing.T) {
+				const otherPort = passkeyOrigin + ":8443"
+				if start := call(w.rig.handler, otherPort, http.MethodGet, "/auth/start", nil); start.Code != http.StatusNotFound || len(sessionSetCookieLines(start)) != 0 {
+					t.Errorf("GET %s/auth/start answered %d %s, setting %q; want 404 and no session cookie", otherPort, start.Code, start.Body.String(), sessionSetCookieLines(start))
+				}
+				// A code and state the issuer gave for a sign-in begun at the canonical origin,
+				// brought back at the outside host's other port.
+				w.rig.pool.SignInAs(map[string]any{"sub": "google-erin@example.com", "email": "erin@example.com", "email_verified": true, "hd": "example.com"})
+				start := call(w.rig.handler, canonicalOrigin, http.MethodGet, "/auth/start", nil)
+				if start.Code != http.StatusFound {
+					t.Fatalf("GET /auth/start at the canonical origin answered %d %s, want a redirect to Google", start.Code, start.Body.String())
+				}
+				code, state := w.rig.pool.Authorize(t, start.Header().Get("Location"))
+				callback := call(w.rig.handler, otherPort, http.MethodGet, "/auth/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state), nil, start.Result().Cookies()...)
+				if callback.Code != http.StatusNotFound || len(sessionSetCookieLines(callback)) != 0 {
+					t.Errorf("GET %s/auth/callback answered %d %s, setting %q; want 404 and no session cookie", otherPort, callback.Code, callback.Body.String(), sessionSetCookieLines(callback))
+				}
+			})
 		})
 	}
 }
