@@ -1343,15 +1343,29 @@ describe("one registration", () => {
   });
 
   test("an outage this process told one session is that session's: the session bound after it is told its own outage and its end, and never the other's end", async () => {
-    const { told, outage, register } = outageHarness();
+    const { told, ends, outage, register } = outageHarness();
 
     // Session A is told the outage. The host then binds session B, whose record says nothing:
-    // B's own refusal tells B, and the accepted registration ends B's outage.
+    // B's own refusal tells B, and the accepted registration ends B's outage. The host's log said
+    // the outage began at A's notice, so B's is one it already said began, and it ends once.
     await register("refused");
     outage.recordRead(false);
     await register("refused");
     await register("accepted");
-    expect(told).toEqual(["no_grant", "no_grant", "restored"]);
+    expect(told).toEqual(["no_grant", "again no_grant", "restored"]);
+    expect(ends).toEqual(["ended"]);
+  });
+
+  test("a bind ends no outage the host's log said began: the first accepted registration after it says the end, whichever session is bound", async () => {
+    const { told, ends, outage, register } = outageHarness();
+
+    // Session A is told the outage; the host binds session B, whose record says nothing, and B's
+    // first registration is accepted: B is told nothing, and the log hears the outage end.
+    await register("refused");
+    outage.recordRead(false);
+    await register("accepted");
+    expect(told).toEqual(["no_grant"]);
+    expect(ends).toEqual(["ended"]);
   });
 
   /** Resolves once every promise settled so far has run its handlers. */

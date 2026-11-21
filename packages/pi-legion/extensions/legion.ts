@@ -1031,6 +1031,9 @@ export default function legionExtension(pi: PiApi): void {
         if (claimsEnded.signal.aborted) return;
         throw error;
       }
+      // A daemon-launched controller's claim that the shutdown ended returns rather than throws
+      // (`claimOnce`): nothing was claimed for this session, so nothing below runs either.
+      if (claimsEnded.signal.aborted) return;
       // The claim is registered, so this session is the controller's: the arming and the
       // doubling levels its branch records are read back here, as session_start reads a worker's.
       restoreModelFallback(context);

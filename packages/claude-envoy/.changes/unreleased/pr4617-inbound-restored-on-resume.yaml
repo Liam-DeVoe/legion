@@ -18,7 +18,9 @@ body: |-
   an outage it was told; a `/clear` undone before it is taken up leaves the old conversation that
   outage, whose end it is told. A session whose outage notice could not be shown is told it again
   at the outage's next refusal, and no end of an outage it was never shown; stderr still says once
-  that the session receives nothing and once that it receives again.
+  that the session receives nothing and once that it receives again, the end at the first accepted
+  registration after, whichever id it is under after a `/clear`. Once shutdown has begun, no
+  `/clear` is taken up and no role is claimed for a new id behind the shutdown's deregistration.
 time: 2026-11-20T14:07:49Z
 custom:
     Issue: pr4617

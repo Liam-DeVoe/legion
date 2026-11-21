@@ -485,7 +485,8 @@ afterEach(async () => {
   setLegionCapabilityBudgetsForTests(undefined);
   // The same for the bound on one `claims/ready` the schedule sends: back to the real 10 s.
   setLegionCapabilitySendTimeoutForTests(undefined);
-  // And the controller's first wait before it claims again: back to `claimRoleAgain`'s own 1 s.
+  // And the first wait before the pane's or the controller's claim is made again: back to
+  // `claimRoleAgain`'s own 1 s.
   setLegionClaimRetryDelayForTests(undefined);
   // And the stall watch's process half: back to the real `/proc` reader and `process.kill`, which
   // no test may be left pointing at.
@@ -6013,6 +6014,78 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       "3",
       "4",
     ]);
+    expect(controller.exits).toEqual([]);
+  }, 45_000);
+
+  // The same typed claim, ended by the session's shutdown during a wait: nothing was claimed for
+  // the session, so the command reads none of what a claim that landed reads next (the model
+  // fallback's branch records), fails on nothing, and the process stays.
+  test("/legion-claim-controller typed in a daemon-launched controller and ended by the session's shutdown runs nothing a landed claim runs", async () => {
+    const sessionId = "ses_controller_typed_shutdown";
+    const controller = await launchedController({
+      sessionId,
+      stateFixture: "state-controller-claim.json",
+    });
+    await bootAsDaemonLaunched(controller);
+    setLegionClaimRetryDelayForTests(5_000);
+    let failure: unknown = "not settled";
+    let shutDown = false;
+    let branchReadsAfterShutdown = 0;
+    try {
+      await controller.handlers.get("session_start")?.({}, controller.context(sessionId));
+      let refusedDials = 0;
+      natsConnectGates.set(`omp-${sessionId}`, async () => {
+        refusedDials += 1;
+        throw new Error("nats: connection refused");
+      });
+      for (const connection of natsConnections.filter(
+        (candidate) => candidate.name === `omp-${sessionId}`
+      )) {
+        connection.drop();
+      }
+      for (let turn = 0; turn < 2_000 && refusedDials === 0; turn++) await Bun.sleep(5);
+      const claimCommand = controller.commands.find(
+        (command) => command.name === "legion-claim-controller"
+      );
+      if (claimCommand === undefined)
+        throw new Error("controller claim command was not registered");
+      const base = controller.context(sessionId);
+      const typed: SessionContext = {
+        ...base,
+        sessionManager: {
+          ...base.sessionManager,
+          getBranch: () => {
+            if (shutDown) branchReadsAfterShutdown += 1;
+            return base.sessionManager.getBranch?.() ?? [];
+          },
+        },
+        ui: { notify: () => undefined, setWidget: recordWidget },
+      };
+      const stopSink = logger.registerLogSink((entry) => {
+        if (
+          entry.level === "warn" &&
+          entry.message.includes("holds no relay subject yet") &&
+          !shutDown
+        ) {
+          shutDown = true;
+          setTimeout(() => void controller.handlers.get("session_shutdown")?.({}, base), 0);
+        }
+      });
+      try {
+        failure = await claimCommand.handler("", commandContext(typed)).then(
+          () => undefined,
+          (error: unknown) => error
+        );
+      } finally {
+        stopSink();
+      }
+    } finally {
+      natsConnectGates.delete(`omp-${sessionId}`);
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(shutDown).toBe(true);
+    expect(failure).toBeUndefined();
+    expect(branchReadsAfterShutdown).toBe(0);
     expect(controller.exits).toEqual([]);
   }, 45_000);
 

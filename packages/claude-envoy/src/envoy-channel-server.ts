@@ -1391,8 +1391,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * it to the conversation the process moved to, which is told its own (`bindStateFile`). The
    * outage notice's own outcome goes back to the report: one that could not be shown leaves the
    * session untold, so no end is told for it, and the next refusal tells it again. The log says
-   * each outage's start and its end once, whatever the session was shown: an operator who read
-   * that the session receives nothing reads that it receives again.
+   * each outage's start and its end once, whatever the session was shown and across a `/clear`:
+   * the log is the process's, so an operator who read that the session receives nothing reads that
+   * it receives again at the first accepted registration after, whichever id it is under.
    */
   const inboundOutage = inboundUnavailable(
     (why, again) => {
@@ -1420,10 +1421,12 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   /**
    * The outage report a registration carries while a `/clear` waits (`handoffWaiting`): a refusal
    * or an acceptance under the id Claude Code left tells nothing and leaves the report as it was.
-   * Told now, it would reach the conversation Claude Code moved to, which never heard of the old
-   * id's outage, and would be recorded in the old id's file as told to a conversation that never
-   * saw it. The new id's own record is read into the report when the `/clear` is taken up
-   * (`bindStateFile`), and a refusal after that tells the new id.
+   * An acceptance told would end the old id's outage in the report with a notice that is refused at
+   * its turn (`pendingHandoff`): the old conversation, if Claude Code goes back to it before the
+   * `/clear` is taken up, would never be told the end of an outage it was told. A refusal told would
+   * queue a notice that is refused at its turn too, at every refusal for as long as the `/clear`
+   * waits, each one a failed notice in the log. The new id's own record is read into the report
+   * when the `/clear` is taken up (`bindStateFile`), and a refusal after that tells the new id.
    */
   const handoffWaitingOutage: InboundUnavailable = {
     refused: () => undefined,
@@ -1806,7 +1809,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * from it.
    */
   const adoptHandoff = async (): Promise<void> => {
-    if (handoffFile === undefined) return
+    // Nothing is taken up once shutdown has begun: a registration queued before it can run after
+    // the shutdown's DELETE, and a `/clear` taken up there would deregister the old id, move the
+    // session to the new id and claim its role for it, all for a process that is going.
+    if (handoffFile === undefined || shuttingDown) return
     const next = await readSessionHandoff(handoffFile)
     if (next === undefined || next === identity.id) {
       handoffWaiting = false
@@ -1871,6 +1877,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     await restoreTurns()
     roleTransferFrom ??= previous
     await register()
+    // A shutdown that began while this ran claims no role behind its DELETE, as a heartbeat's
+    // body does not.
+    if (shuttingDown) return
     await transferRole()
     process.stderr.write(`envoy: session id changed ${previous} -> ${next}; re-registered\n`)
   }

@@ -392,7 +392,7 @@ export function createControllerSession(deps: {
     // never reported ready, logging the claim, the reason and the launch it counts (supervise's
     // registrationDeadline). After that ready no deadline bounds a re-claim
     // (`reclaimAfterSessionChange`), which claims again until it lands, is refused, or the session
-    // shuts down (`shutdown`). A
+    // shuts down (`deps.signal`, `legion.ts`'s `claimsEnded`). A
     // session change there never reaches this claim: the daemon refuses a registration from a
     // session other than the one it recorded (SameAgentRefusal, 409), so the controller exits
     // (claimOnce) and is relaunched on its recorded session. Under `controller: daemon` the

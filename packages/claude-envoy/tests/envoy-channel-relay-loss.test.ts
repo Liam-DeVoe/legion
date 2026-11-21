@@ -18,7 +18,7 @@
 //   `/clear` up in its own registration;
 // - the relay subscription ends as the session shuts down, with a registration still queued for
 //   it: the leaving session is told no outage, and nothing registers behind the DELETE.
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import type { SubscribeInput } from "@legion/envoy-client/transport"
 import type { ChannelNotification } from "../src/envoy-channel-server"
@@ -59,6 +59,19 @@ function notices(notifier: FakeNotifier, heading: string): string[] {
 async function toldInFile(directory: string, id: string): Promise<boolean | undefined> {
   return (await readReplayState(replayStateFile(directory, id)).catch(() => undefined))
     ?.inboundOutageTold
+}
+
+/** Takes what the server writes to stderr until `restore()`, in place of writing it. */
+function captureStderr(): { lines(text: string): number; restore(): void } {
+  const written: string[] = []
+  const spy = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    written.push(String(chunk))
+    return true
+  })
+  return {
+    lines: (text) => written.filter((line) => line.includes(text)).length,
+    restore: () => spy.mockRestore(),
+  }
 }
 
 /** A notifier that holds the write of the frame `eventId` until `release()`, and so every write
@@ -373,8 +386,9 @@ test("a connection closed for good between a /clear's deregistration and its reg
 // still the old one when the new connection opens. The registration that the new connection
 // carries must not tell the end of the old id's outage to the conversation Claude Code moved to,
 // and must not clear the old id's record: the old conversation never saw that end, so a server
-// that resumes the old id later still owes it.
-test("a /clear made after the connection closed for good tells the new conversation nothing of the old id's outage, and the old id's file keeps it told", async () => {
+// that resumes the old id later still owes it. The log is the process's: it said the outage
+// began, and it says it ended at the new id's first accepted registration.
+test("a /clear made after the connection closed for good tells the new conversation nothing of the old id's outage, and the old id's file keeps it told, while the log says the outage's start and its end once", async () => {
   const SESSION = "ses_closed_then_clear"
   const NEXT = "ses_closed_then_clear_next"
   const directory = scratchState()
@@ -404,6 +418,7 @@ test("a /clear made after the connection closed for good tells the new conversat
       }),
     }),
   )
+  const stderr = captureStderr()
   try {
     await first.closeForGood(serverRefusal("AUTHORIZATION_VIOLATION", "'Authorization Violation'"))
     await waitFor(
@@ -441,7 +456,10 @@ test("a /clear made after the connection closed for good tells the new conversat
     expect(notices(notifier, "Envoy inbound unavailable")).toHaveLength(1)
     expect(await toldInFile(directory, SESSION)).toBe(true)
     expect(await toldInFile(directory, NEXT)).not.toBe(true)
+    expect(stderr.lines("envoy-channel: this session receives nothing (")).toBe(1)
+    expect(stderr.lines("envoy-channel: this session receives again")).toBe(1)
   } finally {
+    stderr.restore()
     await session.shutdown()
   }
 }, 30_000)
@@ -451,7 +469,9 @@ test("a /clear made after the connection closed for good tells the new conversat
 // for want of a relay subject. Claude Code is on the new conversation already, so the old id's
 // outage told there would reach a conversation that never had it, be recorded in the old id's
 // file as told to a conversation that never saw it, and leave the new id never told its end. The
-// `/clear` waits for the new connection (`handoffWaiting`), and nothing is told meanwhile.
+// `/clear` waits for the new connection (`handoffWaiting`), and nothing is told meanwhile: no
+// notice of the old id's outage is so much as queued, so the log names neither the outage nor a
+// notice of it refused at its turn.
 test("a /clear not yet taken up when the connection closes for good tells the new conversation no outage of the old id's, and records none", async () => {
   const SESSION = "ses_clear_then_closed"
   const NEXT = "ses_clear_then_closed_next"
@@ -494,6 +514,7 @@ test("a /clear not yet taken up when the connection closes for good tells the ne
     }),
   )
   const released = Promise.withResolvers<void>()
+  const stderr = captureStderr()
   try {
     hold = released
     const following = session.follow(["notifications.team.deploy"]).catch(() => [])
@@ -518,7 +539,12 @@ test("a /clear not yet taken up when the connection closes for good tells the ne
     expect(notices(notifier, "Envoy inbound restored")).toEqual([])
     expect(await toldInFile(directory, SESSION)).not.toBe(true)
     expect(await toldInFile(directory, NEXT)).not.toBe(true)
+    expect(
+      stderr.lines("envoy-channel: the session could not be told that it receives nothing"),
+    ).toBe(0)
+    expect(stderr.lines("envoy-channel: this session receives nothing (")).toBe(0)
   } finally {
+    stderr.restore()
     released.resolve()
     reopened.resolve()
     await session.shutdown()
