@@ -158,11 +158,16 @@ type Config struct {
 	SlotRule record.SlotRule
 }
 
-// Engine interprets Table and writes only records and outbox rows through the supplied Store.
+// Engine interprets its slot rule's table (TableFor over Config.SlotRule, which is Table under
+// the daemon's own rule) and writes only records and outbox rows through the supplied Store.
 type Engine struct {
 	store record.Store
 	cfg   Config
 	log   *slog.Logger
+	// table is the transition table this engine runs, TableFor of its slot rule, chosen once
+	// here rather than at each move: the rule is the engine's for its whole life, and the tables
+	// TableFor answers are built once for the process.
+	table []Row
 	// droppedSettlements is the identities of the checks settlements whose drop checks has logged,
 	// the last intake.DroppedSettlementsKept of them (logDroppedSettlement). It is marked once a
 	// fact's transaction commits, and facts commit on each consumer's goroutine and the API's, so
@@ -173,7 +178,8 @@ type Engine struct {
 var _ intake.Handler = (*Engine)(nil)
 
 // New constructs a workflow engine, taking the shipped review round cap, production check bound
-// and clock for every one of them a caller omits.
+// and clock for every one of them a caller omits, and the daemon's own slot rule
+// (record.MainRule) where it names none.
 func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	if cfg.ReviewRoundCap <= 0 {
 		cfg.ReviewRoundCap = 3
@@ -190,7 +196,9 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Engine{store: store, cfg: cfg, log: log, droppedSettlements: intake.NewRecentKeys[intake.SettlementIdentity](intake.DroppedSettlementsKept)}
+	cfg.SlotRule = cfg.SlotRule.OrMain()
+	return &Engine{store: store, cfg: cfg, log: log, table: TableFor(cfg.SlotRule),
+		droppedSettlements: intake.NewRecentKeys[intake.SettlementIdentity](intake.DroppedSettlementsKept)}
 }
 
 func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
@@ -2218,6 +2226,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // phase it moved the issue to, the role that moved it and the words that role gave. The handoff
 // row a move writes is empty, so without that reason the architect reads a completion with no
 // summary and no verdict and cannot tell it from a worker that finished its phase.
+//
+// A move back by a slot rule's conflict path (TriggerConflict, TriggerChecksRed:
+// conflictMovesBack) is told the same way, as the phase left with the reason the head moved it,
+// since no worker finished that phase and no handoff row says why.
 func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
 	switch trigger {
 	case TriggerGateOpened:
@@ -2225,14 +2237,19 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
 			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
+	case TriggerConflict, TriggerChecksRed:
+		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
+			Reason: fmt.Sprintf("moved back to %s: %s", to, reason)}
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}
 	return record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 }
 
+// row is the row of the engine's table (TableFor of its slot rule) that moves an issue standing
+// in from by trigger, to target where one is named, whose guard snapshot passes.
 func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, snapshot Snapshot) (Row, bool) {
-	for _, row := range Table {
+	for _, row := range e.table {
 		if row.From == from && row.Trigger == trigger && (target == "" || row.To == target) && (row.Guard == nil || row.Guard(snapshot)) {
 			return row, true
 		}

@@ -142,6 +142,59 @@ func (r SlotRule) NeedsSlot(issue, root Issue, live bool) bool {
 	return live && !root.Lingers() && r.KeepsSlot(issue)
 }
 
+// PastReview is r's phase half read the other way round: issue stands, as StandsAt reads it, in
+// a phase short of done that r keeps no slot in, so it holds none of the cap's slots there while
+// its work goes on. Under MainRule those phases are accepting, retro and merging, the three past
+// the review, which is why the method carries the package's name for them (the package's
+// PastReview); under a rule that keeps a slot in one of them, or keeps none in a phase up to the
+// review, it names the phases that rule leaves without one, whatever their place in the
+// workflow.
+//
+// It is what the two readers of "holds no slot because its phase keeps none" ask: the repair of
+// a worker with no task, whose own domain is the slot holders and which must reach such an issue
+// besides (admit's readSlotHolders), and the state's answer of `why`, which serves such an issue
+// at work no answer (projection's atWorkPastReview). The readers that mean the workflow's own
+// "past the review", where the merge is the next step whatever slot the issue holds, read the
+// package's PastReview, which no rule changes (classify.ConflictNeedsMerge, workflow's merge
+// forward).
+func (r SlotRule) PastReview(issue Issue) bool {
+	at := StandsAt(issue)
+	return at != phase.Done && !r.PhaseKeepsSlot(at)
+}
+
+// ChildrenFirstCandidates is every issue of issues whose Dispatch children r's children-first
+// rule can hold it for, by key and sorted (the package's ChildrenFirstCandidates says why each
+// term is there): it stands in the workflow, its tree is recorded, not lingering and under an
+// open design gate, and it stands at phase.Admitted, its own first phase still to start. Under a
+// rule whose wait stops the phase under way (WaitStopsPhase) the last term goes: a parent the
+// daemon has started waits on its open children in whatever phase it stands, as one whose first
+// phase never started does, and gives its slot back for that wait (blockers.waitsOf), so its
+// children are read wherever it stands.
+func (r SlotRule) ChildrenFirstCandidates(issues []Issue, gates map[string]TreeGate) []string {
+	anyPhase := r.OrMain().WaitStopsPhase
+	byKey := make(map[string]Issue, len(issues))
+	for _, issue := range issues {
+		byKey[issue.Key] = issue
+	}
+	keys := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		// The root must be among the records and must not linger. A root whose tree has left the
+		// workflow is no part of a live read at all — its phase is done and its status is not
+		// todo (Store.LiveIssues) — so an unrecorded root is a tree that has gone, and reading
+		// the zero record's linger would answer false for exactly the case this test is for.
+		root, recorded := byKey[issue.Tree]
+		if (!anyPhase && issue.Phase != phase.Admitted) || !InWorkflow(issue) || !recorded || root.Lingers() {
+			continue
+		}
+		if !gates[issue.Tree].Open() {
+			continue
+		}
+		keys = append(keys, issue.Key)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
 // SlotRules is every named rule the repository keeps, the daemon's own first. Each answer is a
 // copy, so a caller that changes a rule it was handed changes no other caller's.
 func SlotRules() []SlotRule {
