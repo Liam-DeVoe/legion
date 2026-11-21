@@ -1097,7 +1097,7 @@
   {
     "id": "chart-09",
     "kind": "chart",
-    "words": "table of in progress issues by who holds the claim",
+    "words": "table of how many in progress issues each claim holder has",
     "page": "/",
     "mode": "ask",
     "level": "standard",
