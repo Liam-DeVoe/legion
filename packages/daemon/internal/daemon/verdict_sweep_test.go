@@ -173,10 +173,11 @@ func newSweepRig(t *testing.T, tokens appauth.Tokens, entries []config.VerdictRe
 	return &sweepRig{verdictRig: rig, sweep: sweep}
 }
 
-// swept runs one pass of the writers' sweep and waits for every write it queued.
+// swept runs one of the writers' sweep's passes after the one at boot, and waits for every write it
+// queued.
 func (rig *sweepRig) swept(t *testing.T) {
 	t.Helper()
-	rig.w.sweepVerdicts(context.Background())
+	rig.w.sweepVerdicts(context.Background(), false)
 	rig.written(t)
 }
 
@@ -405,10 +406,11 @@ func TestLegionVerdictAFactsWriteGoesBeforeTheSweepsWrites(t *testing.T) {
 	}
 }
 
-// A sweep over a Legion head whose success already stands, as the writer wrote it, writes nothing
-// and asks no more merge-state reads: the writer asks one more read only after a pass that wrote a
-// conclusion or changed one, for GitHub to count the run it wrote. The sweep still reads what R19
-// asks of the head: the head's legion-verdict runs and its commit statuses.
+// A 10-minute pass of the sweep over a Legion head whose success already stands, as the writer
+// wrote it, writes nothing and asks no more merge-state reads: the writer asks one more read only
+// after a pass that wrote a conclusion or changed one, for GitHub to count the run it wrote, and
+// only the pass at boot asks one of a standing success. The pass still reads what R19 asks of the
+// head: the head's legion-verdict runs and its commit statuses.
 func TestLegionVerdictSweepAsksNoMergeStateReadOfAnUnchangedSuccessHead(t *testing.T) {
 	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass, openCapture)
 	rig.approvedAndWritten(t)
@@ -576,6 +578,36 @@ func TestLegionVerdictMergeGroupAfterARestartTheBootSweepWritesTheMissingCheck(t
 	})
 	rig.written(t)
 	groupConcluded(t, rig.verdictRig, "group-86", "success")
+}
+
+// A restart lost the merge-state read the writer asks for after a success (writeVerdictOver's
+// timer, held in memory): the reviewer's approve wrote success on code, GitHub answered both reads
+// after it with a stale `blocked`, and the round still waits, with nothing left in memory to read
+// again. The rig stands for the daemon booted again over that record, which holds no more than a
+// new runtime would. The boot pass asks for a read of each issue whose success it finds standing,
+// although it writes nothing there, and GitHub's clean answer settles the round as approved.
+func TestTheBootSweepReadsTheMergeStateOfAStandingSuccessARestartLeftUnsettled(t *testing.T) {
+	rig := newSweepRig(t, roleTokens{}, []config.VerdictRepository{widgetsEntry}, reviewingWithPass, openCapture)
+	rig.github.mu.Lock()
+	rig.github.staleReads = 2
+	rig.github.mu.Unlock()
+	rig.apply(t, reviewerVerdict("approve", "code", 1))
+	rig.written(t)
+	testwait.Eventually(t, "GitHub to answer both reads after the write with a stale blocked", func() bool {
+		_, events := rig.github.recorded()
+		return len(slices.DeleteFunc(events, func(e string) bool { return e != "read pull request 86: blocked" })) == 2
+	})
+	if got, _ := capturePhase(t, rig.pool); got != phase.Reviewing {
+		t.Fatalf("the issue is in %s before the restart, want reviewing: the stale blocked answers hold the round", got)
+	}
+	rig.booted(t)
+	testwait.Eventually(t, "the boot sweep's read to settle the round as approved", func() bool {
+		got, _ := capturePhase(t, rig.pool)
+		return got == phase.Accepting
+	})
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].Conclusion != "success" {
+		t.Fatalf("legion-verdict runs on code = %+v, want the approve's success alone", runs)
+	}
 }
 
 // A legion/<KEY> head of another project in the open list is that project's daemon's to sweep: this

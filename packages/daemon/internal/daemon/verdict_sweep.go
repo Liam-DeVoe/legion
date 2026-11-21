@@ -81,13 +81,14 @@ type groupRef struct {
 // tickVerdictSweep runs the writers' sweep (sweepVerdicts) once as the runtime starts and then
 // every verdictSweepInterval, until ctx ends. The pass at boot is what repairs a restart: every
 // write a fact asked for is held in memory until the writer makes it (verdictWriter), and so is the
-// merge-state read the writer asks for after a success (writeVerdictOver). A runtime whose
-// configuration names no verdict repository sweeps nothing.
+// merge-state read the writer asks for after a pass that wrote a success (writeVerdictOver), which
+// is why the pass at boot alone also asks for a read of each issue whose success stands. A runtime
+// whose configuration names no verdict repository sweeps nothing.
 func (w *workflowRuntime) tickVerdictSweep(ctx context.Context) {
 	if w.verdicts == nil || len(w.verdicts.entries) == 0 {
 		return
 	}
-	w.sweepVerdicts(ctx)
+	w.sweepVerdicts(ctx, true)
 	ticker := time.NewTicker(verdictSweepInterval)
 	defer ticker.Stop()
 	for {
@@ -95,16 +96,17 @@ func (w *workflowRuntime) tickVerdictSweep(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.sweepVerdicts(ctx)
+			w.sweepVerdicts(ctx, false)
 		}
 	}
 }
 
-// sweepVerdicts is one pass of the writers' sweep over each verdict repository (sweepRepository).
-// A repository whose pass fails is logged, and the next pass reads it again.
-func (w *workflowRuntime) sweepVerdicts(ctx context.Context) {
+// sweepVerdicts is one pass of the writers' sweep over each verdict repository (sweepRepository),
+// boot being whether it is the pass at boot. A repository whose pass fails is logged, and the next
+// pass reads it again.
+func (w *workflowRuntime) sweepVerdicts(ctx context.Context, boot bool) {
 	for _, entry := range w.verdicts.entries {
-		if err := w.sweepRepository(ctx, entry); err != nil && ctx.Err() == nil {
+		if err := w.sweepRepository(ctx, entry, boot); err != nil && ctx.Err() == nil {
 			w.log.Warn("verdict: the writers' sweep of a verdict repository failed; its next pass reads it again",
 				"repository", entry.Repository.String(), "error", err)
 		}
@@ -112,11 +114,11 @@ func (w *workflowRuntime) sweepVerdicts(ctx context.Context) {
 }
 
 // sweepRepository sweeps one verdict repository (spec R6, R19, "The writers' sweep"). It reads the
-// repository's open pull requests with one GraphQL query for each hundred, with their latest
-// reviews where the entry names a ci_reviewer, and records what a webhook may have lost of a pull
-// request on a branch that is no issue's (recordSwept): its head, and the CI reviewer's review of
-// that head. It then queues for the writer a write on each open head, of this project's issue or
-// of none, that may put the daemon's own conclusion over another writer's run or status
+// repository's open pull requests with one GraphQL query for each hundred, with each author's last
+// opinionated review where the entry names a ci_reviewer, and records what a webhook may have lost
+// of a pull request on a branch that is no issue's (recordSwept): its head, and the CI reviewer's
+// review of that head. It then queues for the writer a write on each open head, of this project's
+// issue or of none, that may put the daemon's own conclusion over another writer's run or status
 // (overForeign): the writer decides the head from the record, creates the run a lost or failed
 // write left unwritten, turns its own run to the head's conclusion, and writes that conclusion -
 // failure where none stands - over each run and status of the one App its record does not hold.
@@ -126,9 +128,14 @@ func (w *workflowRuntime) sweepVerdicts(ctx context.Context) {
 // (writeVerdicts), so a write the sweep queues runs beside no other write, and decides its head
 // from the record as it stands when the write is made.
 //
+// At boot it also asks for a read of the merge state of each issue of this project whose success,
+// as this daemon recorded writing it, stands at its pull request's head (readStandingSuccess): a
+// restart loses the read the writer asks for after it writes a success, and GitHub's answer to the
+// reads before that may have been a stale `blocked` that holds the round.
+//
 // A daemon in token mode mints no verdict token, so no read here could lead to a write: it reads
 // nothing, and says so once, as the writer does.
-func (w *workflowRuntime) sweepRepository(ctx context.Context, entry config.VerdictRepository) error {
+func (w *workflowRuntime) sweepRepository(ctx context.Context, entry config.VerdictRepository, boot bool) error {
 	serving := w.repositories.serving(entry.Repository)
 	if _, err := w.tokens.VerdictToken(ctx, serving.Owner()); errors.Is(err, appauth.ErrNoVerdictToken) {
 		w.verdicts.tokenMode.Do(func() { w.log.Warn(verdictTokenMode, "repository", entry.Repository.String()) })
@@ -156,6 +163,11 @@ func (w *workflowRuntime) sweepRepository(ctx context.Context, entry config.Verd
 			}
 		}
 		w.verdicts.add(verdictTarget{repository: entry.Repository, number: pull.Number, head: pull.HeadRefOid, overForeign: true})
+		if boot && issueBranch {
+			if err := w.readStandingSuccess(ctx, entry.Repository, pull.HeadRefOid, key); err != nil {
+				return err
+			}
+		}
 	}
 	client := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(w.githubAPI, serving)}
 	read, cancel := context.WithTimeout(ctx, issueRead)
@@ -174,6 +186,22 @@ func (w *workflowRuntime) sweepRepository(ctx context.Context, entry config.Verd
 			continue
 		}
 		w.queueMergeGroupWrite(entry.Repository, number, ref.Object.SHA, true)
+	}
+	return nil
+}
+
+// readStandingSuccess asks for a read of issue's merge state (queueMergeState) where the newest
+// check run or status this daemon recorded writing on head of repository concluded success
+// (wroteSuccess): the pass at boot's stand-in for the read a restart lost, which a write that
+// changes nothing does not ask for (writeVerdictOver). A head whose success the boot pass's own
+// write creates or restores asks for its read there instead.
+func (w *workflowRuntime) readStandingSuccess(ctx context.Context, repository ghrepo.Repository, head, issue string) error {
+	standing, err := w.wroteSuccess(ctx, verdictTarget{repository: repository, head: head})
+	if err != nil {
+		return fmt.Errorf("read whether the success written on %s at %s stands: %w", repository, head, err)
+	}
+	if standing {
+		w.queueMergeState(issue)
 	}
 	return nil
 }
