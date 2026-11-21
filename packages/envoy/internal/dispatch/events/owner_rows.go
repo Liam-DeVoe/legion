@@ -44,6 +44,20 @@ func (o OwnerRows) Add(issue, artifact, what string) {
 	}
 }
 
+// Owners answers the issues and the documents no issue owns that o holds a row of, each in
+// order: the values of the issue_key and the artifact_id column of an event written under one of
+// them, since an event names its one owner in one of those columns (eventOwnerKey).
+func (o OwnerRows) Owners() (issues, artifacts []string) {
+	for _, key := range slices.Sorted(maps.Keys(o)) {
+		if issue, ok := strings.CutPrefix(key, issueOwnerPrefix); ok {
+			issues = append(issues, issue)
+			continue
+		}
+		artifacts = append(artifacts, strings.TrimPrefix(key, artifactOwnerPrefix))
+	}
+	return issues, artifacts
+}
+
 // LockOwnerRows takes the owner lock of each of owners (store.LockOwners) in one statement, each
 // once: the transaction advisory lock that every writer of an issue, or of a document no issue
 // owns, takes before it reads what it writes, and that docs' lockArtifactOwner takes for the

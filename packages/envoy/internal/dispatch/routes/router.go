@@ -49,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -215,6 +216,10 @@ type AppContextOptions struct {
 	// Metrics is the process's metrics registry, which GET /metrics serves and the API adds its
 	// held gauges to; nil serves an empty one. See api.Deps.Metrics.
 	Metrics *metrics.Registry
+	// AnswersLatency times the answers reads this process serves for the keyword fill's pause,
+	// which cmd/dispatch gives the fill too (textversions.Config.Latency); nil times none. See
+	// api.Deps.AnswersLatency.
+	AnswersLatency *sessionanswers.Latency
 	// DevSignIn mounts GET /auth/_dev/signin, which issues the session cookie for any person
 	// named with no sign-in issuer exchange, and makes the whole router refuse a request whose Host
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
@@ -319,6 +324,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ListenerRosterUncached:  opts.ListenerRosterUncached,
 		OutboxPublishes:         opts.OutboxPublishes,
 		Metrics:                 opts.Metrics,
+		AnswersLatency:          opts.AnswersLatency,
 		DashboardEntry:          opts.DashboardEntry,
 		BuildCommit:             opts.BuildCommit,
 		// The process's count of revocations the broker answered superseded.

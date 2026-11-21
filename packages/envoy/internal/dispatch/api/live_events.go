@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -128,9 +129,9 @@ func (s *server) startEventsSubscription(ctx context.Context, stream liveStreame
 // generation and waits, on the next generation, for a horizon proven after the reset. A relay
 // subscription taken meanwhile carries a published cursor that names a position in the old log:
 // above the new log's newest id, or at an id whose row is gone or carries another created_at than
-// the relay read (eventLogWasReset). Started there, the subscription would drop the new log's
-// events up to it, or start and then be ended by the relay's reset, sending the page through a
-// resubscribe and, for a page with no complete replay, the whole refresh it owes a gap. So the
+// the relay read (events.EventLogWasReset). Started there, the subscription would drop the new
+// log's events up to it, or start and then be ended by the relay's reset, sending the page through
+// a resubscribe and, for a page with no complete replay, the whole refresh it owes a gap. So the
 // subscription waits for that reset, which ends the relay subscription, and subscribes again on
 // the generation the relay starts next. A subscription with no since then replays from
 // replacedFrom, read when it found the relay on the replaced log, rather than starting at the new
@@ -179,7 +180,7 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 			endEventsAfterFailure(ctx, stream, sub, "read the event log's head", err)
 			return
 		}
-		if !eventLogWasReset(subscription.head, subscription.headAt, head, cursorAt) {
+		if !events.EventLogWasReset(subscription.head, subscription.headAt, head, cursorAt) {
 			break
 		}
 		if since == nil && replacedFrom < 0 {
@@ -690,7 +691,7 @@ func (s *server) resumeAfterOverflow(ctx context.Context, caller model.Actor, af
 		return relaySubscription{}, eventReplay{}, eventsReader{}, false
 	}
 	head, cursorAt, behind, accessChanged, err := eventSubscriptionCheck(ctx, s.deps.Store.Pool, reader, next.head, &after)
-	if err != nil || eventLogWasReset(next.head, next.headAt, head, cursorAt) {
+	if err != nil || events.EventLogWasReset(next.head, next.headAt, head, cursorAt) {
 		next.cancel()
 		return relaySubscription{}, eventReplay{}, eventsReader{}, false
 	}
@@ -702,18 +703,18 @@ func (s *server) resumeAfterOverflow(ctx context.Context, caller model.Actor, af
 	return next, caughtUp, eventsReader{reader: reader, through: head}, true
 }
 
-// eventSubscriptionCheck is eventCursorCheck for an events subscription whose relay subscription
-// began at cursor, and in the same statement how many events a resume from since stands behind
-// it: the rows of (since, cursor] in the gap of reader's page (eventGapSQL), counted up to
-// maxLiveReplay+1, which is all the bound needs (replayThrough), and whether an access change that
-// moved what reader sees stands among them (accessChanged, sightMovedSQL). For a reader that sees
-// every object (seesEveryObject) that is a project made public alone (madePublicSQL): no other
-// access change moves what such a reader sees, so its resume across a write of a group or of a list
-// is replayed and complete, as every resume was before a project could be private (R9). behind is
-// -1 when there is nothing to count: no since, or a since above the cursor, which
-// resolveEventReplay answers without a replay read. One statement, so a resume waits for the shared
-// pool once before its replay read rather than twice: on a restart every page resumes at once,
-// behind every request queued for a connection.
+// eventSubscriptionCheck is events.EventCursorCheck for an events subscription whose relay
+// subscription began at cursor, and in the same statement how many events a resume from since
+// stands behind it: the rows of (since, cursor] in the gap of reader's page (eventGapSQL), counted
+// up to maxLiveReplay+1, which is all the bound needs (replayThrough), and whether an access
+// change that moved what reader sees stands among them (accessChanged, sightMovedSQL). For a
+// reader that sees every object (seesEveryObject) that is a project made public alone
+// (madePublicSQL): no other access change moves what such a reader sees, so its resume across a
+// write of a group or of a list is replayed and complete, as every resume was before a project
+// could be private (R9). behind is -1 when there is nothing to count: no since, or a since above
+// the cursor, which resolveEventReplay answers without a replay read. One statement, so a resume
+// waits for the shared pool once before its replay read rather than twice: on a restart every
+// page resumes at once, behind every request queued for a connection.
 func eventSubscriptionCheck(ctx context.Context, q queryer, reader model.Actor, cursor int64, since *int64) (maxID int64, cursorAt *time.Time, behind int, accessChanged bool, err error) {
 	moved := sightMovedSQL("e", "$4")
 	if seesEveryObject(reader) {

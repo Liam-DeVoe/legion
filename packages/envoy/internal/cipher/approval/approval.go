@@ -99,7 +99,8 @@ type Config struct {
 	// Store holds the sessions.
 	Store *store.Store
 	// Machine reads the records and decides them (ReadRecord, PendingForApprover,
-	// ApplyPageDecision).
+	// ApplyPageDecision), and its group reader (requests.Machine.Groups) says whether the signed-in
+	// person is a member of a group approver and so sees the buttons (record.MayDecide).
 	Machine *requests.Machine
 }
 

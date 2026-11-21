@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 )
 
 // eraseOwnerAttempts is how many tries lockInStoreOrder makes at reading which owner rows the
@@ -42,6 +43,14 @@ const eraseOwnerAttempts = 3
 // batches take their documents' owners in it too (graphcensus's lockBlockDocuments and
 // lockObjectOwners).
 //
+// After the node's projection rows, and before it reads anything under its locks, it takes the
+// keyword fill's cursor row `for share` (textversions.HoldFillBack): a batch of the fill in
+// flight, which may have read the node's text before the run took its locks, commits first, so
+// the read under the locks lists every keyword row that batch wrote, and no batch writes until the
+// run ends. The fill takes the cursor row first and alone in its batch, and takes no owner lock,
+// so the run waiting there while it holds its owners, its node's row and its projection rows can
+// meet no cycle.
+//
 // Which owners those are is read before they are locked, so it is read again under them with the
 // rest of the listing (readDerived), and the run goes on with that second read. A write that,
 // between the two reads, moved the node under an owner the run did not take could go on writing
@@ -59,13 +68,18 @@ const eraseOwnerAttempts = 3
 // that holds the erased bytes is therefore not on the listing the digest covers, and the run
 // leaves it as it leaves every row the search lists; once the run has committed it searches again,
 // outside its locks, and its report lists each row that search finds and this one did not
-// (searchLeftAfterCommit). Once a try holds its locks, the run holds the writers of those owners
-// for the rest of its work: the read of the rest of the listing under them, the erase and the
-// commit.
+// (searchLeftAfterCommit). The same search answers what only a read of a whole large table finds,
+// so that no such read runs while the run holds its owners' writers: the keys of the display trees
+// that hold a text node of the node's where an event of it carried a body it cut
+// (treeKeysHolding), which the run deletes under its locks by key, and the ids of the events about
+// the node that hold its text, which the run reads again under its locks by id beside the events
+// of the owners it holds (readEvents, eventsUnderLocks). Once a try holds its locks, the run holds
+// the writers of those owners for the rest of its work: the read of the rest of the listing under
+// them, the erase and the commit.
 func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx.Tx, *Erasure, erasedRead, error) {
 	var untaken []string
 	for range eraseOwnerAttempts {
-		left, err := searchLeft(ctx, conn, kind, id)
+		found, err := searchLeft(ctx, conn, kind, id)
 		if err != nil {
 			return nil, nil, erasedRead{}, err
 		}
@@ -75,8 +89,9 @@ func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx
 		}
 		erasure := &Erasure{Kind: kind, ID: id, RanAt: time.Now().UTC()}
 		var read erasedRead
-		read, untaken, err = erasure.lockOwnersThenNode(ctx, tx, left)
+		read, untaken, err = erasure.lockOwnersThenNode(ctx, tx, found)
 		if err == nil && len(untaken) == 0 {
+			read.heldTrees = found.trees
 			return tx, erasure, read, nil
 		}
 		_ = tx.Rollback(context.Background())
@@ -88,27 +103,46 @@ func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx
 		kind, id, eraseOwnerAttempts, strings.Join(untaken, "; "))
 }
 
+// searchedBeforeLocks is what a try's search before its locks found (searchLeft): the lines of
+// the listing's section of rows left, the keys of the display trees that hold a text node of the
+// node's (treeKeysHolding), and the ids of the events about the node that hold its text.
+type searchedBeforeLocks struct {
+	left   []string
+	trees  [][]byte
+	events []int64
+}
+
 // searchLeft is a confirmed run's search for the rows it leaves (readLeft, with the margin records
 // readKeptMargins lists), which a try of lockInStoreOrder runs before it takes any lock. It runs in
 // a read-only transaction of its own, as a run without --confirm reads its whole listing, over the
 // erased texts and the rows that derive from the node as that transaction reads them
 // (readDerived), and that transaction ends before the try's own begins, so the try holds none of
-// the table locks the search took. It answers the lines of the listing's section of rows left.
-func searchLeft(ctx context.Context, conn *pgx.Conn, kind, id string) ([]string, error) {
+// the table locks the search took. It answers the lines of the listing's section of rows left,
+// the keys of the display trees that hold a text node of the node's (treeKeysHolding), and the ids
+// of the events about the node that its read of every event found holding the node's text.
+func searchLeft(ctx context.Context, conn *pgx.Conn, kind, id string) (searchedBeforeLocks, error) {
 	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return nil, fmt.Errorf("begin the search for the rows the erase leaves: %w", err)
+		return searchedBeforeLocks{}, fmt.Errorf("begin the search for the rows the erase leaves: %w", err)
 	}
 	defer tx.Rollback(context.Background())
 	searched := &Erasure{Kind: kind, ID: id}
 	read, err := searched.readDerived(ctx, tx)
 	if err != nil {
-		return nil, err
+		return searchedBeforeLocks{}, err
 	}
 	if err := searched.readLeft(ctx, tx, &read); err != nil {
-		return nil, err
+		return searchedBeforeLocks{}, err
 	}
-	return read.listing.left, nil
+	trees, err := searched.treeKeysHolding(ctx, tx, read)
+	if err != nil {
+		return searchedBeforeLocks{}, err
+	}
+	found := searchedBeforeLocks{left: read.listing.left, trees: trees}
+	for _, event := range read.events {
+		found.events = append(found.events, event.id)
+	}
+	return found, nil
 }
 
 // searchLeftAfterCommit is the search for the rows the run leaves made once more, after the commit
@@ -142,10 +176,12 @@ func (e *Erasure) searchLeftAfterCommit(ctx context.Context, conn *pgx.Conn, rea
 
 // lockOwnersThenNode is one try of lockInStoreOrder: it reads which owner rows the erase writes
 // under (ownerRows, which reads no node, tuple or event), takes them (events.LockOwnerRows), the
-// node's row and the node's projection rows (lockProjectionRows), reads the rest of the listing
-// under those locks (readDerived), lists beside it the rows left that the try's search found
-// (searchLeft), and answers it with every owner it names that the try did not take.
-func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, left []string) (erasedRead, []string, error) {
+// node's row and the node's projection rows (lockProjectionRows), holds the keyword fill back
+// (textversions.HoldFillBack), reads the rest of the listing under those locks (readDerived) -
+// the events about the node among those of the owners it took and those the try's search found
+// (eventsUnderLocks) - lists beside it the rows left that the search found (searchLeft), and
+// answers it with every owner it names that the try did not take.
+func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, found searchedBeforeLocks) (erasedRead, []string, error) {
 	before, err := e.ownerRows(ctx, tx)
 	if err != nil {
 		return erasedRead{}, nil, err
@@ -164,11 +200,15 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, left []stri
 	if err := lockProjectionRows(ctx, tx, e.Kind, e.ID); err != nil {
 		return erasedRead{}, nil, err
 	}
+	if err := textversions.HoldFillBack(ctx, tx); err != nil {
+		return erasedRead{}, nil, err
+	}
+	e.underLocks = &eventsUnderLocks{owners: before, ids: found.events}
 	locked, err := e.readDerived(ctx, tx)
 	if err != nil {
 		return erasedRead{}, nil, err
 	}
-	locked.listing.left = left
+	locked.listing.left = found.left
 	e.list(&locked)
 	var untaken []string
 	for _, key := range slices.Sorted(maps.Keys(locked.owners)) {
