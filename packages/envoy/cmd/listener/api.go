@@ -3130,12 +3130,16 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// At the edge the renewal is held to the token's projects as a new claim is
 		// (roleOfProjects): a claim the session holds of a role of none of them, which another
 		// listener granted it or a token that listed more did, is not renewed but released, and
-		// the answer's warnings name it (store.Registry.RenewRoleClaimsHeldTo).
+		// the answer's warnings name it (store.Registry.RenewRoleClaims' holds). The renewal
+		// also weighs the role lanes the hold took out of the row (registeredSession.dropped):
+		// while the role claim copy refills it names no role, and the row no longer names those.
 		var holdsRole func(role string) bool
+		weighed := registered.row
 		if hold != nil {
 			holdsRole = func(role string) bool { return roleOfProjects(role, hold.projects) }
+			weighed.Topics = append(slices.Clone(registered.row.Topics), registered.dropped...)
 		}
-		renewal, err := d.registry.RenewRoleClaimsHeldTo(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID), registered.row, holdsRole)
+		renewal, err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID), weighed, holdsRole)
 		logger.LogEvent(slog.LevelDebug, "listener subscribe weighed the session's role claims",
 			slog.String("session_id", body.SessionID),
 			slog.Any("roles", renewal.Set),

@@ -108,11 +108,12 @@ The broker reads each typed secret’s value once for each new version or type, 
 
 `ENVOY_EDGE_PROJECTS` makes a listener the edge listener, the one an outside person's agents reach Envoy through.
 It names the projects the edge serves: project keys separated by commas or white space, read as a broker token's own list is (`parseEdgeProjects`, `internal/config/config.go`).
-A list that no token could carry refuses the start, naming the variable.
-Unset or blank, the listener serves as every other listener does, and nothing in this section applies.
+A list that no token could carry refuses the start, naming the variable, and so does a set value that names no project, such as a lone comma or white space.
+Unset or empty, the listener serves as every other listener does, and nothing in this section applies.
 
 The edge holds each session to the projects of the broker token that admitted it, also in a deployment where each project is public.
-It gives a session no message of no project, except the GitHub events of its projects' repositories.
+It follows, stores and shows a session no topic of no project, except the GitHub topics of its projects' repositories, and it releases at each registration every claim the session holds of another project's role.
+A role message the role lane forwarded to the session's own agent subject before that registration, or after a later claim another writer made for the session, travels on that subject: the relay's check of each frame's topic, which the edge needs before it opens, is what holds those frames to the token's projects.
 The header of `cmd/listener/project_scope.go` lists the rules and the function that holds each; `cmd/listener/edge_mode_test.go` and `cmd/listener/edge_repositories_test.go` test each:
 
 - **Start**: the edge refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting, `ENVOY_WEBHOOKS` or a webhook secret, and without the broker-token settings (`ENVOY_AGENT_SECRETS_URL`, `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` or `ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`, and `ENVOY_PUBLIC_URL`).
@@ -147,7 +148,7 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
 
 - **Roles**: `POST /v1/roles/set` and `GET /v1/roles/{role}` take only a role that works for one of the token's projects, else `403 role_not_in_project` (`edgeRoleRefusal`).
   `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title, client instance and capabilities (`edgeRoleHolder`).
-  A registration renews only the session's claims of roles of its token's projects: a claim the session holds of another project's role, which another listener granted it or a token that listed more did, is released, not renewed, and the answer's `warnings` name it (`store.Registry.RenewRoleClaimsHeldTo`).
+  A registration renews only the session's claims of roles of its token's projects: a claim the session holds of another project's role, which another listener granted it or a token that listed more did, is released, not renewed, and the answer's `warnings` name it (`store.Registry.RenewRoleClaims`).
   A claimant made live again is handed the kept messages of its token's projects' roles alone.
 
 - **Sends**: `POST /v1/messages/send` reaches only a session whose registering token listed one of the sender's projects.
