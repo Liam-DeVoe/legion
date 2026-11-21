@@ -218,7 +218,7 @@ func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller st
 		for _, target := range foreign {
 			if !access.CredentialCovers(access.Credential{Listed: []string{caller}}, target.project, false) {
 				return errorf(http.StatusForbidden, codeProjectScope,
-					"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
+					"this request's credential names project %s, and blocked_by issue %s belongs to project %s, a private project that the credential does not name",
 					caller, target.key, target.project)
 			}
 		}
@@ -467,7 +467,7 @@ func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller strin
 		if targetProject != project && caller != "" &&
 			!access.CredentialCovers(access.Credential{Listed: []string{caller}}, targetProject, false) {
 			return errorf(http.StatusForbidden, codeProjectScope,
-				"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
+				"this request's credential names project %s, and blocked_by issue %s belongs to project %s, a private project that the credential does not name",
 				caller, target, targetProject)
 		}
 	}

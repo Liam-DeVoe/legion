@@ -347,12 +347,12 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 func refuseWriteOutsideProjectScope(w http.ResponseWriter, covers, belongsTo string) {
 	if belongsTo == "" {
 		writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
-			"this request's credential may write project %s; this write resolves to no project of that credential's",
+			"this request's credential names project %s, and this write resolves to no project",
 			covers))
 		return
 	}
 	writeError(w, codeProjectScope, http.StatusForbidden, fmt.Sprintf(
-		"this request's credential may write project %s; this write belongs to project %s", covers, belongsTo))
+		"this request's credential names project %s, and this write belongs to project %s, a private project that the credential does not name", covers, belongsTo))
 }
 
 // withinSessionScope runs the session check in front of one mutating route's handler. A row
