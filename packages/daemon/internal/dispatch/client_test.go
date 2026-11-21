@@ -473,9 +473,10 @@ func TestArtifactsReadsWhatEachArtifactIsOnTheIssueAndItsLatestVersion(t *testin
 }
 
 // A document's reviews are read as Dispatch lists them, newest first: each one's version, state,
-// kind, actor, time, the approval request it answered (none for a review given outside one) and
-// the reason it gave (none for an approval given with nothing beside it, whether Dispatch sends a
-// null or leaves the field out). A document Dispatch does not know is its 404 (Missing).
+// actor, time and the reason it gave (none for an approval given with nothing beside it, whether
+// Dispatch sends a null or leaves the field out). The kind and the approval request Dispatch sends
+// beside them are read by nothing, so they are not decoded. A document Dispatch does not know is
+// its 404 (Missing).
 func TestReviewsReadsEveryReviewOfADocumentNewestFirst(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertBearer(t, r)
@@ -506,10 +507,10 @@ func TestReviewsReadsEveryReviewOfADocumentNewestFirst(t *testing.T) {
 		t.Fatalf("reviews: %v", err)
 	}
 	want := []Review{
-		{Version: 4, State: "approved", Kind: "person", Actor: Actor{Kind: "user", ID: "alice"}, At: time.Date(2026, 11, 13, 18, 0, 0, 123456000, time.UTC), AskID: "ask-approval"},
-		{Version: 3, State: "changes_requested", Kind: "person", Actor: Actor{Kind: "user", ID: "alice"}, At: time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC),
+		{Version: 4, State: "approved", Actor: Actor{Kind: "user", ID: "alice"}, At: time.Date(2026, 11, 13, 18, 0, 0, 123456000, time.UTC)},
+		{Version: 3, State: "changes_requested", Actor: Actor{Kind: "user", ID: "alice"}, At: time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC),
 			Reason: "name the rollback path"},
-		{Version: 2, State: "approved", Kind: "person", Actor: Actor{Kind: "session", ID: "ses_architect"}, At: time.Date(2026, 11, 11, 6, 0, 0, 0, time.UTC)},
+		{Version: 2, State: "approved", Actor: Actor{Kind: "session", ID: "ses_architect"}, At: time.Date(2026, 11, 11, 6, 0, 0, 0, time.UTC)},
 	}
 	if !reflect.DeepEqual(reviews, want) {
 		t.Fatalf("reviews = %#v, want %#v", reviews, want)

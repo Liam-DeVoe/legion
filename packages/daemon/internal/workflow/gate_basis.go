@@ -368,7 +368,9 @@ func (e *Engine) ancestorInLiveTree(ctx context.Context, tx pgx.Tx, key string) 
 // hear that root rests on it again, root's issue would get the message of the basis, and root's
 // architect design-approved, which a lingering tree parks as a person's decision for its next
 // start, though a re-admission keeps nothing of the basis (R3). Any other act that ends a wait
-// would tell both architects of a step nobody runs. A row of a step the deployment does not gate
+// would tell both architects of a step nobody runs, but for the check each end makes of the root
+// (openPendingBasis, tellPendingEnded), which ends a wait a release that ended none at the leave
+// left standing on such a root with nobody told. A row of a step the deployment does not gate
 // holds nothing and takes no event, as basisArtifact rules, so it is left as it is. The root's
 // steps are read once for both.
 func (e *Engine) leaveBases(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
@@ -621,7 +623,11 @@ func stepsPhrase(steps []record.DesignStep) string {
 // value it does not list, has no value of its own for it; but no person asked for changes on the
 // root's own document, so the detail is what ended the wait instead, naming the act, the
 // ancestor's document and its version, after this prefix, by which a resume tells it from a
-// person's changes request.
+// person's changes request. The prefix is stored in the wait's answered detail and parsed back
+// from it at the resume (resumeTask) and at a leave before the resume (basisEndedWait, read by
+// untellUnresumedChanges), either of which can come after a deploy, so a release that changes its
+// words must go on reading the words a release before it stored as well, as gateOffAnswer says of
+// every such mark.
 const basisEndedAnswer = "the wait on an ancestor's approval ended: "
 
 // basisEndedWait says whether waiting was answered by the end of a step's wait on an ancestor's
@@ -889,10 +895,15 @@ func (e *Engine) endPendingUntold(ctx context.Context, tx pgx.Tx, root record.Is
 	if err := e.putGateTold(ctx, tx, ended, ended.LatestVersion); err != nil {
 		return ended, err
 	}
-	e.logOnCommit(ctx, "workflow: a step's wait on an ancestor's approval request ended with its root out of the workflow, and nobody is told", "issue", root.Key,
-		"step", gate.Step.OrSpec(), "ancestor", gate.Basis.Issue, "basis", gate.Basis.ArtifactID, "basis_version", gate.Basis.Version,
-		"ask", gate.Basis.Pending.Ask)
+	e.logEndedUntold(ctx, root.Key, gate.Step.OrSpec(), *gate.Basis)
 	return ended, nil
+}
+
+// logEndedUntold logs the end of root key's step's wait on basis's request with nobody told, the
+// end of such a wait on a root out of the workflow (endPendingUntold, tellPendingEnded).
+func (e *Engine) logEndedUntold(ctx context.Context, key string, step record.DesignStep, basis record.GateBasis) {
+	e.logOnCommit(ctx, "workflow: a step's wait on an ancestor's approval request ended with its root out of the workflow, and nobody is told", "issue", key,
+		"step", step, "ancestor", basis.Issue, "basis", basis.ArtifactID, "basis_version", basis.Version, "ask", basis.Pending.Ask)
 }
 
 // tellPendingEnded tells the end of root key's step's wait on basis's request: what says what
@@ -905,10 +916,19 @@ func (e *Engine) endPendingUntold(ctx context.Context, tx pgx.Tx, root record.Is
 // act that answered the wait. Every other end reaches the root's architect as a basis-ended notice
 // that names the act, the ancestor's document and the version, and who made the act (actor, "" for
 // nobody).
+//
+// The end of the wait of a root out of the workflow, or whose tree lingers (record.Stopped), is
+// told to nobody, as the end the root's leave makes (endPendingUntold): the leave ended every such
+// wait, so one still standing there was left by a release that ended none at a leave (a rollback,
+// then this release again), and the root's tree runs nothing for either architect to hear of.
 func (e *Engine) tellPendingEnded(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep, basis record.GateBasis, what, actor string, own bool) error {
 	root, err := e.store.Issue(ctx, tx, key)
 	if err != nil || root == nil {
 		return err
+	}
+	if record.Stopped(*root) {
+		e.logEndedUntold(ctx, key, step, basis)
+		return nil
 	}
 	if err := e.queueRestingRoot(ctx, tx, *root, step, basis, restingEnded(basis.Pending.Ask), what); err != nil {
 		return err

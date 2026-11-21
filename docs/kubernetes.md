@@ -2686,6 +2686,39 @@ The design-gate basis of dispatch://INFRA-3320, in this same release, adds the b
 That migration also keeps `phase_ended` in the kind check, and this release queues rows of it again: the message that tells a parent's worker that the admission pass ended its phase.
 The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
 
+**Before the deploy, list the parents that the first admission pass after it stops.**
+That pass (admit's `childrenWaits`) moves into `awaiting_children` every started parent of a running tree that has an open Dispatch child: an issue in `planning` through `accepting` whose pull request has not merged, with its tree's root in the workflow and not lingering.
+An open child is one that `record.ChildOpen` reads as open, a child filed in the backlog or triage and never released among them.
+The migration leaves `phases.entry_from` null on every row it finds, so that pass also stops a parent whose role stands on an entry that a move back out of `retro` or `merging` raised, which a later pass, reading the column this release writes, leaves where it stands.
+Where such a parent's worker is in the middle of its phase, the pass retires the task its claim holds for that phase (`retire_task`) and sends that worker a `phase_ended` message in the middle of its turn, which tells it to push what it has and stop.
+A parent in `accepting`, or one whose start has not reached its worker, is moved with no `phase_ended` message, and the architect of every parent the pass moves gets one `awaiting-children` notice.
+This read lists those parents, after the reading of dispatch://INFRA-2192/artifact/parent-waits-reading-sh (version 6): one line for each, with its phase, its tree and its open children.
+It reads the running daemon's state with `legion state --json` and the children of each parent from Dispatch, with `DISPATCH_URL` set to the daemon's `dispatch_url` and `DISPATCH_TOKEN_FILE` to its `dispatch_token_file`, in bash, which gives curl the token as a header file and never as an argument:
+
+```bash
+legion state --json > state.json
+jq -r '.issues as $I | .issues[]
+  | select((.phase | IN("planning", "implementing", "testing", "reviewing", "accepting"))
+      and ((.status | IN("triage", "icebox", "backlog", "done")) | not)
+      and (.pullRequest.state // "") != "merged"
+      and ($I[.tree // ""] | . != null and .phase != "done" and .lingerUntil == null
+        and ((.status | IN("triage", "icebox", "backlog", "done")) | not)))
+  | .key' state.json |
+while read -r key; do
+  curl -sSf -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/$key"
+done |
+jq -s -r --slurpfile state state.json '$state[0].issues as $I
+  | def live($r): $r.phase != "done" and (($r.status | IN("triage", "icebox", "backlog", "done")) | not);
+    def open($c): if ($c.status | IN("done", "icebox")) then false
+      elif $I[$c.key].tree == $c.key then live($I[$c.key])
+      elif ($c.status | IN("backlog", "triage")) then $I[$c.key] == null or live($I[$c.key])
+      else true end;
+  .[] | [.children[]? | select(open(.)) | .key] as $open | select($open != [])
+  | "\(.key) \($I[.key].phase) tree=\($I[.key].tree) open=\($open | join(","))"'
+```
+
+The read takes each child's status from Dispatch, where the pass takes it from the daemon's copy of Dispatch's issues, which a boot's listing of the project refreshes (`record.ChildWaits`): a child filed since the daemon last listed is in the read, and reaches the pass once the deploy's boot has listed it.
+
 An earlier daemon reads this much of it:
 
 - **An issue in `awaiting_children`.**
@@ -3164,7 +3197,7 @@ The commits already stamped keep their line: it is in their messages, which noth
 A release at contract 94 holds the work a role is owed as numbers of the record rather than as one token carried on one outbox row.
 `phases` carries `entry`, `entry_task` and `entry_raised_at` — the entry the role of the issue's current phase stands on, the work of that entry, and when the transition raised it — and `claims` carries `given_entry` and `served_entry`, the entry of the last task the claim was queued and the entry its worker confirmed, with `pending_task_deliveries.entry` carrying the number from the start row to the claim.
 An issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from those columns where `phase.RoleFor` names a role for the issue's current phase (`internal/projection/project.go`), and the daemon sends the entry's own work to every role whose claim stands below the entry its `phases` row names, on each admission pass and on a sweep of its own each minute.
-Both keys are absent together for an issue in a phase no role works — `awaiting_person`, `done` and `held` — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
+Both keys are absent together for an issue in a phase no role works — `awaiting_person`, `awaiting_children`, `done` and `held` — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
 A root at `admitted` carried neither key at contract 94, when `phase.RoleFor` named no role for that phase;
 from contract 146 that phase is the architect's, so such a root carries its architect's two numbers by the same rules, and the two times the next paragraph names by its own.
 A caller from a pod whose claims record a contract below 94 is served the issues without either key (`withoutPhaseEntries` in `internal/api/shaping.go`).

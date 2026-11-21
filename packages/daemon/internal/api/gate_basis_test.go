@@ -128,9 +128,9 @@ func basisWorld(seq int64) statusRecorder {
 			sSpec:      {State: "approved", LatestVersion: 1, Version: new(1), By: basisAlice, Seq: 61, At: basisApprovedAt},
 		},
 		reviews: map[string][]dispatch.Review{
-			pSpec:         {{Version: 3, State: "approved", Kind: "person", Actor: basisAlice, At: basisApprovedAt}},
-			pVerification: {{Version: 2, State: "approved", Kind: "person", Actor: basisAlice, At: basisApprovedAt}},
-			sSpec:         {{Version: 1, State: "approved", Kind: "person", Actor: basisAlice, At: basisApprovedAt}},
+			pSpec:         {{Version: 3, State: "approved", Actor: basisAlice, At: basisApprovedAt}},
+			pVerification: {{Version: 2, State: "approved", Actor: basisAlice, At: basisApprovedAt}},
+			sSpec:         {{Version: 1, State: "approved", Actor: basisAlice, At: basisApprovedAt}},
 		},
 		versions: map[string]map[int]string{
 			pSpec:         {3: requirementBlocks("p1", "p2", "p3", "p:4")},
@@ -268,11 +268,11 @@ func TestBasisGateRefusals(t *testing.T) {
 		}, status: http.StatusConflict, code: "ROOT_VERSION_NOT_LATEST", says: []string{"version 5", "names version 4"}},
 		{name: "a person's changes request as R's newest review", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[rSpec] = dispatch.Approval{State: "changes_requested", LatestVersion: 4, Version: new(4), By: basisBob, Reason: new("split it")}
-			world.reviews[rSpec] = []dispatch.Review{{Version: 4, State: "changes_requested", Kind: "person", Actor: basisBob, Reason: "split it"}}
+			world.reviews[rSpec] = []dispatch.Review{{Version: 4, State: "changes_requested", Actor: basisBob, Reason: "split it"}}
 		}, status: http.StatusConflict, code: "ROOT_CHANGES_REQUESTED", says: []string{"changes request on version 4 by user:bob"}},
 		{name: "a changes request on R's v4 followed by v5 with an open approval request", change: func(world *statusRecorder, body map[string]any) {
 			world.approvals[rSpec] = dispatch.Approval{State: "awaiting", LatestVersion: 5, Version: new(4), By: basisBob, AskID: "ask-r5", WaitingOn: "human"}
-			world.reviews[rSpec] = []dispatch.Review{{Version: 4, State: "changes_requested", Kind: "person", Actor: basisBob, Reason: "split it"}}
+			world.reviews[rSpec] = []dispatch.Review{{Version: 4, State: "changes_requested", Actor: basisBob, Reason: "split it"}}
 			body["version"] = 5
 		}, status: http.StatusConflict, code: "ROOT_CHANGES_REQUESTED", says: []string{"changes request on version 4 by user:bob", "whatever its approval shows"}},
 
@@ -318,7 +318,7 @@ func TestBasisGateRefusals(t *testing.T) {
 		}, status: http.StatusConflict, code: "BASIS_NOT_APPROVED", says: []string{"no review and no open approval request at its latest version 3"}},
 		{name: "P's latest review a changes request", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[pSpec] = dispatch.Approval{State: "changes_requested", LatestVersion: 3, Version: new(3), By: basisBob, Seq: 23}
-			world.reviews[pSpec] = append([]dispatch.Review{{Version: 3, State: "changes_requested", Kind: "person", Actor: basisBob, Reason: "drop p3"}}, world.reviews[pSpec]...)
+			world.reviews[pSpec] = append([]dispatch.Review{{Version: 3, State: "changes_requested", Actor: basisBob, Reason: "drop p3"}}, world.reviews[pSpec]...)
 		}, status: http.StatusConflict, code: "BASIS_NOT_APPROVED", says: []string{"a changes request on version 3 by user:bob"}},
 		{name: "the person's approval of a version older than P's latest", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[pSpec] = dispatch.Approval{State: "stale", LatestVersion: 4, Version: new(3), By: basisAlice, Seq: 21}
@@ -326,11 +326,11 @@ func TestBasisGateRefusals(t *testing.T) {
 		{name: "a session's approval", change: func(world *statusRecorder, _ map[string]any) {
 			session := dispatch.Actor{Kind: "session", ID: "ses-outsider"}
 			world.approvals[pSpec] = dispatch.Approval{State: "approved", LatestVersion: 3, Version: new(3), By: session, Seq: 21}
-			world.reviews[pSpec] = []dispatch.Review{{Version: 3, State: "approved", Kind: "plan_review", Actor: session}}
+			world.reviews[pSpec] = []dispatch.Review{{Version: 3, State: "approved", Actor: session}}
 		}, status: http.StatusConflict, code: "BASIS_NOT_BY_PERSON", says: []string{"given by session:ses-outsider, not by a person"}},
 		{name: "Dispatch's own approval", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[pSpec] = dispatch.Approval{State: "approved", LatestVersion: 3, Version: new(3), By: dispatch.SettlementActor, Seq: 21}
-			world.reviews[pSpec] = []dispatch.Review{{Version: 3, State: "approved", Kind: "person", Actor: dispatch.SettlementActor}}
+			world.reviews[pSpec] = []dispatch.Review{{Version: 3, State: "approved", Actor: dispatch.SettlementActor}}
 		}, status: http.StatusConflict, code: "BASIS_NOT_BY_PERSON", says: []string{"given by system:document-settlement, not by a person"}},
 		{name: "a version other than P's approved one", change: func(_ *statusRecorder, body map[string]any) { body["basisVersion"] = 2 },
 			status: http.StatusConflict, code: "BASIS_VERSION_MISMATCH", says: []string{"approved at its latest version 3", "names version 2"}},
@@ -343,7 +343,7 @@ func TestBasisGateRefusals(t *testing.T) {
 		}, status: http.StatusConflict, code: "BASIS_REQUEST_NOT_OPEN", says: []string{"open approval request (ask ask-p4) at its latest version 4, waiting on the agent"}},
 		{name: "P's open request on a version that already holds a changes request", change: func(world *statusRecorder, body map[string]any) {
 			world.approvals[pSpec] = dispatch.Approval{State: "awaiting", LatestVersion: 4, Version: new(4), By: basisBob, AskID: "ask-p4", WaitingOn: "human"}
-			world.reviews[pSpec] = append([]dispatch.Review{{Version: 4, State: "changes_requested", Kind: "person", Actor: basisBob, Reason: "drop p3"}}, world.reviews[pSpec]...)
+			world.reviews[pSpec] = append([]dispatch.Review{{Version: 4, State: "changes_requested", Actor: basisBob, Reason: "drop p3"}}, world.reviews[pSpec]...)
 			body["basisVersion"] = 4
 		}, status: http.StatusConflict, code: "BASIS_REQUEST_NOT_OPEN", says: []string{"version 4 of LEGION-150's primary document", "changes_requested by user:bob"}},
 		{name: "P's primary document with no requirement block", change: func(world *statusRecorder, _ map[string]any) {
@@ -452,7 +452,7 @@ func TestBasisGateRefusals(t *testing.T) {
 func gUnderP(world *statusRecorder) {
 	world.withParent(basisP, basisG)
 	world.approvals[gSpec] = dispatch.Approval{State: "approved", LatestVersion: 5, Version: new(5), By: basisAlice, Seq: 51, At: basisApprovedAt}
-	world.reviews[gSpec] = []dispatch.Review{{Version: 5, State: "approved", Kind: "person", Actor: basisAlice, At: basisApprovedAt}}
+	world.reviews[gSpec] = []dispatch.Review{{Version: 5, State: "approved", Actor: basisAlice, At: basisApprovedAt}}
 	world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-120/spec#b-g1"))
 }
 
@@ -513,13 +513,13 @@ func TestBasisGateOpenings(t *testing.T) {
 		}},
 		{name: "R holding the person's approval of an older version of its own document", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[rSpec] = dispatch.Approval{State: "stale", LatestVersion: 4, Version: new(2), By: basisAlice, Seq: 5, At: basisApprovedAt}
-			world.reviews[rSpec] = []dispatch.Review{{Version: 2, State: "approved", Kind: "person", Actor: basisAlice}}
+			world.reviews[rSpec] = []dispatch.Review{{Version: 2, State: "approved", Actor: basisAlice}}
 		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) }},
 		{name: "a changes request on R's v2 followed by the person's approval of R's v3, with R at v4", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[rSpec] = dispatch.Approval{State: "stale", LatestVersion: 4, Version: new(3), By: basisAlice, Seq: 6, At: basisApprovedAt}
 			world.reviews[rSpec] = []dispatch.Review{
-				{Version: 3, State: "approved", Kind: "person", Actor: basisAlice},
-				{Version: 2, State: "changes_requested", Kind: "person", Actor: basisAlice, Reason: "name the rollback path"},
+				{Version: 3, State: "approved", Actor: basisAlice},
+				{Version: 2, State: "changes_requested", Actor: basisAlice, Reason: "name the rollback path"},
 			}
 		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect.session) }},
 		// P's live text past the version the person approved drops p2: the view is judged at the
@@ -559,7 +559,7 @@ func TestBasisGateOpenings(t *testing.T) {
 		// call records no basis, only the view fact every spec registration carries.
 		{name: "R's latest version approved by the person, with a basis named as well", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[rSpec] = dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(4), By: basisAlice, Seq: 7, At: basisApprovedAt}
-			world.reviews[rSpec] = []dispatch.Review{{Version: 4, State: "approved", Kind: "person", Actor: basisAlice}}
+			world.reviews[rSpec] = []dispatch.Review{{Version: 4, State: "approved", Actor: basisAlice}}
 		}, want: func(seq int64) intake.GateRegistered {
 			fact := basisFact(seq, architect.session)
 			fact.Basis = nil
@@ -646,7 +646,7 @@ func TestTheDecisionsStepsBasisGateIsTheAncestorsDecisionsDocument(t *testing.T)
 	withDecisions(statuses, "# Decisions\n\nNone yet.\n")
 	statuses.approvals[pDecisions] = dispatch.Approval{State: "approved", LatestVersion: 1, Version: new(1), By: basisAlice, Seq: 23, At: basisApprovedAt,
 		Role: dispatch.ArtifactRoleDecisions, Slug: dispatch.DecisionsSlug}
-	statuses.reviews[pDecisions] = []dispatch.Review{{Version: 1, State: "approved", Kind: "person", Actor: basisAlice, At: basisApprovedAt}}
+	statuses.reviews[pDecisions] = []dispatch.Review{{Version: 1, State: "approved", Actor: basisAlice, At: basisApprovedAt}}
 	body := basisBody(architect.grant(t))
 	body["step"], body["artifactId"], body["version"], body["basisArtifactId"], body["basisVersion"] = "decisions", rDecisions, 1, pDecisions, 1
 	if recorder := h.request(http.MethodPost, "/legion/v1/gates/register", body, nil); recorder.Code != http.StatusOK {

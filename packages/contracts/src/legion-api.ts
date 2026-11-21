@@ -876,11 +876,11 @@ const legionIssue = z.object({
    * each minute, so the two are equal for a role holding its work and differ for one the daemon
    * has still to reach. A root carries them as a child does, since the architect is the role
    * that works `admitted` (contract 146); both are absent together for a phase no role works —
-   * `awaiting_person`, `done` and `held` — and each is absent where it is 0, which is a role no
-   * entry has been raised for and one the daemon holds no claim row of; a daemon before contract
-   * 94 writes neither, and a caller in a pod whose plugin declares a contract below 94 is served
-   * the state with neither (the daemon's `withoutPhaseEntries`), which is why a reader takes both
-   * as optional. */
+   * `awaiting_person`, `awaiting_children`, `done` and `held` — and each is absent where it is 0,
+   * which is a role no entry has been raised for and one the daemon holds no claim row of; a
+   * daemon before contract 94 writes neither, and a caller in a pod whose plugin declares a
+   * contract below 94 is served the state with neither (the daemon's `withoutPhaseEntries`),
+   * which is why a reader takes both as optional. */
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
   /** The two times of a claim's handshake of the last entry it was queued a task of (contract

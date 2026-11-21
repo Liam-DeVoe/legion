@@ -47,8 +47,11 @@ type roleForReader struct {
 // at all because a check before it refuses that phase, which is what each named test holds it to. A
 // parent's wait on its open children (awaiting_children.go, dispatch://INFRA-3320) is of the last
 // kind: each of its readers runs only past record.OpenChildHolds, which refuses admitted, or on the
-// start a hold kept, which is never admitted's, and where one reads accepting's architect it starts
-// none (ReturnFromChildren) or holds accepting with no role told (StopForChildren), since the
+// start a hold kept, which is never admitted's. Where one reads accepting's architect it starts no
+// phase worker: the return of a parent whose pull request merged during the wait starts what a
+// move into accepting starts, a child's failed architect again and the accepting step's run
+// (ReturnFromChildren, through startEntered and startStandingStep in internal/workflow's
+// effects.go), and the stop holds accepting with no role told (StopForChildren), since the
 // architect's notice tells it. The release of a hold reads the held phase's role twice
 // (retryPhase), for the entry that phase stands on and for the restart, and a held phase is never
 // admitted. The owner walk reads no role: where it starts is its caller's to say

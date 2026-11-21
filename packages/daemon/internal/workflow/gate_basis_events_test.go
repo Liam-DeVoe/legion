@@ -761,6 +761,43 @@ func TestAPendingBasisOpensNothingOnARootThatLeftTheWorkflow(t *testing.T) {
 	}
 }
 
+// A step still waiting on an ancestor's request on a root out of the workflow, as a release that
+// does not end such waits at a root's leave leaves it (a rollback, then this release again), ends
+// with nobody told when that request closes with no approval, as the person's approval opens
+// nothing there (dispatch://INFRA-3320, R3 and R8): the root's tree runs nothing, so neither
+// architect has a step to hear of. The root is moved to the backlog in the store, with no leave of
+// this release, and the ancestor's close withdraws the request: the step stays closed, registered
+// on the root's own document with no basis and resting on nothing, and the close queues no
+// basis-ended notice, no resting-root notice, no message and no other row.
+func TestAPendingBasisOnARootOutOfTheWorkflowEndsWithNobodyToldWhenItsRequestCloses(t *testing.T) {
+	pool, _, apply := registeredPending(t)
+	leave(t, pool, gatedRoot, phase.Done, "backlog")
+	rows, messages := outboxRows(t, pool), messageBodies(t, pool)
+	if told := noticesOfKind(t, pool, basisAncestor, "resting-root"); len(told) != 1 {
+		t.Fatalf("resting-root notices once the root is on the backlog = %#v, want the pending registration's alone", told)
+	}
+
+	apply("request-withdrawn", intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval, Artifact: basisDoc,
+		State: "resolved", Actor: basisPerson, Mark: askSeq(61), Withdrawn: true})
+
+	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; gate.PendingOnBasis() || gate.Basis != nil || record.GateOpen(gate) ||
+		gate.ArtifactID != gateDoc || gate.LatestVersion != 4 || gate.RestsOnIssue(basisAncestor) {
+		t.Fatalf("the spec step = %#v, want its wait ended: closed at version 4 of the root's own document, with no basis and resting on nothing", gate)
+	}
+	if got := noticesOfKind(t, pool, gatedRoot, "basis-ended"); len(got) != 0 {
+		t.Fatalf("basis-ended notices of the root = %#v, want none: its architect is told nothing of a step out of the workflow", got)
+	}
+	if told := noticesOfKind(t, pool, basisAncestor, "resting-root"); len(told) != 1 {
+		t.Fatalf("resting-root notices after the close = %#v, want the pending registration's alone: the ancestor's architect hears nothing of a root out of the workflow", told)
+	}
+	if got := messageBodies(t, pool); !slices.Equal(got, messages) {
+		t.Fatalf("Dispatch messages after the close = %q, want %q: nothing is posted on a root out of the workflow", got, messages)
+	}
+	if got := outboxRows(t, pool); got != rows {
+		t.Fatalf("outbox rows after the close = %d, want the %d before it: the end of the wait queues nothing", got, rows)
+	}
+}
+
 // A registration that carries a basis on a root that has left the workflow takes no basis
 // (dispatch://INFRA-3320, R3 and R8): the root's architect can still be in the turn the leave
 // suspends, and its register_gate on an ancestor's approval, pending or standing, then lands after
