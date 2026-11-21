@@ -327,9 +327,12 @@
 # which prints the UNKNOWN `run` and writes it to --report (a usage error writes none). --report is
 # deleted when the run starts, so a report is
 # this run's or none. --report <file> writes {"run_at": "<RFC 3339>", "findings": [{"principal",
-# "right", "role", "resource", "permissions", "granted_at"}], "unknown": [{"step", "reason"}]} beside
-# the text, run_at being when the run began. `right` is the sentence the text prints; the rest are
-# its parts, for a reader that matches a finding against an accepted entry by principal and role:
+# "right", "role", "resource", "permissions", "granted_at"}], "unknown": [{"step", "reason"}],
+# "allowances": [{"flag", "value"}]} beside the text, run_at being when the run began. `allowances`
+# names each allowance the run was given (each --service-agent, each --rbac-only-member, and
+# --fleet none), each of which lets a principal or a reading pass, so a reader holds each one to
+# what was accepted; it is [] when there is none. `right` is the sentence the text prints; the rest
+# are its parts, for a reader that matches a finding against an accepted entry by principal and role:
 #   role         the IAM role (roles/container.admin), for an impersonation chain the role of its
 #                outermost link; for an RBAC finding the right's label (create
 #                serviceaccounts/token envoy-operator in envoy-operator); for the namespace and the
@@ -382,8 +385,9 @@ usage: operator-token-minters.sh [flags]
                              cloud grants nothing beside its RBAC; repeatable (without it, such a
                              member is UNKNOWN)
   --service-agent EMAIL      a Google service agent the deployment needs beside GKE's, GKE Hub's
-                             and Compute Engine's, allowed in the IAM steps; repeatable (any other
-                             service-<number>@gcp-sa-* account is judged as any account is)
+                             and Compute Engine's (service-<number>@gcp-sa-<product>.iam.
+                             gserviceaccount.com and nothing else), allowed in the IAM steps and
+                             written into --report; repeatable
   --namespace NS             the operator's namespace (default envoy-operator)
   --service-account NAME     the operator's Kubernetes ServiceAccount (default envoy-operator)
   --guarded NS/NAME          one more namespace and ServiceAccount the pool's Workload Identity binds
@@ -477,6 +481,22 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$POOL_PROJECT" ] || POOL_PROJECT="$PROJECT"
 case "$FLEET" in "" | none) ;; *) usage_error "--fleet takes none, not $FLEET" ;; esac
+# --service-agent allows a Google-managed service agent alone: an account any principal can act as
+# would turn a minter into a pass.
+for agent in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do
+  [[ "$agent" =~ ^service-[0-9]+@gcp-sa-[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] ||
+    usage_error "--service-agent takes a Google service agent, service-<number>@gcp-sa-<product>.iam.gserviceaccount.com, not $agent"
+done
+# allowances_json: the JSON array of each allowance the run was given, {flag, value}: each
+# --service-agent, each --rbac-only-member and --fleet none, which let a principal or a reading pass,
+# so a reader of --report can hold each one to what was accepted.
+allowances_json() {
+  {
+    for value in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do printf -- '--service-agent\t%s\n' "$value"; done
+    for value in ${RBAC_ONLY_MEMBERS[@]+"${RBAC_ONLY_MEMBERS[@]}"}; do printf -- '--rbac-only-member\t%s\n' "$value"; done
+    [ -z "${FLEET:-}" ] || printf -- '--fleet\t%s\n' "$FLEET"
+  } | jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t") | {flag: .[0], value: .[1]}]'
+}
 # The guarded pairs: the operator's first, then the broker's (--broker-workload), then each
 # --guarded, each once.
 GUARDED=("$NAMESPACE/$KSA")
@@ -530,7 +550,8 @@ if [ -n "$missing" ]; then
   reason="the parts $missing of $LIB cannot be read, so no step runs"
   echo "UNKNOWN run: $reason"
   [ -z "$REPORT" ] ||
-    jq -n --arg run_at "$RUN_AT" --arg reason "$reason" '{run_at: $run_at, findings: [], unknown: [{step: "run", reason: $reason}]}' >"$REPORT"
+    jq -n --arg run_at "$RUN_AT" --arg reason "$reason" --argjson allowances "$(allowances_json)" \
+      '{run_at: $run_at, findings: [], unknown: [{step: "run", reason: $reason}], allowances: $allowances}' >"$REPORT"
   echo "operator-token-minters: no step ran, 1 unknown: exit 2"
   FINISHED=true
   exit 2

@@ -2220,5 +2220,6 @@
       "step": "admin tag of ENVOY_OPERATOR",
       "reason": "agent-secrets secret show ENVOY_OPERATOR --json was refused: agent-secrets secret show: Secret Manager GetSecret answered PermissionDenied (missing permission: secretmanager.secrets.get; its message is not printed); looked in GCP Secret Manager project 123456789012"
     }
-  ]
+  ],
+  "allowances": []
 }
