@@ -751,8 +751,10 @@ func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name 
 	if name == "" {
 		return nil
 	}
+	// The server name is the monitor's words, so it is compared as it came and printed as the rule
+	// reads it.
 	var varz struct {
-		ServerName string `json:"server_name"`
+		ServerName redact.RemoteText `json:"server_name"`
 	}
 	status, body, err := guardGet(ctx, client, monURL+"/varz", "")
 	if err == nil && status != http.StatusOK {
@@ -764,7 +766,7 @@ func checkNATSServerName(ctx context.Context, client *http.Client, monURL, name 
 	if err != nil {
 		return fmt.Errorf("guard: nats check failed: %w", err)
 	}
-	if varz.ServerName != name {
+	if !varz.ServerName.Equal(name) {
 		return fmt.Errorf("guard: nats check failed: %s/varz server_name is %q, want %q", redactURL(monURL), varz.ServerName, name)
 	}
 	return nil

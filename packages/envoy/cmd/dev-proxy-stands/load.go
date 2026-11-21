@@ -230,18 +230,25 @@ func (o *loadOptions) speak(timeout time.Duration) (net.Conn, *bufio.Reader, err
 	return conn, bufio.NewReader(conn), nil
 }
 
-// ask writes one HTTP/1.1 request on an open connection and reads its answer.
+// ask writes one HTTP/1.1 request on an open connection and reads its answer, which carries the
+// request it answers (http.ReadResponse's req), its bearer among it, so a print of the answer's
+// words redacts what the request carried (redact.Carried).
 func (o *loadOptions) ask(conn net.Conn, reader *bufio.Reader, method, path string, body []byte, extra string) (*http.Response, error) {
 	request := method + " " + path + " HTTP/1.1\r\nHost: " + o.host + "\r\n"
+	sent, err := http.NewRequest(method, "https://"+o.host+path, nil)
+	if err != nil {
+		return nil, err
+	}
 	if o.header != "" {
 		request += "Authorization: Bearer " + o.header + "\r\n"
+		sent.Header.Set("Authorization", "Bearer "+o.header)
 	}
 	request += extra
 	request += fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))
 	if _, err := conn.Write(append([]byte(request), body...)); err != nil {
 		return nil, err
 	}
-	return http.ReadResponse(reader, nil)
+	return http.ReadResponse(reader, sent)
 }
 
 // one call: a connection of its own, a request on it and the whole answer read.
@@ -434,14 +441,16 @@ func (o *loadOptions) upgrade(stdout io.Writer) {
 		o.say(stdout, map[string]any{"error": err.Error()})
 		return
 	}
-	result := map[string]any{"status": answer.StatusCode, "upgrade": answer.Header.Get("Upgrade")}
+	// The Upgrade header and the frame that comes back are the service's words, or a stand-in's,
+	// so each prints as the rule reads it, with what the request carried redacted first.
+	result := map[string]any{"status": answer.StatusCode, "upgrade": redact.Header(answer, "Upgrade")}
 	if answer.StatusCode == http.StatusSwitchingProtocols {
 		if _, err := conn.Write([]byte("a frame from the command\n")); err != nil {
 			result["frames"] = "the command could not write: " + err.Error()
 		} else if line, err := reader.ReadString('\n'); err != nil {
 			result["frames"] = "no frame came back: " + err.Error()
 		} else {
-			result["frames"] = strings.TrimSpace(line)
+			result["frames"] = redact.Field(redact.Tokens(strings.TrimSpace(line), -1, redact.Carried(answer)...))
 		}
 	} else {
 		refused, _ := redact.ReadAnswer(answer, 200)

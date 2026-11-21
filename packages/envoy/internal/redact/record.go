@@ -227,3 +227,11 @@ func Carried(resp *http.Response) []string {
 	}
 	return nil
 }
+
+// Header is the first value of resp's header name as another party's words: a RemoteText held
+// with every credential the requests that led to resp carried redacted (Carried), which prints
+// only as the rule reads it and compares as it came. A client that names an answer's header in a
+// message names it through this, as it names the answer's body through Answer.Words.
+func Header(resp *http.Response, name string) RemoteText {
+	return NewRemoteText(resp.Header.Get(name)).WithoutTokens(Carried(resp)...)
+}

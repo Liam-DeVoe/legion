@@ -535,7 +535,7 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))
 	}
 	if response.StatusCode/100 != 2 {
-		return dispatchError(response.StatusCode, response.Status, []byte(answer.Words().String()))
+		return dispatchError(response.StatusCode, oauth2call.StatusLine(response.StatusCode), []byte(answer.Words().String()))
 	}
 	if into == nil {
 		return nil

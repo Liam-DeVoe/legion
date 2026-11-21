@@ -434,9 +434,10 @@ func unreadDefaultBranch(mapped mappedRepository, err error) refusedRepository {
 
 // limitAttributes is what a log line says of read's rate limit: how long GitHub asked the reader to
 // wait, the budget githubrest read the limit as spending ("" for a limit named by its body alone),
-// the answer's rate-limit headers as GitHub sent them ("" for each it did not send), so the line
-// names the limit that refused the read in GitHub's own words, and the read's error, whose body
-// names the installation the limit is on.
+// the answer's rate-limit headers as githubrest keeps them - each number GitHub sent written back
+// from it, and any other text as the rule reads it ("" for each it did not send,
+// githubrest.LimitHeaders) - so the line names the limit that refused the read as GitHub sent it,
+// and the read's error, whose body names the installation the limit is on.
 func limitAttributes(read limitedRead) []any {
 	limit := read.answer.Limit
 	return []any{"wait", read.wait.String(), "budget", string(read.answer.Budget), "rateLimit", limit.Limit, "rateLimitRemaining", limit.Remaining,

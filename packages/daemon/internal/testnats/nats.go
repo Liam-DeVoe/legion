@@ -331,7 +331,7 @@ func clientConnections() ([]Connection, error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s/connz answered %s", monitorURL, response.Status)
+		return nil, fmt.Errorf("GET %s/connz answered %s", monitorURL, oauth2call.StatusLine(response.StatusCode))
 	}
 	var connz struct {
 		Connections []struct {

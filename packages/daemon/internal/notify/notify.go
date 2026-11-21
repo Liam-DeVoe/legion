@@ -263,9 +263,9 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	if readErr != nil {
 		// Part of a refusal is no refusal: which one it was, a role nobody holds among them,
 		// is unknown, so it is the failure a request that never got its answer is.
-		return false, unreadAnswer("publish notice to "+topic, response.Status, readErr)
+		return false, unreadAnswer("publish notice to "+topic, oauth2call.StatusLine(response.StatusCode), readErr)
 	}
-	refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, excerpt(answered, cut))
+	refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, oauth2call.StatusLine(response.StatusCode), excerpt(answered, cut))
 	return false, publishRefusal(response.StatusCode, answered, refusal)
 }
 
@@ -402,7 +402,7 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	}
 	body, cut, _ := listenerAnswer(response, refusalBodyLimit)
 	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: listener returned %s: %s",
-		session, response.Status, excerpt(body, cut))
+		session, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))
 }
 
 // RoleHolder reads the session the listener names as role's holder, with that holder's state (GET
@@ -443,7 +443,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 	if response.StatusCode == http.StatusOK {
 		body, _, readErr := listenerAnswer(response, answerBodyLimit)
 		if readErr != nil {
-			return "", "", unreadAnswer("look up the holder of role "+role, response.Status, readErr)
+			return "", "", unreadAnswer("look up the holder of role "+role, oauth2call.StatusLine(response.StatusCode), readErr)
 		}
 		var answer listenerwire.RoleHolder
 		if json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
@@ -455,7 +455,7 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 	switch response.StatusCode {
 	case http.StatusNotFound:
 		if readErr != nil {
-			return "", "", unreadAnswer("look up the holder of role "+role, response.Status, readErr)
+			return "", "", unreadAnswer("look up the holder of role "+role, oauth2call.StatusLine(response.StatusCode), readErr)
 		}
 		var refusal listenerwire.RoleRefusal
 		if json.Unmarshal(body, &refusal) != nil {
@@ -469,9 +469,9 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		}
 		return "", "", refused(fmt.Sprintf("the listener's 404 names no holder and gives reason %q, not %q: %s", refusal.Reason, roleholder.Unclaimed, excerpt(body, cut)))
 	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, response.Status, excerpt(body, cut))
+		return "", "", fmt.Errorf("look up the holder of role %s: listener returned %s: %s", role, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))
 	}
-	return "", "", refused(fmt.Sprintf("listener returned %s: %s", response.Status, excerpt(body, cut)))
+	return "", "", refused(fmt.Sprintf("listener returned %s: %s", oauth2call.StatusLine(response.StatusCode), excerpt(body, cut)))
 }
 
 // RoleLookupRefused is a role lookup the listener answered the same way however often it is
@@ -610,7 +610,7 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 		// registration, so what the stop did is unknown (unreadAnswer).
 		body, _, readErr := listenerAnswer(response, refusalBodyLimit)
 		if readErr != nil {
-			return SessionDeleted{}, unreadAnswer("delete session "+session, response.Status, readErr)
+			return SessionDeleted{}, unreadAnswer("delete session "+session, oauth2call.StatusLine(response.StatusCode), readErr)
 		}
 		var kept listenerwire.DeleteSessionResponse
 		if json.Unmarshal(body, &kept) == nil && kept.Deleted != nil {
@@ -621,5 +621,5 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 		return SessionDeleted{Deleted: true}, nil
 	}
 	body, cut, _ := listenerAnswer(response, refusalBodyLimit)
-	return SessionDeleted{}, fmt.Errorf("delete session %s: listener returned %s: %s", session, response.Status, excerpt(body, cut))
+	return SessionDeleted{}, fmt.Errorf("delete session %s: listener returned %s: %s", session, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))
 }

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -75,7 +74,8 @@ func NewProber(opts ProberOptions) *Prober {
 
 // The listener's live-holder answer is listenerwire.RoleHolder (roleGetHandler,
 // packages/envoy/cmd/listener/api.go), whose `last_seen` is in unix milliseconds, and its 404 for
-// a role it will not name a holder of is listenerwire.RoleRefusal (writeRoleHolderError,
+// a role it will not name a holder of is listenerwire.RoleRefusal (writeRoleHolderError, read here
+// as oauth2call.RoleLookup, whose words print as the rule reads them;
 // packages/envoy/cmd/listener/role_holder.go): `reason` is `unclaimed` when nobody holds the role
 // and `holder_lapsed` when its holder is past the live window, and `holder_state` is that
 // holder's state, `unresponsive` or `gone`. A listener of an earlier release names neither. A
@@ -111,9 +111,11 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 				"url", p.lookup, "session", session, "error", readErr)
 			return Unknown
 		}
-		var refusal listenerwire.RoleRefusal
+		// The reason, the state and the holder are the listener's words, so they are compared as
+		// they came and logged as the rule reads them (oauth2call.RoleLookup).
+		var refusal oauth2call.RoleLookup
 		_ = read.Decode(&refusal)
-		if refusal.HolderState == notify.StateUnresponsive {
+		if refusal.HolderState.Equal(string(notify.StateUnresponsive)) {
 			p.log.Info("controller liveness: the controller role's holder is unresponsive, not gone; the controller is left as it is",
 				"url", p.lookup, "session", session, "reason", refusal.Reason, "lastSeen", refusal.LastSeen)
 			return Unknown
@@ -130,12 +132,12 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		p.log.Warn("controller liveness: "+reason, "url", p.lookup, "status", response.StatusCode)
 		return Unknown
 	}
-	var answer listenerwire.RoleHolder
-	if readErr != nil || read.Decode(&answer) != nil || answer.Holder == "" || answer.LastSeen == nil {
+	var answer oauth2call.RoleLookup
+	if readErr != nil || read.Decode(&answer) != nil || answer.Holder.IsEmpty() || answer.LastSeen == nil {
 		p.log.Warn("controller liveness: the Envoy listener answered the controller role lookup with an unreadable body", "url", p.lookup)
 		return Unknown
 	}
-	if answer.Holder != session {
+	if !answer.Holder.Equal(session) {
 		p.log.Info("controller liveness: another session holds the controller role; the recorded controller is gone",
 			"holder", answer.Holder, "session", session)
 		return Gone

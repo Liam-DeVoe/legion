@@ -9,7 +9,13 @@ body: |-
   `oauth2call.TokenSource`, so a refusal those libraries print holds the same reading. The
   launcher's exchange and the session proxy's IAM impersonation send through
   `oauth2call.RefusalClient`, so a refusal that echoes the subject token or the pod's bearer prints
-  neither.
+  neither. The daemon's clients name an answer's status by its code and the standard phrase
+  (`oauth2call.StatusLine`), never the reason phrase the answering party wrote: the turn reports,
+  Dispatch's client, the Envoy listener calls and the repository cache's reads. The repository a
+  cache's answer names, the reason, holder state and holder the controller probe logs of a role
+  lookup, and GitHub's rate-limit headers in the daemon's limit lines each print as the rule
+  reads them (`oauth2call.Header`, `oauth2call.RoleLookup`), a rate-limit header that is a number
+  as that number.
 time: 2026-11-18T10:48:14Z
 custom:
     Issue: pr4368

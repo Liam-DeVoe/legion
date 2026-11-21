@@ -744,8 +744,10 @@ func cacheHealthOf(ctx context.Context, client *http.Client, address string, rep
 		return repocache.Health{}, err
 	}
 	defer response.Body.Close()
-	if named := response.Header.Get(workspace.CacheRepositoryHeader); !strings.EqualFold(named, repo.String()) {
-		return repocache.Health{}, fmt.Errorf("GET %s/healthz answered %s naming the repository %q, not %s", address, response.Status, named, repo)
+	// The repository the answer names is its own words, so it is compared as it came and printed
+	// as the rule reads it (oauth2call.Header).
+	if named := oauth2call.Header(response, workspace.CacheRepositoryHeader); !named.EqualFold(repo.String()) {
+		return repocache.Health{}, fmt.Errorf("GET %s/healthz answered %s naming the repository %q, not %s", address, oauth2call.StatusLine(response.StatusCode), named, repo)
 	}
 	var health repocache.Health
 	answer, err := oauth2call.ReadAnswer(response, 1<<20)
@@ -753,7 +755,7 @@ func cacheHealthOf(ctx context.Context, client *http.Client, address string, rep
 		err = answer.Decode(&health)
 	}
 	if err != nil {
-		return repocache.Health{}, fmt.Errorf("GET %s/healthz answered %s with a body that is not the cache's health: %w", address, response.Status, err)
+		return repocache.Health{}, fmt.Errorf("GET %s/healthz answered %s with a body that is not the cache's health: %w", address, oauth2call.StatusLine(response.StatusCode), err)
 	}
 	return health, nil
 }

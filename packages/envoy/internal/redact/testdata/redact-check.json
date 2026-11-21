@@ -223,6 +223,22 @@
       {
         "holder": "(*github.com/sjawhar/envoy/internal/dispatch/embed.EntraTokenSource).exchange struct{Error redact.RemoteText \"json:\\\"error\\\"\"}",
         "test": "print-embed.EntraTokenSource.exchange.refusal"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/oauth2call.RoleLookup",
+        "test": "print-oauth2call.RoleLookup"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/loadtest.checkNATSServerName struct{ServerName redact.RemoteText \"json:\\\"server_name\\\"\"}",
+        "test": "print-loadtest.checkNATSServerName.varz"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/cireconcile.graphQLError",
+        "test": "print-cireconcile.graphQLError"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/cireconcile.graphQLAnswer",
+        "test": "print-cireconcile.graphQLAnswer"
       }
     ],
     "reflection": [
@@ -4463,6 +4479,580 @@
         "preimage": "[]byte(redact.Tokens(raw.String(), -1, redact.Carried(response)...))",
         "replacement": "[]byte(raw.String() + redact.Tokens(\"\", -1, redact.Carried(response)...))"
       }
+    },
+    {
+      "id": "agentloop-status-line-decide",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAProviderAnswerNamesItsStatusWithNoPhraseItWrote/decide-refused",
+      "production": "agentloop.Decide: a refusal's detail names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "github.com/sjawhar/envoy/agentloop.Decide",
+      "capture": "agentloop.status-line/decide-refused",
+      "mutation": {
+        "file": "packages/envoy/agentloop/decide.go",
+        "preimage": "redact.StatusLine(resp.StatusCode)",
+        "replacement": "resp.Status"
+      }
+    },
+    {
+      "id": "agentloop-status-line-redirect",
+      "requirement": "r3-each-site",
+      "package": "./agentloop",
+      "test": "TestAProviderAnswerNamesItsStatusWithNoPhraseItWrote/redirect",
+      "production": "agentloop modelTransport.client: a refused redirect names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "(*github.com/sjawhar/envoy/agentloop.modelTransport).client",
+      "capture": "agentloop.status-line/redirect",
+      "mutation": {
+        "file": "packages/envoy/agentloop/transport.go",
+        "preimage": "redact.StatusLine(req.Response.StatusCode)",
+        "replacement": "req.Response.Status"
+      }
+    },
+    {
+      "id": "going-status-line-coded",
+      "requirement": "r3-each-site",
+      "package": "./going",
+      "test": "TestAChatAnswerNamesItsStatusWithNoPhraseItWrote/coded",
+      "production": "going chatStatusError: a coded refusal names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "github.com/sjawhar/envoy/going.chatStatusError",
+      "capture": "going.status-line/coded",
+      "mutation": {
+        "file": "packages/envoy/going/chat.go",
+        "preimage": "redact.StatusLine(response.StatusCode), decoded.Error.Code)",
+        "replacement": "response.Status, decoded.Error.Code)"
+      }
+    },
+    {
+      "id": "going-status-line-uncoded",
+      "requirement": "r3-each-site",
+      "package": "./going",
+      "test": "TestAChatAnswerNamesItsStatusWithNoPhraseItWrote/uncoded",
+      "production": "going chatStatusError: an uncoded refusal names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "github.com/sjawhar/envoy/going.chatStatusError",
+      "capture": "going.status-line/uncoded",
+      "mutation": {
+        "file": "packages/envoy/going/chat.go",
+        "preimage": "HTTP %s\", redact.StatusLine(response.StatusCode))",
+        "replacement": "HTTP %s\", response.Status)"
+      }
+    },
+    {
+      "id": "going-status-line-frame",
+      "requirement": "r3-each-site",
+      "package": "./going",
+      "test": "TestAChatAnswerNamesItsStatusWithNoPhraseItWrote/frame",
+      "production": "going readChatStream: a frame that is not JSON names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "github.com/sjawhar/envoy/going.readChatStream",
+      "capture": "going.status-line/frame",
+      "mutation": {
+        "file": "packages/envoy/going/chat.go",
+        "preimage": "redact.StatusLine(response.StatusCode)",
+        "replacement": "response.Status"
+      }
+    },
+    {
+      "id": "embed-status-line-azure-coded",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestAnEmbeddingAnswerNamesItsStatusWithNoPhraseItWrote/azure-coded",
+      "production": "embed azureStatusError: a coded refusal names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/embed.azureStatusError",
+      "capture": "embed.status-line/azure-coded",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/embed/azure.go",
+        "preimage": "error code %q\", redact.StatusLine(response.StatusCode)",
+        "replacement": "error code %q\", response.Status"
+      }
+    },
+    {
+      "id": "embed-status-line-azure-uncoded",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestAnEmbeddingAnswerNamesItsStatusWithNoPhraseItWrote/azure-uncoded",
+      "production": "embed azureStatusError: an uncoded refusal names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/embed.azureStatusError",
+      "capture": "embed.status-line/azure-uncoded",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/embed/azure.go",
+        "preimage": "HTTP %s\", redact.StatusLine(response.StatusCode))",
+        "replacement": "HTTP %s\", response.Status)"
+      }
+    },
+    {
+      "id": "embed-status-line-entra-error",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestAnEmbeddingAnswerNamesItsStatusWithNoPhraseItWrote/entra-error",
+      "production": "embed EntraTokenSource.exchange: a refusal with an error names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/embed.EntraTokenSource).exchange",
+      "capture": "embed.status-line/entra-error",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/embed/azuretoken.go",
+        "preimage": "error %q\", redact.StatusLine(response.StatusCode)",
+        "replacement": "error %q\", response.Status"
+      }
+    },
+    {
+      "id": "embed-status-line-entra-bare",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestAnEmbeddingAnswerNamesItsStatusWithNoPhraseItWrote/entra-bare",
+      "production": "embed EntraTokenSource.exchange: a bare refusal names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/embed.EntraTokenSource).exchange",
+      "capture": "embed.status-line/entra-bare",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/embed/azuretoken.go",
+        "preimage": "HTTP %s\", redact.StatusLine(response.StatusCode))",
+        "replacement": "HTTP %s\", response.Status)"
+      }
+    },
+    {
+      "id": "oidc-status-line-key-set",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestAKeySetRefusalNamesItsStatusWithNoPhraseItWrote",
+      "production": "oidc Keys.read: a refused key-set read names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.Keys).read",
+      "capture": "oidc.status-line/key-set",
+      "mutation": {
+        "file": "packages/envoy/internal/oidc/keys.go",
+        "preimage": "redact.StatusLine(resp.StatusCode)",
+        "replacement": "resp.Status"
+      }
+    },
+    {
+      "id": "loadtest-status-line-dashboard-live",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADashboardProbeNamesEachStatusWithNoPhraseItWrote",
+      "production": "loadtest probeDashboard: the live socket's refusal names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "github.com/sjawhar/envoy/loadtest.probeDashboard",
+      "capture": "loadtest.status-line/dashboard",
+      "mutation": {
+        "file": "packages/envoy/loadtest/dashboard.go",
+        "preimage": "liveAnswer = redact.StatusLine(resp.StatusCode)",
+        "replacement": "liveAnswer = resp.Status"
+      }
+    },
+    {
+      "id": "loadtest-status-line-dashboard-sse",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestADashboardProbeNamesEachStatusWithNoPhraseItWrote",
+      "production": "loadtest probeDashboard: the SSE feed's refusal names the status by its code and standard phrase (redact.StatusLine)",
+      "function": "github.com/sjawhar/envoy/loadtest.probeDashboard",
+      "capture": "loadtest.status-line/dashboard",
+      "mutation": {
+        "file": "packages/envoy/loadtest/dashboard.go",
+        "preimage": "sseAnswer = redact.StatusLine(sseResp.StatusCode)",
+        "replacement": "sseAnswer = sseResp.Status"
+      }
+    },
+    {
+      "id": "claudebridge-status-line-words",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestARefusedTurnReportNamesItsStatusWithNoPhraseItWrote/words",
+      "production": "claudebridge decodeTurnOutcome: a refused report's line names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "github.com/sjawhar/legion/daemon/internal/claudebridge.decodeTurnOutcome",
+      "capture": "claudebridge.status-line/words",
+      "mutation": {
+        "file": "packages/daemon/internal/claudebridge/turnoutcome.go",
+        "preimage": "status := oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "status := response.Status"
+      }
+    },
+    {
+      "id": "claudebridge-status-line-outcome",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestARefusedTurnReportNamesItsStatusWithNoPhraseItWrote/outcome",
+      "production": "claudebridge decodeTurnOutcome: the outcome refusal's line names the status by its code and standard phrase (oauth2call.StatusLine)"
+    },
+    {
+      "id": "claudebridge-status-line-unread",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/claudebridge",
+      "test": "TestARefusedTurnReportNamesItsStatusWithNoPhraseItWrote/unread",
+      "production": "claudebridge decodeTurnOutcome: the unread refusal's line names the status by its code and standard phrase (oauth2call.StatusLine)"
+    },
+    {
+      "id": "dispatch-status-line-no-words",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestARefusalWithNoWordsNamesItsStatusWithNoPhraseItWrote",
+      "production": "daemon dispatch HTTPClient.request: a refusal with no words names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).request",
+      "capture": "dispatch.status-line/no-words",
+      "mutation": {
+        "file": "packages/daemon/internal/dispatch/client.go",
+        "preimage": "oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "response.Status"
+      }
+    },
+    {
+      "id": "notify-status-line-publish-unread",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote/publish-unread",
+      "production": "notify HTTPPublisher.publish: names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).publish",
+      "capture": "notify.status-line/publish-unread",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "unreadAnswer(\"publish notice to \"+topic, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "unreadAnswer(\"publish notice to \"+topic, response.Status"
+      }
+    },
+    {
+      "id": "notify-status-line-publish-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote/publish-refused",
+      "production": "notify HTTPPublisher.publish: names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).publish",
+      "capture": "notify.status-line/publish-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "topic, oauth2call.StatusLine(response.StatusCode), excerpt(answered, cut))",
+        "replacement": "topic, response.Status, excerpt(answered, cut))"
+      }
+    },
+    {
+      "id": "notify-status-line-registration-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote/registration-refused",
+      "production": "notify HTTPPublisher.ReadSessionRegistration: names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).ReadSessionRegistration",
+      "capture": "notify.status-line/registration-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "session, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))",
+        "replacement": "session, response.Status, excerpt(body, cut))"
+      }
+    },
+    {
+      "id": "notify-status-line-role-holder-unread-200",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote/role-holder-unread-200",
+      "production": "notify HTTPPublisher.RoleHolder: names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).RoleHolder",
+      "capture": "notify.status-line/role-holder-unread-200",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "answerBodyLimit)\n\t\tif readErr != nil {\n\t\t\treturn \"\", \"\", unreadAnswer(\"look up the holder of role \"+role, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "answerBodyLimit)\n\t\tif readErr != nil {\n\t\t\treturn \"\", \"\", unreadAnswer(\"look up the holder of role \"+role, response.Status"
+      }
+    },
+    {
+      "id": "notify-status-line-role-holder-unread-404",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote/role-holder-unread-404",
+      "production": "notify HTTPPublisher.RoleHolder: names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).RoleHolder",
+      "capture": "notify.status-line/role-holder-unread-404",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "case http.StatusNotFound:\n\t\tif readErr != nil {\n\t\t\treturn \"\", \"\", unreadAnswer(\"look up the holder of role \"+role, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "case http.StatusNotFound:\n\t\tif readErr != nil {\n\t\t\treturn \"\", \"\", unreadAnswer(\"look up the holder of role \"+role, response.Status"
+      }
+    },
+    {
+      "id": "notify-status-line-role-holder-busy",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote/role-holder-busy",
+      "production": "notify HTTPPublisher.RoleHolder: names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).RoleHolder",
+      "capture": "notify.status-line/role-holder-busy",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "role, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))",
+        "replacement": "role, response.Status, excerpt(body, cut))"
+      }
+    },
+    {
+      "id": "notify-status-line-role-holder-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote/role-holder-refused",
+      "production": "notify HTTPPublisher.RoleHolder: names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).RoleHolder",
+      "capture": "notify.status-line/role-holder-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "refused(fmt.Sprintf(\"listener returned %s: %s\", oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "refused(fmt.Sprintf(\"listener returned %s: %s\", response.Status"
+      }
+    },
+    {
+      "id": "notify-status-line-delete-unread",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote/delete-unread",
+      "production": "notify HTTPPublisher.DeleteSession: names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).DeleteSession",
+      "capture": "notify.status-line/delete-unread",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "unreadAnswer(\"delete session \"+session, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "unreadAnswer(\"delete session \"+session, response.Status"
+      }
+    },
+    {
+      "id": "notify-status-line-delete-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestAListenerAnswerNamesItsStatusWithNoPhraseItWrote/delete-refused",
+      "production": "notify HTTPPublisher.DeleteSession: names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).DeleteSession",
+      "capture": "notify.status-line/delete-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "session, oauth2call.StatusLine(response.StatusCode), excerpt(body, cut))",
+        "replacement": "session, response.Status, excerpt(body, cut))"
+      }
+    },
+    {
+      "id": "workspace-status-line-not-ready",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem/not-ready",
+      "production": "workspace cacheNotReady: a cache not ready names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.cacheNotReady",
+      "capture": "workspace.status-line/not-ready",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "cache, oauth2call.StatusLine(response.StatusCode)), nil",
+        "replacement": "cache, response.Status), nil"
+      }
+    },
+    {
+      "id": "workspace-status-line-token-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem/token-refused",
+      "production": "workspace askCache: a refused token names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.askCache",
+      "capture": "workspace.status-line/token-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "path, oauth2call.StatusLine(response.StatusCode))",
+        "replacement": "path, response.Status)"
+      }
+    },
+    {
+      "id": "workspace-status-line-repository",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem/repository",
+      "production": "workspace askCache: the repository the cache names, as the rule reads it (oauth2call.Header)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.askCache",
+      "capture": "workspace.status-line/repository",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "shown := named.String()",
+        "replacement": "shown := response.Header.Get(CacheRepositoryHeader)"
+      }
+    },
+    {
+      "id": "workspace-status-line-tar-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem/tar-refused",
+      "production": "workspace unpackCache: a refused tar names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.unpackCache",
+      "capture": "workspace.status-line/tar-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "response.Request.URL, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "response.Request.URL, response.Status"
+      }
+    },
+    {
+      "id": "sandbox-status-line-repository-status",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestACacheHealthNamesItsStatusAndRepositoryAsTheRuleReadsThem/repository",
+      "production": "sandbox cacheHealthOf: an answer naming another repository names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.cacheHealthOf",
+      "capture": "sandbox.status-line/repository",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/repocache.go",
+        "preimage": "not %s\", address, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "not %s\", address, response.Status"
+      }
+    },
+    {
+      "id": "sandbox-status-line-repository-header",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestACacheHealthNamesItsStatusAndRepositoryAsTheRuleReadsThem/repository",
+      "production": "sandbox cacheHealthOf: the repository the cache names, as the rule reads it (oauth2call.Header)",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.cacheHealthOf",
+      "capture": "sandbox.status-line/repository",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/repocache.go",
+        "preimage": "oauth2call.StatusLine(response.StatusCode), named, repo)",
+        "replacement": "oauth2call.StatusLine(response.StatusCode), response.Header.Get(workspace.CacheRepositoryHeader), repo)"
+      }
+    },
+    {
+      "id": "sandbox-status-line-body",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestACacheHealthNamesItsStatusAndRepositoryAsTheRuleReadsThem/body",
+      "production": "sandbox cacheHealthOf: a body that is no health names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.cacheHealthOf",
+      "capture": "sandbox.status-line/body",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/repocache.go",
+        "preimage": "health: %w\", address, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "health: %w\", address, response.Status"
+      }
+    },
+    {
+      "id": "controller-answer-words-unresponsive",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestAProbeLogsTheListenersWordsAsTheRuleReadsThem/unresponsive",
+      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (oauth2call.RoleLookup)"
+    },
+    {
+      "id": "controller-answer-words-gone",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestAProbeLogsTheListenersWordsAsTheRuleReadsThem/gone",
+      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (oauth2call.RoleLookup)"
+    },
+    {
+      "id": "controller-answer-words-another-holder",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestAProbeLogsTheListenersWordsAsTheRuleReadsThem/another-holder",
+      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (oauth2call.RoleLookup)"
+    },
+    {
+      "id": "loadtest-answer-words-nats-server-name",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestANATSServerNameNotTheOneAskedForPrintsAsTheRuleReadsIt",
+      "production": "loadtest checkNATSServerName: the monitor's server_name held as redact.RemoteText"
+    },
+    {
+      "id": "cireconcile-answer-words-errors",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestAGraphQLRefusalNamesGitHubsErrorsAsTheRuleReadsThem",
+      "production": "cireconcile errorText: GitHub's errors entries' type and message held as redact.RemoteText (graphQLError)"
+    },
+    {
+      "id": "delivery-answer-words-not-a-sha",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestACommitWithNoDateNamesItsSHAOnlyWhenItIsOne/not-a-sha",
+      "production": "delivery commitDate: a commit named by its sha only where it is forty hex digits",
+      "function": "github.com/sjawhar/envoy/internal/dispatch/delivery.commitDate",
+      "capture": "delivery.answer-words/not-a-sha",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/delivery/github_prs.go",
+        "preimage": "shown := \"(a sha that is not a commit's)\"",
+        "replacement": "shown := c.SHA"
+      }
+    },
+    {
+      "id": "delivery-answer-words-sha",
+      "requirement": "r4-unchanged",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestACommitWithNoDateNamesItsSHAOnlyWhenItIsOne/sha",
+      "production": "delivery commitDate: a commit's own sha still prints"
+    },
+    {
+      "id": "githubapp-answer-words-blob-encoding",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestABlobInAnotherEncodingNamesNoEncodingItWrote",
+      "production": "githubapp Client.blob: a blob in another encoding is named as one, its encoding printed nowhere",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/githubapp.Client).blob",
+      "capture": "githubapp.answer-words/blob-encoding",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/githubapp/client.go",
+        "preimage": "is in an encoding that is not base64\", sha, path)",
+        "replacement": "has encoding %q, want base64\", sha, path, payload.Encoding)"
+      }
+    },
+    {
+      "id": "dev-proxy-stands-answer-words-upgrade-header",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnUpgradeAnswerPrintsTheServicesWordsAsTheRuleReadsThem",
+      "production": "dev-airlock-stands load upgrade: the Upgrade header as the rule reads it (redact.Header)",
+      "function": "(*github.com/sjawhar/envoy/cmd/dev-proxy-stands.loadOptions).upgrade",
+      "capture": "dev-proxy-stands.answer-words/upgrade",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/load.go",
+        "preimage": "\"upgrade\": redact.Header(answer, \"Upgrade\")",
+        "replacement": "\"upgrade\": answer.Header.Get(\"Upgrade\")"
+      }
+    },
+    {
+      "id": "dev-proxy-stands-answer-words-upgrade-frame",
+      "requirement": "r3-each-site",
+      "package": "./cmd/dev-proxy-stands",
+      "test": "TestAnUpgradeAnswerPrintsTheServicesWordsAsTheRuleReadsThem",
+      "production": "dev-airlock-stands load upgrade: the frame that came back as the rule reads it, the request's bearer redacted first",
+      "function": "(*github.com/sjawhar/envoy/cmd/dev-proxy-stands.loadOptions).upgrade",
+      "capture": "dev-proxy-stands.answer-words/upgrade",
+      "mutation": {
+        "file": "packages/envoy/cmd/dev-proxy-stands/load.go",
+        "preimage": "redact.Field(redact.Tokens(strings.TrimSpace(line), -1, redact.Carried(answer)...))",
+        "replacement": "strings.TrimSpace(line)"
+      }
+    },
+    {
+      "id": "daemon-answer-words-rate-limit",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestARateLimitLineNamesGitHubsHeadersAsNumbersOrAsTheRuleReadsThem",
+      "production": "githubrest limitHeaders: each rate-limit header kept as its number, or as the rule reads it (oauth2call.Header), for limitAttributes and limitSummary",
+      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.limitHeaders",
+      "capture": "daemon.answer-words/rate-limit",
+      "mutation": {
+        "file": "packages/daemon/internal/githubrest/githubrest.go",
+        "preimage": "return oauth2call.Header(response, name).String()",
+        "replacement": "return value"
+      }
+    },
+    {
+      "id": "print-oauth2call.RoleLookup",
+      "requirement": "r2-held",
+      "package": "./oauth2call",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/oauth2call.RoleLookup",
+      "production": "github.com/sjawhar/envoy/oauth2call.RoleLookup: every printer at every placement"
+    },
+    {
+      "id": "print-loadtest.checkNATSServerName.varz",
+      "requirement": "r2-held",
+      "package": "./loadtest",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/loadtest.checkNATSServerName.varz",
+      "production": "github.com/sjawhar/envoy/loadtest.checkNATSServerName's varz: every printer at every placement"
+    },
+    {
+      "id": "print-cireconcile.graphQLError",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/cireconcile.graphQLError",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/cireconcile.graphQLError: every printer at every placement"
+    },
+    {
+      "id": "print-cireconcile.graphQLAnswer",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/cireconcile",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/cireconcile.graphQLAnswer",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/cireconcile.graphQLAnswer: every printer at every placement"
     }
   ],
   "bun": [
@@ -5801,6 +6391,51 @@
       "site": "agent-secrets-devrelay machine-approve's line for a looked-up state that is not pending, which printed the state as the rule reads it beside a broker address that is not clean",
       "source": "the class search of the retried-trade finding",
       "guard": "devrelay-machine-approve-state-fragment"
+    },
+    {
+      "site": "an answer's status line printed as the answering party wrote it (net/http Response.Status), at 33 sites of both modules",
+      "source": "the class search of the retried-trade finding",
+      "guard": "agentloop-status-line-decide"
+    },
+    {
+      "site": "the repository cache's repository header printed raw by a pod's fetch and the daemon's health read",
+      "source": "the class search of the retried-trade finding",
+      "guard": "workspace-status-line-repository"
+    },
+    {
+      "site": "the Envoy listener's reason, holder state and holder, decoded into plain strings and logged raw by the controller probe",
+      "source": "the class search of the retried-trade finding",
+      "guard": "controller-answer-words-gone"
+    },
+    {
+      "site": "the NATS monitor's server_name, decoded into a plain string and printed raw by the load test's guard",
+      "source": "the class search of the retried-trade finding",
+      "guard": "loadtest-answer-words-nats-server-name"
+    },
+    {
+      "site": "GitHub's GraphQL errors entries, decoded into plain strings and printed raw by the reconciler",
+      "source": "the class search of the retried-trade finding",
+      "guard": "cireconcile-answer-words-errors"
+    },
+    {
+      "site": "a commit's sha with no date, printed raw by the delivery fetch",
+      "source": "the class search of the retried-trade finding",
+      "guard": "delivery-answer-words-not-a-sha"
+    },
+    {
+      "site": "a note blob's encoding, printed raw by the GitHub App client",
+      "source": "the class search of the retried-trade finding",
+      "guard": "githubapp-answer-words-blob-encoding"
+    },
+    {
+      "site": "the WebSocket upgrade's Upgrade header and frame, printed raw by dev-airlock-stands",
+      "source": "the class search of the retried-trade finding",
+      "guard": "dev-proxy-stands-answer-words-upgrade-frame"
+    },
+    {
+      "site": "GitHub's rate-limit headers, logged raw by the daemon's limit lines",
+      "source": "the class search of the retried-trade finding",
+      "guard": "daemon-answer-words-rate-limit"
     }
   ]
 }

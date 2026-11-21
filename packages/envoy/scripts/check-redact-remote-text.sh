@@ -36,8 +36,9 @@
 # (every field the boundary sets is a closed value or the rule's reading), and the answer census
 # (outside internal/redact, every Go client reads an HTTP answer's body only through
 # redact.ReadAnswer or redact.StreamAnswer, whose redact.Answer holds the record of the request
-# it sent); (3) each mutation's
-# binding, before any test runs; then the steps above and (4) each row's test unmutated; then
+# it sent, and reads no answer's status line, which it names through redact.StatusLine); (3)
+# each mutation's binding, before any test runs; then the steps above and (4) each row's test
+# unmutated; then
 # (5) each mutation alone, whose test must fail at its designated assertion with a marker in the
 # output it captured there. `--controls` runs the gate's negative controls instead, each from a
 # passing baseline in its own scratch worktree.

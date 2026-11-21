@@ -121,10 +121,11 @@ func DialContext(ctx context.Context, url string, header http.Header, artifactID
 	connection, response, err := gws.DefaultDialer.DialContext(ctx, url, header)
 	if err != nil {
 		if response != nil {
-			// A refused handshake's response carries the server's reason in its status and body,
-			// whose first 512 bytes print as the rule reads them (redact.Answer.Words).
+			// A refused handshake's response carries the server's reason in its status and body:
+			// the status prints by its code and standard phrase (redact.StatusLine), and the first
+			// 512 bytes of the body as the rule reads them (redact.Answer.Words).
 			refused, _ := redact.ReadAnswer(response, 512)
-			return nil, fmt.Errorf("connect a peer to document %s: %s %q: %w", artifactID, response.Status, refused.Words(), err)
+			return nil, fmt.Errorf("connect a peer to document %s: %s %q: %w", artifactID, redact.StatusLine(response.StatusCode), refused.Words(), err)
 		}
 		return nil, fmt.Errorf("connect a peer to document %s: %w", artifactID, err)
 	}

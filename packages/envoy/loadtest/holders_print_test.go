@@ -70,6 +70,9 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	type errorCodeTwin = struct {
 		Code string `json:"code"`
 	}
+	type varzTwin = struct {
+		ServerName string `json:"server_name"`
+	}
 	for _, h := range []redacttest.Holder{
 		{
 			Name:     "loadtest.seedError",
@@ -86,6 +89,15 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			}{code},
 			Same:     errorCodeTwin{redacttest.Code},
 			Exported: errorCodeTwin{redacttest.Code},
+		},
+		{
+			Name: "loadtest.checkNATSServerName.varz",
+			Kind: "fields",
+			Boxed: struct {
+				ServerName redact.RemoteText `json:"server_name"`
+			}{code},
+			Same:     varzTwin{redacttest.Code},
+			Exported: varzTwin{redacttest.Code},
 		},
 		{
 			Name:     "loadtest.reqRec",

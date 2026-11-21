@@ -59,6 +59,20 @@ type GitHubRefusal struct {
 	Message RemoteText `json:"message"`
 }
 
+// RoleLookup is the Envoy listener's answer to a role lookup (GET /v1/roles/<role>) as a module
+// outside this one decodes it (Answer.Decode) to log what it names: the holder on a 200, and on a
+// 404 the reason no live session holds the role and the lapsed holder's state, the shapes of
+// listenerwire.RoleHolder and listenerwire.RoleRefusal. Each is the listener's words, or a
+// stand-in's, and prints only as the rule reads them, with the credentials the request carried
+// redacted; a caller that tells answers apart compares them (RemoteText.Equal). It is declared here,
+// beside the box, so its print test is this module's (holders_print_test.go).
+type RoleLookup struct {
+	Holder      RemoteText `json:"holder"`
+	HolderState RemoteText `json:"holder_state"`
+	Reason      RemoteText `json:"reason"`
+	LastSeen    *int64     `json:"last_seen"`
+}
+
 // ErrAnswerTooLarge is redact.ErrAnswerTooLarge.
 var ErrAnswerTooLarge = redact.ErrAnswerTooLarge
 
@@ -75,3 +89,7 @@ func StreamAnswer(resp *http.Response, limit int64) io.ReadCloser {
 // StatusLine is redact.StatusLine: an answer's status line as a message may print it, the code and
 // its standard reason phrase, never the phrase the answering party wrote (Response.Status).
 func StatusLine(code int) string { return redact.StatusLine(code) }
+
+// Header is redact.Header: the first value of an answer's header as another party's words, held
+// with the record of the requests that led to the answer, printed only as the rule reads it.
+func Header(resp *http.Response, name string) RemoteText { return redact.Header(resp, name) }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -162,11 +163,11 @@ type queryHead struct {
 	// whose commit no status was posted to.
 	statuses []object
 	// statusesRefused is the errors entries GitHub answered against the head commit's status
-	// field or a field under it, and nil where it answered none. Any entry costs the head its
-	// statuses alone: the head is answered whole by its check suites as any other head, the
-	// entries are named at WARN, and a head read over REST for its checks reads no statuses
-	// (walk.visitHead), since GitHub has just refused them.
-	statusesRefused []graphQLError
+	// field or a field under it, as one line of a log (errorText), and empty where it answered
+	// none. Any entry costs the head its statuses alone: the head is answered whole by its check
+	// suites as any other head, the entries are named at WARN, and a head read over REST for its
+	// checks reads no statuses (walk.visitHead), since GitHub has just refused them.
+	statusesRefused string
 	// overflow is why the query could not answer this head whole, and empty for a head it
 	// answered whole. A head with a reason here is read over REST instead and the objects above
 	// are not recorded: the head has more check suites than one query asks for, one of its
@@ -206,11 +207,13 @@ type graphQLAnswer struct {
 
 // graphQLError is one entry of GitHub's errors array. Path names the field the entry is about,
 // which is how a refusal of one head's Checks, or of its statuses alone, is told from a refusal
-// of the whole query (refusedPulls).
+// of the whole query (refusedPulls). Type and Message are GitHub's words, or a stand-in's, held as
+// redact.RemoteText, so errorText prints them only as the rule reads them, with the credentials
+// the query carried redacted.
 type graphQLError struct {
-	Type    string `json:"type"`
-	Path    []any  `json:"path"`
-	Message string `json:"message"`
+	Type    redact.RemoteText `json:"type"`
+	Path    []any             `json:"path"`
+	Message redact.RemoteText `json:"message"`
 }
 
 type graphQLPull struct {
@@ -355,7 +358,10 @@ func headCommit(pull *graphQLPull) *graphQLCommit {
 // over it. A refused pull request with no head commit never reaches here: the query cannot
 // answer that head at all, so its whole page is read over REST.
 func headOf(pull *graphQLPull, refused bool, statusesRefused []graphQLError) queryHead {
-	head := queryHead{number: pull.Number, statusesRefused: statusesRefused}
+	head := queryHead{number: pull.Number}
+	if len(statusesRefused) > 0 {
+		head.statusesRefused = errorText(statusesRefused)
+	}
 	commit := headCommit(pull)
 	if commit == nil {
 		return head
@@ -661,16 +667,16 @@ func underStatus(field []any) bool {
 	return len(field) >= len(statusField) && slices.Equal(field[:len(statusField)], statusField)
 }
 
-// errorText is GitHub's errors array as one line of a log, each entry's type and message: the
-// pass names what GitHub refused, which is the only way an operator can tell a permission the
-// App lacks from a query GitHub gave up on.
+// errorText is GitHub's errors array as one line of a log, each entry's type and message as the
+// rule reads them: the pass names what GitHub refused, which is the only way an operator can tell
+// a permission the App lacks from a query GitHub gave up on.
 func errorText(errors []graphQLError) string {
 	if len(errors) == 0 {
 		return "the answer held no repository and no error"
 	}
 	said := make([]string, 0, len(errors))
 	for _, entry := range errors {
-		said = append(said, strings.TrimSpace(entry.Type+" "+entry.Message))
+		said = append(said, strings.TrimSpace(entry.Type.String()+" "+entry.Message.String()))
 	}
 	return strings.Join(said, "; ")
 }

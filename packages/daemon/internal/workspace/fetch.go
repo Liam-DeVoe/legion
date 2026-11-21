@@ -631,7 +631,7 @@ func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Durat
 	}
 	cache := strings.TrimSuffix(request.CacheURL, "/")
 	if response.StatusCode != http.StatusOK {
-		return fmt.Sprintf("GET %s/healthz answered %s", cache, response.Status), nil
+		return fmt.Sprintf("GET %s/healthz answered %s", cache, oauth2call.StatusLine(response.StatusCode)), nil
 	}
 	var health struct {
 		Ready bool `json:"ready"`
@@ -668,11 +668,13 @@ func askCache(ctx context.Context, request FetchRequest, path string, withToken 
 		return nil, err
 	}
 	if withToken && response.StatusCode == http.StatusUnauthorized {
-		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s: it is not the cache whose token this pod holds", request.CacheURL, cache, path, response.Status)
+		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s: it is not the cache whose token this pod holds", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode))
 	}
-	if named := strings.TrimSpace(response.Header.Get(CacheRepositoryHeader)); !strings.EqualFold(named, request.Repo.String()) {
-		shown := named
-		if shown == "" {
+	// The repository the answer names is its own words, so it is compared as it came and printed
+	// as the rule reads it (oauth2call.Header).
+	if named := oauth2call.Header(response, CacheRepositoryHeader); !named.EqualFold(request.Repo.String()) {
+		shown := named.String()
+		if named.IsEmpty() {
 			shown = `""`
 		}
 		return response, fmt.Errorf("the repository cache %s is the repository cache of %s, not of %s", request.CacheURL, shown, request.Repo)
@@ -711,7 +713,7 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 		return 0, OutsideVolume(stream.stalledBy(err))
 	}
 	if response.StatusCode != http.StatusOK {
-		return 0, OutsideVolume(fmt.Errorf("GET %s answered %s", response.Request.URL, response.Status))
+		return 0, OutsideVolume(fmt.Errorf("GET %s answered %s", response.Request.URL, oauth2call.StatusLine(response.StatusCode)))
 	}
 	// The tar is data unpacked as it arrives (oauth2call.StreamAnswer), as long as the
 	// repository needs; FeedEntry bounds what it writes.

@@ -209,7 +209,7 @@ func (c Client) refusal(method string, target *url.URL, response *http.Response,
 // so both read GitHub's answers one way.
 func AnswerOf(method, path string, response *http.Response, body []byte) *Answer {
 	refused := &Answer{Method: method, Path: path, Status: response.StatusCode, Body: strings.TrimSpace(string(body)),
-		RateLimited: RateLimited(response, body), RetryAfter: retryAfter(response, body, time.Now()), Limit: limitHeaders(response.Header)}
+		RateLimited: RateLimited(response, body), RetryAfter: retryAfter(response, body, time.Now()), Limit: limitHeaders(response)}
 	if refused.RateLimited {
 		refused.Budget = spent(response.Header, body)
 	}
@@ -343,11 +343,14 @@ type Answer struct {
 	Limit       LimitHeaders
 }
 
-// LimitHeaders is the rate-limit headers of a GitHub answer as GitHub sent them, "" for each it did
-// not send: Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset (an epoch
-// second) and X-RateLimit-Resource. RetryAfter and Budget are what the client reads from them and
-// decides by; these decide nothing, and are kept as received so that a log of a refusal names the
-// limit that refused it in GitHub's own words, including where they disagree with the body.
+// LimitHeaders is the rate-limit headers of a GitHub answer, "" for each it did not send:
+// Retry-After, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset (an epoch second) and
+// X-RateLimit-Resource. RetryAfter and Budget are what the client reads from them and decides by;
+// these decide nothing, and are kept so that a log of a refusal names the limit that refused it as
+// GitHub sent it, including where it disagrees with the body. A header is the answering party's
+// own words, so each is kept as the number it is written back from where it parses as one (an
+// HTTP date for Retry-After), and otherwise as the rule reads it (oauth2call.Header): a
+// resource's name, and anything a stand-in wrote in GitHub's place.
 type LimitHeaders struct {
 	RetryAfter string
 	Limit      string
@@ -356,11 +359,21 @@ type LimitHeaders struct {
 	Resource   string
 }
 
-// limitHeaders is headers' rate-limit headers as GitHub sent them.
-func limitHeaders(headers http.Header) LimitHeaders {
+// limitHeaders is response's rate-limit headers as LimitHeaders keeps them.
+func limitHeaders(response *http.Response) LimitHeaders {
+	read := func(name string) string {
+		value := strings.TrimSpace(response.Header.Get(name))
+		if n, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return strconv.FormatInt(n, 10)
+		}
+		if at, err := http.ParseTime(value); err == nil && name == "Retry-After" {
+			return at.UTC().Format(http.TimeFormat)
+		}
+		return oauth2call.Header(response, name).String()
+	}
 	return LimitHeaders{
-		RetryAfter: headers.Get("Retry-After"), Limit: headers.Get("X-RateLimit-Limit"), Remaining: headers.Get("X-RateLimit-Remaining"),
-		Reset: headers.Get("X-RateLimit-Reset"), Resource: headers.Get("X-RateLimit-Resource"),
+		RetryAfter: read("Retry-After"), Limit: read("X-RateLimit-Limit"), Remaining: read("X-RateLimit-Remaining"),
+		Reset: read("X-RateLimit-Reset"), Resource: read("X-RateLimit-Resource"),
 	}
 }
 

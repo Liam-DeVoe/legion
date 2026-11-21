@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -243,7 +244,8 @@ func fetchAttributionFacts(ctx context.Context, client *githubapp.Client, owner,
 
 // commitDate reads one commit's authored time: commit.author.date, or commit.committer.date when
 // GitHub reports no author for the commit (an unlinked email still carries a committer date).
-// Neither present is a malformed answer.
+// Neither present is a malformed answer, whose error names the commit by its sha only where the
+// sha is one, forty hex digits (commitSHA): the sha is GitHub's words, or a stand-in's.
 func commitDate(c commitPayload) (time.Time, error) {
 	if c.Commit.Author != nil {
 		return c.Commit.Author.Date, nil
@@ -251,8 +253,15 @@ func commitDate(c commitPayload) (time.Time, error) {
 	if c.Commit.Committer != nil {
 		return c.Commit.Committer.Date, nil
 	}
-	return time.Time{}, fmt.Errorf("commit %s carries neither an author nor a committer date", c.SHA)
+	shown := "(a sha that is not a commit's)"
+	if commitSHA.MatchString(c.SHA) {
+		shown = c.SHA
+	}
+	return time.Time{}, fmt.Errorf("commit %s carries neither an author nor a committer date", shown)
 }
+
+// commitSHA is a commit's sha as GitHub writes one: forty lowercase hex digits.
+var commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func labelNames(labels []githubLabel) []string {
 	names := make([]string, len(labels))
