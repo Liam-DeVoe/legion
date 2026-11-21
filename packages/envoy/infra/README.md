@@ -3276,8 +3276,12 @@ workflows, so its done entry completes the record that `hold release` needs.
   it. A listing it cannot complete is `UNKNOWN`. It reads the session consumers the hold records,
   after the hold's barrier on their bucket. A consumer in a family's fresh form, `<base>~<nuid>`, is
   kept only when a selection record names it: under a hold no creator runs, so an unrecorded one
-  is a crashed create's orphan, and the census removes it and names it. The census writes, so it
-  runs only while the row is `held`; `check` is the read-only word.
+  is a crashed create's orphan, and the census removes it and names it. A consumer of a family
+  whose store is gone (its database no longer exists), in its own name or its fresh form, is left
+  as it is, whatever its configuration, and printed `LEFT` with why: the records that alone tell an
+  orphan from a selected name went with the store, which is no evidence to delete anything. A `LEFT`
+  line is neither a change nor a failure. The census writes, so it runs only while the row is
+  `held`; `check` is the read-only word.
 
 `check`'s token file holds the measurement job's platform token, presented as user `service`. Its
 settings are `--replicas`, `--stream-max-bytes` and `--session-max-age`, which default to
