@@ -2,8 +2,8 @@
 
 package main
 
-// relay_socket_live_test.go holds rows 1-8 of the relay socket (relay_socket.go) against what a
-// deployment runs:
+// relay_socket_live_test.go holds rows 1-8 of the relay socket (relay_socket.go), and row 5b, an
+// owner's Reset, against what a deployment runs:
 //
 //   - nats-server at testnats.HubImage whose only users are the two edge replicas', each holding
 //     natsgrant.Edge for its machine id, and Dispatch's, holding natsgrant.Dispatch, which creates
@@ -229,11 +229,13 @@ type relayLiveSession struct {
 	id     string
 	key    *ecdsa.PrivateKey
 	signer *http.Client
-	// login is the broker client the device login ran through, machine its token pair, and
-	// renewed when that pair was last issued; nil on a stub rig's session.
-	login   *brokertest.Client
-	machine *oauth2.Token
-	renewed time.Time
+	// login is the broker client the device login ran through, credential the launcher
+	// credential its approval minted, machine its token pair, and renewed when that pair was last
+	// issued; nil on a stub rig's session.
+	login      *brokertest.Client
+	credential string
+	machine    *oauth2.Token
+	renewed    time.Time
 }
 
 // newSession is a session whose requests are signed with a key of its own, and no device login.
@@ -255,7 +257,7 @@ func (r *relayLiveRig) login(t *testing.T, id, person string) *relayLiveSession 
 	session.login.DPoP = brokerclient.NewDPoPTransport
 	session.login.UIToken = r.broker.UIToken
 	authorization := session.login.DeviceLogin(t, session.key, person, "edge-live-"+strings.ReplaceAll(id, "_", "-"))
-	session.login.ApproveMachineLogin(t, person, authorization.UserCode)
+	session.credential = session.login.ApproveMachineLogin(t, person, authorization.UserCode)
 	session.machine, err = session.login.DeviceToken(t, session.key, authorization)
 	if err != nil {
 		t.Fatalf("redeem %s's device login: %v", person, err)
@@ -342,6 +344,16 @@ func (r *relayLiveRig) revoke(t *testing.T, token string) {
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("the revoke was answered %d %s", response.StatusCode, body)
+	}
+}
+
+// revokeLogin ends s's device login at the broker, as Dispatch relays an owner's Reset or a
+// removal from the project's list: the person's revoke of the machine login they approved, which
+// ends every token traded from it.
+func (r *relayLiveRig) revokeLogin(t *testing.T, s *relayLiveSession, person string) {
+	t.Helper()
+	if status, body := r.broker.UI(t, http.MethodPost, "/v1/launcher-credentials/"+s.credential+"/revoke-by-approver", map[string]any{"approver": person}); status != http.StatusOK {
+		t.Fatalf("the revoke of %s's device login was answered %d %s", s.id, status, body)
 	}
 }
 
@@ -679,6 +691,41 @@ func TestAnOpenSocketClosesWhenItsTokenIsRevoked(t *testing.T) {
 	rig.publish(t, s.id)
 	if _, response, err := rig.dial(t, s, rig.b, token.token); err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("an upgrade with the revoked token = %v (%s), want 401", err, describeUpgrade(response))
+	}
+	rig.requireNoViolation(t)
+}
+
+// Row 5b: an owner's Reset, as a removal does, makes Dispatch relay the broker's revoke of each
+// device login the person approved (POST /v1/launcher-credentials/{id}/revoke-by-approver), which
+// ends every token traded from it. The open socket closes 4403 within relayLiveCloseBound of the
+// revoke, long before its token's expiry; the traded token opens no socket again, and the login's
+// refresh is refused, so the machine trades for no other token. Control, in the same row: the other
+// person's socket, whose login stands, stays open; and the check loop removed, the socket stays
+// open past the revoke and the row fails naming how long it waited, as row 4's.
+func TestAnOpenSocketClosesAfterAResetRevokesItsLogin(t *testing.T) {
+	t.Parallel()
+	rig := newRelayLiveRig(t, relayLiveOptions{})
+	reset := rig.login(t, "ses_live_reset", relayLivePerson)
+	kept := rig.login(t, "ses_live_reset_kept", relayLiveOtherPerson)
+	resetToken, keptToken := rig.mustTrade(t, reset), rig.mustTrade(t, kept)
+	resetClient, keptClient := rig.open(t, reset, resetToken.token), rig.open(t, kept, keptToken.token)
+	rig.register(t, reset, resetToken.token, "epoch-1")
+
+	rig.revokeLogin(t, reset, relayLivePerson)
+	revoked := time.Now()
+	closed := requireClosed(t, resetClient, relayLiveCloseBound, relaySocketCloseRefused, relaySocketReasonRefused, relayLivePerson+"'s device login's revoke")
+	if closed.After(resetToken.expires) {
+		t.Fatalf("the socket closed at %s, after its token's expiry %s: the revoke closed nothing", closed, resetToken.expires)
+	}
+	t.Logf("the socket closed %s after the revoke of the device login", closed.Sub(revoked).Round(time.Millisecond))
+	if _, response, err := rig.dial(t, reset, rig.b, resetToken.token); err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("an upgrade with the token traded from the revoked login = %v (%s), want 401", err, describeUpgrade(response))
+	}
+	if _, err := reset.login.Refresh(t, reset.key, reset.machine); err == nil {
+		t.Fatal("the revoked device login's refresh was answered with a token, want it refused")
+	}
+	if window := min(relayLiveCloseBound, time.Until(keptToken.expires)-time.Second); window > 0 {
+		keptClient.stillOpen(window, relayLiveOtherPerson+"'s socket, whose login stands")
 	}
 	rig.requireNoViolation(t)
 }
