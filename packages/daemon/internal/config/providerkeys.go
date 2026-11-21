@@ -105,8 +105,8 @@ type secretsStatus struct {
 
 // readProviderKeyFile is one entry's value from the file it names, read by
 // ReadPrivateSecretPointer's rules, as every other secret file the daemon reads: refused, naming the
-// file and never its contents, when it cannot be read, is not a regular file, holds nothing, or is
-// readable by its group or others.
+// entry's variable, and the file where it was opened, never its contents, when it cannot be read,
+// is not a regular file, holds nothing, or is readable by its group or others.
 func readProviderKeyFile(key ProviderKey, _ []string, _ *slog.Logger) (string, error) {
 	return ReadPrivateSecretPointer("provider_keys."+key.Env, key.File)
 }

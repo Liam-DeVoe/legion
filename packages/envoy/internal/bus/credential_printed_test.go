@@ -3,6 +3,7 @@ package bus
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -89,14 +91,17 @@ func lookupOf(values map[string]string) func(string) (string, bool) {
 }
 
 // TestTheBusCredentialPrintsNoSeedOrToken: the bus prints no part of the NATS credential its
-// environment names. A made-up nkey seed, an account's seed, the seed with a letter mistyped and a
-// made-up service token go where a person could put them, and the error of each refusal
-// credential.go makes - both identities set, a variable set but empty, a file missing, unreadable
-// or empty, a value that is not an nkey seed, a seed that is not a user's - holds no run of
-// printedRun or more characters of any of them, and names the variable, and the file where there
-// is one. A seed's public key may print. The same holds for a server URL nats.go would read other
-// than as written, on a run that may reach remote NATS (ENVOY_ALLOW_REMOTE_NATS=1, as deployments
-// set it), each refused naming the URL by its position alone: one naming the token as its user
+// environment names. A made-up nkey seed, an account's seed, the seed with a letter mistyped, a
+// made-up service token and a made-up opaque token go where a person could put them, and the error
+// of each refusal credential.go makes - both identities set, a variable set but empty, a file
+// missing, unreadable or empty, the seed, the opaque token or the service token pasted where the
+// path of the seed's or the service token's file goes, a value that is not an nkey seed, a seed
+// that is not a user's - holds no run of printedRun or more characters of any of them, and names
+// the variable, and the file where it was read; a file that could not be read is named by its
+// variable and the system's reason, never by its path. A seed's public key may print. The same
+// holds for a server URL nats.go would read other than as written, on a run that may reach remote
+// NATS (ENVOY_ALLOW_REMOTE_NATS=1, as deployments set it), each refused naming the URL by its
+// position alone: one naming the token as its user
 // that does not parse, one with the token in its query, ones whose password holds a "/", "?", "#"
 // or space (which url.Parse reads as a port it quotes, or as userinfo it cannot read), one naming a
 // token that holds a "/" as its user (which parses, the token's head its host), and the pieces of
@@ -104,15 +109,20 @@ func lookupOf(values map[string]string) func(string) (string, bool) {
 // whose head is all digits and a token's, whose second piece names no scheme, and a token's whose
 // second piece names one nats.go does not dial; and a websocket URL with the token in its query
 // whose path stops parsing once nats.go's handshake decodes it, and the same URL written with no
-// scheme after a first ws:// URL, which nats.go gives the pool's ws scheme. The bus trims its list
-// before nats.go reads Servers as written, so a URL with white space around it connects. Then
-// every line the bus logs through slog while test servers refuse the connection holds none of
-// them: a seed's user the restarted server no longer admits, a service token the server refuses from the
-// first connect, and a token written as the server URL's user name - refused; admitted by a
-// server that then reports a slow consumer, stops and starts again; and dialled where nothing
-// answers. Each flow's lines are required, so a run that logged nothing cannot pass, and every
-// client is closed and its close logged before the lines are read. The rows that read an
-// unreadable file skip under root, which reads a 0000 file.
+// scheme after a first ws:// URL, which nats.go gives the pool's ws scheme. A token holding a
+// comma and then nats://, tls://, ws:// or wss://, split as every caller splits its list, leaves
+// its head a URL whose host is a piece of the token, and the URL after it one that names a NATS
+// scheme, which the rules let through: on a run that has not opted into remote NATS the refusal of
+// that host names it by its position alone, and the failed-reconnect line of such a list, whose
+// head's lookup failed, names the servers by their count and the failure by its class. The bus
+// trims its list before nats.go reads Servers as written, so a URL with white space around it
+// connects. Then every line the bus logs through slog while test servers refuse the connection
+// holds none of them: a seed's user the restarted server no longer admits, a service token the
+// server refuses from the first connect, and a token written as the server URL's user name -
+// refused; admitted by a server that then reports a slow consumer, stops and starts again; and
+// dialled where nothing answers. Each flow's lines are required, so a run that logged nothing
+// cannot pass, and every client is closed and its close logged before the lines are read. The rows
+// that read an unreadable file skip under root, which reads a 0000 file.
 func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 	seed, public := madeUpSeed(t, nkeys.PrefixByteUser, "a made-up user seed")
 	account, _ := madeUpSeed(t, nkeys.PrefixByteAccount, "a made-up account seed")
@@ -139,6 +149,15 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 	// A token holding a comma followed by a scheme, whose second piece names one nats.go does not
 	// dial.
 	schemedToken := "madeUpNatsToken,x://" + tail
+	// An opaque token, and tokens holding a comma and then each scheme NATS servers are written
+	// with, whose head is a host name and whose piece after the comma names that scheme.
+	opaqueRaw := sha256.Sum256([]byte("a made-up opaque token pasted as a path"))
+	opaque := "madeUpOpaqueToken" + hex.EncodeToString(opaqueRaw[:])
+	splitHead := "madeUpNatsTokenHead" + hex.EncodeToString(slashed[:8])
+	splitTokens := map[string]string{}
+	for _, scheme := range []string{"nats", "tls", "ws", "wss"} {
+		splitTokens[scheme] = splitHead + "," + scheme + "://madeUpNatsTokenTail" + hex.EncodeToString(slashed[8:16])
+	}
 	credentials := []printedCredential{
 		{"the made-up seed", seed}, {"the made-up account seed", account}, {"the mistyped seed", mistyped}, {"the made-up service token", token},
 		{"the made-up password holding a /", slashedPassword}, {"the made-up password holding a ?", queryPassword},
@@ -146,7 +165,15 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 		{"the made-up password holding a comma", commaPassword}, {"the made-up token holding a /", slashedToken},
 		{"the made-up password holding a comma after digits", digitsPassword}, {"the made-up token holding a comma", commaToken},
 		{"the made-up password that parses", plainPassword}, {"the made-up token holding a comma and a scheme", schemedToken},
+		{"the made-up opaque token", opaque},
 	}
+	for scheme, split := range splitTokens {
+		credentials = append(credentials, printedCredential{"the made-up token holding a comma and " + scheme + "://", split})
+	}
+	// splitURLs is the server URL naming the token that holds a comma and scheme:// as its user, split
+	// as every caller splits its list.
+	splitURLs := func(scheme string) []string { return strings.Split("nats://"+splitTokens[scheme]+"@127.0.0.1:1", ",") }
+	fileUnread := func(variable string) []string { return []string{variable + " names", "could not be read", "open: "} }
 	unparsed := []string{"NATS server URL 1 of 1 cannot be read", "does not parse as a URL"}
 	remote := map[string]string{AllowRemoteEnvVar: "1"}
 	// withPassword is a server URL whose user legion has password.
@@ -192,15 +219,29 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 			{name: "NATS_NKEY_SEED set but blank", env: map[string]string{NkeySeedEnvVar: "  "},
 				names: []string{NkeySeedEnvVar, "set but empty"}},
 			{name: "a service token file that is not there", env: map[string]string{ServiceTokenFileEnvVar: missingToken},
-				names: []string{ServiceTokenFileEnvVar, missingToken, "no such file"}},
+				names: append(fileUnread(ServiceTokenFileEnvVar), "no such file")},
 			{name: "a service token file that cannot be read", env: map[string]string{ServiceTokenFileEnvVar: unreadableToken}, unreadable: true,
-				names: []string{ServiceTokenFileEnvVar, unreadableToken, "permission denied"}},
+				names: append(fileUnread(ServiceTokenFileEnvVar), "permission denied")},
 			{name: "an empty service token file", env: map[string]string{ServiceTokenFileEnvVar: emptyToken},
 				names: []string{ServiceTokenFileEnvVar, emptyToken, "is empty"}},
 			{name: "a seed file that is not there", env: map[string]string{nkeySeedFileVariable: missingSeed, NkeySeedEnvVar: seed},
-				names: []string{nkeySeedFileVariable, missingSeed, "could not be read"}},
+				names: append(fileUnread(nkeySeedFileVariable), "no such file")},
 			{name: "a seed file that cannot be read", env: map[string]string{nkeySeedFileVariable: unreadableSeed}, unreadable: true,
-				names: []string{nkeySeedFileVariable, unreadableSeed, "permission denied"}},
+				names: append(fileUnread(nkeySeedFileVariable), "permission denied")},
+			{name: "the seed pasted as the seed file", env: map[string]string{nkeySeedFileVariable: seed}, names: fileUnread(nkeySeedFileVariable)},
+			{name: "an opaque token pasted as the seed file", env: map[string]string{nkeySeedFileVariable: opaque}, names: fileUnread(nkeySeedFileVariable)},
+			{name: "the service token pasted as the seed file", env: map[string]string{nkeySeedFileVariable: token}, names: fileUnread(nkeySeedFileVariable)},
+			{name: "the seed pasted as the service token file", env: map[string]string{ServiceTokenFileEnvVar: seed}, names: fileUnread(ServiceTokenFileEnvVar)},
+			{name: "an opaque token pasted as the service token file", env: map[string]string{ServiceTokenFileEnvVar: opaque}, names: fileUnread(ServiceTokenFileEnvVar)},
+			{name: "the service token pasted as the service token file", env: map[string]string{ServiceTokenFileEnvVar: token}, names: fileUnread(ServiceTokenFileEnvVar)},
+			{name: "a token holding a comma and nats://, split, on a run that has not opted into remote NATS", urls: splitURLs("nats"),
+				names: []string{"NATS server URL 1 of 2 names another machine", AllowRemoteEnvVar}},
+			{name: "a token holding a comma and tls://, split, on a run that has not opted into remote NATS", urls: splitURLs("tls"),
+				names: []string{"NATS server URL 1 of 2 names another machine", AllowRemoteEnvVar}},
+			{name: "a token holding a comma and ws://, split, on a run that has not opted into remote NATS", urls: splitURLs("ws"),
+				names: []string{"NATS server URL 1 of 2 names another machine", AllowRemoteEnvVar}},
+			{name: "a token holding a comma and wss://, split, on a run that has not opted into remote NATS", urls: splitURLs("wss"),
+				names: []string{"NATS server URL 1 of 2 names another machine", AllowRemoteEnvVar}},
 			{name: "an empty seed file", env: map[string]string{nkeySeedFileVariable: emptySeed},
 				names: []string{nkeySeedFileVariable, emptySeed, "is empty"}},
 			{name: "the service token where the seed goes", env: map[string]string{NkeySeedEnvVar: token},
@@ -263,6 +304,9 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 				for _, name := range row.names {
 					require.Contains(t, printed, name, "the error does not name what it is about")
 				}
+				if strings.Contains(printed, "could not be read") {
+					require.NotContains(t, printed, dir, "a file that could not be read is named by its variable, never its path")
+				}
 			})
 		}
 		// The URLs these rules let through. A later URL that carries a user name and names a NATS
@@ -285,6 +329,28 @@ func TestTheBusCredentialPrintsNoSeedOrToken(t *testing.T) {
 		untrimmed, err := Dial("credential-printed-test", []string{" " + withPassword(plainPassword) + " "}, lookupOf(nil), WithConnectInBackground())
 		require.NoError(t, err, "a URL with white space around it was refused")
 		untrimmed.Close()
+	})
+
+	// The failed-reconnect line of a list a comma in a token split, for each scheme NATS servers are
+	// written with after the comma: nats.go dials the head as a host, whose lookup fails, and hands
+	// that failure, naming the host, to the reconnect callback.
+	t.Run("the reconnect line of a list a comma in a token split", func(t *testing.T) {
+		logs := captureLogs(t)
+		for scheme := range splitTokens {
+			name := "printed-split-" + scheme
+			lookup := &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: splitHead, IsNotFound: true}}
+			options(name, splitURLs(scheme), nil, nil, nil, nil, nil).ReconnectErrCB(nil, lookup)
+			var line map[string]any
+			for _, record := range logs.records(t) {
+				if record["name"] == name && record["msg"] == "envoy nats reconnect attempt failed" {
+					line = record
+				}
+			}
+			require.NotNil(t, line, "no failed-reconnect line for the %s split:\n%s", scheme, logs)
+			requirePrintsNoCredential(t, "the failed-reconnect line of the "+scheme+" split", fmt.Sprint(line), credentials)
+			assert.Equal(t, float64(2), line["servers"], "the line does not name the servers by their count")
+			assert.Equal(t, "name resolution failed", line["error"], "the line does not name the failure by its class")
+		}
 	})
 
 	t.Run("every line logged while a server refuses the connection", func(t *testing.T) {

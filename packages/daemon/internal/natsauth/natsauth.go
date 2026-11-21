@@ -62,7 +62,9 @@ func Configured(file string, lookup func(string) (string, bool)) bool {
 // file the configuration's SeedFileKey names ("" when it names none); else those of the file
 // NATS_NKEY_SEED_FILE names; else NATS_NKEY_SEED. The first source set is authoritative: an empty
 // NATS_NKEY_SEED_FILE, or a missing, unreadable, or blank file, or one whose mode lets more than
-// its owner read it, is an error naming the key or variable and the path, never a fallback to the
+// its owner read it, is an error naming the key or variable, and the path of a file that was
+// opened (one that could not be is named by the key or variable and the system's reason alone,
+// since the path is where a person who pasted the seed itself puts it), never a fallback to the
 // next source or to no credential; so is a blank NATS_NKEY_SEED, and a seed that is not a user nkey
 // seed. The file's group may read it only when root owns it and the reader is not root
 // (config.ReadGroupSecretPointer): a non-root process in a pod — the daemon, or `legion
@@ -188,8 +190,10 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 // "@" after its host, a websocket URL whose handshake URL does not parse, a later scheme-less URL
 // read with the pool's scheme), each read trimmed and an empty one dropped, as nats.go reads them.
 // Not the tail rule: the configuration ran it (config.readNatsURLs runs natsurl.Check on the list,
-// so an unquoted YAML list that split a credential at its comma never loads), and Connect dials
-// what the configuration accepted, so a later entry with a user name and any scheme connects. It
+// and refuses every unquoted flow item that carries a user name, so a YAML list that split a
+// credential at its comma never loads), and Connect dials what the configuration accepted, so a
+// later entry with a user name and any scheme connects. Nor the configuration's mixing and address
+// rules: every rule here is one the configuration runs too, so Connect refuses no list it loads. It
 // names the URL by its position in urls alone, as the configuration's refusal of a nats_urls entry
 // does (config.readNatsURLs), with natsurl's fixed reason: any text of such a URL can be a part of
 // the credential, and url.Parse's error quotes the URL whole.

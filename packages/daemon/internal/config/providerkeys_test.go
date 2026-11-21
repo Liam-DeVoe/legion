@@ -313,7 +313,8 @@ func TestMaterializeProviderKeysReadsAFileKey(t *testing.T) {
 
 // A file provider key is read by ReadPrivateSecretPointer's rules: a file that cannot be read, holds
 // nothing, is not a regular file, or that its group or others can read is a refusal naming the
-// variable and the file, never its contents, and the boot writes no key at all.
+// variable, and the file where it was opened, never its contents, and the boot writes no key at
+// all.
 func TestMaterializeProviderKeysRefusesAFileKeyItCannotUse(t *testing.T) {
 	dir := t.TempDir()
 	empty := filepath.Join(dir, "empty")
@@ -329,7 +330,7 @@ func TestMaterializeProviderKeysRefusesAFileKeyItCannotUse(t *testing.T) {
 	}
 	missing := filepath.Join(dir, "missing")
 	for _, tc := range []struct{ name, file, want string }{
-		{"a missing file", missing, "provider_keys.ANTHROPIC_API_KEY names " + missing + ", which could not be read: open " + missing + ": no such file or directory"},
+		{"a missing file", missing, "provider_keys.ANTHROPIC_API_KEY names a file that could not be read: open: no such file or directory"},
 		{"an empty file", empty, "provider_keys.ANTHROPIC_API_KEY names " + empty + ", which is empty"},
 		{"a file others can read", shared, "provider_keys.ANTHROPIC_API_KEY " + shared + " is readable by its group or others (mode 0644); chmod 0600 it"},
 		{"a directory", dir, "provider_keys.ANTHROPIC_API_KEY names " + dir + ", which is not a regular file"},

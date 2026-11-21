@@ -412,7 +412,7 @@ type Client struct {
 // this codebase owns, ConnectOwningStream.
 func Dial(name string, urls []string, environment func(string) (string, bool), options ...DialOption) (*nats.Conn, error) {
 	opts := parseConnectOptions(options)
-	urls, err := checkedNATSURLs(urls)
+	dialled, err := checkedNATSURLs(urls)
 	if err != nil {
 		return nil, err
 	}
@@ -429,10 +429,10 @@ func Dial(name string, urls []string, environment func(string) (string, bool), o
 	}
 	settings := opts.connectionSettings(credential)
 	dial := func(first nats.Option) (*nats.Conn, error) {
-		return connect(name, urls, allOf(settings, first), dialer, nil, nil, nil, nil, opts.reconnectErrClock)
+		return connect(name, dialled, allOf(settings, first), dialer, nil, nil, nil, nil, opts.reconnectErrClock)
 	}
 	if opts.background {
-		return connectFirstInBackground(name, urls, opts.reconnectErrClock, dial, nil, nil)
+		return connectFirstInBackground(name, dialled, opts.reconnectErrClock, dial, nil, nil)
 	}
 	return dial(nil)
 }
@@ -488,12 +488,12 @@ func ConnectOwningStream(urls []string, options ...ConnectOption) (*Client, erro
 // once install has returned, or, connecting in the background (WithConnectInBackground), in the
 // first connection's reconnect hook once its ensure has succeeded (startKeeperOnce), so its
 // keeper runs no pass before that ensure.
-func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error) {
-	urls, err := checkedNATSURLs(urls)
+func newClient(configured []string, ownsStream bool, opts connectOpts) (*Client, error) {
+	urls, err := checkedNATSURLs(configured)
 	if err != nil {
 		return nil, err
 	}
-	if err := refuseRemoteNATS(urls, opts.environment); err != nil {
+	if err := refuseRemoteNATS(configured, opts.environment); err != nil {
 		return nil, err
 	}
 	credential, err := credential(opts.environment)

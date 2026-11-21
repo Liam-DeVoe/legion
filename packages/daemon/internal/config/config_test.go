@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -1031,9 +1032,10 @@ func TestEndpointURLKeepsAPath(t *testing.T) {
 	}
 }
 
-// The nats_urls lists the unquoted-item and mixing rules leave alone load: a quoted item and a
-// block list carrying a user name (neither is split at a comma), an all-ws and an all-nats list, and
-// the quoted password a withNATSPassword row writes.
+// The nats_urls lists the unquoted-item, mixing and address rules leave alone load: a quoted item,
+// tagged or not, and a block list carrying a user name (neither is split at a comma), an all-ws and
+// an all-nats list, the quoted password a withNATSPassword row writes, and a bracketed IPv6 address
+// with a port beside a host that names none.
 func TestNatsURLsThatLoad(t *testing.T) {
 	for _, tc := range []struct {
 		name, line string
@@ -1046,6 +1048,10 @@ func TestNatsURLsThatLoad(t *testing.T) {
 		{"an all-ws list", "nats_urls: [ws://127.0.0.1:8080, wss://127.0.0.1:8443]\n", []string{"ws://127.0.0.1:8080", "wss://127.0.0.1:8443"}},
 		{"an all-nats list", "nats_urls: [nats://127.0.0.1:4222, tls://127.0.0.1:4223]\n", []string{"nats://127.0.0.1:4222", "tls://127.0.0.1:4223"}},
 		{"a quoted password", withNATSPassword("madeUpNatsPassword", "127.0.0.1:4222"), []string{"nats://legion:madeUpNatsPassword" + "@127.0.0.1:4222"}},
+		{"a tagged quoted item with a user name", `nats_urls: ["nats://127.0.0.1:4222", !!str "nats://madeUpNatsUser@127.0.0.1:4223"]` + "\n",
+			[]string{"nats://127.0.0.1:4222", "nats://madeUpNatsUser@127.0.0.1:4223"}},
+		{"a bracketed IPv6 address and a host with no port", `nats_urls: ["nats://[::1]:4222", "nats://127.0.0.1"]` + "\n",
+			[]string{"nats://[::1]:4222", "nats://127.0.0.1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := Load(writeConfigFile(t, strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n", tc.line, 1)), noEnv)
@@ -1056,6 +1062,44 @@ func TestNatsURLsThatLoad(t *testing.T) {
 				t.Fatalf("NatsURLs = %q, want %q", cfg.NatsURLs, tc.want)
 			}
 		})
+	}
+}
+
+// A file whose YAML does not parse is refused naming the line yaml.v3 names, and none of yaml.v3's
+// message, which can quote the file's text: in an unquoted flow item, a credential holding a comma
+// and then a `*` reads as an alias, and yaml.v3 quotes the letters, digits, `_` and `-` after the
+// `*` as the name of an anchor it does not know. Every loader that parses YAML refuses so: the boot
+// load, `legion config check`'s, the controller's and a pod file's. A message that names a line
+// keeps that line alone.
+func TestAFileWhoseYAMLDoesNotParsePrintsNoneOfIt(t *testing.T) {
+	const password = "madeUpNatsHead,*madeUpAliasRun0123456789,madeUpNatsTail"
+	aliased := "nats_urls: [nats://legion:" + password + "@127.0.0.1:4222]\n"
+	loaders := map[string]func(path string) error{
+		"Load":              func(path string) error { _, err := Load(path, noEnv); return err },
+		"LoadForValidation": func(path string) error { _, err := LoadForValidation(path, noEnv); return err },
+		"LoadController":    func(path string) error { _, err := LoadController(path, ""); return err },
+		"ReadPodFile":       func(path string) error { _, err := ReadPodFile(path); return err },
+	}
+	for name, load := range loaders {
+		t.Run(name, func(t *testing.T) {
+			err := load(writeConfigFile(t, aliased))
+			if err == nil {
+				t.Fatalf("%s loaded a file whose YAML does not parse", name)
+			}
+			for i := 0; i+10 <= len(password); i++ {
+				if run := password[i : i+10]; strings.Contains(err.Error(), run) {
+					t.Errorf("%s's refusal holds %q, a run of the made-up password: %v", name, run, err)
+					break
+				}
+			}
+			if !strings.Contains(err.Error(), "the YAML does not parse") {
+				t.Errorf("%s = %v, want a refusal saying the YAML does not parse", name, err)
+			}
+		})
+	}
+	_, err := Load(writeConfigFile(t, "nats_urls: [nats://127.0.0.1:4222\n"), noEnv)
+	if err == nil || !regexp.MustCompile(`: the YAML does not parse at line [0-9]+$`).MatchString(err.Error()) {
+		t.Fatalf("Load of an unclosed list = %v, want the line yaml.v3 names and nothing else of its message", err)
 	}
 }
 
@@ -1239,6 +1283,47 @@ func TestLoadRefuses(t *testing.T) {
 			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
 				`nats_urls: ["nats://madeUpNatsToken/abc@127.0.0.1:4222"]`+"\n", 1),
 			want: `nats_urls entry 1 cannot be read: an "@" stands after its host, as it does where a credential in its userinfo holds a "/", "?" or "#"; write such a credential percent-encoded`,
+		},
+		{
+			// A plain item written with an explicit tag is split at its commas as an untagged one is,
+			// so it is refused as unquoted (yaml.v3 gives it TaggedStyle, no quoting bit).
+			name: "nats_urls tagged plain item that carries a user name",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				"nats_urls: [nats://127.0.0.1:4222, !!str nats://madeUpNatsUser@127.0.0.1:4223]\n", 1),
+			want: `nats_urls entry 2 carries a user name or password in an unquoted [...] list item; quote it, or write the list as a block list`,
+		},
+		// An entry whose host and port the NATS client cannot dial loaded, and boot failed on it with
+		// the dial's error; it is refused by position, without a lookup or a dial.
+		{
+			name: "nats_urls entry with a port past 65535",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:65536"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: its host and port are no address the NATS client can dial; write an IPv6 host in brackets ([::1]:4222), and a port from 1 to 65535 or none`,
+		},
+		{
+			name: "nats_urls entry with three colons in its authority",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222", "nats://127.0.0.1:4222:4333"]`+"\n", 1),
+			want: `nats_urls entry 2 cannot be read: its host and port are no address the NATS client can dial; write an IPv6 host in brackets ([::1]:4222), and a port from 1 to 65535 or none`,
+		},
+		{
+			name: "nats_urls entry naming an IPv6 address and a port without brackets",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://::1:4222"]`+"\n", 1),
+			want: `nats_urls entry 1 cannot be read: its host and port are no address the NATS client can dial; write an IPv6 host in brackets ([::1]:4222), and a port from 1 to 65535 or none`,
+		},
+		// An entry that is empty or no string is refused by its position, with none of its text.
+		{
+			name: "nats_urls empty entry",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				`nats_urls: ["nats://127.0.0.1:4222", ""]`+"\n", 1),
+			want: `nats_urls entry 2 must be a non-empty string`,
+		},
+		{
+			name: "nats_urls entry that is no string",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				"nats_urls: [nats://127.0.0.1:4222, 4222]\n", 1),
+			want: `nats_urls entry 2 must be a non-empty string`,
 		},
 		{
 			name: "envoy_url with a query string",

@@ -164,7 +164,7 @@ func credential(getenv func(string) string, tokenFile, googleAudience string, no
 		return func(*nats.Options) error { return nil }, "no credential", nil
 	}
 	if tokenFile != "" || googleAudience != "" {
-		reader := natscred.ServiceFile(tokenFile)
+		reader := natscred.ServiceFile(tokenFile, "--service-token-file")
 		if googleAudience != "" {
 			reader = natscred.ServiceGoogle(googleAudience, "--service-google-audience")
 		}

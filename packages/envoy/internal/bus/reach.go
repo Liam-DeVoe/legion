@@ -1,12 +1,22 @@
 package bus
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
+	"os"
+	"slices"
 	"strings"
+	"syscall"
 
+	"github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/natsurl"
 )
 
@@ -30,11 +40,19 @@ const AllowRemoteEnvVar = "ENVOY_ALLOW_REMOTE_NATS"
 // ErrRemoteNATS is what a connect refuses a NATS server this machine does not run with.
 var ErrRemoteNATS = errors.New("bus: refusing a NATS server that is not this machine's")
 
-// refuseRemoteNATS reports the first url naming another machine, unless the run opted in through
-// lookup (the connect's environment, WithEnvironment). An empty urls is nats.go's own default,
-// this machine's server, and passes. A set SOCKS5ProxyEnvVar is remote reach whatever the URLs
-// say: the proxy chooses the server a connection reaches, so a loopback URL no longer names this
-// machine's.
+// refuseRemoteNATS reports the first of urls, the list as it was configured, that names another
+// machine, unless the run opted in through lookup (the connect's environment, WithEnvironment). An
+// empty urls is nats.go's own default, this machine's server, and passes, and so does a blank
+// entry, which the connect drops (natsurl.Check). A set SOCKS5ProxyEnvVar is remote reach whatever
+// the URLs say: the proxy chooses the server a connection reaches, so a loopback URL no longer
+// names this machine's.
+//
+// The refusal names the URL by its position in urls alone (`NATS server URL 2 of 3`), never by any
+// of its text, and so does every line the bus logs about a server (serverOf, connectionClass). A
+// caller splits its list on commas, so a token or password holding ",nats://" (or tls, ws or wss)
+// leaves its head a URL of its own, whose host is a piece of the credential: natsurl's tail rule
+// lets such a list through, since a later URL that carries a user name and names a NATS scheme is
+// one a person writes, and nothing that reads the head can tell it from a host.
 func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
 	if allow, _ := lookup(AllowRemoteEnvVar); allow == "1" {
 		return nil
@@ -43,11 +61,11 @@ func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
 		// Not the value: a proxy can be written with credentials, and this refusal is logged.
 		return fmt.Errorf("%w: %s is set, which sends every connection through a proxy that chooses the server (set %s=1 to reach it)", ErrRemoteNATS, SOCKS5ProxyEnvVar, AllowRemoteEnvVar)
 	}
-	for _, raw := range urls {
-		if LocalNATSURL(raw) {
+	for index, raw := range urls {
+		if strings.TrimSpace(raw) == "" || LocalNATSURL(raw) {
 			continue
 		}
-		return fmt.Errorf("%w: %s (set %s=1 to reach it)", ErrRemoteNATS, natsURLWithoutUserinfo(raw), AllowRemoteEnvVar)
+		return fmt.Errorf("%w: NATS server URL %d of %d names another machine (set %s=1 to reach it)", ErrRemoteNATS, index+1, len(urls), AllowRemoteEnvVar)
 	}
 	return nil
 }
@@ -87,38 +105,149 @@ func LocalNATSURL(raw string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// natsURLWithoutUserinfo renders raw, a configured NATS server URL, for a log line or an error
-// that is logged, with no userinfo, query or fragment at all. nats.go authenticates with the URL's
-// userinfo (connectProto, nats.go v1.55.0 nats.go:3133-3143): a user name alone is a token and
-// user:password a password, so both parts are the credential, and url.URL.Redacted, which keeps
-// the user name, would log a token whole; a query can hold a token a person put there. raw is read
-// as LocalNATSURL reads it. A URL with no "@" carries no userinfo and comes back as written, up to
-// its first "?" or "#". Any other comes back as nothing that preceded an "@" in it: parsed and
-// rendered without its userinfo, query and fragment when that leaves no "@", and otherwise - a URL
-// that does not parse, or one with an "@" past its authority - as what follows its last "@", up to
-// its first "?" or "#".
-func natsURLWithoutUserinfo(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if !strings.Contains(trimmed, "@") {
-		return beforeQuery(trimmed)
-	}
-	withScheme := trimmed
-	if !strings.Contains(withScheme, "://") {
-		withScheme = "nats://" + withScheme
-	}
-	if parsed, err := url.Parse(withScheme); err == nil {
-		parsed.User, parsed.RawQuery, parsed.ForceQuery, parsed.Fragment, parsed.RawFragment = nil, "", false, "", ""
-		if rendered := parsed.String(); !strings.Contains(rendered, "@") {
-			return rendered
+// serverOf names the server a connection reached, connected (its ConnectedUrl, which nats.go
+// renders from the server's URL whole, its userinfo among it), by its position in urls, the
+// servers the connection dials: "2 of 3". It prints no part of a URL, for refuseRemoteNATS's
+// reason. It compares the host and the port alone, and a URL that names no port by its host,
+// since nats.go adds a default port to one; a server urls does not hold is one the cluster
+// advertised, which nats.go adds to the servers it dials.
+func serverOf(urls []string, connected string) string {
+	if reached, err := url.Parse(connected); err == nil && reached.Host != "" {
+		for index, raw := range urls {
+			if sameServer(raw, reached) {
+				return fmt.Sprintf("%d of %d", index+1, len(urls))
+			}
 		}
 	}
-	return beforeQuery(trimmed[strings.LastIndex(trimmed, "@")+1:])
+	return fmt.Sprintf("one the cluster advertised, beside the %d configured", len(urls))
 }
 
-// beforeQuery is text up to its first "?" or "#": a URL without its query and fragment.
-func beforeQuery(text string) string {
-	if end := strings.IndexAny(text, "?#"); end >= 0 {
-		return text[:end]
+// sameServer reports whether raw, a configured server URL, names the host and port of reached,
+// raw read as nats.go reads it, nats:// added where it names no scheme.
+func sameServer(raw string, reached *url.URL) bool {
+	if !strings.Contains(raw, "://") {
+		raw = "nats://" + raw
 	}
-	return text
+	parsed, err := url.Parse(raw)
+	if err != nil || !strings.EqualFold(parsed.Hostname(), reached.Hostname()) {
+		return false
+	}
+	return parsed.Port() == "" || parsed.Port() == reached.Port()
 }
+
+// connectionUnprinted is connectionClass's words for an error it has no class for.
+const connectionUnprinted = "the connection failed (its error is not printed, since it can name the server by a piece of a credential)"
+
+// connectionClass is err, an error of a connection to a NATS server, as the bus prints it in a log
+// line or an error: fixed words naming its class, never its text. nats.go's and the dialers'
+// errors name the server they failed at by the host its URL spells - a lookup's (net.DNSError), a
+// dial's through the SOCKS5 proxy, which is handed that host (net.OpError's Addr), a TLS
+// certificate's name check (x509.HostnameError), a port net cannot read (net.AddrError) - and that
+// host can be a piece of a credential (refuseRemoteNATS). The classes are the system's own words
+// for a failed call (a syscall.Errno: "connection refused", "connection reset by peer"), EOF, the
+// words internal/redact names a lookup, a time out and a TLS failure by, the reply a SOCKS5 proxy
+// answered (socksClass), and the text of an error nats.go defines (natsErrors), which names no
+// server; nats.go's TLS error keeps its words before the class of what failed under it. Any other
+// error is connectionUnprinted, and nil is "unknown".
+func connectionClass(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	text := failureClass(err)
+	if errors.Is(err, nats.ErrTLS) {
+		if text == "" {
+			return nats.ErrTLS.Error()
+		}
+		return nats.ErrTLS.Error() + ": " + text
+	}
+	if text != "" {
+		return text
+	}
+	for _, known := range natsErrors {
+		if errors.Is(err, known) {
+			return known.Error()
+		}
+	}
+	return connectionUnprinted
+}
+
+// failureClass is the class of the transport failure err holds, in connectionClass's words, or ""
+// when it holds none.
+func failureClass(err error) string {
+	var dns *net.DNSError
+	var address *net.AddrError
+	var hostname x509.HostnameError
+	var authority x509.UnknownAuthorityError
+	var invalid x509.CertificateInvalidError
+	var verification *tls.CertificateVerificationError
+	var record tls.RecordHeaderError
+	var timeout interface{ Timeout() bool }
+	var errno syscall.Errno
+	var op *net.OpError
+	switch {
+	case errors.As(err, &dns):
+		return redact.ClassNameResolution
+	case errors.As(err, &address):
+		return "the server's address is no host and port the system can dial"
+	case errors.As(err, &hostname), errors.As(err, &authority), errors.As(err, &invalid),
+		errors.As(err, &verification), errors.As(err, &record):
+		return redact.ClassTLS
+	case errors.Is(err, context.Canceled):
+		return context.Canceled.Error()
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded),
+		errors.As(err, &timeout) && timeout.Timeout():
+		return redact.ClassTimedOut
+	case errors.As(err, &errno):
+		return errno.Error()
+	case errors.Is(err, io.EOF):
+		return io.EOF.Error()
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return io.ErrUnexpectedEOF.Error()
+	case errors.As(err, &op) && strings.HasPrefix(op.Op, "socks"):
+		return socksClass(op.Err)
+	}
+	return ""
+}
+
+// socksReplies are the replies a SOCKS5 proxy refuses a CONNECT with (RFC 1928 section 6), as
+// x/net's client names them in its error, "unknown error <reply>" (internal/socks, Reply.String).
+var socksReplies = []string{
+	"general SOCKS server failure", "connection not allowed by ruleset", "network unreachable", "host unreachable",
+	"connection refused", "TTL expired", "command not supported", "address type not supported",
+}
+
+// socksClass is the class of err, what failed under a dial through the SOCKS5 proxy that is no
+// failed call of the system's: the proxy's reply where it is one of socksReplies, printed from that
+// list, and otherwise that the proxy failed the connection.
+func socksClass(err error) string {
+	if err != nil {
+		if reply, ok := strings.CutPrefix(err.Error(), "unknown error "); ok && slices.Contains(socksReplies, reply) {
+			return "the SOCKS5 proxy answered " + reply
+		}
+	}
+	return "the SOCKS5 proxy failed the connection"
+}
+
+// natsErrors are the errors nats.go defines that a connection can fail with, each a fixed text
+// that names no server (nats.go v1.55.0 nats.go:108-166). An error wrapping one prints as it alone:
+// a server's permissions violation, which adds the subject, prints without the subject.
+var natsErrors = []error{
+	nats.ErrConnectionClosed, nats.ErrConnectionDraining, nats.ErrDrainTimeout, nats.ErrConnectionReconnecting,
+	nats.ErrSecureConnRequired, nats.ErrSecureConnWanted, nats.ErrTimeout, nats.ErrBadTimeout,
+	nats.ErrAuthorization, nats.ErrAuthExpired, nats.ErrAuthRevoked, nats.ErrPermissionViolation,
+	nats.ErrAccountAuthExpired, nats.ErrNoServers, nats.ErrJsonParse, nats.ErrMaxPayload,
+	nats.ErrMultipleTLSConfigs, nats.ErrClientCertOrRootCAsRequired, nats.ErrNoInfoReceived, nats.ErrInvalidConnection,
+	nats.ErrInvalidContext, nats.ErrNoDeadlineContext, nats.ErrNoEchoNotSupported, nats.ErrUserButNoSigCB,
+	nats.ErrNkeyButNoSigCB, nats.ErrNoUserCB, nats.ErrNkeyAndUser, nats.ErrNkeysNotSupported,
+	nats.ErrStaleConnection, nats.ErrTokenAlreadySet, nats.ErrUserInfoAlreadySet, nats.ErrDisconnected,
+	nats.ErrHeadersNotSupported, nats.ErrMaxConnectionsExceeded, nats.ErrMaxAccountConnectionsExceeded,
+	nats.ErrConnectionNotTLS, nats.ErrMaxSubscriptionsExceeded, nats.ErrWebSocketHeadersAlreadySet,
+	nats.ErrServerNotInPool, nats.ErrMixingWebsocketSchemes, nats.ErrSlowConsumer,
+}
+
+// connectError is a connect's failure as the bus returns it: connectionClass's words, with the
+// error kept beneath for errors.Is and errors.As.
+type connectError struct{ err error }
+
+func (e connectError) Error() string { return connectionClass(e.err) }
+func (e connectError) Unwrap() error { return e.err }
