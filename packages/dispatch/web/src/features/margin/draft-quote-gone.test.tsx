@@ -128,7 +128,7 @@ function wordsAnchor(
 /** A draft kept for `quote`'s words of the document under the mark `markId`, with `body`, by a
  *  compose that took those words at `anchoredAt`, or by an older release, which kept no time; the
  *  words lie in the pending inserts `insertMarks` names, where it names a list, and the anchor has
- *  no such field where it names none (`wordsAnchor`). */
+ *  no such field where it names no list (`wordsAnchor`). */
 function keptDraft(
   markId: string,
   quote: string,
@@ -153,7 +153,7 @@ function keptDraft(
  *  or none where it is undefined, and the issue's comment list `comments`, where it is given.
  *  `offeredAt` and `awayAt` are when the composes that kept the two drafts took the words, and
  *  `readAt` is when `read` landed; the words lie in the pending inserts `insertMarks` names on
- *  every surface, where it names a list, and no anchor has such a field where it names none. */
+ *  every surface, where it names a list, and no anchor has such a field where it names no list. */
 function renderSurfaces(
   quote: string,
   read: ArtifactText | undefined,
@@ -557,6 +557,20 @@ test("a draft whose words lie in a pending insert draws none of them on any surf
   }
 });
 
+/** The drafts `drafts`, kept in turn under `name` by a page signed in as alice, as the next page
+ *  reads them once a reload has brought it over the same tab with the query client `client` and
+ *  alice is signed in there: the store of unsent drafts that lives with `client`. */
+function keptOverReload(name: string, drafts: readonly AwayDraft[], client: QueryClient) {
+  const before = new QueryClient();
+  draftStoresSignedIn(before, "alice");
+  for (const draft of drafts) unsentDraftsOf(before).keepAway(name, draft);
+  // The reload: the next page loads over the same tab, with a query client of its own.
+  before.clear();
+  draftStoresReloaded();
+  draftStoresSignedIn(client, "alice");
+  return unsentDraftsOf(client);
+}
+
 // A reload after the delete: the tab kept the drafts the margin's compose kept for the words, each
 // with the insert's mark in its anchor (`keptAnchor`), and the page that loads holds no read of
 // the document's text at all, only the issue's comment list as Dispatch answers it after the
@@ -565,12 +579,7 @@ test("a draft whose words lie in a pending insert draws none of them on any surf
 // the other: none draws the words.
 test("after a reload, the drafts the tab kept for words in a deleted insert keep its mark and draw none of the words, with no read of the document", () => {
   const name = composerNameOf(marginComposeSendKey(DOCUMENT));
-  const wordsAt = (markId: string): ComposerAnchor => ({
-    artifact: DOCUMENT,
-    insertMarks: [INSERT_MARK],
-    mark_id: markId,
-    quote: QUOTE,
-  });
+  const wordsAt = (markId: string) => wordsAnchor(markId, QUOTE, [INSERT_MARK]);
   const keptFor = (markId: string, body: string): AwayDraft => ({
     anchor: wordsAt(markId),
     anchoredAt: Date.now(),
@@ -579,19 +588,15 @@ test("after a reload, the drafts the tab kept for words in a deleted insert keep
     owner: OWNER,
     replyTo: null,
   });
-  const before = new QueryClient();
-  draftStoresSignedIn(before, "alice");
-  unsentDraftsOf(before).keepAway(name, keptFor("mark-away", "Name who runs it."));
-  unsentDraftsOf(before).keepAway(name, keptFor("mark-insert", "Which review is this?"));
-  // The reload: the next page loads over the same tab, with a query client of its own.
-  before.clear();
-  draftStoresReloaded();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  draftStoresSignedIn(client, "alice");
+  const stored = keptOverReload(
+    name,
+    [keptFor("mark-away", "Name who runs it."), keptFor("mark-insert", "Which review is this?")],
+    client
+  );
   client.setQueryData(COMMENTS, [
     { ...INSERT_COMMENT, anchor: { ...INSERT_COMMENT.anchor, quote: "" }, body: "", ...DELETION },
   ]);
-  const stored = unsentDraftsOf(client);
   const atWords = stored.readAway(name, null, wordsAt("mark-insert"));
   const away = stored.readAway(name, null, wordsAt("mark-away"));
   if (atWords?.anchor === undefined || away?.anchor === undefined) {
@@ -722,6 +727,9 @@ test("after a reload, while the page's first reads of the document and its comme
   }
 });
 
+/** Dispatch's refusal of a read while it is unavailable. */
+const UNAVAILABLE = new ApiError(503, { code: "UNAVAILABLE", error: "Dispatch is unavailable" });
+
 // The same reload, whose first reads fail. One failed read with the other still out is a load
 // still under way, and the quote still draws as loading; once both have failed, each surface says
 // the words cannot be checked now, and draws none of them. The comment list read again lands with
@@ -729,20 +737,19 @@ test("after a reload, while the page's first reads of the document and its comme
 // failed.
 test("after a reload whose first reads of the document and its comments both fail, each surface says a draft's words cannot be checked now and draws none of them, and draws them once the comments read lands", async () => {
   const { client, view } = renderSurfaces(QUOTE, undefined, { insertMarks: [INSERT_MARK] });
-  const refused = new ApiError(503, { code: "UNAVAILABLE", error: "Dispatch is unavailable" });
   const comments = Promise.withResolvers<Comment[]>();
   try {
     await act(async () => {
       void client.prefetchQuery({ queryFn: () => comments.promise, queryKey: COMMENTS });
       await client.prefetchQuery({
         ...liveTextQueryOptions(DOCUMENT),
-        queryFn: () => Promise.reject(refused),
+        queryFn: () => Promise.reject(UNAVAILABLE),
       });
     });
     const oneFailed = drawnQuotes(view.container);
 
     await act(async () => {
-      comments.reject(refused);
+      comments.reject(UNAVAILABLE);
       await comments.promise.catch(() => undefined);
     });
     const bothFailed = drawnQuotes(view.container);
@@ -765,9 +772,6 @@ test("after a reload whose first reads of the document and its comments both fai
   }
 });
 
-/** Dispatch's refusal of a read while it is unavailable. */
-const UNAVAILABLE = new ApiError(503, { code: "UNAVAILABLE", error: "Dispatch is unavailable" });
-
 // The architect's ruling of 2026-11-21 01:49Z on dispatch://INFRA-1523. A draft or held send an
 // older build kept names no list of the pending inserts its words lie in
 // (`ComposerAnchor.insertMarks` absent, which nothing reads as an empty list), so the page's
@@ -778,7 +782,7 @@ const UNAVAILABLE = new ApiError(503, { code: "UNAVAILABLE", error: "Dispatch is
 // draws its quote as loading while the text read is out, says the words cannot be checked now
 // once it has failed, and draws none of them; the read that lands after the delete lacks them,
 // and each says they are gone.
-test("a draft an older build kept, which names no inserts, draws no word of its quote on any surface while the page holds its comments and its read of the document's text fails", async () => {
+test("a draft an older build kept, which names no list of inserts, draws no word of its quote on any surface while the page holds its comments and its read of the document's text fails", async () => {
   const start = Date.now();
   setSystemTime(start);
   const { client, view } = renderSurfaces(QUOTE, undefined);
@@ -873,16 +877,8 @@ test("after a reload, a draft kept with no list of inserts reads back with none,
     owner: OWNER,
     replyTo: null,
   });
-  const before = new QueryClient();
-  draftStoresSignedIn(before, "alice");
-  unsentDraftsOf(before).keepAway(name, keptAt(older));
-  unsentDraftsOf(before).keepAway(name, keptAt(empty));
-  // The reload: the next page loads over the same tab, with a query client of its own.
-  before.clear();
-  draftStoresReloaded();
   const client = new QueryClient();
-  draftStoresSignedIn(client, "alice");
-  const stored = unsentDraftsOf(client);
+  const stored = keptOverReload(name, [keptAt(older), keptAt(empty)], client);
   /** What the draft kept at `anchor`'s words names of the inserts they lie in, read back. */
   const marksReadBack = (anchor: ComposerAnchor) => {
     const kept = stored.readAway(name, null, anchor)?.anchor;

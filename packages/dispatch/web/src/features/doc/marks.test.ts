@@ -94,7 +94,7 @@ test("blockPlacements reports each stable block's position and offset", () => {
 // mark: inside it, across its edge, or across two blocks with an insert in each. A replace
 // suggestion's words are the document's own, and words beside an insert are none of its: the
 // list is empty for them, which says they lie in no insert (`ComposerAnchor.insertMarks`).
-test("insertMarksIn names each pending insert any selected word lies in, once, in document order, and none for words in no insert", () => {
+test("insertMarksIn names each pending insert any selected word lies in, once, in document order, and an empty list for words in no insert", () => {
   const insert = (id: string) =>
     schema.marks.proofSuggestion.create({ by: "bob", id, kind: "insert" });
   const replace = schema.marks.proofSuggestion.create({ by: "bob", id: "r-1", kind: "replace" });
