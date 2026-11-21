@@ -69,7 +69,7 @@ test("a stored description is drawn from the server's tree, and nothing on the p
     const body = view.container.firstElementChild as HTMLElement;
     // Drawn in the commit that mounted it, with no parse owed: a text with no tree this long
     // would be the worker's, marked pending meanwhile.
-    expect(body.getAttribute("data-markdown-pending")).toBeNull();
+    expect(body).not.toHaveAttribute("data-markdown-pending");
     expect(body.textContent).toBe(NESTED);
     expect(body.querySelector("em, strong")).toBeNull();
     await act(() => flushTasks());
