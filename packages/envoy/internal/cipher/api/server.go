@@ -879,6 +879,7 @@ func answerUnavailable(w http.ResponseWriter, code, op string) {
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
 }
 
+// writeIssuerUnavailable answers a ServiceAccount token whose issuer the broker cannot read yet —
 // its discovery document has not been read, or the token's key is not among the keys the broker
 // holds from its key set's last good read and the key set cannot be read now
 // (oidc.ErrIssuerUnavailable) — with 503 OIDC_ISSUER_UNAVAILABLE and Dispatch's sentence for the

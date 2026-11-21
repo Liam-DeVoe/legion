@@ -509,8 +509,9 @@ func proxyPassword(names map[string]AirlockName) string {
 // AirlockConnection is what one proxy connection's password proves: the live grant behind it and
 // every airlock name it may carry. It runs the checks that must hold on EVERY connection - the
 // grant's liveness, its enrollment's lease, whether Dispatch calls the enrollment's person a
-// restricted member, and the names its operator withheld - and no others; the full release
-// checks run once per grant per pod, in AirlockValues.
+// restricted member, the names its operator withheld, and the project rule of the names it
+// carries (airlockProjectRule) - and no others; the full release checks run once per grant per
+// pod, in AirlockValues.
 type AirlockConnection struct {
 	GrantID, EnrollmentID, RequestID string
 	// SessionID and RuntimeID are the enrollment's: the session the grant belongs to, empty for

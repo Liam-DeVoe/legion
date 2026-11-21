@@ -162,8 +162,9 @@ func (m *Machine) hideUnseenRow(ctx context.Context, row, login string, facts ro
 // answered nil by the session rule: the grant row names them, so they already know it exists, and
 // a revoke only takes access away, so neither a Dispatch outage nor their leaving the grant's
 // project keeps them from ending it. A person's pod that BROKER_POD_OPERATORS no longer maps acts
-// for no person (unmappedPersonPod), and names its exchange entry's project, not its operator's,
-// so its operator column names whom it once acted for, not a person the grant names: operatorOf
+// for no person (unmappedPersonPod), and names its exchange entry's project while that entry
+// names the issuer the pod enrolled under (credentialProjects), not its operator's, so its
+// operator column names whom it once acted for, not a person the grant names: operatorOf
 // gives none for it. Anyone else is asked the rule (hideUnseenRow): pgx.ErrNoRows for an id no
 // grant has and for a grant they may not see, ErrProjectAccessUnavailable when Dispatch could not
 // say, and nil for a grant they may see, which mayRevoke then lets them end only where its

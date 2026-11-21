@@ -464,7 +464,7 @@ func kubernetesKeyFunc(issuers []IssuerConfig) jwt.Keyfunc {
 // validates it, which writes nothing the token depends on — the DPoP proof's and a GitHub token's
 // single-use markers, each one statement that commits on its own, so a refused trade has spent
 // its proof and its run token as every client expects, since each mints both afresh — and the
-// decision is made (decide: the three JWT types through Store.ExchangeSubject while the library
+// decision is made (decide: the four JWT types through Store.ExchangeSubject while the library
 // validates, the machine access-token type once it has). Then the claims decided are held to what
 // Dispatch says (projectAccess). That question is an HTTP call, and it is asked here, before the
 // transaction begins, so a Dispatch that is slow to answer holds no row lock and no pooled
