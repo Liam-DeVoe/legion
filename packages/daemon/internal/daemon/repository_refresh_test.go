@@ -1285,6 +1285,15 @@ func TestAnIssueSilentForAnUnreadRepositoryIsRecoveredWhereverItResolvesThen(t *
 	// no event of it.
 	moved := issue(key, "acme/widgets", "todo", true, "", 1)
 	client.show(moved)
+	// While zeta/tools is unread, each recovery pass lists the project: the first is woken by the
+	// issue's failed preparation, the rest run on the backoff. A pass that read the listing before
+	// the move prepares the issue on zeta/tools, and had GitHub answered that preparation, the pass
+	// would record the issue there: that is a move made after the recovery read the listing, not
+	// this move, made while GitHub fails. A pass lists once, at its start, and one pass runs at a
+	// time, so a listing after the move says that every pass that read the listing before it is
+	// over.
+	listings := client.listingCount()
+	testwait.Eventually(t, "a recovery listing after the move", func() bool { return client.listingCount() > listings })
 	serveAndRecover(t, w, installs)
 	if got := recordedIssue(t, w, key); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("%s = %+v once zeta/tools is recovered, want it admitted on acme/widgets, where it resolves now", key, got)
