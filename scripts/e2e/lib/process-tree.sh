@@ -332,18 +332,23 @@ incarnation_pid() {
 # read it sends nothing more, and thaws PID only when this stop is what stopped it: a process that
 # was stopped already (state T or t at the first read, a job its shell stopped) stays stopped. It
 # fails too when PID cannot be signalled (signalable) or stopped; a process of another user cannot
-# be stopped at all.
+# be stopped at all. It fails with 2, sending nothing more, where CHECK failed with 2 (a check that
+# could not read PID, as held_names_dir answers for a read no exec let it make), and with 1 on any
+# other refusal.
 freeze_if() {
-  local pid=$1 start=$2 signal=$3 was
+  local pid=$1 start=$2 signal=$3 was checked=0
   shift 3
   signalable "$pid" || return 1
   [ "$(proc_start "$pid")" = "$start" ] || return 1
-  [ "$#" = 0 ] || "$@" "$pid" || return 1
+  [ "$#" = 0 ] || "$@" "$pid" || checked=$?
+  [ "$checked" = 0 ] || return "$((checked == 2 ? 2 : 1))"
   was=$(proc_stat_field "$pid" 3 state)
   kill -STOP "$pid" 2>/dev/null || return 1
-  if [ "$(proc_start "$pid")" != "$start" ] || { [ "$#" -gt 0 ] && ! "$@" "$pid"; }; then
+  [ "$(proc_start "$pid")" = "$start" ] || checked=1
+  [ "$checked" != 0 ] || [ "$#" = 0 ] || "$@" "$pid" || checked=$?
+  if [ "$checked" != 0 ]; then
     case $was in T | t) ;; *) kill -CONT "$pid" 2>/dev/null || true ;; esac
-    return 1
+    return "$((checked == 2 ? 2 : 1))"
   fi
   kill -"$signal" "$pid" 2>/dev/null || true
   case $signal in KILL | STOP) ;; *) kill -CONT "$pid" 2>/dev/null || true ;; esac
@@ -370,6 +375,55 @@ names_dir() {
     done
   done
   return 1
+}
+
+# held_names_dir DIR NAME… PID answers what names_dir answers for PID, from a read of PID's
+# environment that falls within one exec, as procs_naming's own reads do: it reads the environment
+# between two reads of PID's bounds (exec_state), and takes the answer only when both show the same
+# bounds, set. A read across an exec comes back empty, or cut short at a page with the mark further
+# on, and the sweep that took one such read for an answer took a marked process for an unmarked one
+# and left it running (a reviewer's forcing: 3 of 25 sweeps). While PID is inside one exec it waits
+# (every 10 ms, up to procs_naming_hold_seconds, 300), and while its bounds move under each read it
+# reads again (up to procs_naming_exec_seconds, 10); past either, or when this user cannot open
+# PID's environment any more, it says why and fails with 2, so a check that could not read PID is
+# never taken for one that found no mark. An ended PID, and bounds set and equal after the exec (an
+# environment of no variable), answer 1. Where the kernel shows no bounds (bounds_shown) each read
+# is taken as it comes. PID comes last, so freeze_if can run it as a CHECK.
+held_names_dir() {
+  local pid=${!#} before held again found shown hold='' deadline=''
+  before=$(proc_start "$pid")
+  [ -n "$before" ] || return 1
+  bounds_shown shown
+  while :; do
+    exec_state "$pid" "$before" held "$shown"
+    case $held in
+      gone | empty*) return 1 ;;
+      exec)
+        hold=${hold:-$((SECONDS + ${procs_naming_hold_seconds:-300}))}
+        [ "$SECONDS" -lt "$hold" ] || {
+          echo "held_names_dir: process $pid stayed inside one exec for ${procs_naming_hold_seconds:-300} s, so whether it carries the run's mark was not checked" >&2
+          return 2
+        }
+        sleep 0.01
+        continue
+        ;;
+    esac
+    found=0
+    names_dir "$@" || found=$?
+    exec_state "$pid" "$before" again "$shown"
+    [ "$again" != "$held" ] || [ "$found" = 2 ] || return "$found"
+    [ "$again" != gone ] || return 1
+    { : <"/proc/$pid/environ"; } 2>/dev/null || {
+      echo "held_names_dir: the environment of process $pid can no longer be read, so whether it carries the run's mark was not checked" >&2
+      return 2
+    }
+    deadline=${deadline:-$((SECONDS + ${procs_naming_exec_seconds:-10}))}
+    [ "$SECONDS" -lt "$deadline" ] || {
+      echo "held_names_dir: process $pid gave no read of its environment within one exec for ${procs_naming_exec_seconds:-10} s, so whether it carries the run's mark was not checked" >&2
+      return 2
+    }
+    sleep 0.01
+  done
 }
 
 # proc_descendants PID [START] prints `PID START` for every process below PID, children first, then
@@ -414,17 +468,25 @@ kill_frozen() {
 # kill_held DIR NAME… reads `PID START` lines on stdin, as a walk of the run's processes prints them
 # (procs_naming), and ends each with everything under it (kill_frozen) once freeze_if has stopped it
 # while it is still the process that started at START and its environment still gives one of the
-# NAMEs the value DIR or a path under it (names_dir). A pid that passed to another process since
-# the walk gets no signal, and a blank line is skipped. The run's sweep (stop_marked_processes, with
-# run_marks) and the skill-scenario rig's stop_env_processes (with SKILL_SCENARIO_RUN) end their
-# walks' processes through it, so the loop and its rows are written once. It fails with 2 when a
-# tree's processes could not all be read (kill_frozen).
+# NAMEs the value DIR or a path under it (held_names_dir, a read within one exec). A pid that passed
+# to another process since the walk gets no signal, and a blank line is skipped. The run's sweep
+# (stop_marked_processes, with run_marks) and the skill-scenario rig's stop_env_processes (with
+# SKILL_SCENARIO_RUN) end their walks' processes through it, so the loop and its rows are written
+# once. It fails with 2 when a tree's processes could not all be read (kill_frozen), and when a
+# process's check could not read it (freeze_if's 2), which is left running and named.
 kill_held() {
-  local dir=$1 pid start status=0
+  local dir=$1 pid start status=0 held
   shift
   while read -r pid start; do
     [ -n "$pid" ] || continue
-    freeze_if "$pid" "$start" STOP names_dir "$dir" "$@" || continue
+    held=0
+    freeze_if "$pid" "$start" STOP held_names_dir "$dir" "$@" || held=$?
+    if [ "$held" = 2 ]; then
+      echo "kill_held: process $pid of the run under $dir could not be checked, so it was left running" >&2
+      status=2
+      continue
+    fi
+    [ "$held" = 0 ] || continue
     kill_frozen "$pid" || status=2
   done
   return "$status"
@@ -539,19 +601,25 @@ unread_may_carry() {
 
 # run_descendant PID SHELL_START succeeds when PID, a process of this user whose environment this
 # user cannot read, may carry the mark of the run this shell runs, where this shell, $$, is a child
-# subreaper (lib/subreaper.py, which names it in LEGION_E2E_SUBREAPER), and fails when it cannot.
+# subreaper (lib/subreaper.py, which names it in LEGION_E2E_SUBREAPER as `PID START`), and fails
+# when it cannot.
 # Every process of the run then stays below this shell for its whole life: one whose parent ends
 # goes to the nearest subreaper above that parent, which is this shell or one below it, never pid 1
-# or a reaper above this shell. So PID may carry the mark only when its line of parents reaches this
-# shell itself (its pid and SHELL_START, the start proc_start reads) before a process older than this
-# shell, and one whose line could not be read to there (a parent that ended during the read) may,
-# unless it has ended since. PID cannot when it runs nothing (it has ended or is a zombie), when it
-# started before this shell, and when its line meets a process older than this shell first, pid 1
-# among them: a process another session left behind during the run, however young. Each process on
-# the way is read once, as unread_may_carry reads it, in this shell.
+# or a reaper above this shell; except one in another pid namespace, which goes to that namespace's
+# init however far above it the subreaper is (a reviewer's forcing: the run nsenter'd a namespace
+# older than the shell, its sh exited, and that namespace's init adopted the run's not-dumpable
+# orphan). So PID may carry the mark when its line of parents reaches this shell itself (its pid
+# and SHELL_START, the start proc_start reads) before a process older than this shell, or meets
+# first an older process that is the init of a pid namespace other than this shell's (the last pid
+# of its NSpid is 1, and its pid here is not 1), and one whose line could not be read to there (a
+# parent that ended during the read) may, unless it has ended since. PID cannot when it runs
+# nothing (it has ended or is a zombie), when it started before this shell, and when its line meets
+# first another process older than this shell, this namespace's pid 1 among them: a process another
+# session left behind during the run, however young. Each process on the way is read once, as
+# unread_may_carry reads it, in this shell.
 run_descendant() {
   local pid=$1 shell=$2 at parent=$1 start='' stat i
-  local -a fields
+  local -a fields ns
   for ((i = 0; i < 4096; i++)); do
     stat=
     { IFS= read -r -d '' stat <"/proc/$parent/stat"; } 2>/dev/null || :
@@ -565,6 +633,10 @@ run_descendant() {
     elif [ "$parent" = "$$" ] && [ "$at" = "$shell" ]; then
       return 0
     elif [ "$at" -lt "$shell" ]; then
+      [ "$parent" != 1 ] || return 1
+      ns=()
+      { while read -r -a ns; do [ "${ns[0]-}" != NSpid: ] || break; ns=(); done <"/proc/$parent/status"; } 2>/dev/null || :
+      [ "${#ns[@]}" -lt 3 ] || [ "${ns[${#ns[@]} - 1]}" != 1 ] || return 0
       return 1
     fi
     parent=${fields[1]}
@@ -872,8 +944,9 @@ exit 2'
 # naming_lineage, run inside procs_naming with its locals, reads once what the judgment of whether
 # a process of this user may carry the run's mark needs (naming_may_carry): this shell's start
 # (shell), and, unless this shell is a child subreaper (lib/subreaper.py names it in
-# LEGION_E2E_SUBREAPER, which a child process with a pid of its own does not match; run_descendant
-# needs nothing more), its whole line of parents to its top (a parent of 0) as PID:START
+# LEGION_E2E_SUBREAPER as `PID START`, which a child process with a pid of its own, a process that
+# took this pid later, and a refused mark, `PID START refused`, do not match; run_descendant needs
+# nothing more), its whole line of parents to its top (a parent of 0) as PID:START
 # (ancestors), each parent held to a start no later than its child's: a line cut short, by a parent
 # that ended and was reaped during the read or whose pid another process took, would take a reaper
 # above the cut for a stranger and pass a process of the run (unread_may_carry). Such a line, like a
@@ -883,7 +956,7 @@ naming_lineage() {
   lineage=1
   shell=$(proc_start "$$")
   [ -n "$shell" ] || lost="this shell $$"
-  if [ "${LEGION_E2E_SUBREAPER:-}" != "$$" ]; then
+  if [ "${LEGION_E2E_SUBREAPER:-}" != "$$ $shell" ]; then
     child=$$ child_start=$shell
     while [ -z "$lost" ]; do
       p=$(proc_parent "$child")
@@ -908,7 +981,7 @@ naming_lineage() {
 # process of this user whose environment the walk could not read, may carry the run's mark:
 # run_descendant from a shell that is a child subreaper, unread_may_carry from any other.
 naming_may_carry() {
-  if [ "${LEGION_E2E_SUBREAPER:-}" = "$$" ]; then
+  if [ "${LEGION_E2E_SUBREAPER:-}" = "$$ $shell" ]; then
     run_descendant "$1" "$shell"
   else
     unread_may_carry "$1" "$shell" ${ancestors[@]+"${ancestors[@]}"}
@@ -964,10 +1037,12 @@ marked_processes() {
 # start (proc_descendants), so a child it leaves behind when it exits is still ended, by its own
 # start time, and a stranger that took a reaped pid below is not. A process still alive after
 # GRACE, or every one with no GRACE, is ended with its tree. It prints why and fails with 2 when the
-# run's processes could not be read, having signalled nothing, and fails with 2 after its signals
-# when a process's tree below it could not be read (proc_children).
+# run's processes could not be read, having signalled nothing, fails with 2 after its signals when
+# a process's tree below it could not be read (proc_children), and fails with 2, naming it and
+# leaving it running, when a process's check could not read its mark (held_names_dir, a read within
+# one exec, as kill_held's).
 stop_marked_processes() {
-  local dir=$1 grace=${2:-0} pairs pid start i entry status=0 found
+  local dir=$1 grace=${2:-0} pairs pid start i entry status=0 found held
   local -a sent=() alive=() below=()
   pairs=$(marked_processes "$dir") || {
     echo "stop_marked_processes: stopped no process of the run under $dir, since none could be named" >&2
@@ -976,7 +1051,14 @@ stop_marked_processes() {
   [ -n "$pairs" ] || return 0
   if [ "$grace" -gt 0 ]; then
     while read -r pid start; do
-      freeze_if "$pid" "$start" STOP names_dir "$dir" "${run_marks[@]}" || continue
+      held=0
+      freeze_if "$pid" "$start" STOP held_names_dir "$dir" "${run_marks[@]}" || held=$?
+      if [ "$held" = 2 ]; then
+        echo "stop_marked_processes: process $pid of the run under $dir could not be checked, so it was left running" >&2
+        status=2
+        continue
+      fi
+      [ "$held" = 0 ] || continue
       found=$(proc_descendants "$pid" "$start") || status=2
       [ -z "$found" ] || mapfile -t -O "${#below[@]}" below <<<"$found"
       kill -TERM "$pid" 2>/dev/null || true

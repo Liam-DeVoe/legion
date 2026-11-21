@@ -26,6 +26,10 @@ const skip = skipWithout("perl");
 const withoutPython = skipWithout("python3");
 const bin = join(dir, "bin");
 const calls = join(dir, "calls");
+// The file's hooks pass a timeout of their own (hookTimeout), as every row does: Bun's 5 s default
+// for a hook is the machine's to decide on a loaded box, and failed this file after every row had
+// passed. temporaryDirectory's hooks pass the fixture's own.
+const hookTimeout = 60_000;
 beforeAll(() => {
   mkdirSync(bin);
   // A readlink that records each call and answers nothing, and a grep that records each call and
@@ -43,7 +47,7 @@ beforeAll(() => {
     { mode: 0o755 }
   );
   writeFileSync(unreadablePy, unreadableScript);
-});
+}, hookTimeout);
 
 // Every process a row starts, with its start time read when it is recorded, killed when the row ends
 // whatever it ended on, and only while its pid is still the process that started then: a sweep has
@@ -77,7 +81,7 @@ afterEach(() => {
       process.kill(pid, "SIGKILL");
     } catch {}
   }
-});
+}, hookTimeout);
 function spawn(argv: string[], options: { cwd: string; env?: Record<string, string> }) {
   const child = Bun.spawn(ownGroup(argv), {
     cwd: options.cwd,
@@ -671,7 +675,7 @@ work=$WORK
 . ${JSON.stringify(rig)}
 export LEGION_E2E_RUN=$work
 ${unreadableSh}
-[ "\${LEGION_E2E_SUBREAPER:-}" = "$$" ] && echo "the shell is the subreaper" || echo "the shell is no subreaper"
+[ "\${LEGION_E2E_SUBREAPER:-}" = "$$ $(proc_start $$)" ] && echo "the shell is the subreaper" || echo "the shell is no subreaper"
 : >"$work/shell.ready"
 for i in $(seq 1 400); do [ ! -e "$work/go" ] || break; sleep 0.05; done
 linked "$work/foreign.ready"; foreign=$pid
@@ -817,6 +821,9 @@ for i in $(seq 1 30); do
   case " $out " in *" $looping "*) named=$((named + 1)) ;; esac
 done
 kill -KILL "$looping"
+# Reaped here, so bash prints no job notice for it before the next command (the cut-line row's G
+# does the same): one that died before the echo ran made bash say "Killed" on stderr.
+wait "$looping" 2>/dev/null || :
 echo "named in $named of 30 walks, $failed failed"`
     );
     const looping = /^looping (\d+)$/m.exec(r.out)?.[1];
@@ -931,9 +938,37 @@ names_dir() {
   return "$(names_answer "\${!#}" "$(count "nd.\${!#}")")"
 }`;
 
-test.skipIf(skip)(
+// boundsShown says whether this kernel shows a process's memory bounds in /proc/<pid>/stat, as the
+// walk's exec_state reads them: this test process runs and is in no exec, so its start_code (field
+// 26) and env_start (field 50) read 0 only where the kernel shows them all as 0, as gVisor (a Legion
+// pod's kernel) does. There the walk takes each read as it comes (bounds_shown, lib/process-tree.sh),
+// and the two scripted rows below, which answer for exec_state, prove nothing: they are skipped, by
+// this name, except on GitHub Actions (GITHUB_ACTIONS, as send-arguments.test.ts reads it), whose
+// runner shows the bounds, so there a kernel that does not fails them by name.
+const boundsShown = (() => {
+  const fields = readFileSync("/proc/self/stat", "utf8")
+    .replace(/^[\s\S]*\) /, "")
+    .split(" ");
+  return fields[23] !== "0" && fields[47] !== undefined && fields[47] !== "0";
+})();
+const onActions = process.env.GITHUB_ACTIONS === "true";
+if (!boundsShown && !onActions) {
+  console.warn(
+    `Skipped the two scripted exec rows of ${import.meta.path}: this kernel shows no memory bounds in /proc/<pid>/stat (start_code and env_start read 0).`
+  );
+}
+function needBounds(): void {
+  if (!boundsShown) {
+    throw new Error(
+      "this kernel shows no memory bounds in /proc/<pid>/stat (start_code, field 26, and env_start, field 50, read 0 for a running process), so the walk cannot tell a read inside an exec; the GitHub Actions runner must show them"
+    );
+  }
+}
+
+test.skipIf(skip || (!boundsShown && !onActions))(
   "a read of an environment that an exec cut short is read again, never taken for an unmarked process: the bounds moved between the two reads around it",
   () => {
+    needBounds();
     // A read of /proc/<pid>/environ across an exec comes back cut short at a page, and a mark past
     // it is lost: aec1fb77ff read again only an empty read, so it took a cut one for an environment
     // without the mark and named nothing of a marked process, exit 0. Here the process is a sleep
@@ -977,9 +1012,10 @@ kill -KILL "$targets"`,
   60_000
 );
 
-test.skipIf(skip)(
+test.skipIf(skip || (!boundsShown && !onActions))(
   "a process held inside one exec is waited for, whatever the walk's bound: one that started outside the run's shell is named once its exec ends, never passed, and so is the run's own",
   async () => {
+    needBounds();
     // A process a loaded machine holds inside one exec (the exec-window forcing held one 10.8 s)
     // shows its bounds as 0 until the exec ends. A walk that counted those reads against its 10 s
     // bound judged it there by its line of parents and passed one that started outside the run's
@@ -1027,9 +1063,167 @@ kill -KILL "$own"`,
   60_000
 );
 
+test.skipIf(skip || (!boundsShown && !onActions))(
+  "the sweep's check of a process it is about to stop reads within one exec: one an exec cut short is read again and the process ended, never left running as unmarked",
+  () => {
+    needBounds();
+    // stop_marked_processes stops each process the walk named only while it still carries the
+    // run's mark (freeze_if's check), and the check read the environment once: a read across an
+    // exec, cut short before the mark, was taken for an unmarked process, which the sweep passed
+    // over, exit 0, and left running (a reviewer's forcing: 3 of 25 sweeps). Here exec_state and
+    // names_dir answer for a sleep the harness starts: the walk's read decides (the bounds
+    // 1000-2000 both times, the mark found), then the check's first read is one an exec met (the
+    // bounds 1000-2000, no mark, the bounds 3000-4000), and every read after it holds (3000-4000,
+    // the mark found). The sweep must read again and end it. The sleep is started from a subshell
+    // that exits at once, so it is no job of the harness's shell, which would otherwise print a job
+    // notice ("Killed") on stderr at its next command once the sweep had killed it.
+    const work = join(dir, "sweep-cut-short");
+    mkdirSync(work);
+    const r = harness(
+      work,
+      `${execScript}
+(sleep 60 </dev/null >/dev/null 2>&1 & echo $! >"$work/target.pid")
+read -r targets <"$work/target.pid"
+echo "target $targets"
+ln -s "/proc/$targets" "$proc_root/$targets"
+state() { local s; s=$(proc_stat_field "$1" 3 state); echo "\${s:-gone}"; }
+exec_answer() { if [ "$2" -le 3 ]; then echo "set 1000-2000"; else echo "set 3000-4000"; fi; }
+names_answer() { if [ "$2" = 2 ]; then echo 1; else echo 0; fi; }
+st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?
+for i in $(seq 1 200); do [ "$(state "$targets")" != gone ] || break; sleep 0.05; done
+echo "stop_marked_processes $st, the sleep $(state "$targets")"`
+    );
+    const target = /^target (\d+)$/m.exec(r.out)?.[1];
+    if (target !== undefined) started.push(Number(target));
+    expect({
+      err: r.err,
+      out: r.out.replace(/^target \d+\n/m, ""),
+      said: readFileSync(join(work, "stop.err"), "utf8"),
+    }).toEqual({ err: "", out: "stop_marked_processes 0, the sleep gone\n", said: "" });
+  },
+  // A guard on a hang only: one walk and two checks of one process.
+  60_000
+);
+
+test.skipIf(skip || (!boundsShown && !onActions))(
+  "the sweep's check that cannot read a process within one exec fails the sweep with 2, names the process and leaves it running, with a grace and without",
+  () => {
+    needBounds();
+    // A check that could not read the process was refused like a check that found no mark, and the
+    // sweep passed over it with 0. Here exec_state answers for a sleep the harness starts as for a
+    // process held inside one exec from the check's first read on, and the hold is 0 s
+    // (procs_naming_hold_seconds), so the check cannot read it: the sweep must say so and fail
+    // with 2, both through its grace loop (a grace of 1 s) and through kill_held (none).
+    const work = join(dir, "sweep-unread");
+    mkdirSync(work);
+    const r = harness(
+      work,
+      `${execScript}
+sleep 60 </dev/null >/dev/null 2>&1 &
+targets=$!
+echo "target $targets"
+ln -s "/proc/$targets" "$proc_root/$targets"
+state() { local s; s=$(proc_stat_field "$1" 3 state); echo "\${s:-gone}"; }
+exec_answer() { if [ "$2" -le 2 ]; then echo "set 1000-2000"; else echo exec; fi; }
+names_answer() { echo 0; }
+procs_naming_hold_seconds=0
+st=0; stop_marked_processes "$work" 1 2>"$work/grace.err" || st=$?
+echo "with a grace: $st, the sleep $(state "$targets")"
+rm -f "$work/es.$targets" "$work/nd.$targets"
+st=0; stop_marked_processes "$work" 2>"$work/none.err" || st=$?
+echo "without: $st, the sleep $(state "$targets")"
+kill -KILL "$targets"
+wait "$targets" 2>/dev/null || :`
+    );
+    const target = /^target (\d+)$/m.exec(r.out)?.[1];
+    if (target !== undefined) started.push(Number(target));
+    expect({ err: r.err, out: r.out.replace(/^target \d+\n/m, "") }).toEqual({
+      err: "",
+      out: "with a grace: 2, the sleep S\nwithout: 2, the sleep S\n",
+    });
+    for (const [name, by] of [
+      ["grace.err", "stop_marked_processes"],
+      ["none.err", "kill_held"],
+    ]) {
+      expect({ name, said: readFileSync(join(work, name), "utf8") }).toEqual({
+        name,
+        said: `held_names_dir: process ${target} stayed inside one exec for 0 s, so whether it carries the run's mark was not checked\n${by}: process ${target} of the run under ${work} could not be checked, so it was left running\n`,
+      });
+    }
+  },
+  // A guard on a hang only: two sweeps of one process.
+  60_000
+);
+
+// subreaperSignals is the shell the two rows below run under lib/subreaper.py: the status of a
+// pipeline whose reader exits first (141 where SIGPIPE ends the writer, 1 and a "Broken pipe" where
+// the writer ignores it), the status of a write past `ulimit -f` (153 where SIGXFSZ ends it, 1 and
+// "File too large" where it is ignored), and the signals the shell ignores (SigIgn, a mask).
+const subreaperSignals = `seq 1 100000 | head -n 1 >/dev/null 2>&1; pipe=\${PIPESTATUS[0]}
+d=$(mktemp -d); { (ulimit -f 1; head -c 8192 /dev/zero >"$d/f") 2>/dev/null; } 2>/dev/null; xfsz=$?; rm -rf "$d"
+while read -r k v; do [ "$k" != SigIgn: ] || ign=$v; done </proc/$$/status
+echo "pipe $pipe, xfsz $xfsz, ignored $ign, subreaper [\${LEGION_E2E_SUBREAPER:-}] of $$ $(cut -d' ' -f22 </proc/$$/stat)"`;
+
+test.skipIf(withoutPython)(
+  "a proof under lib/subreaper.py has SIGPIPE and SIGXFSZ at their defaults, as a proof started without it has: a pipeline whose reader exits first ends 141, and the shell is named by its pid and its start",
+  () => {
+    // Python ignores SIGPIPE and SIGXFSZ at its start, and an exec keeps an ignored signal ignored,
+    // which the bash it runs cannot undo: under 14fc06e9e8's subreaper.py `seq | head -n 1` ended 1
+    // with "Broken pipe", and github-apps.sh:522's over-limit token command answered 1 instead of
+    // its documented 126. The same shell runs plain beside it as the control: the signals it
+    // ignores are the ones the test runner gave it (bun:test's children ignore SIGQUIT), and the
+    // shell under subreaper.py must ignore those and no more.
+    const plain = Bun.spawnSync(["bash", "-c", subreaperSignals], {
+      env: { PATH: process.env.PATH ?? "" },
+    });
+    const under = Bun.spawnSync(["python3", "-I", subreaperPy, "bash", "-c", subreaperSignals], {
+      env: { PATH: process.env.PATH ?? "" },
+    });
+    const plainSaid = plain.stdout.toString().replace(/, subreaper .*$/m, "");
+    expect(plainSaid).toMatch(/^pipe 141, xfsz 153, ignored [0-9a-f]{16}\n$/);
+    expect({
+      under: under.stdout.toString().replace(/, subreaper .*$/m, ""),
+      err: under.stderr.toString(),
+    }).toEqual({ under: plainSaid, err: "" });
+    const named = /\[(\d+) (\d+)\] of (\d+) (\d+)$/m.exec(under.stdout.toString());
+    expect(named?.slice(1, 3)).toEqual(named?.slice(3, 5));
+  },
+  // A guard on a hang only: two shells of a few commands each.
+  60_000
+);
+
+test.skipIf(withoutPython)(
+  "lib/subreaper.py where the mark cannot be set, its Python without ctypes, says why by name, names the shell refused, and runs the proof all the same",
+  () => {
+    // A Python with no ctypes, or a libc with no prctl, raised before the fallback a kernel refusal
+    // took, so the proof exited 1 with a traceback before it started. Here a ctypes module that
+    // fails to import stands first on the path (python3 without -I reads PYTHONPATH).
+    const fake = join(dir, "no-ctypes");
+    mkdirSync(fake);
+    writeFileSync(join(fake, "ctypes.py"), 'raise ImportError("no ctypes on this box")\n');
+    const r = Bun.spawnSync(
+      ["python3", subreaperPy, "bash", "-c", `echo "ran, [\${LEGION_E2E_SUBREAPER:-}]"`],
+      { env: { PATH: process.env.PATH ?? "", PYTHONPATH: fake } }
+    );
+    expect({
+      code: r.exitCode,
+      out: r.stdout.toString().replace(/\[\d+ \d+ refused\]/, "[PID START refused]"),
+      err: r.stderr.toString(),
+    }).toEqual({
+      code: 0,
+      out: "ran, [PID START refused]\n",
+      err: "subreaper.py: no prctl to call (ImportError: no ctypes on this box); running bash without it\n",
+    });
+  },
+  // A guard on a hang only: one Python and one shell.
+  60_000
+);
+
 // namespacesHold says whether this user may make a private user and pid namespace (util-linux
 // unshare, a user namespace that maps this user to itself) and so run the namespace row; a host that
-// refuses unprivileged user namespaces skips it, by this name.
+// refuses unprivileged user namespaces skips it, by this name, except on GitHub Actions, whose test
+// job allows them (its step "Allow unprivileged user namespaces"), so there a refusal fails the row
+// by name.
 const namespacesHold =
   hostTool("unshare") !== null &&
   hostTool("nsenter") !== null &&
@@ -1037,15 +1231,20 @@ const namespacesHold =
     ["unshare", "--user", "--map-current-user", "--pid", "--fork", "--mount-proc", "true"],
     { stdout: "ignore", stderr: "ignore" }
   ).exitCode === 0;
-if (!namespacesHold) {
+if (!namespacesHold && !onActions) {
   console.warn(
     `Skipped the pid-namespace row of ${import.meta.path}: it needs unshare and nsenter and an unprivileged user and pid namespace.`
   );
 }
 
-test.skipIf(skip || withoutPython || !namespacesHold)(
+test.skipIf(skip || withoutPython || (!namespacesHold && !onActions))(
   "a walk from a shell that entered a pid namespace from outside is no answer for an unreadable orphan of the run that the namespace's init adopted",
   async () => {
+    if (!namespacesHold) {
+      throw new Error(
+        'this host refused an unprivileged user and pid namespace (unshare --user --map-current-user --pid --fork --mount-proc true), or has no unshare or nsenter; the GitHub Actions test job allows them in its step "Allow unprivileged user namespaces"'
+      );
+    }
     // A shell that `docker exec` or `kubectl exec` starts, or a step of a GitHub Actions
     // `container:` job, sits in a pid namespace whose init is no parent of its own: its parent reads
     // 0 there, and the run's orphans go to that init, older than the shell and none of its parents.
@@ -1111,6 +1310,89 @@ echo "shell's parent $(proc_parent $$), orphan's parent $(proc_parent "$orphan")
     );
     expect(readFileSync(join(work, "mp.err"), "utf8")).toMatch(
       /^procs_naming: process \d+ \([^)]+\) is this user's, started after this shell, and its environment cannot be read, so it may carry the run's mark and the processes naming \S+ were not checked$/m
+    );
+  },
+  // A guard on a hang only, as for the rows above.
+  60_000
+);
+
+test.skipIf(skip || withoutPython || (!namespacesHold && !onActions))(
+  "a walk from a subreaper shell is no answer for an unreadable orphan of the run that the init of an older pid namespace adopted",
+  async () => {
+    if (!namespacesHold) {
+      throw new Error(
+        'this host refused an unprivileged user and pid namespace (unshare --user --map-current-user --pid --fork --mount-proc true), or has no unshare or nsenter; the GitHub Actions test job allows them in its step "Allow unprivileged user namespaces"'
+      );
+    }
+    // A child subreaper adopts the run's orphans in its own pid namespace only: a process the run
+    // starts in another one goes to that namespace's init when its parent ends, however far above
+    // the subreaper is. A namespace older than the walking shell has an init older than it, so the
+    // walk from a subreaper shell, which passed every process whose first older parent was not the
+    // shell, passed such an orphan, 0 and nothing named (a reviewer's forcing). The row makes a
+    // namespace before the harness's shell starts (unshare, whose init is a sh that becomes a
+    // sleep); the shell, under lib/subreaper.py, enters it (nsenter) to start a marked
+    // not-dumpable python3 there, whose sh exits at once, so the namespace's init adopts it; and
+    // walks.
+    const work = join(dir, "subreaper-older-ns");
+    mkdirSync(work);
+    const ns = Bun.spawn(
+      ownGroup([
+        "unshare",
+        "--user",
+        "--map-current-user",
+        "--pid",
+        "--fork",
+        "--kill-child",
+        "--mount-proc",
+        "sh",
+        "-c",
+        "echo runs; exec sleep 60",
+      ]),
+      { stdout: "pipe", stderr: "ignore" }
+    );
+    started.push(ns.pid);
+    const said = await ns.stdout.getReader().read();
+    expect(new TextDecoder().decode(said.value)).toBe("runs\n");
+    const init = Number(
+      readFileSync(`/proc/${ns.pid}/task/${ns.pid}/children`, "utf8").trim().split(" ")[0]
+    );
+    await pastStarts([init]);
+    const py = `import ctypes, os, sys, time
+ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)
+open(sys.argv[1] + ".tmp", "w").write(os.readlink("/proc/self") + "\\n")
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(60)`;
+    const body = `set -Eeuo pipefail
+trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
+root=${JSON.stringify(root)}
+work=$WORK
+. ${JSON.stringify(rig)}
+export LEGION_E2E_RUN=$work
+${unreadableSh}
+[ "\${LEGION_E2E_SUBREAPER:-}" = "$$ $(proc_start $$)" ] && echo "the shell is the subreaper" || echo "the shell is no subreaper"
+nsenter --preserve-credentials --user --pid --target ${init} -- sh -c 'python3 -I -c "$1" "$2" </dev/null >/dev/null 2>&1 & exit 0' sh "$PY" "$work/orphan.ready"
+linked "$work/orphan.ready"; orphan=$pid
+for i in $(seq 1 200); do [ "$(proc_parent "$orphan")" != ${init} ] || break; sleep 0.05; done
+echo "orphan $(readable "$orphan"), parent $([ "$(proc_parent "$orphan")" = ${init} ] && echo "the namespace's init" || echo elsewhere)"
+st=0; run_processes >"$work/rp.out" 2>"$work/rp.err" || st=$?
+echo "run_processes $st, named [$(tr '\\n' ' ' <"$work/rp.out")]"
+echo "pid $orphan"`;
+    const shell = Bun.spawnSync(ownGroup(["python3", "-I", subreaperPy, "bash", "-c", body]), {
+      env: { PATH: process.env.PATH ?? "", WORK: work, PY: py, proc_root: rowRoot() },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = shell.stdout.toString();
+    const orphan = /^pid (\d+)$/m.exec(out)?.[1];
+    if (orphan !== undefined) started.push(Number(orphan));
+    expect({ err: shell.stderr.toString(), out: out.replace(/^pid \d+\n/m, "") }).toEqual({
+      err: "",
+      out: "the shell is the subreaper\norphan unreadable, parent the namespace's init\nrun_processes 2, named []\n",
+    });
+    expect(readFileSync(join(work, "rp.err"), "utf8").trimEnd()).toMatch(
+      new RegExp(
+        `^procs_naming: process ${orphan} \\([^)\\n]+\\) is this user's, started after this shell, and its environment cannot be read, so it may carry the run's mark and the processes naming \\S+ were not checked$`
+      )
     );
   },
   // A guard on a hang only, as for the rows above.
