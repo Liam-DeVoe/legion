@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // The program's rule of an owner's launch answers daemon.OwnsPlan for the rig's claim of each role,
@@ -24,14 +23,13 @@ import (
 func TestTheToolRestatesTheDaemonsPlanGuidance(t *testing.T) {
 	compared := 0
 	for _, role := range claim.Roles {
-		for _, issue := range []string{rigRoot, rigChild} {
-			token, err := claim.NewToken(rigProject, issue, role)
+		for _, root := range []bool{true, false} {
+			c, err := rigClaim(role, root)
 			if err != nil {
 				t.Fatal(err)
 			}
-			c := supervise.Claim{Token: token, Project: rigProject, Tree: rigRoot, Issue: issue, Role: role, Generation: 1}
 			if got, want := ownsPlan(c), daemon.OwnsPlan(c); got != want {
-				t.Errorf("ownsPlan of the %s on %s (tree %s) answers %t, daemon.OwnsPlan %t", role, issue, rigRoot, got, want)
+				t.Errorf("ownsPlan of the %s on %s (tree %s) answers %t, daemon.OwnsPlan %t", role, c.Issue, rigRoot, got, want)
 			}
 			compared++
 		}
