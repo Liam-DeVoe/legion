@@ -1066,15 +1066,17 @@ func writtenByPerson(ctx context.Context, actor model.Actor) bool {
 // write, so no set of dropped blocks narrows what it reads. An edit batch is held to its own
 // blocks instead (refuseBatchDroppedAskBlocks), which the gate of that route, droppedAskBlocks,
 // narrows to the blocks the batch dropped itself. A person's own editor is held to neither:
-// settlement retracts the ask of a block that leaves the document there.
+// settlement retracts the open ask of a block that leaves the document there, and records the
+// person's removal of an answered one (holdSettledRemovals).
 //
 // by is who writes it (dropperOf). A write that is not a person's own is refused for an answered
-// ask too, whose block the written tree does not hold as an ask block (refuseDroppedAnsweredAsks).
-// The refusal is ErrInvalidAskBlock for an open ask, which comes first, and ErrAnsweredAskKept for
-// an answered one. A person's own write is taken, and records as that person's removal each
-// answered ask whose block the document's block index held and the written tree does not
-// (holdRemovals): the index is what the document held before this write, so an ask whose block
-// an earlier write took out is no removal of this one.
+// ask too, whose block the document's block index held and the written tree does not hold as an
+// ask block (refuseDroppedAnsweredAsks). The refusal is ErrInvalidAskBlock for an open ask, which
+// comes first, and ErrAnsweredAskKept for an answered one. A person's own write is taken, and
+// records as that person's removal each answered ask whose block the document's block index held
+// and the written tree does not (holdRemovals). The index is what the document held before this
+// write, so an ask whose block an earlier write took out is neither refused to an agent nor a
+// removal of a person's.
 func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string, target *pmdoc.Node, by dropper) error {
 	return refuseDroppedAskBlocksIn(ctx, s.queryFrom(ctx), artifactID, target, by)
 }
@@ -1217,17 +1219,24 @@ func (e *ErrAnsweredAskKept) Error() string {
 // each answered ask of the document whose block the write loses, or answers nil where it loses
 // none. lost answers whether the write loses the block of one id. after is the tree the write
 // leaves: one that still holds a block under that id, as another type, is a write that retyped the
-// block, and the refusal says so. The asks are read with their document's address, in the one
-// statement, so the refusal names each ask's node and its block's address and quotes its question.
-func refuseDroppedAnsweredAsks(ctx context.Context, q Queryer, artifactID string, after *pmdoc.Node, lost func(blockID string) bool) error {
+// block, and the refusal says so. standing narrows it to the asks whose block the document's block
+// index holds as an ask block, as it narrows a person's removals (answerDroppedAnsweredAsks), for a
+// write that replaces the document whole: an answered ask whose block a person removed earlier, or
+// one the decisions step's restore still owes, is no block this write drops. The asks are read
+// with their document's address, in the one statement, so the refusal names each ask's node and
+// its block's address and quotes its question.
+func refuseDroppedAnsweredAsks(ctx context.Context, q Queryer, artifactID string, after *pmdoc.Node, lost func(blockID string) bool, standing bool) error {
 	rows, err := q.Query(ctx, `
 		select k.id::text, k.block_id, k.question, k.issue_key,
 		       d.issue_key, coalesce(d.project_key, ''), d.session_id, d.slug, d.kind, d.is_primary
 		from asks k
 		join artifacts d on d.id = k.block_artifact_id
 		where k.block_artifact_id = $1 and k.state = 'answered' and k.block_id is not null
+		  and (not $2 or exists (
+			select 1 from document_blocks b
+			where b.artifact_id = k.block_artifact_id and b.block_id = k.block_id and b.type = 'ask'))
 		order by k.block_id
-	`, artifactID)
+	`, artifactID, standing)
 	if err != nil {
 		return fmt.Errorf("read answered ask blocks: %w", err)
 	}

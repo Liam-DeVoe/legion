@@ -41,6 +41,11 @@ type settlementReconciliation struct {
 	repairs   []blockRepair
 	events    []model.Event
 	retracted []model.Ask
+	// answeredGone is whether an answered ask of the document has no block in the tree reconciled
+	// - a row no block matched - which alone can make the version a person's removal of its block
+	// (holdSettledRemovals), so a settlement whose tree holds every answered ask's block reads no
+	// removal.
+	answeredGone bool
 	// owedCopies are the other documents showing a copy of an ask this settlement retracts, or of
 	// a decided ask whose wording it restores (restoreDocumentDecidedWordings), whose settlement
 	// reconcileAskBlocks marked owed (owedCopiesOf); the settlement arms each once it commits.
@@ -1101,6 +1106,7 @@ func (s *Service) reconcileAskBlocks(
 	}
 
 	for _, ask := range rows {
+		reconciled.answeredGone = reconciled.answeredGone || ask.State == "answered"
 		// Only an open ask is retracted: an answered or resolved one is already closed, its
 		// answer or resolution is the record, and the asks table forbids a resolved row that
 		// still carries an answer. A closed issue's settlement retracts none.

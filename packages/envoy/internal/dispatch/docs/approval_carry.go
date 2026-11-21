@@ -176,13 +176,15 @@ var attributeRemovalCase = carryCase{
 // - each answered ask it returns, and each ask block of the decisions document it moves, whatever
 // its ask's state - in place of its pointer line, with the `## Decisions` heading it adds to a
 // spec holding no such part, a block under a new id included. It takes out of N only the blocks
-// the restore's own write added (decisionStepCases.restored), and out of A only the pointer line
-// that write took out (pointerLinesTaken); a block an agent wrote into the part is no part of it.
-// Where the approved version held the ask's block already, under the id it stands at now, the
-// block is taken out of both versions only where its words are the words the person approved
-// (restoredAskBlocks), so a restore that returns other words than the approved ones is a
-// difference no case carries. It holds for the restore's own write alone
-// (decisionStepCases.restore): an agent's write that makes the same change carries nothing by it.
+// the restore's own write added (decisionStepCases.restored), and the heading where it is the
+// step's doing (stepsOwnHeading), and out of A only the pointer line that write took out
+// (pointerLinesTaken); a block an agent wrote into the part is no part of it, and neither is a
+// heading A held, empty or not. Where the approved version held the ask's block already, under
+// the id it stands at now, the block is taken out of both versions only where it is byte for byte
+// the block the person approved (restoredAskBlocks), so a restore that returns other words, or
+// the same words in other bytes, than the approved ones is a difference no case carries. It holds
+// for the restore's own write alone (decisionStepCases.restore): an agent's write that makes the
+// same change carries nothing by it.
 //
 // kept for one release: decisions-step
 var restoreCase = carryCase{
@@ -195,7 +197,7 @@ var restoreCase = carryCase{
 			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 			return node.Type == "ask" && input.restored[id]
 		})
-		restored, restoredTook := withoutDecisionsPartBlocks(tree, input.pointerLinesTaken(approved))
+		restored, restoredTook := withoutDecisionsPartBlocks(tree, input.pointerLinesTaken(approved), !approved && input.stepsOwnHeading())
 		return restored, took || restoredTook
 	},
 }
@@ -208,11 +210,11 @@ var restoreCase = carryCase{
 // asks are readingCase's. It takes out of N only the decisions and the pointers the conversion's
 // own write added (decisionStepCases.decisions, decisionStepCases.shaped), and out of A only the
 // pointer line that write took out (pointerLinesTaken): a decision A held, whose words an agent
-// changed since, and a pointer an agent gave an ask, stay differences. A `## Decisions` heading the
-// part holds nothing else under is taken out with them, since the conversion adds it to a spec
-// that holds no such part. It holds for the conversion's own write alone
-// (decisionStepCases.conversion): an agent's upload that adds the same `shaped` pointers to an
-// answered ask supersedes the approval as any other change does.
+// changed since, and a pointer an agent gave an ask, stay differences. The `## Decisions` heading
+// is taken out of N with them where it is the step's doing (stepsOwnHeading) and the part holds
+// nothing else; a heading A held stays in both. It holds for the
+// conversion's own write alone (decisionStepCases.conversion): an agent's upload that adds the
+// same `shaped` pointers to an answered ask supersedes the approval as any other change does.
 //
 // kept for one release: decisions-step
 var conversionCase = carryCase{
@@ -223,15 +225,28 @@ var conversionCase = carryCase{
 			return tree, false
 		}
 		if approved {
-			return withoutDecisionsPartBlocks(tree, input.pointerLinesTaken(true))
+			return withoutDecisionsPartBlocks(tree, input.pointerLinesTaken(true), false)
 		}
 		tree, took := withoutAddedShapedPointers(tree, input.steps.shaped, input.decided)
 		converted, convertedTook := withoutDecisionsPartBlocks(tree, func(node *pmdoc.Node) bool {
 			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 			return node.Type == decisionType && input.steps.decisions[id]
-		})
+		}, input.stepsOwnHeading())
 		return converted, took || convertedTook
 	},
+}
+
+// stepsOwnHeading reports whether N's `## Decisions` heading is the decisions step's doing, which
+// restoreCase and conversionCase take out of N once its part holds nothing else: A holds no such
+// part, and the step's write either added the heading (decisionStepCases.headingAdded) or took out
+// the pointer line it stood over (decisionStepCases.pointerLines), the heading and line an agent
+// of the release before wrote as one after the approval, which the step's blocks replace. Where A
+// holds a `## Decisions` part, empty or not, its heading stays in both versions, so a write that
+// leaves N without the heading a person approved is a difference no case carries.
+//
+// kept for one release: decisions-step
+func (input carryInput) stepsOwnHeading() bool {
+	return !hasDecisionsPart(input.approved) && (input.steps.headingAdded || len(input.steps.pointerLines) > 0)
 }
 
 // carryCases are the cases carryVerdict composes, in the order their reasons are named.
@@ -242,7 +257,8 @@ var carryCases = [...]carryCase{readingCase, attributeRemovalCase, restoreCase, 
 // document, which is all those two cases take out of a version: the block id of each answered ask
 // block the restore wrote (restored), of each decision the conversion wrote (decisions), the
 // `shaped` pointers it gave an answered ask block the document held already, by that block's id
-// (shaped), and the markdown of each pointer line the write took out of the document's
+// (shaped), whether it added the `## Decisions` heading to a document that held no such part
+// (headingAdded), and the markdown of each pointer line the write took out of the document's
 // `## Decisions` part (pointerLines, blockMarkdown), which is what those cases take out of the
 // approved version. Only the step sets it, through a mark on its write's context no route can put
 // there (withDecisionStepWrite), and SnapshotVersion carries it on the version's write
@@ -254,6 +270,7 @@ type decisionStepCases struct {
 	restore, conversion bool
 	restored, decisions map[string]bool
 	shaped              map[string][]string
+	headingAdded        bool
 	pointerLines        []string
 }
 
@@ -307,9 +324,9 @@ type carryInput struct {
 // paragraph of the part whose markdown is that line's, once each in a pass of the cases between
 // the two of them (pointersLeft), however many paragraphs of A are that line; of N, none, since
 // the write left none of them there. A paragraph a person approved that the write did not take
-// out - one citing a block of the decisions document, which the restore keeps, or a second copy of
-// the pointer line - stays in A. The answer is a drop for one call of withoutDecisionsPartBlocks,
-// which it walks in order.
+// out - one citing the decisions document among other words or citing a block of it, which the
+// restore keeps (isPointerLine), or a second copy of the pointer line - stays in A. The answer is
+// a drop for one call of withoutDecisionsPartBlocks, which it walks in order.
 func (input carryInput) pointerLinesTaken(approved bool) func(*pmdoc.Node) bool {
 	if !approved || input.pointersLeft == nil || len(*input.pointersLeft) == 0 {
 		return func(*pmdoc.Node) bool { return false }

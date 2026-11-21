@@ -579,9 +579,9 @@ func joined(t *testing.T, service *Service, op func(ctx context.Context, tx pgx.
 }
 
 // answerBlockAs writes login's answer to the block ask blockID of artifactID as the answer route
-// writes it (settleAskAs): on the ask's node and its row, and, while another build serves
-// (serveTwoBuilds), into the block in step with them; on a fleet of one build no byte of the
-// document holds it.
+// writes it (settleAskAs): on the ask's node and its row, and into the block in step with them -
+// while another build serves (serveTwoBuilds) the answer's words among them, and on a fleet of one
+// build only the ones a version keeps, its state, answerer and time (R3).
 func answerBlockAs(t *testing.T, service *Service, artifactID, blockID, login string, selected []string) {
 	t.Helper()
 	person := model.Actor{Kind: "user", ID: login}

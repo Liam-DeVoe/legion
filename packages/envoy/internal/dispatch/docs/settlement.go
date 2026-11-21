@@ -882,6 +882,15 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if st.credit.kept {
 			keptEditor = &st.credit.actor
 		}
+		// A person's edit in the room that took an answered ask's block out of the document is
+		// that person's removal, which the version's index pass states on the ask's node, as the
+		// same edit over HTTP records it (holdSettledRemovals). Only an answered ask the
+		// reconciled tree held no block of can be one, or any where the version is a later read.
+		if st.reconciliation.answeredGone || st.versioned != st.reconciled {
+			if err := holdSettledRemovals(ctx, tx, room, st.versioned, st.credit.authors); err != nil {
+				return settleDone, st.abandon(err)
+			}
+		}
 		result, writeErr := s.writeVersionTx(ctx, tx, room, renderedTree{tree: st.versioned, markdown: markdown, offsets: offsets}, st.credit.versionActor(), &versionWrite{
 			authors:          st.credit.authors,
 			capture:          &st.credit.capture,

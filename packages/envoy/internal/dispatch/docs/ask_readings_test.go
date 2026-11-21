@@ -228,8 +228,8 @@ func TestARetractedAnsweredAskReturningWithAReadingIsRestored(t *testing.T) {
 // answerAsRecorded answers the ask of blockID on artifactID as alice the way the answer route
 // records an answer: through the one writer of an ask's answer state (asks.Settle), with the
 // ask.answered event that records it - the event a restoration reads the state back from
-// (stateBeforeRetraction) - and the block kept in step with it while another build serves
-// (KeepAskBlockInStep, which writes nothing on a fleet of one build), in one joined transaction.
+// (stateBeforeRetraction) - and the block kept in step with it (KeepAskBlockInStep, which on a
+// fleet of one build writes the ones a version keeps, R3), in one joined transaction.
 func answerAsRecorded(t *testing.T, service *Service, artifactID, blockID string, selected []string) {
 	t.Helper()
 	ask := blockAskOn(t, service, artifactID, blockID)

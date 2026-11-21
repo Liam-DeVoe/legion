@@ -866,8 +866,9 @@ func TestTheBootsRestorationSettlesTheRestoredAsksOwnDocument(t *testing.T) {
 // it writes a copy's attributes into, naming the copy, its source ask, the source's document and
 // the state it shows, and never the question. A later settlement that leaves the copy's blocks as
 // they are logs nothing more, and one that shows a change of a source's state logs that block
-// again. Those attributes are written only while another build serves (serveTwoBuilds), for its
-// pages (rollWindowAskAttributes): on a fleet of one build no byte of a copy holds them.
+// again. The test writes them while another build serves (serveTwoBuilds), for its pages
+// (rollWindowAskAttributes); on a fleet of one build a copy keeps its provenance, and its source's
+// state where that is not open, alone (keptAskState).
 func TestASettlementLogsEachBlockItTakesForACopyOnce(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))

@@ -6117,9 +6117,10 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 // A closed issue's document settles on the running servers as an open issue's does, with nobody
 // opening it again.
 //
-// A process of another build is registered beside the pair (openClosingAskIssue), since only then
-// does the close write anything into the spec for a settlement to save: on a fleet of one build a
-// close changes no byte of any document. Bob's keystroke in his tab on
+// A process of another build is registered beside the pair (openClosingAskIssue), whose pages the
+// close writes the withdrawn ask's attributes into the spec for; on a fleet of one build the close
+// writes the ones a version keeps, one version that changes only the server-owned attributes of the
+// ask's block (R3). Bob's keystroke in his tab on
 // B is stored, and the issue closes through A. The close settles the spec first, so the keystroke
 // is in the version the close leaves; the close's withdrawal of the decision's ask then writes the
 // block resolved, which leaves the spec owing a settlement, and the close closes B's room. Nothing
