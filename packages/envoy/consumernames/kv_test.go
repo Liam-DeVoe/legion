@@ -613,3 +613,35 @@ func TestTheNativeOptionSavesTheStartTheServerReports(t *testing.T) {
 		t.Fatalf("the consumer delivered %+v (%v) first, want stream sequence %d", meta, err, sel.Record.Start)
 	}
 }
+
+// On a cluster a bucket's stream answers nobody for a moment after its create (no leader yet, or
+// its interest not yet on the member the client is on), and a write then is answered "no
+// responders". CreateSessionBucket writes the sentinel only once the stream answers, so on a
+// three-server cluster, at one copy and at three, every create writes its sentinel. Each round
+// creates a bucket of its own (createBucket, the session bucket's create under another name)
+// through the next member, since one round wins the race most of the time; a bucket deleted and
+// created again under one name races the delete's own clean-up instead (10049).
+func TestCreatingTheSessionBucketOnAClusterWritesItsSentinel(t *testing.T) {
+	for _, replicas := range []int{1, 3} {
+		t.Run(fmt.Sprintf("%d copies", replicas), func(t *testing.T) {
+			cluster := testnats.StartCluster(t, 3)
+			for round := range 60 {
+				conn := testnats.Connect(t, cluster.Servers[round%len(cluster.Servers)].URL())
+				config := SessionBucketConfig(replicas)
+				config.Bucket = fmt.Sprintf("%s_round_%d", SessionBucket, round)
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				store, err := createBucket(ctx, conn, config, StoreState{Cutover: CutoverDone, Boundary: 7})
+				if err != nil {
+					cancel()
+					t.Fatalf("round %d: the create on a three-server cluster at %d copies = %v", round, replicas, err)
+				}
+				state, err := store.State(ctx)
+				cancel()
+				if err != nil || state.Cutover != CutoverDone || state.Boundary != 7 {
+					t.Fatalf("round %d: the sentinel read back as %+v, %v", round, state, err)
+				}
+				conn.Close()
+			}
+		})
+	}
+}
