@@ -14,7 +14,7 @@ import (
 // The three rows of this file hold the relation dispatch://INFRA-1574 put in the place of the
 // fixed ten-minute intake handler limit: the limit one fact's handling runs under is derived from
 // the acknowledgement window that bounds each of that fact's reads, so a deployment which widens
-// worker_rpc_timeout_seconds widens the limit with it, instead of leaving a review's three
+// worker_rpc_timeout_seconds widens the limit with it, instead of leaving a review's two
 // bounded reads to fill a limit that never moved. The relation is worth a test of its own because
 // nothing in the daemon refuses a configuration that breaks it: a window wide enough for the
 // reads to outlast a fixed limit would simply have every review cut, over and over, with the cut
@@ -33,7 +33,7 @@ import (
 // hold every duration key to (maxTimerSeconds in
 // packages/daemon/internal/config/config.go, and the Positive rows of topLevelKeys in
 // packages/daemon/internal/config/keytable.go, which carry each duration key's own default). The table below ends on it
-// because the derivation multiplies its window by four and nothing refuses the product: a legal
+// because the derivation multiplies its window by three and nothing refuses the product: a legal
 // configuration must still yield a limit a caller can hold, so the largest legal window is the
 // one row that says the arithmetic does not overflow or wrap.
 const maxTimerWindow = 2_147_483 * time.Second
@@ -60,10 +60,10 @@ func TestTheIntakeHandlerLimitCoversTheReadsItsWindowBounds(t *testing.T) {
 	}{
 		{"the daemon's default worker_rpc_timeout_seconds", 5 * time.Second, defaultHandlerLimit, false},
 		{"the widest window any caller in this tree passes today", 30 * time.Second, defaultHandlerLimit, false},
-		{"the last window the floor covers", 2*time.Minute + 30*time.Second, defaultHandlerLimit, false},
-		{"the window of the issue, where a review's reads filled the old fixed limit", 200 * time.Second, 800 * time.Second, true},
-		{"a window of a quarter of an hour", 15 * time.Minute, 60 * time.Minute, true},
-		{"the largest window a legion.yaml may carry", maxTimerWindow, 4 * maxTimerWindow, true},
+		{"the last window the floor covers, the window of the issue", 200 * time.Second, defaultHandlerLimit, false},
+		{"a window just above the floor", 201 * time.Second, 603 * time.Second, true},
+		{"a window of a quarter of an hour", 15 * time.Minute, 45 * time.Minute, true},
+		{"the largest window a legion.yaml may carry", maxTimerWindow, 3 * maxTimerWindow, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			limit, derived := HandlerLimitFor(row.window)
@@ -107,7 +107,7 @@ func TestTheIntakeHandlerLimitCoversTheReadsItsWindowBounds(t *testing.T) {
 		spec ConsumerSpec
 		want time.Duration
 	}{
-		{"a window above the floor derives the limit the daemon runs under", withWindow(200*time.Second, 0), 800 * time.Second},
+		{"a window above the floor derives the limit the daemon runs under", withWindow(250*time.Second, 0), 750 * time.Second},
 		{"a window the floor covers leaves the floor in place", withWindow(5*time.Second, 0), defaultHandlerLimit},
 		// A rig that cuts a handler in well under a second is the reason a caller-set limit is
 		// kept rather than widened to the derivation: those rows would wait out the floor.
@@ -130,13 +130,12 @@ func TestTheIntakeHandlerLimitCoversTheReadsItsWindowBounds(t *testing.T) {
 // name, with what each one reads: the reads boundedReadsPerFact counts, each of them cut at one
 // AckWait inside handleMessage and made one after another, so they add up rather than overlap.
 var reviewBoundedReads = map[string]string{
-	"ReviewBody":       "a truncated review-App review's full body, read from GitHub so the workflow can read the Legion footer the cap cut off (resolveReviewBody)",
 	"ReviewPermission": "whether the review's author may write to the repository, which is what lets the review decide a round (resolveReviewPermission)",
 }
 
 // otherFactBoundedReads are the ConsumerSpec function fields some fact other than a review reads,
 // by field name, with the fact that makes the read and why that fact makes fewer of them than a
-// review does. They are bounded reads like the two above, and they are not counted, because
+// review does. They are bounded reads like the one above, and they are not counted, because
 // boundedReadsPerFact is the most any one fact makes and no fact here makes more than one.
 var otherFactBoundedReads = map[string]string{
 	"RepositoryMapping": "RepoMappingChanged reads the project's repository mapping again (readMapping); handleMessage returns the moment that read answers, so this fact reaches no other read and no transaction",
@@ -208,7 +207,7 @@ func TestEveryConsumerSpecReadIsCountedInTheHandlerLimit(t *testing.T) {
 		}
 	}
 
-	// And the count itself: a review's reads are the two the spec carries plus the one it does
+	// And the count itself: a review's reads are the one the spec carries plus the one it does
 	// not (recordedPullRequestRead), and that is the number the derivation gives a window each.
 	if counted := len(reviewBoundedReads) + recordedPullRequestRead; counted != boundedReadsPerFact {
 		t.Errorf("a review's handling makes %d bounded reads (%d function fields of ConsumerSpec and recordedPullRequest), while boundedReadsPerFact is %d: HandlerLimitFor gives each read a window, so the two must agree",
@@ -246,13 +245,12 @@ func (r *recordedDeadline) read() (called, hasDeadline bool, remaining time.Dura
 	return r.called, r.hasDeadline, r.remaining
 }
 
-// truncatedReviewApproval is the captured review envelope with its payload rewritten to carry a
-// review id and a truncated body, the two things resolveReviewBody asks of a review before it
-// reads GitHub for the full text; the capture names an author and an approval already, which is
-// what makes the review decide a round and so makes resolveReviewPermission read as well. The
-// payload is rewritten the way TestDecodingCarriesTheReviewOrder rewrites it: the envelope
-// carries its payload as JSON text, so the text is parsed, changed and written back.
-func truncatedReviewApproval(t *testing.T) []byte {
+// reviewApproval is the captured review envelope with its payload rewritten to carry a review id;
+// the capture names an author and an approval already, which is what makes the review one that
+// decides (PullRequestReview.Decides) and so makes resolveReviewPermission read. The payload is
+// rewritten the way TestDecodingCarriesTheReviewOrder rewrites it: the envelope carries its
+// payload as JSON text, so the text is parsed, changed and written back.
+func reviewApproval(t *testing.T) []byte {
 	t.Helper()
 	var envelope map[string]any
 	if err := json.Unmarshal(capturedGitHubEnvelope(t, "review.json"), &envelope); err != nil {
@@ -263,7 +261,6 @@ func truncatedReviewApproval(t *testing.T) []byte {
 		t.Fatalf("parse the captured review's payload: %v", err)
 	}
 	payload["review_id"] = "5325101010"
-	payload["body_truncated"] = "true"
 	text, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("encode the review's payload: %v", err)
@@ -287,35 +284,31 @@ func truncatedReviewApproval(t *testing.T) []byte {
 const readSlack = 5 * time.Second
 
 // This row is the witness on a real consumer that the derived limit is not just arithmetic: a
-// review fact, whose handling makes all three bounded reads, is published to the daemon's own
-// GitHub durable, and each step says what deadline it was handed. The two the spec carries each
-// get a whole acknowledgement window, and the handler — the last thing the handling reaches, past
-// every read — still has more than all three windows left, under the derived limit. That is the
-// claim the issue's change makes, and no unit test of HandlerLimitFor can make it: it depends on
-// handleMessage nesting each read's bound under the work context and on consumeMessage building
-// that work context from the spec's own limit.
+// review fact, whose handling makes both bounded reads, is published to the daemon's own GitHub
+// durable, and each step says what deadline it was handed. The read the spec carries gets a whole
+// acknowledgement window, and the handler — the last thing the handling reaches, past every read
+// — still has more than both windows left, under the derived limit. That is the claim the issue's
+// change makes, and no unit test of HandlerLimitFor can make it: it depends on handleMessage
+// nesting each read's bound under the work context and on consumeMessage building that work
+// context from the spec's own limit.
 //
-// It waits for nothing. The window is wide (ten minutes derives forty) exactly so that no
+// It waits for nothing. The window is wide (ten minutes derives thirty) exactly so that no
 // deadline here can pass while the row runs, and the fact is handled the moment it is delivered;
 // what the row measures are deadlines, not elapsed time.
 func TestAReviewFactsBoundedReadsFitTheDerivedLimit(t *testing.T) {
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
-	// A window of ten minutes derives a limit of forty, well above the floor, so what the
+	// A window of ten minutes derives a limit of thirty, well above the floor, so what the
 	// consumer runs under is the derivation and not defaultHandlerLimit. HandlerLimit is left
 	// unset for the same reason: the daemon sets none either.
 	spec.AckWait = 10 * time.Minute
 	limit, derived := HandlerLimitFor(spec.AckWait)
-	if want := 40 * time.Minute; limit != want || !derived {
+	if want := 30 * time.Minute; limit != want || !derived {
 		t.Fatalf("HandlerLimitFor(%s) = %s, %t; want %s and a derived limit, which is what this row runs the consumer under", spec.AckWait, limit, derived, want)
 	}
 
-	var body, permission, handler recordedDeadline
-	spec.ReviewBody = func(ctx context.Context, _ PullRequestReview) (string, error) {
-		body.record(ctx)
-		return "Captured review, restored from GitHub", nil
-	}
+	var permission, handler recordedDeadline
 	spec.ReviewPermission = func(ctx context.Context, _ PullRequestReview) (bool, error) {
 		permission.record(ctx)
 		return true, nil
@@ -332,14 +325,13 @@ func TestAReviewFactsBoundedReadsFitTheDerivedLimit(t *testing.T) {
 	}))
 	defer stop()
 
-	published := publishAt(t, js, "notifications.github.sjawhar.legion.pr.42.review", truncatedReviewApproval(t))
+	published := publishAt(t, js, "notifications.github.sjawhar.legion.pr.42.review", reviewApproval(t))
 	waitAcknowledged(t, stream, githubConsumerName(spec.Project), published)
 
 	for _, read := range []struct {
 		name     string
 		recorded *recordedDeadline
 	}{
-		{"the review's truncated body", &body},
 		{"the review author's repository permission", &permission},
 	} {
 		called, hasDeadline, remaining := read.recorded.read()
@@ -365,9 +357,9 @@ func TestAReviewFactsBoundedReadsFitTheDerivedLimit(t *testing.T) {
 	if !hasDeadline {
 		t.Fatalf("the fact was applied under a context with no deadline, so nothing cuts a wedged handler")
 	}
-	// Past all three reads, the handler still has more than the three windows they could have
-	// taken: that headroom is the whole point of the fourth window, since the transaction it runs
-	// in and its wait on the apply lock are what nothing else bounds.
+	// Past both reads, the handler still has more than the two windows they could have taken:
+	// that headroom is the whole point of the third window, since the transaction it runs in and
+	// its wait on the apply lock are what nothing else bounds.
 	if reads := boundedReadsPerFact * spec.AckWait; remaining <= reads {
 		t.Errorf("the handler was given %s, which is no more than the %s a fact's %d bounded reads may take: the derived limit leaves one window above them",
 			remaining, reads, boundedReadsPerFact)

@@ -281,8 +281,8 @@ func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 	apply("settled", naming(settledRunsAt(headOne, 1, []record.AttemptRun{wordedRun("unit tests", 2, "success"), skippedRun("envoy-go", 3)}),
 		status("deploy", "success", 1)))
-	apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
-		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
+	apply("approve", reviewAt(7, "approved",
+		headOne))
 	told := reviewStuckNotices(t, pool)
 	want := "GitHub reported on head " + headOne + `: "envoy-go" skipped, "unit tests" success; commit statuses: "deploy" success; ` +
 		skippedSaid + ". The daemon reads the base's rules only on a conflicting read"

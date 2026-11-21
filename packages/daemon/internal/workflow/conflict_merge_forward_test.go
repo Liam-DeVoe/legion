@@ -424,9 +424,8 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 		pool := seedConflictIssue(t, phase.Reviewing, "needs_review", settledGreen("ci", "pr-title"))
 		confirmsConflict(t, pool, every)
 		assertNothingActed(t, pool, phase.Reviewing)
-		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1,
-			State: "approved", CommitID: conflictHead, HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
-			SubmittedAt: firstConflictRead.Add(2 * time.Minute)})
+		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
+			Role: claim.RoleReviewer, Claim: "reviewer-claim", Summary: "ship it", Verdict: "approve", Commit: conflictHead, HandoffRecord: "review-1", HandoffVersion: 1})
 		askedInAccepting := func() {
 			t.Helper()
 			if got := issuePhase(t, pool); got != phase.Accepting {
@@ -806,7 +805,7 @@ func TestAConflictKeepsPhaseWhenAHeadPushInImplementingAsksARead(t *testing.T) {
 			asked := []string{}
 			engine := readingEngine(&asked)
 			applyRefusingNothing(t, pool, engine, intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208",
-				Before: conflictHead, After: headTwo, Pusher: "legion-implementer[bot]"})
+				Before: conflictHead, After: headTwo})
 			if len(asked) != 0 {
 				t.Fatalf("the push to the branch asked reads of %v in %s, want none: its synchronize is what moves the head", asked, tc.at)
 			}

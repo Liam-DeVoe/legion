@@ -241,9 +241,9 @@ type workflowRuntime struct {
 	// mapping load names each of these the mapping does not hold, which catches a typo
 	// (logUnmappedCommitIssueTrailerRepos); nothing else in the daemon reads it.
 	commitIssueTrailerRepos []ghrepo.Repository
-	// reviewAppLogin is the review App's bot login from its boot lease, as the engine holds it: a
-	// review it submits decides a round by that login and the reviewer's recorded session
-	// (workflow's DecidesRound), so reviewerCanWrite asks GitHub nothing about it.
+	// reviewAppLogin is the one App's bot login from its boot read, as the engine holds it
+	// (workflow.Config.AppLogin): a review written with the App's token decides no round
+	// (workflow's RefusesRound), so reviewerCanWrite asks GitHub nothing about it.
 	reviewAppLogin string
 	// permissions holds, by repository and login, until when reviewerCanWrite's read of GitHub
 	// stands as no write access; permissionTTL is how long one stands, zero, in production, being
@@ -786,7 +786,7 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		Project: cfg.Project, Steps: cfg.Gates.Steps(), ReviewRoundCap: cfg.ReviewRoundCap,
 		Linger: cfg.Linger, ProductionCheckBound: cfg.ProductionCheckBound,
 		ProductionCheckRole: project.ProductionCheck,
-		ReviewAppLogin:      reviewAppLogin,
+		AppLogin:            reviewAppLogin,
 		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
 		Experiments: cfg.ExperimentsDeclared(),
 	}
@@ -848,7 +848,7 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 	w.consumers, err = intake.OpenConsumers(ctx, js, w.pool, intake.ConsumerSpec{
 		Project: cfg.Project, Repositories: heard, Renames: cfg.RepositoryRenames,
 		AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
-		ReviewPermission: w.reviewerCanWrite, ReviewBody: w.reviewBody,
+		ReviewPermission:  w.reviewerCanWrite,
 		RepositoryMapping: w.mappingChange, PrepareRepository: w.prepareRepository, PrepareArtifact: w.prepareArtifact,
 	})
 	if err != nil {

@@ -21,7 +21,7 @@ import (
 func workBackEngine(reviewRoundCap int, hooks ...Hook) *Engine {
 	return New(record.NewStore(), Config{
 		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: reviewRoundCap,
-		Linger: time.Hour, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp,
+		Linger: time.Hour, ProductionCheckRole: claim.RoleTester, AppLogin: testAppLogin,
 		Repositories: testRepositories, Hooks: hooks,
 		Clock: func() time.Time { return time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC) },
 	}, nil)
@@ -65,19 +65,15 @@ func testerFails(t *testing.T, pool *pgxpool.Pool, engine *Engine, round string)
 		HandoffRecord: "test-" + round, HandoffVersion: 1})
 }
 
-// reviewerRequestsChanges is the review App's request for changes at head, the half that ends a
-// review round the reviewer has completed, which sends the work back from reviewing. Its body
-// carries the Legion footer naming the head it read, which is what lets a review-App review
-// decide a round at all (refusesRound).
+// reviewerRequestsChanges is the reviewer's request for changes at head, its verdict sent with its
+// completion of reviewing (workflow's handoff), which ends the round and sends the work back from
+// reviewing.
 func reviewerRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, round, head string) {
 	t.Helper()
 	standsIn(t, pool, phase.Reviewing, "needs_review")
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim",
-		HandoffCommit: "review-" + round})
-	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
-	applyRefusingNothing(t, pool, engine, intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42,
-		State: "changes_requested", CommitID: head, HeadSHA: head, Author: testReviewApp,
-		Body: reviewBody("the round "+round+" findings", head)})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim"})
+	applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim,
+		Summary: "the round " + round + " findings", Verdict: "changes", Commit: head, HandoffRecord: "review-" + round, HandoffVersion: 1})
 }
 
 // architectMovesBack is the architect's own move of the issue out of accepting, the one phase it

@@ -137,20 +137,16 @@ func interleavings(facts []runFact, pushes []record.ClassifiedPush) [][]runFact 
 // a pull request's pushes interleave with its other facts: every order of the pushes at every
 // position gives what the pushes arriving first give, and closes the head run. The shapes move a
 // red h2 past h3 to h4 - the order a second head arriving before the first head's pushes broke
-// before the head run - by the review App's red tests and the implementer's code, with settlements
-// of h3 and h4 red and green and a reopen between them. The record goes through the store's round
+// before the head run - by two pushes, with settlements of h3 and h4 red and green and a reopen
+// between them. The record goes through the store's round
 // trip between facts, as the daemon reads it back.
 func TestEveryOrderOfThePushesGivesTheJudgementOfThePushesFirst(t *testing.T) {
 	shapes := []struct {
 		name   string
 		pushes []record.ClassifiedPush
 	}{
-		{"red tests, then red tests", []record.ClassifiedPush{{SHA: "h3", Before: "h2", ByReviewApp: true}, {SHA: "h4", Before: "h3", ByReviewApp: true}}},
-		{"code, then red tests", []record.ClassifiedPush{{SHA: "h3", Before: "h2"}, {SHA: "h4", Before: "h3", ByReviewApp: true}}},
-		{"code, then code", []record.ClassifiedPush{{SHA: "h3", Before: "h2"}, {SHA: "h4", Before: "h3"}}},
-		{"red tests, then code", []record.ClassifiedPush{{SHA: "h3", Before: "h2", ByReviewApp: true}, {SHA: "h4", Before: "h3"}}},
-		{"red tests past an unrecorded h3", []record.ClassifiedPush{{SHA: "h3", Before: "h2", ByReviewApp: true}, {SHA: "h4", Before: "h3", ByReviewApp: true}}},
-		{"code, then red tests past an unrecorded h3", []record.ClassifiedPush{{SHA: "h3", Before: "h2"}, {SHA: "h4", Before: "h3", ByReviewApp: true}}},
+		{"two pushes", []record.ClassifiedPush{{SHA: "h3", Before: "h2"}, {SHA: "h4", Before: "h3"}}},
+		{"two pushes past an unrecorded h3", []record.ClassifiedPush{{SHA: "h3", Before: "h2"}, {SHA: "h4", Before: "h3"}}},
 	}
 	sequences := []struct {
 		name  string
@@ -260,7 +256,7 @@ func TestAHeadRunStaysBounded(t *testing.T) {
 			largestRun, largestMoves, largestRow := 0, 0, 0
 			for i := 1; i <= 200; i++ {
 				if tc.pushFirst {
-					pr = ApplyPush(pr, record.ClassifiedPush{SHA: sha(i), Before: sha(i - 1), ByReviewApp: i%2 == 0})
+					pr = ApplyPush(pr, record.ClassifiedPush{SHA: sha(i), Before: sha(i - 1)})
 				}
 				pr = AdvancePullRequestHead(pr, Arrival{}, sha(i))
 				settlement := SettlementCandidate{Head: sha(i), CheckRuns: tenChecks(i), Generation: int64(i + 1),
@@ -274,7 +270,7 @@ func TestAHeadRunStaysBounded(t *testing.T) {
 					t.Fatalf("after %d heads the redelivered settlement took a step: %d steps, want %d", i, len(pr.Run.Steps), steps)
 				}
 				if late := i - 3; !tc.pushFirst && late >= 1 && late != tc.lost {
-					pr = ApplyPush(pr, record.ClassifiedPush{SHA: sha(late), Before: sha(late - 1), ByReviewApp: late%2 == 0})
+					pr = ApplyPush(pr, record.ClassifiedPush{SHA: sha(late), Before: sha(late - 1)})
 				}
 				if pr.Run != nil {
 					largestRun = max(largestRun, encoded(pr.Run))

@@ -64,7 +64,7 @@ func sentHistory(rng *rand.Rand, lose bool) []sentStep {
 		if k < n && rng.IntN(2) == 0 {
 			kind = lateSync
 		}
-		steps = append(steps, sentStep{push: record.ClassifiedPush{Before: cur, SHA: to, ByReviewApp: sender == "app", Sender: sender}, sync: kind})
+		steps = append(steps, sentStep{push: record.ClassifiedPush{Before: cur, SHA: to, Sender: sender}, sync: kind})
 		cur = to
 	}
 	if lose {

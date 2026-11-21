@@ -94,7 +94,7 @@ func randomHistory(rng *rand.Rand) ([]record.ClassifiedPush, []runFact) {
 	n := 2 + rng.IntN(4)
 	var pushes []record.ClassifiedPush
 	for i := 3; i < 3+n; i++ {
-		p := record.ClassifiedPush{SHA: fmt.Sprintf("h%d", i), Before: fmt.Sprintf("h%d", i-1), ByReviewApp: rng.IntN(2) == 0}
+		p := record.ClassifiedPush{SHA: fmt.Sprintf("h%d", i), Before: fmt.Sprintf("h%d", i-1)}
 		pushes = append(pushes, p)
 	}
 	var facts []runFact
@@ -117,12 +117,12 @@ func randomHistory(rng *rand.Rand) ([]record.ClassifiedPush, []runFact) {
 	}
 	if rng.IntN(2) == 0 {
 		last, back := fmt.Sprintf("h%d", 2+n), fmt.Sprintf("h%d", 2+rng.IntN(n))
-		pushes = append(pushes, record.ClassifiedPush{SHA: back, Before: last, ByReviewApp: rng.IntN(2) == 0})
+		pushes = append(pushes, record.ClassifiedPush{SHA: back, Before: last})
 		facts = append(facts, arrives(back))
 		if rng.IntN(2) == 0 {
 			settle(back)
 		}
-		pushes = append(pushes, record.ClassifiedPush{SHA: "hx", Before: back, ByReviewApp: rng.IntN(2) == 0})
+		pushes = append(pushes, record.ClassifiedPush{SHA: "hx", Before: back})
 		facts = append(facts, arrives("hx"))
 		if rng.IntN(2) == 0 {
 			settle("hx")
@@ -192,7 +192,7 @@ func TestABranchThatReturnsToACommitIsJudgedTheSameInEveryOrder(t *testing.T) {
 	red := record.PullRequest{HeadSHA: "h2", CheckedHead: "h2", Failing: []string{"ci"},
 		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1}
 	reach := record.ClassifiedPush{SHA: "h3", Before: "h2"}
-	tests := record.ClassifiedPush{SHA: "h4", Before: "h3", ByReviewApp: true}
+	tests := record.ClassifiedPush{SHA: "h4", Before: "h3"}
 	reset := record.ClassifiedPush{SHA: "h3", Before: "h4"}
 	fix := record.ClassifiedPush{SHA: "hx", Before: "h3"}
 	facts := []runFact{arrives("h3"), arrives("h4"), settles("h3", 2, "ci"), arrives("h3"), settles("h3", 3, "ci"), arrives("hx"), settles("hx", 4, "ci")}
@@ -271,7 +271,7 @@ func TestASettlementRedeliveredAfterAReopenStandsInEveryOrder(t *testing.T) {
 func TestAPushRedeliveredIntoARunAfterItsMoveIsSpent(t *testing.T) {
 	red := record.PullRequest{HeadSHA: "h2", CheckedHead: "h2", Failing: []string{"ci"},
 		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1}
-	p3, p4 := record.ClassifiedPush{SHA: "h3", Before: "h2", ByReviewApp: true}, record.ClassifiedPush{SHA: "h4", Before: "h3"}
+	p3, p4 := record.ClassifiedPush{SHA: "h3", Before: "h2"}, record.ClassifiedPush{SHA: "h4", Before: "h3"}
 	want := red
 	for _, f := range []runFact{pushed(p3), pushed(p4), arrives("h4"), arrives("h3")} {
 		want = stored(t, deliver(f, want))

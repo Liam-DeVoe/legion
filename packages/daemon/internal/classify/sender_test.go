@@ -28,8 +28,8 @@ func lateAt(before, head, sender string, minute int) runFact {
 // the second arrival of h1 takes the review App's push, whichever push of h0..h1 GitHub delivers
 // first, so the head run closes on the same settlement either way.
 func TestASynchronizesSenderTellsTwoPushesOfTheSameTwoHeadsApart(t *testing.T) {
-	dev, app := record.ClassifiedPush{SHA: "h1", Before: "h0", Sender: "dev"}, record.ClassifiedPush{SHA: "h1", Before: "h0", ByReviewApp: true, Sender: "app"}
-	back := record.ClassifiedPush{SHA: "h0", Before: "h1", ByReviewApp: true, Sender: "app"}
+	dev, app := record.ClassifiedPush{SHA: "h1", Before: "h0", Sender: "dev"}, record.ClassifiedPush{SHA: "h1", Before: "h0", Sender: "app"}
+	back := record.ClassifiedPush{SHA: "h0", Before: "h1", Sender: "app"}
 	heads := []runFact{syncedAt("h0", "h1", "dev", 1), settles("h1", 2, "ci"), syncedAt("h1", "h0", "app", 2), settles("h0", 3, "ci"), syncedAt("h0", "h1", "app", 3), settles("h1", 4, "ci")}
 	const want = `head="h1" checked="h1" failing=[ci] run=false`
 	for _, tc := range []struct {
@@ -74,7 +74,7 @@ func TestASynchronizeBackToTheRecordedHeadIsNoMove(t *testing.T) {
 // them: h0..c1 by the implementer, c1..c2 by the review App, the first synchronize late. Delivered
 // before it or after it, the late one closes the head run on the move the implementer's push made.
 func TestAnArrivalTakesTheMovesALateSynchronizeNames(t *testing.T) {
-	code, tests := record.ClassifiedPush{SHA: "c1", Before: "h0", Sender: "dev"}, record.ClassifiedPush{SHA: "c2", Before: "c1", ByReviewApp: true, Sender: "app"}
+	code, tests := record.ClassifiedPush{SHA: "c1", Before: "h0", Sender: "dev"}, record.ClassifiedPush{SHA: "c2", Before: "c1", Sender: "app"}
 	for _, tc := range []struct {
 		name  string
 		facts []runFact
@@ -162,7 +162,7 @@ func secondAt(before, head, sender string, second int, late bool) runFact {
 func TestSkippedMovesInOneSecondCloseTheirHeadRun(t *testing.T) {
 	dev, app := "dev", "app"
 	pushes := []runFact{pushed(record.ClassifiedPush{SHA: "h1", Before: "h0", Sender: dev}), pushed(record.ClassifiedPush{SHA: "c1", Before: "h1", Sender: dev}),
-		pushed(record.ClassifiedPush{SHA: "c2", Before: "c1", ByReviewApp: true, Sender: app}), pushed(record.ClassifiedPush{SHA: "c3", Before: "c2", Sender: dev})}
+		pushed(record.ClassifiedPush{SHA: "c2", Before: "c1", Sender: app}), pushed(record.ClassifiedPush{SHA: "c3", Before: "c2", Sender: dev})}
 	for _, tc := range []struct {
 		name          string
 		tied, control []runFact
@@ -273,10 +273,10 @@ func TestALoopInASkippedGapIsReadAsTheReleaseBeforeReadsIt(t *testing.T) {
 	start := record.PullRequest{HeadSHA: "h1", CheckedHead: "h1", Failing: []string{"ci"},
 		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1, HeadUpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}
 	facts := []runFact{
-		pushed(record.ClassifiedPush{SHA: "c1", Before: "h1", ByReviewApp: true, Sender: "app"}),
+		pushed(record.ClassifiedPush{SHA: "c1", Before: "h1", Sender: "app"}),
 		pushed(record.ClassifiedPush{SHA: "c2", Before: "c1", Sender: "dev"}),
-		pushed(record.ClassifiedPush{SHA: "c1", Before: "c2", ByReviewApp: true, Sender: "app"}),
-		pushed(record.ClassifiedPush{SHA: "c3", Before: "c1", ByReviewApp: true, Sender: "app"}),
+		pushed(record.ClassifiedPush{SHA: "c1", Before: "c2", Sender: "app"}),
+		pushed(record.ClassifiedPush{SHA: "c3", Before: "c1", Sender: "app"}),
 		syncedAt("c1", "c3", "app", 4), syncedAt("c1", "c2", "dev", 2), syncedAt("c2", "c1", "app", 3), syncedAt("h1", "c1", "app", 1),
 	}
 	got := delivered(t, start, facts...)

@@ -121,7 +121,7 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: drainProject, Repositories: drainRepositories{}, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(records, engine, drainRunning, drainProject, log)
-	// GitHub answers that the approver can write to the repository; the count is every review the
+	// GitHub answers that the reviewer can write to the repository; the count is every review the
 	// consumer asked GitHub about.
 	var asked atomic.Int64
 	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{
@@ -230,7 +230,7 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 		t.Errorf("processed events = %v, want exactly the %d Legion events %v", got, len(want), want)
 	}
 	if got := asked.Load(); got != drainLegionIssues {
-		t.Errorf("GitHub was asked about %d reviewers, want %d: one for each Legion pull request's approval and none for any other pull request", got, drainLegionIssues)
+		t.Errorf("GitHub was asked about %d reviewers, want %d: one for each Legion pull request's request for changes and none for any other pull request", got, drainLegionIssues)
 	}
 	assertDrainedPullRequests(t, direct, records)
 }
@@ -247,9 +247,11 @@ type drainEvent struct {
 
 // drainBacklog is drainOthers events of pull requests and workflows that are not Legion's, one
 // Legion event after every hundred of them. The others cycle through a pull request opened on a
-// branch that is no issue's, a push to it, an approval and a CI settlement of a pull request the
+// branch that is no issue's, a push to it, a review and a CI settlement of a pull request the
 // daemon does not record, and a run of a workflow no deploy names. Each Legion pull request is
-// opened on its issue's branch, pushed to twice, settled green at its last head and approved there.
+// opened on its issue's branch, pushed to twice, settled green at its last head, and a person
+// requests changes there: the one GitHub review that decides a Legion round
+// (workflow's RefusesRound), so the record keeps it as its newest.
 func drainBacklog() []drainEvent {
 	events := make([]drainEvent, 0, drainOthers+drainLegion)
 	at := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
@@ -317,11 +319,11 @@ func drainPullRequestEvent(delivery string, number int, action, branch, head str
 
 func drainReviewEvent(delivery string, number int, id int64, head string, submitted time.Time) drainEvent {
 	n := strconv.Itoa(number)
-	return drainWebhookEnvelope(delivery, drainSubjectPrefix+".pr."+n+".review", "review approved on "+drainRepo+"#"+n, map[string]string{
+	return drainWebhookEnvelope(delivery, drainSubjectPrefix+".pr."+n+".review", "review changes_requested on "+drainRepo+"#"+n, map[string]string{
 		"kind": "review", "action": "submitted", "repo": drainRepo, "number": n, "title": "change " + n, "parent_kind": "pr",
-		"author": "maintainer", "url": "https://github.com/" + drainRepo + "/pull/" + n + "#review", "state": "approved",
+		"author": "maintainer", "url": "https://github.com/" + drainRepo + "/pull/" + n + "#review", "state": "changes_requested",
 		"review_id": strconv.FormatInt(id, 10), "submitted_at": submitted.Format(time.RFC3339), "commit_id": head, "head_sha": head,
-		"body": "looks good",
+		"body": "rename it",
 	})
 }
 
@@ -406,7 +408,8 @@ func processedGitHubEvents(t *testing.T, pool *pgxpool.Pool) []string {
 }
 
 // assertDrainedPullRequests checks that each Legion pull request is recorded on its issue at its
-// last head, settled green there and approved, and that no other pull request is recorded.
+// last head, settled green there with its request for changes as its newest review, and that no
+// other pull request is recorded.
 func assertDrainedPullRequests(t *testing.T, pool *pgxpool.Pool, records record.Store) {
 	t.Helper()
 	var recorded int

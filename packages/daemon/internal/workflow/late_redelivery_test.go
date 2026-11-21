@@ -226,35 +226,21 @@ func TestALateEventOfAMergedPullRequestChangesNothing(t *testing.T) {
 }
 
 // GitHub orders a pull request's deciding reviews by when they were submitted, then by id, and
-// the pull request keeps the newest it has had (record.PullRequest.ReviewSeen), whether that one
-// came by its webhook or by the daemon's read of the reviews (the daemon's readReviews, which applies
-// a review its webhook did not bring as the webhook would). A deciding review submitted before it,
-// delivered late, records nothing: the round keeps the newer decision.
+// the pull request keeps the newest it has had (record.PullRequest.ReviewSeen). A person's request
+// for changes submitted before it, delivered late, records nothing: the round keeps the newer
+// decision.
 func TestALateReviewOlderThanTheNewestChangesNothing(t *testing.T) {
 	submitted := lateApplied
-	webhook := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 12, SubmittedAt: submitted, State: "approved",
-		CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)}
-	read := webhook
-	read.HeadSHA = ""
-	for _, tc := range []struct {
-		name   string
-		newest intake.PullRequestReview
-	}{
-		{"after the newest review's webhook", webhook},
-		{"after the daemon's read of the newest review", read},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			seedReviewOf(t, pool, headOne, "green")
-			apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-			apply("newest-review", tc.newest)
-			if got := pullRequestAt(t, pool); got.decision != "approved" {
-				t.Fatalf("after the newest review the round's decision is %q, want approved", got.decision)
-			}
-			lateChangesNothing(t, pool, apply, "late-review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, SubmittedAt: submitted.Add(-time.Hour),
-				State: "changes_requested", CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("rename the widget", headOne)})
-		})
+	pool := migratedPool(t)
+	seedReviewOf(t, pool, headOne, "green")
+	apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+	apply("newest-review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 12, SubmittedAt: submitted, State: "changes_requested",
+		CommitID: headOne, HeadSHA: headOne, Author: "a-writer", AuthorCanWrite: true, Body: "rename the widget"})
+	if got := pullRequestAt(t, pool); got.decision != "changes_requested" {
+		t.Fatalf("after the newest review the round's decision is %q, want changes_requested", got.decision)
 	}
+	lateChangesNothing(t, pool, apply, "late-review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, SubmittedAt: submitted.Add(-time.Hour),
+		State: "changes_requested", CommitID: headOne, HeadSHA: headOne, Author: "a-writer", AuthorCanWrite: true, Body: "an older finding"})
 }
 
 // A CI settlement whose runs are older, check by check, than the settlement the record holds - the
@@ -298,11 +284,10 @@ func latePullRequest(t *testing.T, pool *pgxpool.Pool) record.PullRequest {
 	return *got
 }
 
-// latePush is the push of legion/LEGION-208 from before to after by pusher, as the push webhook
-// carries it and as the daemon's read rebuilds it from the branch's activity (the daemon's
-// lostPushes).
-func latePush(before, after, pusher string) intake.Push {
-	return intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: before, After: after, Pusher: pusher}
+// latePush is the push of legion/LEGION-208 from before to after, as the push webhook carries it
+// and as the daemon's read rebuilds it from the branch's activity (the daemon's lostPushes).
+func latePush(before, after string) intake.Push {
+	return intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: before, After: after}
 }
 
 // latePushDecidesNothing applies push as a late webhook under an event id of its own and fails t
@@ -338,8 +323,8 @@ func TestALatePushAfterTheReadRebuiltItsChainDecidesNothing(t *testing.T) {
 	pool := migratedPool(t)
 	seedLateIssue(t, pool, phase.Testing, "testing", pr)
 	apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-	tests := latePush("code", "red-tests", testReviewApp)
-	more := latePush("red-tests", "more-red-tests", testReviewApp)
+	tests := latePush("code", "red-tests")
+	more := latePush("red-tests", "more-red-tests")
 	apply("push-read:code...red-tests", tests)
 	apply("push-read:red-tests...more-red-tests", more)
 	apply("head-read:more-red-tests", readHead("more-red-tests", lateApplied))
@@ -350,7 +335,7 @@ func TestALatePushAfterTheReadRebuiltItsChainDecidesNothing(t *testing.T) {
 		id   string
 		push intake.Push
 	}{
-		{"the push the chain began from", latePush("base", "code", implementer)},
+		{"the push the chain began from", latePush("base", "code")},
 		{"the red tests' webhook", tests},
 		{"the second push of red tests' webhook", more},
 	} {

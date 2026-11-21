@@ -409,8 +409,23 @@ func (e *Engine) suspend(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 
 // testerVerdictLabel labels the tester's verdict a started worker's task carries. The reviewer's
 // prompt names it as the tester's result rather than its own (prompts/go/reviewer.md), which a test
-// ties to it.
-const testerVerdictLabel = "Tester's verdict"
+// ties to it. reviewerVerdictLabel labels the reviewer's, approve or changes, which the task the
+// implementer is started with after the reviewer's changes carries (verdictLabel).
+const (
+	testerVerdictLabel   = "Tester's verdict"
+	reviewerVerdictLabel = "Reviewer's verdict"
+)
+
+// verdictLabel is the label of the verdict role's completion carries: the tester's and the
+// reviewer's each under its own, so no worker reads one role's verdict as the other's. The daemon
+// takes a verdict on a phase completion from no other role (api/handoff.go,
+// VERDICT_ROLE_FORBIDDEN), so any other role's row carries none to label.
+func verdictLabel(role claim.Role) string {
+	if role == claim.RoleReviewer {
+		return reviewerVerdictLabel
+	}
+	return testerVerdictLabel
+}
 
 // start starts the phase worker of the issue's current phase, a start stamped with that phase and
 // with the entry it raises for that role (enter), whose task is word for word the task the
@@ -997,10 +1012,12 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
 // whenever the completion reported one: the head the planner's, the implementer's, the tester's or
 // the reviewer's record names, and the commit retro and the merger stand on.
-// A handoff's verdict is always the tester's, since the daemon accepts one from no other role on
-// a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
-// phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
-// pass reads it as the tester's report, never as a field of its own completion.
+// A handoff's verdict is the tester's pass or fail, or the reviewer's approve or changes, since the
+// daemon accepts one from no other role on a phase completion (api/handoff.go,
+// VERDICT_ROLE_FORBIDDEN; the implementer's check report is no phase completion and starts
+// nobody), and the line names whose it is (verdictLabel): the reviewer started on a pass reads it
+// as the tester's report, never as a field of its own completion, and the implementer started on
+// the reviewer's changes reads it as the reviewer's.
 //
 // A merger started in merging at the head a merge forward landed past the review, while the
 // review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
@@ -1019,7 +1036,7 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 		text += " Handoff commit: " + handoff.HandoffCommit + "."
 	}
 	if handoff.Verdict != "" {
-		text += " " + testerVerdictLabel + ": " + handoff.Verdict + "."
+		text += " " + verdictLabel(handoff.Role) + ": " + handoff.Verdict + "."
 	}
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" Pull request: #%d.", pr.Number)

@@ -59,7 +59,7 @@ func namedSync(before, head, sender string, at time.Time) intake.Fact {
 
 // sentPush is a push by sender, the account the push's webhook names.
 func sentPush(before, after, sender string) intake.Fact {
-	push := pushedFromTo(before, after, sender).(intake.Push)
+	push := pushedFromTo(before, after).(intake.Push)
 	push.Sender = sender
 	return push
 }
@@ -213,7 +213,7 @@ func TestASynchronizesSenderPicksItsPushInTheWorkflow(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, "head", "red")
 	engine := testEngine(config.DesignGateRootIssues, nil)
-	applyRefusingNothing(t, pool, engine, sentPush("head", "h1", testReviewApp), sentPush("head", "h1", dev),
+	applyRefusingNothing(t, pool, engine, sentPush("head", "h1", testAppLogin), sentPush("head", "h1", dev),
 		namedSync("head", "h1", dev, time.Date(2026, 9, 22, 23, 51, 0, 0, time.UTC)))
 	after := probePullRequest(t, pool)
 	if after.HeadSHA != "h1" || after.Run != nil {

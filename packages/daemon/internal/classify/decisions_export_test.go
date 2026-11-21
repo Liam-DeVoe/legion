@@ -33,8 +33,8 @@ func TestAPushForALaterMoveWaitsForItsChain(t *testing.T) {
 	red := record.PullRequest{HeadSHA: "h2", CheckedHead: "h2", Failing: []string{"ci"},
 		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}}
 	first := record.ClassifiedPush{SHA: "h3", Before: "h2"}
-	link := record.ClassifiedPush{SHA: "h4", Before: "h3", ByReviewApp: true}
-	tests := record.ClassifiedPush{SHA: "h5", Before: "h4", ByReviewApp: true}
+	link := record.ClassifiedPush{SHA: "h4", Before: "h3"}
+	tests := record.ClassifiedPush{SHA: "h5", Before: "h4"}
 	settledRed := func(pr record.PullRequest) record.PullRequest {
 		pr.CheckedHead, pr.Failing, pr.CheckRuns = pr.HeadSHA, []string{"ci"}, []record.AttemptRun{{Name: "ci", ID: 2}}
 		return pr
@@ -85,8 +85,8 @@ func TestALatePushOfAMoveJudgedSinceChangesNothing(t *testing.T) {
 	red := record.PullRequest{HeadSHA: "h0", CheckedHead: "h0", Failing: []string{"ci"},
 		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1}
 	code := record.ClassifiedPush{SHA: "h1", Before: "h0"}
-	tests := record.ClassifiedPush{SHA: "h2", Before: "h1", ByReviewApp: true}
-	again := record.ClassifiedPush{SHA: "h3", Before: "h2", ByReviewApp: true}
+	tests := record.ClassifiedPush{SHA: "h2", Before: "h1"}
+	again := record.ClassifiedPush{SHA: "h3", Before: "h2"}
 	pr := red
 	for i, p := range []record.ClassifiedPush{code, tests, again} {
 		pr = stored(t, AdvancePullRequestHead(ApplyPush(pr, p), Arrival{}, p.SHA))
@@ -161,9 +161,9 @@ func TestPushesWaitingForALinkAreBounded(t *testing.T) {
 // from the head stays until its move is made, however many waiting pushes arrive behind it.
 func TestTheBoundKeepsPushesOnTheirWay(t *testing.T) {
 	kept := []record.ClassifiedPush{
-		{SHA: "h1", Before: "h0"},                    // code on its way from the head
-		{SHA: "h2", Before: "h1", ByReviewApp: true}, // the review App's red tests on their way after it
-		{SHA: "h3", Before: "h2"},                    // and a fix after them
+		{SHA: "h1", Before: "h0"}, // code on its way from the head
+		{SHA: "h2", Before: "h1"}, // red tests on their way after it
+		{SHA: "h3", Before: "h2"}, // and a fix after them
 	}
 	pr := record.PullRequest{HeadSHA: "h0"}
 	for _, p := range kept {

@@ -1021,7 +1021,7 @@ func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
 		case r.Method == http.MethodGet && isRepository && known && reviews:
 			_, _ = io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && isRepository && rest == "/collaborators/"+stepRecordsPerson+"/permission":
-			_, _ = io.WriteString(w, `{"permission":"write","user":{"login":"`+stepRecordsPerson+`"}}`)
+			_, _ = io.WriteString(w, `{"permission":"write","user":{"login":"`+stepRecordsPerson+`","type":"User"}}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"message":"Not Found"}`)

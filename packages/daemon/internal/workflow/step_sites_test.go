@@ -417,9 +417,10 @@ func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 }
 
 // The report of a step is the handoff its role's completion named, whichever of that completion
-// and the review event lands first: an event that decides the round first ends the review before
-// the reviewer completes, and the completion then names its handoff on that ended run's record,
-// so one write of the run carries it. That write is the run's: its id, its role, its type, its
+// and the review event lands first: a person's request for changes that lands first ends the
+// review before the reviewer completes, and the completion then names its handoff on that ended
+// run's record, so one write of the run carries it; the reviewer's verdict is its completion, so
+// the end it writes carries the report. That write is the run's: its id, its role, its type, its
 // agent and its generation, for a review this release started and counted (count 1) as for one
 // that ran at the upgrade (count 0), whose end the store gave the count. The review's handoff is
 // the review's alone: the sign-off that ends accepting passes the reviewer's row, and the record
@@ -428,15 +429,18 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 	const report = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
 	reviewer := treeRoleToken(t, "LEGION-208", claim.RoleReviewer)
 	for _, tc := range []struct {
-		name          string
-		decision      string
+		name string
+		// person is a person's request for changes by webhook, applied before the reviewer's
+		// completion or, with completeFirst, after it.
+		person        bool
+		verdict       string
 		completeFirst bool
 		want          phase.Phase
 	}{
-		{name: "changes requested, then the reviewer completes", decision: "changes_requested", want: phase.Implementing},
-		{name: "the reviewer completes, then changes are requested", decision: "changes_requested", completeFirst: true, want: phase.Implementing},
-		{name: "approved on a clean head, then the reviewer completes", decision: "approved", want: phase.Accepting},
-		{name: "the reviewer completes, then an approval on a clean head", decision: "approved", completeFirst: true, want: phase.Accepting},
+		{name: "a person's request for changes, then the reviewer completes", person: true, want: phase.Implementing},
+		{name: "the reviewer completes, then a person requests changes", person: true, completeFirst: true, want: phase.Implementing},
+		{name: "the reviewer's changes", verdict: "changes", completeFirst: true, want: phase.Implementing},
+		{name: "the reviewer's approval on a clean head", verdict: "approve", completeFirst: true, want: phase.Accepting},
 	} {
 		for _, counted := range []bool{true, false} {
 			name := tc.name + ", a review this release counted"
@@ -463,12 +467,18 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 				}
 				apply := applyFacts(t, pool, engine)
 				review := func() {
-					apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: tc.decision, CommitID: headOne, Author: testReviewApp,
-						Body: reviewBody("the review", headOne)})
+					if tc.person {
+						apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "changes_requested", CommitID: headOne,
+							Author: "a-writer", AuthorCanWrite: true, Body: "rename the widget"})
+					}
 				}
 				complete := func() {
+					commit := ""
+					if tc.verdict != "" {
+						commit = headOne
+					}
 					if result := apply("reviewer-handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
-						Claim: reviewClaim, Summary: "reviewed", HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
+						Claim: reviewClaim, Summary: "reviewed", Verdict: tc.verdict, Commit: commit, HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
 						t.Fatalf("the reviewer's completion was refused: %+v", result.Refusal)
 					}
 				}

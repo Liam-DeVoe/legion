@@ -41,7 +41,7 @@ func movesMadeAgain(rng *rand.Rand) []moveStep {
 		if to == cur {
 			to = fmt.Sprintf("c%d", k)
 		}
-		steps = append(steps, moveStep{push: record.ClassifiedPush{Before: cur, SHA: to, ByReviewApp: rng.IntN(2) == 0},
+		steps = append(steps, moveStep{push: record.ClassifiedPush{Before: cur, SHA: to},
 			arrive: k == n || rng.IntN(4) != 0})
 		cur = to
 		if !containsHead(visited, to) {

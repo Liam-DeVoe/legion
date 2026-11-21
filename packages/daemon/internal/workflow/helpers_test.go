@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"strconv"
 	"testing"
 	"time"
 
@@ -22,11 +21,8 @@ func refusalCode(result intake.Result) string {
 	return result.Refusal.Code
 }
 
-// A review the review App submits decides a round only when the Legion footer it was written
-// with names the pull request's current head, and a footer names a head only when it spells it
-// as GitHub does - 40 lowercase hexadecimal characters (intake.PullRequestReview.LegionHead,
-// refusesRound). So every fixture whose round a review decides seeds its heads from these, one
-// per head of the branch, and writes its reviews with reviewBody.
+// The heads the fixtures' pull requests stand at, spelled as GitHub spells a commit (40 lowercase
+// hexadecimal characters), one per head of the branch.
 const (
 	// headEarlier is a head the branch left before headOne, for a fixture that needs a head no
 	// round of it stands at.
@@ -36,52 +32,18 @@ const (
 	headThree   = "3333333333333333333333333333333333333333"
 )
 
-// reviewBody is a review's body as a Legion role writes it: what the role said, then the Legion
-// footer naming the session that wrote it and the head it read (prompts/roles/reviewer.md).
-// The session it names is the one the shared fixtures record on the reviewer's claim
-// (seedRoundOneRows), so it is the reviewer's own review, and a fixture about another session
-// writes its own body. It names no entry, so it decides its round and moves no commit the reviewer
-// read (record.PhaseRow.ReviewedHead): a fixture whose proof reads that commit writes its review
-// with roundReviewBody.
+// reviewBody is a review's body as a Legion role wrote it before the reviewer's verdict: what the
+// role said, then the Legion footer naming the reviewer's session (seedRoundOneRows) and the head
+// it read. The daemon reads no footer, so a fixture writes it only to show that a review carrying
+// one decides nothing.
 func reviewBody(said, head string) string {
 	return said + "\n\n<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\",\"head\":\"" + head + "\"} -->"
 }
 
-// reviewBodyOfEntry is a review's body whose Legion footer names session, head and entry as the
-// entry of the round the review is of, the number the reviewer's task names (reviewround.EntryLabel),
-// written as the reviewer's texts have an agent write it, a quoted number (`"entry":"<n>"`). A
-// fixture about a review of the round that stands writes roundReviewBody, which reads that number;
-// one about a review of another round names that round's here.
-func reviewBodyOfEntry(said, session, head string, entry int64) string {
-	return said + "\n\n<!-- legion: {\"session\":\"" + session + "\",\"phase\":\"review\",\"head\":\"" + head + "\",\"entry\":\"" + strconv.FormatInt(entry, 10) + "\"} -->"
-}
-
-// roundReviewBody is the body of session's review of the round that stands, as the reviewer
-// writes it for the task it was given: its footer names the entry LEGION-208's reviewer row holds
-// when the review is built (record.PhaseRow.Entry), the number that task names. It is the one
-// helper of this package through which a fixture of the reviewer's own review ("ses-reviewer",
-// the session seedRoundOneRows records on the reviewer's claim) names its entry, and through which
-// a fixture of another session's review names the same entry, so that only the session tells the
-// two apart. Build the review after the round's entry is raised.
-func roundReviewBody(t *testing.T, pool *pgxpool.Pool, session, said, head string) string {
-	t.Helper()
-	return reviewBodyOfEntry(said, session, head, phaseRowOf(t, pool, claim.RoleReviewer).Entry)
-}
-
 // commentBody is reviewBody for the reviewer's COMMENT: its Legion footer names the reviewer's
-// session and no head, since a comment reads no head the round could be decided on.
+// session and no head.
 func commentBody(said string) string {
 	return said + "\n\n<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\"} -->"
-}
-
-// reviewBodyOf is reviewBody for a review the review App submitted and what the author said for
-// anyone else's: a person writes no Legion footer, and their review decides on the commit_id the
-// webhook carried it with (refusesRound).
-func reviewBodyOf(author, said, head string) string {
-	if author == testReviewApp {
-		return reviewBody(said, head)
-	}
-	return said
 }
 
 // mergingEngine is an engine of a gated project with a fixed clock, which the tests that drive an
@@ -93,7 +55,7 @@ func mergingEngine() *Engine {
 // mergingEngineAt is mergingEngine with its clock at now.
 func mergingEngineAt(now time.Time) *Engine {
 	return New(record.NewStore(), Config{
-		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
+		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, AppLogin: testAppLogin, Repositories: testRepositories,
 		// The project opens its production check with the tester, the role a project that names
 		// no production_check gets (INFRA-809); an engine with no role opens no check at all.
 		ProductionCheckRole: claim.RoleTester,

@@ -206,15 +206,13 @@ func (w *workflowRuntime) headPushes(ctx context.Context, github githubrest.Clie
 // their push webhooks would have carried them, less those the record holds already (its pushes and
 // the moves it made): GitHub's activity of the branch (githubrest.Client.BranchActivity, its newest
 // hundred entries) followed back from head to the recorded head (followActivity). Each is GitHub's
-// push, force push or branch creation, with Before and After its two commits and Pusher its
-// actor's login - an App's <slug>[bot], the form of the push webhook's pusher.name, by which the
-// workflow tells the review App's pushes. Repo and Branch are the record's, the names the webhook's
-// push carries. The workflow judges a move by the chain of its pushes, so one push from the
-// recorded head to head would judge it wrong. Each push's event id names the project, the pull
-// request and the push's two commits (pushReadEventID), so a later read skips it before any
-// transaction, and the push webhook arriving later is the same push recorded again, which the
-// record keeps as its move's push or a repeat of it and which changes no judgement
-// (classify.ApplyPush).
+// push, force push or branch creation, with Before and After its two commits. Repo and Branch are
+// the record's, the names the webhook's push carries. The workflow judges a move by the chain of
+// its pushes, so one push from the recorded head to head would judge it wrong. Each push's event
+// id names the project, the pull request and the push's two commits (pushReadEventID), so a later
+// read skips it before any transaction, and the push webhook arriving later is the same push
+// recorded again, which the record keeps as its move's push or a repeat of it and which changes
+// no judgement (classify.ApplyPush).
 //
 // unfollowed says why the pushes cannot be rebuilt, and then there are none: the page does not
 // lead back from head to the recorded head, an entry on the way is no push, or GitHub answered the
@@ -247,7 +245,7 @@ func (w *workflowRuntime) lostPushes(ctx context.Context, github githubrest.Clie
 		}
 		pushes = append(pushes, readPush{
 			eventID: w.pushReadEventID(pr, entry.Before, entry.After),
-			fact:    intake.Push{Repo: pr.Repo, Branch: pr.Branch, Before: entry.Before, After: entry.After, Pusher: entry.Actor.Login},
+			fact:    intake.Push{Repo: pr.Repo, Branch: pr.Branch, Before: entry.Before, After: entry.After},
 		})
 	}
 	return pushes, "", nil

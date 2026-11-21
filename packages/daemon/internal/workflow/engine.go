@@ -74,15 +74,13 @@ type Config struct {
 	// already open, whose role its own row holds.
 	ProductionCheckRole claim.Role
 	Clock               func() time.Time
-	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A review
-	// it submits is the reviewer's own only when its Legion footer also names the session the
-	// reviewer's claim records (byReviewer), and only then does it decide a round whatever GitHub
-	// gives its bot account (DecidesRound) or answer a round the reviewer left undecided
-	// (reviewersAnswer); while that claim records no session, it waits (RefusedWhileNoSession). A
-	// push by it is recorded as the review App's (record.ClassifiedPush.ByReviewApp). Empty matches
-	// no one. A workflow boot never leaves it empty: it refuses an App that names no login
+	// AppLogin is the bot login (<slug>[bot]) of the one GitHub App every role acts as, from its
+	// boot read. A GitHub review written with its token decides no round (RefusesRound): every
+	// role holds that token, so the login says nothing of who wrote the review, and the reviewer's
+	// verdict reaches the daemon with its completion instead (handoff). Empty matches no one. A
+	// workflow boot never leaves it empty: it refuses an App that names no login
 	// (daemon.appLoginAtBoot).
-	ReviewAppLogin string
+	AppLogin string
 	// Repositories is the daemon's in-memory view of the project's repositories, which the workflow
 	// records an issue's repository and default branch from when it first records the issue.
 	Repositories Repositories
@@ -189,10 +187,10 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 
 func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
 
-// byReviewApp says whether login is the review App's bot (Config.ReviewAppLogin). With no login
-// configured, it is no one's.
-func (e *Engine) byReviewApp(login string) bool {
-	return e.cfg.ReviewAppLogin != "" && login == e.cfg.ReviewAppLogin
+// appWrote says whether login is the one App's bot (Config.AppLogin). With no login configured, it
+// is no one's.
+func (e *Engine) appWrote(login string) bool {
+	return e.cfg.AppLogin != "" && login == e.cfg.AppLogin
 }
 
 // sameRepository is whether a and b name one repository: the same name, compared without case as
@@ -935,6 +933,24 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	found := e.reviewRound(*issue, row, pr)
 	row.Claim, row.HandoffCommit, row.Verdict, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Verdict, fact.Summary, e.now()
 	row.HandoffRecord, row.HandoffVersion = fact.HandoffRecord, fact.HandoffVersion
+	// The reviewer's verdict is the round's decision (decisionOf): approve or changes at the commit
+	// it names, with the tester's pass it carries there. That commit is also the code the reviewer
+	// read, which the task of its next round names (record.PhaseRow.ReviewedHead), while the row
+	// holds the task of the entry that stands: a row a new generation's clear emptied, or one the
+	// entry upgrade filled with no task, keeps its commit until the next entry's start, so the
+	// first review of a re-admitted tree reads the whole change. Only a completion of reviewing
+	// while the round is open writes either: one the issue has left moves nothing (leftItsPhase),
+	// and its round was ended by something else. A completion with no verdict, which a reviewer
+	// before the verdict sent, leaves the decision as it stands, and a round it completes with none
+	// is stuck (stuckUndecided).
+	if current && issue.Phase == phase.Reviewing && fact.Role == claim.RoleReviewer {
+		if decision := decisionOf(fact.Verdict, fact.Commit, fact.TestedCommit, fact.Summary); decision != nil {
+			row.Decision = decision
+			if row.EntryTask != "" {
+				row.ReviewedHead = fact.Commit
+			}
+		}
+	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return intake.Result{}, err
 	}

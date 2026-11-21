@@ -3,10 +3,7 @@ package intake
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"math"
-	"strconv"
 	"strings"
 	"time"
 
@@ -613,27 +610,22 @@ type PullRequestReview struct {
 	CommitID    string
 	HeadSHA     string
 	Author      string
-	// AuthorCanWrite is whether Author has write access or higher to the repository, as GitHub's
-	// collaborator permission answers it (ConsumerSpec.ReviewPermission reads it before the fact is
-	// applied, since the workflow decides inside a transaction and performs no I/O). It is never
-	// looked up, and stays false, for a review that does not decide (Decides), one with no author,
-	// one on a pull request the daemon does not record, and one the review App submitted, which
-	// decides by its login and the reviewer's session (workflow's DecidesRound). It is also false
-	// for an author GitHub does not give write access.
+	// AuthorCanWrite is whether Author is an account of type User with write access or higher to
+	// the repository, as GitHub's collaborator permission answers it (ConsumerSpec.ReviewPermission
+	// reads it before the fact is applied, since the workflow decides inside a transaction and
+	// performs no I/O). It is never looked up, and stays false, for a review that does not decide
+	// (Decides), one with no author, one on a pull request the daemon does not record, and one the
+	// one App wrote, which decides nothing whatever GitHub gives its bot account (workflow's
+	// RefusesRound). It is also false for an author GitHub does not give write access.
 	AuthorCanWrite bool
-	// BodyTruncated is whether Envoy's normalizer capped the review's body before the daemon saw
-	// it (`body_truncated: "true"`), which can cut a long review's trailing Legion footer off
-	// (LegionSession). ConsumerSpec.ReviewBody restores the full body from GitHub for a truncated
-	// review-App review before the fact is applied, and clears this.
-	BodyTruncated bool
-	Body          string
+	Body           string
 	// ReadFromList is whether the daemon's own read of GitHub's list of the pull request's
 	// reviews produced this fact (daemon's reviewToApply) rather than the review's webhook, which
 	// the decoder never sets it from. The list answers with GitHub's current commit_id for every
-	// review it holds (LegionHead, dispatch://INFRA-1557), where the webhook's envelope carries
-	// the commit_id the event was delivered with, so the workflow lets a person's listed review
-	// decide no round while the same person's webhook review decides as it always has
-	// (workflow's refusesRound).
+	// review it holds (dispatch://INFRA-1557), where the webhook's envelope carries the commit_id
+	// the event was delivered with, so the workflow lets a person's listed review decide no round
+	// while the same person's request for changes by webhook refuses the head (workflow's
+	// RefusesRound).
 	ReadFromList bool
 }
 
@@ -646,112 +638,6 @@ func (PullRequestReview) namedIssue() (string, bool) { return "", false }
 func (r PullRequestReview) Decides() bool {
 	state := strings.ToLower(r.State)
 	return state == "approved" || state == "changes_requested"
-}
-
-// legionFooterMarker opens the Legion footer every Legion role appends to a pull-request review:
-// a JSON object naming the session and phase that wrote it and the head it read, and in the
-// reviewer's review the entry of the round it is of (the reviewer template and its footer,
-// prompts/roles/reviewer.md).
-const legionFooterMarker = "<!-- legion:"
-
-// legionFooter is what the daemon reads out of that JSON object: the session that submitted the
-// review (LegionSession), the head the review says it read (LegionHead) and the entry of the
-// round it says it is of (LegionEntry). A role writes its phase there too, which nothing here
-// reads. The entry is kept raw and read on its own, so an entry of the wrong JSON type costs the
-// entry alone and never the session and head beside it, which decide the round.
-type legionFooter struct {
-	Session string          `json:"session"`
-	Head    string          `json:"head"`
-	Entry   json.RawMessage `json:"entry"`
-}
-
-// lastLegionFooter decodes the last Legion footer in the review's body: the JSON object between
-// the last occurrence of legionFooterMarker and the next `-->`. Every field is empty when the
-// body carries no footer, no `-->` closes the last one, or its JSON cannot be parsed. The last
-// occurrence wins, since an earlier footer quoted in the body (a reply, a reviewer's own draft)
-// is not the one that closes it.
-func (r PullRequestReview) lastLegionFooter() legionFooter {
-	at := strings.LastIndex(r.Body, legionFooterMarker)
-	if at < 0 {
-		return legionFooter{}
-	}
-	rest := r.Body[at+len(legionFooterMarker):]
-	end := strings.Index(rest, "-->")
-	if end < 0 {
-		return legionFooter{}
-	}
-	var footer legionFooter
-	if err := json.Unmarshal([]byte(rest[:end]), &footer); err != nil {
-		return legionFooter{}
-	}
-	return footer
-}
-
-// LegionSession is the session named in the last Legion footer in the review's body
-// (lastLegionFooter). It is "" when the body carries no such footer, the last one's JSON cannot
-// be parsed, or its session is empty.
-func (r PullRequestReview) LegionSession() string {
-	return r.lastLegionFooter().Session
-}
-
-// LegionHead is the head the review says it read: the head field of the last Legion footer in the
-// review's body (lastLegionFooter). It is "" when the body carries no footer, the footer's JSON
-// cannot be parsed, it names no head, or the head it names is not a full commit SHA
-// (fullCommitSHA) - a short SHA or a branch name names no commit, since only the whole of it says
-// which code was read.
-//
-// The workflow holds a review the review App submitted to this rather than to CommitID because
-// GitHub rewrites commit_id to the pull request's current head, so its REST record of a review
-// can name a head the review never saw (dispatch://INFRA-1557). Nothing rewrites the body a
-// review was submitted with, so the footer is the review's own word for the code it read, and it
-// is the only thing a force push back to an earlier head cannot forge: no clock tells those
-// heads apart.
-func (r PullRequestReview) LegionHead() string {
-	head := r.lastLegionFooter().Head
-	if !fullCommitSHA(head) {
-		return ""
-	}
-	return head
-}
-
-// LegionEntry is the entry of the round the review says it is of: the entry field of the last
-// Legion footer in the review's body (lastLegionFooter), the number the reviewer's task names
-// (reviewround.EntryLabel, record.PhaseRow.Entry). The reviewer's texts write it as a JSON
-// string of digits (`"entry":"<entry>"`), so a placeholder left unfilled keeps the footer JSON,
-// and it is read as a positive whole number written either that way or as a JSON integer. It is
-// 0 when the body carries no footer, the footer's JSON cannot be parsed, it names no entry, or
-// the entry is anything else: an unfilled placeholder, an empty string, a word, a fraction, an
-// exponent, a sign, zero, one past int64, null, a boolean, an array or an object names no entry.
-// Such a footer still names its session and head, so the review decides its round as before;
-// only the commit the reviewer read (record.PhaseRow.ReviewedHead) waits for a review that names
-// the entry that stands (workflow's review).
-func (r PullRequestReview) LegionEntry() int64 {
-	digits := string(r.lastLegionFooter().Entry)
-	if strings.HasPrefix(digits, `"`) {
-		if err := json.Unmarshal([]byte(digits), &digits); err != nil {
-			return 0
-		}
-	}
-	entry, err := strconv.ParseUint(digits, 10, 64)
-	if err != nil || entry > math.MaxInt64 {
-		return 0
-	}
-	return int64(entry)
-}
-
-// fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
-// characters. Nothing shorter is compared with a head, since a prefix names a commit only by
-// chance and GitHub spells every head it reports this way.
-func fullCommitSHA(s string) bool {
-	if len(s) != 40 {
-		return false
-	}
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // Order is where the review falls among the pull request's reviews (record.ReviewOrder): when it
@@ -942,8 +828,6 @@ type Push struct {
 	// leaves no head: its After is record.NoCommit, which decodePush makes no fact.
 	Before string
 	After  string
-	// Pusher is the push's pusher login (the listener's `pusher`, GitHub's pusher.name).
-	Pusher string
 	// Sender is the login of the account that pushed (the webhook's sender), which a synchronize's
 	// sender names; empty from a listener that predates the field.
 	Sender string

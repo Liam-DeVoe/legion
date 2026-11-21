@@ -29,7 +29,7 @@ func TestAGitHubFactFromAnotherRepositoryChangesNothing(t *testing.T) {
 			intake.PullRequestOpened{Repo: "acme/other", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "other-head", UpdatedAt: updated, Reopened: true},
 			intake.PullRequestSynchronized{Repo: "acme/other", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "other-head", UpdatedAt: updated},
 			intake.Push{Repo: "acme/other", Branch: "legion/LEGION-209", Before: "head", After: "other-head"},
-			intake.PullRequestReview{Repo: "acme/other", Number: 42, ID: 7, State: "approved", CommitID: "head", HeadSHA: "head", Author: testReviewApp, SubmittedAt: updated},
+			intake.PullRequestReview{Repo: "acme/other", Number: 42, ID: 7, State: "approved", CommitID: "head", HeadSHA: "head", Author: testAppLogin, SubmittedAt: updated},
 			intake.PullRequestChecks{Repo: "acme/other", Number: 42, HeadSHA: "head", Failing: []string{"unit"}, Cancelled: []string{}, Snapshot: "red", Generation: 9},
 			intake.PullRequestMergeability{Repo: "acme/other", Number: 42, Base: "main", Mergeable: record.MergeabilityConflicting},
 			intake.PullRequestMerged{Repo: "acme/other", Number: 42, MergeSHA: "merge"},
@@ -165,11 +165,11 @@ func TestAGitHubFactNamingARenamedRepositoryAppliesToTheTreeRecordedUnderItsOldN
 			},
 		},
 		{
-			name:   "a review",
+			name:   "a person's request for changes",
 			prRepo: func(repo string) string { return repo },
 			fact: func(repo string) intake.Fact {
-				return intake.PullRequestReview{Repo: repo, Number: 42, ID: 7, State: "approved", CommitID: headOne, HeadSHA: headOne,
-					Author: testReviewApp, SubmittedAt: renamedUpdated, Body: reviewBody("ship it", headOne)}
+				return intake.PullRequestReview{Repo: repo, Number: 42, ID: 7, State: "changes_requested", CommitID: headOne, HeadSHA: headOne,
+					Author: "a-writer", AuthorCanWrite: true, SubmittedAt: renamedUpdated, Body: "rename the widget"}
 			},
 			want: func(t *testing.T, _ string, after recordSnapshot) {
 				t.Helper()
@@ -177,8 +177,8 @@ func TestAGitHubFactNamingARenamedRepositoryAppliesToTheTreeRecordedUnderItsOldN
 					t.Fatalf("LEGION-209's pull request = %+v, want the review it has seen recorded as 7", pr)
 				}
 				reviewer := phaseRowIn(t, after.Phases, claim.RoleReviewer)
-				if reviewer.Decision == nil || reviewer.Decision.State != "approved" || reviewer.Decision.Head != headOne {
-					t.Fatalf("the reviewer's row = %+v, want its round decided by an approval of head", reviewer)
+				if reviewer.Decision == nil || reviewer.Decision.State != "changes_requested" || reviewer.Decision.Head != headOne {
+					t.Fatalf("the reviewer's row = %+v, want its round decided by a request for changes of head", reviewer)
 				}
 			},
 		},
@@ -244,7 +244,7 @@ func TestAPullRequestOpenAtTheTransferTakesTheFactsNamingTheRepositoryItMovedTo(
 		{
 			name: "a push of a commit",
 			fact: func(repo string) intake.Fact {
-				return intake.Push{Repo: repo, Branch: "legion/LEGION-209", Before: headOne, After: headTwo, Pusher: "author", Sender: "author"}
+				return intake.Push{Repo: repo, Branch: "legion/LEGION-209", Before: headOne, After: headTwo, Sender: "author"}
 			},
 			want: func(t *testing.T, after recordSnapshot) {
 				t.Helper()
@@ -284,10 +284,10 @@ func TestAPullRequestOpenAtTheTransferTakesTheFactsNamingTheRepositoryItMovedTo(
 			},
 		},
 		{
-			name: "a review",
+			name: "a person's request for changes",
 			fact: func(repo string) intake.Fact {
-				return intake.PullRequestReview{Repo: repo, Number: 42, ID: 7, State: "approved", CommitID: headOne, HeadSHA: headOne,
-					Author: testReviewApp, SubmittedAt: renamedUpdated, Body: reviewBody("ship it", headOne)}
+				return intake.PullRequestReview{Repo: repo, Number: 42, ID: 7, State: "changes_requested", CommitID: headOne, HeadSHA: headOne,
+					Author: "a-writer", AuthorCanWrite: true, SubmittedAt: renamedUpdated, Body: "rename the widget"}
 			},
 			want: func(t *testing.T, after recordSnapshot) {
 				t.Helper()
@@ -295,8 +295,8 @@ func TestAPullRequestOpenAtTheTransferTakesTheFactsNamingTheRepositoryItMovedTo(
 					t.Fatalf("LEGION-209's pull request = %+v, want the review it has seen recorded as 7", pr)
 				}
 				reviewer := phaseRowIn(t, after.Phases, claim.RoleReviewer)
-				if reviewer.Decision == nil || reviewer.Decision.State != "approved" || reviewer.Decision.Head != headOne {
-					t.Fatalf("the reviewer's row = %+v, want its round decided by an approval of head", reviewer)
+				if reviewer.Decision == nil || reviewer.Decision.State != "changes_requested" || reviewer.Decision.Head != headOne {
+					t.Fatalf("the reviewer's row = %+v, want its round decided by a request for changes of head", reviewer)
 				}
 			},
 		},

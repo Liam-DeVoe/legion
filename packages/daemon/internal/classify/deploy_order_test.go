@@ -32,14 +32,17 @@ import (
 // older for others is applied per name now rather than dropped whole (ClassifySettlement), which
 // moves what the fences of the run fuzz's several heads come to. What they fence is this release
 // against itself: a daemon running ahead of its listener judges as recorded here, so a later
-// change that moves that judgement is seen rather than deployed.
+// change that moves that judgement is seen rather than deployed. They moved again when a push
+// stopped naming whose role made it, since one App pushes for every role: the fuzzes no longer
+// draw that mark, so each seed draws another history. Drawn as before, the histories still judged
+// to the digests recorded before the mark went, so that change moved no judgement.
 var noMoveNamedDigests = map[string]string{
-	"run-1":          "766fbd213a31cf9c05dc3144b1a0c4f5388803fa849b83a6a2c7233fdede0b1d",
-	"run-7":          "ef6c5b97ecbfc20e021c1bc6fe243c6ed18c5af5ae8027643e39eb86bbe17a1f",
-	"move-1-random":  "4335ce7e08f659833a709cda0ceb068f8e7138fba459901fe5d098636c88d4c7",
-	"move-1-bounded": "c7b409783de5e9d58e651d0210051ccca0f39f281d6183a8418785fb432b46f4",
-	"move-7-random":  "20cab3e755524b93e8355dcad36a68492897b186d9262fed851ac207daa35454",
-	"move-7-bounded": "ea6c805dc3e6c01642afed7cc4dcad7dd5fddee3bca1f9f88c79c87740a5c83f",
+	"run-1":          "245fb1515d4bfe0e6d5f80b70b168529119049c06e0a304fcc444560a8d5a195",
+	"run-7":          "636aaa65ec64bb8ea6c3c63540e1c5ff736fbdfcee32618d198660eb6215b6b7",
+	"move-1-random":  "de0b76d0bb8becf4530eb29e874479b287c7f8aae16f8f3612e0daf4f60aaaca",
+	"move-1-bounded": "0a3e862d97b70d5009c6ca9fcebbb7ca133dd0db0b9d048dac6c6200a41f15ed",
+	"move-7-random":  "4a401126c648b3172d9e59387c5917b1035440edbe698bfa611d338cfca25b8e",
+	"move-7-bounded": "2e8020c18373dc9f3ecc61dc2de7e143893babf696166fcc8dbe28b5cc6a0a40",
 }
 
 // The same histories, every arrival naming its before but no sender, judge to these digests, made
@@ -47,12 +50,12 @@ var noMoveNamedDigests = map[string]string{
 // sender either way - and the move fuzz's are not: there the sender is what tells two pushes of
 // the same two heads apart.
 var noSenderNamedDigests = map[string]string{
-	"run-1":          "766fbd213a31cf9c05dc3144b1a0c4f5388803fa849b83a6a2c7233fdede0b1d",
-	"run-7":          "ef6c5b97ecbfc20e021c1bc6fe243c6ed18c5af5ae8027643e39eb86bbe17a1f",
-	"move-1-random":  "89200283a3b20a127c13aae45628706f8daf13f666904aa81aeae61eaab52861",
-	"move-1-bounded": "de66fdbccfd11787ee1e1a0a1a2a6e6bf300eaaeaa507ed0ff34d698bee32570",
-	"move-7-random":  "881a012880d0f58147ab10e75a83ed01ae2e94e248011437f65510814fb354f0",
-	"move-7-bounded": "59205c380ed8d18029751ed247a843272057f04f983bebb5374089917e44d1c2",
+	"run-1":          "245fb1515d4bfe0e6d5f80b70b168529119049c06e0a304fcc444560a8d5a195",
+	"run-7":          "636aaa65ec64bb8ea6c3c63540e1c5ff736fbdfcee32618d198660eb6215b6b7",
+	"move-1-random":  "fec4918ac26a89653730334d08da3c8a5ebca9b6f0e6934b2aae83ca35f85304",
+	"move-1-bounded": "2405078960dade0aaed79a17095874391811731650e6e284e42468739e606a0d",
+	"move-7-random":  "a532069e07a8b0696d47f6d3424e948362c79e5bcdb1d98d4211d81a15f12383",
+	"move-7-bounded": "72e96c683aea948c0c9cf1c98181abfc1c218acddcf269e036dc100662b6678b",
 }
 
 // A daemon of this release behind a listener that sends a synchronize's before but not its sender
@@ -195,13 +198,13 @@ func TestARunALostPushOpenedClosesAtItsBoundWithNoMoveNamed(t *testing.T) {
 }
 
 // The bound on pushes waiting for a link counts their pairs of heads, each once, as the release
-// before kept one push of each two heads: sixteen pairs waiting, each pushed twice, are all kept,
-// and a seventeenth pair lets go every push of the pair whose newest push is oldest.
+// before kept one push of each two heads: sixteen pairs waiting, each pushed twice by two accounts,
+// are all kept, and a seventeenth pair lets go every push of the pair whose newest push is oldest.
 func TestTheBoundCountsEachTwoHeadsOnce(t *testing.T) {
 	pr := redAtH0()
 	for round := range 2 {
 		for i := 1; i <= maxWaitingPushes; i++ {
-			pr = delivered(t, pr, pushed(record.ClassifiedPush{SHA: fmt.Sprintf("w%d", i), Before: fmt.Sprintf("w%d", i-1), ByReviewApp: round == 1}))
+			pr = delivered(t, pr, pushed(record.ClassifiedPush{SHA: fmt.Sprintf("w%d", i), Before: fmt.Sprintf("w%d", i-1), Sender: fmt.Sprintf("pusher-%d", round)}))
 		}
 	}
 	if len(pr.Pushes) != 2*maxWaitingPushes {
@@ -209,7 +212,7 @@ func TestTheBoundCountsEachTwoHeadsOnce(t *testing.T) {
 	}
 	next := record.ClassifiedPush{SHA: fmt.Sprintf("w%d", maxWaitingPushes+1), Before: fmt.Sprintf("w%d", maxWaitingPushes)}
 	got, dropped := ApplyPushDropping(pr, next)
-	want := record.ClassifiedPush{SHA: "w1", Before: "w0", ByReviewApp: true}
+	want := record.ClassifiedPush{SHA: "w1", Before: "w0", Sender: "pusher-1"}
 	if len(dropped.Waiting) != 1 || dropped.Waiting[0] != want || len(got.Pushes) != 2*maxWaitingPushes-1 {
 		t.Errorf("the seventeenth pair let go %+v and kept %d pushes, want w0..w1 named once (its newest push) and %d kept", dropped.Waiting, len(got.Pushes), 2*maxWaitingPushes-1)
 	}

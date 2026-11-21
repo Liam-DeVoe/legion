@@ -196,7 +196,7 @@ func TestAPushThatCompletesItsMoveMovesNothingAndTellsNobody(t *testing.T) {
 		head string
 		fact intake.Fact
 	}{
-		{"the push arrives after its head", "head", pushedFromTo("code", "head", "legion-implementer[bot]")},
+		{"the push arrives after its head", "head", pushedFromTo("code", "head")},
 		{"the head arrives over a push already known", "code", syncedTo("head")},
 	} {
 		for _, from := range []phase.Phase{phase.Testing, phase.Merging} {
@@ -395,9 +395,9 @@ func syncedTo(head string) intake.Fact {
 	return intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: head}
 }
 
-// pushedFromTo is the branch push that replaced from with to, by pusher.
-func pushedFromTo(from, to, pusher string) intake.Fact {
-	return intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: from, After: to, Pusher: pusher}
+// pushedFromTo is the branch push that replaced from with to.
+func pushedFromTo(from, to string) intake.Fact {
+	return intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: from, After: to}
 }
 
 // toldBody is the whole message a role is sent for one settlement of pull request 42 (workflow's

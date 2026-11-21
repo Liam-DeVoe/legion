@@ -386,7 +386,10 @@ type fixtureGithubInput struct {
 		Projects map[string]struct {
 			Repo string `json:"repo"`
 		} `json:"projects"`
-		ReviewAppLogin string `json:"reviewAppLogin"`
+		// AppLogin is the App's login as the recorded captures name it, under the key they were
+		// recorded with; nothing here reads it, and it is declared so decodeFixture's strict
+		// decode takes the captures as they are.
+		AppLogin string `json:"reviewAppLogin"`
 	} `json:"config"`
 }
 

@@ -33,7 +33,7 @@ import (
 // is not a rate limit), which is logged at error naming the installation, since it holds for every
 // author. A rate limit is returned with the wait GitHub names, so intake waits it out before the
 // review is read again; any other failure is returned too, so intake retries the review rather than
-// applying it with a permission nobody read. The review App's own login, and a review on a pull
+// applying it with a permission nobody read. The one App's own login, and a review on a pull
 // request the daemon does not record, are answered without a GitHub call.
 func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 	pool := reviewPermissionPool(t)
@@ -64,8 +64,8 @@ func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 			wantLog: "level=WARN msg=\"workflow: GitHub answered the repository permission of another account", wantCalls: 1},
 		{name: "an account GitHub does not know", login: "a-ghost", status: http.StatusNotFound, wantCalls: 1},
 		{name: "an installation that may not read the permission", login: "a-member", status: http.StatusForbidden, header: map[string]string{"X-RateLimit-Remaining": "4999"},
-			wantLog: "level=ERROR msg=\"workflow: GitHub refuses the review App's installation", wantCalls: 1},
-		{name: "a 401 for the review App's token, retried with a fresh one", login: "a-writer", status: http.StatusUnauthorized,
+			wantLog: "level=ERROR msg=\"workflow: GitHub refuses the App's read token", wantCalls: 1},
+		{name: "a 401 for the read token, retried with a fresh one", login: "a-writer", status: http.StatusUnauthorized,
 			wantErr: "401", wantWait: tokenRefusedWait, wantCalls: 1},
 		{name: "a 403 out of rate limit", login: "a-writer", status: http.StatusForbidden, header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset},
 			wantErr: "403", wantWait: 90 * time.Second, wantCalls: 1},
@@ -76,7 +76,7 @@ func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 			wantErr: "403", wantWait: time.Minute, wantCalls: 1},
 		{name: "a 429 naming no wait", login: "a-writer", status: http.StatusTooManyRequests, wantErr: "429", wantWait: time.Minute, wantCalls: 1},
 		{name: "GitHub failing", login: "a-writer", status: http.StatusBadGateway, wantErr: "502", wantCalls: 1},
-		{name: "the review App itself", login: "legion-reviewer[bot]", wantCalls: 0},
+		{name: "the App itself", login: "legion-reviewer[bot]", wantCalls: 0},
 		{name: "a pull request the daemon does not record", login: "a-writer", number: 43, permission: "write", wantCalls: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,7 +101,7 @@ func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 				if answered == "" {
 					answered = tc.login
 				}
-				fmt.Fprintf(w, `{"permission":%q,"user":{"login":%q}}`, tc.permission, answered)
+				fmt.Fprintf(w, `{"permission":%q,"user":{"login":%q,"type":"User"}}`, tc.permission, answered)
 			}))
 			defer server.Close()
 			var logs bytes.Buffer
@@ -143,20 +143,52 @@ func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 	}
 }
 
+// The permission is read with the daemon's own read token of the repository's owner
+// (appauth.Tokens.ReadToken), and it lets a review decide only for an account of type User: a bot
+// with write access is an App, whose token an agent can hold, so its review decides nothing, and
+// so does an answer that names no type.
+func TestAReviewersPermissionIsReadWithTheReadTokenAndOnlyAUserWrites(t *testing.T) {
+	pool := reviewPermissionPool(t)
+	for _, tc := range []struct {
+		name, login, kind string
+		want              bool
+	}{
+		{name: "a person with write access", login: "a-writer", kind: "User", want: true},
+		{name: "a bot with write access", login: "copilot-swe-agent[bot]", kind: "Bot"},
+		{name: "an answer that names no type", login: "a-writer", kind: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got, want := r.Header.Get("Authorization"), "Bearer "+readToken("acme"); got != want {
+					t.Errorf("GitHub was asked with %q, want the read token of acme %q", got, want)
+				}
+				fmt.Fprintf(w, `{"permission":"write","user":{"login":%q,"type":%q}}`, tc.login, tc.kind)
+			}))
+			defer server.Close()
+			w := reviewPermissionRuntime(pool, server.URL, quietLogger())
+			w.tokens = roleTokens{}
+			got, err := w.reviewerCanWrite(context.Background(), intake.PullRequestReview{Repo: "acme/widgets", Number: 42, State: "changes_requested", Author: tc.login})
+			if err != nil || got != tc.want {
+				t.Fatalf("%s may decide = %v, %v; want %v and no error", tc.login, got, err, tc.want)
+			}
+		})
+	}
+}
+
 // GitHub answers 401 for a review App token it has not yet accepted (a token minted moments
 // before) as for one whose installation was removed since. Neither says anything about the
 // author, so a 401 decides nothing and keeps nothing, and GitHub's rate limit is not held for it.
 // A token older than the acceptance window is dropped and the delivery retried with a fresh mint,
 // which either reads the permission or, for a removed App, is refused as not installed; a younger
 // one is kept and tried again once it is that old.
-func TestA401ForTheReviewAppsTokenIsRetriedWithAFreshOne(t *testing.T) {
+func TestA401ForTheReadTokenIsRetriedWithAFreshOne(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		minted   time.Duration
 		wantWait time.Duration
 		forgot   string
 	}{
-		{"a token older than the window is minted again", -time.Hour, tokenRefusedWait, "reviewer acme"},
+		{"a token older than the window is minted again", -time.Hour, tokenRefusedWait, "implementer acme"},
 		{"a token moments old is tried again as it is", -time.Second, tokenAcceptWindow - time.Second, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -168,7 +200,7 @@ func TestA401ForTheReviewAppsTokenIsRetriedWithAFreshOne(t *testing.T) {
 					http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 					return
 				}
-				fmt.Fprint(w, `{"permission":"write","user":{"login":"a-writer"}}`)
+				fmt.Fprint(w, `{"permission":"write","user":{"login":"a-writer","type":"User"}}`)
 			}))
 			defer server.Close()
 			w := reviewPermissionRuntime(pool, server.URL, quietLogger())
@@ -210,6 +242,12 @@ func (t *forgettingTokens) Token(ctx context.Context, set appauth.TokenSet, owne
 	return lease, err
 }
 
+func (t *forgettingTokens) ReadToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	lease, err := t.outboxTokens.ReadToken(ctx, owner)
+	lease.Minted = t.minted
+	return lease, err
+}
+
 func (t *forgettingTokens) Forget(set appauth.TokenSet, owner string) {
 	t.forgot = string(set) + " " + owner
 }
@@ -237,7 +275,7 @@ func TestAReviewersPermissionIsReadOncePerWindow(t *testing.T) {
 		if strings.Contains(login, "reader") {
 			permission = "read"
 		}
-		fmt.Fprintf(w, `{"permission":%q,"user":{"login":%q}}`, permission, login)
+		fmt.Fprintf(w, `{"permission":%q,"user":{"login":%q,"type":"User"}}`, permission, login)
 	}))
 	defer server.Close()
 	review := func(author string) intake.PullRequestReview {
@@ -338,35 +376,28 @@ func TestAReviewMintThatFailsTransientlyHoldsTheLimitWithoutMintingAgain(t *test
 	}
 }
 
-// A review on a repository whose owner the review App is not installed on (installed once, then
-// removed, while a record still names the repository, which GitHub intake keeps hearing) decides
-// nothing: the mint's refusal is answered at once as no write access, logged at error naming the
-// owner, and held for the permission window, rather than returned for a delivery that would mint
-// again on every redelivery. The review App's own review is restored from what was delivered.
+// A review on a repository whose owner the App is not installed on (installed once, then removed,
+// while a record still names the repository, which GitHub intake keeps hearing) decides nothing:
+// the mint's refusal is answered at once as no write access, logged at error naming the owner,
+// and held for the permission window, rather than returned for a delivery that would mint again
+// on every redelivery.
 func TestAReviewOnAnOwnerTheReviewAppIsNotInstalledOnDecidesNothing(t *testing.T) {
 	pool := reviewPermissionPool(t)
 	var logged syncBuffer
 	w := reviewPermissionRuntime(pool, "http://unused.invalid", slog.New(slog.NewJSONHandler(&logged, nil)))
 	tokens := &notInstalledTokens{}
 	w.tokens = tokens
-	review := func(author string) intake.PullRequestReview {
-		return intake.PullRequestReview{Repo: "acme/widgets", Number: 42, State: "approved", Author: author, Body: "delivered body"}
-	}
 	for range 2 {
-		canWrite, err := w.reviewerCanWrite(context.Background(), review("a-writer"))
+		canWrite, err := w.reviewerCanWrite(context.Background(), intake.PullRequestReview{Repo: "acme/widgets", Number: 42, State: "approved", Author: "a-writer"})
 		if err != nil || canWrite {
-			t.Fatalf("a review on an owner with no review App = %v, %v; want no write access and no error", canWrite, err)
+			t.Fatalf("a review on an owner with no App = %v, %v; want no write access and no error", canWrite, err)
 		}
 	}
 	if tokens.calls != 1 {
-		t.Fatalf("the review App was minted %d times for one author inside the permission window, want once", tokens.calls)
+		t.Fatalf("the App was minted %d times for one author inside the permission window, want once", tokens.calls)
 	}
 	if !strings.Contains(logged.String(), `"installation_owner":"acme"`) || !strings.Contains(logged.String(), `"level":"ERROR"`) {
-		t.Fatalf("log = %s, want an error naming the owner the review App is not installed on", logged.String())
-	}
-	w.reviewAppLogin = "legion-review[bot]"
-	if body, err := w.reviewBody(context.Background(), review("legion-review[bot]")); err != nil || body != "delivered body" {
-		t.Fatalf("the review App's own review body = %q, %v; want the delivered body and no error", body, err)
+		t.Fatalf("log = %s, want an error naming the owner the App is not installed on", logged.String())
 	}
 }
 
@@ -461,7 +492,7 @@ func TestAReviewNamingARenamedRepositoryReadsThePermissionOfTheRecordedPullReque
 			var asked []string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				asked = append(asked, r.URL.Path)
-				fmt.Fprint(w, `{"permission":"write","user":{"login":"a-writer"}}`)
+				fmt.Fprint(w, `{"permission":"write","user":{"login":"a-writer","type":"User"}}`)
 			}))
 			defer server.Close()
 			w := reviewPermissionRuntimeRenamed(pool, server.URL, quietLogger(), tc.renames)
@@ -500,22 +531,18 @@ func reviewPermissionTransferredPool(t *testing.T) *store.Pool {
 // A review GitHub published before the transfer and the daemon processed after it names
 // sjawhar/legion — the daemon hears both names of a configured pair (heardRepositories), so a
 // review arrives under the old name whenever the daemon was down or behind across the transfer,
-// or its delivery was redelivered across it, and that is also the name the record keeps. Both
-// GitHub reads such a review costs are made on cybermonklabs/legion, the repository GitHub holds
-// it under now (reviewAppClient, through repositories.serving), since only cybermonklabs'
+// or its delivery was redelivered across it, and that is also the name the record keeps. The
+// permission read such a review costs is made on cybermonklabs/legion, the repository GitHub holds
+// it under now (permissionClient, through repositories.serving), since only cybermonklabs'
 // installation covers the repository: this token source mints for that owner alone and refuses
-// every other, as GitHub's does after a transfer (servedOwnerTokens).
-//
-// Both callers of the mint are driven: a person's review, whose permission read decides the
-// round, and the review App's own, whose body is read fresh for the footer. With no pair
-// configured the mint is made for the owner the review names and refused, which is the failure
-// the pair exists to prevent: a permission read refused decides nothing, and a body read refused
-// is naked and redelivered.
+// every other, as GitHub's does after a transfer (servedOwnerTokens). With no pair configured the
+// mint is made for the owner the review names and refused, which is the failure the pair exists
+// to prevent: a permission read refused decides nothing.
 func TestAReviewPublishedBeforeATransferIsReadOnTheRepositoryGitHubHoldsItUnderNow(t *testing.T) {
 	pool := reviewPermissionTransferredPool(t)
 	// review is the review as it reaches the daemon: published under the name the repository
 	// moved away from, which is the name the pull request is recorded under too.
-	review := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 7, State: "approved", CommitID: "head"}
+	review := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 7, State: "changes_requested", CommitID: "head", Author: "a-writer"}
 	for _, caller := range []struct {
 		name string
 		// asked is the path the read asks for when it is made on the repository GitHub serves.
@@ -528,35 +555,15 @@ func TestAReviewPublishedBeforeATransferIsReadOnTheRepositoryGitHubHoldsItUnderN
 		{
 			name:    "a person's review, whose permission decides the round",
 			asked:   "/repos/cybermonklabs/legion/collaborators/a-writer/permission",
-			answers: `{"permission":"write","user":{"login":"a-writer"}}`,
+			answers: `{"permission":"write","user":{"login":"a-writer","type":"User"}}`,
 			read: func(t *testing.T, w *workflowRuntime) error {
 				t.Helper()
-				author := review
-				author.Author = "a-writer"
-				canWrite, err := w.reviewerCanWrite(context.Background(), author)
+				canWrite, err := w.reviewerCanWrite(context.Background(), review)
 				if err != nil {
 					return err
 				}
 				if !canWrite {
 					t.Errorf("a-writer can write = false, want true: GitHub gives write access on the repository it holds the review's under now")
-				}
-				return nil
-			},
-		},
-		{
-			name:    "the review App's own review, whose body is read for its footer",
-			asked:   "/repos/cybermonklabs/legion/pulls/42/reviews/7",
-			answers: `{"body":"Approved.\n\n<!-- legion:review -->"}`,
-			read: func(t *testing.T, w *workflowRuntime) error {
-				t.Helper()
-				own := review
-				own.Author, own.Body, own.BodyTruncated = "legion-reviewer[bot]", "Approved.", true
-				body, err := w.reviewBody(context.Background(), own)
-				if err != nil {
-					return err
-				}
-				if body != "Approved.\n\n<!-- legion:review -->" {
-					t.Errorf("the review's body = %q, want the full one GitHub answered", body)
 				}
 				return nil
 			},
@@ -573,7 +580,7 @@ func TestAReviewPublishedBeforeATransferIsReadOnTheRepositoryGitHubHoldsItUnderN
 			}{
 				{name: "the pair configured", renames: transferredLegion, asked: []string{caller.asked}},
 				{name: "no pair configured", renames: ghrepo.Renames{},
-					refused: "mint the review App token for sjawhar/legion: no installation of the App on sjawhar covers the repository"},
+					refused: "mint the read token for sjawhar/legion: no installation of the App on sjawhar covers the repository"},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					var asked []string

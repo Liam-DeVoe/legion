@@ -119,12 +119,13 @@ func (s CommitStatus) StampedWith(head string) bool {
 
 // ClassifiedPush is one branch push as the daemon records it: a fact about two commits, the head it
 // replaced (Before) and the head it left (SHA), true whenever it is learned, and whose push it was.
+// One App pushes for every role, so a push names its account and no role. A daemon of the release
+// before one App marked a review App's push with a key of its own, which a row it left still
+// holds: the record's decode skips the key, and the row written back holds it nowhere.
 type ClassifiedPush struct {
 	SHA string `json:"sha"`
 	// Before is the head the push replaced, empty when the push did not say.
 	Before string `json:"before,omitempty"`
-	// ByReviewApp is whether the push was the review App's (its pusher is the review App's bot login).
-	ByReviewApp bool `json:"byReviewApp,omitempty"`
 	// Sender is the login of the account that pushed (the webhook's sender), empty from a listener
 	// that predates the field. A synchronize names its move's push by it (classify.pushOf).
 	Sender string `json:"sender,omitempty"`
@@ -610,40 +611,35 @@ type PhaseRow struct {
 	// it survives the next phase's start, so a completion naming it again is known to carry no
 	// handoff written since.
 	LastHandoff string
-	// Decision is the review round's decision, on the reviewer's row: the newest review the
-	// reviewer's own review-App session (told from any other review-App session's by its Legion
-	// footer) or an account with write access to the repository submitted for the round that carried
-	// one (workflow's DecidesRound), kept until the round ends, since the reviewer's completion can
-	// come after the review it posted. Nil until a review decides.
+	// Decision is the review round's decision, on the reviewer's row: the reviewer's verdict, which
+	// its completion of reviewing carries (workflow's handoff), or a person's request for changes,
+	// delivered by webhook from an account of type User with write access to the repository
+	// (workflow's RefusesRound), whichever came last in the round, kept until the round ends. No
+	// review written with the one App's token decides, and no person's approval of a Legion head.
+	// Nil until something decides.
 	Decision *ReviewDecision
-	// ReviewedHead is the commit the daemon last recorded as read by the reviewer's own deciding
-	// review of the entry that stood: the head named in the Legion footer of a review that
-	// approved or requested changes, submitted as the review App from the session the claims
-	// record holds for the claim the daemon starts the reviewer under (workflow's review,
-	// byReviewer and reviewersClaim), in the first round as in every later one. Only the
-	// reviewer's row holds it. A person's review does not move it, since the reviewer did not read
-	// that commit; neither does another review-App session's review or a review that decides
-	// nothing, and while the reviewer's claim records no session no review-App review decides the
-	// round or moves it (workflow's RefusedWhileNoSession). Unlike Decision it outlives its round:
-	// no entry into a phase clears it (workflow's clearHandoff, whose list of fields does not hold
-	// it), so the task of the reviewer's next round names it (workflow's namingTheReviewRound) and
-	// the reviewer reads the difference from it to the head. Only a review of the entry that stands
-	// moves it: the row holds the task of an entry (EntryTask), and the review's footer names that
-	// entry (Entry, intake.PullRequestReview.LegionEntry). No time is compared. A review that names
-	// no entry, or another one, decides its round and leaves the commit where it stands, so the
-	// next round reads more: from an older commit, or the whole change. A new generation clears it
-	// (ClearGeneration), and the clear empties the entry's task until the next start raises an
-	// entry, so the first review of a re-admitted root, of a child run again and of an adopted
-	// member reads the whole change, and a review of an entry before the clear moves nothing,
-	// however late it is applied; a carried hand-over keeps its rows, and the commit with them.
-	// Empty until such a review, and on every row the release before the column wrote.
+	// ReviewedHead is the commit the daemon last recorded as read by the reviewer: the commit its
+	// verdict names, which its completion of reviewing carries (workflow's handoff), the reviewer's
+	// own word for the code it read. Only the reviewer's row holds it. A person's request for
+	// changes does not move it, since the reviewer did not read that commit; neither does a
+	// completion with no verdict, nor one of a phase the issue has left. Unlike Decision it
+	// outlives its round: no entry into a phase clears it (workflow's clearHandoff, whose list of
+	// fields does not hold it), so the task of the reviewer's next round names it (workflow's
+	// namingTheReviewRound) and the reviewer reads the difference from it to the head. A
+	// completion is held to the entry its claim serves before it reaches the workflow (the
+	// completion route's entry fence, api/handoff.go), so a verdict of an earlier entry moves it
+	// only at the head the record holds. A verdict moves it only while the row holds the task of
+	// the entry that stands (EntryTask). A new generation clears it (ClearGeneration) and empties
+	// that task until the next entry is raised, so the first round of a re-admitted root, of a
+	// child run again and of an adopted member reads the whole change, and a verdict applied in
+	// between moves nothing; a carried hand-over keeps its rows, and the commit with them. Empty
+	// until such a verdict, and on every row the release before the column wrote.
 	ReviewedHead string
 	// CompletedAt is when the workflow applied the role's completion of its current phase, zero until
-	// then. The reviewer's orders the reviews its round receives against the completion (workflow's
-	// reviewersAnswer and answerSkew), and is read only for a completed round (Completed). It can
-	// be stale: a daemon older than migration 0026 writes a completion without it, and
-	// ClearGeneration resets the row without it. Behind a completion an old daemon wrote, a stale time
-	// at worst makes a review read as the reviewer's answer: one extra review-stuck notice.
+	// then: it tells a role whose completion of its entry the workflow accepted (workflow's
+	// PhaseWorkerOwedTurn) and when the retro ended (workflow's upgradedStart). It can be stale: a
+	// daemon older than migration 0026 writes a completion without it, and ClearGeneration resets
+	// the row without it.
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
 	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
@@ -742,32 +738,33 @@ type PhaseEntry struct {
 	Verbatim bool
 }
 
-// ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
-// handed to the next implementer, and the head it was written on, whose code an approval approves.
+// ReviewDecision is what decided a review round: its state (changes_requested or approved), its
+// body, handed to the next implementer, and the head it is of, whose code an approval approves.
+// The reviewer's verdict writes it (workflow's handoff): approve as approved and changes as
+// changes_requested, at the commit the verdict names, with the summary its completion carried as
+// the body; and TestedCommit, the commit of the tester's pass the verdict carries to Head, ""
+// where it carries none. A person's request for changes writes it too (workflow's review), at the
+// commit its webhook named. The state keeps a GitHub review's spelling, and TestedCommit is a key
+// of its own, because a daemon of the release before the reviewer's verdict reads this same
+// column (spec R15): it decodes the column leniently, so it reads the state and the head as it
+// always has and skips the key it does not know.
 //
 // ToldStuckHead and ToldStuckState are the daemon's own mark beside it rather than anything the
-// review said: the head and GitHub's merge state an approval of this decision was last reported
+// decision said: the head and GitHub's merge state an approval of this decision was last reported
 // stuck on, in the review-stuck notice an approval GitHub will not merge from writes (workflow's
 // settleRound, stuckMergeState). They are what makes that notice once for each head and state
 // rather than once for each fact: GitHub answers one head `blocked`, then `unknown` while it
 // recomputes, then `blocked` again, and the mark is the only thing that survives the answer in
 // between. They live with the decision because the notice is of the approval this decision is: a
-// review that decides the round afresh replaces the decision and the mark with it, and the next
-// head the new approval sticks on is told in its turn. Empty until a notice goes out.
-//
-// Refused is the daemon's own mark too, and the one case where a decision row holds no decision:
-// why the daemon set aside a review that would otherwise have decided the round (workflow's
-// refusesRound), which is what the stuck notice of a round nothing decided names
-// (workflow's undecidedReason). It is written only on a row that holds no deciding decision -
-// State empty - so a refusal that follows an approval cannot erase it, and the clear every entry
-// into a phase makes of the role's row (workflow's clearHandoff) takes it with the decision, so
-// no round inherits the refusal of the round before it. The decision column is jsonb, so a row
-// an older daemon wrote simply has none.
+// verdict that decides the round afresh replaces the decision and the mark with it, and the next
+// head the new approval sticks on is told in its turn. Empty until a notice goes out. The
+// decision column is jsonb, so a row an older daemon wrote simply has none, and a key an older
+// daemon wrote that this one no longer reads is skipped.
 type ReviewDecision struct {
 	State          string     `json:"state"`
 	Body           string     `json:"body,omitempty"`
 	Head           string     `json:"head,omitempty"`
-	Refused        string     `json:"refused,omitempty"`
+	TestedCommit   string     `json:"testedCommit,omitempty"`
 	ToldStuckHead  string     `json:"toldStuckHead,omitempty"`
 	ToldStuckState MergeState `json:"toldStuckState,omitempty"`
 }
@@ -871,10 +868,11 @@ type PullRequest struct {
 	// replayed at each step and each push (classify.ApplyPush). Nil when no head waits for a push,
 	// and once a run is cut to its bound with none left waiting.
 	Run *HeadRun
-	// ReviewSeen is the newest deciding review (changes requested or approved, from the review App
-	// or an account with write access to the repository) GitHub reported for the pull request: a
-	// deciding review not after it was submitted before one already processed, and records nothing.
-	// A comment, or anyone else's review, decides nothing and leaves it as it is. It lasts as long
+	// ReviewSeen is the newest deciding review GitHub reported for the pull request: a request for
+	// changes, delivered by webhook from an account of type User with write access to the
+	// repository, the one review that decides a round (workflow's RefusesRound). A deciding review
+	// not after it was submitted before one already processed, and records nothing. A comment, an
+	// approval, or anyone else's review decides nothing and leaves it as it is. It lasts as long
 	// as the pull request's record: across rounds, a reopen, and a new generation while the pull
 	// request is open; a new generation deletes one that is not.
 	ReviewSeen ReviewOrder
@@ -2002,13 +2000,6 @@ type Store interface {
 	// its claim and hold are cleared instead, so the tree it stands in now names it. A row whose
 	// task reached no architect tells nothing and hands over instead (ReleaseKeptClaims).
 	ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error
-	// ClaimSession is the session claims records for token, "" and no error when the token holds
-	// no row. The workflow reads it for the claim the daemon starts the reviewer under (workflow's
-	// reviewerToken), in the reviewer's first round as in every later one, to tell the reviewer's
-	// own review from another review-App session's by the Legion footer each carries
-	// (PullRequestReview.LegionSession). The session is recorded there when the reviewer's agent
-	// registers; the claim the outbox makes holds none until then.
-	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
 	// same branch and pull request), its design gate, and each role's handoff, review rounds,

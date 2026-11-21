@@ -394,7 +394,7 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			name:    "branch push",
 			subject: "notifications.github.sjawhar.legion.push.branch.legion/LEGION-208",
 			file:    "github/push.json",
-			want:    Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: "before-captured", After: "head-captured", Pusher: "author", Sender: "author"},
+			want:    Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: "before-captured", After: "head-captured", Sender: "author"},
 		},
 		{
 			name:    "base branch push",
@@ -504,8 +504,8 @@ func TestASynchronizeFromAListenerWithoutBeforeNamesNoMove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode a push without sender: %v", err)
 	}
-	if p, ok := got.Fact.(Push); !ok || p.Sender != "" || p.Pusher != "author" {
-		t.Fatalf("push fact = %#v, want one with no sender and its pusher", got.Fact)
+	if p, ok := got.Fact.(Push); !ok || p.Sender != "" || p.Before != "before-captured" {
+		t.Fatalf("push fact = %#v, want one with no sender and its before", got.Fact)
 	}
 }
 
@@ -924,7 +924,7 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 				t.Fatalf("%s's %s event decoded no fact", repository, kind)
 			}
 			if kind == "push" {
-				// decodePush reads before, pusher and sender with `, _`, so a listener that stopped
+				// decodePush reads before and sender with `, _`, so a listener that stopped
 				// sending one of them would leave the decode above green and lose the field. The
 				// golden is the listener's own output, so comparing the whole decoded fact with the
 				// golden's payload is the cross-package contract: a key the daemon reads may not go.
@@ -941,7 +941,6 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 					Branch: issueBranch,
 					Before: field("before"),
 					After:  field("after"),
-					Pusher: field("pusher"),
 					Sender: field("sender"),
 				}
 				if got, ok := decoded.Fact.(Push); !ok || got != want {
@@ -1856,20 +1855,6 @@ func TestDecodingCarriesTheReviewOrder(t *testing.T) {
 			t.Fatalf("review with the time %#v = %#v, unread %q, %v; want it untimed and nothing reported", absent, decoded.Fact, decoded.Unread, err)
 		}
 	}
-	// A capped review's body is marked (`body_truncated: "true"`), so a truncated review-App review
-	// can be told apart from one whose full body simply carries no Legion footer.
-	decoded, err = withPayload(t, "review.json", reviewSubject, map[string]any{"body_truncated": "true"})
-	if review, ok := decoded.Fact.(PullRequestReview); err != nil || !ok || !review.BodyTruncated {
-		t.Fatalf("review with body_truncated true = %#v, %v; want BodyTruncated set", decoded.Fact, err)
-	}
-	decoded, err = withPayload(t, "review.json", reviewSubject, map[string]any{"body_truncated": "false"})
-	if review, ok := decoded.Fact.(PullRequestReview); err != nil || !ok || review.BodyTruncated {
-		t.Fatalf("review with body_truncated false = %#v, %v; want BodyTruncated clear", decoded.Fact, err)
-	}
-	decoded, err = withPayload(t, "review.json", reviewSubject, nil)
-	if review, ok := decoded.Fact.(PullRequestReview); err != nil || !ok || review.BodyTruncated {
-		t.Fatalf("review with no body_truncated field = %#v, %v; want BodyTruncated clear", decoded.Fact, err)
-	}
 }
 
 // The workflow decides a review round inside a transaction and performs no I/O, so whether the
@@ -1932,83 +1917,6 @@ func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing
 	}
 	other := PullRequestChecks{Repo: "acme/widgets", Number: 42}
 	if got, err := resolveReviewPermission(context.Background(), answering(true, nil), other); err != nil || !reflect.DeepEqual(got, Fact(other)) {
-		t.Fatalf("a fact that is not a review = %#v, %v; want it unchanged", got, err)
-	}
-}
-
-// resolveReviewBody restores a truncated review-App review's body from GitHub
-// (ConsumerSpec.ReviewBody) before resolveReviewPermission reads its author's permission, since a
-// restored body carries the Legion footer the workflow needs. It is read only for a review the
-// normalizer capped, with an id and an author; a review with no id keeps its capped body and
-// BodyTruncated true, and a failed read naks the delivery the same way a failed permission read
-// does.
-func TestResolveReviewBodyRestoresATruncatedReviewsBody(t *testing.T) {
-	truncated := PullRequestReview{Repo: "acme/widgets", Number: 42, ID: 7, State: "approved", Author: "legion-reviewer[bot]",
-		Body: "a capped body", BodyTruncated: true}
-	var asked []PullRequestReview
-	answering := func(body string, err error) ConsumerSpec {
-		return ConsumerSpec{AckWait: time.Second, ReviewBody: func(_ context.Context, review PullRequestReview) (string, error) {
-			asked = append(asked, review)
-			return body, err
-		}}
-	}
-	t.Run("a truncated review is replaced with the answer and BodyTruncated is cleared", func(t *testing.T) {
-		asked = nil
-		got, err := resolveReviewBody(context.Background(), answering("the full body with a footer", nil), truncated)
-		if err != nil {
-			t.Fatalf("resolve the review's body: %v", err)
-		}
-		resolved, ok := got.(PullRequestReview)
-		if !ok || resolved.Body != "the full body with a footer" || resolved.BodyTruncated {
-			t.Fatalf("the review = %#v, want the restored body with BodyTruncated cleared", got)
-		}
-		if len(asked) != 1 {
-			t.Fatalf("GitHub was asked %d times, want once", len(asked))
-		}
-	})
-	t.Run("a review with no id is not looked up", func(t *testing.T) {
-		asked = nil
-		noID := truncated
-		noID.ID = 0
-		got, err := resolveReviewBody(context.Background(), answering("ignored", nil), noID)
-		if err != nil {
-			t.Fatalf("resolve the review's body: %v", err)
-		}
-		resolved, ok := got.(PullRequestReview)
-		if !ok || resolved.Body != "a capped body" || !resolved.BodyTruncated || len(asked) != 0 {
-			t.Fatalf("a review with no id = %#v, asked %v; want its capped body kept and no call made", got, asked)
-		}
-	})
-	t.Run("a review that was not truncated is not looked up", func(t *testing.T) {
-		asked = nil
-		full := truncated
-		full.BodyTruncated = false
-		got, err := resolveReviewBody(context.Background(), answering("ignored", nil), full)
-		if err != nil {
-			t.Fatalf("resolve the review's body: %v", err)
-		}
-		resolved, ok := got.(PullRequestReview)
-		if !ok || resolved.Body != "a capped body" || len(asked) != 0 {
-			t.Fatalf("an untruncated review = %#v, asked %v; want it unchanged and no call made", got, asked)
-		}
-	})
-	t.Run("a daemon with no reader leaves the capped body", func(t *testing.T) {
-		got, err := resolveReviewBody(context.Background(), ConsumerSpec{}, truncated)
-		if err != nil {
-			t.Fatalf("resolve the review's body: %v", err)
-		}
-		resolved, ok := got.(PullRequestReview)
-		if !ok || resolved.Body != "a capped body" || !resolved.BodyTruncated {
-			t.Fatalf("with no reader = %#v, want the capped body kept", got)
-		}
-	})
-	t.Run("a failed read naks the delivery", func(t *testing.T) {
-		if _, err := resolveReviewBody(context.Background(), answering("", errors.New("GitHub answered 502")), truncated); err == nil {
-			t.Fatal("a failed body read resolved; want the error, so the delivery is retried")
-		}
-	})
-	other := PullRequestChecks{Repo: "acme/widgets", Number: 42}
-	if got, err := resolveReviewBody(context.Background(), answering("ignored", nil), other); err != nil || !reflect.DeepEqual(got, Fact(other)) {
 		t.Fatalf("a fact that is not a review = %#v, %v; want it unchanged", got, err)
 	}
 }

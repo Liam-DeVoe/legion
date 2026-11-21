@@ -281,7 +281,7 @@ func reviewRoundTwoNaming(t *testing.T, noCommit bool) (*pgxpool.Pool, *Engine, 
 		return reviewRoundTwo(t)
 	}
 	pool, engine, apply := reviewRoundOne(t)
-	apply("request-changes", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
+	apply("request-changes", reviewAt(1, "changes_requested", headOne))
 	if _, err := pool.Exec(context.Background(), "update phases set reviewed_head = '' where issue = 'LEGION-208' and role = 'reviewer'"); err != nil {
 		t.Fatalf("take the commit off the reviewer's row: %v", err)
 	}
@@ -426,13 +426,11 @@ func bootResumesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 }
 
 // A reviewer relaunched in the middle of its round is given the boot's resume task, which names
-// the entry its row holds, and its review that names that entry records the head it read: the
-// entry a resume names is the entry that stands. Round 2 here stands at headTwo, and round 1's
-// review read headOne. The number is read from the task the reviewer was delivered, as the agent
-// reads it.
+// the entry its row holds, and its verdict records the commit it names. Round 2 here stands at
+// headTwo, and round 1's verdict named headOne.
 func TestAReviewOfTheEntryTheBootsResumeNamesRecordsItsHead(t *testing.T) {
 	pool, engine, apply := reviewRoundOne(t)
-	apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
+	apply("request-changes-1", reviewAt(1, "changes_requested", headOne))
 	mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
 	backToReviewing(t, apply, 2)
 	if got := reviewerRow(t, pool).ReviewedHead; got != headOne {
@@ -440,14 +438,12 @@ func TestAReviewOfTheEntryTheBootsResumeNamesRecordsItsHead(t *testing.T) {
 	}
 	bootResumesTheReviewer(t, pool, engine)
 	entry := entryNamedIn(t, deliveredTask(t, pool, "the boot's resume"))
-	review := reviewAt(t, pool, 2, "changes_requested", headTwo, reviewTestedAt.Add(2*time.Hour))
-	review.Body = reviewBodyOfEntry("the review", "ses-reviewer", headTwo, entry)
-	apply("request-changes-2", review)
+	apply("request-changes-2", reviewAt(2, "changes_requested", headTwo))
 	if got := issuePhase(t, pool); got != phase.Implementing {
 		t.Fatalf("after the resumed reviewer's request for changes the issue is in %s, want implementing", got)
 	}
 	if got := reviewerRow(t, pool).ReviewedHead; got != headTwo {
-		t.Fatalf("after the resumed reviewer's review of entry %d the reviewer's row reads the reviewed commit %q, want %s, the head that review read", entry, got, headTwo)
+		t.Fatalf("after the resumed reviewer's verdict of entry %d the reviewer's row reads the reviewed commit %q, want %s, the commit that verdict named", entry, got, headTwo)
 	}
 }
 
@@ -606,7 +602,7 @@ func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			name: "a woken reviewer whose issue has left reviewing", role: claim.RoleReviewer, after: reviewedPartOf("none") + noEntryPart,
 			walk: func(t *testing.T) (*pgxpool.Pool, *Engine) {
 				pool, engine, apply := reviewRoundOne(t)
-				apply("request-changes", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
+				apply("request-changes", reviewAt(1, "changes_requested", headOne))
 				if row := reviewerRow(t, pool); issuePhase(t, pool) != phase.Implementing || row.EntryTask == "" || row.ReviewedHead != headOne {
 					t.Fatalf("after the request for changes the issue is in %s and the reviewer's row holds the task %q and the commit %q, want implementing, round 1's task and %s",
 						issuePhase(t, pool), row.EntryTask, row.ReviewedHead, headOne)
@@ -643,42 +639,23 @@ func TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 	}
 }
 
-// A reviewer that a CI settlement brings back submits its review of the round that stands with the
-// entry the wake's task names, read from that task as the agent reads it, and the review moves the
-// commit to the head it read. The same review with no entry decides the round and moves nothing,
-// which is what a woken reviewer that followed a task naming no entry got. Round 2 here stands at
-// headTwo, and round 1's review read headOne.
+// A reviewer that a CI settlement brings back gives its verdict of the round that stands, whose
+// entry the wake's task names, and the verdict moves the commit to the commit it names. Round 2
+// here stands at headTwo, and round 1's verdict named headOne.
 func TestAWokenReviewersReviewOfTheEntryItsWakeNamesMovesTheCommit(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		// namesEntry is whether the review's footer names the entry the wake's task names.
-		namesEntry bool
-		want       string
-	}{
-		{name: "the entry the wake names", namesEntry: true, want: headTwo},
-		{name: "no entry", want: headOne},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool, engine, apply := reviewRoundOne(t)
-			apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
-			mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
-			backToReviewing(t, apply, 2)
-			outboxRan(t, pool)
-			releasesTheReviewer(t, pool, engine)
-			wakes(t, pool, engine, claim.RoleReviewer, "ses-reviewer", headTwo, pods.WakeChecks)
-			entry := entryNamedIn(t, deliveredTask(t, pool, "the wake on a CI settlement"))
-			review := reviewAt(t, pool, 2, "changes_requested", headTwo, reviewTestedAt.Add(2*time.Hour))
-			review.Body = reviewBody("the review", headTwo)
-			if tc.namesEntry {
-				review.Body = reviewBodyOfEntry("the review", "ses-reviewer", headTwo, entry)
-			}
-			apply("request-changes-2", review)
-			if got := issuePhase(t, pool); got != phase.Implementing {
-				t.Fatalf("after the woken reviewer's request for changes the issue is in %s, want implementing: the review decides the round", got)
-			}
-			if got := reviewerRow(t, pool).ReviewedHead; got != tc.want {
-				t.Fatalf("after the woken reviewer's review the reviewer's row reads the reviewed commit %q, want %q", got, tc.want)
-			}
-		})
+	pool, engine, apply := reviewRoundOne(t)
+	apply("request-changes-1", reviewAt(1, "changes_requested", headOne))
+	mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
+	backToReviewing(t, apply, 2)
+	outboxRan(t, pool)
+	releasesTheReviewer(t, pool, engine)
+	wakes(t, pool, engine, claim.RoleReviewer, "ses-reviewer", headTwo, pods.WakeChecks)
+	entryNamedIn(t, deliveredTask(t, pool, "the wake on a CI settlement"))
+	apply("request-changes-2", reviewAt(2, "changes_requested", headTwo))
+	if got := issuePhase(t, pool); got != phase.Implementing {
+		t.Fatalf("after the woken reviewer's request for changes the issue is in %s, want implementing: the verdict decides the round", got)
+	}
+	if got := reviewerRow(t, pool).ReviewedHead; got != headTwo {
+		t.Fatalf("after the woken reviewer's verdict the reviewer's row reads the reviewed commit %q, want %s", got, headTwo)
 	}
 }
