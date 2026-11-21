@@ -408,7 +408,7 @@ describe("dispatch steps", () => {
           task: "b",
           needs: ["a"],
           planned: [{ step: 1, name: "tester", state: "not started" }],
-          steps: null,
+          steps: [],
         },
       ],
     };
@@ -423,10 +423,7 @@ describe("dispatch steps", () => {
         "task b needs a: 1 tester not started",
       ].join("\n")
     );
-    expect(result.details).toEqual({
-      issue: "LEG-1",
-      tasks: [{ ...answer.tasks?.[0] }, { ...answer.tasks?.[1], steps: [] }],
-    });
+    expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
   });
 
   // A plan node that recorded no needs, a daemon's of the release before, answers them null: the

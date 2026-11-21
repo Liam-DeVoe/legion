@@ -3396,7 +3396,8 @@ type StepRecord struct {
 // as the plan node records them, [] for a task that needs none; null where the node did not record
 // them (a daemon of the release before wrote it) and for a task the plan does not hold. Planned are
 // the steps that plan gives the task, in order, each with where it stands; absent for a task the
-// plan does not hold, which only its runs show.
+// plan does not hold, which only its runs show. Steps are [] for a task of the plan none of whose
+// steps ran.
 type StepTask struct {
 	Task    string        `json:"task"`
 	Needs   []string      `json:"needs"`

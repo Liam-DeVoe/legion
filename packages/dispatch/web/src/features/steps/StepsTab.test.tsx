@@ -256,13 +256,13 @@ test("the Steps tab draws each step of the plan with its state, and each task's 
       {
         needs: ["a"],
         planned: [{ name: "tester", state: "not started", step: 1 }],
-        steps: null,
+        steps: [],
         task: "b",
       },
       {
         needs: null,
         planned: [{ name: "tester", state: "not started", step: 1 }],
-        steps: null,
+        steps: [],
         task: "c",
       },
     ],

@@ -61,14 +61,17 @@ func startRun(t *testing.T, handler http.Handler, project, issue, task, role str
 
 // The read of an issue's steps lists the tasks of its newest plan first, in the plan's order, each
 // with the tasks it needs and the steps the plan gives it, whether a step of it ran or not; then
-// each other task with a run, by its first run. The needs are the ids the plan node records: the
-// read parses no document, so the node here names a document no artifact holds, whose every read
-// fails. A node written with no needs (a daemon of the release before) answers them null, which is
-// not [] (needs none). An issue with no plan lists its tasks by their first run. The faults are a
-// task of the plan that a person cannot see, needs read from anywhere but the node, and a node
-// that recorded no needs answered as needing none; the controls are the handler that lists runs
-// alone (b is absent), the handler that reads the needs from the document (its read fails), and a
-// reader that answers [] for a node with none (the default task's needs are not null).
+// each other task with a run, by its first run. A task of the plan none of whose steps ran answers
+// its runs as [], as the read answers its tasks, never null. The needs are the ids the plan node
+// records: the read parses no document, so the node here names a document no artifact holds, whose
+// every read fails. A node written with no needs (a daemon of the release before) answers them
+// null, which is not [] (needs none). An issue with no plan lists its tasks by their first run. The
+// faults are a task of the plan that a person cannot see, a task of the plan whose runs answer
+// null, needs read from anywhere but the node, and a node that recorded no needs answered as
+// needing none; the controls are the handler that lists runs alone (b is absent), the handler that
+// builds a task of the plan with no list of runs (b's and the default task's runs are null), the
+// handler that reads the needs from the document (its read fails), and a reader that answers [] for
+// a node with none (the default task's needs are not null).
 func TestTheStepsOfAnIssueListThePlansTasks(t *testing.T) {
 	handler := newTestHandler(t)
 	owner := createTestIssue(t, handler, "LEG", "A run of steps")
@@ -99,7 +102,7 @@ func TestTheStepsOfAnIssueListThePlansTasks(t *testing.T) {
 		t.Fatalf("the steps of %s =\n%+v\nwant\n%+v", owner, got, want)
 	}
 	body := response.Body.String()
-	for _, member := range []string{`"task":"a","needs":[],`, `"task":"b","needs":["a"],"planned":[{"step":1,"name":"tester","state":"not started"}]`, `"task":"earlier","needs":null,`} {
+	for _, member := range []string{`"task":"a","needs":[],`, `"task":"b","needs":["a"],"planned":[{"step":1,"name":"tester","state":"not started"}],"steps":[]}`, `"task":"earlier","needs":null,`} {
 		if !strings.Contains(body, member) {
 			t.Fatalf("the steps of %s answer %s, want it to hold %s", owner, body, member)
 		}
@@ -112,6 +115,9 @@ func TestTheStepsOfAnIssueListThePlansTasks(t *testing.T) {
 	}
 	if !strings.Contains(read.Body.String(), `"task":"default","needs":null,`) {
 		t.Fatalf("the steps of %s answer %s, want the default task's needs null: its node recorded none", defaults, read.Body.String())
+	}
+	if body := read.Body.String(); !strings.HasSuffix(strings.TrimSpace(body), `],"steps":[]}]}`) {
+		t.Fatalf("the steps of %s answer %s, want the default task's runs []: none of its steps ran", defaults, body)
 	}
 
 	later := startRun(t, handler, "LEG", none, "y", "implementer", 1, 1, stepStart.Add(time.Minute))

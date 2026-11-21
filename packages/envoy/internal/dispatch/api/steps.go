@@ -239,13 +239,13 @@ func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pg
 
 // listIssueSteps is GET /api/v1/issues/{key}/steps: the tasks of the issue's newest plan
 // (workflowstore.NewestPlan), in the plan's order, each with the needs its node records (null
-// where the node recorded none), the steps the plan gives it and every run of them; then every
-// other task with a run, in the order of each such task's first run. It reads the plan node and
-// the runs alone, and no document. A closed issue's runs read as an open one's, and a key no issue
-// carries answers as GET /api/v1/issues/{key} does, 404 NOT_FOUND, so a mistyped key never reads
-// as an issue Legion never ran. Only a read that finds no run looks for the issue: the write reads
-// the issue before it records a run (404 ISSUE_NOT_FOUND), and no issue is ever deleted, so a read
-// that finds a run has found its issue.
+// where the node recorded none), the steps the plan gives it and every run of them ([] where none
+// ran); then every other task with a run, in the order of each such task's first run. It reads the
+// plan node and the runs alone, and no document. A closed issue's runs read as an open one's, and a
+// key no issue carries answers as GET /api/v1/issues/{key} does, 404 NOT_FOUND, so a mistyped key
+// never reads as an issue Legion never ran. Only a read that finds no run looks for the issue: the
+// write reads the issue before it records a run (404 ISSUE_NOT_FOUND), and no issue is ever
+// deleted, so a read that finds a run has found its issue.
 func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -290,7 +290,7 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, task := range plan.Tasks {
 			tasks[task.ID] = len(read.Tasks)
-			planned := model.StepTask{Task: task.ID, Planned: make([]model.PlannedStep, len(task.Steps))}
+			planned := model.StepTask{Task: task.ID, Planned: make([]model.PlannedStep, len(task.Steps)), Steps: []model.StepRecord{}}
 			for index, name := range task.Steps {
 				state := "not started"
 				if run, ran := newest[place{task.ID, index + 1}]; ran {

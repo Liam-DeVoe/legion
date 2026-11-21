@@ -113,7 +113,7 @@ test("stepTasks gives each task of the plan its needs and its planned steps", ()
       {
         needs: ["a"],
         planned: [{ name: "tester", state: "not started", step: 1 }],
-        steps: null,
+        steps: [],
         task: "b",
       },
     ],
