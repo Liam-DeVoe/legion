@@ -69,7 +69,7 @@ var (
 	// they reproduce the bundle's counts.
 	v62 = func() rules {
 		r := currentRules
-		r.Name, r.WayOut, r.EveryCommandStoppable, r.EndIsFinal = "v62", false, false, false
+		r.Name, r.WayOut, r.EveryCommandStoppable, r.EndIsFinal, r.BackupCommand = "v62", false, false, false, false
 		return r
 	}()
 )
@@ -381,6 +381,12 @@ func scenarios(r rules, fail bool) []modelScenario {
 		}
 		return append(out, modelOp{cmd: CommandAbort}, modelOp{cmd: CommandRelease})
 	}
+	// Under BackupCommand the recreate and the restore each follow buckets backup, which the
+	// recreate requires.
+	recreate, restore := ops("buckets recreate"), ops("buckets restore")
+	if r.BackupCommand {
+		recreate, restore = ops(commandBackup, "buckets recreate"), ops(commandBackup, "buckets restore")
+	}
 	out := []modelScenario{
 		{Name: "cutover", W: WorkflowCutover, Slots: slots, Init: []modelState{prep, {Row: 'P', NoStart: true}},
 			Ops: ops("create-bucket", "replay", "convert", "streams census")},
@@ -389,8 +395,8 @@ func scenarios(r rules, fail bool) []modelScenario {
 		{Name: "selection-recovery", W: WorkflowSelectionRecovery, Slots: slots, Init: []modelState{prep},
 			Ops: ops("create-bucket --after-loss", "replay", "replay --final")},
 		{Name: "buckets-create", W: WorkflowBucketsCreate, Slots: slots, Init: []modelState{prep}, Ops: ops("buckets create")},
-		{Name: "buckets-recreate", W: WorkflowBucketsRecreate, Slots: slots, Init: []modelState{prep}, Ops: ops("buckets recreate")},
-		{Name: "buckets-restore", W: WorkflowBucketsRestore, Slots: slots, Init: []modelState{prep}, Ops: ops("buckets restore")},
+		{Name: "buckets-recreate", W: WorkflowBucketsRecreate, Slots: slots, Init: []modelState{prep}, Ops: recreate},
+		{Name: "buckets-restore", W: WorkflowBucketsRestore, Slots: slots, Init: []modelState{prep}, Ops: restore},
 		{Name: "streams-update", W: WorkflowStreamsUpdate, Slots: slots, Init: []modelState{prep}, Ops: ops("streams update")},
 		{Name: "streams-census", W: WorkflowStreamsCensus, Slots: slots, Init: []modelState{prep}, Ops: ops("streams census")},
 	}
@@ -775,6 +781,16 @@ var transient = map[string]string{
 	"create-bucket":              "stops as UNKNOWN, the bucket's configuration or content is not this hold's",
 	"create-bucket --after-loss": "stops, the inputs or the bucket are not the selection record's",
 	"restore --finish":           "refuses, a server's id is still the one restore --prepare recorded",
+	commandBackup:                "stops, a bucket's snapshot cannot be read",
+}
+
+// leftBy is what a command's stop after its change records: 'U' for buckets backup, which writes
+// only its archive, outside the hub, and 'C' for every other command, which changed the hub.
+func leftBy(c string) byte {
+	if c == commandBackup {
+		return 'U'
+	}
+	return 'C'
 }
 
 func setStep(r rules, t modelTable, sc modelScenario, s modelState, k int) []modelEdge {
@@ -953,7 +969,7 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 			}
 			out := []modelEdge{adv(ns, c+": effect")}
 			if why, ok := transient[c]; ok {
-				out = append(out, refuse(r, t, sc, s, k, why, true))
+				out = append(out, refuseLeft(r, t, sc, s, k, why, true, leftBy(c)))
 			}
 			if doomable {
 				ds := s
@@ -973,7 +989,7 @@ func steps(r rules, t modelTable, sc modelScenario, s modelState, k int) []model
 		if doomable { // it fails for good after its change: a recreate that deleted the bucket
 			ds := s
 			ds.Doomed = c
-			out = append(out, refuseLeft(r, t, sc, ds, k, "fails for good after its change", false, 'C'))
+			out = append(out, refuseLeft(r, t, sc, ds, k, "fails for good after its change", false, leftBy(c)))
 		}
 		return out
 	case c == CommandProve:
@@ -1626,18 +1642,18 @@ var (
 // that fails for good modeled: the current rules and their two controls, the rules without WayOut
 // and without EveryCommandStoppable.
 var pinnedBound2 = map[string]modelCount{
-	"v63":                       {179601, 0, nil},
-	"v63-WayOut":                {41623, 3153, map[string]int{classWayOut: 3153}},
-	"v63-EveryCommandStoppable": {151429, 4095, map[string]int{classWayOut: 4095}},
+	"v63":                       {184186, 0, nil},
+	"v63-WayOut":                {43159, 3426, map[string]int{classWayOut: 3426}},
+	"v63-EveryCommandStoppable": {156014, 4095, map[string]int{classWayOut: 4095}},
 }
 
 // The current rules' runs by workflow, pinned from this model at bounds 2 and 3.
 var (
 	pinnedCurrentBound2 = map[string]int{"cutover": 32408, "rollback": 5296, "selection-recovery": 8767, "buckets-create": 864,
-		"buckets-recreate": 864, "buckets-restore": 864, "streams-update": 864, "streams-census": 1097, "hub-restore": 128577}
+		"buckets-recreate": 2542, "buckets-restore": 3771, "streams-update": 864, "streams-census": 1097, "hub-restore": 128577}
 	pinnedCurrentBound3 = map[string]int{"cutover": 44271, "rollback": 7246, "selection-recovery": 11993, "buckets-create": 1186,
-		"buckets-recreate": 1186, "buckets-restore": 1186, "streams-update": 1186, "streams-census": 1503, "hub-restore": 765341}
-	pinnedCurrentBound3Total = 835098
+		"buckets-recreate": 3475, "buckets-restore": 5153, "streams-update": 1186, "streams-census": 1503, "hub-restore": 765341}
+	pinnedCurrentBound3Total = 841354
 )
 
 // The model of the hold's workflows, run on this package's journal and table. The frozen bundle's
@@ -1652,7 +1668,7 @@ var (
 // At every hub-restore state of the current rules the package's Step1, Proven, Epoch, Expected and
 // Moved read the record as the model does.
 func TestTheHoldJournalModel(t *testing.T) {
-	if currentRules.Name != "v63" || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal {
+	if currentRules.Name != "v63" || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal || v62.BackupCommand {
 		t.Fatalf("the current rules are %q, and v62 carries a rule added since; the counts below are v62's and v63's", currentRules.Name)
 	}
 	for _, w := range tableFor(currentRules).Workflows() {

@@ -140,11 +140,12 @@ func run(t *testing.T, c *holdrecord.Client, holdID string, req holdrecord.Reque
 
 func cmd(command string) holdrecord.Request { return holdrecord.Request{Command: command} }
 
-// recreateStops runs a buckets-recreate hold's recreate until its own check refuses after its
-// change, and writes its stop recording left.
+// recreateStops runs a buckets-recreate hold's backup and then its recreate until its own check
+// refuses after its change, and writes the recreate's stop recording left.
 func recreateStops(t *testing.T, c *holdrecord.Client, holdID, left string) {
 	t.Helper()
 	ctx := context.Background()
+	run(t, c, holdID, cmd(commandBackup), nil, nil)
 	if _, err := c.Admit(ctx, holdID, cmd("buckets recreate"), nil); err != nil {
 		t.Fatalf("admit buckets recreate: %v", err)
 	}
@@ -152,6 +153,10 @@ func recreateStops(t *testing.T, c *holdrecord.Client, holdID, left string) {
 		t.Fatalf("the recreate's stop: %v", err)
 	}
 }
+
+// commandBackup is `envoy-infra buckets backup`, a held command of the buckets-recreate and
+// buckets-restore workflows; the package names it by this text, and exports no constant for it.
+const commandBackup = "buckets backup"
 
 func journal(t *testing.T, c *holdrecord.Client, holdID string) (holdrecord.Done, uint64) {
 	t.Helper()
@@ -871,19 +876,19 @@ func TestTheHoldJournal(t *testing.T) {
 		c := r.client(t)
 		for _, s := range []struct {
 			holdID, left string
-		}{{"h-changed", "changed: envoy_roles recreated empty"}, {"h-unrecorded", ""}} {
-			hold(t, c, s.holdID, holdrecord.WorkflowBucketsRecreate, nil)
-			if _, err := c.Admit(ctx, s.holdID, cmd("buckets recreate"), nil); err != nil {
+		}{{"h-changed", "changed: envoy_roles restored in part"}, {"h-unrecorded", ""}} {
+			hold(t, c, s.holdID, holdrecord.WorkflowBucketsRestore, nil)
+			if _, err := c.Admit(ctx, s.holdID, cmd("buckets restore"), nil); err != nil {
 				t.Fatal(err)
 			}
 			var stop error
 			if s.left != "" {
-				stop = c.AppendStopLeft(ctx, s.holdID, "buckets recreate", "the create is refused", s.left)
+				stop = c.AppendStopLeft(ctx, s.holdID, "buckets restore", "the snapshot's chunks never arrive", s.left)
 			} else {
-				stop = c.AppendStop(ctx, s.holdID, "buckets recreate", "the create is refused")
+				stop = c.AppendStop(ctx, s.holdID, "buckets restore", "the snapshot's chunks never arrive")
 			}
 			if stop != nil {
-				t.Fatalf("%s: the recreate's stop: %v", s.holdID, stop)
+				t.Fatalf("%s: the restore's stop: %v", s.holdID, stop)
 			}
 			_, err := c.Admit(ctx, s.holdID, cmd(holdrecord.CommandRelease), nil)
 			refused(t, s.holdID+": hold release after the stop", err, holdrecord.ErrOutOfOrder, "not complete")
@@ -899,6 +904,64 @@ func TestTheHoldJournal(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	})
+
+	// envoy-infra buckets backup takes a snapshot of each copied bucket, so it runs under a hold:
+	// the first command of buckets-recreate and buckets-restore, Repeatable, and Stoppable with a
+	// stop that left nothing changed, since it writes only the archive outside the hub. The
+	// recreate, which deletes the bucket, needs the backup's done entry; the restore does not, since
+	// a lost bucket cannot be backed up and restores from an archive an earlier hold took.
+	t.Run("buckets backup runs first in a buckets-recreate hold, again and again, and the recreate needs it", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-backup-recreate", holdrecord.WorkflowBucketsRecreate, nil)
+		run(t, c, "h-backup-recreate", cmd(commandBackup), nil, map[string]string{"archive": "gs://archive/a"})
+		run(t, c, "h-backup-recreate", cmd(commandBackup), nil, map[string]string{"archive": "gs://archive/b"})
+		if _, err := c.Admit(ctx, "h-backup-recreate", cmd(commandBackup), nil); err != nil {
+			t.Fatalf("a third backup: %v", err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-backup-recreate", commandBackup, "a snapshot chunk timed out", holdrecord.LeftUnchanged); err != nil {
+			t.Fatalf("the backup's stop: %v", err)
+		}
+		run(t, c, "h-backup-recreate", cmd("buckets recreate"), nil, nil)
+		if d, _ := journal(t, c, "h-backup-recreate"); !d.Complete {
+			t.Fatal("the recreate after the backups did not complete the record")
+		}
+		release(t, c, "h-backup-recreate")
+		// A second hold: the recreate before any backup is refused, and a backup that stops having
+		// changed nothing leaves a hold that hold release ends.
+		hold(t, c, "h-recreate-first", holdrecord.WorkflowBucketsRecreate, nil)
+		_, err := c.Admit(ctx, "h-recreate-first", cmd("buckets recreate"), nil)
+		refused(t, "the recreate before any backup", err, holdrecord.ErrOutOfOrder, commandBackup)
+		if _, err := c.Admit(ctx, "h-recreate-first", cmd(commandBackup), nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-recreate-first", commandBackup, "the bucket's stream cannot be read", holdrecord.LeftUnchanged); err != nil {
+			t.Fatal(err)
+		}
+		release(t, c, "h-recreate-first")
+	})
+
+	t.Run("buckets backup runs in a buckets-restore hold, again and again, and the restore runs with or without it", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-backup-restore", holdrecord.WorkflowBucketsRestore, nil)
+		run(t, c, "h-backup-restore", cmd(commandBackup), nil, nil)
+		run(t, c, "h-backup-restore", cmd(commandBackup), nil, nil)
+		if _, err := c.Admit(ctx, "h-backup-restore", cmd(commandBackup), nil); err != nil {
+			t.Fatalf("a third backup: %v", err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-backup-restore", commandBackup, "a snapshot chunk timed out", holdrecord.LeftUnchanged); err != nil {
+			t.Fatalf("the backup's stop: %v", err)
+		}
+		run(t, c, "h-backup-restore", cmd("buckets restore"), nil, nil)
+		if d, _ := journal(t, c, "h-backup-restore"); !d.Complete {
+			t.Fatal("the restore after the backups did not complete the record")
+		}
+		release(t, c, "h-backup-restore")
+		hold(t, c, "h-restore-alone", holdrecord.WorkflowBucketsRestore, nil)
+		run(t, c, "h-restore-alone", cmd("buckets restore"), nil, nil)
+		release(t, c, "h-restore-alone")
 	})
 
 	// The broker's floor of each record: an older signed journal a database writer puts back reads

@@ -40,17 +40,30 @@ type rules struct {
 	// held and another end the hold before its journal read; this rule makes that process's
 	// decision a refusal, and the journal's compare-and-swap refuses a write decided before it.
 	EndIsFinal bool
+	// BackupCommand: `envoy-infra buckets backup`, a snapshot of each copied bucket, runs under a
+	// hold, as the first command of buckets-recreate and buckets-restore, Repeatable. The recreate,
+	// which deletes the bucket, requires its done entry, so a recreate always follows a backup of
+	// the bucket taken in its own hold; the restore does not, since a lost bucket cannot be backed
+	// up, and it restores from an archive an earlier hold took. Its stop records LeftUnchanged, but
+	// its done entry counts as a change under hold release's rule as every done entry does, so
+	// after a backup the way out of a recreate or restore that stops is hold abort.
+	BackupCommand bool
 }
 
 // currentRules are the hold's rules as its design stands: the frozen model's v62 (every fix, with
-// no account move) and the rules added since, WayOut, EveryCommandStoppable and EndIsFinal.
+// no account move) and the rules added since, WayOut, EveryCommandStoppable, EndIsFinal and
+// BackupCommand.
 var currentRules = rules{Name: "v63", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true,
 	AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true, AtomicAdmit: true, Serialize: true,
 	StopEntries: true, SetCommand: true, Step1Whole: true, ExpectedMap: true, ConvertStoppable: true,
 	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, WayOut: true, EveryCommandStoppable: true,
-	EndIsFinal: true}
+	EndIsFinal: true, BackupCommand: true}
 
 var current = tableFor(currentRules)
+
+// commandBackup is `envoy-infra buckets backup` (BackupCommand). Its stop records LeftUnchanged:
+// it writes only the archive and its manifest, outside the hub.
+const commandBackup = "buckets backup"
 
 type entry struct {
 	name       string
@@ -94,13 +107,20 @@ func tableFor(r rules) table {
 			stoppable: stop},
 		entry{name: CommandAbort, excludes: []string{CommandProve}, final: true, stoppable: stop})
 	buckets := func(name string) []entry { return []entry{{name: name, final: true, stoppable: stop && r.WayOut}} }
+	recreate, restore := buckets("buckets recreate"), buckets("buckets restore")
+	if r.BackupCommand {
+		backup := entry{name: commandBackup, repeatable: true, stoppable: stop && r.WayOut}
+		recreate[0].requires = []string{commandBackup}
+		recreate = append([]entry{backup}, recreate...)
+		restore = append([]entry{backup}, restore...)
+	}
 	rows := map[Workflow][]entry{
 		WorkflowCutover:           cut,
 		WorkflowRollback:          rb,
 		WorkflowSelectionRecovery: sr,
 		WorkflowBucketsCreate:     buckets("buckets create"),
-		WorkflowBucketsRecreate:   buckets("buckets recreate"),
-		WorkflowBucketsRestore:    buckets("buckets restore"),
+		WorkflowBucketsRecreate:   recreate,
+		WorkflowBucketsRestore:    restore,
 		WorkflowStreamsUpdate:     {{name: "streams update", final: true}},
 		WorkflowStreamsCensus:     {{name: "streams census", final: true}},
 		WorkflowHubRestore:        hub,
