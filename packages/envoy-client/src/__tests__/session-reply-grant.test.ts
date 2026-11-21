@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { connect, createInbox, Events, headers, type Msg, type NatsConnection, nkeys } from "nats";
-import { createConsumerDelivery, deliverSubject, RelayHeader } from "../consumer-delivery";
+import { createConsumerDelivery, deliverSubject } from "../consumer-delivery";
 import { natsAuthOptions } from "../nats-auth";
+import { RelayHeader } from "../relay-frame";
 import { type NatsServer, startNatsServerWithConfig, useNatsServerDirectory } from "./nats-server";
 
 /** nats.js types its `nkeys` export `any`. */
@@ -109,6 +110,7 @@ authorization {
         deliver: (frame) => frame.done(),
         gap: () => undefined,
         log: () => undefined,
+        onTaskValue: () => undefined,
       },
       publish: (reply, body) => session.publish(reply, new TextEncoder().encode(body)),
       persist: () => true,
