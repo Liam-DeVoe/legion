@@ -2602,6 +2602,12 @@ With `DISPATCH_PARENT_STATUS_RULE` on, the process that runs the fix writes the 
 A boot that finds the row runs no fix, also after the setting was off for a time.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
+Migration `20261121043859_request_key_steps` creates `request_key_steps`, one row for each committed step of a keyed status change (`POST /api/v1/issues/{key}/status-change`), in the order the steps committed.
+A row holds the step's entry as the route answers it, with the issue as the step's write answered it, so a repeat of the call answers what its steps read rather than the issues as they stand then.
+The head of the call's recovery point stays in `request_keys.recovery`, and a row goes with its key through the foreign key's cascade.
+Each step adds one row, where the step would otherwise rewrite a growing value in the key's row.
+A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+
 Migration `20261117190118_events_owed_keys` adds `events.owed_keys`, nullable `text[]` with no default: what an event still owes once the outbox's last record of it was written (`recordBatch`, `owedKeys`).
 It holds the key of each destination of the event's list that no batch has reached, the owner's topic family spelled `topic-family`, a session's own subject and a role's topic by their subjects, and `any-session` beside them when the event's recipient read failed;
 an event the record publishes owes nothing, an empty array, and so does one the outbox cannot read: a row it read but cannot publish (its list holds a null, or its actor or payload does not decode), and a row that does not scan, which the batch still knows by its id and its owner's `last_seq`, the first two columns it reads;

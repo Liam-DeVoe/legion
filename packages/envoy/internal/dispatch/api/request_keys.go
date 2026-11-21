@@ -79,12 +79,15 @@ import (
 //     delivery sweep resumes it (resumeOwedDeliveries), and a repeat only sooner.
 //   - A write made of steps that each commit in a transaction of their own, the status change
 //     (status_change.go), keeps its progress as its recovery point instead: each step adds what it
-//     made to the point in its own transaction, and once the last step has run the write marks the
-//     point finished. A repeat that finds the point finished, or beside a stored success, is
+//     made in its own transaction - the ids of its events and of the asks it withdrew to the head
+//     on the key's row, and its entry, with its issue as the step answered it, as a row of
+//     request_key_steps - and once the last step has run the write marks the point finished, with
+//     the answer's issue. A repeat that finds the point finished, or beside a stored success, is
 //     answered from it by the route's keyedReplay. A repeat that finds no answer and no mark, its
 //     holder gone, takes the key over as a new attempt, whatever the holder committed, and that
 //     attempt runs only the steps the point does not hold (keyedRoute.resumes). A stored answer
-//     that is not a success is replayed as it was stored.
+//     that is not a success is replayed as it was stored. Every reader of a point reads it with
+//     the steps' entries (recoveryPointRead).
 //   - Every answer to a keyed request the layer judged carries the key back in the Idempotency-Key
 //     response header, a 5xx included: an earlier Dispatch ignores the header and answers without
 //     it, so a client retries a 5xx under its key only where the echo says the key was judged.
@@ -826,10 +829,10 @@ func (held heldRequestKey) storedSuccess() []byte {
 // requestKeyInFlight reports whether login's key is held by a first request still running: a row
 // inside the key's window, unanswered, its lease live - the KEY_IN_FLIGHT claimRequestKey would
 // answer, looked up before the request's body is spooled. recovery is the recovery point that
-// row holds, read only when wantsPoint (a route that shapes its refusals, keyedRoute.refuse) and
-// the row is in flight, and nil otherwise: what a KEY_IN_FLIGHT answered before the key is read
-// again names. It names no digest: the repeat it finds is judged by its digest once its body has
-// arrived (answerDrainedRepeat).
+// row holds, as every reader reads it (recoveryPointRead), read only when wantsPoint (a route
+// that shapes its refusals, keyedRoute.refuse) and the row is in flight, and nil otherwise: what a
+// KEY_IN_FLIGHT answered before the key is read again names. It names no digest: the repeat it
+// finds is judged by its digest once its body has arrived (answerDrainedRepeat).
 func (s *server) requestKeyInFlight(
 	ctx context.Context, login, key string, wantsPoint bool,
 ) (inFlight bool, recovery json.RawMessage, err error) {
@@ -837,7 +840,7 @@ func (s *server) requestKeyInFlight(
 	err = s.deps.Store.Pool.QueryRow(ctx, `
 		select status is null and coalesce(leased_at >= now() - make_interval(secs => $3), false),
 		       case when $5 and status is null and coalesce(leased_at >= now() - make_interval(secs => $3), false)
-		            then recovery end
+		            then `+recoveryPointRead+` end
 		from request_keys
 		where login = $1 and idempotency_key = $2 and created_at >= now() - make_interval(secs => $4)
 	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds(), wantsPoint).Scan(&inFlight, &recovery)
@@ -964,11 +967,12 @@ func (s *server) claimRequestKey(
 	return claim, true
 }
 
-// readHeldRequestKey reads the row login's key holds; found is false when it holds none.
+// readHeldRequestKey reads the row login's key holds, its recovery point as every reader reads it
+// (recoveryPointRead); found is false when it holds none.
 func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (held heldRequestKey, found bool, err error) {
 	err = s.deps.Store.Pool.QueryRow(ctx, `
 		select request_digest, method, path, attempt, status, headers, response,
-		       response is not null, recovery, coalesce((recovery->>'finished')::boolean, false),
+		       response is not null, `+recoveryPointRead+`, coalesce((recovery->>'finished')::boolean, false),
 		       committed_at is not null,
 		       leased_at is null or leased_at < now() - make_interval(secs => $3),
 		       created_at < now() - make_interval(secs => $4)
@@ -1196,14 +1200,15 @@ func (s *server) releaseRequestKey(ctx context.Context, claim requestKeyClaim) {
 // markRequestKeyCommitted is the step every transaction of claim's handler takes before its COMMIT
 // (store.WithBeforeCommit), while running holds: a transaction that wrote - it holds the ROW
 // EXCLUSIVE lock an INSERT, UPDATE, DELETE or MERGE takes on its target table, on any table but
-// request_keys, and holds it until it ends - marks the key committed in that same transaction, so
-// the mark commits with the request's write or not at all, and a repeat that finds the key in
-// flight and its holder gone is answered KEY_COMMITTED instead of running the write again. A
-// transaction that only read marks nothing, and nor does one that only locked rows: a SELECT ...
-// FOR UPDATE is given a transaction id as a write is, but takes ROW SHARE, and a request whose
-// claim's lock committed before its write failed has made nothing a repeat must not make again. A
-// holder whose key a repeat has taken over is refused (errRequestKeyTakenOver) and its write rolls
-// back, so the request's write is made once.
+// request_keys and request_key_steps, the key's own bookkeeping (a status change's point is both),
+// and holds it until it ends - marks the key committed in that same transaction, so the mark
+// commits with the request's write or not at all, and a repeat that finds the key in flight and its
+// holder gone is answered KEY_COMMITTED instead of running the write again. A transaction that only
+// read marks nothing, and nor does one that only locked rows: a SELECT ... FOR UPDATE is given a
+// transaction id as a write is, but takes ROW SHARE, and a request whose claim's lock committed
+// before its write failed has made nothing a repeat must not make again. A holder whose key a
+// repeat has taken over is refused (errRequestKeyTakenOver) and its write rolls back, so the
+// request's write is made once.
 //
 // running ends when the handler returns: a delivery the handler detached commits after its
 // answer, and is no write of the request's.
@@ -1227,7 +1232,7 @@ func markRequestKeyCommitted(claim requestKeyClaim, running *atomic.Bool) store.
 				select txid_current_if_assigned() is not null and exists (
 					select 1 from pg_locks l join pg_class c on c.oid = l.relation
 					where l.pid = pg_backend_pid() and l.locktype = 'relation' and l.mode = 'RowExclusiveLock'
-					  and c.relkind in ('r', 'p') and c.oid <> 'request_keys'::regclass
+					  and c.relkind in ('r', 'p') and c.oid not in ('request_keys'::regclass, 'request_key_steps'::regclass)
 				) as yes
 			), marked as (
 				update request_keys set committed_at = coalesce(committed_at, now())
@@ -1262,13 +1267,27 @@ func outlivingTheClient(r *http.Request) context.Context {
 // send to one session or an issue message made, the broadcast, the comment whose mentions deliver
 // it, and the progress of a status change. A route binds one (bindRequestKeyRecovery) and its
 // keyedReplay reads the same type back (replayRecovered), so the two cannot disagree about the
-// point's shape. A status change writes its point in each step's write phase with a statement
-// that derives the step's event ids in its own SQL (writeIssue), since those ids exist only once
-// the step's batch has run, and marks it finished in a transaction of its own
-// (markStatusChangeFinished).
+// point's shape. A status change's point is a head on the key's row - the ids of the events and
+// the asks its steps made, then the mark and the answer's issue - and one row per step in
+// request_key_steps holding the step's entry, which every reader reads back under changed
+// (recoveryPointRead). Each step writes its part in its own transaction, right after its write
+// phase's batch (writeIssue, through docs.Ledger.AfterWrites), since the step's issue as its write
+// answered it is known only once that batch has run, and the call marks the point finished in a
+// transaction of its own (markStatusChangeFinished).
 type recoveryPoint interface {
 	messageRecovery | broadcastRecovery | commentRecovery | statusChangeRecovery
 }
+
+// recoveryPointRead is a request_keys row's recovery point as every reader of it reads it: the
+// point the row holds, with, for a status change, the entry of each step that committed under
+// changed, in the order the steps committed (request_key_steps, migration 20261121043859). A row
+// that holds no point reads null, and one no step row names - every other route's - reads as it is
+// stored. It is an expression over request_keys, which a statement that reads it names unaliased.
+const recoveryPointRead = `recovery || coalesce((
+		select jsonb_build_object('changed', jsonb_agg(s.entry order by s.id))
+		from request_key_steps s
+		where s.login = request_keys.login and s.idempotency_key = request_keys.idempotency_key
+		having count(*) > 0), '{}')`
 
 // requestKeyRecoveryUpdate is the one statement a recovery point is bound with, run at once
 // (bindRequestKeyRecovery) or queued in a write phase (queueRequestKeyRecovery). It writes the

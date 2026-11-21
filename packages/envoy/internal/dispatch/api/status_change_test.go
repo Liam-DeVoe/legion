@@ -1649,7 +1649,7 @@ func (rig repeatRig) lapse(t *testing.T, key string) {
 
 // statusChangeKeyRow is the request_keys row of a status change's key: the attempt that holds it,
 // the stored answer's status (nil for none), whether its lease is released, and its recovery point
-// (nil for none).
+// as every reader reads it, with the steps' entries (recoveryPointRead; nil for none).
 type statusChangeKeyRow struct {
 	attempt  int
 	status   *int
@@ -1662,7 +1662,7 @@ func (rig repeatRig) keyRow(t *testing.T, key string) statusChangeKeyRow {
 	var row statusChangeKeyRow
 	var recovery []byte
 	if err := rig.database.Pool.QueryRow(context.Background(), `
-		select attempt, status, leased_at is null, recovery from request_keys where idempotency_key = $1
+		select attempt, status, leased_at is null, `+recoveryPointRead+` from request_keys where idempotency_key = $1
 	`, key).Scan(&row.attempt, &row.status, &row.released, &recovery); err != nil {
 		t.Fatalf("read the key %s: %v", key, err)
 	}
@@ -1850,10 +1850,8 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		}
 		rig.requireSweptOnce(t, named, ask)
 		again := rig.keyedStatusChange(t, write, key)
-		now := issueLastSeq(t, rig.database, named)
-		requireStatusChange(t, write.String()+" repeated", again, http.StatusOK, wantAnswer(
-			wantChange{named, "done", "", seq, now}, wantChange{named, "done", "", seq, now},
-		))
+		// The close's sweep ran after the first answer; the replay answers what the first did.
+		requireStatusChange(t, write.String()+" repeated", again, http.StatusOK, projectedStatusChange(t, first).(map[string]any))
 		if !replayed(again) {
 			t.Error("the repeat of the finished call is not marked replayed")
 		}
@@ -1874,15 +1872,14 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		if retitled := rig.send(t, patchOf(named, map[string]any{"title": "Retitled after the lost answer"})); retitled.Code != http.StatusOK {
 			t.Fatalf("retitle %s: status=%d body=%s", named, retitled.Code, retitled.Body.String())
 		}
-		now := issueLastSeq(t, rig.database, named)
 		again := rig.keyedStatusChange(t, write, key)
 		requireStatusChange(t, write.String()+" repeated", again, http.StatusOK, wantAnswer(
-			wantChange{named, "todo", "", seq[named], now},
-			wantChange{named, "todo", "", seq[named], now},
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
 			wantChange{child, "todo", named, seq[child], seq[child] + 2},
 		))
-		if !replayed(again) || decodeBody[statusChangeAnswer](t, again).Issue.Title != "Retitled after the lost answer" {
-			t.Errorf("the repeat answered %s, want the point replayed with the issue as it stands", again.Body.String())
+		if !replayed(again) || decodeBody[statusChangeAnswer](t, again).Issue.Title != "Issue started whose answer was lost" {
+			t.Errorf("the repeat answered %s, want the point replayed with the issue as its step answered it, before the retitle", again.Body.String())
 		}
 		if held := rig.keyRow(t, key); held.attempt != 1 {
 			t.Errorf("the key holds attempt %d, want the first: a marked point is never taken over", held.attempt)
@@ -1899,8 +1896,8 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		rig.lapse(t, key)
 		before := lastEventID(t, rig.database)
 		want := wantAnswer(
-			wantChange{named, "todo", "", seq[named], seq[named] + 2},
-			wantChange{named, "todo", "", seq[named], seq[named] + 2},
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
 			wantChange{child, "todo", named, seq[child], seq[child] + 2},
 		)
 		requireStatusChange(t, write.String()+" repeated", rig.keyedStatusChange(t, write, key), http.StatusOK, want)
@@ -1934,7 +1931,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		}
 		before := lastEventID(t, rig.database)
 		want := wantRefusal("ISSUE_CHANGED", changedSince,
-			wantChange{named, "todo", "", seq[named], issueLastSeq(t, rig.database, named)},
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
 			wantChange{child, "todo", named, seq[child], seq[child] + 2},
 		)
 		requireStatusChange(t, write.String()+" repeated", rig.keyedStatusChange(t, write, key), http.StatusConflict, want)
@@ -1961,6 +1958,8 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 				key := fmt.Sprintf("repeat-closed-%t", refused)
 				write := statusChangeOf(named, map[string]any{"status": "done", "include_children": true, "expected_sequence": seq[named]})
 				resume := rig.stopAfterStep(t, write, key, 1)
+				// The close's step left the issue at this last_seq, which its stored entry holds.
+				closed := issueLastSeq(t, rig.database, named)
 				rig.lapse(t, key)
 				if swept := rig.sweptOf(named); len(swept) != 0 {
 					t.Fatalf("the close of %s was swept %v before its mark", named, swept)
@@ -1969,10 +1968,9 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 					createThreadComment(t, rig.handler, named, map[string]any{"body": "Closed while its call was cut off."}, "alice")
 				}
 				repeat := rig.keyedStatusChange(t, write, key)
-				now := issueLastSeq(t, rig.database, named)
 				changed := []wantChange{
 					{child, "done", named, seq[child], seq[child] + 2},
-					{named, "done", "", seq[named] + 1, now},
+					{named, "done", "", seq[named] + 1, closed},
 				}
 				if refused {
 					requireStatusChange(t, write.String()+" repeated", repeat, http.StatusConflict, wantRefusal("ISSUE_CHANGED", changedSince, changed...))
@@ -2089,11 +2087,10 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 			t.Fatalf("the call left the point %+v, want it marked", held.point)
 		}
 		loseAnswer(t, rig.database, key)
-		now := issueLastSeq(t, rig.database, named)
 		again := rig.keyedStatusChange(t, write, key)
 		requireStatusChange(t, write.String()+" repeated", again, http.StatusOK, wantAnswer(
-			wantChange{named, "todo", "", seq[named], now},
-			wantChange{named, "todo", "", seq[named], now},
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
 			wantChange{child, "todo", named, seq[child], seq[child] + 2},
 		))
 		if held := rig.keyRow(t, key); !replayed(again) || held.attempt != 1 {
@@ -2302,8 +2299,8 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 				t.Errorf("the drained repeat answered %d %s, want 409 %s telling it to ask again", response.StatusCode, got, contracts.IdempotencyKeyInFlight)
 			}
 			requireStatusChange(t, write.String()+" retried", rig.keyedStatusChange(t, write, key), http.StatusOK, wantAnswer(
-				wantChange{named, "todo", "", seq[named], seq[named] + 2},
-				wantChange{named, "todo", "", seq[named], seq[named] + 2},
+				wantChange{named, "todo", "", seq[named], seq[named] + 1},
+				wantChange{named, "todo", "", seq[named], seq[named] + 1},
 				wantChange{child, "todo", named, seq[child], seq[child] + 2},
 			))
 			if stopped := resume(); stopped.Code != http.StatusConflict {
