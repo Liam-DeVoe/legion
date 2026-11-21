@@ -396,8 +396,10 @@ func mapLine(label string, m map[string]string) string {
 // which the route names (holdrecord.RestoreRow signs a held row afresh there). --bootstrap writes
 // the first row, gen 1 released (holdrecord.Client.Bootstrap), and only into an empty log; a log
 // with entries is refused, naming its next gen and `hold restore`. Otherwise it reads the journal
-// first. With --hold of a hold whose `hold set` is done and which has not ended, the row comes back
-// held with its id, so the hold goes on closed. With --hold of a hold lost in prepare (the route
+// first. With --hold of a hold whose journal holds a `hold set` entry, done or not, and which has
+// not ended, the row comes back held with its id, so the hold goes on closed: a set that stopped or
+// crashed after its row move left the row held before its done entry, and the journal cannot tell
+// whether the move happened. With --hold of a hold lost in prepare (no `hold set` entry; the route
 // stores no prepare row), of a hold that has ended (a done `hold release` or `hold abort`), or with
 // no --hold, the row comes back released with no hold id; after prepare the output says the hold's
 // cohort record stays and names `hold abort` or a new `hold prepare`. The route stores a released
@@ -428,7 +430,7 @@ func restore(ctx context.Context, records *holdrecord.Client, o options, stdout 
 		}
 		switch {
 		case endedBy(d) != "":
-		case latestState(d, holdrecord.CommandSet) == stateDone:
+		case latestState(d, holdrecord.CommandSet) != "":
 			phase, holdID = natsgrant.OperatorPhaseHeld, o.holdID
 		default:
 			// A hold lost in prepare: the route stores no prepare row, so the row comes back

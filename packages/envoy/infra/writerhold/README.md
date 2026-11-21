@@ -133,10 +133,14 @@ admitted in it: "the hold has ended: hold release is done".
 
 `hold restore` writes a lost row back at the log's next gen:
 
-- `--hold ID` of a set hold that has not ended: the row comes back `held` with its id.
-- `--hold ID` of a hold lost in `prepare` or that has ended, or no `--hold`: the row comes back
-  `released`. After `prepare`, the output names the cohort record that stays, and the next step,
-  `hold abort` or a new `hold prepare`.
+- `--hold ID` of a hold whose journal holds a `hold set` entry, done or not, and that has not
+  ended: the row comes back `held` with its id. A set that stopped or crashed after its move left
+  the row `held` before its done entry, and the journal cannot tell whether the move happened, so
+  the restore fails closed. The hold's way out then works as before: set's rerun, `hold abort`
+  after a stop, or `hold release` with nothing changed.
+- `--hold ID` of a hold lost in `prepare` (no `hold set` entry) or that has ended, or no `--hold`:
+  the row comes back `released`. After `prepare`, the output names the cohort record that stays,
+  and the next step, `hold abort` or a new `hold prepare`.
 - The broker refuses a `released` row mid-hold (400 `bad_transition`); the refusal names `--hold`.
 - `--bootstrap` writes the first row, and only into an empty log.
 

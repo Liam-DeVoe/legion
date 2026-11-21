@@ -3346,9 +3346,11 @@ disk that is gone (a 404, or another id under its name) is named in its stop, an
 another disk and a new prove follow. Before it releases, it reconciles each daemon store of the
 cutover rows' `daemon/<P>` families (`--daemon-database P=<file>`, repeat) and stops, naming each
 store, unless every one is changed, gone or already consistent. Once `hold release` or `hold abort` is done, no command is
-admitted in that hold. `hold restore --hold ID` puts a row lost in a set hold back held, and
-restores released for a hold that has ended or was lost in prepare, naming `hold abort` or a new
-`hold prepare` for the cohort record that stays; `hold restore` with neither flag writes the
+admitted in that hold. `hold restore --hold ID` puts a row lost in a set hold back held, a hold
+whose journal holds a `hold set` entry, done or not, since a set that stopped or crashed after its
+move left the row held; it restores released for a hold that has ended or was lost in prepare,
+naming `hold abort` or a new `hold prepare` for the cohort record that stays; `hold restore` with
+neither flag writes the
 released row at the log's next gen, refused mid-hold; `hold restore --bootstrap` writes the first
 row into an empty log only. A journal or
 row the broker answers below its floor (an older signed record put back into its database) is
