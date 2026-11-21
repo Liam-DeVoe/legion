@@ -335,18 +335,39 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		read.calls(t, parityCompare, 1)
 	})
 
-	t.Run("13 two results on one branch not the default, the first compare read refused as unseen", func(t *testing.T) {
+	// onIntegrationBranch is the state of row 13: an after_merge check of an issue merged into
+	// integration/x, a branch that is not the repository's default, and two results on it. With
+	// unseen, GitHub refuses every compare read of that branch as unseen, which a writer's read
+	// holds as the pair's unseen hold; without it, GitHub answers that read, and a writer's read
+	// marks the pair seen (delivery's markSeen).
+	onIntegrationBranch := func(t *testing.T, unseen bool) (*parityPair, string) {
+		t.Helper()
 		pair := newParityPair(t, appKey)
 		issue := pair.issue(t, "ROJ", parityAfterMergeCheck)
-		pair.each(func(stack *parityStack) { recordMerge(t, stack.rig.database, parityRepo, 53, issue, "integration/x") })
+		pair.each(func(stack *parityStack) {
+			recordMerge(t, stack.rig.database, parityRepo, 53, issue, "integration/x")
+			// The merge's own write stamps the yes it stores for its merge commit with the wall
+			// clock (delivery.UpsertPullRequestHead), so each stack's stamp is its own. Nothing
+			// reads a yes's checked_at, and the row's clock stands in for it, so row 20 can
+			// compare the stacks' rows whole.
+			if _, err := stack.rig.database.Pool.Exec(context.Background(),
+				`update branch_commits set checked_at = $1 where on_branch`, pair.clock.now()); err != nil {
+				t.Fatalf("set the merge commit's branch answer to the row's clock: %v", err)
+			}
+		})
 		pair.github.answersCompare(func(base, head string) (int, string) {
-			if base == "integration/x" {
+			if base == "integration/x" && unseen {
 				return http.StatusNotFound, ""
 			}
 			return http.StatusOK, "diverged"
 		})
 		pair.record(t, issue, "m1", strayCommit)
 		pair.record(t, issue, "m1", integrationCommit)
+		return pair, issue
+	}
+
+	t.Run("13 two results on one branch not the default, the first compare read refused as unseen", func(t *testing.T) {
+		pair, issue := onIntegrationBranch(t, true)
 
 		read := pair.read(t, issue, "the first read")
 		// The newer result's compare read of integration/x is refused, and the older result is
@@ -503,7 +524,7 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		read.calls(t, parityPulls, 2)
 	})
 
-	t.Run("20 rows 2, 9 and 12's states, read by a read-only token and then by a writer", func(t *testing.T) {
+	t.Run("20 rows 2, 9, 12 and 13's states and row 13's branch answered, read by a read-only token and then by a writer", func(t *testing.T) {
 		for _, state := range []struct {
 			row  string
 			made func(t *testing.T) (*parityPair, string)
@@ -511,6 +532,8 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 			{"row 2's state", pushedPast},
 			{"row 9's state", refusedUnseen},
 			{"row 12's state", lapsedCache},
+			{"row 13's state", func(t *testing.T) (*parityPair, string) { return onIntegrationBranch(t, true) }},
+			{"row 13's branch with its compare read answered", func(t *testing.T) (*parityPair, string) { return onIntegrationBranch(t, false) }},
 		} {
 			pair, issue := state.made(t)
 			// The read itself checks that the read-only read left the rows, the events and the
