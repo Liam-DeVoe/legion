@@ -651,3 +651,160 @@ func TestAnApprovalEventOpensNoPendingStepOnAnAncestorThatLeftR1(t *testing.T) {
 		})
 	}
 }
+
+// A row an earlier release moved still names the ancestor's document in its basis columns and
+// reads back with no basis (record's basisAsWritten): a release before the basis wrote a person's
+// approval over a step pending on ask-100, as a rollback and a roll forward leave it (migration
+// 20261114064234). Such a row is no step on that document. It sorts first among the rows that name
+// the document and changes nothing: the person's approval of the ancestor's version opens the step
+// still pending on the request, and the moved row stays as the earlier release left it.
+func TestAPendingBasisOpensBesideARowAnEarlierReleaseMoved(t *testing.T) {
+	pool, _, apply := registeredPending(t)
+	// LEGION-207 sorts before LEGION-208, whose step waits on ask-100.
+	const moved = "LEGION-207"
+	seedIssue(t, pool, record.Issue{Key: moved, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: moved, Project: "LEGION", Title: "moved", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "S",
+		HandedOver: true, LastDispatchSeq: 1})
+	waiting := pendingBasis()
+	waiting.RegisteredAt = basisEngineNow
+	seedGate(t, pool, record.PendOnBasis(record.DesignGate{Issue: moved, ArtifactID: "artifact-207", LatestVersion: 4}, *waiting, "ask-100"))
+	if _, err := pool.Exec(t.Context(), `update design_gates set approved_version = 4, approved_seq = 50 where issue = $1`, moved); err != nil {
+		t.Fatalf("approve the step of %s as an earlier release does: %v", moved, err)
+	}
+	if gate := gatesOf(t, pool, moved)[record.DesignStepSpec]; gate.Basis != nil {
+		t.Fatalf("the step of %s an earlier release moved = %#v, want it read with no basis", moved, gate)
+	}
+
+	apply("ancestor-approved", ancestorReview(intake.DispatchArtifactApproved, 4, 60, ""))
+
+	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.OnBasis() || !record.GateOpen(gate) || gate.Basis.Version != 4 {
+		t.Fatalf("the spec step of %s = %#v, want it open on version 4 of the ancestor's document", gatedRoot, gate)
+	}
+	if opened := noticesOfKind(t, pool, gatedRoot, "design-approved"); len(opened) != 1 || opened[0].Version != 4 {
+		t.Fatalf("design-approved notices of %s = %#v, want one naming version 4 of the ancestor's document", gatedRoot, opened)
+	}
+	if gate := gatesOf(t, pool, moved)[record.DesignStepSpec]; gate.Basis != nil || gate.ApprovedVersion == nil || *gate.ApprovedVersion != 4 ||
+		gate.ApprovedMark != (record.EventMark{Seq: 50}) {
+		t.Fatalf("the step of %s = %#v, want it as the earlier release left it: approved at version 4 with no basis", moved, gate)
+	}
+	if got := noticesOfKind(t, pool, moved, "design-approved"); len(got) != 0 {
+		t.Fatalf("design-approved notices of %s = %#v, want none", moved, got)
+	}
+}
+
+// A root that leaves the workflow takes its step's wait on the ancestor's request with it
+// (dispatch://INFRA-3320, R3 and R8): the ancestor's architect hears that the root left, and
+// nothing of the root after that. Moved to the backlog or closed, the root keeps its step closed
+// with no basis when the person then approves the ancestor's version, whether that approval comes
+// as its live event or as the pending-basis seed's read of it, which the boot queues for each step
+// still waiting: the root's issue gets no message, its architect no notice, and the ancestor's
+// architect no notice after the one that says the root left. A step still waiting on a root out of
+// the workflow, as one written before a leave ended such waits, opens on neither, and its wait
+// ends with nobody told.
+func TestAPendingBasisOpensNothingOnARootThatLeftTheWorkflow(t *testing.T) {
+	approval := &intake.BasisReview{Mark: record.EventMark{At: basisApprovedAt.Add(24 * time.Hour)}, Actor: basisPerson}
+	for _, place := range []struct {
+		name  string
+		leave func(t *testing.T, pool *pgxpool.Pool, engine *Engine)
+		// told is how many resting-root notices the ancestor's architect holds once the root
+		// stands there: the pending registration's, and the leave's where the engine applied one.
+		told int
+	}{
+		{"moved to the backlog", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+			closeIssue(t, pool, engine, gatedRoot, "", "backlog", 20)
+		}, 2},
+		{"closed", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+			closeIssue(t, pool, engine, gatedRoot, "", "done", 20)
+		}, 2},
+		{"out of the workflow with its step still waiting", func(t *testing.T, pool *pgxpool.Pool, _ *Engine) {
+			leave(t, pool, gatedRoot, phase.Done, "backlog")
+		}, 1},
+	} {
+		for _, delivery := range []struct {
+			name string
+			fact intake.Fact
+		}{
+			{"the approval's live event", ancestorReview(intake.DispatchArtifactApproved, 4, 60, "")},
+			{"the pending-basis seed's read of the approval", intake.PendingBasisRead{Issue: gatedRoot, Step: record.DesignStepSpec, Generation: 1,
+				ArtifactID: gateDoc, BasisArtifactID: basisDoc, BasisVersion: 4, Ask: "ask-100", LatestVersion: 4, Approval: approval,
+				AncestorStatus: "in_progress", AncestorHandedOver: true}},
+		} {
+			t.Run(place.name+", "+delivery.name, func(t *testing.T) {
+				pool, engine, apply := registeredPending(t)
+				place.leave(t, pool, engine)
+				messages := messageBodies(t, pool)
+				if told := noticesOfKind(t, pool, basisAncestor, "resting-root"); len(told) != place.told {
+					t.Fatalf("resting-root notices once the root is %s = %#v, want %d", place.name, told, place.told)
+				}
+
+				apply("ancestor-approved", delivery.fact)
+
+				if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; record.GateOpen(gate) || gate.Basis != nil || gate.RestsOnIssue(basisAncestor) {
+					t.Fatalf("the spec step = %#v, want it closed with no basis, resting on nothing: the root left the workflow before the approval", gate)
+				}
+				if got := messageBodies(t, pool); !slices.Equal(got, messages) {
+					t.Fatalf("Dispatch messages = %q, want %q: nothing is posted on a root out of the workflow", got, messages)
+				}
+				for _, kind := range []record.NoticeKind{"design-approved", "basis-ended"} {
+					if got := noticesOfKind(t, pool, gatedRoot, kind); len(got) != 0 {
+						t.Fatalf("%s notices of the root = %#v, want none: its architect is told nothing of a step out of the workflow", kind, got)
+					}
+				}
+				if told := noticesOfKind(t, pool, basisAncestor, "resting-root"); len(told) != place.told {
+					t.Fatalf("resting-root notices after the approval = %#v, want the %d before it: the ancestor's architect hears nothing of the root after it left", told, place.told)
+				}
+				if got := outboxKindCount(t, pool, gatedRoot, record.OutboxKindGateSeed); got != 1 {
+					t.Fatalf("gate seeds = %d, want the registration's alone", got)
+				}
+			})
+		}
+	}
+}
+
+// A registration that carries a basis on a root that has left the workflow takes no basis
+// (dispatch://INFRA-3320, R3 and R8): the root's architect can still be in the turn the leave
+// suspends, and its register_gate on an ancestor's approval, pending or standing, then lands after
+// the leave. The step is written as a registration with no basis writes it: registered on the
+// root's own document, closed, with no basis and resting on nothing. Nobody is told anything of a
+// basis: the ancestor's architect gets no resting-root notice, the root's issue no message, the
+// root's architect no design-approved notice, and no pending-basis seed is queued.
+func TestARegistrationOnABasisOfARootThatLeftTheWorkflowTakesNoBasis(t *testing.T) {
+	pool := migratedPool(t)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := applyFacts(t, pool, engine)
+	seedGatedTree(t, pool)
+	seedLiveAncestor(t, pool)
+	closeIssue(t, pool, engine, gatedRoot, "", "backlog", 20)
+	messages := messageBodies(t, pool)
+
+	for _, registration := range []struct {
+		name  string
+		id    string
+		basis *record.GateBasis
+		since int64
+	}{
+		{"a pending basis", "register-pending", pendingBasis(), 21},
+		{"an approved basis", "register-on-basis", approvedBasis(), 22},
+	} {
+		if result := apply(registration.id, onBasis(registration.basis, registration.since)); result.Refusal != nil {
+			t.Fatalf("the registration on %s = %+v, want it written with no basis", registration.name, result.Refusal)
+		}
+		gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]
+		if gate.ArtifactID != gateDoc || gate.LatestVersion != 4 || gate.Basis != nil || record.GateOpen(gate) || gate.RestsOnIssue(basisAncestor) {
+			t.Fatalf("the spec step after the registration on %s = %#v, want it registered at version 4 of the root's own document, closed, with no basis and resting on nothing",
+				registration.name, gate)
+		}
+		if got := noticesOfKind(t, pool, basisAncestor, "resting-root"); len(got) != 0 {
+			t.Fatalf("resting-root notices after the registration on %s = %#v, want none: the ancestor's architect is told nothing of a root out of the workflow", registration.name, got)
+		}
+		if got := messageBodies(t, pool); !slices.Equal(got, messages) {
+			t.Fatalf("Dispatch messages after the registration on %s = %q, want %q: nothing is posted on a root out of the workflow", registration.name, got, messages)
+		}
+		if got := noticesOfKind(t, pool, gatedRoot, "design-approved"); len(got) != 0 {
+			t.Fatalf("design-approved notices after the registration on %s = %#v, want none", registration.name, got)
+		}
+		if seeds := pendingSeeds(t, pool, gatedRoot); len(seeds) != 0 {
+			t.Fatalf("pending-basis seeds after the registration on %s = %#v, want none", registration.name, seeds)
+		}
+	}
+}

@@ -1870,9 +1870,16 @@ func (s *Postgres) GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID s
 
 // GatesForBasisArtifact is every gate whose basis names artifactID as the ancestor's document,
 // standing or pending, of every tree, in issue and then step order. PutGate writes the basis
-// columns only while a basis stands or waits, so an ended basis names no document here.
+// columns only while a basis stands or waits, so an ended basis names no document here. The
+// condition is the indexed prefilter, and the row as read decides, as GatesRestingOn's does: a row
+// whose basis an earlier release moved still names the document in basis_artifact_id, but reads
+// back with no basis (basisAsWritten), so it is no step on that document and is left out.
 func (s *Postgres) GatesForBasisArtifact(ctx context.Context, tx pgx.Tx, artifactID string) ([]DesignGate, error) {
-	return gatesWhere(ctx, tx, "basis_artifact_id = $1", artifactID, "on the ancestor's document "+artifactID)
+	gates, err := gatesWhere(ctx, tx, "basis_artifact_id = $1", artifactID, "on the ancestor's document "+artifactID)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(gates, func(gate DesignGate) bool { return gate.Basis == nil }), nil
 }
 
 // GatesByPendingAsk is every gate pending on ask, the ancestor's open approval request, of every

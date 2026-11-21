@@ -258,6 +258,49 @@ func TestARegistrationOnAnAncestorAcceptedSinceItsReadIsRefused(t *testing.T) {
 	}
 }
 
+// register_gate reads the ancestor open outside any transaction, so the ancestor's close_root can
+// commit between that read and the registration's commit. close_root writes the ancestor's record
+// done and queues Dispatch's status write, so the daemon's mirror of Dispatch and the status the
+// record last read from Dispatch both show the ancestor open until Dispatch's event of the close
+// comes back. The registration reads the record's own status in its transaction, finds the close,
+// and is refused as a registration on an ancestor accepted since its read is: nothing is recorded,
+// and its event is left unmarked. TestARegistrationOnAnAncestorAcceptedSinceItsReadIsRefused is
+// the same race with the ancestor's sign-off.
+func TestARegistrationOnAnAncestorClosedSinceItsReadIsRefused(t *testing.T) {
+	pool := migratedPool(t)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := applyFacts(t, pool, engine)
+	seedGatedTree(t, pool)
+	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Admitted, Generation: 1, Status: "in_progress",
+		DispatchStatus: "in_progress", Rank: "T", HandedOver: true, LastDispatchSeq: 1})
+	seedTreeLifecycle(t, pool, basisAncestor)
+	if result := closeRootNow(t, pool, "close", basisAncestor); result.Refusal != nil {
+		t.Fatalf("the ancestor's close_root = %+v, want it closed", result.Refusal)
+	}
+	if closed := storedIssue(t, pool, basisAncestor); closed.Status != record.DoneStatus || closed.DispatchStatus != "in_progress" {
+		t.Fatalf("the ancestor after its close_root has status %q and Dispatch status %q, want done and in_progress: Dispatch's event of the close has not come back",
+			closed.Status, closed.DispatchStatus)
+	}
+
+	refusedWith(t, apply("register-on-basis", onBasis(approvedBasis(), 6)), "BASIS_ACCEPTED", "The daemon records "+basisAncestor+" done")
+
+	if gates := gatesOf(t, pool, gatedRoot); len(gates) != 0 {
+		t.Fatalf("the root's gates = %#v, want none: the refused registration records nothing", gates)
+	}
+	var asks, rows, marked int
+	if err := pool.QueryRow(t.Context(), `select (select count(*) from root_asks where issue = $1), (select count(*) from outbox where issue = $1),
+		(select count(*) from processed_events where event_id = 'register-on-basis')`, gatedRoot).Scan(&asks, &rows, &marked); err != nil {
+		t.Fatalf("read what the refused registration left: %v", err)
+	}
+	if asks != 0 || rows != 0 || marked != 0 {
+		t.Fatalf("the refused registration left %d mirrored requests, %d outbox rows and %d marked events, want none", asks, rows, marked)
+	}
+	if got := recordedRoot(t, pool).ViewOf; got != "" {
+		t.Fatalf("the root's view fact = %q, want none written", got)
+	}
+}
+
 // A registration on the ancestor's open approval request leaves the step closed and pending on that
 // request, declares no hand-back although the root's own request is open on the person, and keeps
 // the root at admitted in its slot. It queues the pending-basis seed and the resting-root notice of

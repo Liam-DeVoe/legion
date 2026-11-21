@@ -92,8 +92,9 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		}
 		// A root whose step rests on an ancestor's approval ends here the wait that ancestor's
 		// sign-off and close hold for it (dispatch://INFRA-3320, R8), whichever way it leaves, so
-		// that ancestor's architect is told (tellRestingLeft).
-		if err := e.tellRestingLeft(ctx, tx, issue, status); err != nil {
+		// that ancestor's architect is told, and a step of it that waits on an ancestor's approval
+		// request ends that wait with nobody told, so no approval opens it later (leaveBases).
+		if err := e.leaveBases(ctx, tx, issue, status); err != nil {
 			return err
 		}
 		if held, err := record.OperatorHoldsTree(ctx, e.store, tx, issue); err != nil || held {

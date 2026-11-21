@@ -142,13 +142,16 @@ func Accepted(issue Issue) bool {
 // BasisAcceptance says why ancestor no longer meets the daemon's half of R1's first condition for
 // a basis (dispatch://INFRA-3320), as the daemon's own store shows it now, or "" where it still
 // does: what the daemon last read of Dispatch shows it done or retro (AcceptedStatus), in its
-// mirror of Dispatch's issues or in its record of the ancestor, or the daemon records it in its
-// retro or its merge (Accepted). Where neither the mirror nor the record knows the ancestor,
-// nothing the daemon holds says that it is accepted. A root a person moved to the backlog or to
-// icebox stands at phase done while its tree lingers (workflow's beginLinger), and R1 counts
-// backlog and icebox as not accepted, so the phase alone says nothing: a real close is the status
-// Dispatch shows. The answer is a sentence's subject and verb, naming the ancestor and what holds
-// it ("Dispatch shows LEGION-100 done").
+// mirror of Dispatch's issues or in its record of the ancestor; the record's own status is done
+// (DoneStatus); or the daemon records it in its retro or its merge (Accepted). Where neither the
+// mirror nor the record knows the ancestor, nothing the daemon holds says that it is accepted. A
+// root a person moved to the backlog or to icebox stands at phase done while its tree lingers
+// (workflow's beginLinger), and R1 counts backlog and icebox as not accepted, so the phase alone
+// says nothing: a real close is the status Dispatch shows, or the record's own status, which the
+// daemon's own close of a root (workflow's closeRoot) writes done in the transaction that queues
+// the status write to Dispatch, so a reader inside a later transaction sees the close before
+// Dispatch's event of it comes back to the mirror. The answer is a sentence's subject and verb,
+// naming the ancestor and what holds it ("Dispatch shows LEGION-100 done").
 //
 // It answers the daemon's record of the ancestor too, nil where it records none, and nil where the
 // mirror alone answered, which reads no record: a caller that reads more of the record where the
@@ -156,10 +159,10 @@ func Accepted(issue Issue) bool {
 //
 // It is the one reading of that half of the condition inside a transaction of the daemon's own: a
 // registration on a basis reads it again under the lock every fact applies under (workflow's
-// gateRegistered), so it and an ancestor's sign-off, whose hold reads the roots that rest on the
-// ancestor (workflow's RestingRoots), apply in one order; the pending-basis seed's read and the
-// person's approval as its live event read it before either opens a step; and a step carried onto
-// a child keeps a basis or a rest only on an ancestor it passes (admit's carriedGate).
+// gateRegistered), so it and an ancestor's sign-off or close, whose hold reads the roots that rest
+// on the ancestor (workflow's RestingRoots), apply in one order; the pending-basis seed's read and
+// the person's approval as its live event read it before either opens a step; and a step carried
+// onto a child keeps a basis or a rest only on an ancestor it passes (admit's carriedGate).
 func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string) (string, *Issue, error) {
 	mirrored, err := store.DispatchIssuesOf(ctx, tx, []string{ancestor})
 	if err != nil {
@@ -179,6 +182,8 @@ func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor strin
 		return "", nil, nil
 	case AcceptedStatus(recorded.DispatchStatus):
 		return fmt.Sprintf("Dispatch shows %s %s", ancestor, recorded.DispatchStatus), recorded, nil
+	case recorded.Status == DoneStatus:
+		return fmt.Sprintf("The daemon records %s %s", ancestor, recorded.Status), recorded, nil
 	case Accepted(*recorded):
 		return fmt.Sprintf("The daemon records %s in %s", ancestor, StandsAt(*recorded)), recorded, nil
 	}
