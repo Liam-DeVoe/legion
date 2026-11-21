@@ -63,6 +63,10 @@ const (
 	// outageDropWithin bounds the wait for a held frame's drop: the limit, a pass of the hold, a
 	// read's timeout on either side of it, and the box's load.
 	outageDropWithin = 30 * time.Second
+	// outageDropLate is how long after its limit a held frame may still be dropped: the relay's
+	// loop takes the drop up between pulls, and a read it makes inline ends at the oldest held
+	// frame's limit at the latest (readBeforeDrop).
+	outageDropLate = 1500 * time.Millisecond
 	// outageArrival bounds the wait for a frame the relay sends at once.
 	outageArrival = 10 * time.Second
 	// outageTeam and outageChannel are the Slack event's: a channel no private project lists, so
@@ -240,23 +244,27 @@ func readTier(r *http.Request, client *http.Client, url, bearer string) ([]byte,
 	return body, nil
 }
 
-// outageCase is one way the read's chain fails, and its end.
+// outageCase is one way the read's chain fails, and its end. firstRead is how long the read that
+// first finds the project unknown takes under it: the frame is held from that read's end, so its
+// limit runs from then.
 type outageCase struct {
-	name  string
-	start func(*outageChain)
-	end   func(*outageChain)
+	name      string
+	start     func(*outageChain)
+	end       func(*outageChain)
+	firstRead time.Duration
 }
 
 func outageCases() []outageCase {
 	return []outageCase{
-		{"Dispatch stopped", func(c *outageChain) { c.dispatch.stop() }, func(c *outageChain) { c.dispatch.start() }},
-		{"the broker stopped", func(c *outageChain) { c.broker.stop() }, func(c *outageChain) { c.broker.start() }},
+		{"Dispatch stopped", func(c *outageChain) { c.dispatch.stop() }, func(c *outageChain) { c.dispatch.start() }, 0},
+		{"the broker stopped", func(c *outageChain) { c.broker.stop() }, func(c *outageChain) { c.broker.start() }, 0},
 		{"Dispatch answering 500",
 			func(c *outageChain) { c.dispatch.answerStatus(http.StatusInternalServerError) },
-			func(c *outageChain) { c.dispatch.answerStatus(0) }},
+			func(c *outageChain) { c.dispatch.answerStatus(0) }, 0},
+		// Nothing is held when its frame arrives, so the first read waits out k7ReadTimeout.
 		{"the broker answering after twice k7ReadTimeout",
 			func(c *outageChain) { c.broker.answerAfter(2 * k7ReadTimeout) },
-			func(c *outageChain) { c.broker.answerAfter(0) }},
+			func(c *outageChain) { c.broker.answerAfter(0) }, k7ReadTimeout},
 	}
 }
 
@@ -566,10 +574,16 @@ func (s *outageScene) outage(t *testing.T, phase outagePhase, c outageCase) {
 		}
 		if s.rig.counter(t, heldDroppedUndecided) > dropsBefore {
 			dropped = time.Since(stored)
-			// A drop before the limit loses a frame a read could still have decided.
-			if dropped < outageUndecided {
-				s.find(t, "%s: %s's frame held for E was dropped %s after it was stored, before the hold's limit of %s",
+			// A drop before the limit loses a frame a read could still have decided; one long
+			// after it holds a frame past the bound R9's outage exception states.
+			limit := c.firstRead + outageUndecided
+			if dropped < limit {
+				s.find(t, "%s: %s's frame held for E was dropped %s after it was stored, before the hold's limit of %s after its first read",
 					name, phase.held, dropped.Round(time.Millisecond), outageUndecided)
+			}
+			if dropped > limit+outageDropLate {
+				s.find(t, "%s: %s's frame held for E was dropped %s after it was stored, later than %s after the hold's limit of %s after its first read",
+					name, phase.held, dropped.Round(time.Millisecond), outageDropLate, outageUndecided)
 			}
 			break
 		}
