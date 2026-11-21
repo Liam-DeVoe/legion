@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1071,10 +1072,14 @@ const (
 var owedRowWrite = regexp.MustCompile("(?is)(insert into|update)\\s+document_block_versions\\b[^`]*")
 
 // requireOnlyTheFenceWritesTheOwedRow reads the source tree and fails on any statement that
-// writes a revision into document_block_versions outside the fenced writer. A statement that
-// sets the revision to null owes the document an index and asserts nothing, so it is allowed
-// wherever it is; one that writes a number is the fence's alone, and a backfill or a repair
-// that wrote one would be caught here rather than in production.
+// writes a revision into document_block_versions outside the fenced writer. Each part of a
+// statement is held on its own (writesTheRevision): an insert's column list, and the assignments
+// of an update's set or of an insert's `on conflict ... do update set`; the statement writes a
+// revision where any part does. A set that assigns the revision null owes the document an index
+// and asserts nothing, so it is allowed wherever it is, and it excuses no other part of its
+// statement: an insert whose column list names `version` is the fence's alone even where its
+// conflict arm sets `version = null`. A backfill or a repair that wrote one would be caught here
+// rather than in production.
 func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 	t.Helper()
 	found := 0
@@ -1091,10 +1096,7 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 				// window pass clears `windows_owed_at` on a row the fence already wrote,
 				// which says nothing about which pass owns the version. What this scan
 				// holds a statement to is what it sets, not which table it touches, which
-				// is the same rule the null case below reads.
-				continue
-			}
-			if strings.Contains(statement, "version = null") {
+				// is the same rule that lets a part setting `version = null` stand anywhere.
 				continue
 			}
 			found++
@@ -1151,21 +1153,163 @@ func requireNoRevisionTestOutsideTheFence(t *testing.T) {
 	}
 }
 
-// writesTheRevision reports whether a statement of document_block_versions assigns its
-// `version` column: an update that sets it, or an insert that names it among its columns. A
-// statement that touches the row for any other reason writes no revision, so the fence has
+// writesTheRevision reports whether a statement of document_block_versions writes a revision
+// into its `version` column, reading each part of the statement on its own; the statement writes
+// one where any part does. `version` is that column alone: store_version, windows_owed_at and
+// the row's other columns write none.
+//
+//   - An insert writes one where its column list names `version`, whatever value fills it; its
+//     values and its select list are not read. The fence's is the one Go statement of the tree
+//     whose column list names `version`, and the inserts that write it as null, the triggers of
+//     migrations 0122 and 20261108070000, are SQL migrations, which this scan does not read. An
+//     insert with no column list, which fills every column by position, or whose list cannot be
+//     read, is held to write one.
+//   - An update's set, and an insert's `on conflict ... do update set`, write one in each
+//     assignment to `version` of anything but the literal null. A parenthesized target list that
+//     names `version` writes one whatever it assigns, and a set or an assignment that cannot be
+//     read is held to write one.
+//
+// A statement that touches the row for any other reason writes no revision, so the fence has
 // nothing to say about where it lives.
 func writesTheRevision(statement string) bool {
 	lowered := strings.ToLower(statement)
-	if strings.Contains(lowered, "insert into") {
-		return strings.Contains(lowered, "version")
+	rest := lowered[strings.Index(lowered, "document_block_versions")+len("document_block_versions"):]
+	if !strings.HasPrefix(lowered, "insert") {
+		set, found := sqlTopLevel(rest, "set")
+		return !found || setWritesTheRevision(rest[set+len("set"):])
 	}
-	for _, assignment := range []string{"version =", "version="} {
-		if strings.Contains(lowered, assignment) {
+	columns, listed := sqlParenthesized(rest[len(sqlInsertAlias.FindString(rest)):])
+	if !listed || slices.ContainsFunc(sqlList(columns), isVersionColumn) {
+		return true
+	}
+	conflict, found := sqlTopLevel(rest, "conflict")
+	if !found {
+		return false
+	}
+	rest = rest[conflict:]
+	arm, found := sqlTopLevel(rest, "set", "nothing")
+	if !found {
+		return true
+	}
+	return strings.HasPrefix(rest[arm:], "set") && setWritesTheRevision(rest[arm+len("set"):])
+}
+
+// sqlInsertAlias is the alias an insert may give its table before its column list.
+var sqlInsertAlias = regexp.MustCompile(`^\s*as\s+\w+`)
+
+// setWritesTheRevision reports whether the assignments of a set, s being the lowered statement
+// after its `set` and the list running to its from, where or returning, write a revision
+// (writesTheRevision).
+func setWritesTheRevision(s string) bool {
+	for _, assignment := range sqlList(s, "from", "where", "returning") {
+		target, value, found := strings.Cut(assignment, "=")
+		if !found {
+			return true
+		}
+		target = strings.TrimSpace(target)
+		if !strings.HasPrefix(target, "(") {
+			if isVersionColumn(target) && strings.TrimSpace(value) != "null" {
+				return true
+			}
+			continue
+		}
+		names, listed := sqlParenthesized(target)
+		if !listed || slices.ContainsFunc(sqlList(names), isVersionColumn) {
 			return true
 		}
 	}
 	return false
+}
+
+// isVersionColumn reports whether name, trimmed, is the column `version`.
+func isVersionColumn(name string) bool {
+	return strings.Trim(name, `"`) == "version"
+}
+
+// sqlParenthesized is the inside of the parenthesis s opens, after any spaces, or false where s
+// opens none or the parenthesis does not close.
+func sqlParenthesized(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "(") {
+		return "", false
+	}
+	end, _ := sqlTopLevel(s[1:])
+	if 1+end == len(s) || s[1+end] != ')' {
+		return "", false
+	}
+	return s[1 : 1+end], true
+}
+
+// sqlList is the items of the list s begins with, split at its top-level commas and each
+// trimmed. The list runs to the first of ends at its top level, or to where s ends
+// (sqlTopLevel).
+func sqlList(s string, ends ...string) []string {
+	end, _ := sqlTopLevel(s, ends...)
+	s = s[:end]
+	var items []string
+	for {
+		comma, found := sqlTopLevel(s, ",")
+		items = append(items, strings.TrimSpace(s[:comma]))
+		if !found {
+			return items
+		}
+		s = s[comma+1:]
+	}
+}
+
+// sqlTopLevel returns the offset in s of the first of words that stands at the top level of s -
+// outside parentheses, quotes and `--` comments, and as a whole word where it is one - and true.
+// Where none does before s ends, at a `;`, at a `)` that closes a parenthesis opened before s, or
+// at the end of s, it returns the offset of that end and false.
+func sqlTopLevel(s string, words ...string) (int, bool) {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '\'' || c == '"':
+			end := strings.IndexByte(s[i+1:], c)
+			if end < 0 {
+				return len(s), false
+			}
+			i += end + 1
+		case strings.HasPrefix(s[i:], "--"):
+			end := strings.IndexByte(s[i:], '\n')
+			if end < 0 {
+				return len(s), false
+			}
+			i += end
+		case c == '(':
+			depth++
+		case depth == 0 && (c == ')' || c == ';'):
+			return i, false
+		case c == ')':
+			depth--
+		case depth == 0:
+			for _, word := range words {
+				if sqlWordAt(s, i, word) {
+					return i, true
+				}
+			}
+		}
+	}
+	return len(s), false
+}
+
+// sqlWordAt reports whether word stands at offset i of s, not run into a word before or after
+// it where word itself starts or ends with a word character.
+func sqlWordAt(s string, i int, word string) bool {
+	if !strings.HasPrefix(s[i:], word) {
+		return false
+	}
+	if sqlWordByte(word[0]) && i > 0 && sqlWordByte(s[i-1]) {
+		return false
+	}
+	end := i + len(word)
+	return !sqlWordByte(word[len(word)-1]) || end == len(s) || !sqlWordByte(s[end])
+}
+
+// sqlWordByte reports whether c can be part of an SQL word: a letter, a digit, `_` or `$`.
+func sqlWordByte(c byte) bool {
+	return c == '_' || c == '$' || '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
 // dispatchSourceFiles is every non-test Go file of the Dispatch tree and of the commands that
