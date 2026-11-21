@@ -51,9 +51,10 @@
 #               makes a project private, and the run passes when those two do.
 #   listed      bob and carol find each object of PRIV, and carol's PRIV token too while PRIV is
 #               public.
-#   confined    bob, and carol's PRIV token while PRIV is public, find nothing of PUB, no person
-#               (once PRIV is private) and no agent outside PRIV, and no direct message that is not
-#               their own.
+#   confined    bob finds nothing of PUB, no person (once PRIV is private) and no agent outside
+#               PRIV, and no direct message that is not his own. carol's PRIV token, a full
+#               member's, lists PUB beside PRIV while PRIV is public: a full member's list decides
+#               only which private projects it sees (R3).
 #   walk        for alice, carol's token that lists no project and the shared token ("the unseeing
 #               callers"): every GET row of GET /api/v1 whose path names an object, filled once with
 #               PRIV's objects and once with ids that do not exist, each kind of object as the row's
@@ -330,10 +331,8 @@ fi
 # The callers PRIV's list lets in, as they stand now: carol's PRIV token only while PRIV is public,
 # since the switch revoked it.
 listed_now=("${listed_callers[@]}")
-confined_now=(bob carol-priv-token)
 if [ "$priv_private" = 1 ]; then
   listed_now=(bob carol)
-  confined_now=(bob)
 fi
 
 begin listed
@@ -356,10 +355,11 @@ note "$found of $((${#listed_now[@]} * ${#object_reads[@]})) reads of PRIV's obj
 pass
 
 begin confined
-# bob, and carol's PRIV token while PRIV is public: PUB's objects answer as missing, and the lists
-# hold PRIV alone.
+# bob: PUB's objects answer as missing, and the lists hold PRIV alone. A restricted member's list
+# narrows what that person sees; a full member's list decides only which private projects it
+# sees, so carol's PRIV token sees PUB too (below).
 : >"$work/fill-empty"
-for caller in "${confined_now[@]}"; do
+for caller in bob; do
   for path in "${object_reads[@]}"; do
     pub=$(resolve main "${path//\{P\}/PUB}")
     none=${path//\{P\}/ZZNONE}
@@ -426,7 +426,16 @@ for caller in "${confined_now[@]}"; do
   esac
   judge "$status" "$problem"
 done
-note "bob and carol's PRIV token read PUB's objects, the projects, the people, the agents and a direct message"
+note "bob read PUB's objects, the projects, the people, the agents and a direct message"
+# carol's PRIV token, a full member's, sees PUB, which it does not list, beside PRIV. Once PRIV is
+# private the switch has revoked it (the private section holds it to 401).
+if [ "$priv_private" = 0 ]; then
+  send main carol-priv-token GET /api/v1/projects
+  keys=$(jq -c '[.[].key]' "$work/body" 2>/dev/null || echo "not a list: $(head -c 200 "$work/body")")
+  problem=''
+  [ "$keys" = '["PRIV","PUB"]' ] || problem="carol-priv-token GET /api/v1/projects: lists $keys, want [\"PRIV\",\"PUB\"]"
+  judge "$status" "$problem"
+fi
 pass
 
 if [ "$priv_private" = 1 ]; then
