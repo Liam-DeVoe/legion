@@ -148,7 +148,7 @@ func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *
 }
 
 // readListAnswers is what each route of the read list answers the mounted walk below at its probe
-// path, which names a project with no architecture source and an issue Legion never ran: its
+// path, which names a project with no architecture source and an issue Dispatch does not hold: its
 // handler's own answer, which a request the gate refused could not carry. A route added to the
 // list adds its answer here.
 var readListAnswers = map[string]struct {
@@ -156,14 +156,14 @@ var readListAnswers = map[string]struct {
 	code   string
 }{
 	"GET /api/v1/projects/{key}/architecture": {http.StatusNotFound, "SOURCE_NOT_FOUND"},
-	"GET /api/v1/issues/{key}/steps":          {http.StatusOK, ""},
+	"GET /api/v1/issues/{key}/steps":          {http.StatusNotFound, "NOT_FOUND"},
 	"GET /api/v1/projects/{key}/plans":        {http.StatusNotFound, "PROJECT_NOT_FOUND"},
 }
 
 // TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone walks the server register mounted,
 // test hooks in, with a read-only token: every row the list does not name and GET /ws/live answer
 // 403 READ_ONLY_TOKEN; GET /ws/doc/{room}, which reads no broker token at all, answers 401; and
-// the listed route answers its handler's own 404 SOURCE_NOT_FOUND for a project with no source.
+// each listed route answers its handler's own refusal of its probe path (readListAnswers).
 // A row is counted once its assertions have run, and the count is held to the rows the
 // registered server mounts, as the walk above is.
 func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
@@ -507,7 +507,7 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	issueKey := decodeBody[struct {
 		Key string `json:"key"`
 	}](t, issue).Key
-	putStepOK(t, rig.handler, issueKey, "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0b", implementerStart(daemonSession(project)))
+	putStepOK(t, rig.handler, issueKey, "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0b", implementerStart(daemonSessionOf(project)))
 	marked.take()
 	request = caller.presenting(t, http.MethodGet, "/api/v1/issues/"+issueKey+"/steps", token, nil)
 	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
@@ -522,7 +522,7 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	if closed := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+issueKey, map[string]any{"status": "done"}); closed.Code != http.StatusOK {
 		t.Fatalf("close %s: status=%d body=%s", issueKey, closed.Code, closed.Body.String())
 	}
-	putPlanRecordOK(t, rig.handler, issueKey, "0c4b2f7e-3d1a-4b8c-9e6f-1a2b3c4d5e6f", defaultPlanBody(daemonSession(project), 1))
+	putPlanRecordOK(t, rig.handler, issueKey, "0c4b2f7e-3d1a-4b8c-9e6f-1a2b3c4d5e6f", defaultPlanBody(daemonSessionOf(project), 1))
 	marked.take()
 	request = caller.presenting(t, http.MethodGet, "/api/v1/projects/"+project+"/plans", token, nil)
 	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))

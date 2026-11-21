@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -80,6 +81,20 @@ func TestTheControllersFreshSessionOfARoleNamesTheClaimOfItsStepsAgent(t *testin
 
 	wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
 		unsettledRefusal(keyed, supervise.StateLaunching, wantFreshSessionReaches))
+}
+
+// wantFreshSessionRefusal holds a refusal to its status, its code and its sentence: the shape
+// both doors give the refusals the fresh session writes itself.
+func wantFreshSessionRefusal(t *testing.T, recorder *httptest.ResponseRecorder, status int, code, message string) {
+	t.Helper()
+	if recorder.Code != status {
+		t.Fatalf("status = %d, want %d; body %s", recorder.Code, status, recorder.Body)
+	}
+	var failure Failure
+	decodeInto(t, recorder, &failure)
+	if failure.Code != code || failure.Error != message {
+		t.Fatalf("refusal = %+v, want %q and %q", failure, code, message)
+	}
 }
 
 // movesTheTesterStep writes the tester's row of LEGION-209 as a later entry of its step leaves it

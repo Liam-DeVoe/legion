@@ -29,7 +29,7 @@ const (
 	askLeftLine      = "outbox update ask finished without a publish: the claim no longer records its round"
 )
 
-// askRunner is an outbox runner as phase_ended_test.go's unit case builds one — a project, a
+// askRunner is an outbox runner as hook_prompt_test.go's unit case builds one — a project, a
 // record, a publisher and a log — with the claim supervisor the executor reads the round from. A
 // row that names no claim reads the claim of its role's worker from the issue's phases rows, which
 // the record holds none of, so it is the role's own claim. Each role in rounds gets a claim on
@@ -99,7 +99,8 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 
 // A role no live session holds — its pod was released, or its session has not registered — is
 // not woken to be asked: the round ends at its bound whether or not the role answers. The row
-// finishes with one Info line and writes no published line.
+// finishes with one Info line and writes no published line. The claim here records no ask mark,
+// and an undelivered ask writes none; podupdate_undelivered_ask_test.go holds the sweep's ask again.
 func TestPodUpdateAskNobodyHoldsFinishesTheRow(t *testing.T) {
 	publisher := &outboxPublisher{err: fmt.Errorf("publish to the tester's topic: %w", notify.ErrNoHolder)}
 	runner, logs := askRunner(t, publisher, map[claim.Role]string{claim.RoleTester: askedRound})
@@ -184,11 +185,11 @@ type wakeCountingTrees struct {
 	takes int
 }
 
-func (w *wakeCountingTrees) TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at time.Time) (bool, error) {
+func (w *wakeCountingTrees) TakePodWake(ctx context.Context, project, issue string, token claim.Token, role claim.Role, kind string, at time.Time, mark int64) (bool, error) {
 	w.mu.Lock()
 	w.takes++
 	w.mu.Unlock()
-	return w.outboxTrees.TakePodWake(ctx, project, issue, role, kind, at)
+	return w.outboxTrees.TakePodWake(ctx, project, issue, token, role, kind, at, mark)
 }
 
 func (w *wakeCountingTrees) taken() int {
@@ -201,7 +202,7 @@ func (w *wakeCountingTrees) taken() int {
 // no live session, so its topic answers notify.ErrNoHolder and the row finishes there: no pod
 // wake is taken, no process is resumed, and the claim stays released. The round ends at its
 // bound whether or not that role answers. The negative control is c-one-channel's: an executor
-// that called wakeForDelivery first, as phaseEnded does, takes a wake and resumes the claim here.
+// that called wakeForDelivery first, as hookPrompt does, takes a wake and resumes the claim here.
 func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
@@ -233,7 +234,7 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	if got := rig.machine.Claim(); !got.Released() {
 		t.Errorf("the claim after the ask = %s by %s, want it still released", got.State, got.SuspendedBy)
 	}
-	if _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || open {
+	if _, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || open {
 		t.Errorf("the role's open resume after the ask = %t, %v; want none", open, err)
 	}
 }

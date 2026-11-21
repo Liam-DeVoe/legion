@@ -34,15 +34,24 @@ import (
 // its ready, at the claim's current generation, on the session the claim keeps under its role.
 func readyClaimOf(t *testing.T, sup *supervisor, token claim.Token, role claim.Role) {
 	t.Helper()
+	readyClaimAs(t, sup, token, role, "ses-"+string(role))
+}
+
+// readyClaimAs is readyClaimOf on session, whose file is named for it: the daemon holds a session's
+// id and its file's path and name to the first claim of the project that recorded them
+// (supervise's holdRecorded), so a test with two claims of one role names the second's session
+// itself, and so its file.
+func readyClaimAs(t *testing.T, sup *supervisor, token claim.Token, role claim.Role, session string) {
+	t.Helper()
 	machine, ok := sup.Machine(token)
 	if !ok {
 		t.Fatalf("no machine for %s", token)
 	}
 	generation := machine.Claim().Generation
-	session := "ses-" + string(role)
+	file := "/tmp/" + strings.TrimPrefix(session, "ses-") + ".jsonl"
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: token, Generation: generation},
-		supervise.RequestRegister{Claim: token, Generation: generation, Session: session, SessionFile: "/tmp/" + string(role) + ".jsonl"},
+		supervise.RequestRegister{Claim: token, Generation: generation, Session: session, SessionFile: file},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: session},
 	} {
 		if err := machine.Handle(context.Background(), ev); err != nil {
@@ -53,6 +62,12 @@ func readyClaimOf(t *testing.T, sup *supervisor, token claim.Token, role claim.R
 
 // launchedClaim creates role's claim on issue of tree, launches it and makes its agent ready.
 func launchedClaim(t *testing.T, sup *supervisor, tree, issue string, role claim.Role) claim.Token {
+	t.Helper()
+	return launchedClaimAs(t, sup, tree, issue, role, "ses-"+string(role))
+}
+
+// launchedClaimAs is launchedClaim with its agent registering session (readyClaimAs).
+func launchedClaimAs(t *testing.T, sup *supervisor, tree, issue string, role claim.Role, session string) claim.Token {
 	t.Helper()
 	token := mustClaimToken(t, issue, role)
 	machine, _, err := sup.Create(context.Background(), supervise.Claim{
@@ -65,7 +80,7 @@ func launchedClaim(t *testing.T, sup *supervisor, tree, issue string, role claim
 	if err := machine.Handle(context.Background(), supervise.RequestSpawn{Claim: token}); err != nil {
 		t.Fatalf("spawn %s: %v", token, err)
 	}
-	readyClaimOf(t, sup, token, role)
+	readyClaimAs(t, sup, token, role, session)
 	return token
 }
 
@@ -93,6 +108,28 @@ func adoptionsOf(rt *fake.Runtime, token claim.Token) []string {
 	return made
 }
 
+// resumeTaskOf is the resume task engine sends the worker of key's phase, as the record holds
+// the issue now: workflow's Engine.ResumeTask, the one place every resume is composed, read in a
+// transaction it rolls back.
+func resumeTaskOf(t testing.TB, pool *store.Pool, engine *workflow.Engine, key string) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the read of the resume task of %s: %v", key, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	issue, err := record.NewStore().Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		t.Fatalf("read the record of %s: %+v, %v", key, issue, err)
+	}
+	task, err := engine.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		t.Fatalf("compose the resume task of %s: %v", key, err)
+	}
+	return task
+}
+
 // The boot's start of a daemon-suspended phase owner resumes it by rule. If that owner can never
 // launch, the resume spends its launch budget and the claim fails; the start row then finishes
 // rather than retrying the failed claim with fresh budgets (RequestRetry), so the owner is launched
@@ -115,8 +152,10 @@ func TestABootRuleResumeThatSpendsTheLaunchBudgetFinishes(t *testing.T) {
 	clock := time.Now()
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion",
 		now: func() time.Time { return clock }}
+	// The row the boot's resume by rule writes, carrying the task the engine composes for it.
+	engine := workflow.New(records, workflow.Config{Project: issue.Project}, quietLogger())
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleTester,
-		Generation: 1, Phase: phase.Testing, Task: workflow.ResumePhaseTask(issue, workflow.WorkingCopy(issue, nil), ""), ResumeTask: true, RuleResume: true}, clock))
+		Generation: 1, Phase: phase.Testing, Task: resumeTaskOf(t, pool, engine, issue.Key), ResumeTask: true, RuleResume: true}, clock))
 
 	for tick := range 6 {
 		if err := runner.RunOnce(context.Background()); err != nil {
@@ -487,12 +526,18 @@ func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T
 // than one running tree.
 func seedWorkflowTree(t *testing.T, dsn, project string, root record.Issue, claims ...supervise.Claim) {
 	t.Helper()
-	ctx := context.Background()
-	st, err := store.Open(ctx, dsn)
+	st, err := store.Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
 	defer st.Close()
+	seedWorkflowTreeIn(t, st, project, root, claims...)
+}
+
+// seedWorkflowTreeIn is seedWorkflowTree through st, a store the test already holds open.
+func seedWorkflowTreeIn(t *testing.T, st *store.Store, project string, root record.Issue, claims ...supervise.Claim) {
+	t.Helper()
+	ctx := context.Background()
 	records := record.NewStore()
 	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {

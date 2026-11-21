@@ -33,7 +33,7 @@ func TestALaterVersionThatWouldRenameAKeyIsRefusedAsAPlan(t *testing.T) {
 	key, gen := root.Key, root.Generation
 	mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer:a", "tester:a", "reviewer"))))
 	move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
-	if result := apply("stop", ownersStop(t, key, "a")); result.Refusal != nil {
+	if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 	}
 	before := planStandingOf(t, pool, engine, key, gen)

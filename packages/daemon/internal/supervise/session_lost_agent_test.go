@@ -19,7 +19,7 @@ func TestALostSessionOfAKeyedAgentStartsItFreshForItsKey(t *testing.T) {
 	const freshSession, freshFile = "ses_fresh", "/sessions/ses_fresh.jsonl"
 	h := newBareHarness(t)
 	var reported []Claim
-	h.deps.SessionLost = func(c Claim, _ string) { reported = append(reported, c) }
+	h.deps.SessionLost = func(c Claim, _ SessionLoss, _ string) { reported = append(reported, c) }
 	keyed := queuedClaim()
 	keyed.Role = claim.RoleTester
 	h.store.PutClaim(h.ctx, keyed)

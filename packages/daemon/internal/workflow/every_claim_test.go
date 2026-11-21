@@ -78,9 +78,11 @@ func seedRoleClaims(t *testing.T, pool *pgxpool.Pool, keys ...string) {
 // implementer, and the fresh tester of version 1, `…-tester`, which ran and was stopped, still
 // holds its own. A walk over every claim of the issue writes one row for each stored claim, each
 // naming it with its stored role, so each gets its close; rows by role reached the claim of the
-// worker on the tester's step twice and left `…-tester` with none. A walk that leaves out the
-// production check's role leaves out the claim that the check's own close, which names that role,
-// reaches: the claim of the worker on the role's step.
+// worker on the tester's step twice and left `…-tester` with none. Each role whose step's claim is
+// none of those gets one row naming no claim, which reaches a claim that comes up after the walk.
+// A walk that leaves out the production check's role leaves out the claim that the check's own
+// close, which names that role, reaches: the claim of the worker on the role's step, by name and
+// by role.
 func TestEveryClaimWritesARowForEachStoredClaim(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
@@ -117,10 +119,21 @@ func TestEveryClaimWritesARowForEachStoredClaim(t *testing.T) {
 		return everyClaimRows(t, pool, issue.Key)
 	}
 
-	if got, want := walk("issue_close", ""), []everyClaimRow{{"issue_close", "tester", keyed}, {"issue_close", "tester", fresh}}; !slices.Equal(got, want) {
-		t.Fatalf("the issue's close wrote %+v, want %+v: one row for each stored claim, naming it", got, want)
+	others := func(op string, roles ...claim.Role) []everyClaimRow {
+		var rows []everyClaimRow
+		for _, role := range roles {
+			rows = append(rows, everyClaimRow{op, string(role), ""})
+		}
+		return rows
 	}
-	if got, want := walk("suspend", claim.RoleTester), []everyClaimRow{{"suspend", "tester", fresh}}; !slices.Equal(got, want) {
-		t.Fatalf("the walk that leaves out the check's role wrote %+v, want %+v: the claim that role's close reaches left out, the other written", got, want)
+	want := append([]everyClaimRow{{"issue_close", "tester", keyed}, {"issue_close", "tester", fresh}},
+		others("issue_close", claim.RoleArchitect, claim.RolePlanner, claim.RoleReviewer, claim.RoleMerger)...)
+	if got := walk("issue_close", ""); !slices.Equal(got, want) {
+		t.Fatalf("the issue's close wrote %+v, want %+v: one row for each stored claim, naming it, and one for each other role", got, want)
+	}
+	want = append([]everyClaimRow{{"suspend", "tester", fresh}},
+		others("suspend", claim.RoleArchitect, claim.RolePlanner, claim.RoleReviewer, claim.RoleMerger)...)
+	if got := walk("suspend", claim.RoleTester); !slices.Equal(got, want) {
+		t.Fatalf("the walk that leaves out the check's role wrote %+v, want %+v: the claim that role's close reaches left out, by name and by role", got, want)
 	}
 }

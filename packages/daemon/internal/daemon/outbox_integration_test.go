@@ -280,9 +280,6 @@ func (d *blockingDispatch) Approval(context.Context, string) (dispatch.Approval,
 func (d *blockingDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *blockingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *blockingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
@@ -290,6 +287,9 @@ func (d *blockingDispatch) PutGatedSteps(context.Context, string, []string) erro
 	return nil
 }
 func (d *blockingDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+func (d *blockingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
 func (d *blockingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
@@ -473,9 +473,6 @@ func (d *refusingDispatch) Approval(context.Context, string) (dispatch.Approval,
 func (d *refusingDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *refusingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *refusingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
@@ -485,6 +482,9 @@ func (d *refusingDispatch) PutGatedSteps(context.Context, string, []string) erro
 func (d *refusingDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
 	return nil
 }
+func (d *refusingDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
 func (d *refusingDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
@@ -492,11 +492,13 @@ func (d *refusingDispatch) PutDesignGates(context.Context, string, []dispatch.De
 	return nil
 }
 
-// boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies.
+// boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies,
+// and keeps each message posted to it, in order.
 type boardDispatch struct {
 	noArtifacts
 	status   string
 	failures int
+	posted   []string
 }
 
 func (d *boardDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
@@ -522,7 +524,10 @@ func (d *boardDispatch) HandOver(context.Context, dispatch.Issue, string) error 
 func (d *boardDispatch) ReleaseClaim(context.Context, string) error {
 	return errors.New("boardDispatch releases no claim")
 }
-func (d *boardDispatch) PostMessage(context.Context, string, string) error { return nil }
+func (d *boardDispatch) PostMessage(_ context.Context, _ string, body string) error {
+	d.posted = append(d.posted, body)
+	return nil
+}
 func (d *boardDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
@@ -535,12 +540,12 @@ func (d *boardDispatch) Approval(context.Context, string) (dispatch.Approval, er
 func (d *boardDispatch) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *boardDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProject, error) {
-	return nil, nil
-}
 func (d *boardDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
 func (d *boardDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+func (d *boardDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
 	return nil
 }
 func (d *boardDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {

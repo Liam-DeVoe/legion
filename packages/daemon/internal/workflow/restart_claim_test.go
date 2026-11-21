@@ -77,7 +77,7 @@ func TestARestartNamingAClaimRestartsNoStepAnotherClaimWorks(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
-		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 		}
 		result := applyFacts(t, pool, engine)("retry", intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision, Claim: keyed})
@@ -91,4 +91,15 @@ func TestARestartNamingAClaimRestartsNoStepAnotherClaimWorks(t *testing.T) {
 			t.Fatalf("%s stands in %s, want it still held for its stopped task", root.Key, issue.Phase)
 		}
 	})
+}
+
+// token is the claim token of issue's role in the project these tests use, as a string. This
+// branch's tests name a keyed agent's claim by it.
+func token(t *testing.T, issue string, role claim.Role) string {
+	t.Helper()
+	got, err := claim.NewToken("legion", issue, role)
+	if err != nil {
+		t.Fatalf("token of %s %s: %v", issue, role, err)
+	}
+	return string(got)
 }

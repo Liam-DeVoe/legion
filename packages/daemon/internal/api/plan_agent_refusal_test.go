@@ -28,7 +28,7 @@ func TestARegisteredVersionThatWouldRenameAKeyIsAnswered409(t *testing.T) {
 		issues:    map[string]dispatch.Issue{"LEGION-208": {Key: "LEGION-208", LastSeq: 7}},
 		documents: map[string]string{planDoc: "LEGION-208"},
 		approvals: map[string]dispatch.Approval{planDoc: {State: "none", LatestVersion: 9}},
-		plans:     map[string]dispatch.PlanDocument{},
+		plans:     map[string]dispatch.DocumentVersion{},
 	}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,

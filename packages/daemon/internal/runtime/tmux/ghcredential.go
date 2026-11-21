@@ -4,11 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -58,26 +56,36 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // (ghconfig.WriteBundle), recreating a root that is gone, and only while the pane it rendered for
 // is still watched, judged again under the launch lock (writeWatchedBundle): the claim's gh
 // directory is the claim's, for every pane it runs in, and a relaunch of a re-roled claim writes
-// its new role's bundle there. A repository that cannot be read, a
-// render that fails, or a render whose default is not the owner of the pane's own repository is
-// logged and the pane keeps its last tokens until the next tick. A controller whose project has
+// its new role's bundle there. A repository that cannot be read, a render that fails, or a render
+// whose default is not the directory the pane's own repository routes to by the bundle's pairs
+// (ghconfig.RouteDir, which the bundle's default is chosen by: the repository's owner, or the
+// owner a configured pair moved it to) is logged and the pane keeps its last tokens until the
+// next tick. A controller whose project has
 // no GitHub owner to mint for (runtime.ErrNoGitHubOwner) launched with gh acting as nobody, its
 // gh directory empty, and has nothing to refresh: it is passed over without a word, as the
 // sandbox runtime passes over such a controller's pod. A runtime with no credential function
 // (Options.GitHubCredential nil: a daemon with no GitHub Apps) wrote no pane any gh files, so it
 // has nothing to refresh.
+//
+// The walk builds each bundle once (appauth.Bundles): the daemon's function answers from the App
+// role the pane's claim role runs as (appauth.AppRoleFor) and the pane's repository alone, and
+// each build opens with a live read of every page of its App's installations under a fresh JWT
+// (appauth.GitHubCredential), so the panes of one issue running as one App cost the tick one
+// read rather than one apiece. The memo is the walk's and is dropped at its end, so every tick
+// reads GitHub for what its bundles hold (INFRA-2543 R2).
 func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	if r.gitHubCredential == nil {
 		return
 	}
+	bundles := appauth.NewBundles(r.gitHubCredential)
 	for _, entry := range r.trackedProcesses() {
 		token := entry.locator.Claim
 		role, ok, err := r.paneRole(ctx, entry)
-		failed := func(err error) {
+		refreshFailed := func(err error) {
 			r.log.Warn("tmux runtime: github credential refresh failed", "claim", token, "role", role, "err", err)
 		}
 		if err != nil {
-			failed(err)
+			refreshFailed(err)
 			continue
 		}
 		if !ok {
@@ -87,7 +95,7 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		if entry.issue == "" && role != claim.RoleController {
 			recorded, err := r.claimRepository(ctx, token)
 			if err != nil {
-				failed(fmt.Errorf("the claim's repository: %w", err))
+				refreshFailed(fmt.Errorf("the claim's repository: %w", err))
 				continue
 			}
 			repo = recorded
@@ -96,24 +104,25 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		if role == claim.RoleController {
 			bundle, err = r.controllerCredential(ctx, entry.ghDefault)
 		} else {
-			bundle, err = r.gitHubCredential(ctx, role, repo)
+			bundle, err = bundles.Bundle(ctx, role, repo)
 		}
 		if role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner) {
 			continue
 		}
 		if err != nil {
-			failed(err)
+			refreshFailed(err)
 			continue
 		}
-		owner := strings.ToLower(repo.Owner())
-		if owner != "" && bundle.Default != owner {
-			failed(fmt.Errorf("the credential's default owner %s is not the pane's own owner %s", bundle.Default, owner))
-			continue
+		if !repo.IsZero() {
+			if routed, _, _ := ghconfig.RouteDir(bundle.Pairs, repo.Owner(), repo.Name()); bundle.Default != routed {
+				refreshFailed(fmt.Errorf("the credential's default owner %s is not the pane's own owner %s", bundle.Default, routed))
+				continue
+			}
 		}
 		root := runtime.GHConfigDir(r.stateDir, token)
 		changed, watched, err := r.writeWatchedBundle(entry, root, bundle)
 		if err != nil {
-			failed(fmt.Errorf("write the github credential: %w", err))
+			refreshFailed(fmt.Errorf("write the github credential: %w", err))
 			continue
 		}
 		if !watched {
@@ -171,26 +180,4 @@ func (r *Runtime) paneRole(ctx context.Context, entry trackedProcess) (claim.Rol
 	}
 	role, err := runtime.SlotRole(ctx, r.actsAs, token, stored)
 	return role, err == nil, err
-}
-
-// emptyGitHubBundle makes root an empty 0700 directory, removing whatever an earlier launch wrote
-// there: the gh directory of a controller whose gh acts as nobody (runtime.ErrNoGitHubOwner), which
-// GH_CONFIG_DIR still names so no gh configuration elsewhere is read in its place.
-func emptyGitHubBundle(root string) error {
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return err
-	}
-	if err := os.Chmod(root, 0o700); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
-			return err
-		}
-	}
-	return nil
 }

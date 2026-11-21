@@ -89,14 +89,16 @@ func claimsOfRows(t *testing.T, rig *idleRig, kind, op string) []claim.Token {
 }
 
 // releaseTwoClaims runs the idle rule over the rig's pod and requires the release it queues: the
-// save, a stop for each of the two live claims and the teardown. A pod the rule held is no case of
-// either test below, so the hold it recorded is named.
+// save, a stop for each of the two live claims and the teardown. The publication of the role
+// holders that the claims' own writes queue is no row of the release, and is left out. A pod the
+// rule held is no case of either test below, so the hold it recorded is named.
 func releaseTwoClaims(t *testing.T, rig *idleRig) {
 	t.Helper()
 	rig.w.releaseIdlePod(context.Background(), rig.issue.Key)
 	want := []string{string(record.OutboxKindIssueBundle), string(record.OutboxKindSupervise) + ":release",
 		string(record.OutboxKindSupervise) + ":release", string(record.OutboxKindIssueRelease)}
-	if got := rig.rows(t); !slices.Equal(got, want) {
+	got := slices.DeleteFunc(rig.rows(t), func(kind string) bool { return kind == string(record.OutboxKindRoleHoldersPublish) })
+	if !slices.Equal(got, want) {
 		t.Fatalf("the release queued %v, want %v; the holds recorded: %+v", got, want, rig.records(t).Holds)
 	}
 }

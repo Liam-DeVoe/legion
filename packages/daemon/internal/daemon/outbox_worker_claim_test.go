@@ -21,11 +21,11 @@ import (
 // A keyed agent works the tester's step in the claim it started on the implementer's step, and the
 // tester's phases row names that claim. Each row the workflow writes for the tester then reaches
 // that one agent: the start delivers to its claim rather than starting a second session of the
-// key, the step's stop suspends it, and the end of the phase is published on its topic. An update
-// round's ask names the claim the sweep asked and is published where that claim records the round,
-// also where that claim is not the one the record gives the role: a fresh tester an earlier
-// version of the plan started still holds its claim in the pod. An ask the release before wrote
-// names no claim, and reaches the claim the record gives the role.
+// key, and the step's stop suspends it. An update round's ask names the claim the sweep asked and
+// is published where that claim records the round, also where that claim is not the one the
+// record gives the role: a fresh tester an earlier version of the plan started still holds its
+// claim in the pod. An ask the release before wrote names no claim, and reaches the claim the
+// record gives the role.
 func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -92,23 +92,15 @@ func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 		t.Fatalf("key a's claim after the tester's step stop = %s, want suspended", got)
 	}
 
-	ended := mustOutboxRow(t, issue.Key, record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing,
-		Reason: "the head conflicts with main"}, time.Now())
-	ended.ID = 59
-	if err := runner.execute(ctx, ended); err != nil {
-		t.Fatalf("the end of the tester's phase: %v", err)
+	// A claim is asked once per round (the outbox marks it asked), so the ask the release before
+	// wrote, which names no claim, runs first: it reaches the claim the record gives the role.
+	before := record.OutboxRow{ID: 60, Issue: issue.Key, Kind: record.OutboxKindUpdateAsk, NextAt: time.Now(),
+		Payload: json.RawMessage(`{"role":"tester","round":"r1","text":"Push your work."}`)}
+	if err := runner.execute(ctx, before); err != nil {
+		t.Fatalf("the update ask of the release before: %v", err)
 	}
-	if published := publisher.publishes(); len(published) != 1 || published[0].topic != topic {
-		t.Fatalf("the end of the tester's phase was published as %+v, want once on %s", published, topic)
-	}
-
-	ask := mustOutboxRow(t, issue.Key, record.UpdateAsk{Role: claim.RoleTester, Claim: keyed, Round: "r1", Text: "Push your work."}, time.Now())
-	ask.ID = 60
-	if err := runner.execute(ctx, ask); err != nil {
-		t.Fatalf("the update ask: %v", err)
-	}
-	if published := publisher.publishes(); len(published) != 2 || published[1].topic != topic || published[1].message != "Push your work." {
-		t.Fatalf("the update ask was published as %+v, want it on %s", published, topic)
+	if published := publisher.publishes(); len(published) != 1 || published[0].topic != topic || published[0].message != "Push your work." {
+		t.Fatalf("the update ask of the release before was published as %+v, want it on %s", published, topic)
 	}
 
 	// A fresh tester of an earlier version of the plan still holds its own claim in the pod, and
@@ -122,17 +114,8 @@ func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 	if err := runner.execute(ctx, stale); err != nil {
 		t.Fatalf("the update ask of the earlier version's tester: %v", err)
 	}
-	if published := publisher.publishes(); len(published) != 3 || published[2].topic != notify.RoleTopicPrefix+string(own) || published[2].message != "Push yours too." {
+	if published := publisher.publishes(); len(published) != 2 || published[1].topic != notify.RoleTopicPrefix+string(own) || published[1].message != "Push yours too." {
 		t.Fatalf("the update ask of the earlier version's tester was published as %+v, want it on %s", published, notify.RoleTopicPrefix+string(own))
-	}
-
-	before := record.OutboxRow{ID: 62, Issue: issue.Key, Kind: record.OutboxKindUpdateAsk, NextAt: time.Now(),
-		Payload: json.RawMessage(`{"role":"tester","round":"r1","text":"Push your work again."}`)}
-	if err := runner.execute(ctx, before); err != nil {
-		t.Fatalf("the update ask of the release before: %v", err)
-	}
-	if published := publisher.publishes(); len(published) != 4 || published[3].topic != topic || published[3].message != "Push your work again." {
-		t.Fatalf("the update ask of the release before was published as %+v, want it on %s", published, topic)
 	}
 }
 

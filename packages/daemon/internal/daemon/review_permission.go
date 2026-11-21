@@ -159,7 +159,7 @@ const tokenRefusedWait = 5 * time.Second
 // when the mint failed, since it is the one the mint was made for and so the one its caller's log
 // lines and refusals name.
 //
-// The mapping is needed because the daemon hears both names of a configured pair
+// The rename rule is needed because the daemon hears both names of a configured pair
 // (heardRepositories): a review GitHub published before a transfer and processed after it — the
 // daemon down or behind across the transfer, or its delivery redelivered across it — arrives
 // under the name the repository moved away from, whose owner's installation no longer covers it.
@@ -175,7 +175,7 @@ const tokenRefusedWait = 5 * time.Second
 // other reason is returned as is.
 func (w *workflowRuntime) reviewAppClient(ctx context.Context, repository ghrepo.Repository) (githubrest.Client, appauth.Lease, ghrepo.Repository, error) {
 	serving := w.repositories.serving(repository)
-	lease, err := w.tokens.Token(ctx, appauth.Review, serving)
+	lease, err := w.tokens.Token(ctx, appauth.Review, serving.Owner())
 	if err != nil {
 		var transient *appauth.TransientError
 		if errors.As(err, &transient) {

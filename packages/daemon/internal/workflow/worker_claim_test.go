@@ -31,7 +31,7 @@ func TestAReviewStuckNoticeNamesTheReviewersAgent(t *testing.T) {
 		Decision: &record.ReviewDecision{State: "approved", Head: "head-42"}}
 	seedPhase(t, pool, reviewer)
 
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		addressed, err := engine.addressRoles(ctx, tx, root.Project, []roleRecipient{{issue: root.Key, role: claim.RoleReviewer, row: root.Key}}, nil)
 		if err != nil {
 			return err
@@ -91,7 +91,7 @@ func TestASuspendedAgentOnItsSecondRoleIsResumedAndWatched(t *testing.T) {
 	t.Run("the boot resumes it", func(t *testing.T) {
 		pool := seed(t, "suspended", "daemon")
 		engine := testEngine(config.DesignGateRootIssues, nil)
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			owners, err := engine.suspendedPhaseOwners(ctx, tx)
 			if err != nil {
 				return err
@@ -110,7 +110,7 @@ func TestASuspendedAgentOnItsSecondRoleIsResumedAndWatched(t *testing.T) {
 	t.Run("the silence watch reads its run", func(t *testing.T) {
 		pool := seed(t, "ready", "")
 		engine := testEngine(config.DesignGateRootIssues, nil)
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			read, err := engine.phaseWorkerRecord(ctx, tx, entryIssue, 1, claim.RoleTester)
 			if err != nil {
 				return err

@@ -19,8 +19,8 @@ func (e *Engine) openBeneath(ctx context.Context, tx pgx.Tx, issue record.Issue)
 	return record.OpenBeneath(issue, members), nil
 }
 
-// ChildUnderAcceptedParentNotice is what the tree's architect is told when a person moves an
-// issue to todo beneath an ancestor whose head the daemon has already accepted
+// ChildUnderAcceptedParentNotice is what the architect above the child is told when a person
+// moves an issue to todo beneath an ancestor whose head the daemon has already accepted
 // (record.AcceptedAncestor): the head the last step of the ancestor's task passed, which is the
 // reviewed head only where that task has a reviewer step. The issue is recorded, and left
 // standing at admitted until that ancestor closes, because work entering the workflow beneath it

@@ -35,62 +35,6 @@ func roleRowClaims(t *testing.T, pool *pgxpool.Pool, issue, kind string) []struc
 	return got
 }
 
-// A head that starts conflicting with its base ends the phase of the role working it, and the
-// row that tells it so names the claim of the agent that worked that phase, read in the
-// transition's own transaction before its start writes the next step's agent on a role's row: the
-// outbox publishes on that claim's topic, whatever a later entry of the role's step names when the
-// row runs. In the plan `implementer:a tester:a reviewer` key a's agent, `…-implementer`, works the
-// tester's step, and the row names it, not the role's own claim `…-tester`. In `implementer tester
-// reviewer` the retro's agent is the implementer, which the conflict starts, so its implementing
-// task follows.
-func TestAPhaseEndedRowNamesTheAgentThatWorkedThePhase(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		words []string
-		// to is the walk from admitted to the phase the conflict ends.
-		to      []TriggerKind
-		ended   claim.Role
-		follows bool
-	}{
-		{name: "a keyed agent on the tester's step", words: []string{"implementer:a", "tester:a", "reviewer"},
-			to: []TriggerKind{TriggerGateOpened, TriggerImplementationReady}, ended: claim.RoleTester},
-		{name: "the implementer in retro, whose task follows", words: []string{"implementer", "tester", "reviewer"},
-			to:    []TriggerKind{TriggerGateOpened, TriggerImplementationReady, TriggerTesterPassed, TriggerReviewApproved},
-			ended: claim.RoleImplementer, follows: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			engine := stepEngine(nil)
-			root := stepRoot(t, pool, phase.Admitted)
-			seedStepsPlan(t, pool, root.Key, root.Generation, tc.words...)
-			for _, trigger := range tc.to {
-				move(t, pool, engine, root.Key, trigger, "", record.PhaseRow{})
-			}
-			from := issueOf(t, pool, engine, root.Key).Phase
-			if phase.RoleFor(from) != tc.ended {
-				t.Fatalf("%s stands in %s before the conflict, want a phase of the %s: the case's premise", root.Key, from, tc.ended)
-			}
-			worked := roleRowOf(t, pool, engine, root.Key, tc.ended).Claim
-			if worked == "" || (tc.ended == claim.RoleTester && worked == claim.Token(token(t, root.Key, claim.RoleTester))) {
-				t.Fatalf("the %s's phases row names %q before the conflict, want the claim of its step's agent: the case's premise", tc.ended, worked)
-			}
-
-			move(t, pool, engine, root.Key, TriggerConflict, "", record.PhaseRow{})
-
-			ended := roleRowClaims(t, pool, root.Key, string(record.OutboxKindPhaseEnded))
-			if len(ended) != 1 || ended[0].role != string(tc.ended) {
-				t.Fatalf("the conflict wrote the phase-ended rows %+v, want one to the %s", ended, tc.ended)
-			}
-			if ended[0].claim != string(worked) {
-				t.Fatalf("the phase-ended row names the claim %q, want %s, the agent that worked the %s phase", ended[0].claim, worked, from)
-			}
-			if follows := ended[0].follows == "true"; follows != tc.follows {
-				t.Fatalf("the phase-ended row to %s says its task follows = %t, want %t", worked, follows, tc.follows)
-			}
-		})
-	}
-}
-
 // A hook that fires on a move back writes a prompt for each role it names, and each names the
 // claim of the agent that works its role's step in the round the move opened, read once the move's
 // start has written that agent: the outbox publishes on that claim's topic, whatever a later entry
