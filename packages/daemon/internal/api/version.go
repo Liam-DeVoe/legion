@@ -3073,13 +3073,13 @@ package api
 // and `shapedAnswersContract` and `repositoriesLiveContract` stay 193 and 202. Read the base's own
 // number and every open pull request again at the next merge rather than from this line.)
 //
-// 214: an experiment sets how each new issue is done. `POST /legion/v1/plans/register` and `POST
+// 216: an experiment sets how each new issue is done. `POST /legion/v1/plans/register` and `POST
 // /legion/v1/tasks/stop` answer `409 PLAN_NOT_TAKEN` for a recorded issue that an experiment drew
 // into an arm whose `plan` is `default`: a code and a sentence that names the issue's variant and
 // experiment, with no `reasons`. Legion takes no plan from that issue's owner, and so no stop of
 // one of its tasks; register_plan's answer leaves the registration unspent, so the same call sent
 // again gets the same answer. The code is a value of the refusal's `code`, which no reader
-// enumerates, so a plugin below 214 reads the code and its sentence as it reads every other one,
+// enumerates, so a plugin below 216 reads the code and its sentence as it reads every other one,
 // and no answer's shape moves for it. This entry also names what the two routes answer and 211's
 // entry leaves out: register_plan's `400 INVALID_ISSUE`, `400 INVALID_ARTIFACT_ID`,
 // `400 INVALID_VERSION` and `500 DISPATCH_UNAVAILABLE`, and stop_task's
@@ -3090,18 +3090,20 @@ package api
 // issues are done set at the issue's draw (`owner` or `default`), as the draw recorded it, and
 // absent where the arm named none. The issue runs on that group for its whole life, and the
 // project's file can change an arm's `plan` or rename the arm after the draw, so a reader takes
-// the group from the record and never from `settings`. The records of 214 hold
-// `issues.*.assignments.*.plan`, and no record below 214 does: a caller whose contract (the one it
-// states, else its pod's) is below 214 is served every assignment without the key (the band of
+// the group from the record and never from `settings`. The records of 216 hold
+// `issues.*.assignments.*.plan`, and no record below 216 does: a caller whose contract (the one it
+// states, else its pod's) is below 216 is served every assignment without the key (the band of
 // shaping.go's stateNarrowings, `withoutAssignmentPlans`). The key
 // `settings.projects.<KEY>.experiments.<name>.variants[].plan` came with it: a key below
 // `projects`, which no reader types, so no record holds it and nothing is served down
 // (answers.go's typedSettings).
-// (This entry takes 214, the lowest number above 211, the number of the branch it stands on, that
-// no open pull request declared: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for
-// each of the 416 open pull requests, made between 2026-11-21T16:34:38Z and 16:35:13Z, read all
-// 416 and found 211 declared by #4611, 212 by #4065, #4592, #4596 and #4771, 213 by #4030 and
-// #4553, and nothing above 213. From this entry the last number of answers.go's
+// (This entry takes 216, the lowest number above 211, the number of the branch it stands on, that
+// no open pull request declared and no other branch of this change holds: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 413 open pull requests, made between
+// 2026-11-21T17:54:36Z and 17:55:04Z, read all 413 and found 211 declared by #4611, 212 by #4065,
+// #4596 and #4771, 213 by #4030 and #4553, 214 by #4592, and nothing above 214, and 215 is held
+// for another branch of this change that has no pull request yet. From this entry the last number
+// of answers.go's
 // SupportedContracts is `api.assignmentPlanContract`. Read the base's own number and every open
 // pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 214
+const DaemonAPIVersion = 216

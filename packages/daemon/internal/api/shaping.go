@@ -992,7 +992,7 @@ const pauseContract = 178
 const repositoriesLiveContract = 202
 
 // assignmentPlanContract is the daemon contract that added each assignment's `plan`, the group an
-// experiment's arm set at the issue's draw (version.go's 214). A plugin before it is served every
+// experiment's arm set at the issue's draw (version.go's 216). A plugin before it is served every
 // assignment without the key (withoutAssignmentPlans): its reader strips a key it does not name,
 // so the band is what keeps the group from a caller that did not ask for it rather than what keeps
 // such a caller reading. The rest of each row stays as assignmentsContract serves it.
@@ -1001,7 +1001,7 @@ const repositoriesLiveContract = 202
 // that constant, and the contract the key arrived at stays where it is. It moves only with this
 // change's own number, and it is the last number of answers.go's SupportedContracts, which names
 // the constant rather than its number for that reason.
-const assignmentPlanContract = 214
+const assignmentPlanContract = 216
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
