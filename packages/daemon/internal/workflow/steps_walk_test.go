@@ -192,8 +192,9 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 // assertNoPlanRowsRunTodaysSteps fails unless an issue with no plan rows that engine moves out of
 // implementing records today's steps of the task default at today's places: its
 // implementer's end at step 2 and its tester's start at step 3. The implementer's run started
-// under no count of this release (EndUncountedStep), so its end is the record of count 0; the
-// tester's start is the first of its place.
+// under no count of this release, so the daemon's boot before the move opens it at the count 0
+// (OpenUncountedRuns) and its end is the record of count 0; the tester's start is the first of its
+// place.
 func assertNoPlanRowsRunTodaysSteps(t *testing.T, engine *Engine) {
 	t.Helper()
 	pool := migratedPool(t)

@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// heldBeneath is the open issue beneath the parent holdByPlan holds for its children.
+// heldBeneath is the open issue beneath the parent holdForChildren holds for its children.
 const heldBeneath = "LEGION-10"
 
 // ownersArchitect is the architect of key's own claim, the owner a plan these tests give names.
