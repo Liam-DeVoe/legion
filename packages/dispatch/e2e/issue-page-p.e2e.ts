@@ -3144,6 +3144,13 @@ test("a change request sent from the header leaves the focus in the header", asy
       ).toBeVisible();
       await open();
       await expect(dialog, `${from} opened no Request changes`).toBeVisible();
+      // The dialog moves the focus into its text box a frame after it is drawn (`useDialog`).
+      // Keys typed before then go to the header's control that still holds the focus: from
+      // Approve, the space presses Approve and the request is approved, not answered with changes.
+      await expect(
+        dialog.getByRole("textbox", { name: "Reason" }),
+        `Request changes opened from ${from} took no focus into its text box`
+      ).toBeFocused();
       await page.keyboard.type("One change.");
       await dialog.getByRole("button", { exact: true, name: "Request changes" }).focus();
       await page.keyboard.press("Enter");
@@ -3249,6 +3256,12 @@ test("a change request sent from the header's Request changes leaves the focus o
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Request changes" });
     await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    // The dialog moves the focus into its text box a frame after it is drawn (`useDialog`);
+    // keys typed before then go to the header's Request changes.
+    await expect(
+      dialog.getByRole("textbox", { name: "Reason" }),
+      "Request changes took no focus into its text box"
+    ).toBeFocused();
     await page.keyboard.type("One change.");
     await dialog.getByRole("button", { exact: true, name: "Request changes" }).focus();
     await page.keyboard.press("Enter");
@@ -3296,6 +3309,12 @@ test("a change request sent after the header's actions went leaves the focus on 
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Request changes" });
     await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    // The dialog moves the focus into its text box a frame after it is drawn (`useDialog`);
+    // keys typed before then go to the header's Request changes.
+    await expect(
+      dialog.getByRole("textbox", { name: "Reason" }),
+      "Request changes took no focus into its text box"
+    ).toBeFocused();
     await page.keyboard.type("One change.");
 
     await reviewArtifact(seeded.specArtifactId, { state: "approved" }, { login: "bob" });
@@ -3434,6 +3453,12 @@ test("Request changes in its dialog pressed again by Enter before the change req
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", { name: "Request changes" });
     await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    // The dialog moves the focus into its text box a frame after it is drawn (`useDialog`);
+    // keys typed before then go to the header's Request changes.
+    await expect(
+      dialog.getByRole("textbox", { name: "Reason" }),
+      "Request changes took no focus into its text box"
+    ).toBeFocused();
     await page.keyboard.type("One change.");
     const submit = dialog.getByRole("button", { exact: true, name: "Request changes" });
     await submit.focus();
