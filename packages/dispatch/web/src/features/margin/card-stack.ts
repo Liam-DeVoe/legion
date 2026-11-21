@@ -12,7 +12,7 @@ const CARD_GAP = 8;
  * region leaves the mark's offset in the document's own layout, which is all a placement may
  * depend on. One read per layout pass: the answer is the same for every card in it.
  */
-export function regionOrigin(region: HTMLElement): number {
+function regionOrigin(region: HTMLElement): number {
   let scrolled = 0;
   const root = region.ownerDocument.documentElement;
   for (let node = region.parentElement; node !== null && node !== root; node = node.parentElement) {
@@ -29,8 +29,10 @@ export interface CardStack {
   readonly height: number;
   /** The ref of the region the cards are stacked in, whose origin each card is placed from. */
   readonly region: RefObject<HTMLElement | null>;
-  /** Each card's top inside the region, by its key, once the stack has read it. */
-  readonly tops: ReadonlyMap<string, number>;
+  /** A card's top inside the region, by its key: where the stack placed it, and the region's top
+   *  for a card it has not placed yet, for the one commit before its pass, which runs before the
+   *  page is painted. One rule for every region, so none places a card by a read of its own. */
+  readonly topOf: (key: string) => number;
 }
 
 /**
@@ -93,5 +95,6 @@ export function useCardStack<Card>(
     },
     []
   );
-  return { cardRef, height, region, tops };
+  const topOf = useCallback((key: string) => tops.get(key) ?? 0, [tops]);
+  return { cardRef, height, region, topOf };
 }

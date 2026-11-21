@@ -13,6 +13,7 @@ import {
 import { parseNodeReference } from "../refs/routes";
 import {
   chipName,
+  chipNaming,
   type IssueTreeReads,
   type NodeChip,
   type TreeNode,
@@ -83,24 +84,13 @@ export function publishedNames(
   };
 }
 
-/** What the page publishes for `chips` (`issue-tree.ts`'s `targetNaming`): each chip's reading,
- *  the chips that are gone or ambiguous, every answered chip with no reading as one the read
- *  answered with no words, and every chip's reference as one the page asks for. */
+/** What the page publishes for `chips`: every chip the batched read answered for, named by the
+ *  page's own rule (`issue-tree.ts`'s `chipNaming`, as `targetNaming` names the read's targets),
+ *  and every chip's reference as one the page asks for, answered or not yet. */
 export function publishedChips(chips: readonly NodeChip[]): PublishedReferences {
   return {
-    ambiguous: new Set(chips.filter((chip) => chip.ambiguous === true).map((chip) => chip.ref)),
+    ...chipNaming(chips.filter((chip) => chip.answered).map((chip) => [chip.ref, chip] as const)),
     asked: new Set(chips.map((chip) => chip.ref)),
-    gone: new Set(
-      chips.filter((chip) => chip.gone && chip.ambiguous !== true).map((chip) => chip.ref)
-    ),
-    readings: new Map(
-      chips.flatMap((chip) => (chip.reading === undefined ? [] : [[chip.ref, chip.reading]]))
-    ),
-    unnamed: new Set(
-      chips
-        .filter((chip) => chip.answered && !chip.gone && chip.reading === undefined)
-        .map((chip) => chip.ref)
-    ),
   };
 }
 

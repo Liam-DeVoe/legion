@@ -147,7 +147,7 @@ export function DecisionList({
     },
     [blockPlacements]
   );
-  const { cardRef, height, region, tops } = useCardStack(decisions, decisionKey, wantedTop);
+  const { cardRef, height, region, topOf } = useCardStack(decisions, decisionKey, wantedTop);
   if (decisions.length === 0) {
     return null;
   }
@@ -157,7 +157,7 @@ export function DecisionList({
         <div
           key={item.id}
           ref={cardRef(item.id)}
-          style={{ left: 0, position: "absolute", right: 0, top: tops.get(item.id) ?? 0 }}
+          style={{ left: 0, position: "absolute", right: 0, top: topOf(item.id) }}
         >
           <DecisionCard
             hovered={hoveredItemId === item.id}

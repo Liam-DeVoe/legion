@@ -14,7 +14,7 @@ import {
 import type { DisplayTree } from "../../api/types";
 import { type ReferenceNaming, useMarkdownHeadline } from "./markdown-engine";
 import { linkTitleMax } from "./reference-target";
-import { parseNodeReference } from "./routes";
+import { type DispatchReferenceRoute, parseNodeReference } from "./routes";
 import { referenceTargetKind } from "./target-id";
 import { firstWordedBlock } from "./tree-fragment";
 
@@ -264,22 +264,37 @@ function useReadingName(
 }
 
 /**
- * The reading a chip names a block by (INFRA-1196 decisions 66 and 88), from the reading the page
- * published for it (`reading`), which is the block's whole text: its first block that holds any
- * words (`firstWordedBlock`), so a decision is named by its own heading, with the page's word for
- * the block's kind (`fallback`). The page publishes a block's whole text only where a block of it
+ * Whether a chip names the target `route` by a block's line (INFRA-1196 decisions 66 and 88):
+ * `route` names a block, and the reading the page published for it is the block's whole text,
+ * whose first block that holds words the store projects beside its name (`blockLineReading`,
+ * `KnownReferences.lines`). A tie's chip (`issue-page/NodeRow.tsx`'s `Chip`) waits on that line
+ * where this holds, and reads its address otherwise.
+ */
+export function namesBlockByLine(
+  route: DispatchReferenceRoute | undefined,
+  reading: ReferenceNameReading | undefined
+): reading is Extract<ReferenceNameReading, { readonly tree: DisplayTree }> {
+  return (
+    route !== undefined &&
+    referenceTargetKind(route) === "block" &&
+    reading !== undefined &&
+    "tree" in reading
+  );
+}
+
+/**
+ * The reading a chip names a block by (`namesBlockByLine`), from the reading the page published
+ * for it (`reading`), which is the block's whole text: its first block that holds any words
+ * (`firstWordedBlock`), so a decision is named by its own heading, with the page's word for the
+ * block's kind (`fallback`). The page publishes a block's whole text only where a block of it
  * holds words (`issue-page/tree-drafts.ts`'s `treeContext`). A link to the block, and so a plain
- * line, names it by its whole text. Undefined where `reference` names no block and for a block
- * named by words alone, which a chip draws as they stand.
+ * line, names it by its whole text. Undefined for every target a chip names by other words.
  */
 function blockLineReading(
   reference: string,
   reading: ReferenceNameReading
 ): ReferenceNameReading | undefined {
-  const route = parseNodeReference(reference);
-  if (route === undefined || referenceTargetKind(route) !== "block" || !("tree" in reading)) {
-    return undefined;
-  }
+  if (!namesBlockByLine(parseNodeReference(reference), reading)) return undefined;
   const tree = firstWordedBlock(reading.tree) ?? reading.tree;
   return reading.fallback === undefined ? { tree } : { fallback: reading.fallback, tree };
 }
@@ -428,10 +443,10 @@ export function usePublishReferenceNames(published: PublishedReferences | undefi
  */
 export function PublishedReferenceNames({
   children,
-  published = NOTHING_PUBLISHED,
+  published,
 }: {
   children: ReactNode;
-  published: PublishedReferences | undefined;
+  published: PublishedReferences;
 }): ReactNode {
   const known = useContext(ReferenceNamesContext);
   const { ambiguous, asked, gone, unnamed } = published;

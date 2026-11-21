@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useMemo } from "react";
 
 import type { SaveCommentEdit } from "../conversation/send-request";
-import { regionOrigin, useCardStack } from "./card-stack";
+import { useCardStack } from "./card-stack";
 import { marginReplySendKey } from "./margin-context";
 import { ThreadCard } from "./ThreadCard";
 import type { CommentActionFailure } from "./useCommentActionQueue";
@@ -138,12 +138,7 @@ export function ThreadList({
     },
     [blockPlacements, markPlacements]
   );
-  const {
-    cardRef,
-    height: regionHeight,
-    region: anchoredRegion,
-    tops: layoutTops,
-  } = useCardStack(anchored, threadKey, topFor);
+  const { cardRef, height, region, topOf } = useCardStack(anchored, threadKey, topFor);
 
   const card = (thread: Thread, composerClassName?: string) => (
     <ThreadCard
@@ -171,21 +166,15 @@ export function ThreadList({
     />
   );
 
-  // One origin for the whole pass: `topFor`'s fallback runs for a thread whose placement has not
-  // been measured into `layoutTops` yet, and every such thread shares the same region.
-  const renderRegion = anchoredRegion.current;
-  const renderOrigin =
-    anchored.length === 0 || renderRegion === null ? undefined : regionOrigin(renderRegion);
-
   return (
     <div className="space-y-3">
       {anchored.length === 0 ? null : (
         <section
           aria-label="Anchored comments"
           className="relative"
-          ref={anchoredRegion}
+          ref={region}
           style={{
-            minHeight: regionHeight,
+            minHeight: height,
           }}
         >
           {anchored.map((thread) => (
@@ -196,7 +185,7 @@ export function ThreadList({
                 left: 0,
                 position: "absolute",
                 right: 0,
-                top: layoutTops.get(thread.key) ?? topFor(thread, renderOrigin) ?? 0,
+                top: topOf(thread.key),
               }}
             >
               {card(thread)}

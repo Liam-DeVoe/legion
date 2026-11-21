@@ -34,9 +34,8 @@ import { useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { usePlainHeadline } from "../refs/plain-text";
 import { ReferenceHostIs } from "../refs/reference-host";
-import { useKnownReferences } from "../refs/reference-names";
+import { namesBlockByLine, useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference, referenceHref } from "../refs/routes";
-import { referenceTargetKind } from "../refs/target-id";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
@@ -1229,13 +1228,7 @@ function Chip({
   // A block by its first block of words, the line the store projected from the reading the page
   // published for it, which the chip carries: such a chip waits on that line and reads nothing.
   const { lines } = useKnownReferences();
-  const blockLine =
-    !ambiguous &&
-    !gone &&
-    target !== undefined &&
-    referenceTargetKind(target) === "block" &&
-    chip.reading !== undefined &&
-    "tree" in chip.reading;
+  const blockLine = !ambiguous && !gone && namesBlockByLine(target, chip.reading);
   const line = blockLine ? lines.get(chip.ref) : undefined;
   // The address as one text run, which the projection reads as the reference it is.
   const address = useMemo(() => titleReading(chip.ref), [chip.ref]);
