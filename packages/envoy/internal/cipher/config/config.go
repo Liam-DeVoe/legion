@@ -2393,6 +2393,10 @@ func Load(getenv func(string) string) (Config, error) {
 	if len(cfg.ServiceLogins) > 0 && cfg.K8sOIDCIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_SERVICE_LOGINS needs BROKER_K8S_OIDC_ISSUER and BROKER_K8S_OIDC_AUDIENCE, whose tokens its accounts log in with")
 	}
+	// BROKER_GOOGLE_OIDC_ISSUER is Google's unless a dev stack names its own.
+	if err := oidc.IssuerRefusal("BROKER_GOOGLE_OIDC_ISSUER", cfg.GoogleOIDCIssuer); err != nil {
+		return Config{}, err
+	}
 	callers, err := parseAPIAccounts("BROKER_API_ACCOUNTS", getenv("BROKER_API_ACCOUNTS"))
 	if err != nil {
 		return Config{}, err
@@ -2643,6 +2647,9 @@ func parseSignIn(getenv func(string) string, sessionLifetime time.Duration) (app
 	}
 	if len(missing) > 0 {
 		return approval.SignIn{}, fmt.Errorf("the broker's approval page needs %s; missing %s", strings.Join(SignInSettings, ", "), strings.Join(missing, ", "))
+	}
+	if err := oidc.IssuerRefusal(signInIssuerSetting, signIn.Issuer); err != nil {
+		return approval.SignIn{}, err
 	}
 	// The value is not quoted: a token or a URL with a password pasted here would print.
 	if !signInIssuerOK(signIn.Issuer) {

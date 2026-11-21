@@ -14,6 +14,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // TokenTimeout bounds one call to the issuer's token endpoint, a code exchange or a refresh, and
@@ -99,21 +101,22 @@ func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow 
 // authorization_endpoint or token_endpoint offers no sign-in, and fails discovery. One that names
 // no revocation_endpoint is accepted, and Revoke fails against it. The config every grant starts
 // from, the code exchanges', Refresh's and CheckClient's, authenticates as tokenAuthStyle says.
+// Its errors name the issuer through redact.URL and a failure as issuerError prints it.
 func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string) (*codeFlowIssuer, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
-		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", redact.URL(issuer), issuerError(issuer, err))
 	}
 	endpoint := provider.Endpoint()
 	if endpoint.AuthURL == "" || endpoint.TokenURL == "" {
-		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", issuer)
+		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", redact.URL(issuer))
 	}
 	var metadata struct {
 		RevocationEndpoint string   `json:"revocation_endpoint"`
 		TokenAuthMethods   []string `json:"token_endpoint_auth_methods_supported"`
 	}
 	if err := provider.Claims(&metadata); err != nil {
-		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint and token_endpoint_auth_methods_supported: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint and token_endpoint_auth_methods_supported: %w", redact.URL(issuer), issuerError(issuer, err))
 	}
 	endpoint.AuthStyle = tokenAuthStyle(metadata.TokenAuthMethods)
 	return &codeFlowIssuer{

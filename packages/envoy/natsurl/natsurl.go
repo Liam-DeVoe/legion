@@ -160,9 +160,9 @@ func poolScheme(first string) string {
 // UserinfoPastHost reports whether parsed, a URL that parsed, holds an "@" after its host, in its
 // path, query or fragment. That is where a credential holding a "/", "?" or "#" ends url.Parse's
 // authority before its "@", so the URL's host is a part of the credential and every line that
-// names the host names it. It is the one copy of the rule: the NATS server URLs and the daemon's
-// URL settings and printers (internal/redact, the state's settings, a pod's addresses and its
-// dashboard URL) all read it.
+// names the host names it. It is the one copy of the rule: the NATS server URLs, the issuer
+// settings (oidc.IssuerRefusal) and the daemon's URL settings and printers (internal/redact, the
+// state's settings, a pod's addresses and its dashboard URL) all read it.
 func UserinfoPastHost(parsed *url.URL) bool {
 	return strings.Contains(parsed.Path, "@") || strings.Contains(parsed.RawQuery, "@") || strings.Contains(parsed.Fragment, "@")
 }

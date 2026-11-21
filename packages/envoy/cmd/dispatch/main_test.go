@@ -266,6 +266,7 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 	const lead = "Google sign-in needs DISPATCH_SIGNIN_ISSUER, DISPATCH_SIGNIN_CLIENT_ID, DISPATCH_SIGNIN_CLIENT_SECRET and one of DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN: "
 	const both = "DISPATCH_SIGNIN_GROUP and DISPATCH_SIGNIN_DOMAIN are both set; set one: a Cognito pool's group, or a Google Workspace domain"
 	noSignIn := map[string]string{"DATABASE_URL": "postgres://dispatch", "DISPATCH_AGENT_TOKEN": "agent-token"}
+	issuerUserinfo := "madeUpIssuerUser0123:madeUpIssuerSecret0123" + "@"
 	with := func(base, overrides map[string]string) map[string]string {
 		values := map[string]string{}
 		for name, value := range base {
@@ -297,6 +298,11 @@ func TestResolveBootConfigRefusesSignInSettingsItCannotUse(t *testing.T) {
 			"DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is https://issuer.example/pool"},
 		{"a group under Google's issuer", signInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com"}),
 			"DISPATCH_SIGNIN_GROUP is a Cognito pool's group, and a token from https://accounts.google.com carries none; set DISPATCH_SIGNIN_DOMAIN instead"},
+		// A made-up user name and password in either issuer: refused naming the setting alone.
+		{"a sign-in issuer holding a credential", signInEnvironment(map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://" + issuerUserinfo + "issuer.example/pool"}),
+			"DISPATCH_SIGNIN_ISSUER cannot be read: it holds a user name or a password, which no issuer URL has"},
+		{"a service-token issuer holding a credential", with(noSignIn, map[string]string{"DISPATCH_OIDC_ISSUER": "https://" + issuerUserinfo + "oidc.example/id/CLUSTER", "DISPATCH_OIDC_AUDIENCE": "dispatch"}),
+			"DISPATCH_OIDC_ISSUER cannot be read: it holds a user name or a password, which no issuer URL has"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := resolveBootConfig(envGetter(tc.env)); err == nil || err.Error() != tc.want {

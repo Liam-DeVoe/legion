@@ -79,6 +79,9 @@ func signInSettingNames() string {
 // issuer, whose tokens carry no `cognito:groups`. A deployment with the issuer, client ID, client
 // secret and group of a Cognito pool reaches none of them.
 func checkSignInSettings(boot bootConfig, identityMode string) error {
+	if err := oidc.IssuerRefusal("DISPATCH_SIGNIN_ISSUER", boot.SignInIssuer); err != nil {
+		return err
+	}
 	var set []string
 	for _, setting := range signInSettings(boot) {
 		if setting.value != "" {

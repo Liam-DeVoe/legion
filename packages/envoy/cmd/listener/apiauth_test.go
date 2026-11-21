@@ -443,6 +443,12 @@ func TestResolveListenerOIDCConfig(t *testing.T) {
 			env:         map[string]string{"ENVOY_OIDC_AUDIENCE": "envoy"},
 			wantMissing: "ENVOY_OIDC_ISSUER",
 		},
+		{
+			// A made-up user name and password in the issuer: refused naming the setting alone.
+			name:        "an issuer holding a credential is refused by its name",
+			env:         map[string]string{"ENVOY_OIDC_ISSUER": "https://" + "madeUpIssuerUser0123:madeUpIssuerSecret0123" + "@oidc.eks.example/id/CLUSTER", "ENVOY_OIDC_AUDIENCE": "envoy"},
+			wantMissing: "ENVOY_OIDC_ISSUER cannot be read: it holds a user name or a password, which no issuer URL has",
+		},
 	}
 
 	for _, tc := range cases {

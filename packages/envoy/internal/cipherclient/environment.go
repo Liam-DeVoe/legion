@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -198,6 +199,9 @@ func SignInFlow(getenv func(string) string) (*DeviceFlow, error) {
 	issuer := strings.TrimSpace(getenv(SignInIssuerVar))
 	if issuer == "" {
 		issuer = DefaultSignInIssuer
+	}
+	if err := oidc.IssuerRefusal(SignInIssuerVar, issuer); err != nil {
+		return nil, err
 	}
 	return &DeviceFlow{
 		Issuer: strings.TrimSuffix(issuer, "/"), ClientID: clientID,
