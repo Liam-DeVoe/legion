@@ -3,6 +3,7 @@
 // script, which starts two more of itself, and the row of `extensions/envoy.test.ts` that starts
 // it both read it here: the script runs as it loads, so neither can import it.
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { settled, timeLeft } from "@legion/test-fixtures/wait";
 
 /** What the process prints before its report, which is one JSON line. */
@@ -19,9 +20,13 @@ export interface Report {
 /**
  * Starts `session-pod-process.ts` for `session` and answers its report; with `spawn`, the process
  * also starts its two children. With no `env`, the process gets the environment this one started
- * with, as a `Bun.spawn` that names no `env` hands it; with one, that environment. The wait for it
- * is the shared one (`settled`), which ends at the caller's deadline and then kills the process,
- * so a hung run leaves no process behind; a run that reports nothing throws with its stderr.
+ * with, as a `Bun.spawn` that names no `env` hands it; with one, that environment, with Bun's
+ * runtime transpiler cache off (`bunCacheOff`) as `runReportingProcess` (`test/report-process.ts`)
+ * hands it, for its reason: a row's `env` names a HOME the row's temporary-directory hook removes.
+ * It does not start the process through `runReportingProcess`, whose `timeoutMs` is a bound of its
+ * own: the wait for it is the shared one (`settled`), which ends at the caller's deadline and then
+ * kills the process, so a hung run leaves no process behind; a run that reports nothing throws
+ * with its stderr.
  *
  * A process given an `env` is handed a deadline of its own too (`LEGION_PROOF_DEADLINE_MS`, the
  * shared wait's deadline outside `bun test`), half of what is left of the caller's: its own waits
@@ -52,7 +57,7 @@ export async function runSessionPod(options: {
     // environment this process started with, which is the case a row asks about.
     ...(options.env === undefined
       ? {}
-      : { env: { ...options.env, LEGION_PROOF_DEADLINE_MS: deadline } }),
+      : { env: { ...options.env, ...bunCacheOff, LEGION_PROOF_DEADLINE_MS: deadline } }),
   });
   let read: [string, string, number];
   try {
