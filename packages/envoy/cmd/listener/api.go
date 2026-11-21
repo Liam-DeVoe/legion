@@ -2042,6 +2042,16 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// (listenerwire.SessionInfo.Port) for as long as the claims keep refreshing the entry,
 		// where writing it out lets it lapse with the entry it came on.
 		entry.Port = 0
+		// The refresh names the key it writes (session.SessionRegistry.PutWithin), so it keeps
+		// the entry's projects only where the entry names that key already. An entry naming no
+		// key, which an earlier build wrote, may be another session's record the server copied
+		// under this one, and the edge grants no project on it (sessionOfProjects); written
+		// back as it is, its projects would read as this session's own registration of them.
+		// Such an entry is refreshed with the projects of the token this claim was made with,
+		// as a registration records them (registeringProjects).
+		if entry.SessionID != body.SessionID {
+			entry.Projects = registeringProjects(r)
+		}
 		// Whether the claimant was live before this refresh is read before it, from this
 		// listener's cache with no bucket call, as a registration reads it (registerPass): a
 		// claimant the refresh makes live again is handed its roles' kept lanes, by the rule above.

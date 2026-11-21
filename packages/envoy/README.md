@@ -171,6 +171,7 @@ A session record and an interest row each name the key they are stored under (`s
 The server itself stores a record when a request names a key's subject as its reply subject, so a record that names another key, or names its key with no `machine_id`, no positive `updated_at` or (a session record) no `projects`, is no registration and reads as absent on every listener (`session.DecodeEntry`, the store's `boundInterest`).
 The next write of such a record replaces it at the stream sequence it is really stored at.
 A session record that names no key was written by an earlier build: every listener, the edge included, reads it as before for its sweeps, reapers and role routes, and the edge reads it as no project's (`sessionOfProjects`), so it lists such a session to no one and answers a send to it as to a missing session until the session's own listener writes the key.
+A role claim that renews such a record writes the projects of the claim's own token, as a registration does, and never the record's: written back under its key, the record's projects would read as the session's own registration of them.
 
 On every listener, a role claim's key is `store.RoleClaimKeyOf` of the name it was claimed under, and that function's comment says which key each name gets.
 A free-form role under a project (`PRIV.lead-reviewer`) is that project's own claim, keyed `<project>.<role>`, beside the claim of the same name under no project;

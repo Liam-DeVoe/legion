@@ -851,8 +851,11 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 // handle on a bucket since recreated is dropped rather than fencing out the new bucket's rows.
 //
 // The entry is written naming sessionID (SessionEntry.SessionID) and stamped with this moment, so
-// every reader reads it as sessionID's registration (DecodeEntry). An entry naming no machine is
-// refused with ErrEntryUnbound and nothing is written: every reader would read it as no record,
+// every reader reads it as sessionID's registration (DecodeEntry). A caller that writes back an
+// entry it read keeps that entry's Projects only where the entry names sessionID already: one
+// naming no key may be another session's record the server copied under this one, and this write
+// would bind its projects to sessionID (cmd/listener's roleSetHandler). An entry naming no machine
+// is refused with ErrEntryUnbound and nothing is written: every reader would read it as no record,
 // while this registry's own copy held it until its watcher delivered it.
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
 	if entry.MachineID == "" {
