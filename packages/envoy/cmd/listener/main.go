@@ -1029,8 +1029,14 @@ func main() {
 	// meets them.
 	warnIgnoredEnv(logger, "ENVOY_HOST_BRIDGE", "the listener no longer pushes a message to a session's serve port, so it opens no connection this would address")
 	warnIgnoredEnv(logger, "ENVOY_SUBSCRIBE_ALL_TOPICS", "the listener no longer holds a live topics subscription, so there is no such subscription to turn on")
-	// Before any NATS connect, so a listener the writer hold refuses still names its mode.
-	logger.Info("session consumer naming mode", slog.String("consumer_names", string(cfg.ConsumerNames)))
+	// Before any NATS connect, so a listener the writer hold refuses still names its mode. The line
+	// also carries ENVOY_STREAMS_OPERATOR_MADE as it was set, null when unset, which the cutover's
+	// mode check reads beside the naming mode.
+	streamsOperatorMade := slog.Any("streams_operator_made", nil)
+	if value, set := os.LookupEnv("ENVOY_STREAMS_OPERATOR_MADE"); set {
+		streamsOperatorMade = slog.String("streams_operator_made", value)
+	}
+	logger.Info("session consumer naming mode", slog.String("consumer_names", string(cfg.ConsumerNames)), streamsOperatorMade)
 	apiToken := os.Getenv("ENVOY_API_TOKEN")
 	oidcIssuer, oidcAudience, err := resolveListenerOIDCConfig(os.Getenv)
 	if err != nil {
