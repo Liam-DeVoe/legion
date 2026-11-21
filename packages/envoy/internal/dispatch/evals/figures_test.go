@@ -960,6 +960,176 @@ func writesOf(statements []figureStatement) figureWrites {
 	return w
 }
 
+// rangeKeyOrder and dayFigureKeyOrder each answer the positions, from 0, of the keys its arrays
+// hold (range rows' and day rows' of the stored figures, each array a column of the keys), in
+// the byte order of the keys, every text `collate "C"`: the order of the table's primary key that
+// every writer of its rows takes them in, which upsertRangeFigures' and writeAfterRanges'
+// statements sorted their rows by before they took them in the order sent (`with ordinality`).
+const (
+	rangeKeyOrder = `
+		select (k.sent - 1)::int from unnest($1::text[], $2::int[], $3::date[], $4::text[], $5::text[]) with ordinality
+			as k(repo, days, end_day, eval_id, deploy_repo, sent)
+		order by k.repo collate "C", k.days, k.end_day, k.eval_id collate "C", k.deploy_repo collate "C"`
+	dayFigureKeyOrder = `
+		select (k.sent - 1)::int from unnest($1::text[], $2::date[], $3::text[], $4::text[]) with ordinality
+			as k(repo, day, eval_id, deploy_repo, sent)
+		order by k.repo collate "C", k.day, k.eval_id collate "C", k.deploy_repo collate "C"`
+)
+
+// rangeKeyArrays is keys as rangeKeyOrder's arrays.
+func rangeKeyArrays(keys []rangeFigureKey) []any {
+	repos, ns, ends, evalIDs, deployRepos := make([]string, len(keys)), make([]int32, len(keys)), make([]time.Time, len(keys)), make([]string, len(keys)), make([]string, len(keys))
+	for index, key := range keys {
+		repos[index], ns[index], ends[index], evalIDs[index], deployRepos[index] = key.repo, int32(key.days), key.end, key.eval, key.deployRepo
+	}
+	return []any{repos, ns, ends, evalIDs, deployRepos}
+}
+
+// dayFigureKeyArrays is keys as dayFigureKeyOrder's arrays.
+func dayFigureKeyArrays(keys []dayFigureKey) []any {
+	repos, days, evalIDs, deployRepos := make([]string, len(keys)), make([]time.Time, len(keys)), make([]string, len(keys)), make([]string, len(keys))
+	for index, key := range keys {
+		repos[index], days[index], evalIDs[index], deployRepos[index] = key.repo, key.day, key.eval, key.deployRepo
+	}
+	return []any{repos, days, evalIDs, deployRepos}
+}
+
+// rangeKeyText and dayFigureKeyText are a key as a failure names it.
+func rangeKeyText(key rangeFigureKey) string {
+	return fmt.Sprintf("%q, %d days to %s, %q, %q", key.repo, key.days, key.end.Format(time.DateOnly), key.eval, key.deployRepo)
+}
+
+func dayFigureKeyText(key dayFigureKey) string {
+	return fmt.Sprintf("%q, %s, %q, %q", key.repo, key.day.Format(time.DateOnly), key.eval, key.deployRepo)
+}
+
+// keyOrderOf is the positions, from 0, of the n keys the arrays args hold, in the byte order
+// query (rangeKeyOrder, dayFigureKeyOrder or dayRowKeyOrder) answers them in.
+func keyOrderOf(t *testing.T, q delivery.Querier, n int, query string, args ...any) []int {
+	t.Helper()
+	rows, err := q.Query(t.Context(), query, args...)
+	if err != nil {
+		t.Fatalf("order %d keys by their bytes: %v", n, err)
+	}
+	order, err := pgx.CollectRows(rows, pgx.RowTo[int])
+	if err != nil {
+		t.Fatalf("order %d keys by their bytes: %v", n, err)
+	}
+	if len(order) != n {
+		t.Fatalf("%d keys ordered by their bytes came back as %d", n, len(order))
+	}
+	return order
+}
+
+// firstOutOfOrder is the first index of order (keyOrderOf's) that holds another position, -1 for
+// none: keys sent in the byte order of their keys come back in the order they were sent.
+func firstOutOfOrder(order []int) int {
+	for index, at := range order {
+		if at != index {
+			return index
+		}
+	}
+	return -1
+}
+
+// TestEachWritesGoKeyOrderIsPostgresCollateCOrder: the range upsert and the day upsert of the
+// stored figures (upsertRangeFigures, writeAfterRanges) and the statement of day rows
+// (writeDayRows) take their rows in the order they are sent them, so Go's sort of each is the
+// order they lock rows in, where every writer of those rows takes them in their keys' byte order,
+// the order `collate "C"` gives them. For each of the three, keys whose texts differ at every
+// collation edge a byte order has (upper against lower case, accented against plain letters,
+// digits against letters, punctuation, a key that is a prefix of another, and the empty string),
+// in one field of the key with keys equal in their leading fields, given in a shuffled order and
+// sorted by the write's own sort (figureWrites.sortByKey, compareDayRows), come back in the same
+// sequence from Postgres's `order by` of the same keys, each text `collate "C"`. The test
+// database collates text by ICU's en-US, under which many of those pairs order the other way.
+func TestEachWritesGoKeyOrderIsPostgresCollateCOrder(t *testing.T) {
+	r := newRig(t)
+	// edges is texts whose byte order is not the order a collation by language gives them.
+	edges := []string{"", "a", "A", "b", "B", "e", "é", "É", "f", "1", "9", "a1", "aa", "a b", "a-b", "a/b", "a_b",
+		"acme/web", "Acme/web", "acme/web2", "acme/wéb", "~"}
+	// few is some of them, for the other text fields of a key.
+	few := []string{"", "B", "a", "é", "1"}
+	// Day rows' days are instants, which their statement reads as the UTC date each falls on.
+	instants := []time.Time{time.Date(2026, 12, 31, 23, 0, 0, 0, time.UTC), time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2027, 1, 10, 12, 0, 0, 0, time.UTC)}
+	days := make([]time.Time, len(instants))
+	for index, instant := range instants {
+		days[index] = measures.Midnight(instant)
+	}
+	shuffle := rand.New(rand.NewPCG(1, 2))
+
+	var writes figureWrites
+	for _, repo := range edges {
+		for _, n := range []int{7, 8, 14, 85} {
+			for _, end := range days {
+				for _, evalID := range few {
+					for _, deployRepo := range few {
+						writes.ranges = append(writes.ranges, rangeFigureRow{rangeFigureKey: rangeFigureKey{repo: repo, days: n, end: end, eval: evalID, deployRepo: deployRepo}})
+					}
+				}
+			}
+		}
+	}
+	for _, repo := range few {
+		for _, day := range days {
+			for _, evalID := range edges {
+				for _, deployRepo := range few {
+					writes.days = append(writes.days, dayFigureRow{dayFigureKey: dayFigureKey{repo: repo, day: day, eval: evalID, deployRepo: deployRepo}})
+				}
+			}
+		}
+	}
+	var rows []DayRow
+	for _, project := range few[:3] {
+		for _, evalID := range few {
+			for _, deployRepo := range few[:3] {
+				for _, series := range edges {
+					for _, repo := range few {
+						for _, day := range instants {
+							rows = append(rows, DayRow{ProjectKey: project, EvalID: evalID, DeployRepo: deployRepo, Repo: repo, DayPart: measures.DayPart{Series: series, Day: day}})
+						}
+					}
+				}
+			}
+		}
+	}
+	shuffle.Shuffle(len(writes.ranges), func(i, j int) { writes.ranges[i], writes.ranges[j] = writes.ranges[j], writes.ranges[i] })
+	shuffle.Shuffle(len(writes.days), func(i, j int) { writes.days[i], writes.days[j] = writes.days[j], writes.days[i] })
+	shuffle.Shuffle(len(rows), func(i, j int) { rows[i], rows[j] = rows[j], rows[i] })
+	writes.sortByKey()
+	slices.SortFunc(rows, func(a, b DayRow) int { return compareDayRows(&a, &b) })
+
+	rangeKeys := make([]rangeFigureKey, len(writes.ranges))
+	for index, row := range writes.ranges {
+		rangeKeys[index] = row.rangeFigureKey
+	}
+	order := keyOrderOf(t, r.database.Pool, len(rangeKeys), rangeKeyOrder, rangeKeyArrays(rangeKeys)...)
+	if at := firstOutOfOrder(order); at >= 0 {
+		t.Errorf("Go sorts %d range keys (compareRangeKeys) otherwise than Postgres's collate \"C\": at %d Go puts %s, and Postgres %s",
+			len(rangeKeys), at, rangeKeyText(rangeKeys[at]), rangeKeyText(rangeKeys[order[at]]))
+	}
+	dayKeys := make([]dayFigureKey, len(writes.days))
+	for index, row := range writes.days {
+		dayKeys[index] = row.dayFigureKey
+	}
+	order = keyOrderOf(t, r.database.Pool, len(dayKeys), dayFigureKeyOrder, dayFigureKeyArrays(dayKeys)...)
+	if at := firstOutOfOrder(order); at >= 0 {
+		t.Errorf("Go sorts %d day figure keys (compareDayFigureKeys) otherwise than Postgres's collate \"C\": at %d Go puts %s, and Postgres %s",
+			len(dayKeys), at, dayFigureKeyText(dayKeys[at]), dayFigureKeyText(dayKeys[order[at]]))
+	}
+	order = keyOrderOf(t, r.database.Pool, len(rows), dayRowKeyOrder, dayRowKeyArrays(rows)...)
+	if at := firstOutOfOrder(order); at >= 0 {
+		key := func(row DayRow) string {
+			return dayKeyLine(row.ProjectKey, row.EvalID, row.DeployRepo, row.Series, row.Repo, row.Day)
+		}
+		t.Errorf("Go sorts %d day rows (compareDayRows) otherwise than Postgres's collate \"C\": at %d Go puts %q, and Postgres %q",
+			len(rows), at, key(rows[at]), key(rows[order[at]]))
+	}
+	t.Logf("%d range keys, %d day figure keys and %d day row keys, each sorted by its write's sort, held to Postgres's collate \"C\" order of them",
+		len(rangeKeys), len(dayKeys), len(rows))
+}
+
 // TestARangeChunkClosesAtARepositoryOrLengthOnceItHoldsTheLeast: the chunks a write folds and
 // sends of its ranges, in the byte order of their keys, close at the end of a (repository, length)
 // prefix of the keys only once they hold at least the least ranges, and at the limit wherever it
@@ -1259,10 +1429,12 @@ func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
 // while it writes them. Its range upserts take the rows the whole fold on one worker with no write
 // answers (foldMovedDays), each once, in the byte order of their keys, each statement within one
 // chunk of the ranges it reads (readFigurePlan), as rangeChunks cuts them at rangeChunkLeast; its
-// gone ranges, day rows and gone days are that fold's too, in their order, after every range; no
-// statement holds more than statementBytes of parameters as statementChunks estimates them, nor
-// more than that estimate as pgx encodes them; and the stored figures it leaves are the fold of
-// the rows that stand, bit for bit.
+// gone ranges, day rows and gone days are that fold's too, in their order, after every range; the
+// range rows and the day rows its upserts take, across their statements, are in the order
+// Postgres's `collate "C"` gives their keys (rangeKeyOrder, dayFigureKeyOrder), which each
+// statement takes them in as sent; no statement holds more than statementBytes of parameters as
+// statementChunks estimates them, nor more than that estimate as pgx encodes them; and the stored
+// figures it leaves are the fold of the rows that stand, bit for bit.
 func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
@@ -1375,6 +1547,20 @@ func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *t
 		if compareRangeKeys(written.ranges[index-1].rangeFigureKey, written.ranges[index].rangeFigureKey) >= 0 {
 			t.Fatalf("range row %d of the refold's upserts, %+v, does not follow %+v in key order", index, written.ranges[index].rangeFigureKey, written.ranges[index-1].rangeFigureKey)
 		}
+	}
+	rangeKeys := make([]rangeFigureKey, len(written.ranges))
+	for index, row := range written.ranges {
+		rangeKeys[index] = row.rangeFigureKey
+	}
+	if at := firstOutOfOrder(keyOrderOf(t, r.database.Pool, len(rangeKeys), rangeKeyOrder, rangeKeyArrays(rangeKeys)...)); at >= 0 {
+		t.Errorf("range row %d of the refold's upserts, %s, is out of the byte order Postgres's collate \"C\" gives their keys", at, rangeKeyText(rangeKeys[at]))
+	}
+	dayKeys := make([]dayFigureKey, len(written.days))
+	for index, row := range written.days {
+		dayKeys[index] = row.dayFigureKey
+	}
+	if at := firstOutOfOrder(keyOrderOf(t, r.database.Pool, len(dayKeys), dayFigureKeyOrder, dayFigureKeyArrays(dayKeys)...)); at >= 0 {
+		t.Errorf("day row %d of the refold's upserts, %s, is out of the byte order Postgres's collate \"C\" gives their keys", at, dayFigureKeyText(dayKeys[at]))
 	}
 	evals, deployRepos := map[string]bool{}, map[string]bool{}
 	for _, row := range written.ranges {

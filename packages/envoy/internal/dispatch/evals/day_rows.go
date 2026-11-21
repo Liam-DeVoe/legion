@@ -368,18 +368,21 @@ func insertMissingDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy st
 
 // writeDayRows inserts rows, each the computation's (writer `computation`) with built_by builtBy,
 // and meets a row already stored as conflict says. It takes them in the byte order of their keys
-// (project, eval, deploy repository, series, repository, day), named as `collate "C"` as every
-// statement that inserts or locks day rows names it (compareDayKeys), whatever the database's
-// collation: in one statement where their parameters fit in statementBytes, and otherwise in a
-// statement for each run of them in that order that fits (dayRowStatements), all in tx, so the
-// statements together insert and lock the rows in the order one statement does. Every statement
-// of a transaction widens the one eval_days change it logs of an eval (migration
-// 20261117100014), so several statements log what one would. updates says that conflict updates
-// the stored row, and so an upsert writes a row once: two rows of one key are then refused before
-// any statement is sent, as one statement refuses them (ON CONFLICT DO UPDATE cannot affect a row
-// a second time), where cut into two statements the second would rewrite the first. A conflict
-// that does nothing keeps the first row of a key and skips the rest, in one statement or in
-// several alike.
+// (project, eval, deploy repository, series, repository, day), the order `collate "C"` gives them
+// and every statement that inserts or locks day rows takes them in (compareDayKeys), whatever the
+// database's collation: dayRowStatements sends them in that order (compareDayRows, whose order
+// TestEachWritesGoKeyOrderIsPostgresCollateCOrder holds to `collate "C"`'s), and the statement
+// takes them in the order it is sent them (`with ordinality`), which Postgres knows its unnest
+// answers and so sorts nothing for. It sends them in one statement where their parameters fit in
+// statementBytes, and otherwise in a statement for each run of them in that order that fits
+// (dayRowStatements), all in tx, so the statements together insert and lock the rows in the order
+// one statement does. Every statement of a transaction widens the one eval_days change it logs of
+// an eval (migration 20261117100014), so several statements log what one would. updates says that
+// conflict updates the stored row, and so an upsert writes a row once: two rows of one key are
+// then refused before any statement is sent, as one statement refuses them (ON CONFLICT DO UPDATE
+// cannot affect a row a second time), where cut into two statements the second would rewrite the
+// first. A conflict that does nothing keeps the first row of a key in the order sent and skips the
+// rest, in one statement or in several alike.
 func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string, updates bool, conflict string) error {
 	statements, err := dayRowStatements(rows, builtBy, updates)
 	if err != nil {
@@ -392,11 +395,10 @@ func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string,
 			last_value, last_at, last_recorded_at, nullif(last_reading, '')::uuid, counts::jsonb, via_repository, $17
 		from unnest($1::text[], $2::text[], $21::text[], $3::text[], $4::text[], $5::date[], $6::bool[], $7::int[],
 			$8::double precision[], $9::double precision[], $10::double precision[], $11::double precision[], $12::text[],
-			$13::double precision[], $14::timestamptz[], $19::timestamptz[], $20::text[], $15::text[], $16::int[])
+			$13::double precision[], $14::timestamptz[], $19::timestamptz[], $20::text[], $15::text[], $16::int[]) with ordinality
 			as given(project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples,
-				last_value, last_at, last_recorded_at, last_reading, counts, via_repository)
-		order by given.project_key collate "C", given.eval_id collate "C", given.deploy_repo collate "C", given.series collate "C",
-			given.repo collate "C", given.day
+				last_value, last_at, last_recorded_at, last_reading, counts, via_repository, sent)
+		order by given.sent
 		` + conflict
 	for args := range statements {
 		if _, err := tx.Exec(ctx, sql, args...); err != nil {
@@ -482,10 +484,10 @@ func dayRowBytes(row *DayRow, samples *string, counts string) int {
 	return bytes
 }
 
-// compareDayRows orders day rows by the bytes of their keys, as writeDayRows' statement takes
-// them: project, eval and deploy repository, then series, repository and day (compareDayKeys),
-// each day by its instant, since no instant falls on a UTC date (the statement's day) before an
-// earlier instant's.
+// compareDayRows orders day rows by the bytes of their keys, the order writeDayRows' statement
+// takes them in as it is sent them: project, eval and deploy repository, then series, repository
+// and day (compareDayKeys), each day by its instant, since no instant falls on a UTC date (the
+// statement's day) before an earlier instant's.
 func compareDayRows(a, b *DayRow) int {
 	return cmp.Or(strings.Compare(a.ProjectKey, b.ProjectKey), strings.Compare(a.EvalID, b.EvalID), strings.Compare(a.DeployRepo, b.DeployRepo),
 		compareDayKeys(dayKey{series: a.Series, repo: a.Repo, day: a.Day}, dayKey{series: b.Series, repo: b.Repo, day: b.Day}))

@@ -74,10 +74,11 @@ type dayKey struct {
 }
 
 // compareDayKeys orders day keys by series, repository and day, each string by its bytes: the
-// order every statement that inserts or locks one eval's day rows takes them in, which each names
-// as `collate "C"` rather than leave to the database's collation (ICU en-US on this deployment's
-// server orders a series `latency` before a series `Queue`, and bytes the other way), so two
-// writers of overlapping rows wait on each other rather than deadlock.
+// order every statement that inserts or locks one eval's day rows takes them in, whatever the
+// database's collation (ICU en-US on this deployment's server orders a series `latency` before a
+// series `Queue`, and bytes the other way), so two writers of overlapping rows wait on each other
+// rather than deadlock. Each names that order as `collate "C"`, save writeDayRows', which takes
+// its rows in the order it is sent them, this one (compareDayRows).
 func compareDayKeys(a, b dayKey) int {
 	return cmp.Or(cmp.Compare(a.series, b.series), cmp.Compare(a.repo, b.repo), a.day.Compare(b.day))
 }

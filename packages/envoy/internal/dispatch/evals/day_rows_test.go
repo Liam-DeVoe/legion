@@ -53,6 +53,42 @@ func dayKeysIn(args []any) []string {
 	return keys
 }
 
+// dayRowKeyOrder answers the positions, from 0, of the day rows' keys its arrays hold (project,
+// eval, deploy repository, series, repository and day, each array a column of the keys), in the
+// byte order of the keys, every text `collate "C"`: the order of eval_days' primary key that every
+// statement that inserts or locks day rows takes them in (compareDayKeys), which writeDayRows'
+// statement sorted its rows by before it took them in the order sent (`with ordinality`).
+const dayRowKeyOrder = `
+	select (k.sent - 1)::int from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::date[]) with ordinality
+		as k(project_key, eval_id, deploy_repo, series, repo, day, sent)
+	order by k.project_key collate "C", k.eval_id collate "C", k.deploy_repo collate "C", k.series collate "C",
+		k.repo collate "C", k.day`
+
+// dayRowKeyArrays is the keys of rows as dayRowKeyOrder's arrays, each day the UTC date it falls
+// on, as writeDayRows sends it.
+func dayRowKeyArrays(rows []DayRow) []any {
+	projects, evalIDs, deployRepos, series, repos := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
+	days := make([]time.Time, len(rows))
+	for index, row := range rows {
+		projects[index], evalIDs[index], deployRepos[index], series[index], repos[index] = row.ProjectKey, row.EvalID, row.DeployRepo, row.Series, row.Repo
+		days[index] = measures.Midnight(row.Day)
+	}
+	return []any{projects, evalIDs, deployRepos, series, repos, days}
+}
+
+// dayRowKeyArraysIn is the keys of the rows writeDayRows' statements sent take, in the order they
+// take them across the statements, as dayRowKeyOrder's arrays.
+func dayRowKeyArraysIn(sent []pgx.TraceQueryStartData) []any {
+	var projects, evalIDs, deployRepos, series, repos []string
+	var days []time.Time
+	for _, statement := range sent {
+		args := statement.Args
+		projects, evalIDs, series, repos = append(projects, args[0].([]string)...), append(evalIDs, args[1].([]string)...), append(series, args[2].([]string)...), append(repos, args[3].([]string)...)
+		days, deployRepos = append(days, args[4].([]time.Time)...), append(deployRepos, args[20].([]string)...)
+	}
+	return []any{projects, evalIDs, deployRepos, series, repos, days}
+}
+
 // sortedDayKeys is the keys of rows, sorted by their bytes.
 func sortedDayKeys(rows []DayRow) []string {
 	keys := make([]string, len(rows))
@@ -275,10 +311,12 @@ func (c dayChange) String() string {
 // pool), sends at least three statements, none whose parameters pass statementBytes as
 // dayRowStatements estimates them, nor that estimate as pgx encodes them as the types the server
 // describes; they take the rows in the byte order of their keys across the statements, each once,
-// store every row as it was given, and log one eval_days change per eval spanning the days written,
-// as one statement does (migration 20261117100014). A second write, which rewrites the later 20
-// days with other values and adds 20 days after them, so each statement holds rows the upsert
-// updates and rows it inserts, does the same and leaves the earlier 20 days as they were.
+// the order Postgres's `collate "C"` gives the keys they send (dayRowKeyOrder), which the
+// statement takes them in as sent; store every row as it was given, and log one eval_days change
+// per eval spanning the days written, as one statement does (migration 20261117100014). A second
+// write, which rewrites the later 20 days with other values and adds 20 days after them, so each
+// statement holds rows the upsert updates and rows it inserts, does the same and leaves the
+// earlier 20 days as they were.
 func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
@@ -370,6 +408,9 @@ func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) 
 		}
 		if !slices.Equal(held, sortedDayKeys(rows)) {
 			t.Errorf("%s: the statements take %d rows, other rows or in another order than the %d given in the byte order of their keys", what, len(held), len(rows))
+		}
+		if at := firstOutOfOrder(keyOrderOf(t, r.database.Pool, len(held), dayRowKeyOrder, dayRowKeyArraysIn(sent)...)); at >= 0 {
+			t.Errorf("%s: the statements take the row %q at %d, out of the byte order Postgres's collate \"C\" gives their keys", what, held[at], at)
 		}
 
 		changed, err := r.database.Pool.Query(ctx, `

@@ -223,7 +223,8 @@ func (r *refresh) syncSettings(ctx context.Context, w *pageWork) error {
 	return nil
 }
 
-// rewriteWorkers is the most days rewriteSettings builds at once: the CPUs the process may use, up
+// rewriteWorkers is the most goroutines rewriteSettings runs at once, each computing one
+// repository's containment under one rule or building one day: the CPUs the process may use, up
 // to this many.
 const rewriteWorkers = 8
 
@@ -282,14 +283,17 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     judges by and each card the change moves follows under either settings
 //     (delivery.ReadHistoryRows), the walk's first input day (deliveryInputStart, over every kept
 //     repository), each project's first days (firstDays), repo_projects and the running build's
-//     record of its walks (readWalks); then the projects of the issues the pull requests name;
-//   - containment once over each repository's history as the deploy repository (historyOf): the
-//     new production rule's verdict on each run (ProductionApplies, which judges a run by its own
-//     jobs alone, and by its jobs of the judged names as by every job), each pull request's first
+//     record of its walks (readWalks);
+//   - the projects of the issues the pull requests name (readIssueProjects), and beside that read
+//     containment over each repository's history as the deploy repository (historyOf): the new
+//     production rule's verdict on each run (ProductionApplies, which judges a run by its own jobs
+//     alone, and by its jobs of the judged names as by every job), each pull request's first
 //     shipping apply (delivery.ShippingIndex), and each deploy's shipped set, the pull requests
-//     whose first shipping apply it is (Deploys.ShippedBy's rule over every day at once); and the
-//     old rule's verdict and first shipping applies beside it (containmentOf), the new rule's
-//     where the rule did not change;
+//     whose first shipping apply it is (Deploys.ShippedBy's rule over every day at once); and,
+//     where it builds the days the change can move alone (below), the old rule's verdict and first
+//     shipping applies (containmentOf), the new rule's where the rule did not change. No
+//     containment reads the issues' projects, so each repository's under each rule runs on a
+//     goroutine of its own, as many at once as rewriteWorkers allows;
 //   - the days to build, from the delivery walk's first day through today: those whose rows the
 //     change can move (movedDeliveryDays), none for a change that moves no verdict and no card's
 //     part; or every day, where the rows may not stand built under prev: the running build's
@@ -415,11 +419,6 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			issueKeys = append(issueKeys, *pr.IssueKey)
 		}
 	}
-	issueProjects, err := readIssueProjects(ctx, r.store, issueKeys)
-	if err != nil {
-		return err
-	}
-	attribute := attribution{issues: issueProjects, repos: repos}
 	prsByDay := map[time.Time][]int{}
 	for i := range prs {
 		if prs[i].MergedAt != nil {
@@ -427,30 +426,66 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			prsByDay[day] = append(prsByDay[day], i)
 		}
 	}
+	start := earliestOf(input, earliest)
+	walk, found := walks[walkKey{family: walkDelivery}]
+	// The days the change can move alone are built where the running build's delivery walk has
+	// written today, and they need the old rule's verdict beside the new one's.
+	movedOnly := start != nil && found && walk.next != nil && walk.next.After(r.today)
+	// The old rule is the new one where its names (in their order) and its step are the same, as
+	// for a staging job renamed, and containmentOf reads the settings' production rule alone, so
+	// its verdict is the one histories holds.
+	sameRule := slices.Equal(prev.ProductionJobNames, next.ProductionJobNames) && sameName(prev.ProductionApplyStepName, next.ProductionApplyStepName)
 	histories := make([]repoHistory, len(rewritten))
-	for k, repo := range rewritten {
-		histories[k] = historyOf(repo, history.Deploys[repo.name], prs, production)
+	var was []containment
+	if movedOnly {
+		was = make([]containment, len(rewritten))
 	}
-	var days []time.Time
-	if start := earliestOf(input, earliest); start != nil {
-		if walk, found := walks[walkKey{family: walkDelivery}]; found && walk.next != nil && walk.next.After(r.today) {
-			// The old rule is the new one where its names (in their order) and its step are the same,
-			// as for a staging job renamed, and containmentOf reads the settings' production rule
-			// alone, so its verdict is the one histories holds.
-			sameRule := slices.Equal(prev.ProductionJobNames, next.ProductionJobNames) && sameName(prev.ProductionApplyStepName, next.ProductionApplyStepName)
-			was := make([]containment, len(rewritten))
+	// No containment reads the issues' projects, so each repository's under each rule is computed
+	// beside the others and beside their read; each reads the history and writes its own slot.
+	var issueProjects map[string]string
+	if err := store.ReadSideBySide(ctx,
+		func(ctx context.Context) (err error) {
+			issueProjects, err = readIssueProjects(ctx, r.store, issueKeys)
+			return err
+		},
+		func(ctx context.Context) error {
+			group, groupCtx := errgroup.WithContext(ctx)
+			group.SetLimit(min(runtime.GOMAXPROCS(0), rewriteWorkers))
 			for k, repo := range rewritten {
-				if sameRule {
-					was[k] = histories[k].containment
-				} else {
-					was[k] = containmentOf(repo.name, history.Deploys[repo.name], prs, prevProduction)
+				group.Go(func() error {
+					if err := groupCtx.Err(); err != nil {
+						return err
+					}
+					histories[k] = historyOf(repo, history.Deploys[repo.name], prs, production)
+					return nil
+				})
+				if movedOnly && !sameRule {
+					group.Go(func() error {
+						if err := groupCtx.Err(); err != nil {
+							return err
+						}
+						was[k] = containmentOf(repo.name, history.Deploys[repo.name], prs, prevProduction)
+						return nil
+					})
 				}
 			}
-			days = movedDeliveryDays(histories, was, prs, attribute, prevCards, cards, slugs, r.projects, firsts, *start, r.today)
-		} else {
-			for day := *start; !day.After(r.today); day = day.AddDate(0, 0, 1) {
-				days = append(days, day)
+			return group.Wait()
+		},
+	); err != nil {
+		return err
+	}
+	attribute := attribution{issues: issueProjects, repos: repos}
+	var days []time.Time
+	if movedOnly {
+		if sameRule {
+			for k := range histories {
+				was[k] = histories[k].containment
 			}
+		}
+		days = movedDeliveryDays(histories, was, prs, attribute, prevCards, cards, slugs, r.projects, firsts, *start, r.today)
+	} else if start != nil {
+		for day := *start; !day.After(r.today); day = day.AddDate(0, 0, 1) {
+			days = append(days, day)
 		}
 	}
 	// dayOf is each project's rows of day: each repository's DeliveryDay of it, as readDeliveryDay

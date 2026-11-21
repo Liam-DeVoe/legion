@@ -1105,15 +1105,19 @@ func writeFigures(ctx context.Context, tx pgx.Tx, scope figureScope, w figureWri
 // updated_at moved: so a fold that moved nothing writes nothing, and a row another build folded to
 // the same figures keeps its built_by, as the build that folded those figures. Every statement
 // takes its rows in the byte order of their keys, as every writer of them does, so two writers of
-// overlapping rows wait on each other rather than deadlock.
+// overlapping rows wait on each other rather than deadlock: rows come in that order
+// (compareRangeKeys, whose order is the one `collate "C"` gives their keys:
+// TestEachWritesGoKeyOrderIsPostgresCollateCOrder), and the statement takes them in the order it
+// is sent them (`with ordinality`), which Postgres knows its unnest answers and so sorts nothing
+// for, where an order by the keys sorted each statement's rows again.
 func upsertRangeFigures(ctx context.Context, tx pgx.Tx, scope figureScope, rows []rangeFigureRow) error {
 	for args := range rangeUpserts(scope, rows) {
 		if _, err := tx.Exec(ctx, `
 			insert into eval_range_figures (project_key, repo, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest_updated_at, built_by)
 			select $1, given.repo, given.days, given.end_day, given.eval_id, given.deploy_repo, given.fold_key, given.figures, given.oldest, $9
-			from unnest($2::text[], $3::int[], $4::date[], $5::text[], $10::text[], $6::bigint[], $7::bytea[], $8::timestamptz[])
-				as given(repo, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest)
-			order by given.repo collate "C", given.days, given.end_day, given.eval_id collate "C", given.deploy_repo collate "C"
+			from unnest($2::text[], $3::int[], $4::date[], $5::text[], $10::text[], $6::bigint[], $7::bytea[], $8::timestamptz[]) with ordinality
+				as given(repo, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest, sent)
+			order by given.sent
 			on conflict (project_key, repo, days, end_day, eval_id, deploy_repo) do update
 			set fold_key = excluded.fold_key, figures = excluded.figures, oldest_updated_at = excluded.oldest_updated_at,
 				built_by = excluded.built_by
@@ -1130,8 +1134,8 @@ func upsertRangeFigures(ctx context.Context, tx pgx.Tx, scope figureScope, rows 
 // tx, each list in the byte order of its keys and a statement for each chunk of it (rangeDeletes,
 // dayUpserts, dayDeletes): it deletes each gone range, upserts each day row as upsertRangeFigures
 // upserts a range row, only where its fold key, figures or stamp moved and recording scope.build,
-// and deletes each gone day. Every statement takes its rows in the byte order of their keys, as
-// upsertRangeFigures' do.
+// and deletes each gone day. Every statement takes its rows in the byte order of their keys, the
+// day upsert in the order it is sent them (compareDayFigureKeys), as upsertRangeFigures' does.
 func writeAfterRanges(ctx context.Context, tx pgx.Tx, scope figureScope, w figureWrites) error {
 	project := scope.project
 	for args := range rangeDeletes(project, w.goneRanges) {
@@ -1148,9 +1152,9 @@ func writeAfterRanges(ctx context.Context, tx pgx.Tx, scope figureScope, w figur
 		if _, err := tx.Exec(ctx, `
 			insert into eval_day_figures (project_key, repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp, built_by)
 			select $1, given.repo, given.day, given.eval_id, given.deploy_repo, given.fold_key, given.figures, given.rows_stamp, $8
-			from unnest($2::text[], $3::date[], $4::text[], $9::text[], $5::bigint[], $6::bytea[], $7::bigint[])
-				as given(repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp)
-			order by given.repo collate "C", given.day, given.eval_id collate "C", given.deploy_repo collate "C"
+			from unnest($2::text[], $3::date[], $4::text[], $9::text[], $5::bigint[], $6::bytea[], $7::bigint[]) with ordinality
+				as given(repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp, sent)
+			order by given.sent
 			on conflict (project_key, repo, day, eval_id, deploy_repo) do update
 			set fold_key = excluded.fold_key, figures = excluded.figures, rows_stamp = excluded.rows_stamp, built_by = excluded.built_by
 			where (eval_day_figures.fold_key, eval_day_figures.figures, eval_day_figures.rows_stamp)
@@ -1173,13 +1177,16 @@ func writeAfterRanges(ctx context.Context, tx pgx.Tx, scope figureScope, w figur
 }
 
 // compareRangeKeys orders range rows as eval_range_figures' primary key does within a project,
-// each string by its bytes.
+// each string by its bytes: the order upsertRangeFigures' statement takes them in, as it is sent
+// them.
 func compareRangeKeys(a, b rangeFigureKey) int {
 	return cmp.Or(strings.Compare(a.repo, b.repo), cmp.Compare(a.days, b.days), a.end.Compare(b.end),
 		strings.Compare(a.eval, b.eval), strings.Compare(a.deployRepo, b.deployRepo))
 }
 
-// compareDayFigureKeys orders day rows as eval_day_figures' primary key does within a project.
+// compareDayFigureKeys orders day rows as eval_day_figures' primary key does within a project,
+// each string by its bytes: the order writeAfterRanges' day upsert takes them in, as it is sent
+// them.
 func compareDayFigureKeys(a, b dayFigureKey) int {
 	return cmp.Or(strings.Compare(a.repo, b.repo), a.day.Compare(b.day), strings.Compare(a.eval, b.eval),
 		strings.Compare(a.deployRepo, b.deployRepo))
