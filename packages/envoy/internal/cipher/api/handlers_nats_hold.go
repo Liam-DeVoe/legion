@@ -472,14 +472,29 @@ func (s *server) readNATSHoldRecords(w http.ResponseWriter, r *http.Request, _ s
 // record whose signature verifies raises its floor, so a writer's unsigned record at a high gen
 // moves nothing.
 //
-// Each broker replica keeps its own floor, for as long as its process lives: a replica whose floor
-// is below a put-back gen serves it, at any time, not only after a restart, and production runs two
-// replicas, each request going to either. A replica that starts again, or one that has not yet
-// written or served a record, has no floor for it at all. That is the residual for the records;
-// the auth service's floor of the hold row (natscallout's holdView) is per replica too, but every
-// connection decision reads the row, so both replicas track its newest gen. Cutover rows carry no
-// gen of their own, so the routes keep no floor for them: an older signed cutover row put back
-// reads as genuine, on any replica, the same residual. Safe for concurrent use.
+// The residuals, which the hold's design accepts:
+//
+//   - Each broker replica keeps its own floor, for as long as its process lives. A broker-database
+//     writer can put back an older journal on a replica whose floor is below the put-back gen, at
+//     any time, not only after a restart; production runs two replicas. A floor both replicas
+//     share, kept outside the database (one Secret Manager secret the broker alone writes), is the
+//     fix if that acceptance changes. A replica that starts again, or one that has not yet written
+//     or served a record, has no floor for it at all. The auth service's floor of the hold row
+//     (natscallout's holdView) is per replica too, but every connection decision reads the row, so
+//     both replicas track its newest gen.
+//   - After a legitimate restore of the broker's database to an earlier point, every broker
+//     answers each record it has seen at a later gen 409 below_floor until it restarts.
+//   - A kind with several keys put back as an older set that lacks a key is caught only by the
+//     tombstone of the missing key; the keys put back at gens the floor has not passed read as
+//     genuine.
+//   - Cutover rows carry no gen of their own, so the routes keep no floor for them: an older signed
+//     cutover row put back reads as genuine, on any replica.
+//   - A token taken at CONNECT can read every hold route. The operator's platform token is the
+//     NATS CONNECT password, and the routes take it as their bearer for its life, at most an hour:
+//     every write needs the operator's signature as well, but no read does, so whoever holds the
+//     token reads the hold row, the journal, the cohort and the cutover rows.
+//
+// Safe for concurrent use.
 type recordFloors struct {
 	mu   sync.Mutex
 	gens map[recordFloorKey]recordFloor
