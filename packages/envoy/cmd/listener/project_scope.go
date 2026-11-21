@@ -380,12 +380,12 @@ func (h *edgeTopicHold) refusal(ctx context.Context, topics []string) *edgeRefus
 }
 
 // holdPlan is plan without the topics the hold refuses, and those topics: out of the session
-// consumer's filter and out of the row its write stores, since a plan is the complete topic set
-// both are set to (store.InterestPlan). The topics the registration named passed refusal
-// already, so what it drops is a topic of the stored row, which the answer's warnings name
-// (registeredSession.dropped). It is asked of every plan of the registration, the one made again
-// after a conflict among them, whose row another writer stored since. A read that gave no whole
-// answer is the error, which the route answers with repositoriesUnknown.
+// consumer's filter, and out of the row its write stores (store.InterestPlan.Withheld), which
+// takes them out of the row it reads before it merges the plan in. The topics the registration
+// named passed refusal already, so what it drops is a topic of the stored row, which the answer's
+// warnings name (registeredSession.dropped). It is asked of every plan of the registration, the
+// one made again after a conflict among them, whose row another writer stored since. A read that
+// gave no whole answer is the error, which the route answers with repositoriesUnknown.
 func (h *edgeTopicHold) holdPlan(ctx context.Context, plan store.InterestPlan) (store.InterestPlan, []string, error) {
 	if h == nil {
 		return plan, nil, nil
@@ -396,6 +396,7 @@ func (h *edgeTopicHold) holdPlan(ctx context.Context, plan store.InterestPlan) (
 	}
 	if len(refused) > 0 {
 		plan.Topics = slices.DeleteFunc(slices.Clone(plan.Topics), func(topic string) bool { return slices.Contains(refused, topic) })
+		plan.Withheld = refused
 	}
 	return plan, refused, nil
 }
