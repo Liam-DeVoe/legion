@@ -115,7 +115,8 @@ const (
 	relayRetryMax   = 30 * time.Second
 	// relayPruneInterval is how often the relay drops lapsed session entries from the cache
 	// (session.SessionRegistry.PruneLapsed), so a session that stopped registering stops being
-	// relayed: a lapse has no watch event.
+	// relayed: a lapse has no watch event. The edge's admissions of sessions whose entries are gone
+	// go at the same pass (pruneAdmissions).
 	relayPruneInterval = 30 * time.Second
 	// relayRestartLimit is how many relays of one listener may restart their consumer at once
 	// (sessionRelays.restart); the others wait their turn. A listener that starts relays every
@@ -607,7 +608,7 @@ func (m *sessionRelays) stop(ctx context.Context) {
 }
 
 // loop applies the relay's events in order until the relay stops, and prunes the lapsed entries of
-// the session cache every relayPruneInterval.
+// the session cache, and then the admissions of sessions with no entry, every relayPruneInterval.
 func (m *sessionRelays) loop() {
 	defer close(m.loopDone)
 	prune := time.NewTicker(relayPruneInterval)
@@ -617,9 +618,10 @@ func (m *sessionRelays) loop() {
 		case <-m.ctx.Done():
 			m.stopAll(relayCancelListenerStopping)
 			return
-		case <-prune.C:
+		case now := <-prune.C:
 			// Each lapse it finds is a change, which onChange hears.
 			m.sessions.PruneLapsed()
+			m.pruneAdmissions(now)
 			continue
 		case <-m.wake:
 		}
@@ -721,6 +723,17 @@ func (m *sessionRelays) wanted(sessionID string) (bool, relayCancelReason) {
 		return false, relayCancelNotOurs
 	}
 	return true, relayCancelUnknown
+}
+
+// pruneAdmissions forgets, as of now, the admission of each session the cache holds no entry of
+// (session.SessionRegistry.Get) that this replica admitted more than edgeAdmissionGrace ago
+// (edgeAdmissions.prune): a session that deregistered, or whose entry lapsed, keeps no list here.
+// Every listener that is no edge records no admission, and this forgets nothing there.
+func (m *sessionRelays) pruneAdmissions(now time.Time) {
+	m.delivery.admissions.prune(now.Add(-edgeAdmissionGrace), func(sessionID string) bool {
+		_, err := m.sessions.Get(sessionID)
+		return err != nil
+	})
 }
 
 // listConsumers reads every session consumer at once (bus.SessionConsumers.ListSessionConsumers)
@@ -978,8 +991,9 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 	// An edge listener relays a session only on the projects of the token it admitted the
 	// session's registration on, which it holds in memory (edgeAdmissions) and never reads back
 	// from the session's record. A session no registration of reached this listener since it
-	// started - one this replica's restart forgot, or one whose record names this machine and was
-	// written by no registration here - is relayed nothing, and its messages wait in its consumer
+	// started - one this replica's restart forgot, one whose record names this machine and was
+	// written by no registration here, or one whose admission was forgotten after its entry left
+	// the cache (pruneAdmissions) - is relayed nothing, and its messages wait in its consumer
 	// until it registers through this listener, which starts the relay again (apply).
 	if m.repositories != nil {
 		if _, admitted := m.delivery.admissions.of(sessionID); !admitted {
@@ -1119,9 +1133,10 @@ func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) 
 	projects, admitted := m.delivery.admissions.of(sessionID)
 	if !admitted {
 		// relayNATS relays no session this listener admitted no registration of, so this branch
-		// is not reached while admissions are kept. Were it reached, the frame is withheld and
-		// left unacknowledged, for the consumer to deliver again once the session registers here,
-		// never acknowledged away.
+		// is reached only when the admission was forgotten under a running relay: the session's
+		// entry left the cache, which stops its relay too (pruneAdmissions, wanted). The frame is
+		// withheld and left unacknowledged, for the consumer to deliver again once the session
+		// registers here, never acknowledged away.
 		return true, withheldNotAdmitted
 	}
 	withhold, reason := edgeFrameVerdict(m.repositories, sessionID, projects, msg.Subject, msg.Data)

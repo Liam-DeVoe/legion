@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -114,21 +115,37 @@ func ownFrameAgentSubject(sessionID string, projects []string, subject string) b
 // (sessionRelays.edgeWithholds). It is memory only and is never read back from a record: a session
 // this replica admitted no registration of since it started has none here, and the relay holds its
 // messages in its consumer until it registers through this replica (sessionRelays.relayNATS),
-// which the plugin does at every heartbeat. An entry is kept for the life of the process: one
-// session id and its token's list, at most oauthwire.MaxProjects keys.
+// which the plugin does at every heartbeat. An entry is forgotten once its session's record has
+// left the session cache (prune): the map holds the sessions whose records the bucket holds and
+// those admitted within the last edgeAdmissionGrace, each one session id and its token's list, at
+// most oauthwire.MaxProjects keys.
 type edgeAdmissions struct {
 	mu       sync.Mutex
-	projects map[string][]string
+	admitted map[string]edgeAdmission
 }
+
+// edgeAdmission is the list of the token one session's latest registration on this replica was
+// admitted on, and when this replica admitted it.
+type edgeAdmission struct {
+	projects []string
+	at       time.Time
+}
+
+// edgeAdmissionGrace is how long an admission is kept whatever the session cache holds
+// (edgeAdmissions.prune). A registration admits its session before it writes the session's entry
+// (subscribeHandler), within sendRequestBudget, and the entry reaches the cache by the watch after
+// that write; an admission younger than this may be one whose entry is still on its way, and is
+// kept.
+const edgeAdmissionGrace = relayPruneInterval
 
 // admit records projects as the list of the token sessionID's registration was admitted on.
 func (a *edgeAdmissions) admit(sessionID string, projects []string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.projects == nil {
-		a.projects = map[string][]string{}
+	if a.admitted == nil {
+		a.admitted = map[string]edgeAdmission{}
 	}
-	a.projects[sessionID] = slices.Clone(projects)
+	a.admitted[sessionID] = edgeAdmission{projects: slices.Clone(projects), at: time.Now()}
 }
 
 // of is the list sessionID's latest admitted registration's token carried, and whether this
@@ -136,6 +153,20 @@ func (a *edgeAdmissions) admit(sessionID string, projects []string) {
 func (a *edgeAdmissions) of(sessionID string) ([]string, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	projects, admitted := a.projects[sessionID]
-	return projects, admitted
+	admission, admitted := a.admitted[sessionID]
+	return admission.projects, admitted
+}
+
+// prune forgets each admission made before cutoff whose session gone reports has no record, so a
+// replica keeps no list for a session that deregistered or lapsed. gone runs under a.mu, so it may
+// not reach the admissions; the session cache's Get does not. A session that registers here again
+// is admitted again.
+func (a *edgeAdmissions) prune(cutoff time.Time, gone func(sessionID string) bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for sessionID, admission := range a.admitted {
+		if admission.at.Before(cutoff) && gone(sessionID) {
+			delete(a.admitted, sessionID)
+		}
+	}
 }
