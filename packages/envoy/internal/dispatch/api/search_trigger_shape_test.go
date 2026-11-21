@@ -11,30 +11,113 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// sqlStringEnd answers the index of the quote that closes the string literal opening at open in
-// src, a doubled quote being one quote of the text, or len(src) when none closes it.
-func sqlStringEnd(src string, open int) int {
-	for i := open + 1; i < len(src); i++ {
-		if src[i] != '\'' {
-			continue
-		}
-		if i+1 < len(src) && src[i+1] == '\'' {
-			i++
-			continue
-		}
-		return i
-	}
-	return len(src)
+var (
+	// dollarTag opens a dollar-quoted string: $$ or $tag$, a tag being an identifier ($1 is a
+	// parameter, not a quote).
+	dollarTag = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$`)
+	// plainIdentifier is a quoted identifier's text that names what the bare word would.
+	plainIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z_0-9]*$`)
+)
+
+// identifierByte reports whether b can continue an identifier, so that an E before a quote is the
+// escape-string prefix only when it stands alone.
+func identifierByte(b byte) bool {
+	return b == '_' || b == '$' || (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
-// sqlCallEnd answers the index just past the parenthesis that closes the one at open in src,
-// skipping string literals, or -1 when none closes it.
-func sqlCallEnd(src string, open int) int {
+// maskSQL answers src as Postgres's lexer reads it, with nothing but code left: each comment (`--`
+// to the line's end, and `/* */`, nested) becomes a space; each string literal (an ordinary one,
+// whose doubled quote is one quote, an E-prefixed one, whose backslash escapes, and a
+// dollar-quoted one of any tag) becomes an empty literal; and a quoted identifier becomes its name
+// where that name is a plain identifier, so "to_tsvector" reads as to_tsvector. Every check below
+// reads the masked text, so a quote inside a comment or a dollar-quoted string hides no code, and
+// text inside a literal is no call.
+func maskSQL(src string) string {
+	var code strings.Builder
+	for i := 0; i < len(src); {
+		switch rest := src[i:]; {
+		case strings.HasPrefix(rest, "--"):
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+		case strings.HasPrefix(rest, "/*"):
+			for depth := 0; i < len(src); {
+				switch {
+				case strings.HasPrefix(src[i:], "/*"):
+					depth, i = depth+1, i+2
+				case strings.HasPrefix(src[i:], "*/"):
+					depth, i = depth-1, i+2
+				default:
+					i++
+				}
+				if depth == 0 {
+					break
+				}
+			}
+			code.WriteByte(' ')
+		case src[i] == '\'':
+			escapes := i > 0 && (src[i-1] == 'E' || src[i-1] == 'e') && (i == 1 || !identifierByte(src[i-2]))
+			if escapes {
+				written := code.String()
+				code.Reset()
+				code.WriteString(written[:len(written)-1])
+			}
+			for i++; i < len(src); i++ {
+				if escapes && src[i] == '\\' {
+					i++
+					continue
+				}
+				if src[i] == '\'' {
+					if i+1 < len(src) && src[i+1] == '\'' {
+						i++
+						continue
+					}
+					break
+				}
+			}
+			i++
+			code.WriteString("''")
+		case src[i] == '"':
+			var name strings.Builder
+			for i++; i < len(src); i++ {
+				if src[i] == '"' {
+					if i+1 < len(src) && src[i+1] == '"' {
+						name.WriteByte('"')
+						i++
+						continue
+					}
+					break
+				}
+				name.WriteByte(src[i])
+			}
+			i++
+			if plainIdentifier.MatchString(name.String()) {
+				code.WriteString(name.String())
+			} else {
+				code.WriteString("quoted_identifier")
+			}
+		case src[i] == '$' && (i == 0 || !identifierByte(src[i-1])) && dollarTag.MatchString(rest):
+			tag := dollarTag.FindString(rest)
+			if close := strings.Index(rest[len(tag):], tag); close < 0 {
+				i = len(src)
+			} else {
+				i += len(tag) + close + len(tag)
+			}
+			code.WriteString("''")
+		default:
+			code.WriteByte(src[i])
+			i++
+		}
+	}
+	return code.String()
+}
+
+// sqlCallEnd answers the index just past the parenthesis that closes the one at open in code,
+// which maskSQL has left with no literal or comment, or -1 when none closes it.
+func sqlCallEnd(code string, open int) int {
 	depth := 0
-	for i := open; i < len(src); i++ {
-		switch src[i] {
-		case '\'':
-			i = sqlStringEnd(src, i)
+	for i := open; i < len(code); i++ {
+		switch code[i] {
 		case '(':
 			depth++
 		case ')':
@@ -46,21 +129,19 @@ func sqlCallEnd(src string, open int) int {
 	return -1
 }
 
-// sqlCalls answers each call of the function name in src, whole, and its top-level arguments.
-func sqlCalls(src, name string) (calls []string, args [][]string) {
+// sqlCalls answers each call of the function name in code, whole, and its top-level arguments.
+func sqlCalls(code, name string) (calls []string, args [][]string) {
 	opener := regexp.MustCompile(`(?i)(?:\b[a-z_]+\.)?\b` + name + `\s*\(`)
-	for _, at := range opener.FindAllStringIndex(src, -1) {
-		end := sqlCallEnd(src, at[1]-1)
+	for _, at := range opener.FindAllStringIndex(code, -1) {
+		end := sqlCallEnd(code, at[1]-1)
 		if end < 0 {
 			continue
 		}
-		calls = append(calls, src[at[0]:end])
+		calls = append(calls, code[at[0]:end])
 		var split []string
-		inner, depth, start := src[at[1]:end-1], 0, 0
-		for i := 0; i < len(inner); i++ {
-			switch inner[i] {
-			case '\'':
-				i = sqlStringEnd(inner, i)
+		inner, depth, start := code[at[1]:end-1], 0, 0
+		for i, b := range []byte(inner) {
+			switch b {
 			case '(':
 				depth++
 			case ')':
@@ -77,39 +158,15 @@ func sqlCalls(src, name string) (calls []string, args [][]string) {
 	return calls, args
 }
 
-// withoutCalls answers src with every call of each named function removed whole.
-func withoutCalls(src string, names ...string) string {
+// withoutCalls answers code with every call of each named function removed whole.
+func withoutCalls(code string, names ...string) string {
 	for _, name := range names {
-		calls, _ := sqlCalls(src, name)
+		calls, _ := sqlCalls(code, name)
 		for _, call := range calls {
-			src = strings.ReplaceAll(src, call, "")
+			code = strings.ReplaceAll(code, call, "")
 		}
 	}
-	return src
-}
-
-// withoutSQLComments answers src with each `--` comment removed, leaving a `--` inside a string
-// literal where it is.
-func withoutSQLComments(src string) string {
-	var kept strings.Builder
-	for i := 0; i < len(src); i++ {
-		switch {
-		case src[i] == '\'':
-			end := min(sqlStringEnd(src, i), len(src)-1)
-			kept.WriteString(src[i : end+1])
-			i = end
-		case strings.HasPrefix(src[i:], "--"):
-			for i < len(src) && src[i] != '\n' {
-				i++
-			}
-			if i < len(src) {
-				kept.WriteByte('\n')
-			}
-		default:
-			kept.WriteByte(src[i])
-		}
-	}
-	return kept.String()
+	return code
 }
 
 // normalisedCall reports whether argument is wholly one call of search_text or
@@ -120,14 +177,17 @@ func normalisedCall(argument string) bool {
 }
 
 var (
-	sqlString = regexp.MustCompile(`'(?:[^']|'')*'`)
-	newRead   = regexp.MustCompile(`(?i)\bnew\b[^;,\n]*`)
+	// assignTarget is a trigger's write of the vector or the title lexemes, and returnNew its
+	// return of the row: neither reads a column. rowRead is any other mention of the row.
+	assignTarget = regexp.MustCompile(`(?i)\bnew\s*\.\s*(search|title_lexemes)\s*:=`)
+	returnNew    = regexp.MustCompile(`(?i)\breturn\s+new\b`)
+	rowRead      = regexp.MustCompile(`(?i)\bnew\b(\s*\.\s*\w+)?`)
 	// directParse is a call of any of Postgres's functions that parse text into a vector:
-	// to_tsvector, json_to_tsvector, jsonb_to_tsvector, quoted or qualified.
-	directParse = regexp.MustCompile(`(?i)"?\w*to_tsvector"?\s*\(`)
+	// to_tsvector, json_to_tsvector, jsonb_to_tsvector, qualified or not.
+	directParse = regexp.MustCompile(`(?i)\w*to_tsvector\s*\(`)
 	// searchCall is a call that reaches the parser or a normaliser, which makes a trigger function
 	// one this test reads.
-	searchCall = regexp.MustCompile(`(?i)\b(search_vector|issue_search_vector|title_lexemes|search_text|search_document_text)\s*\(|"?\w*to_tsvector"?\s*\(`)
+	searchCall = regexp.MustCompile(`(?i)\b(search_vector|issue_search_vector|title_lexemes|search_text|search_document_text)\s*\(|\w*to_tsvector\s*\(`)
 )
 
 // Each search trigger hands Postgres's text-search parser its text only through the shared
@@ -137,17 +197,18 @@ var (
 // search_text joins underscore runs that search_text broke, which the parser reads in quadratic
 // time (20261121060636), and a text read raw reaches the parser with every run whole.
 //
-// The test reads, outside comments and string literals, the source of every trigger function in
-// the database that calls the parser or a normaliser; the set must be the six it knows, so a new
-// one is read here before it merges. In each: no call of a parsing function (to_tsvector and its
-// json forms, in any spelling); each argument of search_vector is an empty literal or wholly one
-// normalising call; markdown, in any spelling, only inside search_document_text; and once the
-// normalising calls and the vector functions read below are removed, no read through `new` is
-// left - new.x, (new).x, row_to_json(new) - but the vector it writes and the artifact_id it looks
-// a row up by. It reads search_document_text's own body too, which must end in search_text, and
-// each parameter of the two vector functions those triggers call, which must appear only inside its
-// normaliser. A read of the row through another name, such as a variable assigned from new, is
-// beyond it; the parser-input test holds what reaches the parser at run time.
+// The test reads the source of every trigger function in the database that calls the parser or a
+// normaliser, as maskSQL leaves it: code alone, comments of either kind and string literals of
+// every kind taken out. The set must be the six it knows, so a new one is read here before it
+// merges. In each: no call of a parsing function (to_tsvector and its json forms, quoted or
+// qualified); each argument of search_vector is a literal or wholly one normalising call;
+// markdown only inside search_document_text; and once the normalising calls and the vector
+// functions read below are removed, no read through `new` is left - new.x, (new).x,
+// row_to_json(new) - but the vector it writes and the artifact_id it looks a row up by. It reads
+// search_document_text's own body too, which must be one search_text call, and each parameter of
+// the two vector functions those triggers call, which must appear only inside its normaliser. A
+// read of the row through another name, such as a variable assigned from new, is beyond it; the
+// parser-input test holds what reaches the parser at run time.
 func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -164,9 +225,8 @@ func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 		if err := rows.Scan(&name, &source); err != nil {
 			t.Fatalf("read a trigger function: %v", err)
 		}
-		source = withoutSQLComments(source)
-		if searchCall.MatchString(sqlString.ReplaceAllString(source, "''")) {
-			triggers[name] = source
+		if code := maskSQL(source); searchCall.MatchString(code) {
+			triggers[name] = code
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -183,7 +243,7 @@ func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 			`select prosrc from pg_proc where proname = $1 and pronamespace = 'public'::regnamespace`, name).Scan(&source); err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		return withoutSQLComments(source)
+		return maskSQL(source)
 	}
 	body := strings.TrimSpace(source("search_document_text"))
 	if selected, ok := strings.CutPrefix(strings.ToLower(body), "select"); !ok || !normalisedCall(strings.TrimSpace(selected)) ||
@@ -197,35 +257,34 @@ func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 	for name, parameters := range vectorFunctions {
 		text := source(name)
 		for parameter, wrapper := range parameters {
-			rest := sqlString.ReplaceAllString(withoutCalls(text, wrapper), "''")
+			rest := withoutCalls(text, wrapper)
 			if regexp.MustCompile(`(?i)\b` + parameter + `\b`).MatchString(rest) {
 				t.Errorf("%s reads %s outside %s:\n%s", name, parameter, wrapper, text)
 			}
 		}
 	}
 
-	for name, source := range triggers {
-		code := sqlString.ReplaceAllString(source, "''")
+	for name, code := range triggers {
 		if parse := directParse.FindString(code); parse != "" {
 			t.Errorf("%s calls the parser itself (%s…): it must build its vector through search_vector or a vector function", name, parse)
 		}
-		_, args := sqlCalls(source, "search_vector")
+		_, args := sqlCalls(code, "search_vector")
 		for _, arguments := range args {
 			for _, argument := range arguments {
 				if argument != "''" && !normalisedCall(argument) {
-					t.Errorf("%s hands search_vector %q, which is neither '' nor one call of search_text or search_document_text", name, argument)
+					t.Errorf("%s hands search_vector %q, which is neither a literal nor one call of search_text or search_document_text", name, argument)
 				}
 			}
 		}
-		if regexp.MustCompile(`(?i)\bmarkdown\b`).MatchString(sqlString.ReplaceAllString(withoutCalls(source, "search_document_text"), "''")) {
-			t.Errorf("%s reads markdown, which holds ask blocks, outside search_document_text:\n%s", name, source)
+		if regexp.MustCompile(`(?i)\bmarkdown\b`).MatchString(withoutCalls(code, "search_document_text")) {
+			t.Errorf("%s reads markdown, which holds ask blocks, outside search_document_text:\n%s", name, code)
 		}
-		rest := sqlString.ReplaceAllString(withoutCalls(source,
-			"search_document_text", "search_text", "issue_search_vector", "title_lexemes", "issue_embedding_spec"), "''")
-		for _, read := range newRead.FindAllString(rest, -1) {
-			read = strings.ToLower(strings.TrimSpace(read))
-			if !regexp.MustCompile(`^new\.(search|title_lexemes)\s*:=|^new\.artifact_id\b|^new$`).MatchString(read) {
-				t.Errorf("%s reads the row raw (%s), outside the normalising functions:\n%s", name, read, source)
+		rest := withoutCalls(code, "search_document_text", "search_text", "issue_search_vector", "title_lexemes", "issue_embedding_spec")
+		rest = returnNew.ReplaceAllString(assignTarget.ReplaceAllString(rest, "assigned :="), "return")
+		for _, at := range rowRead.FindAllStringIndex(rest, -1) {
+			read := strings.ToLower(strings.Join(strings.Fields(rest[at[0]:at[1]]), ""))
+			if read != "new.search" && read != "new.artifact_id" {
+				t.Errorf("%s reads the row raw (%s), outside the normalising functions:\n%s", name, rest[at[0]:min(len(rest), at[1]+40)], code)
 			}
 		}
 	}
