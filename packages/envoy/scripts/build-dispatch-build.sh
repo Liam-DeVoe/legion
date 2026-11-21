@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Builds one Dispatch build from a commit of this repository into a directory: the server, its web
-# app, its `dispatch` command, and the test data the two-build test (cmd/dispatch/twobuild_*_test.go,
-# `go test -tags twobuild`) reads from it. It builds from `git archive` of the commit, so it makes
-# no worktree, branch or checkout. The server and its web app take the steps the commit's image
+# app, its `dispatch` command, the listener beside it, and the test data the two-build tests read
+# from it (cmd/dispatch/twobuild_*_test.go and infra/consumernames/mixedbuild_*_test.go, each
+# `go test -tags twobuild`). It builds from `git archive` of the commit, so it makes no worktree,
+# branch or checkout. The server, the listener and the web app take the steps the commit's image
 # build takes (packages/envoy/docker/Dockerfile): `bun install --frozen-lockfile`, the contracts'
-# Go codegen, `bun run build:web`, and `go build` of ./cmd/dispatch with `-X main.buildCommit`.
-# The image does not build the `dispatch` command: the script builds the contracts bundle, then
-# runs the commit's own build-dispatch-cli.sh. `go build` runs with `GOTOOLCHAIN=auto`, so a
-# commit that needs another Go toolchain gets it.
+# Go codegen, `bun run build:web`, `go build` of ./cmd/dispatch with `-X main.buildCommit`, and
+# `go build` of ./cmd/listener with no flags. The image does not build the `dispatch` command: the
+# script builds the contracts bundle, then runs the commit's own build-dispatch-cli.sh. `go build`
+# runs with `GOTOOLCHAIN=auto`, so a commit that needs another Go toolchain gets it.
 #
 #   packages/envoy/scripts/build-dispatch-build.sh --commit <sha|tag> --out <dir>
 #   packages/envoy/scripts/build-dispatch-build.sh --previous-release --out <dir>
@@ -24,6 +25,7 @@
 # <dir> then holds:
 #   src/                              the commit's archive, where the parts were built
 #   envoy-dispatch                    the server, built with -X main.buildCommit=<sha>
+#   envoy-listener                    the listener, built as the image builds it
 #   web/                              the web app (packages/dispatch/web/dist), DISPATCH_WEB_DIST
 #   dispatch.js                       the `dispatch` command bundle, run as `bun dispatch.js`
 #   pmdoc/testdata/corpus/            the commit's document corpus
@@ -152,6 +154,8 @@ bash "$cli_script" "$out" || fail "the dispatch command bundle of $sha failed to
 (cd -- "$src/packages/envoy" &&
   GOTOOLCHAIN=auto go build -ldflags "-X main.buildCommit=$sha" -o "$out/envoy-dispatch" ./cmd/dispatch) ||
   fail "go build ./cmd/dispatch of $sha failed."
+(cd -- "$src/packages/envoy" && GOTOOLCHAIN=auto go build -o "$out/envoy-listener" ./cmd/listener) ||
+  fail "go build ./cmd/listener of $sha failed."
 
 readonly dispatch_dir=$src/packages/envoy/internal/dispatch
 mkdir -p -- "$out/pmdoc/testdata" "$out/pmdoc/schema" "$out/text"

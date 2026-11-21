@@ -33,6 +33,12 @@ on:
           that filter matched.
         type: string
         required: true
+      consumer_names_mixed_build:
+        description: >-
+          ci.yaml's `needs.changes.outputs.consumer_names_mixed_build`: the consumer-names
+          mixed-build step below runs when that filter matched.
+        type: string
+        required: true
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -46,7 +52,9 @@ env:
 jobs:
   dispatch-two-builds:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # 45 minutes for the Dispatch half, and 20 more for the consumer-names mixed-build step below,
+    # which carries a bound of its own.
+    timeout-minutes: 65
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -178,6 +186,26 @@ jobs:
           pattern=$(../../.github/scripts/go-tagged-tests.sh twobuild ./cmd/dispatch)
           go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
+      # The consumer-names cutover's mixed-build rows (packages/envoy/infra/consumernames,
+      # mixedbuild_*_test.go): the previous build's envoy-listener, which build-dispatch-build.sh
+      # builds beside its server, on the writer hold's stack, whose broker routes need
+      # BROKER_TEST_DATABASE_URL (holdtest). Only what the twobuild tag adds there, by the same
+      # lister as the step above. go test reports a skipped test as a pass, so a row that skipped
+      # (an unset variable, a build without the listener) fails the step by name.
+      - name: Mixed-build tests of the consumer-names cutover
+        if: inputs.consumer_names_mixed_build == 'true'
+        timeout-minutes: 20
+        env:
+          DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
+          BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+        run: |
+          pattern=$(../../../.github/scripts/go-tagged-tests.sh twobuild ./consumernames)
+          go test -tags twobuild -count=1 -v -timeout 18m -run "$pattern" ./consumernames 2>&1 | tee "$RUNNER_TEMP/mixed-build.log"
+          if grep -E -e '--- SKIP' "$RUNNER_TEMP/mixed-build.log"; then
+            echo "::error::a consumer-names mixed-build row skipped, which is no pass; the SKIP lines above name it and why"
+            exit 1
+          fi
+        working-directory: packages/envoy/infra
       # dispatch-browser.yaml's shard job's step of this name, for the reason
       # .github/ci-notes/dispatch-browser.md#why-every-job-that-runs-the-suite-builds-contracts-first
       # gives: Playwright's

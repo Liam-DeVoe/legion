@@ -2,7 +2,9 @@ package holdtest
 
 import (
 	"context"
+	"crypto"
 	"crypto/ed25519"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,10 +13,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/internal/holdrecord/holdrecordtest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -34,6 +41,19 @@ const (
 
 // ListenerMachines are the listener entries the stack's auth service lists, by machine id.
 var ListenerMachines = []string{"hub-a", "hub-b", "hub-c"}
+
+// DispatchMachines are the Dispatch entries the stack's auth service lists, by machine id, and
+// daemonAccount the one daemon entry's account, granted every project: a test connects an
+// envoy-dispatch of each through DispatchCredential and a Legion daemon through DaemonCredential.
+var DispatchMachines = []string{"mixed-dispatch"}
+
+const (
+	dispatchAccountPrefix = "system:serviceaccount:holdtest:dispatch-"
+	daemonAccount         = "system:serviceaccount:holdtest:daemon"
+	daemonToken           = "holdtest-daemon-token"
+)
+
+func dispatchToken(machine string) string { return "holdtest-dispatch-" + machine + "-token" }
 
 // Stack is the writer hold's whole surrounding, real but for the platform tokens: a test Postgres
 // schema with the broker's migrations, the broker's own /v1/nats-hold routes on it
@@ -58,6 +78,9 @@ type Stack struct {
 
 	t      testing.TB
 	tokens *tokenTable
+	// sessions are the session access tokens SessionCredential minted, which the auth service's
+	// introspection answers.
+	sessions *sessionTable
 }
 
 // tokenTable is the stack's platform tokens: each raw token the hub's clients present, the account
@@ -102,6 +125,14 @@ func Start(t testing.TB) *Stack {
 		tokens.accounts[listenerToken(machine)] = account
 		entries = append(entries, "listener/"+machine+"/*="+account)
 	}
+	for _, machine := range DispatchMachines {
+		account := dispatchAccountPrefix + machine
+		tokens.accounts[dispatchToken(machine)] = account
+		entries = append(entries, "dispatch/"+machine+"/*="+account)
+	}
+	tokens.accounts[daemonToken] = daemonAccount
+	entries = append(entries, "daemon/-/*="+daemonAccount)
+	sessions := &sessionTable{answers: map[string]oauthwire.Introspection{}}
 	services, err := natscallout.ParseServices(strings.Join(entries, " "))
 	if err != nil {
 		t.Fatalf("holdtest: the stack's services: %v", err)
@@ -129,7 +160,8 @@ func Start(t testing.TB) *Stack {
 		HoldRead: func(ctx context.Context) (natshold.Reading, bool, error) {
 			return natshold.Read(ctx, pool, schema)
 		},
-		HoldKeys: []ed25519.PublicKey{broker.VerifyKey},
+		HoldKeys:   []ed25519.PublicKey{broker.VerifyKey},
+		Introspect: sessions.introspect,
 	})
 	if err != nil {
 		t.Fatalf("holdtest: start the auth service: %v", err)
@@ -147,7 +179,7 @@ func Start(t testing.TB) *Stack {
 	}
 	kube := NewKube(t, cluster)
 	kube.InstallRender(t, keys)
-	return &Stack{Cluster: cluster, Keys: keys, Broker: broker, Records: records, Auth: auth, Kube: kube, t: t, tokens: tokens}
+	return &Stack{Cluster: cluster, Keys: keys, Broker: broker, Records: records, Auth: auth, Kube: kube, t: t, tokens: tokens, sessions: sessions}
 }
 
 // SetTokenLife sets how long every platform token the stack verifies from now on lives from its
@@ -171,6 +203,80 @@ func (s *Stack) ProbeCredential() nats.Option { return nats.UserInfo("service", 
 // ListenerCredential is the CONNECT of the listener entry of machine, one of ListenerMachines.
 func (s *Stack) ListenerCredential(machine string) nats.Option {
 	return nats.UserInfo("service", listenerToken(machine))
+}
+
+// DispatchCredential is the CONNECT of the Dispatch entry of machine, one of DispatchMachines,
+// which envoy-dispatch and the listener beside it share.
+func (s *Stack) DispatchCredential(machine string) nats.Option {
+	return nats.UserInfo("service", dispatchToken(machine))
+}
+
+// DaemonCredential is the CONNECT of the stack's one daemon entry, granted every project.
+func (s *Stack) DaemonCredential() nats.Option { return nats.UserInfo("service", daemonToken) }
+
+// SessionCredential is the CONNECT of session sessionID, as natscred.Session sends it: a broker
+// access token bound to a key of its own in the token field, and the key's proof over the
+// connection's nonce as the signature. It mints the token, which the auth service's introspection
+// answers live for the platform tokens' life (SetTokenLife), so the user it is answered with is
+// natsgrant.Session's: the session's own relay subject and control subject, and nothing of another
+// session's.
+func (s *Stack) SessionCredential(sessionID string) nats.Option {
+	s.t.Helper()
+	key, err := proof.NewKey()
+	if err != nil {
+		s.t.Fatalf("holdtest: a key for session %s: %v", sessionID, err)
+	}
+	sum, err := (&jose.JSONWebKey{Key: key.Public()}).Thumbprint(crypto.SHA256)
+	if err != nil {
+		s.t.Fatalf("holdtest: the thumbprint of session %s's key: %v", sessionID, err)
+	}
+	s.tokens.mu.Lock()
+	life := s.tokens.life
+	s.tokens.mu.Unlock()
+	token := "holdtest-session-" + sessionID + "-token"
+	s.sessions.put(token, oauthwire.Introspection{
+		Active: true, Session: sessionID, Person: "person@example.com",
+		ClientID: ciphertoken.ExchangeClientID, ProjectScope: ciphertoken.ProjectScopePerson,
+		Thumbprint: base64.RawURLEncoding.EncodeToString(sum),
+		ExpiresAt:  time.Now().Add(life).Unix(),
+	})
+	sign := func(nonce []byte) ([]byte, error) {
+		signed, err := cipherclient.ConnectionProof(key, token, string(nonce))
+		return []byte(signed), err
+	}
+	options := []nats.Option{
+		// The JWT is a placeholder, which the server needs to send a signature at all and the
+		// auth service never reads (natscred/session.go, placeholderJWT).
+		nats.UserJWT(func() (string, error) { return "-", nil }, sign),
+		nats.TokenHandler(func() string { return token }),
+	}
+	return func(o *nats.Options) error {
+		for _, option := range options {
+			if err := option(o); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+// sessionTable is the broker's knowledge of the session tokens SessionCredential minted, as its
+// introspection answers them: a token it never minted is answered not live.
+type sessionTable struct {
+	mu      sync.Mutex
+	answers map[string]oauthwire.Introspection
+}
+
+func (st *sessionTable) put(token string, answer oauthwire.Introspection) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.answers[token] = answer
+}
+
+func (st *sessionTable) introspect(_ context.Context, token string) (oauthwire.Introspection, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.answers[token], nil
 }
 
 // Connect connects to url with opts, its connect bounded, closed when the test ends, and answers

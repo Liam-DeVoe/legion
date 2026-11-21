@@ -1007,6 +1007,11 @@ RULES = {
     # entry is under its new path below.
     f"{INFRA}/host/heldportwrapper/main_test.go": [
         run(ENVOY, ["./cmd/listener"], "infra/host/heldportwrapper/main_test.go:112 buildListener builds . in ../../../cmd/listener (root go.work)", mode="build")],
+    f"{INFRA}/consumernames/mixedbuild_harness_test.go": [
+        run(ENVOY, ["./cmd/listener"], "infra/consumernames/mixedbuild_harness_test.go:94 mixedBuildCurrentListener builds . in ../../cmd/listener (root go.work)", mode="build")],
+    f"{INFRA}/consumernames/mixedbuild_modes_test.go": [
+        run(ENVOY, ["./cmd/listener"], "infra/consumernames/mixedbuild_modes_test.go:191 mixedBuildStartOnlyListener builds . in ../../cmd/listener "
+            "with an -overlay of ../../internal/bus/session_fresh.go (:177), which that closure holds (root go.work)", mode="build")],
     f"{INFRA}/host/live_test.go": [run(INFRA, ["./cmd/pulumi-resource-envoy-infra"], "infra/host/live_test.go pulumitest.Plugin -> internal/pulumitest/pulumitest.go:170-171 go build", mode="build")],
     f"{INFRA}/internal/textcheck/core_imports_test.go": [
         run(INFRA, ["./core"], "infra/internal/textcheck/core_imports_test.go:20 moduleDeps, whose go list -deps ./core runs in ../.. (:31-32)", mode="build")],
@@ -1118,6 +1123,20 @@ go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch"""
 # and its TAG_RUNS entry are the Go step's.
 TWO_BUILDS_SAME_JOB = "dispatch-two-builds-same"
 TWO_BUILDS_SAME_STEP = "Two-build tests of the Dispatch server against its own build"
+# The two-build job's consumer-names step: the cutover's mixed-build rows of envoy-infra's
+# consumernames package (mixedbuild_*_test.go), against the previous build's listener, which
+# build-dispatch-build.sh builds beside its server. It runs only what the twobuild tag adds there,
+# since envoy-infra-go's unit step runs the package's untagged tests, and fails on a skipped row.
+# It is a gate of its own (consumer_names_mixed_build), so the TAG_RUNS pairing below holds
+# envoy_infra_go to this step's reads and not to the Dispatch half's.
+MIXED_BUILD_STEP = "Mixed-build tests of the consumer-names cutover"
+MIXED_BUILD_SCRIPT = f"""\
+pattern=$(../../../{TAGGED_TESTS} twobuild ./consumernames)
+go test -tags twobuild -count=1 -v -timeout 18m -run "$pattern" ./consumernames 2>&1 | tee "$RUNNER_TEMP/mixed-build.log"
+if grep -E -e '--- SKIP' "$RUNNER_TEMP/mixed-build.log"; then
+  echo "::error::a consumer-names mixed-build row skipped, which is no pass; the SKIP lines above name it and why"
+  exit 1
+fi"""
 BROKER_MP_STEP = "Two-process tests of the secrets broker"
 BROKER_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/cipherd)
@@ -1231,6 +1250,27 @@ def two_builds_same_step():
     return pinned_step(TWO_BUILDS_SAME_JOB, TWO_BUILDS_SAME_STEP, ENVOY, TWO_BUILDS_SCRIPT, [
         (ENVOY, ["./cmd/dispatch"], "go test -tags twobuild ./cmd/dispatch", {"tags": "twobuild"}),
     ], workflow=job_file(TWO_BUILDS_JOB))
+
+
+def mixed_build_step():
+    """The two-build job's consumer-names step, pinned whole, since its -run and its skip check are
+    outside the simple form. Both gates that select it carry it: consumer_names_mixed_build, the
+    step's own, and dispatch_two_builds, since the job must be selected for the step to run in it."""
+    return pinned_step(TWO_BUILDS_JOB, MIXED_BUILD_STEP, INFRA, MIXED_BUILD_SCRIPT, [
+        (INFRA, ["./consumernames"], "go test -tags twobuild ./consumernames", {"tags": "twobuild"}),
+    ])
+
+
+def mixed_build_reads():
+    """What the consumer-names step reads beyond its closure and the RULES rows of its twobuild
+    files: the script its -run comes from, the script that wrote the previous build whose listener
+    it runs, and the Go its job sets up."""
+    return reads(
+        (TAGGED_TESTS, f"{at(TWO_BUILDS_JOB, MIXED_BUILD_STEP)} takes its -run from it"),
+        (f"{ENVOY}/scripts/build-dispatch-build.sh",
+         f"{at(TWO_BUILDS_JOB, 'Build the previous build')} writes the previous build whose envoy-listener "
+         f"{at(TWO_BUILDS_JOB, MIXED_BUILD_STEP)} runs (DISPATCH_PREVIOUS_BUILD)"),
+    ) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod")
 
 
 def two_builds_go_reads():
@@ -3617,6 +3657,7 @@ GATES = [
     ], exact=[
         two_builds_go_step(),
         two_builds_same_step(),
+        mixed_build_step(),
         pinned_step(TWO_BUILDS_JOB, "Build the Dispatch server", ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
             (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
         ]),
@@ -3639,7 +3680,7 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds the server's port through it"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
-    ) + two_builds_go_reads()),
+    ) + two_builds_go_reads() + mixed_build_reads()),
 
     # The two-build job's Go step alone, behind a gate of its own, so the TAG_RUNS pairing below
     # holds envoy_go to what this step reads - cmd/dispatch's twobuild closure, the CLI
@@ -3647,6 +3688,13 @@ GATES = [
     # reads, which a change to cmd/dispatch's untagged tests never needs.
     gate("dispatch_two_builds_go", TWO_BUILDS_JOB, step=TWO_BUILDS_STEP, runs=[ceiling_run(TWO_BUILDS_JOB)],
          exact=[two_builds_go_step(), two_builds_same_step()], reads=two_builds_go_reads()),
+
+    # The two-build job's consumer-names step alone, behind a gate of its own for the Go step's
+    # reason: the TAG_RUNS pairing below holds envoy_infra_go to what this step reads - the
+    # consumernames package's twobuild closure and the scripts it leans on - and not to the
+    # Dispatch half's.
+    gate("consumer_names_mixed_build", TWO_BUILDS_JOB, step=MIXED_BUILD_STEP,
+         exact=[mixed_build_step()], reads=mixed_build_reads()),
 
     gate("listener_server_change", "listener-server-change", exact=[
         pinned_step("listener-server-change", SOAK_STEP, ENVOY, SOAK_SCRIPT, [
@@ -4025,6 +4073,12 @@ TAG_RUNS = [
            job_file(TWO_BUILDS_JOB)),
     TagRun("dispatch_two_builds_go", TWO_BUILDS_SAME_JOB, TWO_BUILDS_SAME_STEP, "envoy_go", "envoy-go",
            f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",
+           job_file(TWO_BUILDS_JOB)),
+    # The two-build job's consumer-names step has a gate of its own (consumer_names_mixed_build),
+    # so envoy_infra_go is held to that step's reads and not to the Dispatch half's.
+    TagRun("consumer_names_mixed_build", TWO_BUILDS_JOB, MIXED_BUILD_STEP, "envoy_infra_go", "envoy-infra-go",
+           "envoy-infra-go's \"Unit test envoy-infra\" runs ./consumernames's untagged tests (scripts/race-unit.sh, "
+           "every package of the module but internal/textcheck)",
            job_file(TWO_BUILDS_JOB)),
     # envoy-go's unit step leaves /cmd/cipherd$ out, since its database-skips step runs it.
     TagRun("broker_multiprocess", "broker-multiprocess", BROKER_MP_STEP, "envoy_go", "envoy-go",
