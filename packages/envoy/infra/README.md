@@ -4114,13 +4114,13 @@ keeps a floor of each hold record it has written or served too (`recordFloors`):
 record put back, or a record gone that no route deleted, reads as unknown, and the command that
 reads it stops. The one record the routes delete, the cohort that `hold abort` from `prepare`
 deletes, goes with the operator's signed delete kept beside the records in the same statement
-(`nats_hold_record_deletes`), so every replica reads it as deleted and the abort's rerun passes on
-whichever replica serves it. A cohort gone with no delete that verifies, or with one signed over an
-earlier gen than a replica saw, reads as unknown on each replica that saw it. The residual: every
-floor is per replica and lasts as long as its process, so a replica that starts again, or one that
-has not served the row or a record since its newer gen, serves an older signed one put back as it
-would the genuine one; production runs two replicas. A floor both replicas share, kept outside the
-database, is the fix if that acceptance changes.
+(`nats_hold_record_deletes`), so every replica reads it as deleted, refuses a write of its key
+again, and the abort's rerun passes on whichever replica serves it. A cohort gone with no delete
+that verifies, or with one signed over an earlier gen than a replica saw, reads as unknown on each
+replica that saw it. The residual: every floor is per replica and lasts as long as its process, so a
+replica that starts again, or one that has not served the row or a record since its newer gen,
+serves an older signed one put back as it would the genuine one; production runs two replicas. A
+floor both replicas share, kept outside the database, is the fix if that acceptance changes.
 
 **Restoring a lost hold row.** The route stores a restored row only at one above the highest gen
 its log holds, which no command can read: a restore at any other gen is refused naming that gen
