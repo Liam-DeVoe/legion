@@ -534,6 +534,61 @@ func TestForcedOrderAReleasedHoldTakesNoEventFromTheNextHold(t *testing.T) {
 	}
 }
 
+// Two live holds A and B on one point: the first matching event parks on A, and a test that
+// releases A as soon as A's Reached returns lets that event go on, not over to B, which stays for
+// the next event. The release has to land after the hook closes A's reached channel and before
+// it decides whether A was released, which no sleep can promise, so the test makes the hook wait
+// at that instant (testnats.SetOnReached) until A's Reached has returned and A is released.
+// While the hook read A's release after it had published A as reached, it took A for one
+// released before it was reached and parked the same event on B.
+func TestForcedOrderAHoldReleasedAsItIsReachedKeepsItsEvent(t *testing.T) {
+	const subject = "released.on.reach"
+	hooks := testnats.Hook(t)
+	report := *natsserver.MeasureHook.Load()
+	a := hooks.Hold(testnats.ClientPublish, testnats.Subject(subject))
+	b := hooks.Hold(testnats.ClientPublish, testnats.Subject(subject))
+	releasedA := make(chan struct{})
+	testnats.SetOnReached(t, func(hold *testnats.Hold) {
+		if hold != a {
+			return
+		}
+		select {
+		case <-releasedA:
+		case <-time.After(reachWithin):
+		}
+	})
+	publish := func() <-chan struct{} {
+		returned := make(chan struct{})
+		go func() {
+			report(&natsserver.MeasureEvent{Point: string(testnats.ClientPublish), Subject: subject})
+			close(returned)
+		}()
+		return returned
+	}
+
+	first := publish()
+	took := a.Reached(t)
+	a.Release()
+	close(releasedA)
+	select {
+	case <-first:
+	case <-time.After(reachWithin):
+		t.Fatalf("the first publish, %s, did not return once A was released: it parked on B", took)
+	}
+
+	second := publish()
+	next := b.Reached(t)
+	if next.N <= took.N {
+		t.Fatalf("B took %s, the event A took (%s), want the next publish", next, took)
+	}
+	b.Release()
+	select {
+	case <-second:
+	case <-time.After(reachWithin):
+		t.Fatal("the second publish did not return once B was released")
+	}
+}
+
 func TestForcedOrderHoldsAPublishBeforeItIsMatched(t *testing.T) {
 	srv, uri := testnats.Start(t)
 	hooks := testnats.Hook(t)
