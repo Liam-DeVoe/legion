@@ -76,12 +76,12 @@ images:
     tag: pgvector-2358fcba
     digest: sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 
-  # PgBouncer 1.25.2, the pool packages/daemon/scripts/test-pgbouncer.sh starts in transaction
-  # mode in front of a test Postgres, as the daemon-go job's step "Start PgBouncer in front of the
-  # Postgres service" runs it in front of its `services:` Postgres, and which internal/ompsessions'
-  # pooled leg runs through. The script names this copy by digest. 1.25.2 refuses search_path as a
-  # startup parameter, and 1.26.0 and later accept it, so the row stays at 1.25.2 while a pool the
-  # session database is reached through does.
+  # PgBouncer 1.25.2, the pool internal/ompsessions' TestEveryPoolPinsItsSearchPath starts with
+  # docker in transaction mode in front of its test Postgres: its PoolImage constant
+  # (packages/daemon/internal/ompsessions/searchpath_test.go) names this copy by digest, and the
+  # daemon-go job pulls it first. 1.25.2 refuses search_path as a startup parameter, and 1.26.0
+  # and later accept it, so the row stays at 1.25.2 while a pool the session database is reached
+  # through does.
   - upstream: docker.io/edoburu/pgbouncer:v1.25.2-p0
     tag: pgbouncer-v1.25.2-p0-7d7a27d9
     digest: sha256:7d7a27d9e90985cab5cf42256f5c13a3120baa4b055b69df37beb272b89b2340
@@ -144,14 +144,12 @@ images:
     tag: buildkit-buildx-stable-1-cec9f139
     digest: sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
 
-  # actionlint, the workflow-file checker three steps run in a `run:` that names this copy by
-  # digest: the `ci-filters` job of .github/workflows/ci.yaml, .github/workflows/workflow-files.yaml,
-  # and the daemon-go job's step "Start PgBouncer in front of the Postgres service"
-  # (.github/workflows/ci-job-daemon-go.yaml), which runs its shellcheck on
-  # packages/daemon/scripts/test-pgbouncer.sh and its test. rhysd publishes it, and it is the one
-  # image of this file a step runs as a command rather than a service, a base or a builder. It
-  # carries the shellcheck actionlint hands each inline `run:` body, 0.11.0 in this image, so the
-  # shellcheck version CI runs moves only when this row does.
+  # actionlint, the workflow-file checker two steps run in a `run:` that names this copy by
+  # digest: the `ci-filters` job of .github/workflows/ci.yaml, and
+  # .github/workflows/workflow-files.yaml. rhysd publishes it, and it is the one image of this
+  # file a step runs as a command rather than a service, a base or a builder. It carries the
+  # shellcheck actionlint hands each inline `run:` body, 0.11.0 in this image, so the shellcheck
+  # version CI runs moves only when this row does.
   - upstream: docker.io/rhysd/actionlint:1.7.12
     tag: actionlint-1.7.12-b1934ee5
     digest: sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667

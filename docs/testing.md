@@ -155,16 +155,6 @@ itself, whose tests import its sources by relative path.
   both builds the two halves into a single list and prints one line, rather than calling
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
-  A Go test that needs an input only CI's daemon-go job provides, such as testbin's prebuilt
-  binary or the PgBouncer pool, reads its variable the same way, with the `LEGION_TEST_` prefix,
-  and skips naming it outside CI and fails on GitHub Actions, where a skip would take the proof out
-  of the one run that holds it (`binary` in `packages/daemon/internal/testbin/testbin.go`). The
-  module's database helper is not one: `testdb.Database` skips without `LEGION_TEST_PG_DSN` on
-  GitHub Actions too. `internal/ompsessions`'
-  `TestEveryPoolPinsItsSearchPath` reads `LEGION_TEST_PGBOUNCER_DSN`, a PgBouncer 1.25.2 in
-  transaction mode in front of the server `LEGION_TEST_PG_DSN` names, after the database, so a
-  host with no database skips it as every database test; `packages/daemon/scripts/test-pgbouncer.sh`
-  starts that pool in Docker and prints the URL, and CI's daemon-go job runs the same script.
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the

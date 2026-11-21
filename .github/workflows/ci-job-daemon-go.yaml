@@ -21,8 +21,7 @@ name: CI job daemon-go
 # Everything here is what those three steps need and nothing else:
 #   * the Postgres service and LEGION_TEST_PG_DSN, BROKER_TEST_DATABASE_URL and
 #     LEGION_E2E_PG_DSN — the daemon's unit tests' store, the broker rig its cipher
-#     contract tests drive, and Stage 1's — and the PgBouncer in front of that service and
-#     LEGION_TEST_PGBOUNCER_DSN, the pool internal/ompsessions' pooled leg runs through;
+#     contract tests drive, and Stage 1's;
 #   * TESTCONTAINERS_RYUK_DISABLED, LEGION_RUN_FUZZ_ITERS and LEGION_KEPT_PROPERTY_RUNS, read by
 #     the testcontainers-backed NATS tests, classify's fuzz tests and the daemon's
 #     keptPropertyEnv;
@@ -98,10 +97,6 @@ jobs:
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       LEGION_E2E_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      # The same server through the PgBouncer the step below starts: internal/ompsessions'
-      # TestEveryPoolPinsItsSearchPath skips without it off CI and fails without it here. The test
-      # names the database it makes in place of `postgres`, which the pool's wildcard entry serves.
-      LEGION_TEST_PGBOUNCER_DSN: postgres://postgres:ci@127.0.0.1:6432/postgres?sslmode=disable
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
       # clean up, and its image (testcontainers/ryuk, on Docker Hub) would be one more registry
       # pull a test could fail on.
@@ -161,14 +156,16 @@ jobs:
 
       # The daemon's NATS tests start testnats.Image (the hub's 2.15.1) and SkippingImage (nats:2.10,
       # for the one test of its refusal), and, for its grant test, Envoy's HubImage
-      # (packages/envoy/testnatsimages), pulled first for the reason the action gives.
-      - name: Pull the NATS test container images
+      # (packages/envoy/testnatsimages); internal/ompsessions' TestEveryPoolPinsItsSearchPath starts
+      # PoolImage, PgBouncer 1.25.2, with docker. Each is pulled first for the reason the action gives.
+      - name: Pull the NATS and PgBouncer test container images
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
             packages/daemon/internal/testnats/nats.go Image
             packages/daemon/internal/testnats/nats.go SkippingImage
             packages/envoy/internal/testnats/nats.go HubImage
+            packages/daemon/internal/ompsessions/searchpath_test.go PoolImage
 
       # internal/launcher's role-namespace tests start each role generation in unprivileged user,
       # mount, PID and IPC namespaces, as an issue pod's launcher does, and t.Fatal rather than
@@ -180,31 +177,6 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare --user --map-root-user true
-
-      # internal/ompsessions' pooled leg (TestEveryPoolPinsItsSearchPath) reaches the Postgres
-      # service through PgBouncer 1.25.2 in transaction mode, the pool a pod reaches its session
-      # database through: such a pool refuses search_path as a startup parameter, so a client
-      # behind it must pin search_path in each transaction, and the leg proves the package does.
-      # packages/daemon/scripts/test-pgbouncer.sh starts it, the script a developer runs for the
-      # same leg, and it is the one place the pool's image and configuration are written, with
-      # why each setting is there. It runs the pool on the runner's network, where the service's
-      # port is published, and prints the pool's URL only once a statement has run through it,
-      # so the plain step never meets a pool that is still starting. The step holds that URL to
-      # the job's LEGION_TEST_PGBOUNCER_DSN, so the URL the tests read is the pool the script started.
-      # It lints the script and its test first with the shellcheck of .github/ci-images.yaml's
-      # actionlint row, 0.11.0, the one shellcheck CI runs, since no other check reads these files,
-      # and runs the test, a fake docker and psql on PATH, before the script starts the real pool.
-      - name: Start PgBouncer in front of the Postgres service
-        run: |
-          docker run --rm -v "$PWD:/repo:ro" -w /repo --entrypoint shellcheck \
-            ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
-            --severity=style packages/daemon/scripts/test-pgbouncer.sh packages/daemon/scripts/test-pgbouncer.test.sh
-          packages/daemon/scripts/test-pgbouncer.test.sh
-          dsn=$(packages/daemon/scripts/test-pgbouncer.sh)
-          if [ "$dsn" != "$LEGION_TEST_PGBOUNCER_DSN" ]; then
-            echo "::error::packages/daemon/scripts/test-pgbouncer.sh printed a URL other than the job's LEGION_TEST_PGBOUNCER_DSN: make the job's value the one it prints"
-            exit 1
-          fi
 
       # The step runs every package of the module except the five the race step below tests and
       # internal/textcheck, whose tests are the text-check job's: so each of the five runs once

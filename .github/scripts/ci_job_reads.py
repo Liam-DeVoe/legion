@@ -2659,8 +2659,6 @@ GATES = [
         ]),
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
-        (f"{DAEMON}/scripts/test-pgbouncer.sh", at("daemon-go", "Start PgBouncer in front of the Postgres service")),
-        (f"{DAEMON}/scripts/test-pgbouncer.test.sh", at("daemon-go", "Start PgBouncer in front of the Postgres service")),
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:152 sources it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/loopback-dsn.sh\"` line)"),
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/port-file.sh\"` line)"),
@@ -2675,9 +2673,10 @@ GATES = [
         (".github/ci-tools.yaml", ".github/actions/install-uv/action.yml:25 installs the uv row's binary"),
         (".github/scripts/ci-tools.sh", ".github/actions/install-uv/action.yml:20 sources it, and ci_tools_fetch "
                                         "reads the uv row's two sources"),
-        (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
-        (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
-        (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
+        (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS and PgBouncer test container images")),
+        (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS and PgBouncer test container images')} consts Image, SkippingImage"),
+        (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS and PgBouncer test container images')} const HubImage"),
+        (f"{DAEMON}/internal/ompsessions/searchpath_test.go", f"{at('daemon-go', 'Pull the NATS and PgBouncer test container images')} const PoolImage"),
     ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the

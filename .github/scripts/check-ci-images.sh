@@ -334,6 +334,7 @@ REACH = (
     "packages/envoy/infra/host/heldportwrapper/Dockerfile",
     "packages/daemon/docker/worker.Dockerfile",
     "packages/daemon/internal/testnats/nats.go",
+    "packages/daemon/internal/ompsessions/searchpath_test.go",
     "packages/envoy/internal/testnats/nats.go",
     "packages/envoy/internal/testpg/testpg.go",
     "packages/envoy/internal/tests3/seaweedfs.go",
@@ -343,7 +344,6 @@ REACH = (
     "packages/dispatch/e2e/visual-run.sh",
     "packages/pi-legion/scripts/skill-scenarios/rig.sh",
     "scripts/e2e/stage1-skeleton.sh",
-    "packages/daemon/scripts/test-pgbouncer.sh",
     "packages/envoy/deploy/scripts/compose-2.12.2_test.sh",
 )
 
@@ -352,8 +352,9 @@ REACH = (
 IMAGE_FROM = {
     (".github/actions/pull-test-images/action.yml", "image"): (
         "each image is read from a Go string constant the caller's `consts:` input names "
-        "(packages/daemon/internal/testnats/nats.go, packages/envoy/internal/testnats/nats.go, "
-        "packages/envoy/internal/testpg/testpg.go, packages/envoy/internal/tests3/seaweedfs.go), "
+        "(packages/daemon/internal/testnats/nats.go, packages/daemon/internal/ompsessions/searchpath_test.go, "
+        "packages/envoy/internal/testnats/nats.go, packages/envoy/internal/testpg/testpg.go, "
+        "packages/envoy/internal/tests3/seaweedfs.go), "
         "or comes from the `images:` input, which ci.yaml's envoy-smoke job fills with the FROM "
         "arguments of packages/envoy/docker/Dockerfile; every one of those files is in the reach "
         "above, and this check reads the references in them"
