@@ -59,8 +59,9 @@ function apiErrorCode(error: unknown): number | undefined {
   return (error as Partial<NatsError> | undefined)?.api_error?.err_code;
 }
 
-/** The sentinel the session bucket is made with (consumernames.StoreState). */
+/** The sentinel the session bucket is made with (consumernames.StoreState), keyed by its own key. */
 export interface SessionBucketState {
+  key: typeof sentinelKey;
   cutover: "done";
   boundary: number;
 }
@@ -70,7 +71,8 @@ export interface SessionBucketState {
  * (consumernames.CreateSessionBucket): it waits up to `seconds` for `stream`, the stream the
  * session consumers read, to exist, reads its first sequence, then creates the bucket with one
  * value a key, on file storage, at the stream's own replica count, and writes the sentinel
- * {"cutover":"done","boundary":B} with B = max(1, that first sequence) as the key's first write.
+ * {"key":"envoy.bucket","cutover":"done","boundary":B} with B = max(1, that first sequence) as the
+ * key's first write. The listener reads only a sentinel that names its own key.
  * A bucket that exists already is refused, as create-bucket refuses it. Answers the sentinel.
  */
 export async function createSessionBucket(
@@ -92,6 +94,7 @@ export async function createSessionBucket(
     }
   }
   const state: SessionBucketState = {
+    key: sentinelKey,
     cutover: "done",
     boundary: Math.max(1, info.state.first_seq),
   };
@@ -121,7 +124,8 @@ export async function createSessionBucket(
  * leader). "" when the record names none, as after the session's clean stop, which leaves the
  * record with no current, and when the bucket holds no record of the session at all. A key whose
  * last message is a delete or purge marker is thrown, as the listener refuses such a session, and
- * so is a bucket that does not exist.
+ * so are a value that is not the session's own record (its `key` is another) and a bucket that
+ * does not exist.
  */
 export async function readCurrent(nc: NatsConnection, sessionId: string): Promise<string> {
   const jsm = await nc.jetstreamManager();
@@ -139,7 +143,12 @@ export async function readCurrent(nc: NatsConnection, sessionId: string): Promis
     throw new Error(
       `the selection record of ${sessionId} in ${sessionBucket} is gone: its last message is a ${operation} marker`
     );
-  const current = message.json<{ current?: unknown }>().current ?? "";
+  const record = message.json<{ key?: unknown; current?: unknown }>();
+  if (record.key !== sessionId)
+    throw new Error(
+      `the key ${sessionId} of ${sessionBucket} holds no record of its own: its key is ${JSON.stringify(record.key)}`
+    );
+  const current = record.current ?? "";
   if (typeof current !== "string")
     throw new Error(
       `the selection record of ${sessionId} in ${sessionBucket} holds a current that is no name: ${JSON.stringify(current)}`

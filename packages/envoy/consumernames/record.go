@@ -1,9 +1,12 @@
 package consumernames
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"time"
@@ -61,6 +64,10 @@ const (
 
 // Record is one logical name's selection record.
 type Record struct {
+	// Key is the store key the record belongs to: the logical name, or a durable's key
+	// (DurableKey). A store's Write sets it and its Read refuses a record whose key is not the key
+	// it read (decodeRecord), so a record of one key copied whole under another is no record there.
+	Key string `json:"key"`
 	// Current is the selected physical name, or "".
 	Current string `json:"current,omitempty"`
 	// Op is the operation in flight, or nil.
@@ -142,6 +149,9 @@ func (r Record) retire(names ...string) Record {
 
 // StoreState is what a store's sentinel holds.
 type StoreState struct {
+	// Key is the sentinel's own key (SentinelKey, PGSentinelKey), which the store's WriteSentinel
+	// sets and its State requires, as a record's (Record.Key).
+	Key string `json:"key"`
 	// Cutover is the family's cutover marker: CutoverDone, CutoverRolledBack, or "" before any.
 	Cutover string `json:"cutover,omitempty"`
 	// Boundary is the cutover boundary B: a session key with no record starts no later than it.
@@ -212,6 +222,15 @@ var (
 	ErrNoSentinel = errors.New("consumer names: the selection store's sentinel is missing")
 	// ErrRecordDeleted is a key whose last write is a delete or a purge marker.
 	ErrRecordDeleted = errors.New("consumer names: the selection record was deleted")
+	// ErrMalformedRecord is a key whose value is not that key's selection record: another JSON
+	// document, a field no record has, data after the record, a field that is not well formed, or a
+	// record carrying another key. Any principal holding a JetStream API grant can have the server
+	// store its answer under any key of the bucket through a request's reply subject, and one
+	// holding a direct get can copy another key's message there whole, so a value is never read as
+	// a record on its shape alone (decodeRecord). It fails closed for that key alone: nothing is
+	// created or bound from it, and only an operator's repair of the key ends it. Under the
+	// sentinel's key such a value is a missing sentinel (ErrNoSentinel).
+	ErrMalformedRecord = errors.New("consumer names: the key holds no selection record of its own")
 	// ErrNoRecord is a key never written.
 	ErrNoRecord = errors.New("consumer names: no selection record")
 	// ErrConflict is a conditional write the store refused.
@@ -232,9 +251,134 @@ var (
 )
 
 // IsSelectionStateLost reports whether err refuses a call because selection state is lost: a
-// missing store, sentinel or key, or a key whose last write is a delete.
+// missing store, sentinel or key, a key whose last write is a delete, or a key whose value is not
+// its record.
 func IsSelectionStateLost(err error) bool {
-	return errors.Is(err, ErrNoStore) || errors.Is(err, ErrNoSentinel) || errors.Is(err, ErrRecordDeleted)
+	return errors.Is(err, ErrNoStore) || errors.Is(err, ErrNoSentinel) || errors.Is(err, ErrRecordDeleted) || errors.Is(err, ErrMalformedRecord)
+}
+
+// decodeRecord reads data as the record of key: one JSON object of Record's fields and nothing
+// after it (decodeStrict), whose own key is key and whose every field is well formed (check).
+// Anything else is ErrMalformedRecord.
+func decodeRecord(key string, data []byte) (Record, error) {
+	var record Record
+	if err := decodeStrict(data, &record); err != nil {
+		return Record{}, fmt.Errorf("%w: %w", ErrMalformedRecord, err)
+	}
+	if err := record.check(key); err != nil {
+		return Record{}, fmt.Errorf("%w: %w", ErrMalformedRecord, err)
+	}
+	return record, nil
+}
+
+// decodeSentinel reads data as the sentinel under key, as decodeRecord reads a record: anything
+// else is ErrMalformedRecord, which the store answers as ErrNoSentinel.
+func decodeSentinel(key string, data []byte) (StoreState, error) {
+	var state StoreState
+	if err := decodeStrict(data, &state); err != nil {
+		return StoreState{}, fmt.Errorf("%w: %w", ErrMalformedRecord, err)
+	}
+	if err := state.check(key); err != nil {
+		return StoreState{}, fmt.Errorf("%w: %w", ErrMalformedRecord, err)
+	}
+	return state, nil
+}
+
+// decodeStrict decodes data into v, which is a struct: data must be one JSON object, with no field
+// v does not have, and nothing but space after it.
+func decodeStrict(data []byte, v any) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return errors.New("the value is no JSON object")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(v); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		return errors.New("the value holds more after its JSON object")
+	}
+	return nil
+}
+
+// consumerName reports whether name can name a consumer: nats-server refuses an empty name, one
+// longer than 255 bytes, and one holding '.', '*', '>', a path separator or whitespace.
+func consumerName(name string) bool {
+	return name != "" && len(name) <= 255 && !strings.ContainsAny(name, `.*>/\`) &&
+		!strings.ContainsFunc(name, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+}
+
+// check refuses a record that is not key's or sets a field that is not well formed: a name no
+// consumer can carry, an operation of no kind this package writes, one reserved at no time, or one
+// missing the name its kind acts on.
+func (r Record) check(key string) error {
+	if r.Key != key {
+		return fmt.Errorf("its key is %q, not %q", r.Key, key)
+	}
+	if r.Current != "" && !consumerName(r.Current) {
+		return fmt.Errorf("its current %q names no consumer", r.Current)
+	}
+	if r.Op != nil {
+		if err := r.Op.check(); err != nil {
+			return err
+		}
+	}
+	if r.LastFloor != nil && !consumerName(r.LastFloor.Name) {
+		return fmt.Errorf("its last floor's name %q names no consumer", r.LastFloor.Name)
+	}
+	for _, name := range r.Retired {
+		if !consumerName(name) {
+			return fmt.Errorf("its retired name %q names no consumer", name)
+		}
+	}
+	if r.Restore != nil && (!consumerName(r.Restore.Target) || r.Restore.Phase == "") {
+		return fmt.Errorf("its restore %+v names no target or no phase", *r.Restore)
+	}
+	return nil
+}
+
+func (op Op) check() error {
+	switch {
+	case op.ReservedAt.IsZero():
+		return fmt.Errorf("its %s operation was reserved at no time", op.Kind)
+	case op.Native != "" && op.Native != NativeNew && op.Native != NativeAll:
+		return fmt.Errorf("its operation keeps the native policy %q, which is none", op.Native)
+	}
+	switch op.Kind {
+	case OpCreate:
+		if !consumerName(op.Candidate) {
+			return fmt.Errorf("its create's candidate %q names no consumer", op.Candidate)
+		}
+	case OpReplace:
+		if !consumerName(op.Candidate) || !consumerName(op.Old) {
+			return fmt.Errorf("its replace of %q by %q names no consumer", op.Old, op.Candidate)
+		}
+	case OpDelete:
+		if !consumerName(op.Old) {
+			return fmt.Errorf("its delete of %q names no consumer", op.Old)
+		}
+	default:
+		return fmt.Errorf("its operation is of the kind %q, which is none", op.Kind)
+	}
+	return nil
+}
+
+// check refuses a sentinel that is not key's or sets a field that is not well formed: a cutover
+// marker this package does not know, or an orphan no consumer can be named.
+func (s StoreState) check(key string) error {
+	if s.Key != key {
+		return fmt.Errorf("its key is %q, not %q", s.Key, key)
+	}
+	if s.Cutover != "" && s.Cutover != CutoverDone && s.Cutover != CutoverRolledBack {
+		return fmt.Errorf("its cutover marker %q is none", s.Cutover)
+	}
+	for _, name := range s.Orphans {
+		if !consumerName(name) {
+			return fmt.Errorf("its orphan %q names no consumer", name)
+		}
+	}
+	return nil
 }
 
 // Admit decides, from the store's sentinel, what a consumer call does in the fresh mode: it is

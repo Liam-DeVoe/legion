@@ -42,7 +42,8 @@ type freshSessions struct {
 	key atomic.Pointer[keyRefusal]
 }
 
-// keyRefusal is a session whose key a call found lost, and what that call answered.
+// keyRefusal is a session whose key a call found lost or holding no record of its own, and what
+// that call answered.
 type keyRefusal struct {
 	sessionID string
 	err       error
@@ -180,8 +181,9 @@ func (s *SessionConsumers) ObserveNames(observe func(consumernames.Operation, co
 // SelectionHealth is, in the fresh mode, why session-consumer calls are refused, naming what is
 // missing: the selection bucket, its sentinel, or the cutover marker, read again here while one
 // of them refused the last check or call, so a bucket the operator creates after the listener
-// starts clears it at the next probe; else the last session whose key was found deleted, until a
-// call for that session is admitted. nil when neither stands, and always nil in the fixed mode.
+// starts clears it at the next probe; else the last session whose key was found deleted or holding
+// no record of its own (consumernames.ErrMalformedRecord), until a call for that session is
+// admitted. nil when neither stands, and always nil in the fixed mode.
 // The listener's /healthz names it, within ctx.
 func (s *SessionConsumers) SelectionHealth(ctx context.Context) error {
 	if s.fresh == nil {
@@ -219,10 +221,10 @@ func (s *SessionConsumers) CheckSelection(ctx context.Context) error {
 
 // freshAnswer records err for SelectionHealth and returns it in this package's vocabulary. Only an
 // answer that proves the store admitted the call clears a refusal: a call that succeeded clears the
-// store's and its own session's key's, and a deleted key, which the store read to find, clears the
-// store's. Any other failure leaves both as they were, since it may never have reached the store (a
-// refused key, a lost connection), and SelectionHealth reads the sentinel again while the store's
-// refusal stands.
+// store's and its own session's key's, and a deleted key or one holding no record of its own,
+// which the store read to find, clears the store's and names that key. Any other failure leaves
+// both as they were, since it may never have reached the store (a refused key, a lost connection),
+// and SelectionHealth reads the sentinel again while the store's refusal stands.
 func (s *SessionConsumers) freshAnswer(sessionID string, err error) error {
 	switch {
 	case err == nil:
@@ -231,7 +233,7 @@ func (s *SessionConsumers) freshAnswer(sessionID string, err error) error {
 			s.fresh.key.CompareAndSwap(refusal, nil)
 		}
 		return nil
-	case errors.Is(err, consumernames.ErrRecordDeleted):
+	case errors.Is(err, consumernames.ErrRecordDeleted), errors.Is(err, consumernames.ErrMalformedRecord):
 		s.fresh.storeRefusal.Store(nil)
 		s.fresh.key.Store(&keyRefusal{sessionID: sessionID, err: err})
 	case errors.Is(err, consumernames.ErrCutoverNotRun), consumernames.IsSelectionStateLost(err):

@@ -142,6 +142,8 @@ func (s *KVStore) State(ctx context.Context) (StoreState, error) {
 	return state, err
 }
 
+// sentinel reads the sentinel and its revision. A value under SentinelKey that is not the
+// sentinel (decodeSentinel) is a missing sentinel, naming the key and the value's sequence.
 func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
 	data, revision, err := s.last(ctx, SentinelKey)
 	if errors.Is(err, ErrNoRecord) || errors.Is(err, ErrRecordDeleted) {
@@ -150,28 +152,30 @@ func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
 	if err != nil {
 		return StoreState{}, 0, err
 	}
-	var state StoreState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return StoreState{}, 0, fmt.Errorf("consumer names: read %s of %s: %w", SentinelKey, s.bucket, err)
+	state, err := decodeSentinel(SentinelKey, data)
+	if err != nil {
+		return StoreState{}, 0, fmt.Errorf("%w: the bucket %s's %s at sequence %d holds no sentinel (%w)", ErrNoSentinel, s.bucket, SentinelKey, revision, err)
 	}
 	return state, revision, nil
 }
 
-// Read implements Store.
+// Read implements Store. A value under logical that is not logical's record (decodeRecord) is
+// ErrMalformedRecord, naming the key and the value's sequence.
 func (s *KVStore) Read(ctx context.Context, logical string) (Record, uint64, error) {
 	data, revision, err := s.last(ctx, logical)
 	if err != nil {
 		return Record{}, 0, err
 	}
-	var record Record
-	if err := json.Unmarshal(data, &record); err != nil {
-		return Record{}, 0, fmt.Errorf("consumer names: read %s's record in %s: %w", logical, s.bucket, err)
+	record, err := decodeRecord(logical, data)
+	if err != nil {
+		return Record{}, 0, fmt.Errorf("consumer names: the key %s of %s at sequence %d: %w", logical, s.bucket, revision, err)
 	}
 	return record, revision, nil
 }
 
-// Write implements Store.
+// Write implements Store. It writes the record under its own key (Record.Key).
 func (s *KVStore) Write(ctx context.Context, logical string, record Record, revision uint64) (uint64, error) {
+	record.Key = logical
 	data, err := json.Marshal(record)
 	if err != nil {
 		return 0, err
@@ -179,9 +183,11 @@ func (s *KVStore) Write(ctx context.Context, logical string, record Record, revi
 	return s.put(ctx, logical, data, revision)
 }
 
-// WriteSentinel writes the sentinel if its revision is still revision (0: never written): the
-// operator's create-bucket and replay write it, and a test of a family writes it as they do.
+// WriteSentinel writes the sentinel, under its own key (StoreState.Key), if its revision is still
+// revision (0: never written): the operator's create-bucket and replay write it, and a test of a
+// family writes it as they do.
 func (s *KVStore) WriteSentinel(ctx context.Context, state StoreState, revision uint64) (uint64, error) {
+	state.Key = SentinelKey
 	data, err := json.Marshal(state)
 	if err != nil {
 		return 0, err

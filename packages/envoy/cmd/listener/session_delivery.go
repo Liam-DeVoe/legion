@@ -813,9 +813,16 @@ func (m *sessionDelivery) refused(sessionID string, err error) *deliveryRefusal 
 		m.logger.Warn("session consumer call failed; the registration is refused",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
 	}
+	refusal := "the session consumer of " + sessionID + " could not be read or created"
+	if errors.Is(err, consumernames.ErrMalformedRecord) {
+		// The key holds something other than its record, which only an operator's repair ends:
+		// name the key and the bucket, so the session's transcript says what to repair.
+		refusal = "the key " + sessionID + " of the selection bucket " + consumernames.SessionBucket +
+			" holds no selection record of its own, so " + sessionID + " gets no consumer until an operator repairs that key"
+	}
 	return &deliveryRefusal{
 		status: http.StatusServiceUnavailable,
-		Error:  "the session consumer of " + sessionID + " could not be read or created",
+		Error:  refusal,
 		Reason: deliveryReasonConsumerError,
 	}
 }

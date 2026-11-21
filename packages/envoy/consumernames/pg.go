@@ -45,37 +45,39 @@ type PGStore struct {
 // NewPGStore is a PGStore on db.
 func NewPGStore(db PGQuerier) *PGStore { return &PGStore{db: db} }
 
-// State implements Store: it reads the sentinel row.
+// State implements Store: it reads the sentinel row. A row whose record is not the sentinel
+// (decodeSentinel) is a missing sentinel.
 func (s *PGStore) State(ctx context.Context) (StoreState, error) {
-	data, _, err := s.row(ctx, PGSentinelKey)
+	data, revision, err := s.row(ctx, PGSentinelKey)
 	if errors.Is(err, ErrNoRecord) {
 		return StoreState{}, fmt.Errorf("%w: %s holds no %s row", ErrNoSentinel, IntakeConsumersTable, PGSentinelKey)
 	}
 	if err != nil {
 		return StoreState{}, err
 	}
-	var state StoreState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return StoreState{}, fmt.Errorf("consumer names: read %s's %s row: %w", IntakeConsumersTable, PGSentinelKey, err)
+	state, err := decodeSentinel(PGSentinelKey, data)
+	if err != nil {
+		return StoreState{}, fmt.Errorf("%w: %s's %s row at revision %d holds no sentinel (%w)", ErrNoSentinel, IntakeConsumersTable, PGSentinelKey, revision, err)
 	}
 	return state, nil
 }
 
-// Read implements Store.
+// Read implements Store. A row whose record is not logical's (decodeRecord) is ErrMalformedRecord.
 func (s *PGStore) Read(ctx context.Context, logical string) (Record, uint64, error) {
 	data, revision, err := s.row(ctx, logical)
 	if err != nil {
 		return Record{}, 0, err
 	}
-	var record Record
-	if err := json.Unmarshal(data, &record); err != nil {
-		return Record{}, 0, fmt.Errorf("consumer names: read %s's row of %s: %w", logical, IntakeConsumersTable, err)
+	record, err := decodeRecord(logical, data)
+	if err != nil {
+		return Record{}, 0, fmt.Errorf("consumer names: %s's row of %s at revision %d: %w", logical, IntakeConsumersTable, revision, err)
 	}
 	return record, revision, nil
 }
 
-// Write implements Store.
+// Write implements Store. It writes the record under its own key (Record.Key).
 func (s *PGStore) Write(ctx context.Context, logical string, record Record, revision uint64) (uint64, error) {
+	record.Key = logical
 	data, err := json.Marshal(record)
 	if err != nil {
 		return 0, err
@@ -83,8 +85,10 @@ func (s *PGStore) Write(ctx context.Context, logical string, record Record, revi
 	return s.put(ctx, logical, data, revision)
 }
 
-// WriteSentinel writes the sentinel row if its revision is still revision (0: never written).
+// WriteSentinel writes the sentinel row, under its own key (StoreState.Key), if its revision is
+// still revision (0: never written).
 func (s *PGStore) WriteSentinel(ctx context.Context, state StoreState, revision uint64) (uint64, error) {
+	state.Key = PGSentinelKey
 	data, err := json.Marshal(state)
 	if err != nil {
 		return 0, err
@@ -116,9 +120,9 @@ func (s *PGStore) List(ctx context.Context) (map[string]Record, error) {
 		if err := rows.Scan(&logical, &data); err != nil {
 			return nil, s.failed("list", "every logical name", err)
 		}
-		var record Record
-		if err := json.Unmarshal(data, &record); err != nil {
-			return nil, fmt.Errorf("consumer names: read %s's row of %s: %w", logical, IntakeConsumersTable, err)
+		record, err := decodeRecord(logical, data)
+		if err != nil {
+			return nil, fmt.Errorf("consumer names: %s's row of %s: %w", logical, IntakeConsumersTable, err)
 		}
 		records[logical] = record
 	}
