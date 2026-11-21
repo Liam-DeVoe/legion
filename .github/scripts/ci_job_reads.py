@@ -3066,13 +3066,15 @@ GATES = [
         # Every binary this run executes, and the dashboard beside them, built once in the
         # binaries job and downloaded by the five jobs that run them - shard, alone,
         # multiprocess, embedder and visual - which is six machines, the shard job having two
-        # legs: this is the closure that build compiles and no other. The step names an output
-        # (-o), pins CGO_ENABLED on the line, and runs the go build and the dashboards' script as
-        # two background jobs it waits on, none of which the simple form reduces, so the step is
-        # pinned whole; the Run carries that CGO_ENABLED, since the closure go lists without cgo
-        # is the one this build compiles. Its directory is the repository root, which is where
-        # the step runs - the go command `cd`s into packages/envoy inside the pinned script, and
-        # the Run below names that directory, which is where the closure is listed.
+        # legs: this is the closure those builds compile and no other. The step names an output
+        # (-o), pins CGO_ENABLED on the line, and runs its two go builds - the Dispatch server,
+        # its dev OIDC issuer and the seeding step, then ./cmd/cipherd as broker, chained in one
+        # subshell - and the dashboards' script as two background jobs it waits on, none of which
+        # the simple form reduces, so the step is pinned whole; the Run carries that CGO_ENABLED,
+        # since the closure go lists without cgo is the one these builds compile. Its directory
+        # is the repository root, which is where the step runs - the subshell `cd`s into
+        # packages/envoy inside the pinned script before either go command, and the Run below
+        # names that directory, which is where the closure is listed.
         pinned_step(BROWSER_BINARIES, BROWSER_BINARIES_STEP, ".", BROWSER_BINARIES_SCRIPT, [
             (ENVOY, ["./cmd/dispatch"] + BROKER_PKGS,
              "CGO_ENABLED=0 go build of the Dispatch server, the real broker, its dev OIDC issuer and the seeding step",

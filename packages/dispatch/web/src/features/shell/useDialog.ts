@@ -1,4 +1,11 @@
-import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type RefObject,
+  useEffect,
+  useInsertionEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { NavigationType, useLocation, useNavigationType } from "react-router-dom";
 
 import { DIALOG_SCOPE, useKeymap, useKeymapScope } from "./keymap";
@@ -127,14 +134,19 @@ export function useDialog<T extends HTMLElement>({
   const containerRef = useRef<T>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  // What held the focus when the layout effect below ran in the commit that opened the dialog,
-  // read before the dialog moves the focus: the element the dialog was opened from, or, where a
-  // descendant took the focus earlier in that commit - by `autoFocus` or by a layout effect of
-  // its own, both of which run before this hook's layout effect - that descendant. Closing gives
-  // the focus back to it while it is still in the document, and to the body otherwise: a
-  // descendant that the close unmounts has left the document by the time the passive effect
-  // below cleans up, so the focus then goes to the body and not to the opener.
+  // What held the focus as the dialog opened: the element it was opened from. It is read in an
+  // insertion effect, which React runs in the mutation phase of the commit that opens the dialog,
+  // before the layout phase in which React carries out a descendant's `autoFocus` and runs every
+  // layout effect - the dialog's own initial focus below among them - so it is never a focus the
+  // dialog's opening moved. Closing gives the focus back to it while it is still in the
+  // document, as WAI-ARIA's dialog pattern has it, and to the body otherwise.
   const openerRef = useRef<HTMLElement | null>(null);
+  useInsertionEffect(() => {
+    if (open) {
+      openerRef.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+  }, [open]);
   useKeymapScope(open ? DIALOG_SCOPE : null);
   useKeymap(
     DIALOG_SCOPE,
@@ -154,8 +166,8 @@ export function useDialog<T extends HTMLElement>({
 
   // The initial focus moves in the commit that opens the dialog, before the browser handles
   // another event: keys typed straight after the press that opened it reach the dialog, not the
-  // control that opened it. Moved a frame later, it left them to the opener: a space typed into
-  // Request changes, opened by Shift+R on the Approve button, pressed Approve.
+  // control that opened it. Moved a frame later, it would leave them to the opener: a space typed
+  // into Request changes, opened by Shift+R on the Approve button, would press Approve.
   // A descendant that focuses itself as the dialog opens keeps that focus. React runs a
   // component's layout effects after those of the components it renders, so a descendant's
   // `autoFocus` or its own layout effect has already landed inside the container by now, and is
@@ -166,8 +178,6 @@ export function useDialog<T extends HTMLElement>({
     if (!open) {
       return;
     }
-    openerRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const container = containerRef.current;
     if (container?.contains(document.activeElement)) {
       return;
