@@ -2709,7 +2709,7 @@ This release also writes both again for every unpublished event a batch reads no
 
 Migration `20261120021308_search_text_versions` creates two new tables, which the keyword fill writes (Background loops, above) and a search at a past time reads (Search, below).
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask.
-Its key is `(kind, id, event_seq)`, and a row is never updated: a new version is a new row.
+Its key is `(kind, id, event_seq)`, and a row is never updated, a new version being a new row, but for the erase, which deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted ("Erasing a node", below).
 `search_text_versions_fill` holds the fill's one cursor row, with the reach the fill stored, the holder that wrote the last batch, and the version of the event rules that wrote the rows up to the cursor.
 `search_text_versions_item_start` on `(kind, id, started_at)` serves the relation's test for a later version of the same item.
 `search_text_versions_search` is a GIN index on the vector with `fastupdate = off`, so a search never scans a pending list and an insert never empties one.
@@ -3583,7 +3583,7 @@ No command erases that text: the object's own route changes its current text, an
 A node of one of those kinds, at any state but `gone`, with no row behind it holds no text: it is a document an earlier build removed during a roll or after a rollback without stating its node gone, the project census's `orphaned` class, and the erase removes it and its tuples, which is that class's one remedy.
 
 It changes only the rows that derive from the node, and what derives from a node is fixed by the node, never by a search for its bytes.
-Those rows are the node's tuples on both sides, its row, its projection rows (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, its own embedding rows and window state, and the events about it.
+Those rows are the node's tuples on both sides, its row, its projection rows (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, its own embedding rows and window state, its own keyword versions, and the events about it.
 A block derives more: the whole text it held at every version (`document_block_texts`, read whole and never as its 480-rune excerpt), the excerpts cut from it, and its own document's editing state, search rows and windows, and every version of that document the block stands in holding the erased text.
 A comment derives the margin record that holds its body in the document it is anchored to, and a reply its entry in its thread root's record there.
 A comment's erase ends no version, and it replaces the history of each document whose margin record holds the body, keeping every other comment's anchor mark and margin record there.
@@ -3629,6 +3629,12 @@ It rewrites, with a marker naming the node and the `graph_erasures` record where
 
 - **The search rows** standing on a version that went: `document_search` is written again from the latest version left, by touching its `search` so `20261101182454`'s trigger writes the row, and an issue whose spec lost a version has its own `search` written again by the statement `20261105145243`'s trigger runs.
 
+- **The keyword versions** (`search_text_versions`), which the keyword fill writes from the event log: every version of the node's own text goes, and an issue whose spec lost a version has the `search` of each of its versions that names that version (`spec_artifact_id`, `spec_version`) written again, by the expression the fill writes it with (`textversions.RestateIssueVectors`), which then reads no markdown for the version that went and keeps the issue's key and the title the row holds.
+  The listing names each by its key and its `event_seq`, as deleted or as rewritten.
+  The erase holds the fill back by its cursor row, the one row of `search_text_versions_fill`, which it takes `for share` before it reads under its locks, creating it where none is (`textversions.HoldFillBack`): a batch takes that row `for update` before it reads anything, so a batch in flight, which may have read the erased text, commits before the erase reads, and no batch writes until the erase ends.
+  A batch that waits on the row past its 5-second `lock_timeout` fails, and the fill tries it again.
+  A fill that reads the comment's events after the erase, as one does after a reset of the log empties the table, reads them redacted and writes the marker as the comment's version, so the table holds no erased byte however often it is filled again.
+
 - **The term statistics** (`search_term_stats`, `search_term_totals`) of every project whose items moved, in two steps.
   Inside the transaction, under the locks, the erase takes out of each project's statistics every lexeme an item it deleted or rewrote no longer holds (`api.ForgetErasedTermsTx`): `search_term_stats` holds lexemes, and one of the erased text that stood there after the commit would be the erased words, still stored.
   It reads them from the old vectors `search_term_queue` carries for those items: the rows its own writes queued, the row it queues itself for each `document_search` row it deletes (`20261101182522`'s trigger fires on an insert or an update of that table alone), and the rows queued before the erase for the same items and for the documents it deleted versions of, the oldest of which carries the vector the counts hold.
@@ -3659,8 +3665,9 @@ A search after the commit that fails leaves the erase standing: the sweep of `te
 Once it holds its locks, a confirmed run holds the writers of the node's issue or document for the rest of its work: the read of the rest of the listing, the erase and the commit.
 Run with `--confirm` over a node that holds text, it prints nothing until the sweep of `text_trees` after the commit has waited out its 30 seconds.
 
-It takes its locks in the store's lock order, written down on `markInboxReadThreads` (`internal/dispatch/api/inbox_read.go`): the owner rows first, then the node's row, then the node's own projection rows `for update` (its `comments`, `document_blocks` and `block_refs` rows, table by table and by key), then everything else.
+It takes its locks in the store's lock order, written down on `markInboxReadThreads` (`internal/dispatch/api/inbox_read.go`): the owner rows first, then the node's row, then the node's own projection rows `for update` (its `comments`, `document_blocks` and `block_refs` rows, table by table and by key), then the keyword fill's cursor row `for share`, then everything else.
 Taking those rows before it writes anything is what orders it against the block index tick's window arm, which holds a comment's row `for no key update` and no owner row while it writes that comment's windows: the erase waits at the row before it has deleted a window, rather than deleting the windows first and meeting the arm in a deadlock.
+The fill takes its cursor row first and alone in each batch and takes no owner row, so the erase waiting there while it holds its owners meets no cycle.
 The owner rows are the node's own - a comment's issue, or the owner of the document it is on - and a block's document's: the document's issue, or the document's own row when no issue owns it.
 It takes no owner row of a row it leaves, since it writes none of them.
 It takes each once, in the order of their owner keys (`artifact:<id>` before `issue:<key>`), through `events.LockOwnerRows`; a person, a session, a role or a page has no owner row, and the run starts at its node.
