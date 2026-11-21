@@ -622,6 +622,13 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// account's grant rather than racing IAM on the first deployment: the listener here, the app
 	// below (dispatchNATSCredential's grants). With natsAudience there is no grant to wait for.
 	seedGrant := pulumi.DependsOn(nats.listenerGrants)
+	// In the required privacy mode the listener also mounts its own account's projected token for
+	// the broker (listenerPrivacySource), beside the NATS credential.
+	listenerMounts, listenerVolumes := corev1.VolumeMountArray{nats.mount}, corev1.VolumeArray{nats.volume}
+	if s.privacy != nil {
+		mount, volume := dispatchListenerBrokerToken(s.privacy.brokerAudience)
+		listenerMounts, listenerVolumes = append(listenerMounts, mount), append(listenerVolumes, volume)
+	}
 
 	// The listener runs under its own ServiceAccount, <hostname>-listener, which is what mounts
 	// the NATS seed through Workload Identity or presents its projected token for natsAudience,
@@ -646,11 +653,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		ServiceAccountName: pulumi.String(listenerName), TerminationGracePeriodSeconds: pulumi.Int(40), EnableServiceLinks: pulumi.Bool(false),
 		Containers: corev1.ContainerArray{
 			corev1.ContainerArgs{
-				Name: pulumi.String("envoy-listener"), Image: pulumi.String(s.images.envoy), Resources: resources("500m", "512Mi"), Env: listenerEnv, VolumeMounts: corev1.VolumeMountArray{nats.mount},
+				Name: pulumi.String("envoy-listener"), Image: pulumi.String(s.images.envoy), Resources: resources("500m", "512Mi"), Env: listenerEnv, VolumeMounts: listenerMounts,
 				Lifecycle: sleepPreStop(5), StartupProbe: answersProbe(core.DefaultListenerPort, 5, 60), LivenessProbe: answersProbe(core.DefaultListenerPort, 10, 3), ReadinessProbe: readyProbe(core.DefaultListenerPort, 5, 6, 2),
 			},
 		},
-		Volumes: corev1.VolumeArray{nats.volume},
+		Volumes: listenerVolumes,
 	}, frontDoor, seedGrant); err != nil {
 		return err
 	}
@@ -845,6 +852,9 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	}
 	if len(s.privateHubs) > 0 {
 		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_HUBS", strings.Join(s.privateHubs, ",")))
+	}
+	if s.projectPrivacyRequired {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PROJECT_PRIVACY_REQUIRED", "true"))
 	}
 	if err := dispatchHubsNeedTheirToken(appEnv); err != nil {
 		return err

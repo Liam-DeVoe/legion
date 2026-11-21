@@ -2690,6 +2690,7 @@ func TestDispatchRefusesAnOidcIssuerWithNoAudience(t *testing.T) {
 func TestDispatchRefusesPrivateHubsWithoutTheAdmissionToken(t *testing.T) {
 	args := dispatchArgs()
 	args.PrivateHubs = []string{"nats://hub:4222"}
+	setListenerPrivacySource(args)
 	_, err := runDispatch(t, args, true)
 	require.ErrorContains(t, err, "privateHubs renders DISPATCH_PRIVATE_HUBS", "privateHubs without a rendered DISPATCH_HUB_ADMISSION_TOKEN_FILE was taken")
 	require.ErrorContains(t, err, "DISPATCH_HUB_ADMISSION_TOKEN_FILE")
