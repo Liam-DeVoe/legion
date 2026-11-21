@@ -280,7 +280,7 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 	r.implementerCall = r.panes[r.token(claim.RoleImplementer)].arm("Phase: implementing.",
 		map[string]any{"op": "handoff_complete", "summary": "Implemented the change at the head the implement record names, pushed to the branch."}, true)
 	r.testerCall = r.panes[r.token(claim.RoleTester)].arm("Phase: testing.",
-		map[string]any{"op": "handoff_complete", "summary": "Tested the head the test record names: it passes.", "verdict": "pass"}, true)
+		map[string]any{"op": "handoff_complete", "summary": "Tested the head the test record names: it passes."}, true)
 	r.reviewerCall = r.panes[r.token(claim.RoleReviewer)].arm("Phase: reviewing.",
 		map[string]any{"op": "handoff_complete", "summary": "Reviewed the head the review record names and approved it."}, true)
 
@@ -527,14 +527,14 @@ func (r *lateCompletionLive) testerCompletes() {
 
 // Step 4. The finished tester, whose testing phase already holds the completion of step 3, is
 // given a second turn by the operator's own task (`legion claims deliver`), and the stand-in's
-// turn calls handoff_complete again with verdict pass. The step records the tool's answer and the
-// daemon's line for it, and holds that the call made one request: the daemon wrote exactly one
-// line for the tester's claim from the delivery until a settle after the tool answered, so the
-// plugin's retry, which runs only while the daemon gives no answer, sent nothing more. Step 6
-// judges the answer.
+// turn calls handoff_complete again, with no verdict, as every phase completion is sent. The step
+// records the tool's answer and the daemon's line for it, and holds that the call made one
+// request: the daemon wrote exactly one line for the tester's claim from the delivery until a
+// settle after the tool answered, so the plugin's retry, which runs only while the daemon gives no
+// answer, sent nothing more. Step 6 judges the answer.
 func (r *lateCompletionLive) finishedTesterRepeats() {
 	result, mark := r.repeatCompletion(claim.RoleTester, lateTesterRepeat,
-		map[string]any{"op": "handoff_complete", "summary": "Testing is done; reporting it again.", "verdict": "pass"})
+		map[string]any{"op": "handoff_complete", "summary": "Testing is done; reporting it again."})
 	line := r.settledAnswer("the finished tester's repeat", mark, r.token(claim.RoleTester))
 	r.note("daemon: %s", answeredLine(line))
 	r.note("read back: the daemon answered the tester's claim once between the delivery and %s after the tool's answer", liveSettle)

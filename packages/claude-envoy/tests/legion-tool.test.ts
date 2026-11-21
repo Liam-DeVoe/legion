@@ -181,7 +181,7 @@ test("handoff_complete finds the record and commit for the issue's phase and the
       },
       branchHead: noBranchHead,
     },
-    { op: "handoff_complete", summary: "Implemented it.", verdict: "pass" },
+    { op: "handoff_complete", summary: "Implemented it." },
   )
   expect(lookups).toEqual(["implementing implementer"])
   expect(answer).toEqual(await daemonFixture("handoff-complete.json"))
@@ -194,13 +194,37 @@ test("handoff_complete finds the record and commit for the issue's phase and the
       body: {
         grantId: "grant-for-one-command",
         summary: "Implemented it.",
-        verdict: "pass",
+        verdict: "",
         commit: "a".repeat(40),
         handoffId: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13",
         handoffVersion: 2,
       },
     },
   ])
+})
+
+// A phase completion carries no verdict on this host as on every other: the tool refuses one once
+// the record says the completion is a phase's, and mints and posts nothing.
+test("a phase completion naming a verdict is refused after the state read, with nothing minted or posted", async () => {
+  const { client, requests } = await daemon()
+  await expect(
+    executeLegionTool(
+      {
+        daemon: client,
+        claim: () => implementer,
+        handoffReport: async () => {
+          throw new Error("no handoff report expected")
+        },
+        branchHead: noBranchHead,
+      },
+      { op: "handoff_complete", summary: "Implemented it.", verdict: "pass" },
+    ),
+  ).rejects.toThrow(
+    new Error(
+      "handoff_complete carries no verdict on a phase completion: Dispatch's check states decide the testing phase",
+    ),
+  )
+  expect(requests.map(({ path }) => path)).toEqual(["/legion/v1/state"])
 })
 
 // The agent that does the retro rates the plan in the completion that ends it, through this tool

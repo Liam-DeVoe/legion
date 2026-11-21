@@ -181,6 +181,10 @@ export const PhaseOpArguments = z.discriminatedUnion(
       issue: z
         .string({ error: "handoff_complete's issue is an issue key, as LEGION-208 is" })
         .optional(),
+      // A production check report's verdict alone. A phase completion carries none: Dispatch's
+      // check states at the tested head decide the testing phase, and executePhaseOp refuses a
+      // verdict once the record says the completion is a phase's, as the daemon does
+      // (VERDICT_NOT_TAKEN).
       verdict: z
         .enum(["pass", "pending", "fail"], {
           error: "handoff_complete's verdict is pass, pending or fail",
@@ -333,9 +337,10 @@ export function legionToolDescription(host: {
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-    "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
-    "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
+    "architect), and `verdict` pass|pending|fail on a production check report alone (pending: production does not carry the merge " +
     "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow). " +
+    "A phase completion carries no verdict (the daemon refuses one, VERDICT_NOT_TAKEN): Dispatch's check states at the tested head " +
+    "decide the testing phase. " +
     "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
@@ -431,7 +436,7 @@ const ROOT_COMPLETION_REFUSAL =
  * first, then a root architect's completion,
  * then each problem with the operation's own fields in the order it takes them, and a completion's
  * `plan_rating` or `plan_reason` without the other; then what the record decides (a check
- * report's verdict, its claim's role against the check's own, its `wake_at`, `pending` or
+ * report's verdict, its claim's role against the check's own, its `wake_at`, a verdict or
  * `wake_at` on a phase completion, the issue a completion or a move names), then a refused
  * handoff report (`findHandoffReport`). A daemon refusal throws its code and sentence.
  *
@@ -442,8 +447,9 @@ const ROOT_COMPLETION_REFUSAL =
  * call what its phase's completion carries, and the daemon's answer decides. A check report names
  * its verdict (`pass`, `pending` or `fail`), and a `pending` whose look is not the check's last
  * the `wake_at` of its next look; no handoff was written and nothing pushed, so no record or commit
- * is looked up and none is sent. `pending` is a check's verdict alone, refused on a phase
- * completion, and so is `wake_at`. A rating of the plan is sent as given on either: which
+ * is looked up and none is sent. A phase completion carries no verdict, since Dispatch's check
+ * states at the tested head decide the testing phase, and no `wake_at`: each is refused there,
+ * before the report is looked up. A rating of the plan is sent as given on either: which
  * completion ends the retro, and so takes one, is the daemon's to say (`PLAN_RATING_UNEXPECTED`,
  * `PLAN_RATING_REQUIRED`).
  */
@@ -791,9 +797,12 @@ async function completeHandoff(
       ...rating,
     });
   }
-  if (args.verdict === "pending") {
+  // A phase completion carries no verdict: Dispatch's check states at the tested head decide the
+  // testing phase, and the daemon refuses a phase completion that names one (VERDICT_NOT_TAKEN).
+  // This says so without the round trip, whatever the verdict and whichever role sends it.
+  if (args.verdict !== undefined) {
     throw new Error(
-      "handoff_complete's verdict is pass or fail on a phase completion; pending is a production check's"
+      "handoff_complete carries no verdict on a phase completion: Dispatch's check states decide the testing phase"
     );
   }
   // The daemon refuses a phase completion that carries a wake (CHECK_WAKE_UNEXPECTED); this says
@@ -809,7 +818,7 @@ async function completeHandoff(
   return daemon.handoffComplete({
     grantId: await mintClaimGrant(daemon, claim),
     summary: args.summary,
-    verdict: args.verdict ?? "",
+    verdict: "",
     ...report,
     ...rating,
   });

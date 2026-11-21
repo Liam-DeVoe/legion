@@ -1837,19 +1837,19 @@ export function legionPlanRatingLoneField(
  * role does not work report the commit the workspace stands on instead, the merger's reports the
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
- * `verdict` is `pass`
- * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
- * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
- * on the wire, as the Go field is. `wakeAt` is the check report's alone (contract 54): when the
- * checking agent asks to be woken for its next look, which a pending report on a look that is not
- * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
- * completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a `LegionInstant`, not a `timestamp`:
- * the daemon's decode of it refuses a time with no seconds, and so does this. `planRating` and
- * `planReason` are the rating of the plan the issue ran (contract 168), which the completion that
- * ends the retro carries and no other completion does (`PLAN_RATING_UNEXPECTED`): a whole number
- * from 1 (the plan cost the work) to 5 (the plan fit the work), and why, the two together
- * (`PLAN_RATING_INPUT`). A plugin at contract 168 or later must send both on its retro
- * (`PLAN_RATING_REQUIRED`). */
+ * `verdict` is `pass`, `pending` or `fail` for a check report (`CHECK_VERDICT_REQUIRED`) and the
+ * empty string for every phase completion: from contract 206 a phase completion that names one is
+ * refused (`VERDICT_NOT_TAKEN`), since Dispatch's check states at the tested head decide the
+ * testing phase. It stays a string on the wire, as the Go field is. `wakeAt` is the check report's
+ * alone (contract 54): when the checking agent asks to be woken for its next look, which a pending
+ * report on a look that is not the check's last must name (`CHECK_WAKE_REQUIRED`) and which no
+ * other verdict and no phase completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a
+ * `LegionInstant`, not a `timestamp`: the daemon's decode of it refuses a time with no seconds,
+ * and so does this. `planRating` and `planReason` are the rating of the plan the issue ran
+ * (contract 168), which the completion that ends the retro carries and no other completion does
+ * (`PLAN_RATING_UNEXPECTED`): a whole number from 1 (the plan cost the work) to 5 (the plan fit
+ * the work), and why, the two together (`PLAN_RATING_INPUT`). A plugin at contract 168 or later
+ * must send both on its retro (`PLAN_RATING_REQUIRED`). */
 export const LegionHandoffCompleteRequest = z
   .strictObject({
     grantId: nonEmptyString,
