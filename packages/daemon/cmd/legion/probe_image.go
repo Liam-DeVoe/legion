@@ -68,8 +68,9 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // row open rather than the probe's own line going missing. It then reads the image's Oh My Pi's
 // version and whether its help lists --session-id (capabilities.ReadOmpVersion and
 // ReadSessionIDFlag) onto the OK line's omp-version and omp-session-id marks, each `unread` with
-// the failure on stderr when it cannot be read, since only a daemon that sets an exchange audience
-// needs the flag and refuses the image without it. When every check passes, it prints
+// the failure on stderr when its read fails before the deadline, since only a daemon that sets an
+// exchange audience needs the flag and refuses the image without it; a read the deadline cut has
+// no verdict, like every other check. When every check passes, it prints
 // bootprobe.OKLine with the capabilities, model-fallback, omp-version and omp-session-id marks; a
 // failed capability is the probe's message, exit 1, so a broken image never publishes. Each check
 // is judged as it returns, by the deadline --probe-budget sets: what it saw fail before the
@@ -334,15 +335,25 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		modelFallback = bootprobe.ModelFallbackUnread
 	}
 	// Which Oh My Pi the image carries, and whether it takes the --session-id a daemon under an
-	// exchange audience starts each new role with. Neither failure refuses the run: the marks say
-	// unread, and the daemon that reads them decides.
+	// exchange audience starts each new role with. A read that fails before the deadline refuses
+	// nothing: its mark says unread, with the failure on stderr, and the daemon that reads the
+	// marks decides. A read that failed once ctx ended has no verdict, as checkRoleOverlays judges
+	// a role's read: the deadline stops the read's process group, so the failure may be its own
+	// doing, and an omp-session-id=unread it would leave is a mark a daemon under an exchange
+	// audience refuses for good. A read that answered keeps its answer, whenever it returned.
 	ompVersion, err := capabilities.ReadOmpVersion(ctx, img)
-	if err != nil {
+	switch {
+	case err != nil && ctx.Err() != nil:
+		noVerdict = append(noVerdict, "omp-version: "+err.Error())
+	case err != nil:
 		fmt.Fprintf(stderr, "legion probe-image: Oh My Pi's version not read; the OK line says omp-version=%s: %v\n", bootprobe.OmpVersionUnread, err)
 		ompVersion = bootprobe.OmpVersionUnread
 	}
 	sessionIDFlag, err := capabilities.ReadSessionIDFlag(ctx, img)
-	if err != nil {
+	switch {
+	case err != nil && ctx.Err() != nil:
+		noVerdict = append(noVerdict, "omp-session-id: "+err.Error())
+	case err != nil:
 		fmt.Fprintf(stderr, "legion probe-image: whether Oh My Pi takes --session-id not read; the OK line says omp-session-id=%s, which a daemon that sets runtime.kubernetes.agent_secrets.exchange_audience refuses: %v\n",
 			bootprobe.SessionIDFlagUnread, err)
 		sessionIDFlag = bootprobe.SessionIDFlagUnread

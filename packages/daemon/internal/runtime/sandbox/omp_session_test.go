@@ -24,7 +24,7 @@ const recordedSessionID = "019a2b3c-4d5e-7f60-8a71-92b3c4d5e6f7"
 const unnamedSession = ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smoke-legion-208--/recorded.jsonl"
 
 // sessionWords are the words of an agent argv that name its session, in the argv's order:
-// `--session-id <id>`, `--resume <id>`, and `--resume=<file>`.
+// `--session-id <id>`, `--resume <id>`, and `--resume=<file>` or `--resume=<id>`.
 func sessionWords(argv []string) []string {
 	var words []string
 	for i, word := range argv {
@@ -131,13 +131,12 @@ func TestATradingLaunchResumesASessionRecordedWithNoFileByItsID(t *testing.T) {
 	}
 }
 
-// A claim that records a session id and no file is resumed by that id as `--resume=<id>`, one
-// argv word (agentArgv), in a pod that trades as in one that trades nothing. An id of a shape
-// sessionIDFault names, such as one that begins with `-`, passes in that word as any other does,
-// so a pod that trades either starts it as a pod that trades nothing does, or refuses it naming
-// the session id the claim recorded as the id's source. The refusal never names a file: such a
-// claim records none, and its words "no `--resume <id>` can pass it" describe the two-word form
-// this resume does not use.
+// A claim that records a session id and no file is resumed by that id: a pod that trades and one
+// that trades nothing both start the resume with the one word `--resume=<id>` (agentArgv), and
+// neither refuses it, an id that begins with `-` included. Only the two-word `--resume <id>` is
+// refused for an id of a shape sessionIDFault names
+// (TestAResumedIdNoParserCanMisreadIsTheOnlyOnePassed), and such a claim records no file a
+// refusal could name.
 func TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot(t *testing.T) {
 	const id = "-" + resumeSessionID
 	untraded := newRig(t, nil, withResumesBySession())
@@ -155,10 +154,7 @@ func TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot(t *tes
 	first = g.spawn(workerSpec(t))
 	resumed, err := g.r.Resume(g.ctx, &first, spec)
 	if err != nil {
-		if msg := err.Error(); strings.Contains(msg, "the name of") || !strings.Contains(msg, "the session id its claim recorded") {
-			t.Fatalf("a pod that trades refuses the resume of the recorded session %q naming a file the claim does not record, where it must name the session id the claim recorded: %v", id, err)
-		}
-		return
+		t.Fatalf("a pod that trades refuses the resume of the recorded session %q, which it must start as `--resume=%s`: %v", id, id, err)
 	}
 	if got, want := sessionWords(lastStart(t, g, workerToken).Argv), []string{"--resume=" + id}; !slices.Equal(got, want) {
 		t.Errorf("a pod that trades names its session as %q, want %q", got, want)
@@ -209,11 +205,13 @@ func TestAnOldClaimResumesByTheIdInItsFileName(t *testing.T) {
 	}
 }
 
-// A launch that trades passes the id it resumes as a word of its own, `--resume <id>`, so an id an
-// argument parser would read as something else — one that begins with `-`, or holds white space or
-// a control character — is refused before anything of the pod is touched, naming the claim and
-// what is wrong with the id, whether the claim recorded it or its file's name gives it. An id of a
-// session id's shape, the control, resumes.
+// A launch that trades and resumes a recorded file passes the id it resumes as a word of its own,
+// `--resume <id>`, so an id an argument parser would read as something else — one that begins
+// with `-`, or holds white space or a control character — is refused before anything of the pod is
+// touched, naming the claim and what is wrong with the id, whether the claim recorded it or its
+// file's name gives it. An id of a session id's shape, the control, resumes. A resume of a session
+// the claim records with no file passes the one word `--resume=<id>` instead, which no such id is
+// refused for (TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot).
 func TestAResumedIdNoParserCanMisreadIsTheOnlyOnePassed(t *testing.T) {
 	dir := ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smoke-legion-208--/"
 	g := newRig(t, nil, exchangeKeyed())
