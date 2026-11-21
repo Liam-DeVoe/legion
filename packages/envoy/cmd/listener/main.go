@@ -868,6 +868,11 @@ func isListRead(r *http.Request) bool {
 	return r.Method == http.MethodGet && (r.URL.Path == "/v1/sessions" || r.URL.Path == "/v1/interests/")
 }
 
+// v1API is /v1 as main mounts it: apiAuth in front of the /v1 gate.
+func v1API(auth listenerAPIAuth, gate *startingGate) http.Handler {
+	return apiAuth(auth, gate)
+}
+
 // openWebhooks builds the webhook routes over the publisher they publish through and the CI store
 // (nil without the GitHub route) and opens the webhook gate onto them. A webhook waits on nothing
 // else, not even the interest and session caches /v1 waits on, and GitHub does not redeliver a
@@ -1174,7 +1179,7 @@ func main() {
 	// Serve /v1/* on the listener port for local plugin registration.
 	apiAuthConfig.requests = newListenerRequests(met)
 	apiAuthConfig.route = v1Gate.route
-	v1Handler := apiAuth(apiAuthConfig, v1Gate)
+	v1Handler := v1API(apiAuthConfig, v1Gate)
 	mux.Handle("/v1", v1Handler)
 	mux.Handle("/v1/", v1Handler)
 
