@@ -214,8 +214,10 @@ var ErrPodGone = errors.New("the pod the locator records is not there")
 // The update round's own replacement of a pod it is done with is no such reason: no other role
 // runs in such a pod, and the daemon holds it for the relaunch, from its stop until its launch
 // starts, where the claim has not answered the round and the round does not pass it over, at most
-// until the round's bound. ErrProcessOutlivedStop is answered after the stop, which did not end
-// the process: starting the next one beside it would leave two processes writing one session.
+// until the round's bound; a relaunch whose launch never starts, one that failed for good among
+// them, holds it until the bound, so it costs the round at most its remaining time.
+// ErrProcessOutlivedStop is answered after the stop, which did not end the process: starting the
+// next one beside it would leave two processes writing one session.
 var (
 	ErrLauncherNotConnected = errors.New("the role's launcher is not connected")
 	ErrRelaunchReplacesPod  = errors.New("the launch would replace the pod, which ends every other role running in it")
@@ -242,8 +244,9 @@ type InPlaceRelauncher interface {
 	// (Options.RoundPodEnds in the Kubernetes runtime) and may answer by having the launch replace
 	// a pod the round is done with; the daemon holds the pod for the relaunch, from its stop until
 	// its launch starts, only where the claim has not answered the round and the round does not
-	// pass it over, and at most until the round's bound. So a nil promises that the relaunch ends
-	// no other running role, and not that the next process starts in the same pod.
+	// pass it over, and at most until the round's bound, which ends it too for a relaunch whose
+	// launch never starts. So a nil promises that the relaunch ends no other running role, and not
+	// that the next process starts in the same pod.
 	RelaunchRefusal(ctx context.Context, loc Locator, mayReplacePod bool) error
 	// StopForRelaunch stops loc's process for its relaunch: through its launcher, which answers
 	// once the process has ended, or, where mayReplacePod and the launcher is not connected, by

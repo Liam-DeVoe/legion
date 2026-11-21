@@ -6750,13 +6750,15 @@ and where the claims record the round's pod but no live claim records a process 
 
 A pod with no role process in it has no process to replace it through, and a role launched into it would have its first turn ended by the round's replacement and be launched a second time, as INFRA-4455's tester was on 2026-11-19 (dispatch://INFRA-4109 R7).
 So the daemon replaces such a pod before any launch goes into it, wherever nothing holds the pod (`roundPodEnds`).
-Four things hold it:
+Five things hold it:
 
 - an operator's suspension of a claim the round asks, at any time;
 
 - a hold of a project's pause on the pod, at any time ([Pausing a project](#pausing-a-project));
 
 - before the round's bound, a claim of the issue whose role a project's pause still owes a launch, read for each role (the role has not run in the pod since the pause stopped it, `PausePodHold.Owed`), that has not answered the round, and that is suspended `released` or runs no process and is not suspended, failed or retired (`podHolds.owes`), as while its launch waits in the wake pacing, after a daemon restart left that launch `launch_uncertain` or the release of it made it `queued`, and after the launch forgot the role's lost session and recorded no session: the work on the disk is the pause's, whether or not an ask of the round reached that claim, and the launch of another role of the pod does not end that keep;
+
+- before the round's bound, a claim of the issue relaunching on its same session (`relaunch`, R5) whose relaunch's launch has not started, that has not answered the round, that has not left its pod for another, and that the round does not pass over (`relaunchesInPlace`): the relaunch asks nothing of the round before its stop, an out-of-reach claim holds no ask, and once the stop has ended its process no process of the pod is its own, so without this hold the sweep would replace the pod by issue, or the launch would replace it as the round's own replacement, while the launch waits for a retry or a restart, and the work on the disk that the claim had not pushed would go with it; a relaunch whose launch never starts, a claim failed for good among them, holds the pod until the bound at the latest, so it costs at most the round's remaining time;
 
 - before the round's bound, a claim the round waits for that holds an ask of the round that reached its session and that it has not answered: its process went while it held the ask, so its unpushed work may be on the disk.
 
@@ -6771,7 +6773,7 @@ A launch reads the same rule when it runs (`roundPodEndsAtLaunch`, the Sandbox r
 Under the pod's launch turn, a launch that would keep the live pod of its issue asks the daemon whether the round over that pod ends by this rule, so the round's bound is read when the launch runs and not when its claim was resumed.
 Where no role process runs in the pod and nothing holds it, the launch replaces the pod as the round's own replacement and starts its role in a new pod, so the role is launched once.
 Before the bound, the launch also keeps the pod where the launching claim itself holds the round's ask and has not answered it.
-Before the bound, the launch keeps the pod as well while the third thing above holds it (`podHolds.owes`).
+Before the bound, the launch keeps the pod as well while the third or the fourth thing above holds it (`podHolds.owes`, `relaunchesInPlace`): the fourth is the launching claim's own relaunch on its same session, whose stop ended its process in the pod.
 The launching claim is one such claim where the pause owes its own role the launch: it runs no process yet, with a session or with none.
 The pause kept the pod for that role's work, so neither the role's own launch, when the wake pacing lets it out, nor the launch of another role of the pod replaces it.
 The next sweep reads the replaced pod gone, or another pod in its place, and ends the round with the line and the message of a replacement by issue (`endRoundALaunchReplaced`).

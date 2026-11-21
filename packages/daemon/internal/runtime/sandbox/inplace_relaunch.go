@@ -11,8 +11,9 @@ import (
 var _ runtime.InPlaceRelauncher = (*Runtime)(nil)
 
 // RelaunchRefusal satisfies runtime.InPlaceRelauncher: why a relaunch of loc's process on its same
-// session (R5) cannot stop it and start the next generation through the same launcher in the same
-// pod. Without mayReplacePod it refuses a role whose launcher for loc's pod is not connected
+// session (R5) cannot stop it and start the next generation through the same launcher without
+// ending another role running in its pod or waiting out the launch bound. Without mayReplacePod it
+// refuses a role whose launcher for loc's pod is not connected
 // (runtime.ErrLauncherNotConnected), since a start through it would wait out the launch bound and
 // be charged, and a launch that would replace the pod (runtime.ErrRelaunchReplacesPod), since that
 // ends every other role running in it, naming why. The pod is judged by relaunch's own decision

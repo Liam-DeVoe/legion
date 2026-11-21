@@ -2035,6 +2035,11 @@ func launchRoundPodEnds(group []supervise.Claim, launching supervise.Claim, roun
 // written its generation beside it yet (LastRelaunchGeneration 0), which the relaunch's launch does
 // once it starts, whether at once or at a retry (supervise's launchNow). c is a member of round
 // that has neither answered it nor left its pod for another (answered, LeftPodRound).
+//
+// A relaunch whose launch never starts keeps that reading: a claim whose relaunch failed for good
+// (supervise.StateFailed, its LastRelaunchGeneration still 0) holds the pod as one still to start
+// does. roundPodEnds reads this only before the bound, so such a claim holds the pod until the
+// bound at the latest, and a failed relaunch costs the round at most its remaining time.
 func relaunchesInPlace(c supervise.Claim, round string) bool {
 	return !c.LastRelaunch.IsZero() && c.LastRelaunchGeneration == 0 && c.UpdateRound == round &&
 		!answered(c, round) && !c.LeftPodRound(round)
