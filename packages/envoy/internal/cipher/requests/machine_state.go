@@ -231,9 +231,12 @@ type Minter func(ctx context.Context, req secrets.MintRequest) (secrets.Minted, 
 // GiveBack tries to undo, at its upstream, one minted value of a type that a release minted for the
 // secret name and then handed to nobody (secrets.GitHubApp.GiveBack): a release that failed after
 // the mint, or a session's release of a name the airlock holds back, which mints the value only to
-// learn its slots. It runs to a bound of its own whatever ctx does, logs what the upstream did not
-// confirm, and answers nothing, since nothing the release answers depends on it.
-type GiveBack func(ctx context.Context, name, value string)
+// learn its slots. form is the value form of the GitHub profile the name is served as, which
+// says what the value holds (releasedName.gitHubValue: githubname.ValueInstallations or
+// githubname.ValueToken), and "" for a name of any other type. It runs to a bound of its own
+// whatever ctx does, logs what the upstream did not confirm, and answers nothing, since nothing
+// the release answers depends on it.
+type GiveBack func(ctx context.Context, name, value, form string)
 
 // PendingRequest is one credential request Create has just written pending, as it hands it to
 // Machine.Judge: what the broker's model judge reads of a request, and nothing else.
@@ -598,10 +601,11 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 //
 // A request's target, the account or repositories of one account its signed locations narrow its
 // one GitHub profile to (record.AuthorizationDetail.Target), is refused when the profile cannot
-// serve it (checkTarget, ErrTargetRefused), once the names are read and before a live grant is
-// looked for or anybody is asked, and otherwise recorded beside its name. A live grant is handed
-// back, and a pending request joined, only for the same names and the same target, since each
-// grant releases its own request's scope.
+// serve it (checkTarget, ErrTargetRefused), once the policy has decided the names and before
+// anybody is asked, and otherwise recorded beside its name. Only a name the policy does not deny
+// is held to its profile, so a requester the profile does not list is denied as such and is never
+// told what the profile names. A live grant is handed back, and a pending request joined, only for
+// the same names and the same target, since each grant releases its own request's scope.
 func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sessionID string) (Request, error) {
 	if !validSessionID(sessionID) {
 		return Request{}, ErrSessionIDInvalid
@@ -654,13 +658,9 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		}
 	}
 	// The target the request's signed locations name, which only a request for one name carries
-	// (record.VerifyRequestObject). One the name's profile cannot serve, and none on a value-token
-	// profile of several accounts, is refused here, before a live grant is looked for and before
-	// anybody is asked (checkTarget).
+	// (record.VerifyRequestObject). It is held to the name's profile once the policy has decided
+	// the name (checkTarget, below).
 	targetAccount, targetRepositories := obj.Details[0].Target()
-	if err := checkTarget(set, names, targetAccount, targetRepositories); err != nil {
-		return Request{}, err
-	}
 	lifetime := defaultLifetime(set, names, obj.LifetimeSeconds)
 	// A key the judge decides grants at most its own judge seconds, but only when the judge
 	// decides the request: a request naming no lifetime gets the shortest judge seconds of the
@@ -726,6 +726,19 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	}
 	e, err := m.evaluate(set, names, requester, obj.Reason)
 	if err != nil {
+		return Request{}, err
+	}
+	// A target the profile of a name the policy does not deny cannot serve, and none on a
+	// value-token profile of several accounts, is refused here, before anybody is asked
+	// (checkTarget). A denied name is passed over: its denial is the answer, and a requester the
+	// profile does not list is told so rather than which accounts and repositories it names.
+	var allowed []string
+	for _, d := range e.decisions {
+		if d.Decision != policy.Deny {
+			allowed = append(allowed, d.Name)
+		}
+	}
+	if err := checkTarget(set, allowed, targetAccount, targetRepositories); err != nil {
 		return Request{}, err
 	}
 	// A target narrows the request's one name, so every decision of it carries the target, which
@@ -841,24 +854,18 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 // approval that would grant makes again (applyDecisionAttempt), nil where every name can be
 // served with it. account and repositories are the target the request's signed locations name,
 // "" for none; set is the snapshot Create or the approval evaluates names against. A name set
-// does not serve is passed over, since the evaluation answers it with the policy's own error. A
-// target outside a name's profile, and a target on a name with no github block, are gitHubScope's
-// refusal, the rule the release mints by. A value-token profile, whose release is one account's
-// bare token, asked for with no target while more than one account is in effect is refused too:
-// the minter would refuse that release (secrets.GitHubScope), and here nobody is asked to approve
-// it first.
+// does not serve is passed over, since the evaluation answers it with the policy's own error.
+// Every refusal is gitHubScope's, the rule the release mints by: a target outside a name's
+// profile, a target on a name with no github block, and no target on a value-token profile of
+// several accounts. Here nobody is asked to approve a release that rule refuses.
 func checkTarget(set *policy.Set, names []string, account string, repositories []string) error {
 	for _, name := range names {
 		served, ok := set.Secrets[name]
 		if !ok {
 			continue
 		}
-		scope, err := gitHubScope(name, served.Profile, account, repositories)
-		if err != nil {
+		if _, err := gitHubScope(name, served.Profile, account, repositories); err != nil {
 			return err
-		}
-		if account == "" && scope != nil && scope.Value == policy.ValueToken && len(scope.Accounts) > 1 {
-			return fmt.Errorf("%w: %s releases one account's bare token, and the profile names %s: name one with --target ACCOUNT[/REPOSITORY]", ErrTargetRefused, name, profileWords(served.Profile.GitHub))
 		}
 	}
 	return nil

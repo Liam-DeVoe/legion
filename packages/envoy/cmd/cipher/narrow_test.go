@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
 // requestAnswer is how a narrowBroker answers POST /v1/requests, which is what tells apart the
@@ -340,8 +340,8 @@ func TestParseGitHubNarrowingAnswersTheOneCanonicalForm(t *testing.T) {
 	if got, refusal := parseGitHubNarrowing("ada", nil, false); refusal != nil || got.Repositories != nil {
 		t.Fatalf("parseGitHubNarrowing with no repositories = %+v, %v; want no repositories", got, refusal)
 	}
-	atMost := repositoryNames(secrets.MaxNarrowedRepositories)
-	if got, refusal := parseGitHubNarrowing("ada", atMost, true); refusal != nil || len(got.Repositories) != secrets.MaxNarrowedRepositories {
+	atMost := repositoryNames(githubname.MaxNarrowedRepositories)
+	if got, refusal := parseGitHubNarrowing("ada", atMost, true); refusal != nil || len(got.Repositories) != githubname.MaxNarrowedRepositories {
 		t.Fatalf("parseGitHubNarrowing with %d repositories = %d repositories, %v; want all of them", len(atMost), len(got.Repositories), refusal)
 	}
 }
@@ -356,7 +356,7 @@ func repositoryNames(n int) []string {
 }
 
 // TestParseGitHubNarrowingRefusesWhatGitHubCannotHold: the owner is one GitHub login and the
-// repositories, when present, at least one and at most secrets.MaxNarrowedRepositories names
+// repositories, when present, at least one and at most githubname.MaxNarrowedRepositories names
 // GitHub can hold; each refusal names the field it refuses, so narrowingRules names it by the
 // flag that gave it. This table is the narrowing rules' one test;
 // TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo shows only how a refusal reaches the caller.
@@ -378,7 +378,7 @@ func TestParseGitHubNarrowingRefusesWhatGitHubCannotHold(t *testing.T) {
 		{"a repository named ..", "ada", []string{".."}, "repositories", `".."`},
 		{"an empty repository name", "ada", []string{""}, "repositories", `""`},
 		{"an empty repository list", "ada", []string{}, "repositories", "is empty"},
-		{"one repository past the maximum", "ada", repositoryNames(secrets.MaxNarrowedRepositories + 1), "repositories", fmt.Sprint(secrets.MaxNarrowedRepositories)},
+		{"one repository past the maximum", "ada", repositoryNames(githubname.MaxNarrowedRepositories + 1), "repositories", fmt.Sprint(githubname.MaxNarrowedRepositories)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, refusal := parseGitHubNarrowing(tc.owner, tc.repositories, true)

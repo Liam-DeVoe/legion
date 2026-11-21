@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -76,7 +76,7 @@ func gitHubAppValue(t *testing.T) string {
 func acmeScope(names ...string) *secrets.GitHubScope {
 	scope := &secrets.GitHubScope{
 		Accounts:    []string{"acme-org"},
-		Permissions: map[string]string{"contents": "read", "metadata": "read"}, Value: policy.ValueInstallations,
+		Permissions: map[string]string{"contents": "read", "metadata": "read"}, Value: githubname.ValueInstallations,
 	}
 	for _, name := range names {
 		scope.Repositories = append(scope.Repositories, "acme-org/"+name)

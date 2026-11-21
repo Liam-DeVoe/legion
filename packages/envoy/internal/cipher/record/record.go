@@ -20,8 +20,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-jose/go-jose/v4"
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
@@ -178,16 +178,16 @@ func Locations(account string, repositories []string) []string {
 
 // MaxTargetLocations is the most entries one detail's locations hold: one for each repository of
 // its target, as many as a GitHub profile's token names.
-const MaxTargetLocations = secrets.MaxNarrowedRepositories
+const MaxTargetLocations = githubname.MaxNarrowedRepositories
 
 // gitHubLocationPrefix opens every entry of a target's locations.
 const gitHubLocationPrefix = "https://github.com/"
 
 // parseLocation reads one entry of a target's locations, https://github.com/<account> or
 // https://github.com/<account>/<repository>: the account, the repository or "" for the account
-// form, and false for every other string. The account is a GitHub login (secrets.ValidLogin) in
-// lowercase alone, the form GitHub compares logins in and the form the profiles file holds them
-// in, and the repository a name GitHub can hold (secrets.ValidRepositoryName). A name a location
+// form, and false for every other string. The account is a GitHub login (githubname.ValidLogin)
+// in lowercase alone, the form GitHub compares logins in and the form the profiles file holds them
+// in, and the repository a name GitHub can hold (githubname.ValidRepositoryName). A name a location
 // cannot hold is refused here rather than left to the profile it is compared with, since the
 // approval page prints the record's target and a rune such as a bidi override would change what
 // a person reads.
@@ -198,11 +198,11 @@ func parseLocation(location string) (account, repository string, ok bool) {
 	}
 	account, repository, named := strings.Cut(rest, "/")
 	switch {
-	case !secrets.ValidLogin(account) || strings.ToLower(account) != account:
+	case !githubname.ValidLogin(account) || strings.ToLower(account) != account:
 		return "", "", false
 	case !named:
 		return account, "", true
-	case !secrets.ValidRepositoryName(repository):
+	case !githubname.ValidRepositoryName(repository):
 		return "", "", false
 	}
 	return account, repository, true

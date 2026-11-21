@@ -23,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -261,7 +262,7 @@ func (s airlockSplit) slots() []string { return slices.Sorted(maps.Keys(s.values
 //
 //   - a stored secret and a google-login access token are one string, so they are the value
 //     slot's placeholder alone;
-//   - a github-app profile whose github.value is token (gitHubValue, policy.ValueToken) is
+//   - a github-app profile whose github.value is token (gitHubValue, githubname.ValueToken) is
 //     released as the one account's bare token, which is one string too, so it is the value
 //     slot's placeholder alone;
 //   - a stored AWS key pair, which the entry marks kind "aws", is the stored object re-emitted
@@ -278,7 +279,7 @@ func airlockSplitOf(entryKind, secretType, gitHubValue, value string) (airlockSp
 	var split airlockSplit
 	var err error
 	switch {
-	case secretType == policy.TypeGitHubApp && gitHubValue == policy.ValueToken:
+	case secretType == policy.TypeGitHubApp && gitHubValue == githubname.ValueToken:
 		return valueSplit(value), nil
 	case secretType == policy.TypeGitHubApp:
 		split, err = githubAppSplit(value)

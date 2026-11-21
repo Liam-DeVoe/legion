@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -105,7 +106,10 @@ func TestTargetIsALocationOfTheSignedRequest(t *testing.T) {
 // profile it holds a live grant of gets that grant back only when its new request names the same
 // target: the same account, the same repositories, or no target as before. Another target of the
 // same profile, and the same target of another profile of the same source, are new requests with
-// grants of their own, since each grant releases its own scope.
+// grants of their own, since each grant releases its own scope. So is the same target of the same
+// profile once its entry is edited: the live grant was decided under the old entry, which its
+// release would end (checkRelease), so the reuse ends it instead of handing it back, and the
+// grants of an entry the edit left as it was are reused across it.
 func TestALiveGrantIsReusedOnlyForTheSameProfileAndTarget(t *testing.T) {
 	m, enrollmentID, key := targetFixture(t, policy.TierAgent, policytest.ProfilesFile(
 		policytest.AppProfile("APP_KEY"),
@@ -145,9 +149,28 @@ func TestALiveGrantIsReusedOnlyForTheSameProfileAndTarget(t *testing.T) {
 			t.Fatalf("Create(%s, %s) again = %+v, %v; want its live grant %s back", ask.profile, ask.name, again, err, grants[ask.name])
 		}
 	}
+
+	const edited = "the same account through another profile"
+	rollProfiles(t, m, policytest.ProfilesFile(
+		policytest.AppProfile("APP_KEY"),
+		`{"name": "APP_KEY_ADA", "source": "APP_KEY", "github": {"accounts": ["ada"], "permissions": {"contents": "read", "metadata": "read"}}}`,
+	))
+	fresh, err := m.Create(t.Context(), enrollmentID, signTargetRequest(t, m, key, "APP_KEY_ADA", "https://github.com/ada"), "")
+	if err != nil || fresh.GrantID == nil || *fresh.GrantID == grants[edited] {
+		t.Fatalf("Create(APP_KEY_ADA, %s) once its entry is edited = %+v, %v; want a grant of its own, not %s", edited, fresh, err, grants[edited])
+	}
+	var revokedBy *string
+	if err := m.Store.Pool.QueryRow(t.Context(), `select revoked_by from grants where id=$1`, grants[edited]).Scan(&revokedBy); err != nil || revokedBy == nil || *revokedBy != GrantEndedActor {
+		t.Fatalf("the grant of the edited entry is revoked by %v, %v; want it ended by %s", revokedBy, err, GrantEndedActor)
+	}
+	kept, err := m.Create(t.Context(), enrollmentID, signTargetRequest(t, m, key, "APP_KEY", "https://github.com/ada"), "")
+	if err != nil || kept.GrantID == nil || *kept.GrantID != grants["an account"] {
+		t.Fatalf("Create(APP_KEY, an account) across another entry's edit = %+v, %v; want its live grant %s back", kept, err, grants["an account"])
+	}
+
 	var requests int
-	if err := m.Store.Pool.QueryRow(t.Context(), `select count(*) from requests`).Scan(&requests); err != nil || requests != len(asks) {
-		t.Fatalf("the broker holds %d request rows, %v; want %d, one for each target", requests, err, len(asks))
+	if err := m.Store.Pool.QueryRow(t.Context(), `select count(*) from requests`).Scan(&requests); err != nil || requests != len(asks)+1 {
+		t.Fatalf("the broker holds %d request rows, %v; want %d, one for each target and one for the edited entry", requests, err, len(asks)+1)
 	}
 }
 
@@ -187,8 +210,8 @@ func TestAPendingRequestIsJoinedOnlyForTheSameTarget(t *testing.T) {
 // approved across the same roll as before.
 func TestAnApprovalHoldsTheTargetToTheProfileItIsGivenUnder(t *testing.T) {
 	const block = `"permissions": {"contents": "read", "metadata": "read"}`
-	before := policytest.ProfilesFile(`{"name": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean", "ada/proofs"], ` + block + `}}`)
-	after := policytest.ProfilesFile(`{"name": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean"], ` + block + `}}`)
+	before := policytest.ProfilesFile(`{"name": "APP_KEY", "github": {"accounts": ["ada"], "repositories": ["ada/lean", "ada/proofs"], ` + block + `}}`)
+	after := policytest.ProfilesFile(`{"name": "APP_KEY", "github": {"accounts": ["ada"], "repositories": ["ada/lean"], ` + block + `}}`)
 	m, enrollmentID, key := targetFixture(t, policy.TierHuman, before)
 	dropped, err := m.Create(t.Context(), enrollmentID, signTargetRequest(t, m, key, "APP_KEY", "https://github.com/ada/proofs"), "")
 	if err != nil || dropped.State != "pending" || dropped.RecordID == nil {
@@ -231,11 +254,67 @@ func TestATargetRefusalIsOneOfThisPackagesRefusals(t *testing.T) {
 	}
 }
 
+// TestARequesterTheProfileDoesNotListIsDeniedWhateverItsTarget: Create holds a target to the
+// profile only for a name the policy does not deny, so a requester the profile does not list is
+// denied by the requesters rule whatever target it names, outside the profile included, and is
+// never answered a target refusal, which names the profile's accounts and repositories to a
+// requester the profile is not for.
+func TestARequesterTheProfileDoesNotListIsDeniedWhateverItsTarget(t *testing.T) {
+	m, enrollmentID, key := targetFixture(t, policy.TierAgent, policytest.ProfilesFile(
+		`{"name": "APP_KEY", "requesters": ["ada@example.com"], "github": {"accounts": ["ada"], "repositories": ["ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}}`,
+	))
+	const want = "APP_KEY: " + policy.ReasonRequesterNotListed
+	for name, locations := range map[string][]string{
+		"no target":                   nil,
+		"a target inside the profile": {"https://github.com/ada/proofs"},
+		"an account outside it":       {"https://github.com/acme"},
+		"a repository outside it":     {"https://github.com/ada/lean"},
+	} {
+		denied, err := m.Create(t.Context(), enrollmentID, signTargetRequest(t, m, key, "APP_KEY", locations...), "")
+		if err != nil || denied.State != "denied" || denied.GrantID != nil || denied.Detail == nil || *denied.Detail != want {
+			t.Fatalf("Create(APP_KEY, %s) by a requester the profile does not list = %+v, %v; want it denied with the detail %q", name, denied, err, want)
+		}
+	}
+}
+
+// TestAReleaseOfABareTokenOfSeveralAccountsWithNoTargetIsRefused: a value-token profile releases
+// one account's bare token, so a scope of several accounts with no target is refused by the one
+// rule the release and Create share (gitHubScope), as ErrTargetRefused, and the minter is never
+// asked. The grant here names a target at Create, which records it, and loses it in the database
+// afterwards, the one way a grant of such a scope with no target can reach a release.
+func TestAReleaseOfABareTokenOfSeveralAccountsWithNoTargetIsRefused(t *testing.T) {
+	m, enrollmentID, key := targetFixture(t, policy.TierAgent, policytest.ProfilesFile(
+		`{"name": "APP_KEY", "github": {"accounts": ["acme", "ada"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}}`,
+	))
+	asked := 0
+	m.Minters = map[string]Minter{
+		policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+			asked++
+			return secrets.Minted{Value: "not-a-secret"}, nil
+		},
+	}
+	request, err := m.Create(t.Context(), enrollmentID, signTargetRequest(t, m, key, "APP_KEY", "https://github.com/ada"), "")
+	if err != nil || request.GrantID == nil {
+		t.Fatalf("Create(APP_KEY --target ada) = %+v, %v; want a grant", request, err)
+	}
+	if _, err := m.Store.Pool.Exec(t.Context(), `update request_secrets set target_account = null where request_id = $1`, request.ID); err != nil {
+		t.Fatalf("drop the recorded target: %v", err)
+	}
+	if _, err := m.Values(t.Context(), *request.GrantID, enrollmentID, ReleaseCall{}); !errors.Is(err, ErrTargetRefused) || !strings.Contains(err.Error(), "--target") {
+		t.Fatalf("Values of a bare token of acme and ada with no target = %v; want ErrTargetRefused telling the caller to name one with --target", err)
+	}
+	if asked != 0 {
+		t.Fatalf("the minter was asked %d times for a bare token of two accounts; want never", asked)
+	}
+}
+
 // TestAReleaseMintsTheTargetsScope: a release of a grant whose request names a target asks the
 // minter for the target's account alone, with the target's repositories, or, for an account
 // target, the profile's repositories of that account: a target narrows the profile and never
 // widens it. A request with no target asks for the profile's own scope, its repositories of
 // both accounts among them, each as account/name, so the minter can send each account its own.
+// A target's repository matches the profile's without regard to case, as GitHub matches it
+// (secrets' heldBy), and the minter is asked for the profile's own spelling of it.
 func TestAReleaseMintsTheTargetsScope(t *testing.T) {
 	m, enrollmentID, key := targetFixture(t, policy.TierAgent, policytest.ProfilesFile(
 		`{"name": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean", "ada/proofs", "acme/site"], "permissions": {"contents": "read", "metadata": "read"}}}`,
@@ -256,6 +335,7 @@ func TestAReleaseMintsTheTargetsScope(t *testing.T) {
 		{"an account", []string{"https://github.com/ada"}, secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: []string{"ada/lean", "ada/proofs"}}},
 		{"the other account", []string{"https://github.com/acme"}, secrets.GitHubScope{Accounts: []string{"acme"}, Repositories: []string{"acme/site"}}},
 		{"a repository", []string{"https://github.com/ada/proofs"}, secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: []string{"ada/proofs"}}},
+		{"a repository in another case", []string{"https://github.com/ada/Proofs"}, secrets.GitHubScope{Accounts: []string{"ada"}, Repositories: []string{"ada/proofs"}}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			asked = nil
@@ -267,7 +347,7 @@ func TestAReleaseMintsTheTargetsScope(t *testing.T) {
 				t.Fatalf("Values: %v", err)
 			}
 			row.want.Permissions = map[string]string{"contents": "read", "metadata": "read"}
-			row.want.Value = policy.ValueInstallations
+			row.want.Value = githubname.ValueInstallations
 			if want := []secrets.GitHubScope{row.want}; !reflect.DeepEqual(asked, want) {
 				t.Fatalf("the minter was asked for %+v, want the target's scope %+v", asked, want)
 			}

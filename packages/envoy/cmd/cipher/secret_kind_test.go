@@ -19,6 +19,7 @@ import (
 	"github.com/aws/smithy-go"
 	"google.golang.org/grpc/codes"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -840,7 +841,7 @@ func refusedTypeValues(t *testing.T) []refusedTypeValue {
 func mintRefusal(t *testing.T, secretType, value string) string {
 	t.Helper()
 	req := secrets.MintRequest{Name: "TYPE_KEY", Source: "TYPE_KEY", HumanTier: true, Value: value, GitHub: &secrets.GitHubScope{
-		Accounts: []string{"acme-org"}, Permissions: map[string]string{"metadata": "read"}, Value: policy.ValueInstallations,
+		Accounts: []string{"acme-org"}, Permissions: map[string]string{"metadata": "read"}, Value: githubname.ValueInstallations,
 	}}
 	var err error
 	switch secretType {

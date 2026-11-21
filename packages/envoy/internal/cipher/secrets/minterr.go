@@ -69,15 +69,15 @@ type GitHubScope struct {
 	// Accounts are the lowercase logins of the accounts whose installations the release mints
 	// for, each once.
 	Accounts []string
-	// Repositories are "account/name" entries, the account lowercased, sorted; nil is every
-	// repository the installation reaches. Each account's token names that account's
-	// repositories alone, by name (GitHubApp.Mint), so a scope that names repositories names some
-	// of each account in effect.
+	// Repositories are "account/name" entries, the account lowercased, sorted, at most
+	// githubname.MaxNarrowedRepositories of them; nil is every repository the installation
+	// reaches. Each account's token names that account's repositories alone, by name
+	// (GitHubApp.Mint), so a scope that names repositories names some of each account in effect.
 	Repositories []string
 	// Permissions are the profile's, before the cut: each GitHub App permission and its level.
 	Permissions map[string]string
-	// Value is ValueInstallations or ValueToken: today's JSON of one entry per
-	// account, or the bare token of the one account in effect.
+	// Value is githubname.ValueInstallations or githubname.ValueToken: today's JSON of one entry
+	// per account, or the bare token of the one account in effect.
 	Value string
 }
 
@@ -93,13 +93,6 @@ type Minted struct {
 	Expires time.Time
 	LeftOut map[string][]string
 }
-
-// MaxNarrowedRepositories is the most repositories a GitHubScope names. GitHub's access_tokens
-// body takes 500, but its answer carries a full repository object for each one, about 5 KB, and
-// the minter reads that answer to a cap sized for this many (accessTokensResponseLimit): a token
-// GitHub minted whose answer the minter cannot read whole cannot be released, and its revoke is
-// sent only where the part it read names the token.
-const MaxNarrowedRepositories = 100
 
 // The classes of a minter's failure. Every error a minter returns wraps exactly one, so the
 // broker's log names the class an operator acts on without reading the message, which never
@@ -118,12 +111,12 @@ var (
 	// ErrMintNarrowingRefused: the profile's scope in effect for the release cannot be served: its
 	// permissions, cut to what an installation holds, leave none but metadata (ErrMintEmptyCut); it
 	// names repositories, and an account in effect holds none of them; it is a bare token of more
-	// than one account; or GitHub answered its token request 422, which it does for a repository
-	// the installation does not reach (a misspelled name among them) or a permission it does not
-	// hold. The caller names another profile or a target, or the profiles file changes; neither
-	// the App nor the secret is at fault. Its name and its words are the ones it had for the
-	// narrowing a caller once asked for, which a released client still matches
-	// (packages/daemon's appauth).
+	// than one installation (ErrMintSeveralInstallations); or GitHub answered its token request
+	// 422, which it does for a repository the installation does not reach (a misspelled name among
+	// them) or a permission it does not hold. The caller names another profile or a target, or
+	// the profiles file changes; neither the App nor the secret is at fault. Its name and its
+	// words are the ones it had for the narrowing a caller once asked for, which a released client
+	// still matches (packages/daemon's appauth).
 	ErrMintNarrowingRefused = errors.New("the narrowing cannot be served")
 	// ErrMintUpstream: GitHub or Google could not be asked or answered no usable reply (the network,
 	// a 5xx, a rate limit, a body past its cap or one that does not decode, a token GitHub describes

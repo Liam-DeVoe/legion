@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -1451,7 +1452,7 @@ func TestTheReleaseNamesEachPermissionTheCutLeftOut(t *testing.T) {
 	if want := map[string]map[string][]string{"APP_KEY": {"ada": {"contents:write", "members"}}}; !reflect.DeepEqual(release.GitHubLeftOut, want) {
 		t.Fatalf("the release's left-out entries = %v, want %v", release.GitHubLeftOut, want)
 	}
-	want := []secrets.GitHubScope{{Accounts: []string{"acme", "ada"}, Permissions: map[string]string{"metadata": "read"}, Value: policy.ValueInstallations}}
+	want := []secrets.GitHubScope{{Accounts: []string{"acme", "ada"}, Permissions: map[string]string{"metadata": "read"}, Value: githubname.ValueInstallations}}
 	if !reflect.DeepEqual(scopes, want) {
 		t.Fatalf("the minter's scopes = %+v, want the profile's own, %+v", scopes, want)
 	}

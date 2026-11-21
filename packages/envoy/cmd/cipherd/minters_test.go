@@ -15,6 +15,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -29,7 +30,7 @@ import (
 // from a profile: secrets.GitHubApp.Mint refuses a mint with no scope before GitHub is asked
 // anything, so every github-app mint below carries one.
 func appScope(account string) *secrets.GitHubScope {
-	return &secrets.GitHubScope{Accounts: []string{account}, Permissions: map[string]string{"contents": "read", "metadata": "read"}, Value: policy.ValueInstallations}
+	return &secrets.GitHubScope{Accounts: []string{account}, Permissions: map[string]string{"contents": "read", "metadata": "read"}, Value: githubname.ValueInstallations}
 }
 
 // TestEachTypeReachesItsOwnMinter: the broker's minters send a github-app secret's value to the
@@ -268,7 +269,7 @@ func TestRequestMachineGivesBackAGitHubAppTokenAtTheMintersGitHub(t *testing.T) 
 	if status := reads(); status != http.StatusOK {
 		t.Fatalf("a read with the minted token answered %d, want 200", status)
 	}
-	giveBack(t.Context(), "APP_KEY", minted.Value)
+	giveBack(t.Context(), "APP_KEY", minted.Value, githubname.ValueInstallations)
 	if status := reads(); status != http.StatusUnauthorized {
 		t.Fatalf("a read with the given-back token answered %d, want 401", status)
 	}

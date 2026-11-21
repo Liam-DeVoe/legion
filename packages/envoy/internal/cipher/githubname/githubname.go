@@ -1,29 +1,36 @@
-package secrets
+// Package githubname is the shape of GitHub's own words, written once for the broker: a login, a
+// repository's name, a permission's name and level, the two forms a GitHub profile's value takes,
+// and the most repositories one token names. It imports nothing but the standard library, so every
+// holder of these rules can import it without what it holds: the profiles file's parser (policy),
+// the request object's locations (record), and the minter (secrets), and record does not link the
+// minters through it. Each caller keeps its own refusal's words; only the rule is here.
+package githubname
 
 import (
 	"regexp"
 	"slices"
 )
 
-// The shape of GitHub's own words, written once for the broker: a login, a repository's name, a
-// permission's name and level, and the two forms a GitHub profile's value takes. They live in
-// this package, as MaxNarrowedRepositories does, because it is the one package every holder of
-// them can import: policy imports record, record cannot import policy, and this package imports
-// neither. Each caller keeps its own refusal's words; only the rule is here.
-
-// The two forms a GitHub profile's value takes (GitHubScope.Value, and policy's GitHubBlock.Value,
-// which names them by these same constants): the JSON of one entry per account, with its
-// installation_id, token and expires_at, which is the default, or the bare token of the one
-// account in effect.
+// The two forms a GitHub profile's value takes (secrets.GitHubScope.Value, and policy's
+// GitHubBlock.Value): the JSON of one entry per account, with its installation_id, token and
+// expires_at, which is the default, or the bare token of the one account in effect.
 const (
 	ValueInstallations = "installations"
 	ValueToken         = "token"
 )
 
+// MaxNarrowedRepositories is the most repositories one token names: a GitHub profile's
+// repositories, and so a target's locations. GitHub's access_tokens body takes 500, but its answer
+// carries a full repository object for each one, about 5 KB, and the minter reads that answer to a
+// cap sized for this many (secrets' accessTokensResponseLimit): a token GitHub minted whose answer
+// the minter cannot read whole cannot be released, and its revoke is sent only where the part it
+// read names the token.
+const MaxNarrowedRepositories = 100
+
 // MetadataPermission is the permission GitHub grants at read with every installation token,
 // whatever its request named, and which every installation it lists holds. The minter refuses a
-// token holding a permission its request did not name (heldBy), so every GitHub profile names it,
-// at read and no other level (policy.ParseProfiles): every endpoint GitHub lists under it
+// token holding a permission its request did not name (secrets' heldBy), so every GitHub profile
+// names it, at read and no other level (policy.ParseProfiles): every endpoint GitHub lists under it
 // ("Permissions required for GitHub Apps") needs read.
 const MetadataPermission = "metadata"
 

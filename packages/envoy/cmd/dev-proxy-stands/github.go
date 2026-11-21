@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 )
 
 // permissionFlags is --installation-permissions: what the App's installation on each owner holds,
@@ -26,8 +26,8 @@ type permissionFlags struct {
 func (f permissionFlags) String() string { return "" }
 
 // Set parses one owner's value, refusing an owner named twice, a permission named twice, a name
-// that is no permission's (secrets.ValidPermissionName) and a level GitHub does not give
-// (secrets.LevelRank), each by what it refuses: a stand that quietly held a misspelt map would
+// that is no permission's (githubname.ValidPermissionName) and a level GitHub does not give
+// (githubname.LevelRank), each by what it refuses: a stand that quietly held a misspelt map would
 // answer a check's cut with the wrong installation.
 func (f permissionFlags) Set(value string) error {
 	owner, list, ok := strings.Cut(value, "=")
@@ -42,11 +42,11 @@ func (f permissionFlags) Set(value string) error {
 		for _, entry := range strings.Split(list, ",") {
 			permission, level, leveled := strings.Cut(entry, ":")
 			switch {
-			case !secrets.ValidPermissionName(permission):
+			case !githubname.ValidPermissionName(permission):
 				return fmt.Errorf("%q is no permission's name: a permission is lowercase letters and underscores", permission)
 			case !leveled:
 				return fmt.Errorf("%q names no level: want <permission>:<level>", permission)
-			case secrets.LevelRank(level) == 0:
+			case githubname.LevelRank(level) == 0:
 				return fmt.Errorf("the level %q is none of read, write and admin", level)
 			}
 			if _, twice := held[permission]; twice {

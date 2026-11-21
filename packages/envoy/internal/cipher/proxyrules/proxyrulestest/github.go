@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 )
 
 // GitHubOptions is what a GitHubStand answers with.
@@ -219,10 +219,10 @@ func (g *GitHubStand) held(owner string) map[string]string {
 func (g *GitHubStand) holdsAll(owner string, asked map[string]string) bool {
 	held := g.held(owner)
 	for permission, level := range asked {
-		if secrets.LevelRank(level) == 0 || secrets.LevelRank(held[permission]) < secrets.LevelRank(level) {
+		if githubname.LevelRank(level) == 0 || githubname.LevelRank(held[permission]) < githubname.LevelRank(level) {
 			return false
 		}
-		if level == "read" && secrets.WriteOnlyPermission(permission) {
+		if level == "read" && githubname.WriteOnlyPermission(permission) {
 			return false
 		}
 	}
@@ -354,7 +354,7 @@ func (g *GitHubStand) Answer(w http.ResponseWriter, _ *http.Request, seen Reques
 // (holdsAll). The answer echoes the body: a selection of the repositories it named, or all of the
 // account's when it named none, and the permissions it asked for, or all the installation holds
 // when it named none, with metadata at read beside them wherever they do not name it
-// (secrets.MetadataPermission). The other answers (Answers) answer in its place: three that
+// (githubname.MetadataPermission). The other answers (Answers) answer in its place: three that
 // refuse this request or every one, one that mints wider than asked, and one outage before it.
 func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner string) {
 	answering := g.answering()
@@ -390,8 +390,8 @@ func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner str
 	if permissions == nil {
 		permissions = map[string]string{}
 	}
-	if _, named := permissions[secrets.MetadataPermission]; !named {
-		permissions[secrets.MetadataPermission] = "read"
+	if _, named := permissions[githubname.MetadataPermission]; !named {
+		permissions[githubname.MetadataPermission] = "read"
 	}
 	if answering.Mode == GitHubTokensWider {
 		// Wider on both of the rules a token is checked by: every repository of the account, and
@@ -467,7 +467,7 @@ func (g *GitHubStand) answerHeld(w http.ResponseWriter, seen Request, route gith
 		w.WriteHeader(http.StatusNotFound)
 		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
 		return
-	case secrets.LevelRank(scope.permissions[route.permission]) < secrets.LevelRank(route.level):
+	case githubname.LevelRank(scope.permissions[route.permission]) < githubname.LevelRank(route.level):
 		w.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"message": "Resource not accessible by integration",

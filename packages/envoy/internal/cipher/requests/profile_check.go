@@ -186,9 +186,10 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 // scope. Refusing the request for one of those would tell the caller to fix a profile that is not
 // at fault and would hide a broken App key behind it.
 func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, name, source string, served policy.Secret, targetAccount string, targetRepositories []string) (checked bool, refusal error) {
-	// Create refused, against this same snapshot, a target the profile cannot serve
-	// (checkTarget), so gitHubScope refuses nothing here; were it to, its refusal is answered as
-	// the refusal it is rather than checked around.
+	// Create holds the target to the profile inside its transaction, once the policy has decided
+	// the names (checkTarget), which is after this check. This check runs only for a request the
+	// policy sends to a person, so no name here is denied, and a target gitHubScope refuses is
+	// answered now, as the refusal checkTarget would make, before GitHub is asked anything.
 	scope, err := gitHubScope(name, served.Profile, targetAccount, targetRepositories)
 	if err != nil {
 		return true, err
@@ -322,8 +323,8 @@ func (m *Machine) narrowingCause(ctx context.Context, mint Minter, name string, 
 
 // narrowingCauseProbes bounds the per-repository probes one cause search makes. Each probe is a
 // whole mint — an installations listing and a token request — and a scope may name up to
-// secrets.MaxNarrowedRepositories of them, so an unbounded search would ask GitHub a hundred times
-// for a reason the caller is refused for either way. Past this many the search answers
+// githubname.MaxNarrowedRepositories of them, so an unbounded search would ask GitHub a hundred
+// times for a reason the caller is refused for either way. Past this many the search answers
 // narrowingCauseNotFound, as it does for the budget, and that refusal still names every
 // repository of the scope, which is what a caller of such a profile has to read anyway. The
 // budget usually ends the search first; this bound is what holds for a deployment that raises
