@@ -10507,11 +10507,11 @@ console.log(JSON.stringify(args));
         );
       })
     );
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns or
-    // steps (`onPassClock`). 60_000. Worst measured cost: 8 802.09 ms over 20 runs at 16 busy
-    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T20:42Z to 20:59Z, so 60_000 is 6.8
-    // times that.
-  }, 60_000);
+    // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
+    // (`onPassClock`). 90_000. Worst measured cost: 10 405.19 ms over 20 runs at 16 busy loops (the
+    // 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T03:12Z to 03:27Z, and 8
+    // 802.09 ms over 20 runs there, 2026-11-20T20:42Z to 20:59Z, so 90_000 is 8.6 times the worst.
+  }, 90_000);
 
   // A settle abandoned at its deadline mid-hand-back still records the holds whose hand-back
   // failed: while its loop runs they are in neither `pendingHandBacks` nor `abandonedHolds`, and
@@ -13304,8 +13304,9 @@ console.log(JSON.stringify(args));
     );
     // A bound on work, not a hang guard: every wait above ends by its own count of turns
     // (`onPassClock`). 120_000. Worst measured cost: 19 286.27 ms over 20 runs at 16 busy loops
-    // (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T20:59Z to 21:16Z, so 120_000 is 6.2
-    // times that.
+    // (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T20:59Z to 21:16Z,
+    // and 11 187.24 ms over 20 runs there, 2026-11-21T03:28Z to 03:41Z, so 120_000 is 6.2 times the
+    // worst.
   }, 120_000);
 
   test("the first healthy tick after a stall re-asserts the role once as a re-registration", async () => {
@@ -15087,9 +15088,10 @@ console.log(JSON.stringify(args));
       // rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T10:52Z to 11:27Z. One run
       // of "hands the agent no copy when the host moved on with no session event" alone cost
       // 25 497.91 ms there, which main's 20_000 cut, and 120_000 is 4.7 times that. The row
-      // "stops a command past its limit and says when, keeping what it printed" waits on the
-      // test's clock for a count of turns instead (`onPassClock`), and its worst over 20 runs of
-      // it alone at that rung, 2026-11-20T21:16Z to 21:34Z, was 12 889.64 ms.
+      // "stops a command past its limit and says when, keeping what it printed" runs its limit on
+      // the test's clock (`onPassClock`) and waits for its shell with no bound of its own, and its
+      // worst over 20 runs of it alone at that rung, 2026-11-21T03:41Z to 03:56Z, was
+      // 13 188.07 ms.
       setDefaultTimeout(120_000);
       // A bound on work, not a hang guard: the poll below waits at most 1_000 turns for a killed
       // group to end. 60_000. Worst measured cost: 159.52 ms over 81 invocations in 3 runs of this
@@ -21315,7 +21317,11 @@ console.log(JSON.stringify(args));
         }
       })
     );
-  }, 30_000);
+    // A bound on work, not a hang guard: every wait above ends by its own count of turns
+    // (`onPassClock`). 60_000. Worst measured cost: 5 776.74 ms over 20 runs at 16 busy loops (the
+    // 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T04:11Z to 04:25Z, so
+    // 60_000 is 10.4 times that.
+  }, 60_000);
 
   for (const { row, error, shown, withheld } of [
     {
@@ -21498,10 +21504,11 @@ console.log(JSON.stringify(args));
       );
       await fixture.handlers.get("session_shutdown")?.({}, context);
     });
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns or
-    // steps (`onPassClock`, `readPass`). 90_000. Worst measured cost: 13 026.49 ms over 20 runs
-    // at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T20:24Z to 20:42Z, so
-    // 90_000 is 6.9 times that.
+    // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
+    // (`onPassClock`, `readPass`). 90_000. Worst measured cost: 13 026.49 ms over 20 runs at 16
+    // busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T20:24Z to
+    // 20:42Z, and 12 273.40 ms over 20 runs there, 2026-11-21T02:55Z to 03:12Z, so 90_000 is 6.9
+    // times the worst.
   }, 90_000);
 
   /** A pod whose NATS connection presents its broker token, at a broker that answers each trade
@@ -21642,11 +21649,12 @@ console.log(JSON.stringify(args));
       );
       await fixture.handlers.get("session_shutdown")?.({}, context);
     });
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns or
-    // steps (`onPassClock`, `readPass`). 60_000. Worst measured cost: 7 282.53 ms over 20 runs
-    // at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T18:13Z to 18:28Z, so
-    // 60_000 is 8.2 times that.
-  }, 60_000);
+    // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
+    // (`onPassClock`, `readPass`). 150_000. Worst measured cost: 23 310.35 ms over 20 runs at 16
+    // busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T02:38Z to
+    // 02:55Z, the next worst of those 20 being 11 460.22 ms, and 7 282.53 ms over 20 runs there,
+    // 2026-11-20T18:13Z to 18:28Z, so 150_000 is 6.4 times the worst.
+  }, 150_000);
 
   test("a first trade that answers 503 and then grants: the start presents its token in its first pass", async () => {
     // The start has nothing to do until it holds a token, so it waits for ready: the retry
@@ -21830,11 +21838,12 @@ console.log(JSON.stringify(args));
       await switching;
       await fixture.handlers.get("session_shutdown")?.({}, after.context);
     });
-    // A bound on work, not a hang guard: every wait above ends by its own count of turns or
-    // steps (`onPassClock`). 90_000. Worst measured cost: 13 513.21 ms over 20 runs at 16 busy
-    // loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T16:06Z to 16:22Z, with the boot on the
-    // real clock, and 12 258.67 ms over 20 runs there with the boot on the test clock,
-    // 2026-11-20T17:58Z to 18:13Z, so 90_000 is 6.7 times the worst.
+    // A bound on work, not a hang guard: every wait above ends by its own count of turns or steps
+    // (`onPassClock`). 90_000. Worst measured cost: 13 513.21 ms over 20 runs at 16 busy loops (the
+    // 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T16:06Z to 16:22Z, with
+    // the boot on the real clock; with the boot on the test clock, 12 258.67 ms over 20 runs there,
+    // 2026-11-20T17:58Z to 18:13Z, and 8 259.09 ms, 2026-11-21T02:21Z to 02:38Z. So 90_000 is 6.7
+    // times the worst.
   }, 90_000);
 
   test("after a switch whose move failed, the old session's viewer is replayed nothing of the new one", async () => {
@@ -21979,9 +21988,10 @@ console.log(JSON.stringify(args));
     expect(natsState.timeline.filter((entry) => entry === "reconnect").length).toBe(reconnects);
     expect(minted).toHaveLength(traded);
     // A hang guard, not a bound on work: what can hang is the keeper's reconnect, which `until`
-    // above waits for with no deadline of its own. 90_000. Worst measured cost: 11 803.37 ms
-    // over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T19:53Z
-    // to 20:08Z, so 90_000 is 7.6 times that.
+    // above waits for with no deadline of its own. 90_000. Worst measured cost: 11 803.37 ms over
+    // 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
+    // 2026-11-20T19:53Z to 20:08Z, and 11 270.14 ms over 20 runs there, 2026-11-21T03:56Z to
+    // 04:11Z, so 90_000 is 7.6 times the worst.
   }, 90_000);
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
