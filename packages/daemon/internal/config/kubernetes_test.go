@@ -580,10 +580,10 @@ const testWriterAudience = "//iam.googleapis.com/projects/123456789012/locations
 // writerAudienceRefusal is the loader's answer to a writer_audience of another form than a
 // provider's full resource name. It spells the whole rule out, the gcp- prefix Google keeps for
 // itself included, so a refusal of a pool or provider id that starts with it says why.
-func writerAudienceRefusal(value string) string {
-	return fmt.Sprintf("runtime.kubernetes.session_database.writer_audience %q must be a workload identity provider's full resource name,"+
-		" //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>,"+
-		" each id 4 to 32 characters of a-z, 0-9 and - that does not start with gcp-", value)
+func writerAudienceRefusal(_ string) string {
+	return "runtime.kubernetes.session_database.writer_audience must be a workload identity provider's full resource name," +
+		" //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>," +
+		" each id 4 to 32 characters of a-z, 0-9 and - that does not start with gcp-"
 }
 
 // brokerAudienceRefusal is the loader's answer to a writer_audience that is the broker's audience
@@ -1202,19 +1202,27 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			name: "session_database with an instance that is no connection name",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-instance, name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
-			want: `runtime.kubernetes.session_database.instance "example-instance" must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
+			want: `runtime.kubernetes.session_database.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
 		},
 		{
 			name: "session_database with an instance missing a segment",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: \"example-project::example-instance\", name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
-			want: `runtime.kubernetes.session_database.instance "example-project::example-instance" must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
+			want: `runtime.kubernetes.session_database.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
 		},
 		{
 			name: "session_database with an instance led by whitespace",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: \" example-project:us-central1:example-instance\", name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
-			want: `runtime.kubernetes.session_database.instance " example-project:us-central1:example-instance" must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
+			want: `runtime.kubernetes.session_database.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
+		},
+		{
+			// A key=value DSN pasted where the connection name goes: no "@", "/" or "?", so it
+			// reaches the shape check, whose refusal names the key alone. The password is made up.
+			name: "session_database with a key=value DSN where the instance goes",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: \"host=db user=legion password=madeUpKvPassword0123\", name: legion_sessions, user: legion-sessions@example-project.iam}\n"),
+			want: `runtime.kubernetes.session_database.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project`,
 		},
 		{
 			// A DSN pasted where the connection name goes, its made-up password among three ":",
@@ -1230,35 +1238,43 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
 				" impersonate_service_account: legion-sessions@example-project.iam}\n"),
-			want: `runtime.kubernetes.session_database.impersonate_service_account "legion-sessions@example-project.iam" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+			want: `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
 		},
 		{
 			name: "session_database impersonating a person's email",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: someone@example.com," +
 				" impersonate_service_account: someone@example.com}\n"),
-			want: `runtime.kubernetes.session_database.impersonate_service_account "someone@example.com" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+			want: `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
 		},
 		{
 			name: "session_database impersonating a bare name",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
 				" impersonate_service_account: legion-sessions}\n"),
-			want: `runtime.kubernetes.session_database.impersonate_service_account "legion-sessions" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+			want: `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+		},
+		{
+			// A key pasted where the account goes, made up: the refusal names the key alone.
+			name: "session_database impersonating a pasted key",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
+				" impersonate_service_account: madeUpPastedAccountKey0123456789}\n"),
+			want: `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
 		},
 		{
 			name: "session_database impersonating a service account in upper case",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: Legion-Sessions@example-project.iam," +
 				" impersonate_service_account: Legion-Sessions@example-project.iam.gserviceaccount.com}\n"),
-			want: `runtime.kubernetes.session_database.impersonate_service_account "Legion-Sessions@example-project.iam.gserviceaccount.com" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+			want: `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
 		},
 		{
 			name: "session_database impersonating a service account led by whitespace",
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
 				" impersonate_service_account: \" legion-sessions@example-project.iam.gserviceaccount.com\"}\n"),
-			want: `runtime.kubernetes.session_database.impersonate_service_account " legion-sessions@example-project.iam.gserviceaccount.com" must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
+			want: `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com`,
 		},
 		{
 			name: "session_database impersonating a blank service account",

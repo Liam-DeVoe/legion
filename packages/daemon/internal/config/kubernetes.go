@@ -2071,19 +2071,19 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 		sessionDatabaseKey+".writer_audience"); err != nil {
 		return ompsessions.Database{}, err
 	}
-	// A connection name holds none of "@", "/", "?" or "://": a value that does is a DSN or a URL
-	// pasted here, which can carry a password, refused by the key alone before the shape check,
-	// whose refusal quotes the value.
+	// None of these refusals quotes the value: a DSN pasted as the instance (a key=value DSN with
+	// its password among them), a key pasted as the account or the audience, would print. A value
+	// holding "@", "/", "?" or "://" is named as a DSN or a URL, the shape such a paste has.
 	if strings.ContainsAny(database.Instance, "@/?") || strings.Contains(database.Instance, "://") {
 		return ompsessions.Database{}, fmt.Errorf("%s.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project; it holds an \"@\", \"/\" or \"?\", as a DSN or a URL does", sessionDatabaseKey)
 	}
 	if !ompsessions.ValidInstance(database.Instance) {
-		return ompsessions.Database{}, fmt.Errorf("%s.instance %q must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project", sessionDatabaseKey, database.Instance)
+		return ompsessions.Database{}, fmt.Errorf("%s.instance must be the Cloud SQL instance's connection name, project:region:instance, or domain:project:region:instance for a domain-scoped project", sessionDatabaseKey)
 	}
 	if database.WriterAudience != "" {
 		if !ompsessions.ValidWriterAudience(database.WriterAudience) {
-			return ompsessions.Database{}, fmt.Errorf("%s.writer_audience %q must be a workload identity provider's full resource name, %s",
-				sessionDatabaseKey, database.WriterAudience, ompsessions.WriterAudienceForm)
+			return ompsessions.Database{}, fmt.Errorf("%s.writer_audience must be a workload identity provider's full resource name, %s",
+				sessionDatabaseKey, ompsessions.WriterAudienceForm)
 		}
 		if database.ImpersonateServiceAccount == "" {
 			return ompsessions.Database{}, fmt.Errorf("%s.writer_audience needs %s.impersonate_service_account:"+
@@ -2095,7 +2095,7 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 	}
 	login, ok := ompsessions.ServiceAccountLogin(database.ImpersonateServiceAccount)
 	if !ok {
-		return ompsessions.Database{}, fmt.Errorf("%s.impersonate_service_account %q must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com", sessionDatabaseKey, database.ImpersonateServiceAccount)
+		return ompsessions.Database{}, fmt.Errorf("%s.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com", sessionDatabaseKey)
 	}
 	if database.User != login {
 		return ompsessions.Database{}, fmt.Errorf("%s.user %q must be %q: Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com", sessionDatabaseKey, database.User, login)
