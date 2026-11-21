@@ -12,7 +12,6 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -282,12 +281,8 @@ func expectRecordNames(t *testing.T, capture *logtest.Recorder, what string, bod
 		return
 	}
 	var named [][2]any
-	for _, record := range capture.Records() {
-		fields := map[string]any{}
-		record.Attrs(func(a slog.Attr) bool { fields[a.Key] = a.Value.Any(); return true })
-		if record.Message == answer.RefusalMessage && fields["answer_id"] == refused.AnswerID {
-			named = append(named, [2]any{fields["caller_class"], fields["caller"]})
-		}
+	for _, fields := range refusalRecords(capture, refused.AnswerID) {
+		named = append(named, [2]any{fields["caller_class"], fields["caller"]})
 	}
 	if len(named) != 1 || named[0] != [2]any{class, id} {
 		t.Errorf("the records of the refusal of %s name the callers %v, want one naming %s %s", what, named, class, id)
