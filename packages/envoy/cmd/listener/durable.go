@@ -191,12 +191,12 @@ func listenerDurableConfig(name string, subjects []string) nats.ConsumerConfig {
 }
 
 // correctListenerDurable brings the durable info describes to the canonical policy on subjects, in
-// place, in either naming mode: a setting NATS cannot change in place is refused
-// (listenerDurableRefusal), and any other drift is updated once the client's marker gate admits it
-// (a client with no gate always does). Only a field the policy writes can differ: the copy shares
-// every other one, the server-set metadata included. opts bound the update (the fresh mode's
-// context).
-func correctListenerDurable(client *bus.Client, info *nats.ConsumerInfo, subjects []string, opts ...nats.JSOpt) error {
+// place, in the fixed naming mode (the fresh mode writes its create's whole configuration instead,
+// ensureFreshDurable): a setting NATS cannot change in place is refused (listenerDurableRefusal),
+// and any other drift is updated once the client's marker gate admits it (a client with no gate
+// always does). Only a field the policy writes can differ: the copy shares every other one, the
+// server-set metadata included.
+func correctListenerDurable(client *bus.Client, info *nats.ConsumerInfo, subjects []string) error {
 	if err := listenerDurableRefusal(info.Name, info.Config); err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func correctListenerDurable(client *bus.Client, info *nats.ConsumerInfo, subject
 	if err := client.MarkerUnread(); err != nil {
 		return err
 	}
-	_, err := client.JS().UpdateConsumer(bus.Stream, &corrected, opts...)
+	_, err := client.JS().UpdateConsumer(bus.Stream, &corrected)
 	return err
 }
 

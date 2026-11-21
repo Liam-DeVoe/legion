@@ -991,8 +991,8 @@ func (s *SessionConsumers) applySettings(config *jetstream.ConsumerConfig, filte
 	config.FilterSubjects = filters
 }
 
-// update sends consumer name's current configuration with the session consumer settings and
-// filters applied, when that changes anything, and reports whether it sent it.
+// update sends consumer name's correction (updated) when it changes anything, and reports whether
+// it sent it.
 func (s *SessionConsumers) update(ctx context.Context, name string, current jetstream.ConsumerConfig, filters []string) (bool, error) {
 	next, changed := s.updated(current, filters)
 	if !changed {
@@ -1002,9 +1002,20 @@ func (s *SessionConsumers) update(ctx context.Context, name string, current jets
 	return err == nil, err
 }
 
-// updated is current with the session consumer settings and filters applied, and whether that
-// changes anything an update sends.
+// updated is the correction of current, a session consumer's configuration as the server answers
+// it, to filters, and whether it changes anything an update sends. In the fixed mode it is current
+// with the session consumer settings and filters applied, today's correction. In the fresh mode it
+// is the whole configuration the family's create gives (freshConfig) at current's own start, with
+// what no update changes kept (CorrectedConfig): so a consumer adopted with a max batch, headers
+// only or any other setting an update changes, or one updated so since, delivers only as
+// the family creates it. Its session is the one the consumer's own metadata names: every update of
+// a fresh-mode current follows Names.Owns, which checks that pair, and KeepListed reads only
+// whether the correction would change anything.
 func (s *SessionConsumers) updated(current jetstream.ConsumerConfig, filters []string) (jetstream.ConsumerConfig, bool) {
+	if s.fresh != nil {
+		create := s.freshConfig(current.Durable, current.Metadata[SessionIDMetadataKey], current.OptStartSeq, filters)
+		return CorrectedConfig(current, create)
+	}
 	next := current
 	s.applySettings(&next, filters)
 	same := next.AckWait == current.AckWait &&
@@ -1180,38 +1191,59 @@ type consumerResponse struct {
 
 // upsert sends config to the server as consumer name's create or update (action).
 func (s *SessionConsumers) upsert(ctx context.Context, name string, config jetstream.ConsumerConfig, action string) (*jetstream.ConsumerInfo, error) {
+	info, err := s.client.upsertConsumer(ctx, name, config, action)
+	var refused *jetstream.APIError
+	if !errors.As(err, &refused) {
+		return info, err
+	}
+	// The server refuses a create once the stream holds its max_consumers, and that refusal is the
+	// session's whole delivery: it is surfaced as ErrConsumerLimitReached so the listener can name
+	// the cause rather than report a consumer it could not create.
+	if errors.Is(refused, jetstream.ErrMaximumConsumersLimit) {
+		return nil, fmt.Errorf("%w: %s session consumer %s: %w", ErrConsumerLimitReached, action, name, refused)
+	}
+	return nil, fmt.Errorf("bus: %s session consumer %s: %w", action, name, refused)
+}
+
+// info reads consumer name, or returns ErrSessionConsumerNotFound.
+func (s *SessionConsumers) info(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
+	info, err := s.client.consumerInfo(ctx, name)
+	var refused *jetstream.APIError
+	if !errors.As(err, &refused) {
+		return info, err
+	}
+	if refused.ErrorCode == jetstream.JSErrCodeConsumerNotFound {
+		return nil, fmt.Errorf("%w: %s", ErrSessionConsumerNotFound, name)
+	}
+	return nil, fmt.Errorf("bus: read session consumer %s: %w", name, refused)
+}
+
+// upsertConsumer sends config to the server as consumer name's create or update (action), and
+// answers the consumer's info; the server's refusal is its *jetstream.APIError, unwrapped.
+func (c *Client) upsertConsumer(ctx context.Context, name string, config jetstream.ConsumerConfig, action string) (*jetstream.ConsumerInfo, error) {
 	request := struct {
 		Stream string                    `json:"stream_name"`
 		Config *jetstream.ConsumerConfig `json:"config"`
 		Action string                    `json:"action"`
 	}{Stream: Stream, Config: &config, Action: action}
 	var response consumerResponse
-	if err := s.client.consumerRequest(ctx, consumerAPI("CREATE", name), request, &response); err != nil {
+	if err := c.consumerRequest(ctx, consumerAPI("CREATE", name), request, &response); err != nil {
 		return nil, err
 	}
 	if response.Error != nil {
-		// The server refuses a create once the stream holds its max_consumers, and that refusal is
-		// the session's whole delivery: it is surfaced as ErrConsumerLimitReached so the listener
-		// can name the cause rather than report a consumer it could not create.
-		if errors.Is(response.Error, jetstream.ErrMaximumConsumersLimit) {
-			return nil, fmt.Errorf("%w: %s session consumer %s: %w", ErrConsumerLimitReached, action, name, response.Error)
-		}
-		return nil, fmt.Errorf("bus: %s session consumer %s: %w", action, name, response.Error)
+		return nil, response.Error
 	}
 	return &response.ConsumerInfo, nil
 }
 
-// info reads consumer name, or returns ErrSessionConsumerNotFound.
-func (s *SessionConsumers) info(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
+// consumerInfo reads consumer name; the server's refusal is its *jetstream.APIError, unwrapped.
+func (c *Client) consumerInfo(ctx context.Context, name string) (*jetstream.ConsumerInfo, error) {
 	var response consumerResponse
-	if err := s.client.consumerRequest(ctx, consumerAPI("INFO", name), nil, &response); err != nil {
+	if err := c.consumerRequest(ctx, consumerAPI("INFO", name), nil, &response); err != nil {
 		return nil, err
 	}
 	if response.Error != nil {
-		if response.Error.ErrorCode == jetstream.JSErrCodeConsumerNotFound {
-			return nil, fmt.Errorf("%w: %s", ErrSessionConsumerNotFound, name)
-		}
-		return nil, fmt.Errorf("bus: read session consumer %s: %w", name, response.Error)
+		return nil, response.Error
 	}
 	return &response.ConsumerInfo, nil
 }

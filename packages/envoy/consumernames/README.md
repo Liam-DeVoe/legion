@@ -97,15 +97,18 @@ revision:
   naming it, and the operation stays open):
   - its start is the one the operation reserved: the native policy of a native first create, else
     a start by sequence no later than the saved start;
-  - every setting the family's create gives and no update corrects is as the create gives it
-    (`Config.Adopt`; `bus.Client.ConsumerAdoptable` reads them from the server's own answer). That
-    means explicit acks, no start time, instant replay, the stream's storage, whole messages, no
-    deliver group, no flow control, no heartbeat, neither direct nor sourcing. For a session it
-    also means a pull consumer at the server's default max waiting. For the listener's durable it
-    means a push consumer delivering to a reply inbox.
+  - every setting no update changes is as the family's create gives it (`Config.Adopt`;
+    `bus.Client.ConsumerAdoptable` compares the server's own answer with the family's whole create
+    configuration). That means explicit acks, no start time, instant replay, the stream's storage,
+    no deliver group, no flow control, no heartbeat, no pause (nats-server keeps a pause across
+    every update), neither direct nor sourcing. For a session it also means a pull consumer at the
+    server's default max waiting; for the listener's durable, a push consumer delivering to a reply
+    inbox. The comparison is an allowlist: a setting the server answers that this build does not
+    know is refused too.
 
-  Only the settings an update changes, the filters among them, are then corrected in place, before
-  anything is delivered. A read of the candidate that fails is returned as itself, not as a refusal.
+  Every setting an update changes is then written back to the family's create (the filters, max
+  batch, headers only, ack wait and the others; `bus.CorrectedConfig`), in place, before anything is
+  delivered. A read of the candidate that fails is returned as itself, not as a refusal.
 - **Create** (no current): the start is the record's `start`, else the family's first-create
   rule, and for a session key with no record no later than the cutover boundary B. The call
   reserves the operation and the start in one conditional write, creates the candidate once, then

@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -78,15 +79,20 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 		CheckKey: consumernames.CheckDurableKey,
 		Metadata: func(string) map[string]string { return durableMetadata(durable) },
 		Owner:    fmt.Sprintf("%s/%s/%d", durable, host, os.Getpid()),
-		// Every setting the durable's create gives that no correction reaches, which the server's
-		// own answer shows (bus.Client.ConsumerAdoptable): a push consumer delivering to a reply
-		// inbox, explicit acks, instant replay, whole messages and no idle heartbeat among them. Its
-		// start Names checks, and its filters and the settings an update changes are corrected in
-		// place before the bind (ensureFreshDurable). A refusal is the listener's refusal of the
-		// durable (errListenerDurableRefused), since no retry gets past a candidate only an
-		// operator can repair.
+		// The candidate as the server answers it, against the whole configuration the durable's
+		// create gives (durableCreateConfig, bus.Client.ConsumerAdoptable): one that differs in a
+		// setting no update changes, a push consumer delivering to a reply inbox, explicit acks,
+		// instant replay and no idle heartbeat among them, is refused. Its start Names checks, and
+		// every setting an update changes is corrected in place before the bind
+		// (ensureFreshDurable). A refusal is the listener's refusal of the durable
+		// (errListenerDurableRefused), since no retry gets past a candidate only an operator can
+		// repair.
 		Adopt: func(ctx context.Context, _ string, adopted *jetstream.ConsumerInfo) error {
-			err := client.ConsumerAdoptable(ctx, adopted.Name, true)
+			create, err := jetstreamConfig(durableCreateConfig(adopted.Name, durable, nil))
+			if err != nil {
+				return err
+			}
+			err = client.ConsumerAdoptable(ctx, adopted.Name, create)
 			if errors.Is(err, consumernames.ErrUnexpectedConsumer) {
 				return fmt.Errorf("%w: %w", errListenerDurableRefused, err)
 			}
@@ -96,10 +102,37 @@ func durableNames(client *bus.Client, durable string) *consumernames.Names {
 }
 
 // durableMetadata is the metadata every fresh-mode consumer of the listener's durable named durable
-// carries, which its create writes (ensureFreshDurable) and the owner check requires
+// carries, which its create writes (durableCreateConfig) and the owner check requires
 // (consumernames.Config.Metadata): both read it here, so a key added to one is in the other.
 func durableMetadata(durable string) map[string]string {
 	return map[string]string{consumernames.LogicalMetadataKey: durable}
+}
+
+// durableCreateConfig is the whole configuration the fresh mode creates consumer name of the
+// listener's durable named durable with, on subjects, but its start: listenerDurableConfig's,
+// carrying the durable's metadata. The create sends it with its start (ensureFreshDurable), the
+// adoption check compares a candidate with it, and the correction writes it (jetstreamConfig,
+// bus.CorrectedConfig).
+func durableCreateConfig(name, durable string, subjects []string) nats.ConsumerConfig {
+	config := listenerDurableConfig(name, subjects)
+	config.Metadata = durableMetadata(durable)
+	return config
+}
+
+// jetstreamConfig is config as nats.go's jetstream package types it, which the adoption check and
+// the correction read (bus.Client.ConsumerAdoptable, bus.CorrectedConfig): both types are the
+// server's JSON of a consumer's configuration, so config's JSON decodes as it, every setting
+// config holds kept.
+func jetstreamConfig(config nats.ConsumerConfig) (jetstream.ConsumerConfig, error) {
+	var out jetstream.ConsumerConfig
+	data, err := json.Marshal(config)
+	if err == nil {
+		err = json.Unmarshal(data, &out)
+	}
+	if err != nil {
+		return jetstream.ConsumerConfig{}, fmt.Errorf("listener durable %s's configuration as the jetstream package types it: %w", config.Durable, err)
+	}
+	return out, nil
 }
 
 // boundedContext is ctx with durableNamesTimeout when it carries no deadline.
@@ -130,33 +163,59 @@ func durableInfo(ctx context.Context, client *bus.Client, durable string) (*nats
 		if sel.Record.Current == "" {
 			return nil, fmt.Errorf("%w: the selection of %s names no current", nats.ErrConsumerNotFound, durable)
 		}
-		return ownedDurable(ctx, client, names, key, sel.Record.Current)
+		info, err := ownedDurable(ctx, client, names, key, sel.Record.Current)
+		if err != nil {
+			return nil, err
+		}
+		return natsInfo(info)
 	}
 	return client.JS().ConsumerInfo(bus.Stream, durable, nats.Context(ctx))
 }
 
-// ownedDurable reads the listener's durable consumer name, which key's record names, and answers it
-// only when the consumer's own metadata names the durable (Names.Owns): a read of the durable that
-// a reader then acts on, to report, correct or bind it, is never another owner's consumer. Both of
-// the durable's readers through its record use it (durableInfo, ensureFreshDurable); Names reads
-// the protocol's part of it itself (protocolInfo).
-func ownedDurable(ctx context.Context, client *bus.Client, names *consumernames.Names, key, name string) (*nats.ConsumerInfo, error) {
-	info, err := client.JS().ConsumerInfo(bus.Stream, name, nats.Context(ctx))
+// ownedDurable reads the listener's durable consumer name, which key's record names, as the server
+// answers it (bus.Client.ConsumerInfo: every setting nats.go's jetstream package reads, the pause
+// among them), and answers it only when the consumer's own metadata names the durable
+// (Names.Owns): a read of the durable that a reader then acts on, to report, correct or bind it, is
+// never another owner's consumer. Both of the durable's readers through its record use it
+// (durableInfo, ensureFreshDurable); Names reads the protocol's part of it itself (protocolInfo).
+// A consumer the server does not hold is nats.ErrConsumerNotFound, as today's read answers it.
+func ownedDurable(ctx context.Context, client *bus.Client, names *consumernames.Names, key, name string) (*jetstream.ConsumerInfo, error) {
+	info, err := client.ConsumerInfo(ctx, name)
+	var refused *jetstream.APIError
+	if errors.As(err, &refused) && refused.ErrorCode == jetstream.JSErrCodeConsumerNotFound {
+		return nil, fmt.Errorf("%w: %w", nats.ErrConsumerNotFound, err)
+	}
 	if err != nil {
 		return nil, err
 	}
-	if err := names.Owns(key, protocolInfo(info)); err != nil {
+	if err := names.Owns(key, info); err != nil {
 		return nil, err
 	}
 	return info, nil
 }
 
+// natsInfo is info as nats.go's nats package types it, which the durable's readers read: both
+// types are the server's JSON of a consumer's info, so info's JSON decodes as it.
+func natsInfo(info *jetstream.ConsumerInfo) (*nats.ConsumerInfo, error) {
+	var out nats.ConsumerInfo
+	data, err := json.Marshal(info)
+	if err == nil {
+		err = json.Unmarshal(data, &out)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listener durable %s's info as the nats package types it: %w", info.Name, err)
+	}
+	return &out, nil
+}
+
 // ensureFreshDurable is startListenerSubscription's create in the fresh mode: the durable's current
-// through its record, its policy corrected in place as today's is, or a fresh <durable>~<nuid> at the
-// record's start, and for a durable with no record at deliver policy all, today's first create. A
-// current the server no longer holds is created again at the start its record proves. A current
-// Names adopted rather than this call created (Step 0, a create whose outcome was unknown) is
-// corrected in place like any other before it is bound. It answers the physical name to bind.
+// through its record, brought in place to the whole configuration the durable's create gives, or a
+// fresh <durable>~<nuid> at the record's start, and for a durable with no record at deliver policy
+// all, today's first create. A current the server no longer holds is created again at the start its
+// record proves. A current Names adopted rather than this call created (Step 0, a create whose
+// outcome was unknown) is corrected in place like any other before it is bound
+// (bus.CorrectedConfig): so one adopted with headers only, or updated so since, delivers only as
+// the listener creates it. It answers the physical name to bind.
 func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string, subjects []string) (string, error) {
 	ctx, cancel := boundedContext(ctx)
 	defer cancel()
@@ -165,8 +224,7 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 	var createdHere string
 	sel, created, err := names.Ensure(ctx, key, consumernames.CreateRequest{
 		Create: func(ctx context.Context, name string, start consumernames.Start) (*jetstream.ConsumerInfo, error) {
-			config := listenerDurableConfig(name, subjects)
-			config.Metadata = durableMetadata(durable)
+			config := durableCreateConfig(name, durable, subjects)
 			switch start.Native {
 			case consumernames.NativeAll:
 				config.DeliverPolicy = nats.DeliverAllPolicy
@@ -208,8 +266,14 @@ func ensureFreshDurable(ctx context.Context, client *bus.Client, durable string,
 	if err != nil {
 		return "", err
 	}
-	if err := correctListenerDurable(client, info, subjects, nats.Context(ctx)); err != nil {
+	create, err := jetstreamConfig(durableCreateConfig(current, durable, subjects))
+	if err != nil {
 		return "", err
+	}
+	if corrected, changed := bus.CorrectedConfig(info.Config, create); changed {
+		if err := client.UpdateConsumer(ctx, corrected); err != nil {
+			return "", err
+		}
 	}
 	return current, nil
 }

@@ -95,13 +95,12 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 			}
 		},
 		Metadata: sessionConsumerMetadata,
-		// Every setting a session consumer's create gives that no correction reaches, which the
-		// server's own answer shows (ConsumerAdoptable): a pull consumer at the server's default
-		// max waiting, explicit acks, instant replay, whole messages and no heartbeat among them. Its
-		// start Names checks, and the filters and the settings an update changes are corrected in
-		// place by the call that adopted it (published) before it delivers.
-		Adopt: func(ctx context.Context, _ string, info *jetstream.ConsumerInfo) error {
-			return s.client.ConsumerAdoptable(ctx, info.Name, false)
+		// The candidate as the server answers it, against the whole configuration a session
+		// consumer's create gives (freshConfig, ConsumerAdoptable): one that differs in a setting no
+		// update changes is refused. Its start Names checks, and every setting an update changes is
+		// corrected in place by the call that adopted it (published, updated) before it delivers.
+		Adopt: func(ctx context.Context, sessionID string, info *jetstream.ConsumerInfo) error {
+			return s.client.ConsumerAdoptable(ctx, info.Name, s.freshConfig(info.Name, sessionID, info.Config.OptStartSeq, nil))
 		},
 	})
 	return fresh
@@ -270,13 +269,7 @@ func (s *SessionConsumers) freshCreate(sessionID string, filters []string, resul
 		if clamped {
 			startSeq = bound.firstStart()
 		}
-		config := jetstream.ConsumerConfig{
-			Durable:       name,
-			DeliverPolicy: jetstream.DeliverByStartSequencePolicy,
-			OptStartSeq:   startSeq,
-			Metadata:      sessionConsumerMetadata(sessionID),
-		}
-		s.applySettings(&config, filters)
+		config := s.freshConfig(name, sessionID, startSeq, filters)
 		s.pendingMu.Lock()
 		fault := s.createFault
 		s.pendingMu.Unlock()
@@ -312,6 +305,22 @@ func (s *SessionConsumers) freshCreate(sessionID string, filters []string, resul
 		*result = SessionConsumerStart{Created: true, Name: name, StartSeq: startSeq, Gap: startSeq < bound.firstSeq, StreamID: bound.id, AckFloor: startSeq - 1}
 		return info, nil
 	}
+}
+
+// freshConfig is the whole configuration the fresh mode creates sessionID's consumer name with, at
+// stream sequence startSeq, filtering on filters: today's settings (applySettings), the session's
+// metadata (sessionConsumerMetadata), and its start. The create sends it (freshCreate), the
+// adoption check compares a candidate with it (ConsumerAdoptable), and the correction writes it
+// (updated, CorrectedConfig).
+func (s *SessionConsumers) freshConfig(name, sessionID string, startSeq uint64, filters []string) jetstream.ConsumerConfig {
+	config := jetstream.ConsumerConfig{
+		Durable:       name,
+		DeliverPolicy: jetstream.DeliverByStartSequencePolicy,
+		OptStartSeq:   startSeq,
+		Metadata:      sessionConsumerMetadata(sessionID),
+	}
+	s.applySettings(&config, filters)
+	return config
 }
 
 // loweredStart is what the first-create rule did to a caller's start, for create's INFO line.
@@ -352,10 +361,11 @@ func (s *SessionConsumers) freshFirst(sessionID string, startSeq uint64, lowered
 
 // published is what a call that published sel's current answers: the create's own result when
 // this call created it; else the current as Names adopted it (Step 0, or a create whose outcome
-// was unknown), whose settings and filters are first corrected in place to this call's (update), so
-// nothing is delivered from it under a filter or a setting this call did not give it. Names
-// adopted it only with its owner and start as the family creates them, and every setting no update
-// corrects as the family's create gives it (ConsumerAdoptable).
+// was unknown), which is first brought to the whole configuration the family's create gives, this
+// call's filters among them (update, updated), so nothing is delivered from it under a filter or a
+// setting this call did not give it. Names adopted it only with its owner and start as the family
+// creates them, and every setting no update changes as the family's create gives it
+// (ConsumerAdoptable).
 func (s *SessionConsumers) published(ctx context.Context, sel consumernames.Selection, result SessionConsumerStart, filters []string) (SessionConsumerStart, error) {
 	if result.Name == sel.Record.Current {
 		return result, nil

@@ -1230,7 +1230,7 @@ func TestAnAdoptionReadWithoutTheInfoGrantIsErrConsumerNotGranted(t *testing.T) 
 			}
 			t.Cleanup(consumers.Close)
 			const candidate = SessionConsumerNamePrefix + "~NOTGRANTED"
-			err = consumers.client.ConsumerAdoptable(context.Background(), candidate, false)
+			err = consumers.client.ConsumerAdoptable(context.Background(), candidate, consumers.freshConfig(candidate, "ses_notgranted", 1, nil))
 			if tc.granted {
 				if err == nil || errors.Is(err, ErrPublishDenied) || !strings.Contains(err.Error(), candidate) {
 					t.Fatalf("control: the granted read of a candidate the server does not hold = %v; want the server's own answer naming it", err)
