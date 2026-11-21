@@ -792,10 +792,10 @@ test("a chip names its target by its first words and never by an address", () =>
     expect(row).not.toMatch(/CORE-1 (spec|plan-md)/u);
     // The chips stand inside the words' own box, after the words, and on no line of their own.
     const trail = view.container.querySelector("[data-node-trail]");
-    expect(trail?.parentElement?.hasAttribute("data-node-words")).toBe(true);
+    expect(trail?.parentElement).toHaveAttribute("data-node-words");
     expect(trail?.previousElementSibling?.textContent).toBe("Keep one reading.");
     // The named chip is the link a reader follows to its target.
-    expect(chips[0]?.querySelector("a")?.getAttribute("href")).toBe("/issues/CORE-1/spec#b-r2");
+    expect(chips[0]?.querySelector("a")).toHaveAttribute("href", "/issues/CORE-1/spec#b-r2");
   } finally {
     view.unmount();
   }

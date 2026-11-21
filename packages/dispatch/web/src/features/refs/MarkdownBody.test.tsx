@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the `error` events below are a picture failing to load, which user-event has no form for.
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { onFakeClock, realClock, tick } from "../../__tests__/fake-clock";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
@@ -1896,31 +1897,38 @@ describe("A long body parsed in the worker", () => {
     }
   });
 
+  /** The parse deadline the two rows below set through `setParseDeadline`. It is theirs, not the
+   *  page's 10 s, so they move the fake clock by it. */
+  const PARSE_DEADLINE_MS = 50;
+
   // Nothing ever answers this body. The engine's deadline ends with the body parsed on the page;
   // this row shortens it through `setParseDeadline`, the seam `resetMermaidDiagrams` is for the
-  // diagram renderer's own limit, so it proves what the deadline ends in without waiting out the
-  // page's own 10 s. The 25 s wait below is above this package's 10 s default
-  // (`web/src/__tests__/setup.ts`) because the row waits out a parse deadline on a parse the test
-  // itself slowed to a stop - its worker never answers - and then the long body's own parse on
-  // the page's thread.
+  // diagram renderer's own limit, and moves the fake clock across it, so it proves what the
+  // deadline ends in without waiting out the page's own 10 s.
   test("ends formatted on the page's own thread when the worker misses its deadline", async () => {
     const worker = installFakeParseWorker();
-    setParseDeadline(50);
+    setParseDeadline(PARSE_DEADLINE_MS);
+    jest.useFakeTimers();
     const view = render(<MarkdownBody markdown={longBody("A worker that never answers")} />);
 
     try {
-      await worker.waitForRequests(1);
-      await waitFor(() => expect(topItems(view.container)).toHaveLength(longItems), {
-        interval: 250,
-        timeout: 25_000,
-      });
+      // Half the deadline after the worker was posted the body, the body is still the worker's:
+      // it reads as its pending text, parsed nowhere.
+      await tick(PARSE_DEADLINE_MS / 2);
+      expect(worker.requests).toHaveLength(1);
+      expect(pendingMark(view.container)).toBe("true");
+      expect(topItems(view.container)).toHaveLength(0);
+
+      await tick(PARSE_DEADLINE_MS);
+      await waitFor(() => expect(topItems(view.container)).toHaveLength(longItems));
       await waitFor(() => expect(pendingMark(view.container)).toBeNull());
       expect(fallbackMark(view.container)).toBeNull();
     } finally {
+      realClock();
       setParseDeadline();
       view.unmount();
     }
-  }, 40_000); // the 25 s wait must run out inside the test; below the package's 60 s deadline
+  });
 
   // The other end of the same deadline. An element keeps its place on the parse the worker is
   // holding when it goes (`keepIfPosted`), which is how a streaming turn is shown the frame the
@@ -1929,21 +1937,31 @@ describe("A long body parsed in the worker", () => {
   // throws such an answer away - the freeze a reader who navigated away would feel for a body
   // nobody is looking at (sjawhar/legion#2519). A parse on the page would have cached its
   // answer, so the mount below would need no worker at all; it asks for one, which is what says
-  // the page parsed nothing.
+  // the page parsed nothing. Only the deadline runs on the fake clock: the mount below is
+  // answered through `parse-worker-fixture.ts`, whose zero-delay `tick` a fake clock holds.
   test("parses nothing on the page when the deadline passes for a body its reader left", async () => {
     const worker = installFakeParseWorker();
-    setParseDeadline(50);
     const markdown = longBody("A body left with the worker");
-    const left = render(<MarkdownBody markdown={markdown} />);
+    setParseDeadline(PARSE_DEADLINE_MS);
     try {
-      await worker.waitForRequests(1);
+      await onFakeClock(async () => {
+        const left = render(<MarkdownBody markdown={markdown} />);
+        try {
+          await tick(PARSE_DEADLINE_MS / 2);
+          expect(worker.requests).toHaveLength(1);
+        } finally {
+          left.unmount();
+        }
+        // The deadline fires with the element gone and its place still on the job, and stopping
+        // the worker it was holding is what it does: the worker outlives the element, and is
+        // stopped once the deadline has passed.
+        expect(worker.workers[0]?.terminated).toBe(false);
+        await tick(PARSE_DEADLINE_MS);
+        expect(worker.workers[0]?.terminated).toBe(true);
+      });
     } finally {
-      left.unmount();
+      setParseDeadline();
     }
-    // The deadline fires with the element gone and its place still on the job, and stopping the
-    // worker it was holding is what it does: that, rather than a wait of the test's, is what
-    // says it has passed.
-    await waitFor(() => expect(worker.workers[0]?.terminated).toBe(true));
 
     const back = render(<MarkdownBody markdown={markdown} />);
     try {
@@ -1957,7 +1975,6 @@ describe("A long body parsed in the worker", () => {
       await waitFor(() => expect(pendingMark(back.container)).toBeNull());
       expect(fallbackMark(back.container)).toBeNull();
     } finally {
-      setParseDeadline();
       back.unmount();
     }
   });

@@ -288,10 +288,10 @@ The clock of a unit test:
   too. Under the fake clock, user-event comes from `userOnFakeClock` in `web/src/__tests__/user.ts`.
 
 - The deadline of each `web/src` test is the `--timeout 60000` of `package.json`'s `test:web`
-  script, and `web/src/__tests__/setup.ts` says how it was sized. A row sets a shorter one only
-  with a comment that says what it bounds (`WHOLE_TABLE_TIMEOUT_MS` in
-  `web/src/features/refs/fixture-table-readings.test.ts`, the 40 s of a 25 s wait in
-  `web/src/features/refs/MarkdownBody.test.tsx`).
+  script, and `web/src/__tests__/setup.ts` says how it was sized.
+  A row sets a shorter one only with a comment that says what it bounds.
+  The one shorter deadline left is `WHOLE_TABLE_TIMEOUT_MS` in
+  `web/src/features/refs/fixture-table-readings.test.ts`, which two of its rows set.
   On Bun 1.4.4, the pin, that deadline fires under a held clock too: a row that held the clock and
   awaited a promise that nothing resolved ended at 3.04 s under `--timeout 3000`. A harness row in
   `e2e/__tests__` that starts a child states its own limit with `rowLimit` from
