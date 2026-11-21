@@ -408,9 +408,11 @@ func TestIdlePodsListsOnlyIssuesWithALiveClaim(t *testing.T) {
 // pod no role can take a turn in, which is what the second release rule acts on. The claim
 // states alone are not the answer — every issue of the deployment whose roles ever stopped
 // would be one, and each candidate costs a transaction that takes the daemon's global fact
-// serializer — so the workflow filter is read here beside them: the member of a lingering tree,
-// the issue whose own phase is done and the one closed long ago all hold claims that have
-// stopped and are no candidates, and the pod with a live claim is the idle rule's.
+// serializer — so the workflow filter is read here beside them, over each issue's own standing
+// (R20 of dispatch://INFRA-3320): the issue whose own phase is done and the one closed long ago
+// hold claims that have stopped and are no candidates, the member of a lingering tree is one by its
+// own standing whatever its stored tree's root says, and the pod with a live claim is the idle
+// rule's.
 func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 	const (
 		lingeringRoot = "LEGION-300"
@@ -450,8 +452,8 @@ func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 1 || candidates[0] != unowned {
-		t.Fatalf("the candidates = %v, want %s alone: the pod no claim owns under a tree the workflow still runs", candidates, unowned)
+	if len(candidates) != 2 || candidates[0] != unowned || candidates[1] != underLinger {
+		t.Fatalf("the candidates = %v, want %s and %s: the pods no claim owns of issues in the workflow by their own standing", candidates, unowned, underLinger)
 	}
 }
 

@@ -429,25 +429,15 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 				t.Fatalf("IssueSandbox after the launch = %q, %t; want %s present", sandbox, present, name)
 			}
 
-			// The issue is re-admitted as a root of its own: its launch relabels the Sandbox for the
-			// new tree and keeps it. The relabel is fenced to the Sandbox's resourceVersion, which an
-			// API server gives every object and the rig's tracker does not, so the test gives the
-			// Sandbox one first.
-			object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			versioned := object.(*unstructured.Unstructured).DeepCopy()
-			versioned.SetResourceVersion("sandbox-rv-before-the-new-tree")
-			if err := g.dyn.Tracker().Update(sandboxGVR, versioned, testNamespace); err != nil {
-				t.Fatal(err)
-			}
+			// The issue is re-admitted as a root of its own: its launch under the new gate root
+			// keeps the Sandbox, and with it the tree label its creation wrote, which no decision
+			// reads and no launch rewrites (decision 14 of dispatch://INFRA-4730).
 			orphan := claim.Token("legion-legion-legion-209-architect")
 			orphanSpec := testSpec(t, orphan, claim.RoleArchitect, childIssue)
 			orphanSpec.Tree = childIssue
 			loc = g.spawn(orphanSpec)
-			if s := g.sandbox(name); s.Labels[labelTree] != labelValue(childIssue) {
-				t.Fatalf("after the launch under tree %s the Sandbox carries tree %q", childIssue, s.Labels[labelTree])
+			if s := g.sandbox(name); s.Labels[labelTree] != labelValue(testTree) {
+				t.Fatalf("after the launch under tree %s the Sandbox carries tree %q, want its creation's %s", childIssue, s.Labels[labelTree], testTree)
 			}
 			keeps(t, g, "a launch under a new tree", loc, uid, template)
 

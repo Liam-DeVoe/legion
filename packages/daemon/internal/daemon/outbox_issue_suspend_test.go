@@ -115,8 +115,15 @@ func TestIssueCloseDeletesTheSandboxAfterARestart(t *testing.T) {
 	}
 	var pendingStop bool
 	if err := pool.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = 'supervise'
-		and payload->>'op' = 'suspend' and payload->>'role' = 'planner')`, issue.Key).Scan(&pendingStop); err != nil || !pendingStop {
-		t.Fatalf("close lost the stored launching role's stop before its machine appeared: pending=%t, err=%v", pendingStop, err)
+		and payload->>'op' = 'issue_close' and payload->>'role' = 'planner')`, issue.Key).Scan(&pendingStop); err != nil || !pendingStop {
+		var queued []string
+		rows, _ := pool.Query(ctx, `select kind || ' ' || payload::text from outbox where issue = $1 order by id`, issue.Key)
+		for rows != nil && rows.Next() {
+			var row string
+			_ = rows.Scan(&row)
+			queued = append(queued, row)
+		}
+		t.Fatalf("close lost the stored launching role's issue_close before its machine appeared: pending=%t, err=%v; queued %q", pendingStop, err, queued)
 	}
 	// Restart the runtime and outbox while the close still waits. Neither has retained watch
 	// membership or an in-memory suspension request; the same database owns the pending effect.
@@ -558,6 +565,13 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	if _, err := st.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatal(err)
 	}
+	// Admission opens each issue's own lifecycle as it records the issue (decision 16 of
+	// dispatch://INFRA-4730), which its claims bind and its close's cleanup ends.
+	for _, key := range append([]string{root.Key}, fenceKeys(children)...) {
+		if _, err := st.OpenIssueLifecycle(ctx, "legion", key, treelifecycle.AuthorityWorkflow); err != nil {
+			t.Fatal(err)
+		}
+	}
 	api := newIssueSandboxAPI(sandboxes...)
 	server := httptest.NewServer(api)
 	t.Cleanup(func() { cancel(); server.Close() })
@@ -956,4 +970,13 @@ func TestAProductionCheckLookStillStartsItsRole(t *testing.T) {
 	if after.Status != "done" {
 		t.Fatalf("%s after the look's start = %q, want it left done", root.Key, after.Status)
 	}
+}
+
+// fenceKeys is the key of each of children, in order.
+func fenceKeys(children []fenceIssue) []string {
+	keys := make([]string, len(children))
+	for i, child := range children {
+		keys[i] = child.Key
+	}
+	return keys
 }

@@ -112,7 +112,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode([]map[string]any{{"key": own, "title": "This project's root", "status": "todo", "parent": nil, "rank": "m", "labels": []string{dispatch.LegionLabel}, "resolved_repo": "acme/widgets"}}); err != nil {
+		if err := json.NewEncoder(w).Encode([]map[string]any{{"key": own, "title": "This project's root", "status": "todo", "parent": nil, "rank": "m", "labels": []string{dispatch.LegionLabel}, "resolved_repo": "acme/widgets", "last_seq": 1}}); err != nil {
 			t.Errorf("write Dispatch issues: %v", err)
 		}
 	}))
@@ -557,6 +557,11 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 			pr    record.PullRequest
 		}{{ownIssue, ownPR}, {theirIssue, theirPR}} {
 			if err := raw.PutIssue(ctx, tx, seed.issue); err != nil {
+				return err
+			}
+			// Every decision reads the issue's chain from the copy of Dispatch's issues.
+			if err := raw.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: seed.issue.Key, Project: seed.issue.Project, Seq: 1,
+				Status: record.Carry(seed.issue.Status), Parent: record.Carry("")}); err != nil {
 				return err
 			}
 			if err := raw.PutPullRequest(ctx, tx, seed.pr); err != nil {

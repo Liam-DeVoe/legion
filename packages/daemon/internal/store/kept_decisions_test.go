@@ -16,8 +16,8 @@ import (
 
 // keptRig is a store with the records a kept decision's claim and hold read: issues and their
 // places on the Dispatch chain (the copy's rows), outbox rows that claim, and root-architect
-// claims whose deliveries hold. The store reads its members as the daemon hands it the reader
-// (ReadKeptMembers, record.KeptMembers).
+// claims whose deliveries hold. A composer of the rig reads the members it names on the chain
+// (record.KeptMembers), as the workflow's does.
 type keptRig struct {
 	t     *testing.T
 	ctx   context.Context
@@ -28,11 +28,7 @@ type keptRig struct {
 
 func newKeptRig(t *testing.T) *keptRig {
 	t.Helper()
-	st := migratedStore(t)
-	st.ReadKeptMembers(func(ctx context.Context, tx pgx.Tx, issue string) ([]string, error) {
-		return record.KeptMembers(ctx, tx, record.NewStore(), issue)
-	})
-	return &keptRig{t: t, ctx: context.Background(), store: st, at: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
+	return &keptRig{t: t, ctx: context.Background(), store: migratedStore(t), at: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
 }
 
 func (r *keptRig) exec(sql string, args ...any) {

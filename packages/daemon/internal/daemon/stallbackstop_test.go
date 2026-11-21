@@ -566,7 +566,7 @@ func TestTheStallBackstopKeepsTheNewerNoticeOwedWhileTheSweepRetriedTheOlder(t *
 func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStall(t *testing.T) {
 	rig := newBackstopRig(t)
 	root := rig.claim(claim.RolePlanner, "LEGION-220", backstopBound+time.Hour, true)
-	root.Role = claim.RoleArchitect
+	root.Role, root.HoldsGate = claim.RoleArchitect, true
 	rig.s.cfg.WorkerStallBackstops[claim.RoleArchitect] = backstopBound
 	claims := rig.supervising(root)
 

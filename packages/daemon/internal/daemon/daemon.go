@@ -414,9 +414,6 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 		return err
 	}
-	// The claim store holds and tells a root architect's kept decisions by the issues the Dispatch
-	// chain shows owed to it (record.KeptMembers), which only the record package reads.
-	st.ReadKeptMembers(keptMembers)
 	// The boot's budget for the steps after the open. The loops the boot starts take marks of their
 	// own, since they run beside each other (store.ForConcurrentWorker).
 	boot, cancelBoot := bootBudget(ctx)
@@ -3588,10 +3585,4 @@ func callerPodOf(rt runtime.Runtime) func(netip.Addr) (string, bool) {
 		return pods.PodAt
 	}
 	return nil
-}
-
-// keptMembers is the claim store's reader of the issues whose kept rows are owed to issue's
-// architect now (store.KeptMembersReader), over the daemon's own record store.
-func keptMembers(ctx context.Context, tx pgx.Tx, issue string) ([]string, error) {
-	return record.KeptMembers(ctx, tx, record.NewStore(), issue)
 }
