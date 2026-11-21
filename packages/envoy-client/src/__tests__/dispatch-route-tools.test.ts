@@ -1,13 +1,10 @@
-import { beforeEach, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { bearerCredential } from "../bearer";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // A spec that binds its routes (`DispatchToolSpec.routes`) is served by one generic command: the
 // request it sends is built from the binding alone, and what it prints is the route's answer.
-
-beforeEach(forgetKeyedLayerMemory);
 
 const config = {
   enabled: true,
