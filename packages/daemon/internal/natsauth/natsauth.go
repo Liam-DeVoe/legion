@@ -187,11 +187,12 @@ func Connect(urls []string, seed string, name string, options ...nats.Option) (*
 // natsurl.CheckEntries runs on the list as nats.go reads it refuse (a URL that does not parse, an
 // "@" after its host, a websocket URL whose handshake URL does not parse, a later scheme-less URL
 // read with the pool's scheme), each read trimmed and an empty one dropped, as nats.go reads them.
-// Not the tail rule: it guards a credential a comma split, and a comma is refused here first, so
-// a later entry with a user name and any scheme connects, as readNatsURLs loads it. It names the
-// URL by its position in urls alone, as the configuration's refusal of a nats_urls entry does
-// (config.readNatsURLs), with natsurl's fixed reason: any text of such a URL can be a part of the
-// credential, and url.Parse's error quotes the URL whole.
+// Not the tail rule: the configuration ran it (config.readNatsURLs runs natsurl.Check on the list,
+// so an unquoted YAML list that split a credential at its comma never loads), and Connect dials
+// what the configuration accepted, so a later entry with a user name and any scheme connects. It
+// names the URL by its position in urls alone, as the configuration's refusal of a nats_urls entry
+// does (config.readNatsURLs), with natsurl's fixed reason: any text of such a URL can be a part of
+// the credential, and url.Parse's error quotes the URL whole.
 func unreadableURL(urls []string) error {
 	for index, raw := range urls {
 		if strings.Contains(raw, ",") {

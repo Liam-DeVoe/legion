@@ -690,10 +690,13 @@ func namesKey(value *yaml.Node, name string) bool {
 // readNatsURLs is `nats_urls`: valid URLs, in order, each once. An entry the NATS client would read
 // other than as written once the entries are joined with commas is refused too, with natsurl's
 // reason (natsurl.EntryRefusal: a comma, an "@" after its host, a websocket path that stops parsing
-// once decoded), and every refusal names its entry by its position alone (`nats_urls entry 2`),
-// never by any of its text: a credential holding a "/", "?", "#", space or comma ends url.Parse's
-// authority early, so the entry does not parse, or parses with a part of the credential as its
-// host, and nothing that reads a URL finds such a credential to cut; a query can hold a token too.
+// once decoded), and so is a list natsurl.Check refuses (its tail rule: a later entry with a user
+// name and none of the schemes nats, tls, ws and wss, which is what a comma in a credential leaves
+// when an unquoted YAML list splits the credential into two entries before any entry holds a
+// comma). Every refusal names its entry by its position alone (`nats_urls entry 2`), never by any
+// of its text: a credential holding a "/", "?", "#", space or comma ends url.Parse's authority
+// early, so the entry does not parse, or parses with a part of the credential as its host, and
+// nothing that reads a URL finds such a credential to cut; a query can hold a token too.
 func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 	read, err := readStrings(value, key)
 	if err != nil || read == nil {
@@ -715,6 +718,10 @@ func readNatsURLs(value *yaml.Node, key string) ([]string, error) {
 		if !slices.Contains(urls, raw) {
 			urls = append(urls, raw)
 		}
+	}
+	// readStrings refuses an empty entry, so Check's position is the entry's in the file.
+	if _, position, why := natsurl.Check(read); why != "" {
+		return nil, fmt.Errorf("%s entry %d cannot be read: %s", key, position, why)
 	}
 	return urls, nil
 }

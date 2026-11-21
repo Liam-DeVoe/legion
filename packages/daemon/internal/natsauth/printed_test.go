@@ -31,11 +31,11 @@ func listening(t *testing.T) string {
 	return listener.Addr().String()
 }
 
-// A nats_urls list whose later entry carries a user name and a scheme no NATS server is written
-// with is dialled, not refused: readNatsURLs loads it, nats.go dials such an entry as plain NATS,
-// and the tail rule natsurl.Check runs guards only a credential a comma split, which Connect
-// refuses first. Both addresses are closed ports, so the dial fails, and the failure is nats.go's,
-// not a refusal of the list.
+// A list Connect is handed whose later entry carries a user name and a scheme no NATS server is
+// written with is dialled, not refused: Connect dials what the configuration accepted, and the
+// configuration (config.readNatsURLs) runs the tail rule on nats_urls, so Connect runs the pool
+// and handshake rules alone. Both addresses are closed ports, so the dial fails, and the failure is
+// nats.go's, not a refusal of the list.
 func TestConnectDialsALaterEntryWithAUserNameAndAnotherScheme(t *testing.T) {
 	closed := func() string {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")

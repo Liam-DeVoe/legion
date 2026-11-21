@@ -1166,6 +1166,16 @@ func TestLoadRefuses(t *testing.T) {
 			want: `nats_urls entry 1 cannot be read: it holds a comma, which the NATS client reads as a list of servers: list each server as its own nats_urls entry, and write a comma in a credential percent-encoded (%2C)`,
 		},
 		{
+			// An unquoted flow list splits a credential at its comma into two entries before any
+			// entry holds a comma: the made-up token's head becomes the first entry's host and its
+			// tail the second entry's user name under a scheme no NATS server is written with. The
+			// list's tail rule refuses the second entry by position, so boot never dials the head.
+			name: "nats_urls unquoted list that splits a credential at its comma",
+			body: strings.Replace(minimalFile, "nats_urls: [nats://127.0.0.1:4222]\n",
+				"nats_urls: [nats://madeUpNatsTokenHead,x://madeUpNatsTokenTail@127.0.0.1:4222]\n", 1),
+			want: `nats_urls entry 2 cannot be read: it carries a user name or password and names none of the schemes nats, tls, ws and wss, as the part after a comma in a credential does once the list is split on its commas; in a nats or tls list such a URL connected before, but a credential split there has its head dialled and printed as a host: name the URL's scheme, and write a comma in a credential percent-encoded (%2C)`,
+		},
+		{
 			// A websocket entry whose path stops parsing once decoded, as the NATS client's handshake
 			// decodes it: it loaded before and the daemon's connect then refused it; the loader now
 			// refuses it with natsurl's reason.
