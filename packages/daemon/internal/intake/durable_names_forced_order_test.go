@@ -62,10 +62,10 @@ const (
 )
 
 var collisionOrders = []collisionOrder{
-	// On R3 the follower's late write finishes with no error, and the follower, made leader after
-	// the restart, has delivered 20 to 30 in one run and 22 to 30 in another (hooked v2.15.1, fo4
-	// and fo5 of the build-t5 report): no race regression there, a row whose treatment must still
-	// deliver 21 to 30.
+	// A compatibility row on R3: the follower's late write finishes with no error, and the
+	// follower, made leader after the restart, has delivered 20 to 30 in one run and 22 to 30 in
+	// another (hooked v2.15.1, fo4 and fo5 of the build-t5 report), so it is no race regression
+	// there, and its treatment must still deliver 21 to 30.
 	{name: "the predecessor's write held before its IO, released after the replacement's create", predecessor: testnatsinprocess.WritePreIO, control: loses, controlR3: losesOrDelivers},
 	// Held before its rename, the predecessor's write has its o.dat.tmp in the directory the delete
 	// removes, so its late rename fails and lands nothing, whichever name the replacement has: the

@@ -132,7 +132,9 @@ func TestASessionTokenGetsItsOwnChannel(t *testing.T) {
 }
 
 // A service's platform token, from an account the deployment lists, is answered with its kind's
-// grant from natsgrant, named <kind>/<machine id or account>, expiring with the token.
+// grant from natsgrant, Dispatch's and a listener's with the private-projects bucket beside it and
+// a daemon's with its account's own reply prefix (scopeGrant), named <kind>/<machine id or
+// account>, expiring with the token.
 func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	now := time.Now()
 	tokens := map[string]platformToken{
@@ -143,9 +145,9 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	}
 	deps := Deps{ServiceToken: serviceTokens(tokens)}
 	for raw, want := range map[string]Decision{
-		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{}), Expires: now.Add(time.Hour)},
-		"listener-token": {Name: "listener/example-hub", Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)},
-		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)},
+		"dispatch-token": {Name: "dispatch/example-dispatch", Grant: dispatchCalloutGrant("example-dispatch"), Expires: now.Add(time.Hour)},
+		"listener-token": {Name: "listener/example-hub", Grant: listenerCalloutGrant("example-hub"), Expires: now.Add(time.Hour)},
+		"daemon-token":   {Name: "daemon/" + daemonAccount, Grant: daemonCalloutGrant(daemonAccount), Expires: now.Add(30 * time.Minute)},
 		"measure-token":  {Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)},
 	} {
 		t.Run(raw, func(t *testing.T) {
@@ -173,16 +175,16 @@ func TestADispatchConnectionsNameAddsTheGenerationsItNames(t *testing.T) {
 		token, name string
 		want        natsgrant.Permissions
 	}{
-		{"dispatch-token", intake, natsgrant.Dispatch("example-dispatch", natsgrant.ParseDispatchConnection(intake))},
-		{"dispatch-token", cleanup, natsgrant.Dispatch("example-dispatch", natsgrant.ParseDispatchConnection(cleanup))},
-		{"dispatch-token", "dispatch-intake", natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{})},
-		{"dispatch-token", "dispatch", natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{})},
-		{"dispatch-token", "dispatch-intake/listener-m2/Gen1", natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{})},
+		{"dispatch-token", intake, withPrivateProjectsWrite(natsgrant.Dispatch("example-dispatch", natsgrant.ParseDispatchConnection(intake)))},
+		{"dispatch-token", cleanup, withPrivateProjectsWrite(natsgrant.Dispatch("example-dispatch", natsgrant.ParseDispatchConnection(cleanup)))},
+		{"dispatch-token", "dispatch-intake", dispatchCalloutGrant("example-dispatch")},
+		{"dispatch-token", "dispatch", dispatchCalloutGrant("example-dispatch")},
+		{"dispatch-token", "dispatch-intake/listener-m2/Gen1", dispatchCalloutGrant("example-dispatch")},
 		// The listener beside Dispatch: its own machine's generation, and none for a name naming another.
 		{"dispatch-token", natsgrant.ListenerIntakeConnection("example-dispatch", "Gen1", "Gen0"),
-			natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{ListenerMachine: "example-dispatch", Generation: "Gen1", Old: "Gen0"})},
-		{"dispatch-token", natsgrant.ListenerIntakeConnection("m2", "Gen1", ""), natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{})},
-		{"listener-token", intake, natsgrant.Listener("example-hub")},
+			withPrivateProjectsWrite(natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{ListenerMachine: "example-dispatch", Generation: "Gen1", Old: "Gen0"}))},
+		{"dispatch-token", natsgrant.ListenerIntakeConnection("m2", "Gen1", ""), dispatchCalloutGrant("example-dispatch")},
+		{"listener-token", intake, listenerCalloutGrant("example-hub")},
 	} {
 		req := serviceRequest(row.token)
 		req.Name = row.name
