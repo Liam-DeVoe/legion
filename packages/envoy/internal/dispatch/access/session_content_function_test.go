@@ -11,7 +11,7 @@ import (
 
 // TestTheContentFunctionIsTheBodyGoRenders: session_content_visible, the function a migrated
 // database holds, is sessionContentFunctionBody as it renders now, word for word (whitespace aside).
-// The rule is written once, in Go beside PersonSeesProjectSQL, which it reads; a change of either
+// The rule is written once, in Go over store.PersonSeesProjectSQL, which it reads; a change of either
 // that ships without a migration replacing the function fails here rather than leaving the
 // database answering the old rule. The function sets nothing for its calls (no SET clause), as
 // session_clause_visible does not, and is declared at the cost that keeps statements on their

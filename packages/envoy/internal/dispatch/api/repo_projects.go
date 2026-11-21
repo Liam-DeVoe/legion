@@ -360,8 +360,8 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 //
 // That is the one order: no other writer takes repo's lock, and none takes it after a project's
 // owner lock (an access write takes a group's name, then the project's owner lock, then the
-// sessions' people, access.LockForAccessWrite and recordReachedProjects), so no two writes wait on
-// each other in a cycle.
+// sessions' people, access.LockForAccessWrite and store.RecordReachedProjects), so no two writes
+// wait on each other in a cycle.
 //
 // A mapping whose current project who does not see (projectSeenBy) is answered hidden before any
 // lock is taken: the mapping as read with no lock, hidden true. A write of such a mapping is

@@ -243,7 +243,7 @@ func TestARestrictedMemberIsNeverAdmittedByAGroup(t *testing.T) {
 			t.Errorf("%s sees OTHER = %t, want %t: OTHER lists only the group crew, and %s is a member of it", test.person, got, test.sees, test.person)
 		}
 		var listed bool
-		if err := database.Pool.QueryRow(ctx, `select `+PersonSeesProjectSQL("$1", "(select member_kind from people where email = $1)", "p")+` from projects p where p.key = 'OTHER'`,
+		if err := database.Pool.QueryRow(ctx, `select `+store.PersonSeesProjectSQL("$1", "(select member_kind from people where email = $1)", "p")+` from projects p where p.key = 'OTHER'`,
 			test.person).Scan(&listed); err != nil {
 			t.Fatalf("PersonSeesProjectSQL(%s): %v", test.person, err)
 		}
@@ -257,7 +257,7 @@ func TestARestrictedMemberIsNeverAdmittedByAGroup(t *testing.T) {
 // statement that binds one says so in pg_stat_statements and in every census that reads SQL.
 func TestEverySQLFragmentStartsWithTheMarker(t *testing.T) {
 	for name, fragment := range map[string]string{
-		"PersonSeesProjectSQL":       PersonSeesProjectSQL("$1", "$2", "p"),
+		"PersonSeesProjectSQL":       store.PersonSeesProjectSQL("$1", "$2", "p"),
 		"VisibleProjectsSQL":         VisibleProjectsSQL(),
 		"ProjectClause":              ProjectClause("p.key", "$1"),
 		"OpenClause":                 OpenClause("$1"),

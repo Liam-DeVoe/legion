@@ -13,12 +13,13 @@
 // is open when it is not a restricted member: it reads every row that belongs to no project, as
 // every caller did before.
 //
-// One home. The rule is written once in SQL (PersonSeesProjectSQL, VisibleProjectsSQL) and once in
-// Go over a person already resolved (CredentialCovers, Credential.Sees), and a test holds the two
-// equal over every combination. The outside sign-in's question, whether some project names an
-// email directly, is listed.go's, the same rule's direct arm read from the other side. Every SQL
-// fragment this package hands a statement starts with Marker and its own name, so a statement that
-// binds one says so wherever its text is read.
+// One home. The rule is written once in SQL (store.PersonSeesProjectSQL, which the store's own
+// writes of a member kind read too, and VisibleProjectsSQL) and once in Go over a person already
+// resolved (CredentialCovers, Credential.Sees), and a test holds the two equal over every
+// combination. The outside sign-in's question, whether some project names an email directly, is
+// listed.go's, the same rule's direct arm read from the other side. Every SQL fragment this
+// package hands a statement, store.PersonSeesProjectSQL among them, starts with Marker and its own
+// name, so a statement that binds one says so wherever its text is read.
 package access
 
 import (
@@ -29,6 +30,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // ErrUnresolvedActor is Resolve's refusal of an actor that carries no credential: one a write
@@ -49,26 +51,6 @@ const Marker = "/* project access: "
 
 func fragment(name, sql string) string { return Marker + name + " */ " + sql }
 
-// PersonSeesProjectSQL is the rule for one person over one project row: true when the person,
-// whose member kind memberExpr answers, sees the project projectAlias names. The group arm
-// counts a member only through a people row of a full member, so a restricted member, or a login
-// nobody has signed in as, is never admitted by a group (v24 R2).
-func PersonSeesProjectSQL(personExpr, memberExpr, projectAlias string) string {
-	return fragment("PersonSeesProjectSQL", fmt.Sprintf(`(%[3]s.owner = %[1]s
-		or exists (
-			select 1 from project_access listed
-			where listed.project_key = %[3]s.key and listed.principal_kind = 'person' and listed.principal = %[1]s
-			offset 0)
-		or exists (
-			select 1
-			from project_access listed
-			join access_group_members member on member.group_name = listed.principal
-			join people full_member on full_member.email = member.person and full_member.member_kind = 'full'
-			where listed.project_key = %[3]s.key and listed.principal_kind = 'group' and member.person = %[1]s
-			offset 0)
-		or (%[3]s.visibility = 'public' and %[2]s = 'full'))`, personExpr, memberExpr, projectAlias))
-}
-
 // VisibleProjectsSQL answers one caller's viewer in one row: every project it sees as a sorted
 // jsonb array, whether it is a restricted member, whether any project is private, and whether
 // Resolve answers its list as Viewer.Lists. Its parameters are $1 the person (null for a credential that names
@@ -76,10 +58,10 @@ func PersonSeesProjectSQL(personExpr, memberExpr, projectAlias string) string {
 // people row holds them (the broker signs in only people of its sign-in domain), $3 whether it is
 // an agent credential rather than a browser, and $4 its list of projects (null or empty for none).
 //
-// A project passes when the person sees it (PersonSeesProjectSQL; a credential of no person has no
-// person's limit) and the credential's list covers it, which is CredentialCovers in SQL: a browser
-// is covered everywhere; a restricted member's credential that lists projects, for those alone; and
-// every other credential for each public project and each private one it lists.
+// A project passes when the person sees it (store.PersonSeesProjectSQL; a credential of no person
+// has no person's limit) and the credential's list covers it, which is CredentialCovers in SQL: a
+// browser is covered everywhere; a restricted member's credential that lists projects, for those
+// alone; and every other credential for each public project and each private one it lists.
 // TestTheListRuleIsOneInGoAndSQL holds the two equal over every combination. With no private
 // project a full member's list decides nothing it reads, and the caller sees what a credential
 // listing none sees (R9). Resolve answers the list as Viewer.Lists for every credential but a
@@ -106,7 +88,7 @@ func VisibleProjectsSQL() string {
 		)
 		select
 			coalesce(jsonb_agg(p.key order by p.key collate "C") filter (where
-				(viewer.person is null or `+PersonSeesProjectSQL("viewer.person", "viewer.member_kind", "p")+`)
+				(viewer.person is null or `+store.PersonSeesProjectSQL("viewer.person", "viewer.member_kind", "p")+`)
 				and ((viewer.person is not null and not $3::boolean)
 					or case when viewer.restricted and viewer.listed
 						then p.key = any($4::text[])
@@ -188,7 +170,7 @@ func PersonClause(loginExpr, viewerParam string) string {
 			where %[5]s
 			offset 0))`,
 		loginExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), viewerParam,
-		PersonSeesProjectSQL("("+loginExpr+")", "(select person_kind.member_kind from people person_kind where person_kind.email = ("+loginExpr+"))", "seen")))
+		store.PersonSeesProjectSQL("("+loginExpr+")", "(select person_kind.member_kind from people person_kind where person_kind.email = ("+loginExpr+"))", "seen")))
 }
 
 // SessionClause passes a session, by id, when it is the viewer's own; to any other viewer, never
@@ -251,10 +233,11 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //   - The server's viewer and the viewer's own session pass, and every session passes an open
 //     viewer of a deployment that holds no private project (R9).
 //   - Every other viewer is relayed no session that acted in or reached a project it does not
-//     see: a session_projects pair, or a session_reached_projects pair, which an access change
-//     that took the project from a person the session is tied to wrote (recordReachedProjects),
-//     since the transcript keeps what the session read while its person saw the project, and the
-//     rules below judge the session's people by what they see now.
+//     see: a session_projects pair, or a session_reached_projects pair, which a change that took
+//     the project from a person the session is tied to wrote (store.RecordReachedProjects: an
+//     access change, or a write of the person's member kind), since the transcript keeps what the
+//     session read while its person saw the project, and the rules below judge the session's
+//     people by what they see now.
 //   - A viewer that is not open (a restricted member) is relayed only a session that its own
 //     person's credential alone proved: every person a write or a broker-issued token of the
 //     session recorded (session_owners, the person the token acts for) is the viewer's person, and
@@ -271,10 +254,10 @@ func SessionClause(sessionExpr, viewerParam string) string {
 //     in a project or list one. Where it lists none (the listener sent no list, as every listener
 //     does until it learns each session's projects), the session's people bound what its
 //     credential could read: a proved write must have tied it to somebody (session_owners), and
-//     every private project each person tied to it sees (PersonSeesProjectSQL) must be one the
-//     viewer sees. So a session only people on no private project proved is watched as before, one
-//     a private project's person proved only by a viewer who sees that project too, and one with
-//     neither a list nor a tie by nobody.
+//     every private project each person tied to it sees (store.PersonSeesProjectSQL) must be one
+//     the viewer sees. So a session only people on no private project proved is watched as
+//     before, one a private project's person proved only by a viewer who sees that project too,
+//     and one with neither a list nor a tie by nobody.
 //
 // The server's viewer, the viewer's own session and an open viewer of a deployment that holds no
 // private project are answered in the statement's own SQL, so those rows call nothing and read
@@ -295,8 +278,8 @@ func SessionContentClause(sessionExpr, viewerParam string) string {
 // sessionContentFunctionBody is the body of session_content_visible(session_id text, viewer
 // jsonb), the migration's function: SessionContentClause's decision for the session $1 and the
 // visibility argument $2 for every viewer the clause's own SQL does not answer first, the rule
-// SessionContentClause's comment states. It is written here, beside the rule it reads
-// (PersonSeesProjectSQL), and the migration holds it as this text renders it:
+// SessionContentClause's comment states. It is written here, beside the clause whose rule it is,
+// over store.PersonSeesProjectSQL, and the migration holds it as this text renders it:
 // TestTheContentFunctionIsTheBodyGoRenders fails while the function a migrated database holds
 // differs from it, so a change of either rule here ships with a migration that replaces the
 // function.
@@ -330,7 +313,7 @@ func sessionContentFunctionBody() string {
 				or (not %[1]s and %[5]s)
 			end, false)`,
 		ViewerFlag("$2", "open"), held, ViewerPerson("$2"),
-		PersonSeesProjectSQL("tied.login", "tied_person.member_kind", "hidden"),
+		store.PersonSeesProjectSQL("tied.login", "tied_person.member_kind", "hidden"),
 		fmt.Sprintf(`(exists (
 				select 1 from session_owners tied
 				where tied.session_id = $1 and tied.login = %[1]s

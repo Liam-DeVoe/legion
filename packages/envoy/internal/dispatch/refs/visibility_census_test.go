@@ -100,7 +100,7 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 		for index, statement := range read.statements {
 			statementMarks := strings.Count(statement, VisibilityMarker)
 			// A project's own visibility, the public arm of the access rule a person's scope
-			// binds (access.PersonSeesProjectSQL, `<project>.visibility = 'public'`), and the
+			// binds (store.PersonSeesProjectSQL, `<project>.visibility = 'public'`), and the
 			// private-project SessionClause and RoleClause gates (`<project>.visibility =
 			// 'private'`), are tests of a project and not of a node, so neither is a registry
 			// predicate of the statement's own.
