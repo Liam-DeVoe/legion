@@ -797,7 +797,10 @@ func (PullRequestDequeued) namedIssue() (string, bool) { return "", false }
 // (gh-readonly-queue/<base>/pr-<number>-<base sha>), and HeadSHA the group's own commit, which the
 // queue waits on every required check of. Action is GitHub's: checks_requested asks for those
 // checks, and the daemon writes legion-verdict on HeadSHA from the pull request's verdict at its
-// head (internal/daemon's mergeGroupHandler); destroyed ends the group, and nothing is written.
+// head (internal/daemon's mergeGroupHandler); destroyed ends the group, and nothing is written. It
+// is a fact only on a repository the daemon writes legion-verdict on
+// (ConsumerSpec.VerdictRepositories); the consumer acknowledges it with no transaction on every
+// other repository (outsideFact).
 type MergeGroup struct {
 	Repo    string
 	Number  int

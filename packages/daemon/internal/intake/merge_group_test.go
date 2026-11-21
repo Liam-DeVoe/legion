@@ -1,10 +1,20 @@
 package intake
 
 import (
+	"context"
 	"encoding/json"
 	"maps"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 // A merge_group event, as Envoy's listener publishes it on the repository's merge_group subject,
@@ -58,4 +68,66 @@ func TestLegionVerdictMergeGroupDecodesToThePullRequestItsRefNames(t *testing.T)
 			}
 		})
 	}
+}
+
+// A merge group is a fact only on a repository the daemon writes legion-verdict on
+// (ConsumerSpec.VerdictRepositories), as an outside pull request's sighting is: on every other
+// heard repository nothing writes legion-verdict, so the consumer acknowledges it with no
+// transaction under the fact lock (ApplyFact), rather than running every handler for a fact the
+// merge group's handler then drops. The event is Envoy's own golden envelope.
+func TestLegionVerdictAMergeGroupIsAFactOnAVerdictRepositoryAlone(t *testing.T) {
+	pool := migratedPool(t)
+	js, stream := testJetStream(t)
+	spec := consumerSpec(&lockedBuffer{})
+	spec.AckWait = time.Minute
+	var mu sync.Mutex
+	var applied []Fact
+	recorder := handlerFunc(func(_ context.Context, _ pgx.Tx, fact Fact) (Result, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		applied = append(applied, fact)
+		return Result{}, nil
+	})
+	seen := func() []Fact {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(applied)
+	}
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "github-envelopes", "merge-group-checks-requested.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var golden struct {
+		Topic   string         `json:"topic"`
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &golden); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(golden.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := func(id string) []byte { return envelopeJSON(t, id, "github", string(payload)) }
+
+	t.Run("a repository no verdict entry names", func(t *testing.T) {
+		stop := startConsume(t, js, spec, pool, recorder)
+		defer stop()
+		assertAcknowledgedThrough(t, stream, githubConsumerName(spec.Project), publish(t, js, golden.Topic, envelope("merge-group-1")))
+		if facts := seen(); len(facts) != 0 {
+			t.Fatalf("applied %#v, want nothing of a merge group there", facts)
+		}
+	})
+
+	t.Run("a verdict repository", func(t *testing.T) {
+		withVerdicts := spec
+		withVerdicts.VerdictRepositories = []ghrepo.Repository{ghrepo.MustParse("SJawhar/Legion")}
+		stop := startConsume(t, js, withVerdicts, pool, recorder)
+		defer stop()
+		assertAcknowledgedThrough(t, stream, githubConsumerName(spec.Project), publish(t, js, golden.Topic, envelope("merge-group-2")))
+		want := MergeGroup{Repo: "sjawhar/legion", Number: 1050, Action: "checks_requested", HeadSHA: "9e1c7d2a4b6f8e0c1d3a5b7c9e1f2a4b6c8d0e2f"}
+		if facts := seen(); len(facts) != 1 || facts[0] != Fact(want) {
+			t.Fatalf("applied %#v, want the merge group %#v", facts, want)
+		}
+	})
 }
