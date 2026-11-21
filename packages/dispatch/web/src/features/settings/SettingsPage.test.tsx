@@ -6,6 +6,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { realClock, settle } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { panelOf, pickFromLabelled } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -535,6 +536,45 @@ test("a default another browser sets while this page's pick is out shows at once
     expect(isDefault("owner/repo")).toBe(true);
     expect(isDefault("owner/other")).toBe(false);
   } finally {
+    page.restore();
+  }
+});
+
+// While a mapping write is out, a row's Default and Delete and the form's Add mapping are held, by
+// `aria-disabled`, never `disabled` (`pressHeld`). A Delete takes its row away at the press, so its
+// hold is read on the other row's Delete, which the reader moves to. The control keeps the focus,
+// and a second press sends nothing.
+test.each([
+  { label: "Default repository of CORE: owner/other", press: " ", role: "radio", start: undefined },
+  {
+    label: "Delete mapping for owner/other",
+    press: "{Enter}",
+    role: "button",
+    start: "Delete mapping for owner/repo",
+  },
+  { label: "Add mapping", press: "{Enter}", role: "button", start: undefined },
+] as const)("$label, held while a mapping write is out, keeps the focus, and a second press sends nothing", async ({
+  label,
+  press,
+  role,
+  start,
+}) => {
+  const user = userEvent.setup();
+  // Every write is held until the case has the server answer it inside `act`.
+  const server = mappingServer([mapping, { ...mapping, default: false, repo: "owner/other" }]);
+  const page = await renderMappings(server);
+  try {
+    await user.click(screen.getByLabelText("Repository"));
+    await user.paste("owner/new");
+    await pickFromLabelled(user, "Project", "OPS · OPS");
+    await pressHeld(user, screen.getByRole(role, { name: label }), {
+      name: label,
+      press,
+      sent: () => page.putRepoProject.mock.calls.length + page.deleteRepoProject.mock.calls.length,
+      start: start === undefined ? undefined : screen.getByRole("button", { name: start }),
+    });
+  } finally {
+    await act(async () => server.answer());
     page.restore();
   }
 });

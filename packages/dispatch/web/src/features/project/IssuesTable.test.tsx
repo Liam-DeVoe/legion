@@ -1204,6 +1204,145 @@ test("under the Epic filter, Take out of epic hands the focus to the row now at 
   expect(focusedName()).toBe(`Select ${next}`);
 });
 
+/** How tall `layTableOut` draws each of the List's rows. */
+const TABLE_ROW_PX = 100;
+
+/** The box the List's rows scroll in, as drawn now. */
+const tableBox = () => document.querySelector<HTMLElement>('[data-testid="issues-table-scroll"]');
+
+/** The List's rows, in the order the table draws them. */
+const drawnRows = () => [...(tableBox()?.querySelectorAll("[data-issue-row]") ?? [])];
+
+/** Where the row of `key` stands from the window's top, as `layTableOut` draws it; undefined
+ *  where the table draws no such row. */
+const rowTop = (key: string) =>
+  document.querySelector(`[data-issue-row="${key}"]`)?.getBoundingClientRect().top;
+
+/** Lays the List's rows down the box they scroll in, `TABLE_ROW_PX` a row in the order the table
+ *  draws them, from the box's top less its `scrollTop`, as a reader deep in the List sees them.
+ *  The box fills a 600 px window from the page's top. A row, and everything in it, is drawn in the
+ *  row's box, and the box's content where its rows run. A point of the window names the row drawn
+ *  there (`document.elementFromPoint`). happy-dom lays nothing out and scrolls nothing, and the
+ *  List's anchor (`ViewportAnchor`) reads each of these to keep the row in hand where the reader
+ *  sees it. Answers the function that gives happy-dom its own answers back. */
+function layTableOut(): () => void {
+  const real = Element.prototype.getBoundingClientRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const box = tableBox();
+    if (box === null) return real.call(this);
+    if (this === box) return new DOMRect(0, 0, 1000, 600);
+    const rows = drawnRows();
+    const row = this.closest("[data-issue-row]");
+    if (row !== null) {
+      return new DOMRect(0, rows.indexOf(row) * TABLE_ROW_PX - box.scrollTop, 1000, TABLE_ROW_PX);
+    }
+    if (this === box.firstElementChild) {
+      return new DOMRect(0, -box.scrollTop, 1000, rows.length * TABLE_ROW_PX);
+    }
+    return real.call(this);
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation(
+    (_x, y) => drawnRows()[Math.floor((y + (tableBox()?.scrollTop ?? 0)) / TABLE_ROW_PX)] ?? null
+  );
+  return () => {
+    rect.mockRestore();
+    point.mockRestore();
+  };
+}
+
+/** An epic and the twenty issues under it, each listed out of the epic once its write lands,
+ *  and `send`, which answers each write. The listing answers from the array the case is given. */
+function epicRows() {
+  const rows = [
+    issue("CORE-1", { labels: ["epic"], title: "Table epic" }),
+    ...Array.from({ length: 20 }, (_, index) => issue(`CORE-${index + 2}`, { parent: "CORE-1" })),
+  ];
+  const send = spyOn(api, "send").mockImplementation(async (request) => {
+    const key = request.path.split("/").at(-1) ?? "";
+    rows.splice(
+      rows.findIndex((row) => row.key === key),
+      1,
+      issue(key)
+    );
+    return savedIssue(key) as never;
+  });
+  restores.push(() => send.mockRestore());
+  return rows;
+}
+
+/** The box the List's rows scroll in, scrolled five rows down: the rows at 6, 7 and 8 in the
+ *  order the table draws them stand at 100, 200 and 300 px, the last at the box's centre. Answers
+ *  the box and that order. */
+function scrollFiveRowsDown(): { box: HTMLElement; order: string[] } {
+  restores.push(layTableOut());
+  const box = tableBox();
+  if (box === null) throw new Error("The List drew no scroll box");
+  box.scrollTop = 5 * TABLE_ROW_PX;
+  return { box, order: drawnRows().map((row) => row.getAttribute("data-issue-row") ?? "") };
+}
+
+// Deep in the List under its Epic filter, the reader marks two adjacent rows above the row at the
+// box's centre and presses the bar's Take out of epic. The list read after the writes no longer
+// shows the two rows. The reader asked for them to go, so the rows below them move up into their
+// place and the box does not scroll to hold the centre row where it stood: the box's `scrollTop`
+// is as it was, and the row after the two stands where the first of them stood.
+test("a bulk action whose list read takes rows out of the view above the row in hand leaves the box's scrollTop as it was, and the rows below move up", async () => {
+  const user = userEvent.setup();
+  const rows = epicRows();
+  table(rows, `?f.epic=${encodeURIComponent("CORE-1 · Table epic")}`);
+  await screen.findByRole("checkbox", { name: "Select CORE-21" });
+  const { box, order } = scrollFiveRowsDown();
+  const [first, second, next] = order.slice(6, 9) as [string, string, string];
+  const place = rowTop(first);
+  await user.click(screen.getByRole("checkbox", { name: `Select ${first}` }));
+  await user.click(screen.getByRole("checkbox", { name: `Select ${second}` }));
+  await user.click(
+    within(screen.getByRole("toolbar", { name: "Selected issues" })).getByRole("button", {
+      name: "Take out of epic",
+    })
+  );
+  await waitFor(() => expect(rowTop(first)).toBeUndefined());
+  expect(rowTop(second)).toBeUndefined();
+  expect(box.scrollTop).toBe(5 * TABLE_ROW_PX);
+  expect(rowTop(next)).toBe(place);
+});
+
+// An action's rows are the reader's to take away only while the action's list read is out. Take
+// out of epic with no Epic filter leaves the two issues listed, and the bar's hand-off puts the
+// focus on the checkbox of the one marked last. Later a live update takes the other one, above
+// it, off the list. Nobody pressed for that, so the box scrolls up by that row's height and the
+// focused row stays where the reader sees it.
+test("a live update that takes away, above the row in hand, a row an earlier action changed is still made up for by a scroll", async () => {
+  const user = userEvent.setup();
+  const rows = epicRows();
+  const { client } = table(rows);
+  await screen.findByRole("checkbox", { name: "Select CORE-21" });
+  const { box, order } = scrollFiveRowsDown();
+  const [taken, kept] = order.slice(6, 8) as [string, string];
+  expect([taken, kept].includes("CORE-1")).toBe(false);
+  await user.click(screen.getByRole("checkbox", { name: `Select ${taken}` }));
+  await user.click(screen.getByRole("checkbox", { name: `Select ${kept}` }));
+  await user.click(
+    within(screen.getByRole("toolbar", { name: "Selected issues" })).getByRole("button", {
+      name: "Take out of epic",
+    })
+  );
+  await waitFor(() => expect(focusedName()).toBe(`Select ${kept}`));
+  expect(box.scrollTop).toBe(5 * TABLE_ROW_PX);
+  const seen = rowTop(kept);
+  // The live update: the listing no longer holds `taken`.
+  rows.splice(
+    rows.findIndex((row) => row.key === taken),
+    1
+  );
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await waitFor(() => expect(rowTop(taken)).toBeUndefined());
+  expect(box.scrollTop).toBe(4 * TABLE_ROW_PX);
+  expect(rowTop(kept)).toBe(seen);
+});
+
 // A table action's bar stays, held, until the list read after its writes has settled, and goes
 // in the commit that lets its controls go. Take out of epic with no Epic filter leaves the two
 // issues listed, so the bar's hand-off puts the focus on the checkbox of the issue marked last.

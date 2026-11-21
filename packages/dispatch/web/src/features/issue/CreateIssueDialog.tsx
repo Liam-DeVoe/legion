@@ -50,6 +50,14 @@ const createIssue = (input: CreateIssueInput, bounds: WriteBounds): Promise<Issu
  * close it and leave the reader on its trigger, inside the dialog, whose own Escape and Tab
  * cycle then take over. It says the projects are loading while their read is out, and that they
  * could not be loaded where it failed, as the dialog does beside it.
+ *
+ * While the create is out, the reader's press stays where they made it. Title and Spec are held:
+ * `aria-disabled` and read-only, never disabled. Create is held by `aria-disabled`. So the field
+ * or the button the reader submitted from keeps the focus, and a submit then sends nothing. A
+ * create that lands with no answer empties the title, and Create stays held while it has no
+ * title, with the focus still on it. Create is disabled only while no project is picked, which
+ * nothing the dialog sends changes. Create anyway goes at its own press, with the refusal it
+ * answers, so it has nothing to hold.
  */
 export function CreateIssueDialog({
   onClose,
@@ -187,14 +195,15 @@ export function CreateIssueDialog({
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
             Title
             <input
+              aria-disabled={mutation.isPending || undefined}
               className={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none ${inputClasses(true)}`}
-              disabled={mutation.isPending}
               maxLength={ISSUE_TITLE_MAX}
               onChange={(event) => {
                 mutation.forgetUnanswered();
                 setTitle(event.target.value);
               }}
               ref={titleRef}
+              readOnly={mutation.isPending}
               type="text"
               value={title}
             />
@@ -202,10 +211,11 @@ export function CreateIssueDialog({
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
             Spec <span className={`font-normal ${textMutedOnSurface}`}>(optional)</span>
             <textarea
+              aria-disabled={mutation.isPending || undefined}
               className={`mt-1 block w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none ${inputClasses(true)}`}
-              disabled={mutation.isPending}
               onChange={(event) => setSpec(event.target.value)}
               onKeyDown={(event) => submitOnModifiedEnter(event)}
+              readOnly={mutation.isPending}
               rows={3}
               value={spec}
             />
@@ -253,8 +263,9 @@ export function CreateIssueDialog({
               </button>
             )}
             <button
+              aria-disabled={!canSubmit || undefined}
               className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={!canSubmit}
+              disabled={selectedProject === ""}
               type="submit"
             >
               {mutation.isPending ? "Creating…" : "Create"}

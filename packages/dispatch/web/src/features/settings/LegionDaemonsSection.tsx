@@ -19,6 +19,7 @@ import { api, apiErrorMessage } from "../../api/client";
 import { legionDaemonQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { LegionSetting } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   TableBody,
@@ -217,8 +218,14 @@ export function LegionDaemonsSection(): ReactNode {
       removeDaemon.retry();
     }
   };
+  // While either write is out, Save Legion daemon and every row's Remove are held by
+  // `aria-disabled` (`heldPress`), and the address box by `aria-disabled` and read-only, never
+  // disabled: the control the reader pressed or submitted from keeps the focus, and a press or a
+  // submit then sends nothing.
+  const writing = saveDaemon.isPending || removeDaemon.isPending;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (writing) return;
     // The project list is a button, which no `required` holds: an empty one files nothing here.
     if (project === "") {
       setProjectMissing(true);
@@ -231,7 +238,6 @@ export function LegionDaemonsSection(): ReactNode {
     }
     saveDaemon.mutate({ project, state_url: url });
   };
-  const writing = saveDaemon.isPending || removeDaemon.isPending;
 
   return (
     <section aria-labelledby="legion-daemons-heading" data-legion-daemons>
@@ -292,9 +298,8 @@ export function LegionDaemonsSection(): ReactNode {
                       <TableCell align="right">
                         <button
                           aria-label={`Remove the Legion daemon of ${setting.project}`}
-                          className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                          disabled={writing}
-                          onClick={() => removeDaemon.mutate(setting.project)}
+                          className={`font-medium refused:cursor-not-allowed refused:opacity-50 ${dangerText} ${dangerHoverText}`}
+                          {...heldPress(writing, () => removeDaemon.mutate(setting.project))}
                           type="button"
                         >
                           Remove
@@ -325,16 +330,21 @@ export function LegionDaemonsSection(): ReactNode {
               <label className={settingsFieldLabel} htmlFor="legion-state-url">
                 Legion daemon state URL
                 <input
+                  aria-disabled={writing || undefined}
                   className={settingsMonoInput}
-                  disabled={writing}
                   id="legion-state-url"
                   onChange={(event) => setStateUrl(event.target.value)}
                   placeholder="https://daemon.example"
+                  readOnly={writing}
                   required
                   value={stateUrl}
                 />
               </label>
-              <button className={settingsSubmitButton} disabled={writing} type="submit">
+              <button
+                aria-disabled={writing || undefined}
+                className={settingsSubmitButton}
+                type="submit"
+              >
                 Save Legion daemon
               </button>
             </form>

@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { pressHeld } from "../../__tests__/held-press";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -448,6 +449,36 @@ test("a held Save keeps the keyboard focus, and a press or a submit while it is 
     expect(save).toHaveFocus();
   } finally {
     restoreFocus();
+    cleanup();
+    queryClient.clear();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// Enter in a field submits the form, and the field keeps the focus through the hold: each field is
+// held by `aria-disabled` and read-only, never `disabled`, which Chromium answers by taking the
+// focus off it (`emulateChromiumFocusFixup`, on in `pressHeld`). A second Enter there sends
+// nothing.
+test("Enter in the Deploy workflow box submits, and the box keeps the focus through the hold", async () => {
+  const user = userEvent.setup();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue({
+    ...record,
+    updated_at: "2026-10-08T09:00:00Z",
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <DeliverySettingsForm initial={record} />
+      </QueryClientProvider>
+    );
+    const box = field("Deploy workflow");
+    await pressHeld(user, box, {
+      name: "Deploy workflow",
+      sent: () => putDeliverySettings.mock.calls.length,
+    });
+    expect(box.readOnly).toBe(true);
+  } finally {
     cleanup();
     queryClient.clear();
     putDeliverySettings.mockRestore();

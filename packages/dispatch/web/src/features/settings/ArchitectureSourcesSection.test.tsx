@@ -4,6 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 
 import { realClock } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, panelOf, pickFromLabelled, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -239,7 +240,7 @@ test("each architecture source of a project is its own row, refreshed and delete
     await waitFor(() =>
       expect(
         section.getByRole("button", { name: "Delete architecture source legion/arch for CORE" })
-      ).not.toHaveAttribute("disabled")
+      ).not.toHaveAttribute("aria-disabled")
     );
 
     await user.click(
@@ -277,6 +278,58 @@ test("each architecture source of a project is its own row, refreshed and delete
     putArchitectureSource.mockRestore();
     syncArchitectureSource.mockRestore();
     deleteArchitectureSource.mockRestore();
+  }
+});
+
+// A source's Refresh and Delete, and the form's Add source, repository and branch, are each held
+// while their write is out, by `aria-disabled`, never `disabled` (`pressHeld`): the control the
+// reader pressed or submitted from keeps the focus, and a second press sends nothing.
+test.each([
+  { label: "Refresh architecture source legion/arch for CORE", role: "button" },
+  { label: "Delete architecture source legion/arch for CORE", role: "button" },
+  { label: "Add source", role: "button" },
+  { label: "Source repository", role: "textbox" },
+  { label: "Branch", role: "textbox" },
+] as const)("$label, held while its write is out, keeps the focus, and a second press sends nothing", async ({
+  label,
+  role,
+}) => {
+  const user = userEvent.setup();
+  const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([
+    architectureSource,
+  ]);
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  // The writes' answer, held until the case refuses it inside `act`.
+  const answer = Promise.withResolvers<never>();
+  const writes = [
+    spyOn(api, "syncArchitectureSource").mockReturnValue(answer.promise),
+    spyOn(api, "deleteArchitectureSource").mockReturnValue(answer.promise),
+    spyOn(api, "putArchitectureSource").mockReturnValue(answer.promise),
+  ];
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ArchitectureSourcesSection />
+      </QueryClientProvider>
+    );
+    const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
+    await section.findByRole("cell", { name: "legion/arch" });
+    await pickFromLabelled(user, "Source project", "CORE · Core");
+    await user.click(section.getByLabelText("Source repository"));
+    await user.paste("acme/infra");
+    await pressHeld(user, section.getByRole(role, { name: label }), {
+      name: label,
+      sent: () => writes.reduce((count, write) => count + write.mock.calls.length, 0),
+    });
+  } finally {
+    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
+    cleanup();
+    queryClient.clear();
+    listArchitectureSources.mockRestore();
+    listProjects.mockRestore();
+    for (const write of writes) write.mockRestore();
   }
 });
 

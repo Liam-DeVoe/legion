@@ -36,7 +36,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { holdFirstRequest } from "./editor";
 import { inboxList } from "./inbox-pane";
-import { type KeyedWrite, keyedWrite } from "./keyed-writes";
+import { distinctKeys, type KeyedWrite, keyedWrite } from "./keyed-writes";
 import { setCreatedAt } from "./seed";
 import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, test } from "./test";
@@ -1561,8 +1561,12 @@ test("a send the server refuses keeps its row after a later send succeeds, and R
       row("Refused first.").getByRole("link", { name: "Sent to 2 agents" })
     ).toBeVisible();
     await expect(sends.getByText(/^Could not send/)).toHaveCount(0);
-    expect(posted).toHaveLength(3);
-    expect(posted[0]).toEqual({
+    // Three writes, counted by key: a request the store sent again under its key, after a dropped
+    // answer, is the same write. The third is the refused one's message under a key of its own.
+    const keys = distinctKeys(posted);
+    expect(keys).toHaveLength(3);
+    const refused = posted.find((write) => write.key === keys[0]);
+    expect(refused).toEqual({
       input: {
         body: "Refused first.",
         delivery: "aside",
@@ -1570,8 +1574,10 @@ test("a send the server refuses keeps its row after a later send succeeds, and R
       },
       key: expect.any(String),
     });
-    expect(posted[2]).toEqual({ input: posted[0]?.input, key: expect.any(String) });
-    expect(posted[2]?.key).not.toBe(posted[0]?.key);
+    expect(posted.find((write) => write.key === keys[2])).toEqual({
+      input: refused?.input,
+      key: expect.any(String),
+    });
   } finally {
     await alice.close();
   }

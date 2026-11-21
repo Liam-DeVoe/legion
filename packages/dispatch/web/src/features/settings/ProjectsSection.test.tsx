@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, panelOf, pick, rows, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -78,6 +79,51 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
     expect(createProject).toHaveBeenCalledTimes(1);
   } finally {
     realClock();
+    cleanup();
+    queryClient.clear();
+    listProjects.mockRestore();
+    listDefaults.mockRestore();
+    createProject.mockRestore();
+  }
+});
+
+// While the create is out, Key, Name and New project are held, by `aria-disabled`, never
+// `disabled` (`pressHeld`): the control the reader submitted from keeps the focus, and a second
+// press sends nothing.
+test.each([
+  { label: "Key", role: "textbox" },
+  { label: "Name", role: "textbox" },
+  { label: "New project", role: "button" },
+] as const)("$label, held while the create is out, keeps the focus, and a second press sends nothing", async ({
+  label,
+  role,
+}) => {
+  const user = userEvent.setup();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
+  // The create's answer, held until the case refuses it inside `act`.
+  const answer = Promise.withResolvers<never>();
+  const createProject = spyOn(api, "createProject").mockReturnValue(answer.promise);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ProjectsSection />
+      </QueryClientProvider>
+    );
+    await screen.findByRole("cell", { name: "CORE" });
+    await user.click(screen.getByLabelText("Key"));
+    await user.paste("qa");
+    await user.click(screen.getByLabelText("Name"));
+    await user.paste("Quality");
+    await pressHeld(user, screen.getByRole(role, { name: label }), {
+      name: label,
+      sent: () => createProject.mock.calls.length,
+    });
+  } finally {
+    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
     cleanup();
     queryClient.clear();
     listProjects.mockRestore();

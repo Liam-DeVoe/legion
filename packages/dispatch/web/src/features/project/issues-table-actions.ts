@@ -610,6 +610,13 @@ export function useIssueTableActions({
             text: `${notice === undefined ? "" : `${notice.text} `}${ISSUES_NOT_LOADED} ${unsettled}.`,
           },
     moved,
+    // Whether the press of this action is taking row `key` out of the view: a row the action
+    // changed, while the action is out (`busy`), and while the list read after it is still out
+    // once its hold ran out (`unsettled`). The commit that lets the action go draws that read at
+    // the latest, and a read that outlived the hold is drawn in the commit that ends `unsettled`.
+    // The List's anchor asks the render before a commit as well (`ViewportAnchor`'s `leaving`), so
+    // the rows are named in that commit. A row a later live update takes away is not named.
+    leaving: (key: string) => (busy || unsettled !== undefined) && moved.has(key),
     duplicateEpic,
     setDuplicateEpic,
     unansweredEpic,

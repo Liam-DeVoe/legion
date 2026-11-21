@@ -494,17 +494,18 @@ function AgentMessageList({
             </button>
           </p>
         )}
+        {/* Held while its write is out (`heldPress`), not disabled: the button keeps the focus
+            the reader's press left on it, and a press of it then sends nothing. */}
         {visible.length === 0 ? null : (
           <button
             className={`ml-auto inline-flex min-h-11 items-center text-sm md:min-h-8 ${textMutedHoverToSecondary}`}
-            disabled={clear.isPending}
-            onClick={() =>
+            {...heldPress(clear.isPending, () =>
               clear.mutate(
                 visible
                   .map(exchangeActivityAt)
                   .reduce((latest, at) => (compareTimestamps(at, latest) > 0 ? at : latest))
               )
-            }
+            )}
             type="button"
           >
             Clear conversation

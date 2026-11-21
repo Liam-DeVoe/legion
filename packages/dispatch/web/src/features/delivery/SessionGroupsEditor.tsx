@@ -330,10 +330,13 @@ export function SessionGroupsEditor({
             placeholder="Group name"
             value={name}
           />
+          {/* Held, as a card's Rename and Add selected are, while its write is out and while it
+              has nothing to create: no name, or no session selected. A create that lands empties
+              the name, and the button the reader pressed keeps the focus through both
+              (`heldPress`). */}
           <button
             className={secondaryButtonCompact}
-            disabled={name.trim() === "" || selected.length === 0 || save.isPending}
-            onClick={create}
+            {...heldPress(name.trim() === "" || selected.length === 0 || save.isPending, create)}
             type="button"
           >
             Create group

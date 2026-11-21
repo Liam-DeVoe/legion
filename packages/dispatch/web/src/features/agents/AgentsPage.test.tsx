@@ -2435,6 +2435,50 @@ test("Agents Clear hides every exchange up to now for this viewer and persists t
   }
 });
 
+// Clear conversation is held while its write is out, by `aria-disabled`, never `disabled`. A
+// disabled button drops the focus to the page's body in a browser, and does here under
+// `emulateChromiumFocusFixup`. So the pressed Clear keeps the focus through the write, and a second
+// press, by key or by pointer, sends nothing.
+test("Clear conversation, held while its write is out, keeps the focus, and a second press sends nothing", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({
+    messages: [exchange("m1", "Only question", "2026-09-14T01:00:00Z")],
+  });
+  const stored = page.putAgentState.getMockImplementation();
+  // The write's answer, held until the case gives it inside `act`.
+  const answer = Promise.withResolvers<void>();
+  page.putAgentState.mockImplementation(async (session, input, bounds) => {
+    await answer.promise;
+    if (stored === undefined) throw new Error("the agent-state write has no answer");
+    return stored(session, input, bounds);
+  });
+  const stopFocusFixup = emulateChromiumFocusFixup();
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const clear = await within(planner).findByRole("button", { name: "Clear conversation" });
+    act(() => clear.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(page.putAgentState).toHaveBeenCalledTimes(1));
+    expect(focusedControl()).toBe("button Clear conversation");
+    expect(clear.getAttribute("aria-disabled")).toBe("true");
+
+    await user.keyboard("{Enter}");
+    await user.click(clear);
+    expect(page.putAgentState).toHaveBeenCalledTimes(1);
+    expect(focusedControl()).toBe("button Clear conversation");
+  } finally {
+    await act(async () => {
+      answer.resolve();
+      await answer.promise;
+    });
+    stopFocusFixup();
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 test("Agents keeps exchanges with activity after the persisted cutoff and hides the rest", async () => {
   const user = userEvent.setup();
   const page = renderAgents({

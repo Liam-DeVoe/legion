@@ -476,11 +476,11 @@ test("a member's Remove, gone with its member, hands the focus to the next membe
 
 // Delete group keeps the focus while its write is out and until the live update carrying it is
 // drawn. Of the only group, that update takes the Groups section away with its card, so the rescue
-// walks the focus back through the dialog. The control before the lost place is the "New group
-// name" box, which takes typed text: the walk passes over it, so the reader's next key is typed
-// into no field they never chose, and lands on the control before it, the last session's live
-// link.
-test("Delete group of the only group walks the focus back past the New group name box", async () => {
+// walks the focus back through the dialog. The control before the lost place is Create group, held
+// with nothing to create but in the Tab order (`aria-disabled`), which takes no typed text: the
+// walk lands on it, and the reader's next key is typed into no field they never chose, never the
+// "New group name" box before it.
+test("Delete group of the only group walks the focus back to the held Create group, never into the New group name box", async () => {
   const user = userEvent.setup();
   const remove = spyOn(api, "deleteDeliverySessionGroup").mockResolvedValue(undefined);
   const restoreFocus = emulateChromiumFocusFixup();
@@ -493,10 +493,11 @@ test("Delete group of the only group walks the focus back past the New group nam
     await user.click(deleting);
     await landAndDraw(deleting, [], editor);
 
-    const reviewer = screen.getByRole("link", { name: "Open live conversation with Reviewer" });
-    await waitFor(() => expect(reviewer).toHaveFocus());
+    const createGroup = screen.getByRole("button", { name: "Create group" });
+    await waitFor(() => expect(named(document.activeElement)).toBe("Create group"));
     await afterRescue();
-    expect(document.activeElement).toBe(reviewer);
+    expect(document.activeElement === createGroup).toBe(true);
+    expect(createGroup.getAttribute("aria-disabled")).toBe("true");
     expect(screen.getByLabelText("New group name")).not.toHaveFocus();
   } finally {
     restoreFocus();
@@ -637,7 +638,7 @@ test("a Rename whose live update comes in the same batch as its answer holds not
 });
 
 // So for a press on another control of the dialog: Create group, its group made and drawn, and
-// the button disabled after it with its name box emptied. The press is the cause of what its write
+// the button held after it with its name box emptied. The press is the cause of what its write
 // takes away and of nothing after the write has landed, though a press in the dialog counts for a
 // loss anywhere in it. With the focus put on the other card's Rename with no press, that card
 // deleted on another device leaves the focus on the dialog's own stop, whether the engine fires a
@@ -661,7 +662,9 @@ test("a card deleted on another device after a Create group landed leaves the fo
       await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
       editor.draw([crew, made]);
       await afterRescue();
-      expect(screen.getByRole("button", { name: "Create group" })).toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: "Create group" }).getAttribute("aria-disabled")
+      ).toBe("true");
       const rename = within(screen.getByRole("group", { name: "Release crew" })).getByRole(
         "button",
         { name: "Rename" }
@@ -684,6 +687,47 @@ test("a card deleted on another device after a Create group landed leaves the fo
       cleanup();
       create.mockRestore();
     }
+  }
+});
+
+// Create group is held while its write is out, and while it has nothing to create, by
+// `aria-disabled`, never `disabled`. A disabled button drops the focus to the page's body in a
+// browser, and does here under `emulateChromiumFocusFixup`. The create lands and empties the name,
+// so the pressed button keeps the focus through the write and after it, and a second press, by key
+// or by pointer, sends nothing.
+test("Create group keeps the focus while its write is out and once it has emptied the name, and a second press sends nothing", async () => {
+  const user = userEvent.setup();
+  // The create's answer, held until the case gives it inside `act`.
+  const answer = Promise.withResolvers<DeliverySessionGroup>();
+  const create = spyOn(api, "createDeliverySessionGroup").mockReturnValue(answer.promise);
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  const editor = renderEditor();
+  try {
+    await user.click(screen.getByRole("checkbox", { name: "Planner one" }));
+    await user.click(screen.getByLabelText("New group name"));
+    await user.paste("Night crew");
+    const button = screen.getByRole("button", { name: "Create group" });
+    act(() => button.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(named(document.activeElement)).toBe("Create group");
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    await user.keyboard("{Enter}");
+    await user.click(button);
+    expect(create).toHaveBeenCalledTimes(1);
+
+    await act(async () => answer.resolve({ ...crew, name: "Night crew", sessions: ["s1"] }));
+    await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+    expect((screen.getByLabelText("New group name") as HTMLInputElement).value).toBe("");
+    expect(named(document.activeElement)).toBe("Create group");
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    await user.keyboard("{Enter}");
+    await user.click(button);
+    expect(create).toHaveBeenCalledTimes(1);
+  } finally {
+    stopFocusFixup();
+    cleanup();
+    create.mockRestore();
   }
 });
 
@@ -791,9 +835,9 @@ test("a group made with its answer lost clears the form and says so, and a secon
     expect(
       (screen.getByRole("checkbox", { name: "Planner one" }) as HTMLInputElement).checked
     ).toBe(false);
-    expect(
-      (screen.getByRole("button", { name: "Create group" }) as HTMLButtonElement).disabled
-    ).toBe(true);
+    expect(screen.getByRole("button", { name: "Create group" }).getAttribute("aria-disabled")).toBe(
+      "true"
+    );
     await waitFor(() => expect(queryClient.getQueryState(reads.run)?.isInvalidated).toBe(true));
     expect(create).toHaveBeenCalledTimes(1);
   } finally {

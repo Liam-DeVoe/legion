@@ -6,6 +6,7 @@ import { api, apiErrorMessage } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type { RepoProject } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   TableBody,
@@ -200,8 +201,13 @@ export function SettingsPage(): ReactNode {
       deleteMapping.retry();
     }
   };
+  // While either write is out, every row's Default and Delete and the form's Add mapping are held
+  // by `aria-disabled`, never disabled: the control the reader pressed keeps the focus, and a press
+  // or a submit then sends nothing.
+  const writing = putMapping.isPending || deleteMapping.isPending;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (writing) return;
     // The project list is a button, which no `required` holds: an empty one files nothing here.
     if (project === "") {
       setProjectMissing(true);
@@ -285,27 +291,29 @@ export function SettingsPage(): ReactNode {
                         <TableCell tone="secondary">{mapping.project}</TableCell>
                         <TableCell>
                           <input
+                            aria-disabled={writing || undefined}
                             aria-label={`Default repository of ${mapping.project}: ${mapping.repo}`}
                             checked={mapping.default}
-                            className="size-4 cursor-pointer disabled:cursor-not-allowed"
-                            disabled={deleteMapping.isPending || putMapping.isPending}
+                            className="size-4 cursor-pointer refused:cursor-not-allowed"
                             name={`default-repository-${mapping.project}`}
-                            onChange={() =>
+                            onChange={() => {
+                              // Held, a pick writes nothing, and the radio, controlled, shows the
+                              // default as it was.
+                              if (writing) return;
                               putMapping.mutate({
                                 default: true,
                                 project: mapping.project,
                                 repo: mapping.repo,
-                              })
-                            }
+                              });
+                            }}
                             type="radio"
                           />
                         </TableCell>
                         <TableCell align="right">
                           <button
                             aria-label={`Delete mapping for ${mapping.repo}`}
-                            className={`font-medium disabled:cursor-not-allowed disabled:opacity-50 ${dangerText} ${dangerHoverText}`}
-                            disabled={deleteMapping.isPending || putMapping.isPending}
-                            onClick={() => deleteMapping.mutate(mapping.repo)}
+                            className={`font-medium refused:cursor-not-allowed refused:opacity-50 ${dangerText} ${dangerHoverText}`}
+                            {...heldPress(writing, () => deleteMapping.mutate(mapping.repo))}
                             type="button"
                           >
                             Delete
@@ -343,8 +351,8 @@ export function SettingsPage(): ReactNode {
                   value={project}
                 />
                 <button
+                  aria-disabled={writing || undefined}
                   className={settingsSubmitButton}
-                  disabled={putMapping.isPending || deleteMapping.isPending}
                   type="submit"
                 >
                   Add mapping
@@ -353,11 +361,7 @@ export function SettingsPage(): ReactNode {
               {projectMissing ? <NoProjectPicked /> : null}
               {failedAction !== undefined ? (
                 <div className="mt-4">
-                  <QueryError
-                    message={failedAction.message}
-                    onRetry={retry}
-                    retrying={putMapping.isPending || deleteMapping.isPending}
-                  />
+                  <QueryError message={failedAction.message} onRetry={retry} retrying={writing} />
                 </div>
               ) : null}
             </>

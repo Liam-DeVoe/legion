@@ -14,6 +14,7 @@ import type {
   MessageWithTrees,
   UserState,
 } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { PinButton } from "../../components/PinButton";
 import { useSending } from "../../hooks/useSending";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -542,6 +543,10 @@ function commentReplyTarget(
   };
 }
 
+/** A comment's mention deliveries, each with its Retry while `isSafeRetry` holds for it. While a
+ *  retry's write is out (`retrying`), every Retry of the list is held (`heldPress`), as the
+ *  targeted-message card's retry row is held (`DeliveryRetry`), not disabled. The pressed one
+ *  keeps the focus and its Tab stop, and a press of any of them sends nothing. */
 function CommentDeliveryList({
   agents,
   deliveries,
@@ -598,8 +603,7 @@ function CommentDeliveryList({
             {!canRetry || !safeRetry ? null : (
               <button
                 className={`min-h-8 font-medium ${linkText}`}
-                disabled={retrying}
-                onClick={() => onRetry(delivery)}
+                {...heldPress(retrying, () => onRetry(delivery))}
                 type="button"
               >
                 Retry
