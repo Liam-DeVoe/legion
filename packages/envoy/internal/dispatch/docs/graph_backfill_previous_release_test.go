@@ -417,7 +417,10 @@ func markingStatements(t *testing.T) []namedStatement {
 		write.Tuples = append(write.Tuples, facts...)
 	}
 	sent := &recordedBatch{}
-	if err := store.RunWrite(ctx, sent, write.Queue); err != nil {
+	if err := store.RunWrite(ctx, sent, func(b *store.WriteBatch) error {
+		write.Queue(b)
+		return nil
+	}); err != nil {
 		t.Fatalf("read refs.CommentWrite.Queue's statements: %v", err)
 	}
 	if len(sent.sql) == 0 {

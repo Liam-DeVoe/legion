@@ -4,7 +4,7 @@
 //
 // It is a package of its own, and not a pass of graphcensus, because it writes through docs and
 // api inside its own transaction - a document's live state (docs.ReadErasedLiveText) and the term
-// statistics (api.RecountSearchTermStatsTx) - and docs' own tests import graphcensus, which can
+// statistics (api.ForgetErasedTermsTx) - and docs' own tests import graphcensus, which can
 // therefore import neither.
 package grapherase
 
@@ -106,13 +106,16 @@ func ParseNode(value string) (kind, id string, err error) {
 // What it did goes into `graph_erasures`: what was removed, who ran it and when, and no erased
 // text. Nobody addresses that row and no read of the graph answers it.
 //
-// Once it has committed it waits treeStoreBound and deletes the display trees it deleted once
-// more (sweepTrees). treeStoreBound is how long after the commit a read that began before it can
-// still store the display tree of a text the erase removed: a read stores the trees it read on a
-// goroutine of its own, detached from the request and bounded by api.StoreTreesTimeout, which is
-// what cmd/dispatch passes; a test passes a shorter one. An error there comes back beside the
-// Erasure, which is then Applied: the erase stands, and what the sweep could not do is the
-// error's to say.
+// Once it has committed it counts again, outside its locks, the term statistics of every project
+// it took erased words out of (recountTermStats), then waits treeStoreBound and deletes the
+// display trees it deleted once more (sweepTrees). treeStoreBound is how long after the commit a
+// read that began before it can still store the display tree of a text the erase removed: a read
+// stores the trees it read on a goroutine of its own, detached from the request and bounded by
+// api.StoreTreesTimeout, which is what cmd/dispatch passes; a test passes a shorter one. An error
+// there comes back beside the Erasure, which is then Applied: the erase stands, and what the
+// sweep could not do is the error's to say. A count that fails is no failure of the erase and
+// comes back as no error: the Erasure names it (NotRecounted), with the refresh pass that counts
+// the project again.
 func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStoreBound time.Duration) (*Erasure, error) {
 	if kind == schemanodes.KindSupertag || kind == schemanodes.KindAttribute {
 		return nil, fmt.Errorf("the erase refuses %s:%s: a type node is data the block schema seeds, and no command deletes it", kind, id)
@@ -176,6 +179,7 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 		return nil, fmt.Errorf("commit: %w", err)
 	}
 	erasure.Applied = true
+	erasure.recountTermStats(ctx, conn)
 	if err := erasure.sweepTrees(ctx, conn, treeStoreBound); err != nil {
 		return erasure, err
 	}
@@ -190,11 +194,13 @@ func Erase(ctx context.Context, databaseURL, kind, id, confirm string, treeStore
 // on. Then it rewrites what it may not remove - the blocks holding the node's block and the
 // mentions whose excerpt was cut from it, the events about it, the search vectors that stood on
 // a version that went, the embedding rows of what it leaves (restateEmbeddings), and the live
-// state of every document whose history it replaces - counts the term statistics of every
-// project whose items moved again, and deletes the display trees of the texts that went. Last go
-// the tuples the listing named and the node (graphstore.EraseNode), which refuses the run where
-// a tuple landed since, and the record of what the run did goes in. Every row it writes is one
-// the read under its locks listed (erasedRead).
+// state of every document whose history it replaces - takes out of the term statistics of every
+// project whose items moved the lexemes the run removed (api.ForgetErasedTermsTx, which reads no
+// item but the ones the run changed: counting those projects again is recountTermStats's, after
+// the commit), and deletes the display trees of the texts that went. Last go the tuples the
+// listing named and the node (graphstore.EraseNode), which refuses the run where a tuple landed
+// since, and the record of what the run did goes in. Every row it writes is one the read under
+// its locks listed (erasedRead).
 func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	sums, err := e.treeSums(ctx, tx, read)
 	if err != nil {
@@ -257,8 +263,7 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	if err := e.redactEvents(ctx, tx, read.events); err != nil {
 		return err
 	}
-	projects, err := e.restateSearch(ctx, tx, read.artifacts)
-	if err != nil {
+	if err := e.restateSearch(ctx, tx, read.artifacts); err != nil {
 		return err
 	}
 	if err := e.restateEmbeddings(ctx, tx, forgotten); err != nil {
@@ -267,9 +272,9 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 	if err := e.replaceLiveTexts(ctx, tx); err != nil {
 		return err
 	}
-	recounted, queued, err := api.RecountSearchTermStatsTx(ctx, tx, projects)
+	recounted, queued, err := api.ForgetErasedTermsTx(ctx, tx, read.artifacts)
 	if err != nil {
-		return fmt.Errorf("count the term statistics again: %w", err)
+		return fmt.Errorf("take the erased words out of the term statistics: %w", err)
 	}
 	e.removed("search_term_queue", queued)
 	e.Recounted = recounted
@@ -293,6 +298,26 @@ func (e *Erasure) apply(ctx context.Context, tx pgx.Tx, read erasedRead) error {
 		return fmt.Errorf("record the erase: %w", err)
 	}
 	return nil
+}
+
+// recountTermStats counts again, once the run has committed and so outside its locks, the term
+// statistics of every project it took erased words out of (Recounted), each in a transaction of
+// its own on the run's connection, as a refresh pass counts one project
+// (api.RefreshSearchTermStats). The run cleared each one's snapshot, so each is counted in full
+// from its items as the commit left them, which gives back the counts of the lexemes the run took
+// out that other items still hold.
+//
+// A count that fails is no failure of the erase, and the run goes on to the next project: the
+// statistics already hold none of the erased words, and lack only those counts. It is named in
+// NotRecounted, and the fallback is the project's next refresh pass (api.RunSearchTermStatsRefresh),
+// which the cleared snapshot makes a full count; until it runs, the related-item check probes
+// those lexemes live.
+func (e *Erasure) recountTermStats(ctx context.Context, conn *pgx.Conn) {
+	for _, project := range e.Recounted {
+		if err := api.RefreshSearchTermStats(ctx, conn, project); err != nil {
+			e.NotRecounted = append(e.NotRecounted, NotRecounted{Project: project, Error: err.Error()})
+		}
+	}
 }
 
 // eraseBlockTexts deletes the whole text of the node's block at every version, which is the
