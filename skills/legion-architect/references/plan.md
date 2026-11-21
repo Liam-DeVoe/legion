@@ -18,9 +18,6 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 :::
 ```
 
-- `steps` names the task's steps in the order they run, separated by spaces.
-  Legion runs the retro and the merge after the last step itself, so no plan names them.
-
 - Give the block `serves` naming the spec's `requirement` blocks, as a planner's task does, so the issue's coverage counts it.
   A change of `serves` alone changes no task.
 
@@ -29,13 +26,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 - This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
   It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because retro rates the plan's steps and the agent that worked each against it.
 
-- Once `plan.md` exists, upload each new version with `--force --precondition-json '{"document":"sha256:…"}'`, the token `dispatch doc-read --issue <issue> --artifact plan.md` prints.
-  An upload replaces the whole document, so Dispatch refuses one with no token (`400 PRECONDITION_REQUIRED`) and one whose token is behind the live version (`409 PRECONDITION_FAILED`):
-  your version cannot erase what a planner step wrote since your read, and on that refusal you read the plan again and upload again.
-
 ## The roles and their order
-
-The steps are some of these five, in this order, with `implementer` among them:
 
 | Step | Type | Phase | What leaving it out means |
 | --- | --- | --- | --- |
@@ -48,9 +39,6 @@ The steps are some of these five, in this order, with `implementer` among them:
 Without `acceptance:owner`, two steps still hold the checks:
 a reviewer step approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
 So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
-An issue with no `before_merge` check has neither gate, so give it `acceptance:owner`: your acceptance is then its only gate.
-Give `acceptance:owner` to a parent with children too, because a parent's last round runs from your acceptance (`skill://legion-architect/references/acceptance.md`, "The last round"):
-without it, Legion holds the parent before its retro until its children leave, then starts the retro at the head the parent stood on.
 
 ## What Legion refuses
 
@@ -62,14 +50,9 @@ A reason that ends `This release of Legion does not carry it out yet.` names a p
 
 - No `needs`, `merges`, `owner` or `part_of` attribute on the block.
 
-- No `role:key` step but `acceptance:owner`; `acceptance` alone is refused.
-
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
 ## When to give it
-
-Call the `legion` tool's `register_plan` (`issue`, `artifactId`, `version`) with the version you wrote.
-Legion reads that version and no later one, so a version you do not give changes nothing.
 
 - **A root:** before `register_gate`, because the gate's opening starts the root's first step.
 
@@ -78,11 +61,6 @@ Legion reads that version and no later one, so a version you do not give changes
   the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`.
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
-
-- **An issue that already runs** runs the task `default`, the project's default steps.
-  Call `stop_task` on the task `default`, then `register_plan` with a version whose one task replaces it: Legion starts that task at its first step.
-
-- **A parked or done child:** only after `rerun_child`, as `skill://legion-architect/references/plan-changes.md` says.
 
 A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
 The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
