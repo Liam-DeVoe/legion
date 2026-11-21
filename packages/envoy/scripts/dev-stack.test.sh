@@ -103,16 +103,18 @@ readonly unserved_file="${temporary_dir}/unserved-ports"
 # The test's one guard and its one wait, scripts/e2e/lib/proof-wait.sh's proof_guard and
 # wait_held, the returning form of wait_for, since each caller says what a wait's end means for
 # its case (fail, below, ends the test). It ends at once where its fact can no longer come and
-# otherwise 30 s before the guard, and keeps its last poll in work. Guard 220 s: at least twice
-# this test's longest run beside 8 busy loops on 2 CPUs, 93 s (builds Job d2-devstack, two runs,
-# no gVisor, 2026-11-19), plus the wait's 30 s margin. Its longest green run on CI was 17 s (run
-# 44607131679), over the 20 newest green merge-group runs of ci.yaml that ran its step up to
-# 2026-11-19 (runs 44508510162 to 44607131679).
+# otherwise 30 s before the guard, and keeps its last poll in work. Guard 400 s: at least twice
+# this test's longest run beside 8 busy loops on 2 CPUs, 180.5 s, plus the wait's 30 s margin
+# (builds Job d8-devstack-read, legion-load-run-g8279, at b472843d51: three runs of 180.5,
+# 172.5 and 175.2 s, under gVisor, 2026-11-21). The reading before it, 93 s (d2-devstack,
+# 2026-11-19), predates main's rows (e5)-(e10) and (q)-(t), and so does its longest green run on
+# CI, 17 s (run 44607131679, over the 20 newest green merge-group runs of ci.yaml that ran its
+# step up to 2026-11-19).
 work=$temporary_dir
 note() { echo "$*"; }
 # shellcheck source=scripts/e2e/lib/proof-wait.sh
 source "${project_root}/scripts/e2e/lib/proof-wait.sh"
-proof_guard 220
+proof_guard 400
 
 # The Postgres server every instance below is told to use. Nothing connects to it: the fake psql
 # answers every call.
