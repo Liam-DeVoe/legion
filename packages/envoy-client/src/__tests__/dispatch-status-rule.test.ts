@@ -381,6 +381,26 @@ describe("dispatch issue-update with an option of the status change", () => {
     expect(requests).toEqual([]);
   });
 
+  // A refusal lists every problem of the call, so its caller fixes all of them and calls once
+  // (the dispatch skill). With no --reason the same call breaks two parts of the rule: done needs
+  // a reason, and include_children does not go with done. Adding the reason alone still leaves the
+  // second, so the first refusal names both.
+  test("--include-children with --status done and no --reason names both problems before anything is sent", async () => {
+    const { code, stdout } = await run([
+      "issue-update",
+      "--issue",
+      "ACME-4",
+      "--status",
+      "done",
+      "--include-children",
+    ]);
+
+    expect(code).toBe(2);
+    expect(stdout).toContain("status done requires reason");
+    expect(stdout).toContain("include_children does not go with status done");
+    expect(requests).toEqual([]);
+  });
+
   test("issue-update --unlink-children sends the status change and no PATCH", async () => {
     // The fixture's call passed include_parent too: this one is answered its unlink alone.
     statusChange = entriesOf(changed, ["ACME-3", "ACME-2"]);
@@ -581,7 +601,7 @@ describe("dispatch issue-update with an option of the status change", () => {
 
 describe("a PARENT_STATUS_CONFLICT", () => {
   const childFlags =
-    "dispatch issue-update --status takes --include-children, which moves the open issues under the issue with it, or --unlink-children, which removes its open children from it.";
+    "dispatch issue-update --status takes --unlink-children, which removes its open children from it, or, with a status other than done, --include-children, which moves the open issues under the issue with it. A person signed in at a browser closes them with it on the issue's page.";
 
   // Whichever command Dispatch refuses, the CLI prints the refusal, each issue that holds the
   // rule as `KEY [status] title`, and the flags that move them, and exits 1, as it prints a near
@@ -602,7 +622,7 @@ describe("a PARENT_STATUS_CONFLICT", () => {
     expect(patch.code).toBe(1);
     const patchLines = patch.stdout.split("\n");
     expect(patchLines[0]).toStartWith(
-      `PARENT_STATUS_CONFLICT: ${errorOf(conflict)}; the reason already landed as message ${MESSAGE_ID}`
+      `PARENT_STATUS_CONFLICT: ${errorOf(conflict)} The reason already landed as message ${MESSAGE_ID}`
     );
     expect(patchLines.slice(1)).toEqual(["ACME-5 [todo] Child in work", childFlags, ""]);
 
@@ -624,7 +644,7 @@ describe("a PARENT_STATUS_CONFLICT", () => {
     expect(midway.code).toBe(1);
     const midwayLines = midway.stdout.split("\n");
     expect(midwayLines[0]).toStartWith(
-      `PARENT_STATUS_CONFLICT: ${errorOf(conflictMidway)}; the steps before the refusal changed ACME-8 (status todo -> done); the reason already landed as message ${MESSAGE_ID}`
+      `PARENT_STATUS_CONFLICT: ${errorOf(conflictMidway)} The steps before the refusal changed ACME-8 (status todo -> done); the reason already landed as message ${MESSAGE_ID}`
     );
     expect(midwayLines.slice(1)).toEqual([
       "ACME-10 [triage] Filed between two steps",
