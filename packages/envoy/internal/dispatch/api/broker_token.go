@@ -278,7 +278,7 @@ func (s *server) recordedIssuer(issuer string) (string, bool) {
 	switch canonical := oidc.CanonicalIssuer(issuer); {
 	case s.deps.SignInIssuer != "" && canonical == s.deps.SignInIssuer:
 		return "", true
-	case s.deps.Passkeys != nil && canonical == s.deps.Passkeys.Issuer():
+	case s.deps.Passkeys != nil && canonical == s.deps.Passkeys.Store().Issuer():
 		return canonical, true
 	}
 	return "", false

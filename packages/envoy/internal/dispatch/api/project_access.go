@@ -309,13 +309,12 @@ func (s *server) putProjectAccessPerson(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// refusePasskeyOfAnotherOwner is errPasskeyOfAnotherOwner when passkey sign-in is on and email's
-// address holds a passkey enrolled through a link someone other than owner made, read in tx under
-// the address's lock; an email that names nobody is left to the list's own refusal.
+// refusePasskeyOfAnotherOwner is errPasskeyOfAnotherOwner when email's address holds a passkey
+// enrolled through a link someone other than owner made, read in tx under the address's lock; an
+// email that names nobody is left to the list's own refusal. It runs whatever
+// DISPATCH_SIGNIN_PASSKEY says: a passkey enrolled while the setting was on reads every project that
+// names its person once it is on again, so a list written while it is off must not name them either.
 func (s *server) refusePasskeyOfAnotherOwner(ctx context.Context, tx pgx.Tx, email, owner string) error {
-	if s.deps.Passkeys == nil {
-		return nil
-	}
 	login, err := access.PersonPrincipal(email)
 	if err != nil {
 		return nil
@@ -333,16 +332,13 @@ func (s *server) refusePasskeyOfAnotherOwner(ctx context.Context, tx pgx.Tx, ema
 	return nil
 }
 
-// refuseTransferOfAnotherOwnersPasskey is errPasskeyOfAnotherOwner when passkey sign-in is on and a
-// person project key's list names directly holds a passkey that a link of someone other than owner,
-// the project's next owner, enrolled (store.ProjectNamesAnotherOwnersPasskey, read under each such
-// person's address lock): handing the project over would leave the link's maker, its owner until
-// now, an account of their own binding that reads it. The maker resets the person first, as a
-// list's naming of them waits for (refusePasskeyOfAnotherOwner).
+// refuseTransferOfAnotherOwnersPasskey is errPasskeyOfAnotherOwner when a person project key's list
+// names directly holds a passkey that a link of someone other than owner, the project's next owner,
+// enrolled (store.ProjectNamesAnotherOwnersPasskey, read under each such person's address lock):
+// handing the project over would leave the link's maker, its owner until now, an account of their
+// own binding that reads it. The maker resets the person first, as a list's naming of them waits for
+// (refusePasskeyOfAnotherOwner). It runs whatever DISPATCH_SIGNIN_PASSKEY says, as that refusal does.
 func (s *server) refuseTransferOfAnotherOwnersPasskey(ctx context.Context, tx pgx.Tx, key, owner string) error {
-	if s.deps.Passkeys == nil {
-		return nil
-	}
 	held, err := store.ProjectNamesAnotherOwnersPasskey(ctx, tx, key, owner)
 	if err != nil {
 		return err
@@ -357,10 +353,10 @@ func (s *server) refuseTransferOfAnotherOwnersPasskey(ctx context.Context, tx pg
 // deployment with a broker takes the person's machine-login approval lock first, before the
 // project's owner lock (machineLoginApprovalsFirst): the removal may record the revocation of the
 // person's machine logins, which waits for an approve of theirs the broker has not answered, and
-// so that wait holds up no other write of the project's access. Where passkey sign-in is on, the
-// removal takes the person's links of this project and their address before it removes them
-// (lockPasskeyRemoval), and once no list names them directly any more it ends a restricted
-// member's account (endUnlistedPasskeySignIn).
+// so that wait holds up no other write of the project's access. Wherever Dispatch keeps passkeys,
+// whatever DISPATCH_SIGNIN_PASSKEY says, the removal takes the person's links of this project and
+// their address before it removes them (lockPasskeyRemoval), and once no list names them directly
+// any more it ends a restricted member's account (endUnlistedPasskeySignIn).
 func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
 	email := r.PathValue("email")
 	s.ownerWrite(w, r, "", s.machineLoginApprovalsFirst(email), func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
@@ -379,15 +375,16 @@ func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Reques
 }
 
 // lockPasskeyRemoval takes, in a removal's transaction tx and before it writes anything, what the
-// removal of email from project key's list may end a passkey sign-in under, where passkey sign-in
-// is on (R5): it deletes the person's unused links of key, then takes the address's lock
-// (store.LockAddressTx). That is the order an enrollment takes them in: the link, the address,
-// then the person's sessions' owner lock (store.RecordReachedProjects, through the account
-// binding). The removal itself takes that last lock (access.RemovePrincipal), so it comes after
-// these: taken the other way round, a removal holding the sessions' lock and an enrollment holding
-// the address each wait for the other, and PostgreSQL fails one of them (40P01).
+// removal of email from project key's list may end a passkey sign-in under, wherever Dispatch keeps
+// passkeys (Deps.PasskeyAccounts), whatever DISPATCH_SIGNIN_PASSKEY says (R5): it deletes the
+// person's unused links of key, then takes the address's lock (store.LockAddressTx). That is the
+// order an enrollment takes them in: the link, the address, then the person's sessions' owner lock
+// (store.RecordReachedProjects, through the account binding). The removal itself takes that last
+// lock (access.RemovePrincipal), so it comes after these: taken the other way round, a removal
+// holding the sessions' lock and an enrollment holding the address each wait for the other, and
+// PostgreSQL fails one of them (40P01).
 func (s *server) lockPasskeyRemoval(ctx context.Context, tx pgx.Tx, key, email string) error {
-	if s.deps.Passkeys == nil {
+	if s.deps.PasskeyAccounts == nil {
 		return nil
 	}
 	login := model.CanonicalLogin(email)
@@ -456,18 +453,19 @@ func (s *server) recordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, pe
 }
 
 // endUnlistedPasskeySignIn is a removal's end of a person's passkey sign-in, in its transaction tx,
-// where passkey sign-in is on (R5), under the address's lock the removal took first
-// (lockPasskeyRemoval): when no project's owner is them and no list names them directly any more
-// (access.Listed, read after the removal and under that lock in tx), it ends their account as the
-// owner's Reset does (store.PgPasskeys.EndAccountTx): a new passkey subject, which revokes their
-// personal tokens and owes the broker the old account's revocation, and their sign-in ended and
-// passkeys deleted. So a later owner who names the address names a new account, and nothing the
+// wherever Dispatch keeps passkeys, whatever DISPATCH_SIGNIN_PASSKEY says (R5: a removal from the
+// last list ends the person for good, an off window included), under the address's lock the removal
+// took first (lockPasskeyRemoval): when no project's owner is them and no list names them directly
+// any more (access.Listed, read after the removal and under that lock in tx), it ends their account
+// as the owner's Reset does (store.PgPasskeys.EndAccountTx): a new passkey subject, which revokes
+// their personal tokens and owes the broker the old account's revocation, and their sign-in ended
+// and passkeys deleted. So a later owner who names the address names a new account, and nothing the
 // old one made acts for it. A full member's address has nothing to end
 // (auth.ErrAddressHeldByMember). The lock puts two removals from the last two lists that name the
 // person in order, so the second reads the first's commit and ends the account, with no broker
 // configured too.
 func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, email string) error {
-	if s.deps.Passkeys == nil {
+	if s.deps.PasskeyAccounts == nil {
 		return nil
 	}
 	login := model.CanonicalLogin(email)
@@ -478,7 +476,7 @@ func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, email 
 	if listed {
 		return nil
 	}
-	if _, err := s.deps.Passkeys.EndAccountTx(ctx, tx, login); err != nil && !errors.Is(err, auth.ErrAddressHeldByMember) {
+	if _, err := s.deps.PasskeyAccounts.EndAccountTx(ctx, tx, login); err != nil && !errors.Is(err, auth.ErrAddressHeldByMember) {
 		return err
 	}
 	return nil
@@ -572,7 +570,7 @@ func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		if s.deps.WorkspaceAddress(login) {
+		if s.deps.Passkeys.WorkspaceAddress(login) {
 			return nil, errWorkspaceAddress
 		}
 		if other, err := store.ListedByAnotherOwner(ctx, tx, login, by.ID); err != nil {
@@ -588,7 +586,7 @@ func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		answer = invitationAnswer{URL: s.deps.Passkeys.Issuer() + "/enroll#" + token, ExpiresAt: expiresAt}
+		answer = invitationAnswer{URL: s.deps.Passkeys.Store().Issuer() + "/enroll#" + token, ExpiresAt: expiresAt}
 		return nil, nil
 	}) {
 		return
@@ -620,7 +618,7 @@ func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
-		if s.deps.WorkspaceAddress(login) {
+		if s.deps.Passkeys.WorkspaceAddress(login) {
 			return model.ProjectAccess{}, nil, errWorkspaceAddress
 		}
 		if err := s.recordMachineLoginRevocation(ctx, tx, login); err != nil {
@@ -629,7 +627,7 @@ func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request
 		if err := store.DeletePersonInvitationsTx(ctx, tx, login); err != nil {
 			return model.ProjectAccess{}, nil, err
 		}
-		if _, err := s.deps.Passkeys.EndAccountTx(ctx, tx, login); errors.Is(err, auth.ErrAddressHeldByMember) {
+		if _, err := s.deps.Passkeys.Store().EndAccountTx(ctx, tx, login); errors.Is(err, auth.ErrAddressHeldByMember) {
 			return model.ProjectAccess{}, nil, errFullMember
 		} else if err != nil {
 			return model.ProjectAccess{}, nil, err
@@ -673,7 +671,7 @@ func (s *server) withOwnersPasskeys(ctx context.Context, q store.PasskeyReader, 
 	invitable, others := []string{}, []string{}
 	for _, person := range answer.People {
 		switch {
-		case slices.Contains(full, person) || s.deps.WorkspaceAddress(person):
+		case slices.Contains(full, person) || s.deps.Passkeys.WorkspaceAddress(person):
 		case slices.Contains(listedElsewhere, person):
 			others = append(others, person)
 		default:

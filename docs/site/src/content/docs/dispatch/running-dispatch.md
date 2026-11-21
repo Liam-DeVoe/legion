@@ -378,7 +378,11 @@ the address the reader is on.
 at all. It needs `DISPATCH_SIGNIN_DOMAIN` and `DISPATCH_OUTSIDE_ORIGIN`: Google signs in your own
 people alone, and a person from outside signs in only at the outside address, where Dispatch serves
 no Google sign-in. So the Google client lists no callback on the outside address, only
-`<DISPATCH_SERVER_URL>/auth/callback`, and its consent screen's audience stays Internal. A
+`<DISPATCH_SERVER_URL>/auth/callback`, and its consent screen's audience stays Internal. It also
+needs `DISPATCH_TRUSTED_PROXY_RANGES`, the load balancer's ranges whose `X-Forwarded-For` Dispatch
+reads to limit passkey sign-ins per client address: behind Google's load balancer,
+`35.191.0.0/16,130.211.0.0/22,2600:2d00:1:1::/64`
+([Google's firewall rules](https://cloud.google.com/load-balancing/docs/firewall-rules)). A
 project's owner puts the person's email on the project's access list, then makes an
 invitation link for them on the project's **Access** tab and hands it over however they like. The
 link works once, within 24 hours, for that person only, and making a new one ends the old one. With

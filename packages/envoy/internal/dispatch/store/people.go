@@ -329,6 +329,17 @@ func (s *PgPeopleStore) signInAccountTx(ctx context.Context, tx pgx.Tx, email st
 		}
 		recorded.tokensRevoked = tokens.RowsAffected()
 		owed = []string{stored}
+		// An account of another issuer than the one now signing in held the address: a passkey's
+		// account (people.sub_issuer is the outside origin) that a Google account replaces, or a
+		// passkey's under another outside origin. Its passkeys go with it, so none signs in again
+		// and none counts as another owner's passkey of the address (HeldByAnotherOwnersPasskey,
+		// ProjectNamesAnotherOwnersPasskey). An enrollment and a passkey's sign-in lock its passkey
+		// rows after the address, as this does.
+		if storedIssuer != "" && storedIssuer != account.issuer {
+			if _, err := tx.Exec(ctx, `delete from passkeys where email = $1`, email); err != nil {
+				return signInRecorded{}, fmt.Errorf("delete the passkeys of the account that %q's sign-in replaces: %w", email, err)
+			}
+		}
 	case recorded.firstRecording:
 		if recorded.tokensRevoked, owed, err = revokeOtherAccountsTokens(ctx, tx, email, subject); err != nil {
 			return signInRecorded{}, err
