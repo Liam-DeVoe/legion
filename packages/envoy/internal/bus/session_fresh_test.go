@@ -86,8 +86,8 @@ func TestTheFixedModeIsTheDefaultAndReadsNoSelectionBucket(t *testing.T) {
 	if _, err := owner.JS().StreamInfo("KV_" + consumernames.SessionBucket); !errors.Is(err, natsgo.ErrStreamNotFound) {
 		t.Fatalf("the selection bucket's stream: %v, want none", err)
 	}
-	if err := consumers.CheckSelection(context.Background()); err != nil || consumers.SelectionHealth() != nil {
-		t.Fatalf("the fixed mode's selection check = %v, health %v; want nothing read", err, consumers.SelectionHealth())
+	if err := consumers.CheckSelection(context.Background()); err != nil || consumers.SelectionHealth(context.Background()) != nil {
+		t.Fatalf("the fixed mode's selection check = %v, health %v; want nothing read", err, consumers.SelectionHealth(context.Background()))
 	}
 }
 
@@ -142,7 +142,7 @@ func TestTheFreshModeRefusesWithoutItsSelectionStateAndNeverUsesTheFixedName(t *
 			if _, err := consumers.RestartAtFloor(ctx, session, filters); err == nil {
 				t.Fatal("RestartAtFloor in the fresh mode was served")
 			}
-			if health := consumers.SelectionHealth(); health == nil {
+			if health := consumers.SelectionHealth(ctx); health == nil {
 				t.Fatal("SelectionHealth names nothing after a refusal")
 			}
 			if names := streamConsumers(t, owner); len(names) != 0 {
@@ -470,5 +470,100 @@ func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
 				t.Fatalf("RefuseConvertedStore over a store the cutover did not convert = %v; want the start to go on", err)
 			}
 		})
+	}
+}
+
+// A fresh-mode listener started before its selection bucket exists reports the missing bucket,
+// and clears it at the next health read once the operator has made the bucket, with no session
+// call between: the health read reads the sentinel again while a store refusal stands.
+func TestTheSelectionHealthClearsOnceTheBucketIsMade(t *testing.T) {
+	_, consumers, conn := freshSessionConsumersWithoutBucket(t)
+	ctx := context.Background()
+	if err := consumers.CheckSelection(ctx); !consumernames.IsSelectionStateLost(err) {
+		t.Fatalf("CheckSelection with no bucket = %v, want the missing bucket", err)
+	}
+	// Control: while the bucket is missing, the health read names it.
+	if err := consumers.SelectionHealth(ctx); err == nil || !strings.Contains(err.Error(), "KV_"+consumernames.SessionBucket) {
+		t.Fatalf("SelectionHealth with no bucket = %v, want the bucket named", err)
+	}
+	if _, err := consumernames.CreateSessionBucket(ctx, conn, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumers.SelectionHealth(ctx); err != nil {
+		t.Fatalf("SelectionHealth once the bucket is made = %v, want nil with no session call", err)
+	}
+}
+
+// A session whose key was found deleted stays named by the health read after another session's
+// call is admitted: that success says nothing of the lost key.
+func TestASessionsLostKeyStaysNamedAfterAnotherSessionsSuccess(t *testing.T) {
+	owner, consumers, _ := freshSessionConsumersOnStream(t)
+	ctx := context.Background()
+	conn := testnats.Connect(t, testnats.URL(t))
+	t.Cleanup(conn.Close)
+	js, err := jetstream.New(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.KeyValue(ctx, consumernames.SessionBucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const lost, other = "ses_lost_key", "ses_other_key"
+	if err := kv.Delete(ctx, lost); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := consumers.Ensure(ctx, lost, []string{contracts.LegacyAgentSubject(lost)}, 0); !errors.Is(err, consumernames.ErrRecordDeleted) {
+		t.Fatalf("Ensure of the deleted key = %v, want ErrRecordDeleted", err)
+	}
+	publishStored(t, owner, contracts.LegacyAgentSubject(other), "one")
+	if _, err := consumers.Ensure(ctx, other, []string{contracts.LegacyAgentSubject(other)}, 0); err != nil {
+		t.Fatalf("Ensure of another session: %v", err)
+	}
+	if err := consumers.SelectionHealth(ctx); !errors.Is(err, consumernames.ErrRecordDeleted) || !strings.Contains(err.Error(), lost) {
+		t.Fatalf("SelectionHealth after another session's success = %v, want the lost key of %s named", err, lost)
+	}
+}
+
+// A fixed-mode start whose grant refuses every read of the selection bucket learns nothing of a
+// conversion: the refusal is the grant's (ErrConsumerNotGranted), on which the listener warns and
+// starts, since a hub that never gave its listener the window's grants holds no bucket the window
+// made. The control is the same converted bucket read with a grant that allows the read, which
+// refuses the start.
+func TestAFixedModeStartRefusedTheBucketsReadIsNoConversion(t *testing.T) {
+	seed, public := testnats.User(t)
+	stream := "KV_" + consumernames.SessionBucket
+	uri := testnats.StartNkeyDenied(t, public, "$JS.API.STREAM.MSG.GET."+stream, "$JS.API.DIRECT.GET."+stream+".>")
+	admin := WithEnvironment(func(string) (string, bool) { return "", false })
+	ctx := context.Background()
+	conn := testnats.Connect(t, uri)
+	t.Cleanup(conn.Close)
+	if _, err := consumernames.CreateSessionBucket(ctx, conn, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := ConnectOwningStream([]string{uri}, admin)
+	if err != nil {
+		t.Fatalf("connect the stream's owner: %v", err)
+	}
+	t.Cleanup(owner.Close)
+
+	// Control: a read the grant allows sees the conversion and refuses the start.
+	granted, err := ConnectSessionConsumers([]string{uri}, 0, nil, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(granted.Close)
+	if err := granted.RefuseConvertedStore(ctx); err == nil || errors.Is(err, ErrConsumerNotGranted) || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
+		t.Fatalf("a granted read of a converted bucket = %v, want the start refused naming %s", err, consumernames.ModeEnvVar)
+	}
+
+	t.Setenv("NATS_NKEY_SEED", seed)
+	refused, err := ConnectSessionConsumers([]string{uri}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(refused.Close)
+	if err := refused.RefuseConvertedStore(ctx); !errors.Is(err, ErrConsumerNotGranted) || !errors.Is(err, ErrPublishDenied) {
+		t.Fatalf("a read the grant refuses = %v, want ErrConsumerNotGranted, on which the listener warns and starts", err)
 	}
 }

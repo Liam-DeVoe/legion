@@ -684,7 +684,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		} else if err := repair.Err(); err != nil {
 			response["status"] = "degraded"
 			response["error"] = dependencyUnavailable("role claim repair", err)
-		} else if err := sessionSelectionHealth(d); err != nil {
+		} else if err := sessionSelectionHealth(ctx, d); err != nil {
 			response["status"] = "degraded"
 			response["error"] = dependencyUnavailable("session consumer selection bucket "+consumernames.SessionBucket, err)
 		}
@@ -698,11 +698,11 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 // missing, or the cutover not run, each named. Every registration is then refused, while the
 // listener's other routes serve, so /healthz answers degraded rather than unhealthy. nil in the
 // fixed mode, whose /healthz answers as it did before the setting.
-func sessionSelectionHealth(d *listenerDeps) error {
+func sessionSelectionHealth(ctx context.Context, d *listenerDeps) error {
 	if d.consumers == nil || d.consumers.consumers == nil {
 		return nil
 	}
-	return d.consumers.consumers.SelectionHealth()
+	return d.consumers.consumers.SelectionHealth(ctx)
 }
 
 // roleClaimRepairHealth is the "role_claim_repair" field of a /healthz answer: the role claim

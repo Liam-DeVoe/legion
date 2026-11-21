@@ -42,9 +42,21 @@ type freshSessions struct {
 	store *consumernames.KVStore
 	// observe is the counters' callback a caller set (ObserveNames), or nil.
 	observe atomic.Pointer[func(op, outcome string)]
-	// selection is the last refusal of a call for lost selection state or the cutover, nil once
-	// a call was admitted (SelectionHealth).
-	selection atomic.Pointer[error]
+	// storeRefusal is the refusal the bucket, its sentinel or the cutover marker last gave a call
+	// or a check (a missing bucket or sentinel, a marker that is not done), nil once one admitted a
+	// call; SelectionHealth reads the sentinel again while it is set, so a bucket created after
+	// the start clears it with no session call.
+	storeRefusal atomic.Pointer[error]
+	// key is the last refusal of one session's key (a key whose last write is a delete), kept
+	// until a call for that same session is admitted: another session's success says nothing of
+	// it.
+	key atomic.Pointer[keyRefusal]
+}
+
+// keyRefusal is a session whose key a call found lost, and what that call answered.
+type keyRefusal struct {
+	sessionID string
+	err       error
 }
 
 // clientRequester is a consumernames.Requester over the client's confirmed requests, so a read
@@ -143,16 +155,23 @@ func (s *SessionConsumers) ObserveNames(observe func(op, outcome string)) {
 	}
 }
 
-// SelectionHealth is, in the fresh mode, the refusal the last session-consumer call met for lost
-// selection state (a missing bucket, sentinel or key) or for the cutover not having run, naming
-// what is missing; nil once a call was admitted, and always nil in the fixed mode. The listener's
-// /healthz names it.
-func (s *SessionConsumers) SelectionHealth() error {
+// SelectionHealth is, in the fresh mode, why session-consumer calls are refused, naming what is
+// missing: the selection bucket, its sentinel, or the cutover marker, read again here while one
+// of them refused the last check or call, so a bucket the operator creates after the listener
+// starts clears it at the next probe; else the last session whose key was found deleted, until a
+// call for that session is admitted. nil when neither stands, and always nil in the fixed mode.
+// The listener's /healthz names it, within ctx.
+func (s *SessionConsumers) SelectionHealth(ctx context.Context) error {
 	if s.fresh == nil {
 		return nil
 	}
-	if err := s.fresh.selection.Load(); err != nil {
-		return *err
+	if s.fresh.storeRefusal.Load() != nil {
+		if err := s.CheckSelection(ctx); err != nil {
+			return err
+		}
+	}
+	if refusal := s.fresh.key.Load(); refusal != nil {
+		return refusal.err
 	}
 	return nil
 }
@@ -167,21 +186,33 @@ func (s *SessionConsumers) CheckSelection(ctx context.Context) error {
 	if err == nil {
 		err = consumernames.Admit(state)
 	}
-	return s.freshAnswer("", err)
+	switch {
+	case err == nil:
+		s.fresh.storeRefusal.Store(nil)
+	case errors.Is(err, consumernames.ErrCutoverNotRun), consumernames.IsSelectionStateLost(err):
+		s.fresh.storeRefusal.Store(&err)
+	}
+	return err
 }
 
 // freshAnswer records err for SelectionHealth and returns it in this package's vocabulary.
 func (s *SessionConsumers) freshAnswer(sessionID string, err error) error {
 	switch {
-	case err == nil:
-		s.fresh.selection.Store(nil)
-		return nil
+	case errors.Is(err, consumernames.ErrRecordDeleted):
+		s.fresh.storeRefusal.Store(nil)
+		s.fresh.key.Store(&keyRefusal{sessionID: sessionID, err: err})
 	case errors.Is(err, consumernames.ErrCutoverNotRun), consumernames.IsSelectionStateLost(err):
-		s.fresh.selection.Store(&err)
+		s.fresh.storeRefusal.Store(&err)
 	case errors.Is(err, ErrPublishDenied):
 	default:
-		// Any other answer came after the store admitted the call.
-		s.fresh.selection.Store(nil)
+		// Any other answer, nil among them, came after the store admitted the call.
+		s.fresh.storeRefusal.Store(nil)
+		if refusal := s.fresh.key.Load(); refusal != nil && refusal.sessionID == sessionID {
+			s.fresh.key.CompareAndSwap(refusal, nil)
+		}
+	}
+	if err == nil {
+		return nil
 	}
 	switch {
 	case errors.Is(err, consumernames.ErrInvalidKey):
