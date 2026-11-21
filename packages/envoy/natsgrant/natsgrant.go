@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/natscred"
 )
 
 // Permissions are one NATS user's publish and subscribe allow lists, and the deny lists nats-server
@@ -288,6 +289,18 @@ func SessionToken(id string) bool {
 	return !strings.ContainsFunc(id, func(r rune) bool {
 		return r == '.' || r == '*' || r == '>' || unicode.IsSpace(r) || unicode.IsControl(r)
 	})
+}
+
+// SessionReplyInbox is the reply inbox under which a service whose credential names identity asks
+// a session for an answer: nats.go's _INBOX., then that service's own reply prefix
+// (natscred.InboxPrefix) as one token, so the inbox is distinct for each identity. A reply subject
+// under it that names the session (bus.SessionReplySubject) is one the session's own grant lets it
+// answer, since that grant admits replies under any one token after _INBOX. and its own id; and
+// the auth service grants the requester SessionReplyInbox(identity)+".>" (natscallout's scope),
+// which no other identity holds, so no other client reads the answers. The listener's relay, its
+// connection probe and Dispatch's agent stream replay ask under it.
+func SessionReplyInbox(identity string) string {
+	return nats.InboxPrefix + natscred.InboxPrefix(identity)
 }
 
 // Daemon is the NATS grant of one Legion daemon. Its three durable consumers inspect and create
