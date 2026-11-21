@@ -70,12 +70,14 @@ const (
 	// point.
 	StreamApply Point = "stream.apply"
 
-	// ServerShutdown and ServerDown are no hold points: they are where a server's Shutdown begins,
-	// before it stops anything, and where it has waited for every goroutine of its own. Between
-	// the two the hook releases the server's held goroutines and parks none of them again. Each
-	// carries the ID of the server's run (Event.ServerID), and a ServerShutdown of a run whose
-	// ServerDown the hook has seen changes nothing: v2.10.29 can report one late, from a second
-	// concurrent Shutdown call, after a restart on the same store.
+	// ServerShutdown and ServerDown are no hold points: they are where a server's Shutdown or
+	// lame duck begins, before it stops anything, and where its Shutdown has waited for every
+	// goroutine of its own. Between the two the hook releases the server's held goroutines and
+	// parks none of them again. A lame duck reports ServerShutdown before it shuts JetStream
+	// down, which waits for each clustered stream's goroutines, and its Shutdown reports it a
+	// second time. Each carries the ID of the server's run (Event.ServerID), and a
+	// ServerShutdown of a run whose ServerDown the hook has seen changes nothing: v2.10.29 can
+	// report one late, from a second concurrent Shutdown call, after a restart on the same store.
 	ServerShutdown Point = "server.shutdown"
 	ServerDown     Point = "server.down"
 )

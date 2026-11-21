@@ -1177,6 +1177,13 @@ ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
 ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
 DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
 DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
+# The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
+# forced-order.test.sh runs forced-order.sh three times, and the one run that gets as far as a go
+# test is over its fixture package, hooktest/skiponly, on the linked version; the other two are
+# refused before anything is built.
+FORCED_ORDER_TEST = f"{ENVOY}/scripts/forced-order.test.sh"
+ENVOY_FORCED_ORDER_TEST_STEP = "Test forced-order.sh's refusals"
+ENVOY_FORCED_ORDER_TEST_PKGS = ["./internal/testnats/hooktest/skiponly/"]
 
 
 def envoy_forced_order_step(server):
@@ -3493,9 +3500,12 @@ GATES = [
     # the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race",
          runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")]
+         + [forced_order_run("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP, ENVOY, ENVOY_FORCED_ORDER_TEST_PKGS)]
          + [forced_order_run("envoy-go-race", envoy_forced_order_step(server), ENVOY, ENVOY_FORCED_ORDER_PKGS)
             for server in ENVOY_FORCED_ORDER_SERVERS],
          reads=ceiling_reads("envoy-go-race")
+         + reads((FORCED_ORDER_TEST, f"{at('envoy-go-race', ENVOY_FORCED_ORDER_TEST_STEP)} runs it"))
+         + forced_order_reads("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP)
          + [read for server in ENVOY_FORCED_ORDER_SERVERS
             for read in forced_order_reads("envoy-go-race", envoy_forced_order_step(server))]
          + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
