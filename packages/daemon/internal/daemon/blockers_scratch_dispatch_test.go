@@ -488,9 +488,16 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	for _, key := range []string{stalled, ready} {
 		setDispatchStatus(t, baseURL, key, "done")
 	}
-	settled(t, d, "record "+stalled+" and "+ready+" done once a person closed them", func(s api.State) bool {
-		return s.Issues[stalled].Phase == phase.Done && s.Issues[ready].Phase == phase.Done
+	// A person's done stops each where it stands: it leaves Legion's work at its phase, which it
+	// keeps (R20 of dispatch://INFRA-3320; only the merge's close and close_root end a run).
+	state, body = settled(t, d, "stop "+stalled+" and "+ready+" once a person closed them", func(s api.State) bool {
+		return s.Issues[stalled].Status == "done" && s.Issues[ready].Status == "done"
 	})
+	for _, key := range []string{stalled, ready} {
+		if got := state.Issues[key].Phase; got != phase.Planning {
+			t.Fatalf("the child %s a person closed stands at %s; want it stopped in %s, its phase kept\nstate %s", key, got, phase.Planning, body)
+		}
+	}
 
 	// 5. A waiting root a person takes off the board and back is still checked. A root linked to the
 	// late blocker waits in line while a slot stands free; moved to backlog it leaves the line, and

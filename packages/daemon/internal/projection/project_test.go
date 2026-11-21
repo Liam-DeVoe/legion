@@ -228,9 +228,9 @@ func TestProjectShowsOnlySlotlessTodoIssuesInDispatchRankOrder(t *testing.T) {
 			{Key: "LEGION-210", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-210", Phase: phase.Done, Status: "done", Rank: "00000"},
 			{Key: "LEGION-211", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-211", Phase: phase.Admitted, Status: "backlog", Rank: "00001"},
 			{Key: "LEGION-212", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-212", Phase: phase.Admitted, Status: "todo", Rank: "00004", LastDispatchSeq: 1, HandedOver: true},
-			// A root another tree handed over carrying the phase it ran there waits for its tree
-			// to be opened like any other: its promotion opens it and starts that phase's role.
-			{Key: "LEGION-213", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-213", Status: "todo", Rank: "00003", LastDispatchSeq: 10, Phase: phase.Implementing, HandedOver: true, HandedOverFrom: "LEGION-200"},
+			// A root a hand-over of the release before carried in (record.CarriedIn) in the phase
+			// it ran there waits for a slot like any other: its promotion starts that phase's role.
+			{Key: "LEGION-213", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-213", Status: "todo", Rank: "00003", LastDispatchSeq: 10, Phase: phase.Implementing, Generation: 1, CarriedGeneration: 1, HandedOver: true},
 			{Key: "LEGION-214", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-214", Phase: phase.Admitted, Status: "todo", Rank: "00002", HandedOver: true},
 		},
 		slots: []record.Slot{{Issue: "LEGION-214", Index: 0, AdmittedAt: now}},
@@ -631,10 +631,10 @@ func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
 			{Key: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Status: "in_progress", Phase: phase.Implementing},
 			{Key: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Status: "todo", Phase: phase.Admitted},
 			{Key: "LEGION-212", Project: "LEGION", Tree: "LEGION-212", Status: "todo", Phase: phase.Admitted, Rank: "00012", HandedOver: true},
-			// A root another tree handed over, waiting for a slot with its run already under
-			// way: promotion admits it whatever its links say, so the state reports no wait for
-			// it either.
-			{Key: "LEGION-211", Project: "LEGION", Tree: "LEGION-211", Status: "todo", Phase: phase.Testing, Rank: "00011", HandedOver: true, HandedOverFrom: "LEGION-200"},
+			// A root a hand-over of the release before carried in (record.CarriedIn), waiting for
+			// a slot with its run already under way: promotion admits it whatever its links say,
+			// so the state reports no wait for it either.
+			{Key: "LEGION-211", Project: "LEGION", Tree: "LEGION-211", Status: "todo", Phase: phase.Testing, Generation: 1, CarriedGeneration: 1, Rank: "00011", HandedOver: true},
 		},
 		slots: []record.Slot{{Issue: "LEGION-208", Index: 0, AdmittedAt: projectedAt}},
 		mirror: []record.DispatchIssueRow{

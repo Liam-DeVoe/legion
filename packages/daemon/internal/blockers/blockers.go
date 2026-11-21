@@ -227,24 +227,22 @@ func ChildRows(issues []record.Issue, facts record.LineFacts) []record.BlockedIs
 // state's reading of waiting roots share, so a root one of them exempts can never be reported
 // blocked by the other.
 //
-// Two kinds of issue are exempt. One that carries a run into a tree of its own — a handed-over
-// child, a re-admitted tree — is work already under way, which the promotion never holds by its
-// links (record.Issue.CarriesRun), by whichever door it arrives. Once it holds a slot, the rule
-// for a started issue (waitsOf) reads its links like any other. And a tree Legion takes back
-// after it has finished and lingered starts again at its person's word, though re-admission leaves
-// it carrying no run: that is both halves at once, that it ran and that the tree coming back is its
-// own, which record.Issue.TakenBack holds. The mark is a fact about a run: the workflow writes it
-// as a phase of that run begins, re-admission keeps it when the root's own tree comes back, and
-// every other path that opens a run starts it clean — a child's re-entry into its tree, and a
-// child's hand-over to a root of its own without its run. So no issue is exempt unless the run it
-// is exempt for is the run it arrived with. A root waiting on a person (awaiting_person, answered or
-// not) carries its run (record.Issue.CarriesRun): its links were read when it was first admitted,
-// and it resumes on the slot it holds whatever they say now (waitsOf). Everything else is checked like
-// any other issue: a child that has been released but never started, a waiting root that only left
-// the line and came back, and a child handed over from a finished tree as a root of its own without
-// its run, whether or not it ran there, a done child a person labels as an orphan root among them. A
-// child held at phase.Admitted in its own tree is no candidate here at all: the workflow holds it,
-// and Blocked reports it, by Holds, whatever its mark — and a re-entered child carries none.
+// Two kinds of issue are exempt. One that carries a run (record.Issue.CarriesRun: it stands in a
+// phase past admitted and short of done) is work already under way, which the promotion never
+// holds by its links. Once it holds a slot, the rule for a started issue (waitsOf) reads its links
+// like any other. And an issue whose run has stood in a phase of its own (record.Issue.TakenBack,
+// decision 19 of dispatch://INFRA-4730) starts again whatever its links say, though it waits at
+// admitted. The mark is the issue's own fact of a run (R17 of dispatch://INFRA-3320): the workflow
+// writes it as a phase of that run begins (Engine.transition), a return to work keeps it, since it
+// resumes the same run at a new entry, and a new run clears it (Engine.NewRun), so no issue is
+// exempt unless the run it is exempt for is the run it stands in; a converted hand-over of the
+// release before that carries its run sets it, and no change of parent writes it. A root waiting on
+// a person (awaiting_person, answered or not) carries its run: its links were read when it was
+// first admitted, and it resumes on the slot it holds whatever they say now (waitsOf). Everything
+// else is checked like any other issue: an issue released but never started, a waiting root that
+// only left the line and came back, and an issue whose new run opened (a todo on a closed record).
+// A child of an open parent is no candidate here at all: it waits at admitted for its parent's
+// release (R9), and Blocked reports it, by Holds, whatever its mark.
 func Exempt(issue record.Issue) bool { return issue.CarriesRun() || issue.TakenBack }
 
 // WaitsOn is what issue still waits on, from rows: the issues Dispatch says it is blocked by

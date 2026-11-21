@@ -71,7 +71,7 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 	records := record.NewStore()
 	root := record.Issue{Key: doorRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: doorRoot,
 		Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", HandedOver: true, LastDispatchSeq: 1}
-	putOutboxIssue(t, pool, records, root)
+	putChainIssue(t, pool, records, root)
 	approved := 1
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: doorRoot, ArtifactID: "artifact-1", LatestVersion: 1, ApprovedVersion: &approved})
@@ -120,11 +120,12 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 	}
 }
 
-// put records each issue as the workflow holds it.
+// put records each issue as the workflow holds it, with its row of the copy (putChainIssue), so
+// the issue stands on a known Dispatch chain under the rig's root.
 func (r *childArchitectRig) put(issues ...record.Issue) {
 	r.t.Helper()
 	for _, issue := range issues {
-		putOutboxIssue(r.t, r.pool, r.records, issue)
+		putChainIssue(r.t, r.pool, r.records, issue)
 	}
 }
 
@@ -314,16 +315,16 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 			t.Fatalf("the held child's entry queued %d architect starts, want none until its first phase starts", starts)
 		}
 		rig.drain()
-		if got := readIssue(t, rig.pool, doorChild); got.Phase != phase.Admitted {
-			t.Fatalf("the held child stands at %s while %s works, want admitted", got.Phase, doorBlocker)
+		if got := readIssue(t, rig.pool, doorChild); got == nil || got.Phase != phase.Admitted {
+			t.Fatalf("the held child is recorded as %+v while %s works, want it at admitted", got, doorBlocker)
 		}
 		if _, found := rig.sup.Machine(mustClaimToken(t, doorChild, claim.RoleArchitect)); found {
 			t.Fatal("the held child has an architect claim while it waits, want none until its first phase starts")
 		}
 		rig.apply("blocker-done", intake.DispatchIssue{Key: doorBlocker, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.closed", Status: "done",
 			Title: doorBlocker, Rank: "Z"})
-		if got := readIssue(t, rig.pool, doorChild); got.Phase != phase.Planning {
-			t.Fatalf("the child stands at %s once %s is done, want planning", got.Phase, doorBlocker)
+		if got := readIssue(t, rig.pool, doorChild); got == nil || got.Phase != phase.Planning {
+			t.Fatalf("the child is recorded as %+v once %s is done, want it in planning", got, doorBlocker)
 		}
 		rig.wantChildsArchitectToldItsIssues([]string{doorChild})
 	})

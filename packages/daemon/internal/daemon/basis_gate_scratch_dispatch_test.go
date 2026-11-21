@@ -256,9 +256,11 @@ func catchUpGate(t *testing.T, notice record.Notice) record.CatchUpGate {
 }
 
 // linkUnder sets parent as root's Dispatch parent, as the person does at the dashboard. Where the
-// daemon records parent in a live tree (live), it waits for the daemon to tell root and parent's
-// architect that root stays a tree of its own, and requires those words to name R1's path, the
-// view on parent, and not that root's work reaches parent's tree only through its own issues.
+// daemon records parent in a live tree (live), it waits for R18's reparented notices
+// (dispatch://INFRA-3320): one to root's own architect and one to parent's, the architect above
+// it now, each queued on root and naming the architect it tells (record.Notice.To), and requires
+// those words to name R1's path, the view on parent, and not that root's work reaches parent's
+// tree only through its own issues.
 func (r *personHandoverRig) linkUnder(root, parent scratchIssue, live bool) {
 	t := r.t
 	t.Helper()
@@ -272,12 +274,14 @@ func (r *personHandoverRig) linkUnder(root, parent scratchIssue, live bool) {
 		return strings.Contains(words, path) && strings.Contains(words, "with register_gate's basis.") &&
 			!strings.Contains(words, "only through that tree's own issues")
 	}
-	testwait.Eventually(t, "the daemon to tell "+root.Key+" that it can be written as a view on "+parent.Key, func() bool {
-		return slices.ContainsFunc(r.messages(root.Key), names)
-	})
-	if notices := childStatusNotices(t, r.pool, parent.Key); !slices.ContainsFunc(notices, names) {
-		t.Fatalf("the child-status notices to the architect of %s = %q, want one naming R1's path (%q)", parent.Key, notices, path)
+	toldTo := func(architect string) bool {
+		return slices.ContainsFunc(r.notices(root.Key, string(record.ReparentedNotice)), func(notice record.Notice) bool {
+			return notice.To == architect && names(notice.Reason)
+		})
 	}
+	testwait.Eventually(t, "the daemon to tell "+root.Key+" that it can be written as a view on "+parent.Key, func() bool {
+		return toldTo(root.Key) && toldTo(parent.Key)
+	})
 	t.Logf("%s, set under %s, and the architect of %s were told R1's path: %q", root.Key, parent.Key, parent.Key, path)
 }
 
@@ -1137,9 +1141,14 @@ func TestBasisGateRefusals(t *testing.T) {
 	r.patch(parent.Key, asPerson, map[string]any{"labels": []string{"waves"}})
 	cases.refused("P without the legion label", call(), http.StatusConflict, "BASIS_NOT_IN_LEGION", parent.Key+" carries no \"legion\" label", "waves")
 	r.addLabel(parent.Key, asSession, "legion")
+	// P's acceptance on Dispatch ends the step R has open on its approval (workflow's endOpenOn,
+	// read off the copy): each move is applied before its call, so the call's own refusal is what
+	// the case compares R before and after.
 	r.setStatus(parent.Key, "retro")
+	r.quiet(parent.Key)
 	cases.refused("P in Dispatch status retro", call(), http.StatusConflict, "BASIS_ACCEPTED", "Dispatch shows "+parent.Key+" retro")
 	r.setStatus(parent.Key, "done")
+	r.quiet(parent.Key)
 	cases.refused("P set done", call(), http.StatusConflict, "BASIS_ACCEPTED", "Dispatch shows "+parent.Key+" done")
 	r.setStatus(parent.Key, "in_progress")
 	r.editDocument(parent.PrimaryArtifactID, map[string]string{"op": "delete", "block": "p1"}, map[string]string{"op": "delete", "block": "p2"},

@@ -161,12 +161,15 @@ func actsOnPod(payload OutboxPayload) bool {
 
 // entryFenced says whether payload's kind names the phase entry it was queued at: every kind
 // FenceOf fences but the gate's seeds, which belong to the run across a stop, the branch, which
-// is the run's, and the production check's rows, which follow the close (R17 of
-// dispatch://INFRA-3320).
+// is the run's, the production check's rows, which follow the close (R17 of
+// dispatch://INFRA-3320), and R18's reparented notice, which tells a change of parent at
+// whatever phase entry the issue stands, as the re-parent seed that queues it does.
 func entryFenced(payload OutboxPayload) bool {
-	switch payload.(type) {
+	switch value := payload.(type) {
 	case GateSeed, PendingBasisSeed, IssueBranch, CheckWakeDue, CheckLook, CheckBound:
 		return false
+	case Notice:
+		return value.Kind != ReparentedNotice
 	}
 	_, carries := FenceOf(payload)
 	return carries
@@ -215,7 +218,9 @@ func fenced(payload OutboxPayload, fence Fence) (OutboxPayload, fenceStamp) {
 		return value, stamp
 	case Notice:
 		generation(&value.Generation)
-		entry(&value.Entry)
+		if entryFenced(value) {
+			entry(&value.Entry)
+		}
 		return value, stamp
 	case SuperviseRequest:
 		if !value.Stops() {

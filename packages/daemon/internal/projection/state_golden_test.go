@@ -38,7 +38,8 @@ var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this 
 // child LEGION-209, held at `admitted` behind an issue still in progress, and the waiting root
 // LEGION-210, behind one the daemon has never observed and so cannot call finished. LEGION-211
 // waits in the same line on an issue of its own, and is in neither `blocked` nor any judgement:
-// a root carrying a run is work already under way.
+// a root a hand-over of the release before carried in (record.CarriedIn) carries a run, work
+// already under way.
 //
 // It carries the trees too (R22 of dispatch://INFRA-3320): the roots in Legion's work, each with
 // no issue above it in work on Dispatch's chain, so `trees` names three roots while one issue
@@ -58,7 +59,7 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 			{Key: issue, Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Status: "in_progress", Phase: phase.Admitted, Generation: 1, HandedOver: true},
 			{Key: "LEGION-209", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Status: "todo", Phase: phase.Admitted, Generation: 1},
 			{Key: "LEGION-210", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-210", Status: "todo", Phase: phase.Admitted, Generation: 1, Rank: "00010", HandedOver: true},
-			{Key: "LEGION-211", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-211", Status: "todo", Phase: phase.Implementing, Generation: 2, Rank: "00011", HandedOver: true, HandedOverFrom: "LEGION-200"},
+			{Key: "LEGION-211", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-211", Status: "todo", Phase: phase.Implementing, Generation: 2, CarriedGeneration: 2, Rank: "00011", HandedOver: true},
 		},
 		phases: map[string][]record.PhaseRow{issue: {{Issue: issue, Role: claim.RoleArchitect, Claim: architect}}},
 		slots:  []record.Slot{{Issue: issue, Index: 0, AdmittedAt: admitted}},

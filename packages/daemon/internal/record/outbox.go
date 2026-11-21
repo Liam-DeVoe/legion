@@ -515,10 +515,11 @@ type Notice struct {
 	// noticeArchitect).
 	To string `json:"to,omitempty"`
 	// Generation and Entry are the run and the phase entry of the row's issue the notice was
-	// queued at (Fence): a notice of an earlier one is not delivered. A controller notice is the
-	// project's and carries neither: it is the same notice converted before its row is fenced
-	// (workflow's noticeWithController). The publish keeps them, so a re-held copy is fenced as
-	// its row was (the daemon's reholdNotice).
+	// queued at (Fence): a notice of an earlier one is not delivered. A reparented notice names
+	// the run alone, since a change of parent is told at whatever phase entry the issue stands
+	// (entryFenced). A controller notice is the project's and carries neither: it is the same
+	// notice converted before its row is fenced (workflow's noticeWithController). The publish
+	// keeps them, so a re-held copy is fenced as its row was (the daemon's reholdNotice).
 	Generation uint64 `json:"generation,omitempty"`
 	Entry      int64  `json:"entry,omitempty"`
 }

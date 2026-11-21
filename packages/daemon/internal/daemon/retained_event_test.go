@@ -141,7 +141,7 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{{Key: root.Key, Title: root.Title, Rank: "A", Status: "backlog", LastSeq: 2, HandedOver: true,
+			reconcileAdmission(t, pool, admission, "LEGION", []dispatch.IssueSummary{{Key: root.Key, Title: root.Title, Rank: "A", Status: "backlog", LastSeq: 2, HandedOver: true,
 				ResolvedRepo: "acme/widgets"}}, int64(ack.Sequence), intake.DispatchConsumerPosition{})
 			if !admission.Held() {
 				t.Fatal("the boot summary is not held behind the retained event")

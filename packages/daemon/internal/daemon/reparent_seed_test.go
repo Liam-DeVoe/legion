@@ -13,9 +13,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -154,6 +156,61 @@ func TestAReparentTellsTheOwnOldAndNewArchitectOnce(t *testing.T) {
 	for key, reasons := range rig.told() {
 		if len(reasons) != 1 {
 			t.Fatalf("after a second event under the same parent the architect of %s was told %d times, want still once", key, len(reasons))
+		}
+	}
+}
+
+// A change of parent is told at whatever phase entry the issue stands (R18 of
+// dispatch://INFRA-3320), as the re-parent seed that queues its notices is: the issue moving into
+// a new phase entry between the seed's read and the notices' delivery fences none of them. A
+// notice of another kind queued at the earlier entry is not delivered, which is what tells the
+// two apart (record.Fence, decision 10 of dispatch://INFRA-4730).
+func TestAReparentedNoticeIsToldAtWhateverPhaseEntryTheIssueStands(t *testing.T) {
+	ctx := context.Background()
+	client := &reparentDispatch{}
+	client.issue = dispatch.Issue{Key: reparentNewParent, Status: "in_progress", Labels: []string{"design"}}
+	rig := newReparentRig(t, client)
+	rig.seq++
+	fact := intake.DispatchIssue{Key: reparentIssue, ResolvedRepo: "acme/widgets", Seq: rig.seq, Type: "issue.updated", Status: "in_progress",
+		Title: reparentIssue, Parent: reparentNewParent, Rank: reparentIssue}
+	if _, err := intake.ApplyFact(ctx, rig.pool, "dispatch", "move-entry", fact, blockers.NewMirror(rig.records, "LEGION"), rig.engine); err != nil {
+		t.Fatalf("apply the move under %s: %v", reparentNewParent, err)
+	}
+	// One pass runs the rows due when it starts: the seed, whose fact queues the notices.
+	if err := rig.runner.RunOnce(ctx); err != nil {
+		t.Fatalf("run the seed: %v", err)
+	}
+	if told := rig.told(); len(told) != 0 {
+		t.Fatalf("the seed's own pass published %v, want the notices still queued: the case's premise", told)
+	}
+	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+		// A notice of another kind, queued at the entry the notices were queued at.
+		row, err := record.NewFencedRow(ctx, tx, rig.records, reparentIssue,
+			record.Notice{Kind: "phase-finished", Role: claim.RoleImplementer, Phase: phase.Implementing}, time.Now())
+		if err != nil {
+			return err
+		}
+		if err := rig.records.Enqueue(ctx, tx, row); err != nil {
+			return err
+		}
+		// The implementer's new phase entry, which raises the issue's (record.IssueFence).
+		return rig.records.PutPhase(ctx, tx, record.PhaseRow{Issue: reparentIssue, Role: claim.RoleImplementer, Entry: 3, EntryRaisedAt: time.Now()})
+	}); err != nil {
+		t.Fatalf("queue the phase-finished notice and raise the entry of %s: %v", reparentIssue, err)
+	}
+	for range 3 {
+		if err := rig.runner.RunOnce(ctx); err != nil {
+			t.Fatalf("run the outbox: %v", err)
+		}
+	}
+	if got := slices.Sorted(maps.Keys(rig.told())); !slices.Equal(got, []string{reparentOldParent, reparentNewParent, reparentIssue}) {
+		t.Fatalf("after %s entered a new phase entry the reparented notices reached the architects of %v, want those of %s, %s and %s",
+			reparentIssue, got, reparentIssue, reparentOldParent, reparentNewParent)
+	}
+	_, delivered := rig.publisher.snapshot()
+	for _, published := range delivered {
+		if notice := published.payload.(record.Notice); notice.Kind == "phase-finished" {
+			t.Fatalf("the phase-finished notice of the earlier entry was published %+v, want it fenced out", notice)
 		}
 	}
 }

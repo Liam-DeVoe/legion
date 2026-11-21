@@ -429,7 +429,7 @@ func pendingID(p *Delivery) string {
 // them (the claim store's releaseKeptDecisions), so they are the tree's again, and the catch-up of
 // the architect's next ready names them, as does the one the root's start writes for an architect
 // it finds running (the daemon's outbox, workflow's claimReady). The daemon's
-// TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect follows one such decision to the
+// TestADecisionASupersededTaskNamedIsToldToTheReturnedArchitect follows one such decision to the
 // catch-up that tells it.
 //
 // The replaced task's row ends as any other retirement ends it, and the question a restart armed

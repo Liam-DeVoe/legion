@@ -2872,20 +2872,23 @@ func (s *Postgres) RefenceFactRows(ctx context.Context, tx pgx.Tx) error {
 		if err != nil {
 			return fmt.Errorf("read the fence %s stands at when its fact commits: %w", issue, err)
 		}
-		entries, both := []int64{}, []int64{}
+		// Each part is set again only where the stamp filled it: a reparented notice names the
+		// run alone (entryFenced), so its settle gives it no entry.
+		entries, generations := []int64{}, []int64{}
 		for _, row := range byIssue[issue] {
-			if row.stamp.generation {
-				both = append(both, row.id)
-			} else {
+			if row.stamp.entry {
 				entries = append(entries, row.id)
 			}
+			if row.stamp.generation {
+				generations = append(generations, row.id)
+			}
 		}
-		if _, err := tx.Exec(ctx, `update outbox set payload = case
-				when id = any($2::bigint[]) then payload || jsonb_build_object('generation', $3::bigint, 'entry', $4::bigint)
-				else payload || jsonb_build_object('entry', $4::bigint) end
-			where (id = any($1::bigint[] || $2::bigint[]) and (payload->>'entry')::bigint is distinct from $4)
+		if _, err := tx.Exec(ctx, `update outbox set payload = payload
+				|| case when id = any($2::bigint[]) then jsonb_build_object('generation', $3::bigint) else '{}'::jsonb end
+				|| case when id = any($1::bigint[]) then jsonb_build_object('entry', $4::bigint) else '{}'::jsonb end
+			where (id = any($1::bigint[]) and (payload->>'entry')::bigint is distinct from $4)
 				or (id = any($2::bigint[]) and (payload->>'generation')::bigint is distinct from $3)`,
-			entries, both, int64(fence.Generation), fence.Entry); err != nil {
+			entries, generations, int64(fence.Generation), fence.Entry); err != nil {
 			return fmt.Errorf("set the fence of %s's rows to the one its fact leaves it at: %w", issue, err)
 		}
 	}

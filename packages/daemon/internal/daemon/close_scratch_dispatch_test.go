@@ -197,6 +197,8 @@ func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, e
 			Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"}); err != nil {
 			return err
 		}
+		// Its row of the copy: the close reads the issue's children on its Dispatch chain (R24).
+		seedCopyRow(t, tx, issue, "", "in_progress", 1)
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue,
 			Repo: "acme/widgets", Number: 42, Branch: claim.IssueBranch(issue), HeadSHA: "head"})
 	}); err != nil {
@@ -215,9 +217,15 @@ func architectClosesTheRoot(t *testing.T, pool *store.Pool, records record.Store
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return records.PutIssue(ctx, tx, record.Issue{Key: issue, Repo: "acme/widgets", DefaultBranch: "main",
+		if err := records.PutIssue(ctx, tx, record.Issue{Key: issue, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Tree: issue, Project: "LEGION", Title: issue, Phase: phase.Admitted, Generation: 1,
-			Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"})
+			Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"}); err != nil {
+			return err
+		}
+		// Its row of the copy: close_root reads who may act on it and its children on its
+		// Dispatch chain (R18, R24).
+		seedCopyRow(t, tx, issue, "", "in_progress", 1)
+		return nil
 	}); err != nil {
 		t.Fatalf("seed the admitted root: %v", err)
 	}
