@@ -5715,6 +5715,41 @@
       "production": "loadtest checkNATSServerName: the monitor's server_name held as redact.RemoteText"
     },
     {
+      "id": "loadtest-answer-members-seed-comment",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASeedKeepsNoKeyOrIDThatEchoesItsRequest/comment",
+      "production": "loadtest seedIssueWith: Dispatch's issue key kept only in an issue key's shape (isIssueKey), so a refused comment's error names no key the answer echoed"
+    },
+    {
+      "id": "loadtest-answer-members-seed-route",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASeedKeepsNoKeyOrIDThatEchoesItsRequest/route",
+      "production": "loadtest seed: a refused route's error names a key the seed kept only in an issue key's shape (seedIssueWith, isIssueKey)"
+    },
+    {
+      "id": "loadtest-answer-members-seed-file",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestASeedKeepsNoKeyOrIDThatEchoesItsRequest/seed-file",
+      "production": "loadtest seedIssueWith: seed.json keeps Dispatch's key, primary document id and comment ids only in Dispatch's shape (isIssueKey, isDispatchID)"
+    },
+    {
+      "id": "loadtest-answer-members-ref-target",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAReferenceTargetKeepsNoArtifactIDThatEchoesItsRequest",
+      "production": "loadtest writeRefTargets: a target's artifact id kept only in Dispatch's shape (isDispatchID), so refDocumentToken's refusal names no id the answer echoed"
+    },
+    {
+      "id": "loadtest-answer-members-replay-key",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAReplaySeedNamesNoCreatedKeyThatEchoesItsRequest",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replaySeeder).mapIssue: a created key that is not the bundle's named only in an issue key's shape (shownKey)"
+    },
+    {
       "id": "cireconcile-answer-words-errors",
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/cireconcile",
@@ -8337,6 +8372,31 @@
       "site": "the NATS monitor's server_name, decoded into a plain string and printed raw by the load test's guard",
       "source": "the class search of the retried-trade finding",
       "guard": "loadtest-answer-words-nats-server-name"
+    },
+    {
+      "site": "loadtest seedIssueWith: Dispatch's issue key, decoded into a plain string, printed raw by a refused comment's error and kept in seed.json",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-seed-comment"
+    },
+    {
+      "site": "loadtest seed: Dispatch's issue key printed raw by a refused route's error",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-seed-route"
+    },
+    {
+      "site": "loadtest seedIssueWith: Dispatch's primary document and comment ids, decoded into plain strings and written raw to seed.json",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-seed-file"
+    },
+    {
+      "site": "loadtest seed-refs: a target's artifact id, decoded into a plain string (idOf), printed raw by refDocumentToken's refusals",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-ref-target"
+    },
+    {
+      "site": "loadtest replay-seed mapIssue: the key Dispatch's issue create names, decoded into a plain string, printed raw when it is not the bundle's",
+      "source": "the class search of round 5's deep review",
+      "guard": "loadtest-answer-members-replay-key"
     },
     {
       "site": "GitHub's GraphQL errors entries, decoded into plain strings and printed raw by the reconciler",

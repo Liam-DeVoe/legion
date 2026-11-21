@@ -512,9 +512,13 @@ func (s *replaySeeder) issueBody(p seedIssuePlan) (who, map[string]any, int, err
 	return w, withActor(body, actor), len(spec), nil
 }
 
+// mapIssue maps p's issue to the key Dispatch created it as (createIssue) or holds it under (an
+// issue adopted from the database). A key that is not p's is refused, and named only in an issue
+// key's shape (shownKey): Dispatch's answer, or whatever answers in its place, can echo the
+// request's bearer there.
 func (s *replaySeeder) mapIssue(ctx context.Context, p seedIssuePlan, key, primary string) error {
 	if key != p.Key {
-		return fmt.Errorf("issue number %d was created as %s, want %s: the numbering no longer matches the bundle", p.Number, key, p.Key)
+		return fmt.Errorf("issue number %d was created as %s, want %s: the numbering no longer matches the bundle", p.Number, shownKey(key), p.Key)
 	}
 	if !p.placeholder() {
 		if err := s.ids.put(ctx, idArtifact, primaryArtifact(p.Issue).ID, primary); err != nil {

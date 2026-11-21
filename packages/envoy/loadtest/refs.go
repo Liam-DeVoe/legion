@@ -290,8 +290,10 @@ func writeRefTargets(ctx context.Context, a *api, p refPlan) (int, error) {
 				if res.err != nil || res.status != http.StatusCreated {
 					return fmt.Errorf("write %s version %d on %s: %d %s %v, want 201", name, v+1, t.issue, res.status, res.text(), res.err)
 				}
-				if artifactID = idOf(res.body); artifactID == "" {
-					return fmt.Errorf("write %s version %d on %s: no artifact id in %s", name, v+1, t.issue, res.text())
+				// The id is Dispatch's word, which the next version's read sends back and its
+				// refusal names: it is kept only in Dispatch's shape (isDispatchID).
+				if artifactID = idOf(res.body); !isDispatchID(artifactID) {
+					return fmt.Errorf("write %s version %d on %s: no artifact id in Dispatch's shape in %s", name, v+1, t.issue, res.text())
 				}
 				if n := written.Add(1); n%refProgressEvery == 0 {
 					log.Printf("seed-refs: %d/%d versions, %d targets done, %s", n, total, done.Load(), time.Since(start).Round(time.Second))
