@@ -491,7 +491,8 @@ test("an upload refused because its document moved says so in the page's words, 
 // A refusal whose route words tell an agent to run a `dispatch` command says what happened in the
 // page's words: an edit of an approval request says to change its document, a question written
 // into a decision that cannot take one there says to write it in the document editor, and any
-// other such refusal says Dispatch refused it, with its code, and to change the item here.
+// other such refusal says Dispatch refused it and to change the item here. A refusal that names
+// no command, and a row that was refused nothing, keep their words.
 test("a refusal that names a dispatch command says what happened in the page's words", async () => {
   const refusedRow = (number: number, tool: string, code: string, message: string): GoingPlanRow =>
     row(number, {
@@ -523,6 +524,28 @@ test("a refusal that names a dispatch command says what happened in the page's w
         "INVALID_OP",
         "the quote was not found in the document; read it again with `dispatch doc-read` and quote what it holds"
       ),
+      // The other empty-question refusal names no command, and keeps its words.
+      refusedRow(
+        3,
+        "dispatch_edit_ask",
+        "ASK_BLOCK_TEXT",
+        'block: ask block "blk-8" has an empty question; send this ask edit again with a question, which writes it into the block'
+      ),
+      // A row that waits names the row it needs by its item's title, which can hold the words
+      // "dispatch search": it was refused nothing, and keeps its words.
+      row(4, {
+        arguments: { issue: "CORE-1", priority: 1 },
+        issue: "CORE-1",
+        item: "CORE-1",
+        result: {
+          code: "",
+          delivery: null,
+          message: 'waits for the row that files "make dispatch search faster"',
+          status: 0,
+        },
+        state: "waiting",
+        tool: "dispatch_issue_update",
+      }),
     ],
     state: "done",
   };
@@ -533,9 +556,12 @@ test("a refusal that names a dispatch command says what happened in the page's w
     const drawn = within(card).getAllByTestId("going-plan-row");
     // No row tells the person to run a command.
     expect(
-      drawn.map((one) => one.textContent ?? "").filter((text) => /\bdispatch [a-z]/u.test(text))
+      drawn
+        .slice(0, 3)
+        .map((one) => one.textContent ?? "")
+        .filter((text) => /\bdispatch [a-z]/u.test(text))
     ).toEqual([]);
-    const [fixed, emptyQuestion, other] = drawn;
+    const [fixed, emptyQuestion, other, optionsOnly, waiting] = drawn;
     expect(fixed).toHaveTextContent(
       "An approval request's question and options cannot be edited, so nothing was changed. Change the document it asks about instead."
     );
@@ -546,6 +572,9 @@ test("a refusal that names a dispatch command says what happened in the page's w
       "Dispatch refused this change with advice for its command-line tool"
     );
     expect(other).toHaveTextContent("Open the item to change it here.");
+    expect(optionsOnly).toHaveTextContent("send this ask edit again with a question");
+    expect(waiting).toHaveTextContent('waits for the row that files "make dispatch search faster"');
+    expect(waiting).not.toHaveTextContent("Dispatch refused this change");
   } finally {
     restore();
   }

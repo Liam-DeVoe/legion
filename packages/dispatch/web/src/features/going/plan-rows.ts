@@ -149,14 +149,16 @@ export const ASK_EMPTY_QUESTION_REFUSAL =
 
 /** A refusal whose words name a command of the `dispatch` command-line tool - written for an
  *  agent that runs it - which the person who approved the row cannot run. */
-const NAMES_A_COMMAND = /\bdispatch [a-z][a-z-]*/u;
+const NAMES_A_COMMAND = /`dispatch [a-z][a-z-]*`|\bdispatch [a-z][a-z-]* --/u;
 
 /** What a row's result says to the person: the page's own words for an upload refused because
  *  its document moved (`UPLOAD_MOVED_REFUSAL`), an edit of an approval request
  *  (`ASK_KIND_FIXED_REFUSAL`) and a question written into a decision that cannot take one there
- *  (`ASK_EMPTY_QUESTION_REFUSAL`); any other refusal whose words name a `dispatch` command in the
- *  page's general words, with Dispatch's code for it, so no route's advice to run a command
- *  reaches the person; and every other result as Dispatch wrote it. */
+ *  (`ASK_EMPTY_QUESTION_REFUSAL`); any other refusal of a failed row whose words name a `dispatch`
+ *  command, as the server writes one (backticked, or followed by its flags), in the page's
+ *  general words, so no route's advice to run a command reaches the person; and every other
+ *  result as Dispatch wrote it, a waiting or skipped row's words, which can name an item's title,
+ *  among them. */
 export function rowResultMessage(row: GoingPlanRow): string {
   const result = row.result;
   if (result === null) {
@@ -172,10 +174,13 @@ export function rowResultMessage(row: GoingPlanRow): string {
   if (result.code === "ASK_KIND_FIXED") {
     return ASK_KIND_FIXED_REFUSAL;
   }
-  if (result.code === "ASK_BLOCK_TEXT" && result.message.includes("has an empty question")) {
+  if (
+    result.code === "ASK_BLOCK_TEXT" &&
+    result.message.includes("writing a question into it would delete")
+  ) {
     return ASK_EMPTY_QUESTION_REFUSAL;
   }
-  return NAMES_A_COMMAND.test(result.message)
+  return row.state === "failed" && NAMES_A_COMMAND.test(result.message)
     ? "Dispatch refused this change with advice for its command-line tool, which this page does not run, so nothing was changed. Open the item to change it here."
     : result.message;
 }
