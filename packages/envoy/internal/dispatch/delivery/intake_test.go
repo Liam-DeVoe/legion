@@ -28,10 +28,13 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestMain drops the databases the package's tests clone (storetest.Main) and removes the NATS
-// server they share (testnats.Main).
+// TestMain drops the databases the package's tests clone (storetest.Main), removes the NATS
+// server they share (testnats.Main), and removes the counted test binary the rows that count
+// their work built (removeCountedBuild).
 func TestMain(m *testing.M) {
-	os.Exit(storetest.Main(func() int { return testnats.Main(m.Run) }))
+	code := storetest.Main(func() int { return testnats.Main(m.Run) })
+	removeCountedBuild()
+	os.Exit(code)
 }
 
 // deliveryPools is each running test's database, so every deliveryTestPool of one test answers

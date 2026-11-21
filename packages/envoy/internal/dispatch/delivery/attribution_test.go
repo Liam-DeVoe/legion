@@ -249,13 +249,14 @@ func TestCitedIssuesCreditsTheURLsOwnPath(t *testing.T) {
 // the reading allocates are counted too (allocatedBy), at two sizes of the same shape eight times
 // apart, since a reading that took the span back to the nearest space and parsed it as a URL -
 // ebb65528's, which never calls authorityBefore - copies that span for each match: what it
-// allocates grows with the square of the body, where this reading's grows with the body.
+// allocates grows with the square of the body, where this reading's grows with the body. And the
+// statements the reading runs are counted at the same two sizes by Go's coverage counters
+// (countedCitedIssues), which see a walk back that neither calls authorityBefore nor copies:
+// strings.LastIndexAny to the nearest space, beside authorityBefore's bounded read, runs its loop
+// in strings once a match over the body behind it.
 func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
-	bodyOf := func(size int) string {
-		return strings.Repeat("/a/b/issues/1", size/13) + ",github.com/acme/widgets/issues/7"
-	}
-	body := bodyOf(1 << 20)
+	body := issuePathsEveryThirteenBytes(1 << 20)
 	matches := len(githubIssuePath.FindAllStringIndex(body, -1))
 	before := AuthorityReads()
 	got := citedIssues("acme/widgets", body)
@@ -272,7 +273,7 @@ func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	// The least of three readings at each size, since another goroutine of the binary only ever
 	// adds to what a reading sees.
 	allocated := func(size int) uint64 {
-		body := bodyOf(size)
+		body := issuePathsEveryThirteenBytes(size)
 		least := allocatedBy(func() { citedIssues("acme/widgets", body) })
 		for range 2 {
 			least = min(least, allocatedBy(func() { citedIssues("acme/widgets", body) }))
@@ -284,6 +285,21 @@ func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 		t.Errorf("citedIssues allocated %d bytes over %d bytes and %d over %d, %.1f times for a body %d times longer; want at most %d times",
 			smallAllocated, small, largeAllocated, large, float64(largeAllocated)/float64(smallAllocated), growth, slack*growth)
 	}
+	smallWork := countedCitedIssues(t, countedPathsEveryThirteenBytes, small)
+	largeWork := countedCitedIssues(t, countedPathsEveryThirteenBytes, large)
+	if smallMatches := len(githubIssuePath.FindAllStringIndex(issuePathsEveryThirteenBytes(small), -1)); smallWork.work < int64(smallMatches) {
+		t.Errorf("citedIssues over %s, fewer statements than its %d matches: the counters did not see the reading", smallWork.text(), smallMatches)
+	}
+	switch ratio := float64(largeWork.work) / float64(smallWork.work); {
+	case largeWork.work < smallWork.work:
+		t.Errorf("citedIssues ran %s, then %s: work that shrinks as the body grows is a coverage counter that wrapped, not a reading",
+			smallWork.text(), largeWork.text())
+	case largeWork.work > slack*growth*smallWork.work:
+		t.Errorf("citedIssues ran %s, then %s, %.1f times for a body %d times longer; want at most %d times: a match is walking back over the body behind it",
+			smallWork.text(), largeWork.text(), ratio, growth, slack*growth)
+	default:
+		t.Logf("citedIssues ran %s, then %s, %.1f times for a body %d times longer", smallWork.text(), largeWork.text(), ratio, growth)
+	}
 	if !slices.Equal(got, []string{cited}) {
 		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)
 	}
@@ -291,6 +307,13 @@ func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	if got := citedIssues("acme/widgets", whole); len(got) != 0 {
 		t.Fatalf("a path running past the issue number cites %v, want nothing", got)
 	}
+}
+
+// issuePathsEveryThirteenBytes is a body of about size bytes with no whitespace in it and an issue
+// path every thirteen bytes, ending in one citation of acme/widgets#7: the shape a reading that
+// walks back to the nearest space pays the square of.
+func issuePathsEveryThirteenBytes(size int) string {
+	return strings.Repeat("/a/b/issues/1", size/13) + ",github.com/acme/widgets/issues/7"
 }
 
 // TestAttributionTakesTheHeadBranch: source 3, a key in the branch name, matched whatever its

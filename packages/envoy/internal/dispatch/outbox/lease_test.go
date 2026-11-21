@@ -129,12 +129,30 @@ func startProcessWith(t *testing.T, name string, database *store.Store, url stri
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { p.outbox.Run(ctx); close(done) }()
-	p.stop = sync.OnceFunc(func() {
+	// The stop is not a sync.OnceFunc: a give-up inside one ends the goroutine (runtime.Goexit) in
+	// the once, which sync.OnceFunc turns into a panic with a nil argument. cancel may be called
+	// again, and a second receive finds done closed; a give-up once the row has failed is logged
+	// rather than failed again (failOnce).
+	p.stop = func() {
 		cancel()
-		testwait.Receive(t, name+"'s outbox stopping once its context ended", done)
-	})
+		testwait.Receive(failOnce{t}, name+"'s outbox stopping once its context ended", done)
+	}
 	t.Cleanup(p.stop)
 	return p
+}
+
+// failOnce is t for a wait that may run once t has already failed, as the stop a cleanup makes
+// after a row gave up does: a give-up fails t as Fatalf does while t has not failed, and is only
+// logged once it has, so a row that failed prints its own failure and not a second one.
+type failOnce struct{ *testing.T }
+
+func (t failOnce) Fatalf(format string, args ...any) {
+	t.Helper()
+	if t.Failed() {
+		t.Logf(format, args...)
+		return
+	}
+	t.T.Fatalf(format, args...)
 }
 
 // publishing is the processes that publish now.

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/session"
@@ -765,18 +766,23 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		outbox.scan(context.Background(), unfenced{})
 
 		backedOff(t, database, event, "no responders")
-		var due float64
-		var nextAttempt time.Time
-		if err := shifted.Pool.QueryRow(context.Background(),
-			`select extract(epoch from next_attempt_at - now()), next_attempt_at from events where id = $1`, event.ID).Scan(&due, &nextAttempt); err != nil {
+		// The back-off is next_attempt_at less the moment the attempt stamped it at, both on the
+		// database: shiftedClock holds the shifted pool's now() at one moment an hour past the
+		// pod's, so the scan stamped now() + retry.Delay(1) against it, and only a stamp made on
+		// that clock is exactly the first back-off past it; one made on the pod's clock is an hour
+		// short of it.
+		var backOff int64
+		if err := shifted.Pool.QueryRow(context.Background(), `
+			select (extract(epoch from e.next_attempt_at - m.at) * 1000000)::bigint
+			from events e, testclock.moment m where e.id = $1
+		`, event.ID).Scan(&backOff); err != nil {
 			t.Fatalf("read the event's next attempt: %v", err)
 		}
-		if due <= 0 || due > 1 {
-			t.Fatalf("the next attempt is %.3fs past the database's now(), want within the first back-off's second", due)
+		if got := time.Duration(backOff) * time.Microsecond; got != retry.Delay(1) {
+			t.Fatalf("the next attempt is %s past the attempt's moment on the database's clock, want the first back-off, %s", got, retry.Delay(1))
 		}
-		if until := time.Until(nextAttempt); until < 50*time.Minute {
-			t.Fatalf("the next attempt is %v past the pod's clock, want it on the database's, an hour ahead", until)
-		}
+		// The next scan reads now() at that same moment, so the back-off is still ahead of it
+		// however long the machine took to get here, and the scan must leave the event alone.
 		sent, _ := counter.of(event.ID)
 		outbox.scan(context.Background(), unfenced{})
 		if again, _ := counter.of(event.ID); again != sent {

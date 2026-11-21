@@ -95,13 +95,14 @@ func TestTheOutboxForwardsToARoleHolderInsideTheLiveWindow(t *testing.T) {
 	if record.Delivery != session.DeliveryConsumer {
 		t.Fatalf("the holder's record states delivery %q, want %q: the record a relay probe is asked about", record.Delivery, session.DeliveryConsumer)
 	}
-	// The holder is judged at judgedAt, a moment the row fixes once it has read the record, so the
-	// row's own pace never moves the registration's age; the row past the window judges it at the
-	// same moment moved past the window.
-	judgedAt := time.Now()
-	if age := judgedAt.Sub(time.UnixMilli(record.UpdatedAt)); age >= session.LiveWindow {
-		t.Fatalf("the holder's last registration is %s old, want less than %s", age, session.LiveWindow)
+	// The holder is judged at judgedAt, a second past the registration the registry stamped, a
+	// moment the row takes from that stamp alone, so neither the row's own pace nor the machine's
+	// moves the registration's age; the row past the window judges it at the same moment moved
+	// past the window.
+	if record.UpdatedAt == 0 {
+		t.Fatalf("the holder's record carries no registration stamp (UpdatedAt 0), want the moment the registry wrote it: the age both rows judge is read from it")
 	}
+	judgedAt := time.UnixMilli(record.UpdatedAt).Add(time.Second)
 	rig.silent(t, roleTopic)
 
 	t.Run("the outbox forwards an event routed to the role to the holder's own subject and publishes it", func(t *testing.T) {

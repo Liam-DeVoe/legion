@@ -210,13 +210,15 @@ func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 // (allocatedBy), which grow with what each match reads back wherever that reading is made: a
 // reader that took the span back to the nearest space and parsed it as a URL - ebb65528's, which
 // never calls authorityBefore - copies that span for each match, the body's length for each of
-// the comma body's.
+// the comma body's. It counts a third, the statements the reading runs, by Go's coverage counters
+// (countedCitedIssues): a walk back to the nearest space that copies nothing and leaves
+// authorityBefore's count alone, strings.LastIndexAny beside it, runs its loop in strings over the
+// body's length for each of the comma body's matches and over a word for each of the space body's.
 func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
 	const repo = "acme/widgets"
-	one := "github.com/acme/widgets/issues/7"
-	prose := strings.Repeat("a", 65536)
-	bySpace := prose + " " + strings.TrimSuffix(strings.Repeat(one+" ", 200), " ")
-	byComma := prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
+	const prose = 65536
+	bySpace := citationsAfterProse(" ", prose)
+	byComma := citationsAfterProse(",", prose)
 	// The least of three readings: another goroutine of the binary only ever adds to what a reading
 	// sees, and the reading's own allocations are the same each time.
 	readBack := func(body string) (read, allocated uint64) {
@@ -243,6 +245,27 @@ func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
 		t.Errorf("citing %d bytes allocated %d bytes with the paths separated by commas and %d separated by spaces, want about the same: a match is copying what it reads back to the nearest space", len(byComma), commaAllocated, spaceAllocated)
 	}
 	t.Logf("read back %d bytes for each body; allocated %d separated by spaces and %d by commas", space, spaceAllocated, commaAllocated)
+	spaceWork := countedCitedIssues(t, countedCitationsBySpace, prose)
+	commaWork := countedCitedIssues(t, countedCitationsByComma, prose)
+	if spaceWork.bytes != len(bySpace) || commaWork.bytes != len(byComma) {
+		t.Fatalf("the counted runs read bodies of %d and %d bytes, want the row's own, %d and %d", spaceWork.bytes, commaWork.bytes, len(bySpace), len(byComma))
+	}
+	if spaceWork.work < 200 {
+		t.Errorf("citing with the paths separated by spaces ran %s, fewer statements than its 200 paths: the counters did not see the reading", spaceWork.text())
+	}
+	if commaWork.work > 2*spaceWork.work {
+		t.Errorf("citing with the paths separated by commas ran %s, and separated by spaces %s; want about the same: a match is walking back to the nearest space",
+			commaWork.text(), spaceWork.text())
+	} else {
+		t.Logf("citing ran %s separated by spaces and %s by commas", spaceWork.text(), commaWork.text())
+	}
+}
+
+// citationsAfterProse is a word of prose bytes, then 200 citations of acme/widgets#7, the word and
+// each citation followed by separator but the last.
+func citationsAfterProse(separator string, prose int) string {
+	const one = "github.com/acme/widgets/issues/7"
+	return strings.Repeat("a", prose) + separator + strings.TrimSuffix(strings.Repeat(one+separator, 200), separator)
 }
 
 // allocatedBy is the bytes the process allocated on the heap while op ran (runtime.MemStats's

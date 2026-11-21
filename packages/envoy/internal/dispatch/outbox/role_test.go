@@ -419,7 +419,11 @@ func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 		}
 	}
 	update(&narrowed, "narrow")
-	restore := sync.OnceFunc(func() { update(&capturing, "restore") })
+	// The restore is not a sync.OnceFunc: update fails t with Fatalf, whose runtime.Goexit inside
+	// one becomes a panic with a nil argument. sync.Once.Do lets the goroutine end and counts the
+	// restore done, so a restore that failed is not tried again by the cleanup's call.
+	var restored sync.Once
+	restore := func() { restored.Do(func() { update(&capturing, "restore") }) }
 	t.Cleanup(restore)
 	return restore
 }

@@ -419,6 +419,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		}
 		finalizing := make(chan struct{})
 		releaseFinalizer := make(chan struct{})
+		release := sync.OnceFunc(func() { close(releaseFinalizer) })
 		hook := func() {
 			close(finalizing)
 			<-releaseFinalizer
@@ -431,6 +432,17 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			stopIntakes(&runs, &row.holder.intake.heldDurable)
 			close(closed)
 		}()
+		// A failure from here to the release leaves the finalizer held in the hook and the stop
+		// waiting for it. These cleanups run first, in the reverse of this order: they release the
+		// finalizer, thaw the holder's link should the row not have reached that yet, and wait for
+		// the stop to return before the cleanups above close the pool it releases its hold through;
+		// a give-up of that wait once the row has failed is logged rather than failed again
+		// (failOnce).
+		t.Cleanup(func() {
+			testwait.Receive(failOnce{t}, "StartIntakes' stop to return once the row's cleanup released its finalizer", closed)
+		})
+		t.Cleanup(row.thaw)
+		t.Cleanup(release)
 		testnats.RequireLockHeld(t, row.conn)
 		row.thaw()
 		testwait.Receive(t, "the client's close to settle the pending hand-back", finalizing)
@@ -442,7 +454,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if !holdLive(t, row.pool) {
 			t.Fatal("the hold was released before the finalizer's release step")
 		}
-		close(releaseFinalizer)
+		release()
 		testwait.Receive(t, "StartIntakes' stop to return once the finalizer is released", closed)
 		if holdLive(t, row.pool) {
 			t.Fatal("the pending hand-back's finalizer released but left its hold live: shutdown could close the pool before releasing it")

@@ -333,12 +333,13 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
 	fake := newJobsFake(t)
-	entered, release := make(chan struct{}), make(chan struct{})
+	entered, released := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(released) })
 	fake.mu.Lock()
 	fake.production = map[string]any{"name": "widgets-release / widgets-release", "started_at": "2026-09-03T12:05:00Z", "completed_at": nil, "conclusion": nil}
 	fake.answer = func(w http.ResponseWriter, r *http.Request) bool {
 		close(entered)
-		<-release
+		<-released
 		return false
 	}
 	fake.mu.Unlock()
@@ -347,6 +348,13 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 	jobs.receive(ctx, jobPayload("acme/widgets", 500))
 	read := make(chan struct{})
 	go func() { defer close(read); clock.Advance(jobQuiet) }()
+	// After the fake's server, so they run before its Close, which waits for the handler held at
+	// GitHub: a failure before the release releases the read and waits for the move that ran it,
+	// and a give-up of that wait once the row has failed is logged rather than failed again.
+	t.Cleanup(func() {
+		testwait.Receive(failOnce{t}, "the move that ran the job intake's read to return once the row's cleanup released it", read)
+	})
+	t.Cleanup(release)
 	testwait.Receive(t, "the job intake's read, which the move fires, to reach GitHub", entered)
 
 	// The run's end, as Intake writes it: the run concluded and every job finished.
@@ -365,7 +373,7 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 	}, true); err != nil {
 		t.Fatalf("store the ended run's jobs: %v", err)
 	}
-	close(release)
+	release()
 	testwait.Receive(t, "the move that ran the job intake's read to return once the read was released", read)
 
 	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 500)

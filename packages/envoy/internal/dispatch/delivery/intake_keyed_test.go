@@ -171,10 +171,14 @@ func runIntake(t *testing.T, intake *Intake) (stop func()) {
 		defer close(done)
 		intake.Run(ctx)
 	}()
-	stop = sync.OnceFunc(func() {
+	// The stop is not a sync.OnceFunc: a give-up inside one ends the goroutine (runtime.Goexit) in
+	// the once, which sync.OnceFunc turns into a panic with a nil argument. cancel may be called
+	// again, and a second receive finds done closed; a give-up once the row has failed is logged
+	// rather than failed again (failOnce).
+	stop = func() {
 		cancel()
-		testwait.Receive(t, "the intake's Run to return once its context ended", done)
-	})
+		testwait.Receive(failOnce{t}, "the intake's Run to return once its context ended", done)
+	}
 	t.Cleanup(stop)
 	return stop
 }
