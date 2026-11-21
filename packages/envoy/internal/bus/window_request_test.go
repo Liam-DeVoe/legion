@@ -127,6 +127,7 @@ func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 // it has settled its flush, so it settles a flush that beat its timeout, every time. The frozen
 // Request below keeps its timer.
 func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	server, _, client := requestClient(t, bus.WithRequestExpiry(func(time.Time) (<-chan time.Time, func()) {
 		switch requests.Add(1) {
