@@ -14,16 +14,18 @@ import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser, LandingResponse } from "./api/types";
 import { AuthGate } from "./app";
 // The Answers, document and project pages are lazy routes of the app, the Inbox it draws at `/` a
-// chunk of its own (`features/inbox/InboxHost.tsx`), and the margin a lazy part of its shell
-// (`MarginColumn.tsx`, which mounts it on every route). A page module's first compile is not what
-// a wait is for, and a load a row starts and ends before lands in a later row as React's report of
-// a suspended resource outside `act`. So the modules are loaded here, with the test file, and no
-// row starts or waits for that load.
+// chunk of its own (`features/inbox/InboxHost.tsx`), and the margin and the reference preview lazy
+// parts of its shell (`MarginColumn.tsx`, which mounts the margin on every route, and
+// `features/refs/RefPreviewLayer.tsx`, which mounts the card's host once the page has drawn). A
+// page module's first compile is not what a wait is for, and a load a row starts and ends before
+// lands in a later row as React's report of a suspended resource outside `act`. So the modules are
+// loaded here, with the test file, and no row starts or waits for that load.
 import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
 import "./features/inbox/inbox-chunk";
 import "./features/margin/Margin";
 import "./features/project/ProjectPage";
+import "./features/refs/RefPreview";
 // Every kind of write is a chunk of its own (`features/writes/kinds.ts`), which the store's take-up
 // of what a reload kept waits for from the sign-in on, and every write a row presses waits for that
 // take-up (`Writes.resume`, `Writes.run`). The rows here are about the writes, not about that

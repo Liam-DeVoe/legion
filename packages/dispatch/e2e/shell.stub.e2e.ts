@@ -106,9 +106,13 @@ test("a page chunk that fails on every load reloads three times and then shows t
   // Every download of the issue page's code fails, the way a request does when the network
   // changes under it (a VPN reconnect, a Wi-Fi switch).
   await page.route(/\/assets\/IssuePage-[^/]+\.js$/u, (route) => route.abort());
+  // Each document the tab asks for, the first and every reload: a `load` event would undercount,
+  // because the entry starts the page's chunk beside the landing read (`preloadRouteChunk`,
+  // `web/src/app.tsx`), so its failure can reload the tab before that document's `load` fires,
+  // and a document a reload replaces before its `load` never fires one.
   let loads = 0;
-  page.on("load", () => {
-    loads += 1;
+  page.on("request", (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) loads += 1;
   });
 
   await page.goto(`/issues/${scene.unreachable}`);
