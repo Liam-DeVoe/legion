@@ -29,18 +29,12 @@ import {
   whoAmIQuery,
 } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
-import type {
-  InboxReadResponse,
-  InboxRow,
-  MeInboxEntry,
-  MeInboxResponse,
-  MyReplyRow,
-} from "../../api/types";
+import type { InboxReadResponse, InboxRow, MeInboxResponse, MyReplyRow } from "../../api/types";
 import { issuePriority } from "../issue/issue-priority";
 import { useIssueAssignee } from "../issue/useIssueAssignee";
 import { useIssuePriority } from "../issue/useIssuePriority";
 import { replyRow } from "../threads/replies-fixture";
-import { issueAsk } from "./inbox-fixture";
+import { issueAsk, oneReadAnswer } from "./inbox-fixture";
 import { markAllReadBody, useMarkAllRead } from "./mark-all";
 import { useInboxAsks } from "./one-read";
 import { useOutstandingAnswerWrite } from "./outstanding-answers";
@@ -62,33 +56,7 @@ afterEach(() => {
 
 /** One answer of the one read, its entries carrying `asks` and `threads`. */
 function oneRead(asks: readonly InboxRow[], threads: readonly MyReplyRow[] = []): MeInboxResponse {
-  const entries: MeInboxEntry[] = [
-    ...asks.map(
-      (ask): MeInboxEntry => ({
-        ask,
-        moment: ask.created_at,
-        node: { id: ask.id, kind: "ask" },
-        relations: [],
-      })
-    ),
-    ...threads.map(
-      (thread): MeInboxEntry => ({
-        moment: thread.reply.created_at,
-        node: { id: thread.thread_id, kind: "comment" },
-        relations: [],
-        thread,
-      })
-    ),
-  ];
-  return {
-    as_of: AS_OF,
-    entries,
-    horizon: 1,
-    limit: 0,
-    offset: 0,
-    person: "alice",
-    total: entries.length,
-  };
+  return oneReadAnswer([...asks, ...threads], { asOf: AS_OF });
 }
 
 /** What every client of this file is made with: a read the row seeds is never stale, so nothing

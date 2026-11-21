@@ -7,8 +7,17 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../api/client";
 import { whoAmIQuery } from "../api/queries";
-import type { CredentialPendingRow, IssueSummary, Priorities, Project } from "../api/types";
+import type {
+  CredentialPendingRow,
+  InboxRow,
+  IssueSummary,
+  MyReplyRow,
+  Priorities,
+  Project,
+} from "../api/types";
+import { answerOneRead } from "../features/inbox/inbox-fixture";
 import { Sidebar } from "../features/sidebar/Sidebar";
+import { replyRow } from "../features/threads/replies-fixture";
 
 /** The summary call the rail reads (`?summary=true`): the two fault counts, and `empty` where
  *  the deployment has written no priority at all. Neither answer carries a priority row. */
@@ -80,15 +89,18 @@ function project(overrides: Partial<Project> = {}): Project {
 
 /** `pending` is the broker's list of credential requests waiting on the viewer; without it this
  *  Dispatch has no broker (the list answers `null`). `priorities` is what the rail's summary
- *  call answers; by default this deployment has written none. */
+ *  call answers; by default this deployment has written none. `threads` are the reader's Reply
+ *  rows. The reader's own asks and threads reach the Inbox count through the one read, which the
+ *  Inbox draws them from, and every ask through the Inbox read. */
 function renderSidebar(
   pathname = "/",
   pending?: CredentialPendingRow[],
-  priorities: Priorities = summary(0, 0, false)
+  priorities: Priorities = summary(0, 0, false),
+  threads: readonly MyReplyRow[] = []
 ) {
   const listPriorities = spyOn(api, "listPriorities").mockResolvedValue(priorities);
   railSpies.push(listPriorities);
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([
+  const asks: InboxRow[] = [
     {
       anchor: null,
       answer: null,
@@ -206,7 +218,11 @@ function renderSidebar(
       },
       urgency: "med",
     },
-  ]);
+  ];
+  railSpies.push(
+    answerOneRead({ asks: asks.filter((ask) => ask.waiting_on_person === "alice"), threads })
+  );
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(asks);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(
     pending === undefined ? null : { pending }
   );
@@ -376,18 +392,16 @@ for (const [unread, name] of [
       kind: "user",
       login: "alice",
     });
-    const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
-      as_of: "2026-10-12T00:00:00Z",
-      limit: 1,
-      offset: 0,
-      rows: [],
-      total: unread,
-    });
-    const sidebar = renderSidebar("/");
+    const sidebar = renderSidebar(
+      "/",
+      undefined,
+      undefined,
+      Array.from({ length: unread }, (_, index) => replyRow(`c${index}`))
+    );
 
     try {
       await waitFor(() =>
-        expect(listMyReplies).toHaveBeenCalledWith({ kind: ["reply", "agent"], limit: 1 })
+        expect(api.getMeInbox).toHaveBeenCalledWith({ limit: 1, state: "unread" })
       );
       await waitFor(() =>
         expect(screen.getByRole("link", { name: /^Inbox/ }).textContent).toBe(name)
@@ -401,7 +415,6 @@ for (const [unread, name] of [
       sidebar.listIssues.mockRestore();
       sidebar.listProjects.mockRestore();
       whoAmI.mockRestore();
-      listMyReplies.mockRestore();
     }
   });
 }

@@ -63,9 +63,9 @@ const THEMES = ["light", "dark"] as const;
  *  column at. */
 const VIEWPORT = { height: 800, width: 1280 };
 
-/** The Inbox as it stands, with the one read's opt-in on (`?one=1`, as e2e/one-inbox.e2e.ts opens
- *  it): an open ask waiting on the reader, a comment thread of theirs a session answered (a Reply
- *  row), and a session's reply to a message they sent it (an Agent row). */
+/** The Inbox as it stands, drawn from the one read, its default: an open ask waiting on the
+ *  reader, a comment thread of theirs a session answered (a Reply row), and a session's reply to
+ *  a message they sent it (an Agent row). */
 const inboxToday: Scene<{ readonly rows: readonly string[] }> = {
   name: "page-inbox-today",
   async seed() {
@@ -89,7 +89,7 @@ const inboxToday: Scene<{ readonly rows: readonly string[] }> = {
     });
     return { rows: [ask.id, replyRowId(thread), agentRowId(agent)] };
   },
-  path: () => "/?one=1",
+  path: () => "/",
   async act(page, { rows }) {
     await expect(page.getByRole("heading", { exact: true, level: 1, name: "Inbox" })).toBeVisible();
     await expect(inboxList(page).locator("[data-inbox-row]")).toHaveCount(rows.length);

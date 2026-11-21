@@ -474,7 +474,8 @@ function InboxCardRow({
   /** The same registration for this row's snooze write; the Inbox keeps a live row rendered
    *  even when its band is folded, so `Snoozing…` and a refusal survive the fold. */
   onSnoozeLive: (askId: string, live: boolean) => void;
-  /** Timestamp of the Inbox snapshot that supplied this row's initial thread. */
+  /** When the read that supplied this row's initial thread answered: the one read for the
+   *  reader's own asks, the Inbox read for every other (`useInboxAsks`'s `updatedAtOf`). */
   threadUpdatedAt: number;
   /** The signed-in person's lowercase email; "Assign to me" writes it. */
   viewer: string;
@@ -1824,7 +1825,7 @@ export function Inbox({
         onAnswered={recordAnswered}
         onAssignLive={onAssignLive}
         onSnoozeLive={onSnoozeLive}
-        threadUpdatedAt={inbox.dataUpdatedAt}
+        threadUpdatedAt={inboxAsks.updatedAtOf(row.ask.id, inbox.dataUpdatedAt)}
         viewer={viewer}
       />
     ) : (

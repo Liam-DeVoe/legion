@@ -8,6 +8,8 @@ import { ApiError, api } from "../api/client";
 import type { Agent, InboxRow, IssueDetails, UserAgentState } from "../api/types";
 import { AuthGate } from "../app";
 import { liveViewsOf } from "../features/agent-view/live-views";
+import { oneReadReply } from "../features/inbox/inbox-fixture";
+import { replyRow } from "../features/threads/replies-fixture";
 import { jump, onFakeClock } from "./fake-clock";
 import { answerAgentStates } from "./send-answers";
 // The issue page is a lazy route of the app, and the live view's page and the margin lazy parts
@@ -87,6 +89,7 @@ const issue: IssueDetails = {
 const originalApi = {
   getAsk: api.getAsk,
   getInbox: api.getInbox,
+  getMeInbox: api.getMeInbox,
   getIssue: api.getIssue,
   getIssueSubscribers: api.getIssueSubscribers,
   getMyAgentState: api.getMyAgentState,
@@ -96,7 +99,6 @@ const originalApi = {
   listComments: api.listComments,
   listIssueAsks: api.listIssueAsks,
   listIssues: api.listIssues,
-  listMyReplies: api.listMyReplies,
   listProjectArchitectureSources: api.listProjectArchitectureSources,
   listProjects: api.listProjects,
   listRepoProjects: api.listRepoProjects,
@@ -118,6 +120,9 @@ function setViewport(width: number): void {
     }) as MediaQueryList) as typeof window.matchMedia;
 }
 
+/** The shell at `width` over `inbox` as every ask the Inbox read lists, with `unreadThreads` of
+ *  the reader's threads unread. The reader's own asks and threads reach the header's count
+ *  through the one read, which the Inbox draws them from. */
 function renderShellAt(
   width: number,
   inbox: InboxRow[] = [],
@@ -126,13 +131,9 @@ function renderShellAt(
 ): QueryClient {
   setViewport(width);
   api.whoAmI = async () => ({ event_head: "0", kind: "user", login: "alice" });
-  api.listMyReplies = async (query) => ({
-    as_of: "2026-10-12T00:00:00Z",
-    limit: query.limit ?? 0,
-    offset: 0,
-    rows: [],
-    total: unreadThreads,
-  });
+  const threads = Array.from({ length: unreadThreads }, (_, index) => replyRow(`c${index}`));
+  const asks = inbox.filter((ask) => ask.waiting_on_person === "alice");
+  api.getMeInbox = async (query = {}) => oneReadReply(query, { asks, threads });
   api.listIssues = async () => [
     {
       advances: [],

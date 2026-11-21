@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 
 import { inboxQuery, projectsQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
+import { invalidateMeInbox } from "./one-read-cache";
 
 /** A document ask's artifact; the server always sets it, so its absence is a contract error. */
 export function askArtifactId(ask: Ask): string {
@@ -12,7 +13,8 @@ export function askArtifactId(ask: Ask): string {
 }
 
 /**
- * The reads that carry an ask besides its own thread: the Inbox, and the lists of whatever owns
+ * The reads that carry an ask besides its own thread: the Inbox - its own read and the one read
+ * the page draws the reader's own asks from (`one-read-cache.ts`) - and the lists of whatever owns
  * it - its issue, or the project document it is written on.
  *
  * Every write that moves whose turn an ask is, or whom it waits on, invalidates all of them
@@ -23,6 +25,7 @@ export function askArtifactId(ask: Ask): string {
  */
 export function invalidateOwnerReads(queryClient: QueryClient, ask: Ask): void {
   void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
+  invalidateMeInbox(queryClient);
   if (ask.issue_key === null) {
     void queryClient.invalidateQueries({ queryKey: ["artifact", askArtifactId(ask)] });
     void queryClient.invalidateQueries({ queryKey: projectsQuery().queryKey });

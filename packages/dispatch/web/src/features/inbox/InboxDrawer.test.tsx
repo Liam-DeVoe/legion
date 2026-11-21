@@ -10,7 +10,7 @@ import type { InboxRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { InboxDrawer } from "./InboxDrawer";
-import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
+import { installInboxApiMocks, issueAsk, mockAskReads, mockInboxReads } from "./inbox-fixture";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -57,7 +57,7 @@ function renderDrawer() {
 
 test("opens over the triggering control, moves initial focus to Close, and returns it on close", async () => {
   const user = userEvent.setup();
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
+  const getInbox = mockInboxReads([issueAsk()]);
   const getAsk = mockAskReads([issueAsk()]);
   const view = renderDrawer();
   try {
@@ -91,7 +91,7 @@ test("picking an assignee inside the drawer lists that person there, writes noth
     question: "Bob's question?",
   });
   const rows = [mine, bobs];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getInbox = mockInboxReads(rows);
   const getAsk = mockAskReads(rows);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
     { login: "alice" },
@@ -127,7 +127,7 @@ test("picking an assignee inside the drawer lists that person there, writes noth
 test("Snooze inside the drawer folds the row into Later, same as the Inbox page", async () => {
   const user = userEvent.setup();
   let served: InboxRow[] = [issueAsk()];
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getInbox = mockInboxReads(() => served);
   const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(async (id, until) => {
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
     return { snoozed_until: until };
@@ -162,7 +162,7 @@ test("Answering an ask inside the drawer submits and removes it from the list, s
   const user = userEvent.setup();
   const withOptions = issueAsk({ options: [{ label: "Ship" }, { label: "Hold" }] });
   let served = [withOptions];
-  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getInbox = mockInboxReads(() => served);
   const getAsk = mockAskReads([withOptions]);
   const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
     served = [];
@@ -193,7 +193,7 @@ test("Answering an ask inside the drawer submits and removes it from the list, s
 
 test("Escape with a row focused backs out of the row first; only a second Escape closes the drawer", async () => {
   const user = userEvent.setup();
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
+  const getInbox = mockInboxReads([issueAsk()]);
   const getAsk = mockAskReads([issueAsk()]);
   const view = renderDrawer();
   try {
@@ -233,7 +233,7 @@ test("at 1440 px the drawer is still today's Inbox: the card in the row, no read
   };
   const was = window_.innerWidth;
   window_.happyDOM.setViewport({ width: 1440 });
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
+  const getInbox = mockInboxReads([issueAsk()]);
   const getAsk = mockAskReads([issueAsk()]);
   const view = renderDrawer();
   try {

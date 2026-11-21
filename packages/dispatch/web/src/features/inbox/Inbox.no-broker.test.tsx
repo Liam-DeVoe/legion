@@ -13,6 +13,7 @@ import { refreshQueries } from "../../api/query-refresh";
 import type { CredentialPendingResponse } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { Inbox } from "./Inbox";
+import { answerOneRead } from "./inbox-fixture";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -29,6 +30,7 @@ const never = () => Promise.withResolvers<never>().promise;
 
 let whoAmI: Mock<typeof api.whoAmI>;
 let getInbox: Mock<typeof api.getInbox>;
+let getMeInbox: Mock<typeof api.getMeInbox>;
 let getCredentialPending: Mock<typeof api.getCredentialPending>;
 let getCredentialCapabilities: Mock<typeof api.getCredentialCapabilities>;
 beforeEach(() => {
@@ -39,6 +41,7 @@ beforeEach(() => {
     login: "alice",
   });
   getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  getMeInbox = answerOneRead({});
   getCredentialPending = spyOn(api, "getCredentialPending")
     .mockResolvedValueOnce(null)
     .mockImplementation(never);
@@ -51,6 +54,7 @@ beforeEach(() => {
 afterEach(() => {
   whoAmI.mockRestore();
   getInbox.mockRestore();
+  getMeInbox.mockRestore();
   getCredentialPending.mockRestore();
   getCredentialCapabilities.mockRestore();
   focusManager.setFocused(undefined);
@@ -90,6 +94,11 @@ function watchEmptyState(): { blinks: number; stop: () => void } {
 test("a Dispatch with no broker is asked once per load, even when that answer beats the inbox list", async () => {
   const inbox = Promise.withResolvers<[]>();
   getInbox.mockReturnValue(inbox.promise);
+  // The reader's own rows are the one read's, which answers no sooner than the Inbox read.
+  answerOneRead(async () => {
+    await inbox.promise;
+    return {};
+  });
   const view = render(shell(productionQueryClient(), <Inbox />));
   try {
     await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(1));

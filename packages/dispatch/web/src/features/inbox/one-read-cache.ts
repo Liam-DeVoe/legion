@@ -86,9 +86,10 @@ export function restoreMeInbox(
   for (const [key, data] of snapshot ?? []) queryClient.setQueryData(key, data);
 }
 
-/** Reads the one read again, which a write asks for once the server has decided it. */
-export function invalidateMeInbox(queryClient: QueryClient): void {
-  void queryClient.invalidateQueries({ queryKey: meInboxKey });
+/** Reads the one read again, which a write asks for once the server has decided it; a write
+ *  that stays pending until its reads land awaits the answer. */
+export function invalidateMeInbox(queryClient: QueryClient): Promise<void> {
+  return queryClient.invalidateQueries({ queryKey: meInboxKey });
 }
 
 /** Edits every cached read of the one read: each answer's entries by `edit`, and the unread count

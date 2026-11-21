@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,21 +9,18 @@ import { realClock, settle } from "../../__tests__/fake-clock";
 import { answerInboxReads } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
-import {
-  inboxThreadsQuery,
-  myRepliesCountQuery,
-  myRepliesKey,
-  whoAmIQuery,
-} from "../../api/queries";
+import { ApiError, NetworkError } from "../../api/client";
+import { meInboxCountQuery, meInboxQuery, myRepliesKey, whoAmIQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
-import type { DispatchEvent, MyRepliesResponse, MyReplyRow } from "../../api/types";
+import type { DispatchEvent, MeInboxResponse, MyReplyRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { InboxBar, type InboxFilters } from "./InboxBar";
+import { answerOneRead, oneReadAnswer, oneReadReply } from "./inbox-fixture";
 import type { InboxListRow } from "./list-row";
 import { MARK_ALL_REFUSED_TEXT, markAllReadBody, marksThread, useMarkAllRead } from "./mark-all";
+import { meInboxThreads } from "./one-read-rows";
 import { useUnreadThreadCount } from "./useInboxCount";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -36,42 +33,30 @@ afterEach(cleanup);
 
 const AS_OF = "2026-10-12T02:00:00Z";
 
-function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
-  return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
-}
-
-/** What `GET /api/v1/me/replies` answers while Dispatch holds `rows`: the Inbox's list, or for
- *  the one-row page the shared count reads (`limit: 1`, `myRepliesCountQuery`) the number of
- *  them still unread. */
-function repliesAnswer(
-  page: { readonly limit?: number },
-  rows: readonly MyReplyRow[]
-): MyRepliesResponse {
-  if (page.limit !== 1) return threadsRead(rows);
-  return { ...threadsRead([]), limit: 1, total: rows.filter((row) => row.unread).length };
+/** The one read's answer of its Inbox while Dispatch holds `rows` as the reader's threads. */
+function threadsRead(rows: readonly MyReplyRow[]): MeInboxResponse {
+  return oneReadAnswer(rows, { asOf: AS_OF });
 }
 
 function noop(): void {}
 
 /**
  * The bar over one list, with the one number the sidebar's Inbox count and the compact header's
- * Inbox link both read beside it (`useUnreadThreadCount` over `myRepliesCountQuery`, which is
- * what `Sidebar.tsx` and `app.tsx` each add their Needs-you count to). The bar is the surface
- * the button and its refusal live on; the press itself is the Inbox's own hook.
+ * Inbox link both read beside it (`useUnreadThreadCount` over the one read's `meInboxCountQuery`,
+ * which is what `Sidebar.tsx` and `app.tsx` each add their Needs-you count to). The list is the
+ * reader's Reply and Agent rows of the one read, which the Inbox draws them from. The bar is the
+ * surface the button and its refusal live on; the press itself is the Inbox's own hook.
  */
 function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
-  const read = useQuery(inboxThreadsQuery());
-  const rows: readonly InboxListRow[] = (read.data?.rows ?? []).map((thread) => ({
-    kind: "thread",
-    thread,
-  }));
+  const threads = meInboxThreads(useQuery(meInboxQuery()).data);
+  const rows: readonly InboxListRow[] = threads.map((thread) => ({ kind: "thread", thread }));
   const markAll = useMarkAllRead({ asOf: AS_OF, filters, rows });
   const count = useUnreadThreadCount();
   return (
     <>
       <output data-testid="inbox-count">{count}</output>
       <output data-testid="listed">{rows.length}</output>
-      <output data-testid="unread">{(read.data?.rows ?? []).filter((t) => t.unread).length}</output>
+      <output data-testid="unread">{threads.filter((t) => t.unread).length}</output>
       <InboxBar
         agentToken={undefined}
         assignees={undefined}
@@ -117,8 +102,8 @@ function renderBar(
   client: QueryClient = new QueryClient(CLIENT_OPTIONS)
 ) {
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  client.setQueryData(inboxThreadsQuery().queryKey, threadsRead(rows));
-  client.setQueryData(myRepliesCountQuery().queryKey, count);
+  client.setQueryData(meInboxQuery().queryKey, threadsRead(rows));
+  client.setQueryData(meInboxCountQuery().queryKey, count);
   const tree = (narrowed: InboxFilters | undefined): ReactNode => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -242,17 +227,17 @@ test("a read of the list asked before Mark all read does not put back the rows t
   marked.mockReturnValue(settle.promise);
   const before = [replyRow("c1"), replyRow("c2")];
   const after = [replyRow("c1", { unread: false }), replyRow("c2", { unread: false })];
-  const asked = Promise.withResolvers<MyRepliesResponse>();
-  const listMyReplies = spyOn(api, "listMyReplies")
-    .mockImplementationOnce(() => asked.promise)
-    .mockImplementation(async (page) => repliesAnswer(page, after));
+  const asked = Promise.withResolvers<MeInboxResponse>();
+  const getMeInbox = answerOneRead({ threads: after }, { asOf: AS_OF }).mockImplementationOnce(
+    () => asked.promise
+  );
   try {
     const { client } = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
     let read = Promise.resolve();
     await act(async () => {
-      read = client.refetchQueries({ queryKey: inboxThreadsQuery().queryKey });
+      read = client.refetchQueries({ queryKey: meInboxQuery().queryKey });
     });
-    expect(listMyReplies).toHaveBeenCalledTimes(1);
+    expect(getMeInbox).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: "Mark all read" }));
     await waitFor(() => expect(unread()).toBe("0"));
@@ -264,18 +249,18 @@ test("a read of the list asked before Mark all read does not put back the rows t
     expect(unread()).toBe("0");
     expect(listed()).toBe("2");
     // The list the press asked for again waits for its answer, and has asked Dispatch nothing.
-    expect(listMyReplies).toHaveBeenCalledTimes(1);
+    expect(getMeInbox).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       settle.resolve({ marked: 2 });
     });
     // That read and the press's own refresh of the list and the count each ask after the mark.
-    await waitFor(() => expect(listMyReplies).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(getMeInbox).toHaveBeenCalledTimes(4));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(unread()).toBe("0");
     expect(inboxCount()).toBe("0");
   } finally {
-    listMyReplies.mockRestore();
+    getMeInbox.mockRestore();
   }
 });
 
@@ -290,39 +275,39 @@ test("a read of the unread count asked before Mark all read does not put back th
   marked.mockReturnValue(settle.promise);
   const before = [replyRow("c1"), replyRow("c2")];
   const after = [replyRow("c1", { unread: false }), replyRow("c2", { unread: false })];
-  const asked = Promise.withResolvers<MyRepliesResponse>();
-  const listMyReplies = spyOn(api, "listMyReplies")
-    .mockImplementationOnce(() => asked.promise)
-    .mockImplementation(async (page) => repliesAnswer(page, after));
+  const asked = Promise.withResolvers<MeInboxResponse>();
+  const getMeInbox = answerOneRead({ threads: after }, { asOf: AS_OF }).mockImplementationOnce(
+    () => asked.promise
+  );
   try {
     const { client } = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
     let read = Promise.resolve();
     await act(async () => {
-      read = client.refetchQueries({ queryKey: myRepliesCountQuery().queryKey });
+      read = client.refetchQueries({ queryKey: meInboxCountQuery().queryKey });
     });
-    expect(listMyReplies).toHaveBeenCalledTimes(1);
+    expect(getMeInbox).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: "Mark all read" }));
     await waitFor(() => expect(inboxCount()).toBe("0"));
     // The read answers as Dispatch held the count when it was asked: two unread.
     await act(async () => {
-      asked.resolve(repliesAnswer({ limit: 1 }, before));
+      asked.resolve(oneReadReply({ state: "unread" }, { threads: before }, { asOf: AS_OF }));
       await read;
     });
     expect(inboxCount()).toBe("0");
     // The count the press asked for again waits for its answer, and has asked Dispatch nothing.
-    expect(listMyReplies).toHaveBeenCalledTimes(1);
+    expect(getMeInbox).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       settle.resolve({ marked: 2 });
     });
     // That read and the press's own refresh of the list and the count each ask after the mark.
-    await waitFor(() => expect(listMyReplies).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(getMeInbox).toHaveBeenCalledTimes(4));
     await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(inboxCount()).toBe("0");
     expect(unread()).toBe("0");
   } finally {
-    listMyReplies.mockRestore();
+    getMeInbox.mockRestore();
   }
 });
 
@@ -343,9 +328,7 @@ test("a read of the list or the count asked while Mark all read is out waits for
     replyRow("c3"),
   ];
   let served = before;
-  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
-    repliesAnswer(page, served)
-  );
+  const getMeInbox = answerOneRead(() => ({ threads: served }), { asOf: AS_OF });
   try {
     const { client } = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
     await user.click(screen.getByRole("button", { name: "Mark all read" }));
@@ -356,9 +339,9 @@ test("a read of the list or the count asked while Mark all read is out waits for
       void client.invalidateQueries({ queryKey: myRepliesKey });
     });
     // Neither read has asked Dispatch anything, though both have started.
-    expect(listMyReplies).not.toHaveBeenCalled();
-    expect(client.getQueryState(inboxThreadsQuery().queryKey)?.fetchStatus).toBe("fetching");
-    expect(client.getQueryState(myRepliesCountQuery().queryKey)?.fetchStatus).toBe("fetching");
+    expect(getMeInbox).not.toHaveBeenCalled();
+    expect(client.getQueryState(meInboxQuery().queryKey)?.fetchStatus).toBe("fetching");
+    expect(client.getQueryState(meInboxCountQuery().queryKey)?.fetchStatus).toBe("fetching");
     expect(unread()).toBe("0");
     expect(inboxCount()).toBe("0");
 
@@ -367,12 +350,12 @@ test("a read of the list or the count asked while Mark all read is out waits for
       settle.resolve({ marked: 2 });
     });
     await waitFor(() => expect(listed()).toBe("3"));
-    expect(listMyReplies).toHaveBeenCalled();
+    expect(getMeInbox).toHaveBeenCalled();
     await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(unread()).toBe("1");
     expect(inboxCount()).toBe("1");
   } finally {
-    listMyReplies.mockRestore();
+    getMeInbox.mockRestore();
   }
 });
 
@@ -420,9 +403,7 @@ test("a reply thread somebody else starts while Mark all read is out shows once 
   marked.mockReturnValue(settled.promise);
   const before = [replyRow("c1"), replyRow("c2")];
   let served = before;
-  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
-    repliesAnswer(page, served)
-  );
+  const getMeInbox = answerOneRead(() => ({ threads: served }), { asOf: AS_OF });
   try {
     const { client } = renderBar(before, 2, undefined, new DispatchQueryClient(CLIENT_OPTIONS));
     await user.click(screen.getByRole("button", { name: "Mark all read" }));
@@ -445,9 +426,9 @@ test("a reply thread somebody else starts while Mark all read is out shows once 
     });
     // None of those events is the press's: both reads have started, and neither has asked
     // Dispatch.
-    expect(listMyReplies).not.toHaveBeenCalled();
-    expect(client.getQueryState(inboxThreadsQuery().queryKey)?.fetchStatus).toBe("fetching");
-    expect(client.getQueryState(myRepliesCountQuery().queryKey)?.fetchStatus).toBe("fetching");
+    expect(getMeInbox).not.toHaveBeenCalled();
+    expect(client.getQueryState(meInboxQuery().queryKey)?.fetchStatus).toBe("fetching");
+    expect(client.getQueryState(meInboxCountQuery().queryKey)?.fetchStatus).toBe("fetching");
     expect(listed()).toBe("2");
 
     await act(async () => {
@@ -458,7 +439,7 @@ test("a reply thread somebody else starts while Mark all read is out shows once 
     // press's two rows read, and bob's thread unread.
     await waitFor(() => expect(listed()).toBe("3"));
     await waitFor(() => expect(client.isFetching()).toBe(0));
-    expect(listMyReplies).toHaveBeenCalled();
+    expect(getMeInbox).toHaveBeenCalled();
     expect(client.isMutating()).toBe(1);
     expect(unread()).toBe("1");
     expect(inboxCount()).toBe("1");
@@ -469,7 +450,7 @@ test("a reply thread somebody else starts while Mark all read is out shows once 
     await waitFor(() => expect(client.isMutating()).toBe(0));
     await waitFor(() => expect(client.isFetching()).toBe(0));
   } finally {
-    listMyReplies.mockRestore();
+    getMeInbox.mockRestore();
   }
 });
 
@@ -500,10 +481,9 @@ test("a stopped press reads the list again rather than saying nothing was marked
   answerInboxReads().mockRejectedValue(
     new NetworkError("/api/v1/me/inbox/read", new TypeError("Failed to fetch"))
   );
-  const reread = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
-    page.limit === 1
-      ? threadsRead([])
-      : threadsRead([replyRow("c1", { unread: false }), replyRow("c2", { unread: false })])
+  const reread = answerOneRead(
+    { threads: [replyRow("c1", { unread: false }), replyRow("c2", { unread: false })] },
+    { asOf: AS_OF }
   );
   const { client } = renderBar([replyRow("c1"), replyRow("c2")], 2);
   try {

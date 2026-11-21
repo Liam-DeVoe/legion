@@ -268,10 +268,10 @@ test("the comparison page states the gate in plain words", async ({ browser }, t
   }
 });
 
-/** The Inbox page's opt-in to the one read, which these rows open the page with while the
- *  default still names the reads it replaces. The default flip (T17) empties it, and the rows run
- *  as they are on the default. */
-const ONE_READ: Readonly<Record<string, string>> = { one: "1" };
+/** The Inbox page's opt-in to the one read, which these rows opened the page with while the
+ *  default still named the reads it replaces. The default is the one read now (T17), so it is
+ *  empty and the rows run as they are on the default. */
+const ONE_READ: Readonly<Record<string, string>> = {};
 
 /** `path` with `params`, and with the opt-in to the one read. */
 function address(path: string, params: Readonly<Record<string, string>> = {}): string {

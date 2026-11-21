@@ -42,7 +42,7 @@ export const inboxQuery = () =>
   queryOptions({
     queryKey: ["inbox"],
     queryFn: async ({ client }) => {
-      const fetch = beginInboxFetch(client);
+      const fetch = beginInboxFetch(client, "inbox");
       let asks: InboxRow[] | undefined;
       try {
         asks = await api.getInbox();
@@ -302,11 +302,28 @@ export const meInboxKey = [...myRepliesKey, "one-read"] as const;
 
 /** Every row of the reader's own Inbox from the one read, in one unpaged read of its `inbox`
  *  state: the open asks that wait on them, and their Reply and Agent rows, read or not, less what
- *  they have dismissed. The page, its drawer and the Needs-you count read this one key. */
+ *  they have dismissed. The page, its drawer and the Needs-you count read this one key. The
+ *  reader's own ask cards mount their threads from its asks, so its requests count in the
+ *  generations an ask event in flight marks (`ask-thread-freshness.ts`), as the Inbox read's do. */
 export const meInboxQuery = () =>
   queryOptions({
     queryKey: [...meInboxKey, "inbox"],
-    queryFn: () => api.getMeInbox({ state: "inbox" }),
+    queryFn: async ({ client }) => {
+      const fetch = beginInboxFetch(client, "one-read");
+      let answer: MeInboxResponse | undefined;
+      try {
+        answer = await api.getMeInbox({ state: "inbox" });
+        return answer;
+      } finally {
+        const asks =
+          answer === undefined
+            ? undefined
+            : (answer.entries ?? []).flatMap((entry) =>
+                entry.ask === undefined ? [] : [entry.ask]
+              );
+        finishInboxFetch(client, fetch, asks);
+      }
+    },
   });
 
 /** The reader's count of unread threads from the one read, the `total` of its `unread` state on

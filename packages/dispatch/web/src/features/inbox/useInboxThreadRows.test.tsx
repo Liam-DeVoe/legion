@@ -8,8 +8,8 @@
  * never settles - React ends that loop by throwing "Maximum update depth exceeded" and the page
  * draws its error boundary instead of the reader's dismissed threads.
  *
- * Behind the Inbox's opt-in (`one=1` on the page's address) the same rows come from the one read,
- * and the threads' own read is not asked.
+ * The Inbox draws these rows from the one read, with no opt-in (`one=1` on the page's address
+ * is left over from when it was one), and the threads' own read is not asked.
  */
 
 import { afterEach, expect, spyOn, test } from "bun:test";
@@ -19,10 +19,11 @@ import { type ReactNode, useRef } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { dismissedThreadsQuery, whoAmIQuery } from "../../api/queries";
-import type { MeInboxEntry, MeInboxResponse, MyRepliesResponse, MyReplyRow } from "../../api/types";
+import { meInboxDismissedQuery, whoAmIQuery } from "../../api/queries";
+import type { MyReplyRow } from "../../api/types";
 import type { InboxShow } from "../refs/routes";
 import { replyRow } from "../threads/replies-fixture";
+import { answerOneRead, oneReadAnswer } from "./inbox-fixture";
 import { rowId } from "./list-row";
 import { useInboxThreadRows } from "./useInboxThreadRows";
 
@@ -36,21 +37,17 @@ afterEach(() => {
   for (const mock of restores.splice(0)) mock.mockRestore();
 });
 
-function dismissedPage(rows: readonly MyReplyRow[]): MyRepliesResponse {
-  return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
-}
-
-/** A client holding the sign-in read and one settled page of the Dismissed read, so the hook
- *  renders over pages it never has to fetch. */
+/** A client holding the sign-in read and one settled page of the one read's Dismissed view, so
+ *  the hook renders over pages it never has to fetch. */
 function seeded(rows: readonly MyReplyRow[]): QueryClient {
-  restores.push(spyOn(api, "listMyReplies").mockResolvedValue(dismissedPage(rows)));
+  restores.push(answerOneRead({ dismissed: rows }, { asOf: AS_OF }));
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
-  client.setQueryData(dismissedThreadsQuery().queryKey, {
+  client.setQueryData(meInboxDismissedQuery().queryKey, {
     pageParams: [undefined],
-    pages: [dismissedPage(rows)],
+    pages: [oneReadAnswer(rows, { asOf: AS_OF })],
   });
   return client;
 }
@@ -109,24 +106,8 @@ test("the Dismissed pages are flattened once, so a second render over them sets 
 });
 
 /** One answer of the one read holding `rows` as its Reply rows, in that order. */
-function oneReadAnswer(rows: readonly MyReplyRow[]): MeInboxResponse {
-  const entries = rows.map(
-    (thread): MeInboxEntry => ({
-      moment: thread.reply.created_at,
-      node: { id: thread.thread_id, kind: "comment" },
-      relations: [{ at: thread.reply.created_at, direction: "outbound", kind: "participates_in" }],
-      thread,
-    })
-  );
-  return {
-    as_of: AS_OF,
-    entries,
-    horizon: 1,
-    limit: 0,
-    offset: 0,
-    person: "alice",
-    total: entries.length,
-  };
+function threadsAnswer(rows: readonly MyReplyRow[]) {
+  return oneReadAnswer(rows, { asOf: AS_OF });
 }
 
 test("behind one=1 the Inbox's threads and its dismissed ones are the one read's", async () => {
@@ -135,7 +116,7 @@ test("behind one=1 the Inbox's threads and its dismissed ones are the one read's
   const listMyReplies = spyOn(api, "listMyReplies");
   restores.push(listMyReplies);
   const getMeInbox = spyOn(api, "getMeInbox").mockImplementation(async (query = {}) =>
-    oneReadAnswer(query.state === "dismissed" ? [replyRow("c7")] : [replyRow("c1"), replyRow("c9")])
+    threadsAnswer(query.state === "dismissed" ? [replyRow("c7")] : [replyRow("c1"), replyRow("c9")])
   );
   restores.push(getMeInbox);
 

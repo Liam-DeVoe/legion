@@ -6,6 +6,7 @@ import { advancesIssuesParams } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
+import { invalidateMeInbox } from "../inbox/one-read-cache";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { plainWrite, useWrites } from "../writes/write-store";
 import { type IssueListing, listingName } from "./issues-table-data";
@@ -201,6 +202,8 @@ export function useIssueTableActions({
       void client.invalidateQueries({ queryKey: ["issues"] });
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
+      // The Inbox draws the reader's own asks, which carry their issue's fields, from the one read.
+      void invalidateMeInbox(client);
     }
   };
   const titleOf = (key: string) => issues.find((issue) => issue.key === key)?.title ?? key;

@@ -13,7 +13,7 @@ import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import { type KeptTab, keptTab, keyMinted, UnloadTarget } from "../../__tests__/kept-sends-harness";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api, NetworkError } from "../../api/client";
-import { agentMessagesQuery } from "../../api/queries";
+import { agentMessagesQuery, meInboxKey } from "../../api/queries";
 import type { Comment, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -151,6 +151,34 @@ test("a send that lands, with or without its answer, refreshes its session", asy
       stop();
       createAgentMessage.mockRestore();
     }
+  }
+});
+
+// The Inbox draws the reader's own rows from the one read - an Agent row's conversation with its
+// session, and the asks and Reply rows a comment moves - so a send that lands reads it again, a
+// message to a session and a comment on an issue alike.
+test("a send that lands reads the one read again", async () => {
+  const client = signedIn();
+  const invalidate = spyOn(client, "invalidateQueries");
+  const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementationOnce(() =>
+    Promise.resolve(sentMessage)
+  );
+  const createComment = spyOn(api, "createComment").mockResolvedValueOnce({} as never);
+  const { held } = heldOf(keptTab(), client);
+  const commentKey: MutationKey = ["conversation-composer", "CORE-1"];
+  try {
+    for (const [name, sent] of [
+      [agentKey, agentSend],
+      [commentKey, request],
+    ] as const) {
+      invalidate.mockClear();
+      held.send(name, sent);
+      await waitFor(() => expect(held.get(name)).toBeUndefined());
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: meInboxKey });
+    }
+  } finally {
+    createAgentMessage.mockRestore();
+    createComment.mockRestore();
   }
 });
 

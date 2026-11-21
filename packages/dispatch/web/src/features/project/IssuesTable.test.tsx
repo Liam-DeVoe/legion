@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { ApiError, api } from "../../api/client";
-import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
+import { boardMoveMutationKey, meInboxQuery, projectIssuesQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { readSelectedIssues } from "../search/bar-scope";
@@ -621,6 +621,33 @@ test("a refused bulk operation retries independently while the other operations 
   expect(
     within(screen.getByRole("region", { name: "Project issues" })).getByRole("status").textContent
   ).toContain("All changes saved");
+});
+
+// The Inbox draws the reader's own asks from the one read, and each carries its issue's fields,
+// so a bulk action reads it again once its writes settle, beside the Inbox's own read.
+test("a bulk action reads the one read again once its writes settle", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockImplementation(
+    async (request) => savedIssue(request.path.split("/").at(-1) ?? "") as never
+  );
+  restores.push(() => send.mockRestore());
+  const { client } = table([issue("CORE-1")]);
+  client.setQueryData(meInboxQuery().queryKey, {
+    as_of: "2026-10-12T02:00:00Z",
+    entries: [],
+    horizon: 1,
+    limit: 0,
+    offset: 0,
+    person: "alice",
+    total: 0,
+  });
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  expect(client.getQueryState(meInboxQuery().queryKey)?.isInvalidated).toBe(false);
+  await user.click(screen.getByRole("button", { name: "Take out of epic" }));
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(client.getQueryState(meInboxQuery().queryKey)?.isInvalidated).toBe(true)
+  );
 });
 
 test("a live unseen ancestor keeps the same scroll box and marks unknown ancestry on failure", async () => {

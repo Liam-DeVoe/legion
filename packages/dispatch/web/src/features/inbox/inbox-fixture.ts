@@ -1,17 +1,23 @@
 import { afterEach, beforeEach, type Mock, spyOn } from "bun:test";
+import type { QueryClient } from "@tanstack/react-query";
 
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
-import type { InboxRow } from "../../api/types";
+import { inboxQuery, meInboxQuery } from "../../api/queries";
+import type { InboxRow, MeInboxEntry, MeInboxResponse, MyReplyRow } from "../../api/types";
+import { askWaitingOnPerson } from "./list-row";
 
-/** The mocks every Inbox render needs: the signed-in login, and the credential requests waiting
- *  on it; an open ask card also reads its owner's subscribers and its backlinks. */
+/** The mocks every Inbox render needs: the signed-in login, the credential requests waiting on
+ *  it, and the one read, which the page draws the reader's own rows from (`answerOneRead`; empty
+ *  until a test says what it holds); an open ask card also reads its owner's subscribers and its
+ *  backlinks. */
 export interface InboxApiMocks {
   whoAmI: Mock<typeof api.whoAmI>;
   getIssueSubscribers: Mock<typeof api.getIssueSubscribers>;
   getArtifactSubscribers: Mock<typeof api.getArtifactSubscribers>;
   getReferences: Mock<typeof api.getReferences>;
   getCredentialPending: Mock<typeof api.getCredentialPending>;
+  getMeInbox: Mock<typeof api.getMeInbox>;
 }
 
 /** Installs the shared fixtures `Inbox.test.tsx` and `InboxDrawer.test.tsx` both build on: call
@@ -36,6 +42,7 @@ export function installInboxApiMocks(): InboxApiMocks {
       edges: [],
       node: graphNode({ id: "", kind: "ask" }),
     });
+    mocks.getMeInbox = answerOneRead({});
   });
   afterEach(() => {
     mocks.whoAmI.mockRestore();
@@ -43,6 +50,7 @@ export function installInboxApiMocks(): InboxApiMocks {
     mocks.getIssueSubscribers.mockRestore();
     mocks.getArtifactSubscribers.mockRestore();
     mocks.getReferences.mockRestore();
+    mocks.getMeInbox.mockRestore();
   });
   return mocks;
 }
@@ -142,4 +150,130 @@ export function mockAskReads(rows: readonly InboxRow[]) {
       route_status_reason: null,
     };
   });
+}
+
+/** The `as_of` every answer of the one read these fixtures make carries: the read mark Mark all
+ *  read sends from it. */
+export const ONE_READ_AS_OF = "2026-10-12T02:00:00Z";
+
+/** The entry the one read (`GET /api/v1/me/inbox`) lists a row of the Inbox by: an open ask that
+ *  waits on the reader by the ask itself, a Reply row by its thread, and an Agent row by its
+ *  conversation with the session, each at the moment it last moved. */
+export function oneReadEntry(row: InboxRow | MyReplyRow): MeInboxEntry {
+  if (!("thread_id" in row)) {
+    return { ask: row, moment: row.created_at, node: { id: row.id, kind: "ask" }, relations: [] };
+  }
+  const moment = row.reply.created_at;
+  if (row.kind === "agent") {
+    return {
+      agent: row as MeInboxEntry["agent"] & MyReplyRow,
+      moment,
+      node: { id: row.thread_id, kind: "message" },
+      relations: [],
+    };
+  }
+  return { moment, node: { id: row.thread_id, kind: row.kind }, relations: [], thread: row };
+}
+
+/** What the one read holds for its reader: the open asks that wait on them, their Reply and
+ *  Agent rows in the Inbox, read or not, and the rows they dismissed out of it. */
+export interface OneReadHeld {
+  readonly asks?: readonly InboxRow[];
+  readonly dismissed?: readonly MyReplyRow[];
+  readonly threads?: readonly MyReplyRow[];
+}
+
+/** One answer of the one read listing `rows`, in that order, for `person`. */
+export function oneReadAnswer(
+  rows: readonly (InboxRow | MyReplyRow)[],
+  { asOf = ONE_READ_AS_OF, person = "alice" }: { asOf?: string; person?: string } = {}
+): MeInboxResponse {
+  const entries = rows.map(oneReadEntry);
+  return { as_of: asOf, entries, horizon: 1, limit: 0, offset: 0, person, total: entries.length };
+}
+
+/**
+ * What the one read answers a read of `query` with while Dispatch holds `held`: `state=inbox`
+ * (`meInboxQuery`) every ask and every thread row; the count's one-entry page of `state=unread`
+ * (`meInboxCountQuery`) how many thread rows are unread, as its `total`; and `state=dismissed`
+ * (`meInboxDismissedQuery`) the dismissed rows, on one page.
+ */
+export function oneReadReply(
+  query: { readonly state?: string },
+  held: OneReadHeld,
+  { asOf = ONE_READ_AS_OF, person = "alice" }: { asOf?: string; person?: string } = {}
+): MeInboxResponse {
+  const threads = held.threads ?? [];
+  if (query.state === "unread") {
+    return {
+      ...oneReadAnswer([], { asOf, person }),
+      limit: 1,
+      total: threads.filter((thread) => thread.unread).length,
+    };
+  }
+  if (query.state === "dismissed") return oneReadAnswer(held.dismissed ?? [], { asOf, person });
+  return oneReadAnswer([...(held.asks ?? []), ...threads], { asOf, person });
+}
+
+/** Answers `api.getMeInbox` as Dispatch answers each of the page's reads of it (`oneReadReply`)
+ *  from what `held` holds, read again at each call, so a test that moves what the server holds
+ *  moves what the next read answers. */
+export function answerOneRead(
+  held: OneReadHeld | (() => OneReadHeld | Promise<OneReadHeld>),
+  options: { asOf?: string; person?: string } = {}
+): Mock<typeof api.getMeInbox> {
+  return spyOn(api, "getMeInbox").mockImplementation(async (query = {}) =>
+    oneReadReply(query, typeof held === "function" ? await held() : held, options)
+  );
+}
+
+/**
+ * The page's two reads of the open asks, answered from one list of rows as Dispatch answers
+ * them: the Inbox read (`GET /api/v1/inbox`) every one of `rows`, and the one read, which the
+ * page draws the reader's own rows from, those of them that wait on `viewer`
+ * (`askWaitingOnPerson`), with `threads` as its Reply and Agent rows. `rows` may be a function,
+ * read at each call, for a test that moves what the server holds. Answers the Inbox read's mock;
+ * the one read's is the same spy each call to `answerOneRead` makes, which the file's own
+ * restore of it - `installInboxApiMocks`' or the test's - puts back.
+ */
+export function mockInboxReads(
+  rows: readonly InboxRow[] | (() => readonly InboxRow[] | Promise<readonly InboxRow[]>),
+  { threads = [], viewer = "alice" }: { threads?: readonly MyReplyRow[]; viewer?: string } = {}
+): Mock<typeof api.getInbox> {
+  const held = async () => (typeof rows === "function" ? await rows() : rows);
+  answerOneRead(
+    async () => ({
+      asks: (await held()).filter((row) => askWaitingOnPerson(row) === viewer),
+      threads,
+    }),
+    { person: viewer }
+  );
+  return spyOn(api, "getInbox").mockImplementation(async () => [...(await held())]);
+}
+
+/** Lands a new answer of the page's two reads of the open asks in `queryClient`, as a refresh
+ *  brings what Dispatch holds now: the Inbox read every one of `rows`, and the one read those of
+ *  them that wait on `viewer`, beside the Reply and Agent rows it already holds. */
+export function landInboxReads(
+  queryClient: QueryClient,
+  rows: readonly InboxRow[],
+  viewer = "alice"
+): void {
+  queryClient.setQueryData<InboxRow[]>(inboxQuery().queryKey, [...rows]);
+  queryClient.setQueryData<MeInboxResponse>(meInboxQuery().queryKey, (held) => {
+    const mine = rows.filter((row) => askWaitingOnPerson(row) === viewer);
+    const threads = (held?.entries ?? []).filter((entry) => entry.ask === undefined);
+    const answer = oneReadAnswer(mine, { asOf: held?.as_of, person: viewer });
+    const entries = [...(answer.entries ?? []), ...threads];
+    return { ...answer, entries, total: entries.length };
+  });
+}
+
+/** Reads the page's two reads of the open asks again, as a refresh does: what Dispatch holds
+ *  now reaches the page through both, the reader's own rows through the one read. */
+export async function refetchInboxReads(queryClient: QueryClient): Promise<void> {
+  await Promise.all([
+    queryClient.refetchQueries({ queryKey: inboxQuery().queryKey }),
+    queryClient.refetchQueries({ queryKey: meInboxQuery().queryKey }),
+  ]);
 }

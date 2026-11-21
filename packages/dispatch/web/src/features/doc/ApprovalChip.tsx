@@ -36,6 +36,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { MentionField } from "../conversation/MentionField";
+import { invalidateMeInbox } from "../inbox/one-read-cache";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
@@ -444,6 +445,8 @@ export function ApprovalChip({
         queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
         queryClient.invalidateQueries({ queryKey: ["artifact", reviewed.id] }),
         queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
+        // The Inbox draws the reader's own approval asks from the one read.
+        invalidateMeInbox(queryClient),
         ...(reviewed.issue_key === null
           ? [
               queryClient.invalidateQueries({

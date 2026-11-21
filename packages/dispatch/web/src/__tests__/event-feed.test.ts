@@ -18,6 +18,7 @@ import {
   inboxThreadsQuery,
   issueQuery,
   issueStepsQuery,
+  meInboxQuery,
   myRepliesCountQuery,
   prioritiesQuery,
   priorityHistoryQuery,
@@ -29,9 +30,16 @@ import {
   userStateQuery,
 } from "../api/queries";
 import { refreshQueries } from "../api/query-refresh";
-import type { Ask, AskRead, DispatchEvent, EventType, InboxRow } from "../api/types";
+import type {
+  Ask,
+  AskRead,
+  DispatchEvent,
+  EventType,
+  InboxRow,
+  MeInboxResponse,
+} from "../api/types";
 import { hasPendingAskThreadInvalidation } from "../features/inbox/ask-thread-freshness";
-import { issueAsk } from "../features/inbox/inbox-fixture";
+import { issueAsk, oneReadAnswer } from "../features/inbox/inbox-fixture";
 import { useAskAnswerForm } from "../features/inbox/useAskAnswerForm";
 import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import {
@@ -2009,6 +2017,80 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
     expect(hasPendingAskThreadInvalidation(client, sibling)).toBe(false);
   } finally {
     for (const card of cards) card.unmount();
+    getInbox.mockRestore();
+  }
+});
+
+// The page draws the reader's own asks from the one read, so a claim that moves while only that
+// read is in flight marks the issue as a claim while the Inbox read is in flight does. A card of
+// the reader's own mounts from the one read's body, so only a newer one read clears the mark: a
+// newer Inbox read alone does not.
+test("a claim that moves while the one read is in flight sends that issue's later cards to the ask endpoint, until a newer one read lands", async () => {
+  const onIssue = issueAsk({ id: "ask-1" });
+  const inFlight = Promise.withResolvers<MeInboxResponse>();
+  const getMeInbox = spyOn(api, "getMeInbox").mockImplementationOnce(() => inFlight.promise);
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([onIssue]);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const oneReadKey = meInboxQuery().queryKey;
+  const reads: string[] = [];
+  // The endpoint answers after the claim: the thread names the new claimant.
+  const getAskThread = async (id: string): Promise<AskRead> => {
+    reads.push(id);
+    return threadOf(onIssue, "session-now");
+  };
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children);
+  let card: { unmount: () => void } | undefined;
+  try {
+    void client.prefetchQuery(meInboxQuery());
+    await waitFor(() => expect(client.getQueryState(oneReadKey)?.fetchStatus).toBe("fetching"));
+    expect(client.getQueryState(inboxQuery().queryKey)).toBeUndefined();
+    const claimed = event("issue.claimed", {
+      claim: { actor: { id: "session-now", kind: "session" }, at: "2026-09-24T06:00:00Z" },
+      reason: "claimed",
+    });
+    markAskThreadsSeededByAnInFlightInbox(
+      client,
+      eventRefreshTargets(claimed, "alice"),
+      askThreadsIssue(claimed)
+    );
+    // The in-flight body was composed before the claim.
+    inFlight.resolve(oneReadAnswer([onIssue]));
+    await waitFor(() => expect(client.getQueryState(oneReadKey)?.fetchStatus).toBe("idle"));
+    expect(hasPendingAskThreadInvalidation(client, onIssue)).toBe(true);
+
+    // An Inbox read composed after the claim leaves the one read's body as it was.
+    await client.fetchQuery(inboxQuery());
+    expect(hasPendingAskThreadInvalidation(client, onIssue)).toBe(true);
+
+    const mounted = renderHook(
+      () =>
+        useAskAnswerForm({
+          answer: async () => onIssue as Ask,
+          ask: onIssue,
+          createReply: async () => {
+            throw new Error("no reply in this test");
+          },
+          getAskThread,
+          initialThread: threadOf(onIssue),
+          initialThreadUpdatedAt: Date.now(),
+        }),
+      { wrapper }
+    );
+    card = mounted;
+    await waitFor(() =>
+      expect(mounted.result.current.threadQuery.data?.claimant).toBe("session-now")
+    );
+    expect(reads).toEqual(["ask-1"]);
+
+    // A newer one read, composed after the claim, clears the issue's mark.
+    getMeInbox.mockResolvedValueOnce(oneReadAnswer([onIssue]));
+    await client.refetchQueries({ queryKey: oneReadKey });
+    expect(hasPendingAskThreadInvalidation(client, onIssue)).toBe(false);
+  } finally {
+    card?.unmount();
+    getMeInbox.mockRestore();
     getInbox.mockRestore();
   }
 });

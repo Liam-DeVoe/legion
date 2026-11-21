@@ -18,8 +18,8 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError } from "../../api/client";
 import {
   inboxQuery,
-  inboxThreadsQuery,
-  myRepliesCountQuery,
+  meInboxCountQuery,
+  meInboxQuery,
   myRepliesOwnerQuery,
   userAgentStateQuery,
   whoAmIQuery,
@@ -38,6 +38,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
+import { oneReadAnswer } from "./inbox-fixture";
 import { ThreadRowCard } from "./ThreadRowCard";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
@@ -106,7 +107,8 @@ function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
   return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
 }
 
-/** A client holding everything the Inbox reads but the thread's own comments. */
+/** A client holding everything the Inbox reads but the thread's own comments: the reader's rows
+ *  and their unread count are the one read's. */
 function seeded(rows: readonly MyReplyRow[]): QueryClient {
   const client = new QueryClient({
     defaultOptions: {
@@ -116,8 +118,8 @@ function seeded(rows: readonly MyReplyRow[]): QueryClient {
   });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   client.setQueryData(inboxQuery().queryKey, []);
-  client.setQueryData(inboxThreadsQuery().queryKey, threadsRead(rows));
-  client.setQueryData(myRepliesCountQuery().queryKey, rows.length);
+  client.setQueryData(meInboxQuery().queryKey, oneReadAnswer(rows, { asOf: AS_OF }));
+  client.setQueryData(meInboxCountQuery().queryKey, rows.length);
   // The unread set `useMarkThreadRead` watches: without the thread in it nothing is marked.
   client.setQueryData(myRepliesOwnerQuery({ issue: "CORE-1" }).queryKey, threadsRead(rows));
   return client;
@@ -187,8 +189,8 @@ test("a card read by the dwell rule stays in the list, drawn as read", async () 
     // says it is read now.
     act(() => {
       client.setQueryData(
-        inboxThreadsQuery().queryKey,
-        threadsRead([{ ...row, unread: false, unread_count: 0 }])
+        meInboxQuery().queryKey,
+        oneReadAnswer([{ ...row, unread: false, unread_count: 0 }], { asOf: AS_OF })
       );
     });
     expect(document.querySelector("[data-inbox-thread-card]")).not.toBeNull();
@@ -220,11 +222,11 @@ test("a row read in the column stays in the list after the selection moves off i
 
     act(() => {
       client.setQueryData(
-        inboxThreadsQuery().queryKey,
-        threadsRead([
-          { ...(rows[0] as MyReplyRow), unread: false, unread_count: 0 },
-          rows[1] as MyReplyRow,
-        ])
+        meInboxQuery().queryKey,
+        oneReadAnswer(
+          [{ ...(rows[0] as MyReplyRow), unread: false, unread_count: 0 }, rows[1] as MyReplyRow],
+          { asOf: AS_OF }
+        )
       );
     });
     const read = document.querySelector('[data-inbox-row="reply:comment-1"]');

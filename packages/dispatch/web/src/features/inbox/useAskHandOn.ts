@@ -5,13 +5,7 @@ import { inboxQuery, meInboxQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask, InboxRow } from "../../api/types";
 import { askWritten } from "../../api/write-events";
 import { livePress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  cancelMeInbox,
-  invalidateMeInbox,
-  meInboxSnapshot,
-  patchMeInboxAsks,
-  restoreMeInbox,
-} from "./one-read-cache";
+import { cancelMeInbox, meInboxSnapshot, patchMeInboxAsks, restoreMeInbox } from "./one-read-cache";
 import { invalidateOwnerReads } from "./owner-reads";
 
 export interface AskHandOnWrite {
@@ -118,7 +112,6 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
       // reads the ask from its owner's list, where the control's own value comes from, so an
       // Inbox-only refresh would snap the picker back to the person before the hand-on.
       invalidateOwnerReads(queryClient, press.ask);
-      invalidateMeInbox(queryClient);
       // The Inbox's own Reply-thread card is the one surface that reads the ask from its thread
       // instead (`ThreadBody`, `askThreadQuery`), which is kept for the session and never goes
       // stale of itself. It is read again here rather than in `invalidateOwnerReads`, whose

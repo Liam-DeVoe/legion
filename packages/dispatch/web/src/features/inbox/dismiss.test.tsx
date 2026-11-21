@@ -22,10 +22,10 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import {
-  dismissedThreadsQuery,
   inboxQuery,
-  inboxThreadsQuery,
-  myRepliesCountQuery,
+  meInboxCountQuery,
+  meInboxDismissedQuery,
+  meInboxQuery,
   myRepliesKey,
   whoAmIQuery,
 } from "../../api/queries";
@@ -42,7 +42,9 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
-import { issueAsk } from "./inbox-fixture";
+import { answerOneRead, issueAsk, mockInboxReads, oneReadAnswer } from "./inbox-fixture";
+import { askWaitingOnPerson } from "./list-row";
+import { meInboxThreads } from "./one-read-rows";
 import {
   dismissesThread,
   dismissRefusalText,
@@ -76,10 +78,14 @@ function threadsRead(rows: readonly MyReplyRow[]): MyRepliesResponse {
   return { as_of: AS_OF, limit: 0, offset: 0, rows: [...rows], total: rows.length };
 }
 
-/** A client holding everything the Inbox reads, with `asks` open and `rows` in the Inbox's own
- *  thread read. The refetch a landed press triggers is answered from the same rows. */
+/** A client holding everything the Inbox reads, with `asks` open and `rows` the reader's Reply
+ *  and Agent rows, each drawn from the one read, as the reader's own asks among `asks` are. The
+ *  refetch a landed press triggers is answered from the same rows. */
 function seeded(rows: readonly MyReplyRow[], asks: readonly InboxRow[] = []): QueryClient {
+  const mine = asks.filter((ask) => askWaitingOnPerson(ask) === "alice");
   restores.push(spyOn(api, "getCredentialPending").mockResolvedValue({ pending: [] }));
+  restores.push(answerOneRead({ asks: mine, threads: rows }, { asOf: AS_OF }));
+  // The unread set of the issue a thread row is on, which the reading column reads.
   restores.push(spyOn(api, "listMyReplies").mockResolvedValue(threadsRead(rows)));
   restores.push(spyOn(api, "getMyAgentState").mockResolvedValue({}));
   // The reading column reads the issue behind the thread row it is on, with that issue's
@@ -97,9 +103,14 @@ function seeded(rows: readonly MyReplyRow[], asks: readonly InboxRow[] = []): Qu
   });
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   client.setQueryData(inboxQuery().queryKey, [...asks]);
-  client.setQueryData(inboxThreadsQuery().queryKey, threadsRead(rows));
-  client.setQueryData(myRepliesCountQuery().queryKey, rows.length);
+  client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([...mine, ...rows], { asOf: AS_OF }));
+  client.setQueryData(meInboxCountQuery().queryKey, rows.length);
   return client;
+}
+
+/** The Dismissed view's one page of the one read, holding `rows`. */
+function dismissedPages(rows: readonly MyReplyRow[]) {
+  return { pageParams: [undefined], pages: [oneReadAnswer(rows, { asOf: AS_OF })] };
 }
 
 function renderInbox(client: QueryClient, address = "/"): void {
@@ -218,7 +229,7 @@ test("a row a refused dismiss put back is the reader's hand's again, held under 
   const row = document.querySelector<HTMLElement>('[data-inbox-row="reply:c1"]');
   act(() => row?.focus());
   act(() => {
-    client.setQueryData(inboxThreadsQuery().queryKey, threadsRead([replyRow("c9")]));
+    client.setQueryData(meInboxQuery().queryKey, oneReadAnswer([replyRow("c9")], { asOf: AS_OF }));
   });
   expect(rowIds()).toEqual(["reply:c1", "reply:c9"]);
 });
@@ -230,10 +241,8 @@ test("a row a refused dismiss put back is the reader's hand's again, held under 
 test("a read of either view or the count asked while a dismiss is out waits for its answer, and never puts the thread back", async () => {
   // What Dispatch holds, which each read answers with as it is when it is asked.
   const server = { dismissed: [] as MyReplyRow[], inbox: [replyRow("c1"), replyRow("c9")] };
-  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
-    threadsRead(page.state === "dismissed" ? server.dismissed : server.inbox)
-  );
-  restores.push(listMyReplies);
+  const getMeInbox = answerOneRead(() => ({ dismissed: server.dismissed, threads: server.inbox }));
+  restores.push(getMeInbox);
   const dismissed = answerInboxDismisses();
   const answer = Promise.withResolvers<{ dismissed: number }>();
   dismissed.mockReturnValue(answer.promise);
@@ -241,12 +250,12 @@ test("a read of either view or the count asked while a dismiss is out waits for 
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   const { result } = renderHook(
     () => ({
-      count: useQuery(myRepliesCountQuery()).data,
+      count: useQuery(meInboxCountQuery()).data,
       dismiss: useInboxDismiss(),
-      dismissedThreads: useInfiniteQuery(dismissedThreadsQuery()).data?.pages.flatMap(
-        (page) => page.rows?.map((row) => row.thread_id) ?? []
+      dismissedThreads: useInfiniteQuery(meInboxDismissedQuery()).data?.pages.flatMap((page) =>
+        meInboxThreads(page).map((row) => row.thread_id)
       ),
-      inboxThreads: useQuery(inboxThreadsQuery()).data?.rows?.map((row) => row.thread_id),
+      inboxThreads: meInboxThreads(useQuery(meInboxQuery()).data).map((row) => row.thread_id),
     }),
     {
       wrapper: ({ children }: { children: ReactNode }) => (
@@ -268,12 +277,12 @@ test("a read of either view or the count asked while a dismiss is out waits for 
 
   // Dispatch has not taken the dismiss, so a read that reached it now would answer c1 still in
   // the Inbox, and counted.
-  const reads = listMyReplies.mock.calls.length;
+  const reads = getMeInbox.mock.calls.length;
   await act(async () => {
     void client.invalidateQueries({ queryKey: myRepliesKey });
     await settle();
   });
-  expect(listMyReplies).toHaveBeenCalledTimes(reads);
+  expect(getMeInbox).toHaveBeenCalledTimes(reads);
   expect(result.current).toMatchObject({ count: 1, dismissedThreads: [], inboxThreads: ["c9"] });
 
   // Dispatch takes it, and a reply lands on c5 meanwhile: the reads go now, and draw what it
@@ -284,7 +293,7 @@ test("a read of either view or the count asked while a dismiss is out waits for 
     answer.resolve({ dismissed: 1 });
     await settle();
   });
-  await waitFor(() => expect(listMyReplies.mock.calls.length).toBeGreaterThan(reads));
+  await waitFor(() => expect(getMeInbox.mock.calls.length).toBeGreaterThan(reads));
   await waitFor(() =>
     expect(result.current).toMatchObject({
       count: 2,
@@ -318,10 +327,8 @@ function threadStateEvent(payload: { login: string; thread_id?: string }): Dispa
 test("a thread somebody else starts while a dismiss is out shows once the dismiss's thread-state event has come", async () => {
   // What Dispatch holds, which each read answers with as it is when it is asked.
   const server = { dismissed: [] as MyReplyRow[], inbox: [replyRow("c1"), replyRow("c9")] };
-  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async (page) =>
-    threadsRead(page.state === "dismissed" ? server.dismissed : server.inbox)
-  );
-  restores.push(listMyReplies);
+  const getMeInbox = answerOneRead(() => ({ dismissed: server.dismissed, threads: server.inbox }));
+  restores.push(getMeInbox);
   const dismissed = answerInboxDismisses();
   const answer = Promise.withResolvers<{ dismissed: number }>();
   dismissed.mockReturnValue(answer.promise);
@@ -329,12 +336,12 @@ test("a thread somebody else starts while a dismiss is out shows once the dismis
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   const { result } = renderHook(
     () => ({
-      count: useQuery(myRepliesCountQuery()).data,
+      count: useQuery(meInboxCountQuery()).data,
       dismiss: useInboxDismiss(),
-      dismissedThreads: useInfiniteQuery(dismissedThreadsQuery()).data?.pages.flatMap(
-        (page) => page.rows?.map((row) => row.thread_id) ?? []
+      dismissedThreads: useInfiniteQuery(meInboxDismissedQuery()).data?.pages.flatMap((page) =>
+        meInboxThreads(page).map((row) => row.thread_id)
       ),
-      inboxThreads: useQuery(inboxThreadsQuery()).data?.rows?.map((row) => row.thread_id),
+      inboxThreads: meInboxThreads(useQuery(meInboxQuery()).data).map((row) => row.thread_id),
     }),
     {
       wrapper: ({ children }: { children: ReactNode }) => (
@@ -361,7 +368,7 @@ test("a thread somebody else starts while a dismiss is out shows once the dismis
     { ...started, reply: { ...started.reply, author: { id: "bob", kind: "user" } } },
   ];
   server.dismissed = [replyRow("c1")];
-  const reads = listMyReplies.mock.calls.length;
+  const reads = getMeInbox.mock.calls.length;
   await act(async () => {
     hearLiveEvent(client, threadStateEvent({ login: "alice", thread_id: "c9" }), "alice");
     hearLiveEvent(client, threadStateEvent({ login: "bob" }), "alice");
@@ -369,7 +376,7 @@ test("a thread somebody else starts while a dismiss is out shows once the dismis
     await settle();
   });
   // Neither event is the dismiss's: no read has asked Dispatch.
-  expect(listMyReplies).toHaveBeenCalledTimes(reads);
+  expect(getMeInbox).toHaveBeenCalledTimes(reads);
   expect(result.current).toMatchObject({ count: 1, dismissedThreads: [], inboxThreads: ["c9"] });
 
   await act(async () => {
@@ -385,7 +392,7 @@ test("a thread somebody else starts while a dismiss is out shows once the dismis
       inboxThreads: ["c9", "c5"],
     })
   );
-  expect(listMyReplies.mock.calls.length).toBeGreaterThan(reads);
+  expect(getMeInbox.mock.calls.length).toBeGreaterThan(reads);
   expect(client.isMutating()).toBe(1);
 
   await act(async () => {
@@ -490,10 +497,10 @@ test("Select all in the paged Dismissed view sends the narrowing with that list'
   const dismissed = answerInboxDismisses();
   dismissed.mockResolvedValue({ dismissed: 2 });
   const client = seeded([]);
-  client.setQueryData(dismissedThreadsQuery().queryKey, {
-    pageParams: [undefined],
-    pages: [threadsRead([replyRow("c1"), replyRow("c9")])],
-  });
+  client.setQueryData(
+    meInboxDismissedQuery().queryKey,
+    dismissedPages([replyRow("c1"), replyRow("c9")])
+  );
   renderInbox(client, "/?show=dismissed");
 
   await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
@@ -550,10 +557,10 @@ test("a move back to the Inbox the reader stopped says it may have been made", a
     new NetworkError("/api/v1/me/inbox/dismiss", new TypeError("Failed to fetch"))
   );
   const client = seeded([]);
-  client.setQueryData(dismissedThreadsQuery().queryKey, {
-    pageParams: [undefined],
-    pages: [threadsRead([replyRow("c1"), replyRow("c9")])],
-  });
+  client.setQueryData(
+    meInboxDismissedQuery().queryKey,
+    dismissedPages([replyRow("c1"), replyRow("c9")])
+  );
   renderInbox(client, "/?show=dismissed");
   try {
     await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
@@ -580,7 +587,7 @@ test("a bulk snooze the reader stopped says it may have been saved, not that it 
   restores.push(snoozes);
   const ask = issueAsk({ id: "ask-1", question: "Which approach?" });
   // The pick reads the Inbox again once its writes settle.
-  restores.push(spyOn(api, "getInbox").mockResolvedValue([ask]));
+  restores.push(mockInboxReads([ask]));
   const client = seeded([], [ask]);
   renderInbox(client);
   try {
