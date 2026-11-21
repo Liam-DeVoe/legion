@@ -4995,7 +4995,7 @@ refusals_waiting() {
     sed -e 's/^on these open Dispatch children of it: //' -e 's/ ([a-z_]*)//g'
 }
 refused_naming() { refusals_waiting | grep -qxF -- "$1"; }
-accept_now="read the evidence as your instructions say and accept it with the legion tool's sign_off for $tree1 now. Park, close and change nothing: the proof human takes the children out. Report what the daemon answered."
+accept_now="read the evidence as your instructions say and accept it with the legion tool's sign_off for $tree1 now. Write no status, close nothing and change nothing: the proof human takes the children out. Report what the daemon answered."
 send_agent "$tree1" architect "Stage 4b proof acceptance: the reviewer approved pull request #$pr_number, and $child3 and $child4 are open beneath $tree1; $accept_now"
 on_tree "$tree1" until_true 900 "the daemon to refuse $tree1's sign_off, naming $child3 and $child4 open beneath it" \
   refused_naming "$child3, $child4"
@@ -5012,7 +5012,7 @@ child_parked() {
   out=$(op get sandboxes,pods -l "legion.dev/project=$run_label,legion.dev/issue=$1" -o name) && [ -z "$out" ] &&
     out=$(pod_disk "$2") && [ -z "$out" ]
 }
-park_child_issue() {
+backlog_child_issue() {
   local child=$1 pod=$2
   set_status "$child" backlog
   until_true 600 "$child to leave the workflow" issue_phase "$child" "done"
@@ -5020,7 +5020,7 @@ park_child_issue() {
   until_true 600 "$child's Sandbox, pod and disk to be gone after its backlog" child_parked "$child" "$pod"
   note "the proof human parked $child (backlog): it left the workflow, its planner is suspended, and it has no Sandbox, no pod and no disk (its pod $pod took the disk $pod-issue with it)"
 }
-park_child_issue "$child3" "$child3_pod"
+backlog_child_issue "$child3" "$child3_pod"
 send_agent "$tree1" architect "Stage 4b proof acceptance, again: $child3 has left the workflow and $child4 has not; $accept_now"
 on_tree "$tree1" until_true 900 "the daemon to refuse $tree1's sign_off again, naming $child4 alone" \
   refused_naming "$child4"
@@ -5046,7 +5046,7 @@ children_base_sha=$(jq -cn --arg branch "$pr_base" --arg sha "$children_base_blo
   timeout 60 gh api --method PUT "repos/$repo/contents/$children_base_path" --input - --jq .commit.sha) ||
   fail "the proof human could not commit $children_base_path to $pr_base"
 note "the proof human committed $children_base_path to $pr_base as $children_base_sha while $tree1 waited on $child4 at head $children_wait_head"
-park_child_issue "$child4" "$child4_pod"
+backlog_child_issue "$child4" "$child4_pod"
 # The last move to the backlog ends the wait: the pass takes tree 1 back to testing in place of
 # the acceptance it held, and starts the tester and no other role. Its task names that held start
 # and, since tree 1 has Dispatch children, ends with the sentence every testing task of a parent

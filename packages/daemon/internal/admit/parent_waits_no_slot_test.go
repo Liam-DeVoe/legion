@@ -881,11 +881,11 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 
 	// The children the return names: a parent waits on three children, and a fourth is filed and
 	// released under it during the wait, which the next pass adds to the wait's children. The first
-	// reaches done with its pull request merged, the second moves to icebox, the third is taken out
-	// with park_child (moved to the backlog, its record leaving the workflow), and the fourth reaches
-	// done with its pull request merged. The testing task the return starts names the first and the
-	// fourth, each with its pull request, and neither of the others, and it carries the Handoff line
-	// of the implementer's last handoff, which roles/tester.md tells the tester to read.
+	// reaches done with its pull request merged, the second moves to icebox, the third moves to the
+	// backlog by its owning architect's status write (its record leaving the workflow), and the
+	// fourth reaches done with its pull request merged. The testing task the return starts names the
+	// first and the fourth, each with its pull request, and neither of the others, and it carries the
+	// Handoff line of the implementer's last handoff, which roles/tester.md tells the tester to read.
 	t.Run("the return names the children that merged during the wait and no other", func(t *testing.T) {
 		const (
 			iceboxed = "LEGION-302"
@@ -898,7 +898,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		pwPullRequest(t, pool, spParent, record.PullRequestOpen)
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 		seedMirrorChild(t, pool, iceboxed, "todo", spParent)
-		// The child park_child takes out is a released one, which the daemon records in the tree.
+		// The child its architect moves to the backlog is a released one, which the daemon records in the tree.
 		putIssue(t, pool, record.Issue{Key: parked, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Project: testProject, Title: parked, Tree: spParent, Parent: record.ParentOf(spParent), Phase: phase.Admitted, Generation: 1,
 			Status: "todo", DispatchStatus: "todo", Rank: parked, HandedOver: true, LastDispatchSeq: 1})
@@ -921,7 +921,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		putIssue(t, pool, record.Issue{Key: parked, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Project: testProject, Title: parked, Tree: spParent, Parent: record.ParentOf(spParent), Phase: phase.Done, Generation: 1,
 			Status: "backlog", DispatchStatus: "backlog", Rank: parked, HandedOver: true, LastDispatchSeq: 2})
-		// The parked child had opened a pull request, which did not merge.
+		// The child on the backlog had opened a pull request, which did not merge.
 		seedPullRequest(t, pool, parked, 53, record.PullRequestOpen)
 		spMirror(t, pool, parked, "backlog", spParent, 2)
 		pnChildMerged(t, pool, late, spParent, 54)

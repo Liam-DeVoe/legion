@@ -264,11 +264,11 @@ func openChildNames(open []record.OpenChild) string {
 func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) record.Notice {
 	reason := fmt.Sprintf("%s is in awaiting_children, holding the start of %s: %s. No phase of %s starts while Dispatch shows an open child under it: %s.",
 		parent, hold.Start, hold.Cause, parent, openChildNames(hold.Open)) + childCycleSentences(hold.Open)
-	reason += fmt.Sprintf(" The wait ends when no child under %[1]s is open: each one released and run until it leaves the workflow, closed, moved to icebox, taken out with park_child, or moved out from under %[1]s to an issue outside its tree or to no parent."+
+	reason += fmt.Sprintf(" The wait ends when no child under %[1]s is open: each one released and run until it leaves the workflow, closed, moved to icebox, or moved out from under %[1]s to an issue outside its tree or to no parent."+
 		" Then %[1]s goes back to the start it held by itself, a held testing, reviewing or accepting as testing unless its pull request merged meanwhile, on a task that names each child that merged during the wait; the return asks for no forward merge, and each testing round of %[1]s runs on its head merged with the tip of the pull request's base branch."+
 		" It holds no admission slot while it waits, and request_backward_move and sign_off on it are refused (%[2]s)."+
-		" Close a child, move it to icebox or take it out with park_child "+parkRule+", and cite that reason in a comment on the child.",
-		parent, waitingOnChildren)
+		" A child you released and a child you did not release leave by the same status write. %[3]s",
+		parent, waitingOnChildren, record.EndChildRule)
 	return record.Notice{Kind: AwaitingChildrenNoticeKind, Role: claim.RoleArchitect, Phase: from, Summary: hold.Summary, Verdict: hold.Verdict, Reason: reason}
 }
 
@@ -611,8 +611,8 @@ func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Iss
 			issue.Key, held, goesBack(held), act, act)), nil
 	}
 	return refused(waitingOnChildren, fmt.Sprintf("%[1]s waits in awaiting_children on these open Dispatch children of it: %[2]s. It stands in no phase that %[3]s acts on, so this %[3]s changed nothing; once no child under it is open, %[1]s %[4]s. "+
-		"Act on the children: release one that should run, or move one out from under %[1]s to an issue outside its tree or to no parent; close one, move it to icebox or take it out with park_child "+parkRule+", and cite that reason in a comment on the child",
-		issue.Key, openChildNames(open), act, goesBack(held))), nil
+		"Act on the children: release one that should run, or move one out from under %[1]s to an issue outside its tree or to no parent. %[5]s",
+		issue.Key, openChildNames(open), act, goesBack(held), record.EndChildRule)), nil
 }
 
 // goesBack is where the return takes a parent holding the start of held, as the refusals of an
