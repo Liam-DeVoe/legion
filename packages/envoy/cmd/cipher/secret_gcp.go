@@ -178,14 +178,11 @@ var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, 
 		return "", fmt.Errorf("read the Google sign-in's email from %s: %w", googleUserinfoURL, redact.Class(err))
 	}
 	defer resp.Body.Close()
-	// Google's answer is read through redact.ReadAnswer, and a read that failed prints its class.
 	answer, err := redact.ReadAnswer(resp, 1<<20)
 	if err != nil {
 		return "", fmt.Errorf("read the Google sign-in's email from %s: %w", googleUserinfoURL, redact.Class(err))
 	}
 	if resp.StatusCode != http.StatusOK {
-		// Of Google's words only a registered code prints (redact.Answered): the bytes go to it
-		// and nowhere else.
 		var body bytes.Buffer
 		_, _ = answer.StreamTo(&body)
 		return "", fmt.Errorf("read the Google sign-in's email from %s: %s", googleUserinfoURL, redact.Answered(resp.StatusCode, body.Bytes()))

@@ -155,9 +155,6 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	client := newModelTransport(req.Model.Endpoint).client()
 
 	resp, err := client.Do(post)
-	// The answer is read through redact.ReadAnswer: a model endpoint's words, or a stand-in's,
-	// can repeat the token the call carried, so the detail prints them as the rule reads them, and
-	// a decode's error quotes no value. A body past the cap is cut there and named as such.
 	var answer redact.Answer
 	tooLarge := false
 	if err == nil {

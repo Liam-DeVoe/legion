@@ -133,8 +133,6 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 		// Its value is only checked for presence, never kept.
 		LegacyProject presence `json:"project"`
 	}
-	// Decode's error names the member and quotes no value: the answer can echo the token the
-	// introspection carried.
 	if err := read.Decode(&answer); err != nil {
 		return Introspection{}, fmt.Errorf("%w: decode the broker's answer: %w", ErrBrokerUnreachable, err)
 	}

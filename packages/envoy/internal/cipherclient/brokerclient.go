@@ -664,10 +664,6 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		return nil, fmt.Errorf("trade %s at %s: %w", c.subject.Describe(), shown, c.brokerURL.Error(err))
 	}
 	defer resp.Body.Close()
-	// Whatever answers in the broker's place can echo any credential the trade carried (the subject
-	// token, the actor token, the proof), under any status: the answer is read through
-	// redact.ReadAnswer, so every word of it this trade prints is held with each of them redacted,
-	// and compares as it came, and a decode's error quotes none of it.
 	read, err := redact.ReadAnswer(resp, 1<<20)
 	if err != nil {
 		return nil, fmt.Errorf("read the broker's answer from %s: %w", shown, c.brokerURL.Error(err))

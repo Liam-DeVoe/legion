@@ -248,10 +248,6 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		return 0, nil, unreachable(c.baseURL, method, named, withoutQuery(err, query))
 	}
 	defer resp.Body.Close()
-	// Whatever answers in the broker's place can echo the request it was sent - its body (a pod
-	// token), its Proof header - in any byte of its answer, so the answer is read through
-	// redact.ReadAnswer: every word of it prints with each credential the request carried
-	// redacted, and a decode's error quotes no value of it.
 	answer, err := redact.ReadAnswer(resp, 16<<20)
 	if err != nil {
 		return 0, nil, &cutOffError{base: c.baseURL, method: method, url: named, cause: c.baseURL.Error(err)}
@@ -748,8 +744,6 @@ func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentI
 	var result struct {
 		LeaseExpiresAt time.Time `json:"lease_expires_at"`
 	}
-	// Decode's error names lease_expires_at and quotes no value: an answer in the broker's place
-	// can echo the pod token the renewal carried into it.
 	if err := answer.Decode(&result); err != nil {
 		return time.Time{}, fmt.Errorf("decode renew response: %w", err)
 	}

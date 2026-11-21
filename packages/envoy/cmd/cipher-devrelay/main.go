@@ -262,8 +262,6 @@ func cmdMachineApprove(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: lookup: %v\n", err)
 		return 1
 	}
-	// State is the broker's word, which an answer in its place can fill with the bearer it was
-	// sent: it is held with the request's record (Decode) and prints through the rule.
 	var rec struct {
 		RecordID string            `json:"record_id"`
 		State    redact.RemoteText `json:"state"`

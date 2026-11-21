@@ -339,8 +339,6 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 			if err != nil {
 				return err
 			}
-			// Dispatch's answer, or a stand-in's, can echo the call's token into a time the decode's
-			// error would quote: the failure names the listing and no value of it.
 			if json.Unmarshal(body, &listingsByIdx[i]) != nil {
 				return fmt.Errorf("%s artifacts: the listing is not the shape replay-fetch reads", k)
 			}

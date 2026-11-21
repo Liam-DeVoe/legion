@@ -164,8 +164,6 @@ func (s *EntraTokenSource) exchange(ctx context.Context) (string, time.Duration,
 		return "", 0, fmt.Errorf("embed: entra read response: %w", err)
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		// Entra's error is its word, or a stand-in's, which can echo the assertion the exchange
-		// carried: it is held with the request's record (redact.Answer.Decode).
 		var refusal struct {
 			Error redact.RemoteText `json:"error"`
 		}

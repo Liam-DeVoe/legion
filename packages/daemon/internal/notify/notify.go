@@ -447,7 +447,6 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		}
 		var answer listenerwire.RoleHolder
 		if json.Unmarshal(body, &answer) != nil || answer.Holder == "" {
-			// The 200's body is data, which the error quotes none of.
 			return "", "", refused("the listener's 200 names no holder")
 		}
 		return answer.Holder, cmp.Or(string(answer.HolderState), "live"), nil

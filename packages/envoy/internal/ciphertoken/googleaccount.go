@@ -240,8 +240,6 @@ func (g *GoogleAccount) generateIDToken() (string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		// A refusal's reason is read no further than maxMintRefusal bytes (a longer one is cut
-		// there), and prints through redact.Answer.Words, with the request's credentials redacted.
 		refusal, err := redact.ReadAnswer(resp, maxMintRefusal)
 		if err != nil && !errors.Is(err, redact.ErrAnswerTooLarge) {
 			return "", fmt.Errorf("read generateIdToken's answer: %w", err)

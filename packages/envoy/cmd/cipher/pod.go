@@ -139,7 +139,6 @@ func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, ru
 		EnrollmentID string `json:"enrollment_id"`
 	}
 	if err := answer.Decode(&result); err != nil {
-		// Decode's error names the member and quotes no value of the answer.
 		return "", false, fmt.Errorf("decode enrollment response: %w", err)
 	}
 	if result.EnrollmentID == "" {
@@ -331,7 +330,6 @@ func (c *client) TokenLogin(ctx context.Context, token, request string) (string,
 		CredentialID string `json:"credential_id"`
 	}
 	if err := answer.Decode(&result); err != nil {
-		// As CreatePodEnrollment's decoder error: it names the member and quotes no value.
 		return "", fmt.Errorf("decode token login response: %w", err)
 	}
 	if result.CredentialID == "" {

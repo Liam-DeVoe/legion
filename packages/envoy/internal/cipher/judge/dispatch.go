@@ -251,7 +251,6 @@ func (d Dispatch) get(ctx context.Context, endpoint, token string, into any) (in
 	if err != nil {
 		return answer.StatusCode, fmt.Errorf("dispatch's answer could not be read: %w", err)
 	}
-	// Decode's error names the member and quotes no value of the answer.
 	if err := read.Decode(into); err != nil {
 		return answer.StatusCode, fmt.Errorf("dispatch's answer could not be read: %w", err)
 	}

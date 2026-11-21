@@ -70,7 +70,6 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 	case redact.RefusalCode(err) == redact.InvalidClient:
 		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: %s", issuer, clientID, redact.InvalidClient)
 	}
-	// The code is the issuer's word, so it prints as it prints itself (redact.RemoteText).
 	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check with the OAuth error %q, which says nothing about the client: %w",
 		issuer, redact.NewRemoteText(retrieve.ErrorCode), err)
 }

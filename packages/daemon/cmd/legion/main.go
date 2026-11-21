@@ -1675,7 +1675,6 @@ func get(ctx context.Context, url string) ([]byte, error) {
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s answered %d: %s", url, response.StatusCode, answer.Words())
 	}
-	// The answer is data the command decodes or prints as the daemon wrote it.
 	var body bytes.Buffer
 	_, _ = answer.StreamTo(&body)
 	return body.Bytes(), nil

@@ -138,8 +138,6 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 			if !ok {
 				return nil, fmt.Errorf("GitHub answered GET %s with no %q list", path, field)
 			}
-			// The list is GitHub's words, and a decode's error quotes the value it could not read
-			// (a time's among them), which can echo the token the call carried: it names the list.
 			if json.Unmarshal(list, &page) != nil {
 				return nil, fmt.Errorf("decode the %q list GitHub answered GET %s with: its items are not the shape this call reads", field, path)
 			}

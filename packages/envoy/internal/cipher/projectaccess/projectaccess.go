@@ -353,8 +353,6 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 		return 0, fmt.Errorf("projectaccess: ask dispatch: %w", err)
 	}
 	defer response.Body.Close()
-	// The answer is read once, through redact.ReadAnswer: its code is Dispatch's word, or a
-	// stand-in's, held with the request's record, and a decode's error quotes no value of it.
 	answer, readErr := redact.ReadAnswer(response, maxAnswerBytes)
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 		return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, refusalCode(answer, readErr))

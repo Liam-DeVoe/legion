@@ -235,8 +235,6 @@ func newMetadataServer(ctx context.Context, cfg MetadataConfig, logf func(format
 	accounts := []string{"default/", cfg.WorkloadPool + "/"}
 	slices.Sort(accounts)
 	return &metadataServer{
-		// The exchange's client records what each refused request carried, the subject token among
-		// it, so the boundary reads the library's error of the refusal with it redacted.
 		ctx:       context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(&http.Client{Timeout: exchangeTimeout})),
 		pool:      cfg.WorkloadPool,
 		audience:  "identitynamespace:" + cfg.WorkloadPool + ":" + cfg.IdentityProvider,

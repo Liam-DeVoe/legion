@@ -530,9 +530,6 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 		return fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(err))
 	}
 	defer response.Body.Close()
-	// The answer is read through oauth2call.ReadAnswer: a refusal's words print with every
-	// credential the call carried redacted (the daemon's Dispatch token among them), and a
-	// decode's error quotes no value of the answer.
 	answer, err := oauth2call.ReadAnswer(response, 64<<20)
 	if err != nil {
 		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))

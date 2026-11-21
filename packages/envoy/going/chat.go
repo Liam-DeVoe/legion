@@ -349,8 +349,6 @@ func (c *HTTPClient) token(ctx context.Context) (string, error) {
 // is compared without a copy, and json.Unmarshal copies every string it decodes, so nothing the
 // turn keeps aliases a buffer the next line overwrites.
 func readChatStream(response *http.Response, onText func(string) error) ([]ToolCall, error) {
-	// The stream is read through redact.StreamAnswer, which gives up to the cap and refuses a
-	// stream that runs past it rather than reading it without end.
 	stream := redact.StreamAnswer(response, chatStreamLimit)
 	scanner := bufio.NewScanner(stream)
 	scanner.Buffer(make([]byte, 0, 4096), chatFrameLimit)
@@ -412,7 +410,6 @@ func readChatStream(response *http.Response, onText func(string) error) ([]ToolC
 // at most chatErrorBodyLimit of the body for that code: neither says anything about the question.
 func chatStatusError(response *http.Response) error {
 	var decoded chatWireError
-	// A body past the limit is cut there, and decodes to no code.
 	if answer, err := redact.ReadAnswer(response, chatErrorBodyLimit); err == nil {
 		_ = answer.Decode(&decoded)
 	}

@@ -95,7 +95,6 @@ func (s *HTTPServer) Start() error {
 		}
 		defer postResp.Body.Close()
 		if postResp.StatusCode >= 400 {
-			// The server's words, or a stand-in's, print as the rule reads them.
 			refused, _ := redact.ReadAnswer(postResp, 64<<10)
 			return fmt.Errorf("POST to %s: status %d: %s", s.messageURL, postResp.StatusCode, refused.Words())
 		}

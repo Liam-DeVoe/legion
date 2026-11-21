@@ -226,8 +226,6 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return nil, azureStatusError(response)
 	}
-	// A body past the cap is refused rather than decoded as far as the cap allows (redact.ReadAnswer
-	// reads one byte past it to tell the two apart).
 	answer, err := redact.ReadAnswer(response, azureResponseBodyLimit)
 	if errors.Is(err, redact.ErrAnswerTooLarge) {
 		return nil, fmt.Errorf("embed: azure response exceeds %d bytes", azureResponseBodyLimit)
@@ -247,7 +245,6 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 // anything about the texts.
 func azureStatusError(response *http.Response) error {
 	var decoded azureErrorResponse
-	// A body past the limit is cut there, and decodes to no code.
 	if answer, readErr := redact.ReadAnswer(response, azureErrorBodyLimit); readErr == nil {
 		_ = answer.Decode(&decoded)
 	}

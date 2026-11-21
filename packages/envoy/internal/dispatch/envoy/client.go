@@ -690,8 +690,6 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 		}
 	}
 	err := listenerRefusal(response, refusal.Error)
-	// The reason is the listener's word, compared as it came against the reasons the listener
-	// gives for a role no live session holds.
 	if slices.ContainsFunc(roleholder.NoHolderReasons, refusal.Reason.Equal) && !errors.Is(err, ErrUnavailable) {
 		return Session{}, noRoleHolderError{reason: err.Error()}
 	}
