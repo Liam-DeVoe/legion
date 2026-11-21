@@ -177,6 +177,50 @@ func TestAPlannedStepStandsWhereTheRunsOfItsOwnGenerationStand(t *testing.T) {
 	}
 }
 
+// A later version of the plan in force can change a stopped task's steps within one run of the
+// issue: version 1 is `implementer reviewer`, its implementer passed and its reviewer was stopped,
+// and version 2 is `implementer tester reviewer`. The runs of version 1 stay in the generation, so
+// place 2 holds the reviewer's stopped run while the plan names a tester there. A run counts for a
+// planned step only when it is a run of that step, so the tester, which never ran, reads not started.
+// The fault is a run of another step at the same place read as the step's; the control is the same
+// sequence with that run's role the tester's, under which the tester reads stopped.
+func TestAPlannedStepReadsOnlyItsOwnRunsAfterAVersionChangesItsSteps(t *testing.T) {
+	handler := newTestHandler(t)
+	daemon := daemonSessionOf("LEG")
+	planned := func(issue, stoppedRole string) []string {
+		t.Helper()
+		id, artifact := uuid.NewString(), uuid.NewString()
+		version := func(number int, steps ...string) {
+			putPlanRecordOK(t, handler, issue, id, map[string]any{
+				"actor": daemon, "generation": 1, "source": "owner", "artifact_id": artifact, "version": number,
+				"tasks": []map[string]any{{"id": "a", "steps": steps, "needs": []string{}}},
+			})
+		}
+		end := func(run, role string, place, minute int, result string) {
+			putStepOK(t, handler, issue, run, map[string]any{"actor": daemon, "task": "a", "step": place, "kind": "step",
+				"role": role, "generation": 1, "result": result, "ended_at": at(minute)})
+		}
+		version(1, "implementer", "reviewer")
+		end(startRun(t, handler, "LEG", issue, "a", "implementer", 1, 1, at(0)), "implementer", 1, 5, "passed")
+		end(startRun(t, handler, "LEG", issue, "a", stoppedRole, 2, 1, at(10)), stoppedRole, 2, 15, "stopped")
+		version(2, "implementer", "tester", "reviewer")
+		tasks := stepsTasks(readSteps(t, handler, issue))
+		if len(tasks) == 0 {
+			t.Fatalf("the steps of %s list no task", issue)
+		}
+		return tasks[0].Planned
+	}
+
+	changed := createTestIssue(t, handler, "LEG", "A plan whose later version adds a tester")
+	if got, want := planned(changed, "reviewer"), []string{"1 implementer passed", "2 tester not started", "3 reviewer not started"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the planned steps after version 2 = %q, want %q: the reviewer's run at place 2 is no run of the tester", got, want)
+	}
+	control := createAdvancingIssue(t, handler, map[string]any{"project": "LEG", "title": "A plan whose tester was stopped"}, "alice").Key
+	if got, want := planned(control, "tester"), []string{"1 implementer passed", "2 tester stopped", "3 reviewer not started"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the planned steps of the control = %q, want %q: a run of the tester at place 2 is the tester's", got, want)
+	}
+}
+
 // A plan write records each task's needs as the ids it names, and answers them; a task written
 // with no needs answers them null. A need that names no task of the plan is refused, and nothing
 // is written. The fault is a node that holds a need no task of it answers to; the control is a
