@@ -7,14 +7,14 @@ import (
 )
 
 // derivedIntakeHandlerLimitLine is the sentence `legion config check` prints for a file
-// whose `worker_rpc_timeout_seconds` is 200, written out here rather than built from
+// whose `worker_rpc_timeout_seconds` is 250, written out here rather than built from
 // daemon.IntakeHandlerLimitLine: a row that composed the expected line from the code that writes
 // it would pass whatever that code said, and what an operator reads is the whole point of the
-// line. The numbers in it are the derivation's — four windows of 200 s — so a change to the
+// line. The numbers in it are the derivation's — three windows of 250 s — so a change to the
 // derivation or to the wording fails this row and is read by a person before it ships.
-const derivedIntakeHandlerLimitLine = "intake: one fact's handling is cut after 800s: " +
-	"worker_rpc_timeout_seconds (200) bounds each read a review makes — whether its pull request is recorded, " +
-	"its truncated body and its author's repository permission — and one window more is left for the part nothing bounds, " +
+const derivedIntakeHandlerLimitLine = "intake: one fact's handling is cut after 750s: " +
+	"worker_rpc_timeout_seconds (250) bounds each read a review makes — whether its pull request is recorded " +
+	"and its author's repository permission — and one window more is left for the part nothing bounds, " +
 	"the fact's transaction and its wait on the apply lock\n"
 
 // Two configurations that differ in one line, `worker_rpc_timeout_seconds`, run through the same
@@ -39,7 +39,7 @@ func TestConfigCheckNamesTheIntakeHandlerLimitOnlyWhenTheWindowDerivesOne(t *tes
 		},
 		{
 			"a window that derives a limit above the floor names it",
-			"worker_rpc_timeout_seconds: 200\nprojects:\n  DEMO: {}\n",
+			"worker_rpc_timeout_seconds: 250\nprojects:\n  DEMO: {}\n",
 			demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable + derivedIntakeHandlerLimitLine,
 		},
 	} {

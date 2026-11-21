@@ -16,8 +16,7 @@ import (
 // The heads a conflict round runs between: the head the daemon judged conflicting with its base,
 // the head the implementer's forward merge leaves, which answers it, and the head a second
 // forward merge leaves, after the issue has reached the cap. They are the package's own heads,
-// spelled as whole commit SHAs, because a review-App review decides a round only when the head
-// its Legion footer names is one (intake.PullRequestReview.LegionHead).
+// spelled as whole commit SHAs, as GitHub spells a commit.
 const (
 	conflictedHead = headOne
 	mergedHead     = headTwo
@@ -84,7 +83,7 @@ func recordedHead(t *testing.T, pool *pgxpool.Pool) string {
 // (marksConflicting), and it moves no issue (dispatch://INFRA-4374 R1): every move at the
 // conflicting head is a role's. Three are made here, one for each way this release makes one: a
 // worker's own backward move (TriggerBackward, request_backward_move), here the architect's from
-// accepting, a tester's fail at that same head, and the review App's request for changes at it.
+// accepting, a tester's fail at that same head, and the reviewer's request for changes at it.
 // Each raises the implementer's pass, because a completion's key is built from that number
 // (record.PhaseRow.Pass, api/handoff.go), and the review's is the only one that opens a review
 // round at all - the cap counts rounds, and only a review that requested changes opens one
@@ -92,7 +91,7 @@ func recordedHead(t *testing.T, pool *pgxpool.Pool) string {
 // rounds already behind the issue the three moves write no cap message and no pr-blocked notice.
 //
 // Then the implementer's forward merge moves the recorded head, which is what answers a conflict,
-// and the review App's request for changes at the new head is the first counted round since: the
+// and the reviewer's request for changes at the new head is the first counted round since: the
 // mark no longer equals the recorded head, so nothing excuses it, it is the third counted round,
 // and the cap's message names both numbers.
 //
@@ -121,7 +120,7 @@ func TestConflictRoundsCostTheCapNothing(t *testing.T) {
 		t.Fatalf("the architect's move back left the issue in %s, want implementing", got)
 	}
 
-	// A tester's fail at that same head, and the review App's request for changes at it. The
+	// A tester's fail at that same head, and the reviewer's request for changes at it. The
 	// first opens no review round, the second opens one and it is a conflict round.
 	testerFails(t, pool, engine, "1")
 	reviewerRequestsChanges(t, pool, engine, "1", conflictedHead)
@@ -149,7 +148,7 @@ func TestConflictRoundsCostTheCapNothing(t *testing.T) {
 
 	reviewerRequestsChanges(t, pool, engine, "2", mergedHead)
 	if got := issuePhase(t, pool); got != phase.Implementing {
-		t.Fatalf("the review App's request for changes left the issue in %s, want implementing", got)
+		t.Fatalf("the reviewer's request for changes left the issue in %s, want implementing", got)
 	}
 	if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 4 || conflicts != 1 {
 		t.Fatalf("rounds = %d of which %d conflict rounds, want 4 and the same 1: the round at the merged head is counted", rounds, conflicts)
@@ -200,7 +199,7 @@ func TestConflictRoundsCostTheCapNothing(t *testing.T) {
 // Every row makes the mark from implementing, with a base that requires no check, where a
 // confirmed conflict needs no merge, so the two reads record their judgement and ask and move
 // nothing (workflow's mergeability, classify.ConflictNeedsMerge): what the rounds below are read
-// against is the mark the record holds. The round itself is the review App's request for changes,
+// against is the mark the record holds. The round itself is the reviewer's request for changes,
 // because that is what opens a review round at all in this release (recordRound).
 func TestAConflictRoundCountsAgainstNoCapUntilTheMarkIsCleared(t *testing.T) {
 	for _, tc := range []struct {
@@ -257,14 +256,14 @@ func TestAConflictRoundCountsAgainstNoCapUntilTheMarkIsCleared(t *testing.T) {
 
 			reviewerRequestsChanges(t, pool, engine, "1", tc.head)
 			if got := issuePhase(t, pool); got != phase.Implementing {
-				t.Fatalf("the review App's request for changes left the issue in %s, want implementing", got)
+				t.Fatalf("the reviewer's request for changes left the issue in %s, want implementing", got)
 			}
 			wantConflicts := 0
 			if tc.excused {
 				wantConflicts = 1
 			}
 			if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 1 || conflicts != wantConflicts {
-				t.Fatalf("after the review App's request for changes rounds = %d of which %d conflict rounds, want 1 and %d", rounds, conflicts, wantConflicts)
+				t.Fatalf("after the reviewer's request for changes rounds = %d of which %d conflict rounds, want 1 and %d", rounds, conflicts, wantConflicts)
 			}
 		})
 	}

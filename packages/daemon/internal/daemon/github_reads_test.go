@@ -20,13 +20,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// outboxBearer is the bearer outboxTokens hands the daemon's call to path: the reviewer's write
-// lease for the read of a review author's permission (reviewAppClient), and the read lease for
-// every other read of a repository (readClient).
-func outboxBearer(path string) string {
-	if strings.Contains(path, "/collaborators/") {
-		return "Bearer outbox-token"
-	}
+// outboxBearer is the bearer outboxTokens hands the daemon's call to path: the read lease, which
+// every read of a repository uses, the read of a review author's permission (permissionClient)
+// among them (readClient).
+func outboxBearer(string) string {
 	return "Bearer outbox-token-read"
 }
 

@@ -622,19 +622,24 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 	t.Run("a hold from reviewing whose round is decided", func(t *testing.T) {
 		pool := migratedPool(t)
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-		// The reviewer completed, its claim then failed, and its approval landed while the issue
-		// was held: the release finds both halves of the round in and ends it in accepting.
+		// The reviewer completed with its approval while GitHub had not answered for the head, its
+		// claim then failed, and GitHub's answer landed while the issue was held: the release
+		// finds the round decided and ends it in accepting.
 		seedReview(t, pool, "green")
+		apply("merge-state-unknown", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
+			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateUnknown})
+		apply("reviewer-approved", intake.HandoffComplete{Generation: 1, Issue: root, Role: claim.RoleReviewer, Claim: reviewClaim,
+			Summary: "reviewed", Verdict: "approve", Commit: headOne, HandoffRecord: "review-1", HandoffVersion: 1})
+		if waits := storedIssue(t, pool, root); waits.Phase != phase.Reviewing {
+			t.Fatalf("the root after the approval = %#v, want it in reviewing: GitHub has not answered for the head", waits)
+		}
+		apply("reviewer-failed", intake.ClaimFailed{Issue: root, Role: claim.RoleReviewer})
 		// GitHub reports the head one it would merge, which is what the settle asks of it: the
 		// release below decides the round rather than the merge state.
 		apply("merge-state", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
 			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean})
-		apply("reviewer-completed", intake.HandoffComplete{Generation: 1, Issue: root, Role: claim.RoleReviewer, Claim: reviewClaim,
-			Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
-		apply("reviewer-failed", intake.ClaimFailed{Issue: root, Role: claim.RoleReviewer})
-		apply("approved", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "approved", CommitID: headOne, Author: testReviewApp, Body: reviewBody("the review", headOne)})
 		if held := storedIssue(t, pool, root); held.Phase != phase.Held || held.Hold == nil || held.Hold.From != phase.Reviewing {
-			t.Fatalf("the root after the review = %#v, want it still held from reviewing: a held round decides nothing", held)
+			t.Fatalf("the root after GitHub's answer = %#v, want it still held from reviewing: a held round decides nothing", held)
 		}
 
 		apply("todo", intake.DispatchIssue{Key: root, ResolvedRepo: "sjawhar/legion", Seq: 5, Type: "issue.updated", Status: "todo",

@@ -19,7 +19,7 @@ import (
 func TestEveryMoveTakesTheMergeVerdictAndNoMoveKeepsIt(t *testing.T) {
 	read := time.Date(2026, 11, 12, 7, 5, 3, 0, time.UTC)
 	code := record.ClassifiedPush{SHA: "h3", Before: "h2"}
-	tests := record.ClassifiedPush{SHA: "h3", Before: "h2", ByReviewApp: true}
+	other := record.ClassifiedPush{SHA: "h3", Before: "h2", Sender: "another-account"}
 	for _, tc := range []struct {
 		name  string
 		facts []runFact
@@ -27,7 +27,7 @@ func TestEveryMoveTakesTheMergeVerdictAndNoMoveKeepsIt(t *testing.T) {
 	}{
 		{"a code push, then its head", []runFact{pushed(code), arrivesFrom("h2", "h3")}, record.MergeStateUnread},
 		{"a head, then its code push", []runFact{arrivesFrom("h2", "h3"), pushed(code)}, record.MergeStateUnread},
-		{"the review App's push, then its head", []runFact{pushed(tests), arrivesFrom("h2", "h3")}, record.MergeStateUnread},
+		{"another account's push, then its head", []runFact{pushed(other), arrivesFrom("h2", "h3")}, record.MergeStateUnread},
 		{"a head whose push has not arrived", []runFact{arrivesFrom("h2", "h3")}, record.MergeStateUnread},
 		{"a synchronize back to the recorded head", []runFact{arrivesFrom("h1", "h2")}, record.MergeStateClean},
 	} {

@@ -457,6 +457,61 @@ func TestForgetMakesTheNextTokenAndReadTokenMintAgain(t *testing.T) {
 	}
 }
 
+// ForgetRead drops the owner's read lease alone: the next ReadToken mints again, and every write
+// lease of the owner is served from the cache as before, so a read GitHub refused costs no role
+// its write token.
+func TestForgetReadDropsTheReadLeaseAndKeepsTheWriteLeases(t *testing.T) {
+	_, privatePEM := testAppKey(t)
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	exchanges := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app/installations":
+			fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`)
+		case "/app/installations/77":
+			fmt.Fprint(w, installationGranting("77", grantedEverythingAsked))
+		case "/app/installations/77/access_tokens":
+			_, asked := askedInExchange(t, r)
+			mu.Lock()
+			exchanges++
+			n := exchanges
+			mu.Unlock()
+			fmt.Fprint(w, mintedFor(fmt.Sprintf("installation-%d", n), now.Add(time.Hour), asked.Permissions, "legion"))
+		case "/app":
+			fmt.Fprint(w, `{"slug":"legion"}`)
+		case "/users/legion[bot]":
+			fmt.Fprint(w, `{"id":271566631}`)
+		default:
+			t.Errorf("unexpected GitHub path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	tokens := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	ctx := context.Background()
+	write, err := tokens.Token(ctx, SetImplementer, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read, err := tokens.ReadToken(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens.ForgetRead("ACME")
+	if again, err := tokens.Token(ctx, SetImplementer, "acme"); err != nil || again.Token != write.Token {
+		t.Fatalf("the implementer's Token after ForgetRead = %s, %v; want the cached %s", again.Token, err, write.Token)
+	}
+	if again, err := tokens.ReadToken(ctx, "acme"); err != nil || again.Token == read.Token {
+		t.Fatalf("ReadToken after ForgetRead = %s, %v; want a fresh mint, not the dropped %s", again.Token, err, read.Token)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if exchanges != 3 {
+		t.Fatalf("%d exchanges, want 3: each lease once, then the read lease alone again", exchanges)
+	}
+}
+
 // ReadToken is the same App's installation token for an owner, narrowed to reading: its exchange
 // posts the read permissions, it caches under its own key beside Token's (one mint each for one
 // owner, a second ReadToken served from the cache), and it carries the same bot identity.

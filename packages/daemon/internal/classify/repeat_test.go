@@ -41,16 +41,15 @@ func judged(pr record.PullRequest, fresh, again string) string {
 
 // moveAgain is the facts of h0..h1, a forced return h1..h0 and h0..again, a red settling at each
 // head, each push delivered before its head or after it (late), each synchronize naming its move.
-// by says whose each push was: the review App's or the implementer's.
-func moveAgain(by [3]bool, late bool, again string) []runFact {
+func moveAgain(late bool, again string) []runFact {
 	var facts []runFact
 	for i, s := range []struct {
 		push record.ClassifiedPush
 		head string
 	}{
-		{record.ClassifiedPush{SHA: "h1", Before: "h0", ByReviewApp: by[0]}, "h1"},
-		{record.ClassifiedPush{SHA: "h0", Before: "h1", ByReviewApp: by[1]}, "h0"},
-		{record.ClassifiedPush{SHA: again, Before: "h0", ByReviewApp: by[2]}, again},
+		{record.ClassifiedPush{SHA: "h1", Before: "h0"}, "h1"},
+		{record.ClassifiedPush{SHA: "h0", Before: "h1"}, "h0"},
+		{record.ClassifiedPush{SHA: again, Before: "h0"}, again},
 	} {
 		settle := settles(s.head, int64(i+2), "ci")
 		if late {
@@ -63,18 +62,14 @@ func moveAgain(by [3]bool, late bool, again string) []runFact {
 }
 
 // A move made again is judged by the push that made it again, as a move to a fresh commit is:
-// h0..h1, a forced return h1..h0, then h0..h1 pushed again, for every combination of the review
-// App's and the implementer's pushes, delivered before their heads and after them, against a
-// control whose third push reaches a fresh commit h1b.
+// h0..h1, a forced return h1..h0, then h0..h1 pushed again, delivered before their heads and after
+// them, against a control whose third push reaches a fresh commit h1b.
 func TestAMoveMadeAgainIsJudgedByThePushThatMadeItAgain(t *testing.T) {
-	for mask := range 8 {
-		by := [3]bool{mask&1 != 0, mask&2 != 0, mask&4 != 0}
-		for _, late := range []bool{false, true} {
-			got := delivered(t, redAtH0(), moveAgain(by, late, "h1")...)
-			control := delivered(t, redAtH0(), moveAgain(by, late, "h1b")...)
-			if g, w := judged(got, "", ""), judged(control, "h1b", "h1"); g != w || got.Run != nil {
-				t.Errorf("review App's pushes %v, pushes late %v: h1 made again %s, a fresh commit %s", by, late, g, w)
-			}
+	for _, late := range []bool{false, true} {
+		got := delivered(t, redAtH0(), moveAgain(late, "h1")...)
+		control := delivered(t, redAtH0(), moveAgain(late, "h1b")...)
+		if g, w := judged(got, "", ""), judged(control, "h1b", "h1"); g != w || got.Run != nil {
+			t.Errorf("pushes late %v: h1 made again %s, a fresh commit %s", late, g, w)
 		}
 	}
 }
@@ -88,7 +83,7 @@ func TestAMoveMadeAgainIsJudgedByThePushThatMadeItAgain(t *testing.T) {
 // own red settlement standing in every order, as on main.
 func TestARepeatStandsOnlyForTheMoveItsSynchronizeNames(t *testing.T) {
 	code, back := record.ClassifiedPush{SHA: "h1", Before: "h0"}, record.ClassifiedPush{SHA: "h0", Before: "h1"}
-	tests, onto := record.ClassifiedPush{SHA: "hx", Before: "h0", ByReviewApp: true}, record.ClassifiedPush{SHA: "h1", Before: "hx", ByReviewApp: true}
+	tests, onto := record.ClassifiedPush{SHA: "hx", Before: "h0"}, record.ClassifiedPush{SHA: "h1", Before: "hx"}
 	const want = `head="h1" checked="h1" failing=[ci] run=false`
 	for _, start := range []struct {
 		name  string
@@ -138,9 +133,9 @@ func TestAnArrivalThatNamesNoMoveTakesNoRepeat(t *testing.T) {
 // implementer's push, so the run closes, judged as for a fresh commit h1b, with the pushes
 // delivered before the head or after it.
 func TestARepeatCompletesTheMovesASynchronizeSkipped(t *testing.T) {
-	first, back := record.ClassifiedPush{SHA: "h1", Before: "h0", ByReviewApp: true}, record.ClassifiedPush{SHA: "h0", Before: "h1"}
+	first, back := record.ClassifiedPush{SHA: "h1", Before: "h0"}, record.ClassifiedPush{SHA: "h0", Before: "h1"}
 	history := func(again string, late bool) []runFact {
-		redo, on := record.ClassifiedPush{SHA: again, Before: "h0", ByReviewApp: true}, record.ClassifiedPush{SHA: "h2", Before: again}
+		redo, on := record.ClassifiedPush{SHA: again, Before: "h0"}, record.ClassifiedPush{SHA: "h2", Before: again}
 		facts := []runFact{pushed(first), arrivesFrom("h0", "h1"), settles("h1", 2, "ci"), pushed(back), arrivesFrom("h1", "h0"), settles("h0", 3, "ci")}
 		if late {
 			return append(facts, arrivesFrom(again, "h2"), settles("h2", 4, "ci"), pushed(redo), pushed(on))
@@ -162,10 +157,10 @@ func TestARepeatCompletesTheMovesASynchronizeSkipped(t *testing.T) {
 func TestAMoveMadeAgainInsideAHeadRun(t *testing.T) {
 	start := record.PullRequest{HeadSHA: "c0", CheckedHead: "c0", Failing: []string{"ci"},
 		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1}
-	opening := record.ClassifiedPush{SHA: "h0", Before: "c0", ByReviewApp: true}
+	opening := record.ClassifiedPush{SHA: "h0", Before: "c0"}
 	first, back := record.ClassifiedPush{SHA: "h1", Before: "h0"}, record.ClassifiedPush{SHA: "h0", Before: "h1"}
 	history := func(again string) []runFact {
-		redo := record.ClassifiedPush{SHA: again, Before: "h0", ByReviewApp: true}
+		redo := record.ClassifiedPush{SHA: again, Before: "h0"}
 		return []runFact{arrivesFrom("c0", "h0"), settles("h0", 2, "ci"), pushed(first), arrivesFrom("h0", "h1"), settles("h1", 3, "ci"),
 			pushed(back), arrivesFrom("h1", "h0"), settles("h0", 4, "ci"), pushed(redo), arrivesFrom("h0", again), settles(again, 5, "ci")}
 	}
@@ -191,7 +186,7 @@ func TestAMoveMadeAgainInsideAHeadRun(t *testing.T) {
 func TestTheSameMoveMadeThreeTimesInAHeadRun(t *testing.T) {
 	start := record.PullRequest{HeadSHA: "c0", CheckedHead: "c0", Failing: []string{"ci"},
 		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1}
-	opening := record.ClassifiedPush{SHA: "h0", Before: "c0", ByReviewApp: true}
+	opening := record.ClassifiedPush{SHA: "h0", Before: "c0"}
 	history := func(heads [3]string) []runFact {
 		facts := []runFact{arrivesFrom("c0", "h0"), settles("h0", 2, "ci")}
 		id := int64(3)
@@ -221,43 +216,33 @@ func TestTheSameMoveMadeThreeTimesInAHeadRun(t *testing.T) {
 	}
 }
 
-// Every interleaving of the redo's three pushes with its heads and red settlements, for every
-// combination of the review App's and the implementer's pushes, is judged as the same history made
-// on a fresh commit h1b, pushes first, and closes its head run - outside R1. R1 is the floor: when
-// the two pushes of h0..h1 differ, nothing a push or a synchronize carries says which was made
-// first, so a move takes the one delivered first; each order is then judged as the history whose
-// two pushes of h0..h1 were made in the order they were delivered, which is the history itself or
-// that history with the two swapped.
+// Every interleaving of the redo's three pushes with its heads and red settlements is judged as the
+// same history made on a fresh commit h1b, pushes first, and closes its head run. One account
+// pushes for every role, so the two pushes of h0..h1 carry the same two heads and nothing else,
+// and no order of them is a history of its own.
 func TestEveryOrderOfAMoveMadeAgainIsJudgedAsOnAFreshCommit(t *testing.T) {
-	truth := func(by [3]bool) string {
-		return judged(delivered(t, redAtH0(), moveAgain(by, false, "h1b")...), "h1b", "h1")
+	want := judged(delivered(t, redAtH0(), moveAgain(false, "h1b")...), "h1b", "h1")
+	var facts []runFact
+	var pushes []record.ClassifiedPush
+	for _, f := range moveAgain(false, "h1") {
+		if f.push != nil {
+			pushes = append(pushes, *f.push)
+		} else {
+			facts = append(facts, f)
+		}
 	}
-	for mask := range 8 {
-		by := [3]bool{mask&1 != 0, mask&2 != 0, mask&4 != 0}
-		var facts []runFact
-		var pushes []record.ClassifiedPush
-		for _, f := range moveAgain(by, false, "h1") {
-			if f.push != nil {
-				pushes = append(pushes, *f.push)
-			} else {
-				facts = append(facts, f)
-			}
+	wrong := 0
+	for _, order := range interleavings(facts, pushes) {
+		got := judged(delivered(t, redAtH0(), order...), "", "")
+		if got == want {
+			continue
 		}
-		want, swapped := truth(by), truth([3]bool{by[2], by[1], by[0]})
-		r1 := by[0] != by[2]
-		wrong := 0
-		for _, order := range interleavings(facts, pushes) {
-			got := judged(delivered(t, redAtH0(), order...), "", "")
-			if got == want || (r1 && got == swapped) {
-				continue
-			}
-			if wrong++; wrong <= 3 {
-				t.Errorf("review App's pushes %v (R1 %v), order %v: %s, want %s", by, r1, order, got, want)
-			}
+		if wrong++; wrong <= 3 {
+			t.Errorf("order %v: %s, want %s", order, got, want)
 		}
-		if wrong > 3 {
-			t.Errorf("review App's pushes %v: %d orders misjudged in all", by, wrong)
-		}
+	}
+	if wrong > 3 {
+		t.Errorf("%d orders misjudged in all", wrong)
 	}
 }
 
@@ -268,7 +253,7 @@ func TestEveryOrderOfAMoveMadeAgainIsJudgedAsOnAFreshCommit(t *testing.T) {
 // last or never, h0..h1 changes nothing of it.
 func TestAPushTheRecordLetsGoIsLetGoByItsHeadRun(t *testing.T) {
 	lost := record.ClassifiedPush{SHA: "h1", Before: "h0"}
-	facts := []runFact{arrivesFrom("h0", "h1"), settles("h1", 2, "ci"), pushed(record.ClassifiedPush{SHA: "x", Before: "h1", ByReviewApp: true}),
+	facts := []runFact{arrivesFrom("h0", "h1"), settles("h1", 2, "ci"), pushed(record.ClassifiedPush{SHA: "x", Before: "h1"}),
 		pushed(record.ClassifiedPush{SHA: "h2", Before: "h1"}), arrivesFrom("h1", "h2"), settles("h2", 3, "ci")}
 	for i := 1; i <= maxWaitingPushes; i++ {
 		facts = append(facts, pushed(record.ClassifiedPush{SHA: fmt.Sprintf("w%d", i), Before: fmt.Sprintf("w%d", i-1)}))
@@ -313,7 +298,7 @@ func TestAHeadRunHoldsNoMorePushesThanTheRecordsBound(t *testing.T) {
 	}
 	pr = opened()
 	for i := 1; i <= 100; i++ {
-		pr = delivered(t, pr, pushed(record.ClassifiedPush{SHA: "h2", Before: "h1", ByReviewApp: i%2 == 0}))
+		pr = delivered(t, pr, pushed(record.ClassifiedPush{SHA: "h2", Before: "h1"}))
 	}
 	if pr.Run == nil || len(pr.Run.Pushes) > maxRepeats+1 {
 		t.Errorf("100 pushes of h1..h2 again: the run %v, want at most %d pushes", pr.Run, maxRepeats+1)
@@ -330,8 +315,7 @@ func TestAHeadRunHoldsNoMorePushesThanTheRecordsBound(t *testing.T) {
 // the review App, its push before its head or after it. Each is judged as the same history on a
 // fresh commit h1b.
 func TestAMoveMadeByAChainAndMadeAgainByAPush(t *testing.T) {
-	tests, onto := record.ClassifiedPush{SHA: "hx", Before: "h0", ByReviewApp: true}, record.ClassifiedPush{SHA: "h1", Before: "hx", ByReviewApp: true}
-	backByApp := record.ClassifiedPush{SHA: "h0", Before: "h1", ByReviewApp: true}
+	tests, onto := record.ClassifiedPush{SHA: "hx", Before: "h0"}, record.ClassifiedPush{SHA: "h1", Before: "hx"}
 	back := record.ClassifiedPush{SHA: "h0", Before: "h1"}
 	for _, late := range []bool{false, true} {
 		tail := func(push record.ClassifiedPush, id int64) []runFact {
@@ -340,18 +324,18 @@ func TestAMoveMadeByAChainAndMadeAgainByAPush(t *testing.T) {
 			}
 			return []runFact{pushed(push), arrivesFrom("h0", push.SHA), settles(push.SHA, id, "ci")}
 		}
-		chained := []runFact{pushed(tests), pushed(onto), arrivesFrom("hx", "h1"), settles("h1", 2, "ci"), pushed(backByApp), arrivesFrom("h1", "h0"), settles("h0", 3, "ci")}
+		chained := []runFact{pushed(tests), pushed(onto), arrivesFrom("hx", "h1"), settles("h1", 2, "ci"), pushed(back), arrivesFrom("h1", "h0"), settles("h0", 3, "ci")}
 		got := delivered(t, redAtH0(), append(append([]runFact{}, chained...), tail(record.ClassifiedPush{SHA: "h1", Before: "h0"}, 4)...)...)
 		control := delivered(t, redAtH0(), append(append([]runFact{}, chained...), tail(record.ClassifiedPush{SHA: "h1b", Before: "h0"}, 4)...)...)
 		if g, w := judged(got, "", ""), judged(control, "h1b", "h1"); g != w || got.Run != nil {
 			t.Errorf("made by a chain, then by a push, late %v: %s, a fresh commit %s", late, g, w)
 		}
 		twice := []runFact{pushed(record.ClassifiedPush{SHA: "h1", Before: "h0"}), arrivesFrom("h0", "h1"), settles("h1", 2, "ci"), pushed(back), arrivesFrom("h1", "h0"), settles("h0", 3, "ci"),
-			pushed(record.ClassifiedPush{SHA: "h1", Before: "h0"}), arrivesFrom("h0", "h1"), settles("h1", 4, "ci"), pushed(backByApp), arrivesFrom("h1", "h0"), settles("h0", 5, "ci")}
-		got = delivered(t, redAtH0(), append(append([]runFact{}, twice...), tail(record.ClassifiedPush{SHA: "h1", Before: "h0", ByReviewApp: true}, 6)...)...)
-		control = delivered(t, redAtH0(), append(append([]runFact{}, twice...), tail(record.ClassifiedPush{SHA: "h1b", Before: "h0", ByReviewApp: true}, 6)...)...)
+			pushed(record.ClassifiedPush{SHA: "h1", Before: "h0"}), arrivesFrom("h0", "h1"), settles("h1", 4, "ci"), pushed(back), arrivesFrom("h1", "h0"), settles("h0", 5, "ci")}
+		got = delivered(t, redAtH0(), append(append([]runFact{}, twice...), tail(record.ClassifiedPush{SHA: "h1", Before: "h0"}, 6)...)...)
+		control = delivered(t, redAtH0(), append(append([]runFact{}, twice...), tail(record.ClassifiedPush{SHA: "h1b", Before: "h0"}, 6)...)...)
 		if g, w := judged(got, "", ""), judged(control, "h1b", "h1"); g != w || got.Run != nil {
-			t.Errorf("made a third time by the review App, late %v: %s, a fresh commit %s", late, g, w)
+			t.Errorf("made a third time, late %v: %s, a fresh commit %s", late, g, w)
 		}
 	}
 }

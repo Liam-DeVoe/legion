@@ -20,27 +20,32 @@
 // own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real intake consumers, the real review
 // round and its stuck notice, the real merge-state ladder (daemon's readMergeStates) and the real
-// state build. Facts enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS
-// stream for the CI settlements, the reviews, the push, the synchronize and the pushes onto the
-// base that ask the daemon to read a head again. Every assertion is a read of GET
-// /legion/v1/state — of the decoded object for what it says, and of the body's own keys for what
-// it leaves off, which is what the negative control holds.
+// state build. Facts enter as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS stream
+// for the CI settlements, the reviews, the push, the synchronize and the pushes onto the base that
+// ask the daemon to read a head again. The one exception is the reviewer's verdict: no agent runs
+// here, so the approval each step stands on is written to the reviewer's phases row as the
+// reviewer's completion of reviewing writes it (workflow's handoff, decisionOf), and the reviewer's
+// COMMENT that follows it, published as an envelope, is the fact the daemon settles the round on
+// and asks GitHub's merge state for (recordApproval). The completion route itself is proven by
+// api's TestHandoffReviewerVerdict and workflow's TestReviewRoundFromTheReviewersVerdict. Every
+// assertion is a read of GET /legion/v1/state — of the decoded object for what it says, and of the
+// body's own keys for what it leaves off, which is what the negative control holds.
 //
 // What the proof stands in for lies outside the rule. The broker is a native nats-server the
 // script starts and names in LEGION_E2E_NATS_URL. GitHub is mergeWaitGitHub, a REST stand-in for
 // the two pull requests the proof drives, whose answer for a head — `mergeable`,
 // `mergeable_state`, `head.sha`, `base.ref` and `updated_at` — the steps set between them, and
 // which can be made to answer nothing at all for a head, the state a round is in before its first
-// answering read. Dispatch is the board the package's whole-daemon live proofs share
-// (liveDispatch, in live_proof_test.go), and Envoy's listener the package's noticeListener. The
-// two Apps' tokens are workflowTokenRecorder's placeholders, which is also where the review App's
-// login comes from: appLoginAtBoot asks the lease for it and gets `legion-review[bot]`, the
-// reviewAppLogin this package already spells (pull_request_reads_test.go). No agent runs: the fake
-// runtime launches whatever claim a move starts, and the proof acts as no role. The three issues,
-// their pull requests and their slots are seeded through the store, as every daemon test seeds its
-// fixture, and so is the reviewer's claim of the two whose reviews the proof publishes, recording
-// the session those reviews' footers name, so each review is the reviewer's own (workflow's
-// byReviewer); what is driven is the change.
+// answering read; it gives mergeWaitPerson, an account of type User, write access to the
+// repository. Dispatch is the board the package's whole-daemon live proofs share (liveDispatch, in
+// live_proof_test.go), and Envoy's listener the package's noticeListener. The two Apps' tokens are
+// workflowTokenRecorder's placeholders, which is also where the one App's login comes from:
+// appLoginAtBoot asks the lease for it and gets `legion-review[bot]`, the appLogin this
+// package already spells (pull_request_reads_test.go). No agent runs: the fake runtime launches
+// whatever claim a move starts, and the proof acts as no role. The three issues, their pull
+// requests and their slots are seeded through the store, as every daemon test seeds its fixture,
+// and so is the reviewer's claim of the two whose rounds the proof decides; what is driven is the
+// change.
 package daemon
 
 import (
@@ -75,17 +80,18 @@ import (
 const mergeWaitBase = "main"
 
 // The two heads the proof drives: the head the round is approved at, and the head a push moves it
-// to. They are full commit SHAs because a review the review App submits decides a round only when
-// the head its Legion footer names is the pull request's current head, and the daemon reads no
-// shorter spelling there (intake.PullRequestReview.LegionHead, over fullCommitSHA).
+// to, spelled as GitHub spells a commit.
 const (
 	mergeWaitFirstHead  = "4c1d0b9a7e52f38610d4c2b7a9e5f0318d6b2c47"
 	mergeWaitSecondHead = "8b3e5f1c9d04a7268f1b3c5d7e9a0b2c4d6e8f13"
 )
 
-// mergeWaitReviewerSession is the session the seeded reviewer claims record and every review the
-// proof publishes names in its Legion footer (publishReview).
+// mergeWaitReviewerSession is the session the seeded reviewer claims record.
 const mergeWaitReviewerSession = "ses-reviewer"
+
+// mergeWaitPerson is the person whose request for changes ends the negative control's round: an
+// account of type User the GitHub stand-in gives write access to the repository.
+const mergeWaitPerson = "a-writer"
 
 // The head of each issue the negative control reads: the issue whose round waits on nothing, and
 // the issue whose pull request the record does not hold open. Both are full SHAs for the same
@@ -176,17 +182,16 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 // seed records the three issues as the daemon would hold them at the moment their reviewers took
 // the work, each a root handed to Legion, in reviewing, holding its tree's admission slot, its
 // lifecycle open under the workflow, on a pull request of its own, but for one state the daemon
-// never holds: the two whose reviews the proof publishes have a reviewer claim and no reviewer
-// row, which is left for the review itself to write, where the daemon writes that row when it
-// enters the reviewer (workflow's enter). The closed issue's reviewer row is seeded with the
-// approval that stands at its head, because no review of it is
-// published and that approval is what would make the rule say its round waits, were its pull
-// request open: the rule's own test of the open pull request is what leaves its round waiting on
-// nothing. The reviewer's claim of each of the two whose reviews the proof publishes records
-// mergeWaitReviewerSession, as the registration of its agent records it, and stands as the release
-// of an idle pod leaves it (supervise.SuspendedByReleased), with the session kept: the boot's
-// resume by rule resumes no such claim, and with no session recorded each review would wait and
-// decide nothing (workflow's RefusedWhileNoSession).
+// never holds: the two whose rounds the proof decides have a reviewer claim and no reviewer row,
+// which is left for the reviewer's verdict to write (recordApproval), where the daemon writes that
+// row when it enters the reviewer (workflow's enter). The closed issue's reviewer row is seeded
+// with the approval that stands at its head, because no verdict of it is driven and that approval
+// is what would make the rule say its round waits, were its pull request open: the rule's own
+// test of the open pull request is what leaves its round waiting on nothing. The reviewer's claim
+// of each of the two whose rounds the proof decides records mergeWaitReviewerSession, as the
+// registration of its agent records it, and stands as the release of an idle pod leaves it
+// (supervise.SuspendedByReleased), with the session kept: the boot's resume by rule resumes no
+// such claim.
 func (r *mergeWaitReadableLive) seed() {
 	t := r.t
 	t.Helper()
@@ -285,8 +290,8 @@ func (r *mergeWaitReadableLive) mergeWaitAppears() {
 	r.publishChecks(r.stuckNumber, mergeWaitFirstHead, "lint", "unit")
 	r.note("drove CI's settlement of #%d at %s: lint and unit reported, both concluded, so every check GitHub reported on the head is over (classify.ChecksConcludedOnHead)",
 		r.stuckNumber, mergeWaitShort(mergeWaitFirstHead))
-	r.publishReview(r.stuckNumber, "approved", mergeWaitFirstHead)
-	r.note("drove the reviewer's APPROVE of %s, the head the pull request stands at, while GitHub answers that head mergeable_state %q",
+	r.recordApproval(r.stuck, r.stuckNumber, mergeWaitFirstHead)
+	r.note("recorded the reviewer's verdict approve of %s, the head the pull request stands at, and drove its COMMENT, while GitHub answers that head mergeable_state %q",
 		mergeWaitShort(mergeWaitFirstHead), "blocked")
 
 	wait := r.waitForWait(r.stuck, "the merge wait of "+r.stuck+" with the stuck round told of",
@@ -431,8 +436,8 @@ func (r *mergeWaitReadableLive) aPushMovesTheHead() {
 		mergeWaitShort(moved.PullRequest.Head), r.stuck, mergeWaitShort(mergeWaitFirstHead))
 
 	r.publishChecks(r.stuckNumber, mergeWaitSecondHead, "unit")
-	r.publishReview(r.stuckNumber, "approved", mergeWaitSecondHead)
-	r.note("drove CI's settlement of the new head, one run of unit, and the reviewer's APPROVE of %s", mergeWaitShort(mergeWaitSecondHead))
+	r.recordApproval(r.stuck, r.stuckNumber, mergeWaitSecondHead)
+	r.note("drove CI's settlement of the new head, one run of unit, and recorded the reviewer's verdict approve of %s with its COMMENT", mergeWaitShort(mergeWaitSecondHead))
 	testwait.Eventually(t, "the daemon's read of the new head, which GitHub answers nothing for", func() bool {
 		return r.github.refusals(r.stuckNumber) > 0
 	})
@@ -477,8 +482,8 @@ func (r *mergeWaitReadableLive) aPushMovesTheHead() {
 // the same value and only one of them is what the daemon writes.
 func (r *mergeWaitReadableLive) theNegativeControl() {
 	t := r.t
-	r.publishReview(r.movingNumber, "changes_requested", mergeWaitMovingHead)
-	r.note("drove the reviewer's REQUEST_CHANGES of %s at %s, which ends its round", r.moving, mergeWaitShort(mergeWaitMovingHead))
+	r.publishPersonReview(r.movingNumber, "changes_requested", mergeWaitMovingHead)
+	r.note("drove %s's REQUEST_CHANGES of %s at %s, which ends its round", mergeWaitPerson, r.moving, mergeWaitShort(mergeWaitMovingHead))
 	rejected := r.waitForIssue(r.moving, "the issue "+r.moving+" back in implementing",
 		func(got api.Issue) bool { return got.Phase == phase.Implementing })
 	r.note("read back: %s is in %s — its round ended, so nothing of it waits on GitHub, whatever GitHub answers for its head (%q)",
@@ -648,15 +653,42 @@ func (r *mergeWaitReadableLive) publishChecks(number int, head string, names ...
 	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("checks-%d-%d", number, r.seq), string(payload)))
 }
 
-// publishReview publishes the reviewer's review of the pull request at head (publishReviewAs), its
-// footer naming mergeWaitReviewerSession, the session the seeded reviewer claim records, so the
-// review is the reviewer's own (workflow's byReviewer). The footer names no entry: the review
-// decides its round as before, and this proof reads no commit the reviewer read.
-func (r *mergeWaitReadableLive) publishReview(number int, state, head string) {
+// recordApproval writes the reviewer's verdict approve of head onto key's reviewer row as the
+// reviewer's completion of reviewing writes it (workflow's handoff, decisionOf): the decision, the
+// commit it read and the completion itself. Then it publishes the reviewer's COMMENT of the pull
+// request numbered number at head, written with the one App's token as the reviewer posts its
+// findings: a review that decides nothing, and the fact the daemon settles the round on and asks
+// GitHub's merge state for (workflow's review, askMergeState).
+func (r *mergeWaitReadableLive) recordApproval(key string, number int, head string) {
+	r.t.Helper()
+	r.seq++
+	handoff := fmt.Sprintf("review-%s-%d", key, r.seq)
+	r.write("the reviewer's verdict approve of "+head, func(tx pgx.Tx) error {
+		return r.records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: r.token(key, claim.RoleReviewer),
+			HandoffRecord: handoff, HandoffVersion: 1, LastHandoff: handoff, Summary: "the work holds", Verdict: "approve", HandoffCommit: head,
+			CompletedAt: time.Now(), ReviewedHead: head, Decision: &record.ReviewDecision{State: "approved", Body: "the work holds", Head: head}})
+	})
+	r.reviewID++
+	r.publishReviewAs(number, "commented", head, "", r.seq, r.reviewID)
+}
+
+// publishPersonReview publishes mergeWaitPerson's review of state of the pull request numbered
+// number at head, as Envoy relays a GitHub review (intake's decodeReview reads it).
+func (r *mergeWaitReadableLive) publishPersonReview(number int, state, head string) {
 	r.t.Helper()
 	r.seq++
 	r.reviewID++
-	r.publishReviewAs(number, state, head, legionFooter(mergeWaitReviewerSession, head), r.seq, r.reviewID)
+	payload, err := json.Marshal(map[string]string{
+		"kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "action": "submitted",
+		"state": state, "commit_id": head, "head_sha": head, "author": mergeWaitPerson, "body": "rename the widget",
+		"body_truncated": "false", "review_id": strconv.FormatInt(1000+r.reviewID, 10),
+		"submitted_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		r.t.Fatalf("encode the review payload: %v", err)
+	}
+	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), number)
+	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("review-%d-%d", number, r.seq), string(payload)))
 }
 
 // publishPush publishes the implementer's push of to onto from on issue's branch (publishPushOf).
@@ -858,6 +890,9 @@ func (g *mergeWaitGitHub) answer(w http.ResponseWriter, path string) bool {
 		// The listing the per-issue read makes for an issue whose record holds no open pull
 		// request: GitHub holds none open on the branch, so that read applies no opened.
 		g.write(w, []any{})
+		return true
+	case "/collaborators/" + mergeWaitPerson + "/permission":
+		g.write(w, map[string]any{"permission": "write", "user": map[string]string{"login": mergeWaitPerson, "type": "User"}})
 		return true
 	}
 	for number, pull := range g.pulls {

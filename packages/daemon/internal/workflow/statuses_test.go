@@ -112,8 +112,8 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 		apply("settled", naming(settledRunsAt(headOne, 1, []record.AttemptRun{{Name: "unit tests", ID: 2}}),
 			status("deploy", "success", 1), status("ci", "failure", 1)))
-		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
-			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
+		apply("approve", reviewAt(7, "approved",
+			headOne))
 		told := reviewStuckNotices(t, pool)
 		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded; commit statuses: "ci" failure, "deploy" success. The daemon reads the base's rules only on a conflicting read`
 		if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
@@ -125,14 +125,14 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 		seedMergeStateRound(t, pool, record.MergeStateBlocked)
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 		apply("settled", naming(settledRunsAt(headOne, 1, []record.AttemptRun{{Name: "unit tests", ID: 2}}), status("ci", "failure", 1)))
-		apply("push", intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: "legion-implementer[bot]"})
+		apply("push", intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo})
 		apply("sync", intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headTwo})
 		if got := recordedPR(t, pool, "LEGION-208"); !reflect.DeepEqual(got.Statuses, []record.CommitStatus{keptStatus("ci", "failure", 1, headOne)}) {
 			t.Fatalf("after the move the record keeps %+v, want ci failed at %s: this test proves nothing without it", got.Statuses, headOne)
 		}
 		apply("settled-new-head", settledRunsAt(headTwo, 1, []record.AttemptRun{{Name: "unit tests", ID: 3}}))
-		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headTwo,
-			HeadSHA: headTwo, Author: testReviewApp, Body: reviewBody("ship it", headTwo)})
+		apply("approve", reviewAt(7, "approved",
+			headTwo))
 		apply("blocked", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headTwo,
 			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked})
 		told := reviewStuckNotices(t, pool)
@@ -150,8 +150,8 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 			CheckedHead: headOne, CheckRuns: []record.AttemptRun{{Name: "unit tests", ID: 1, Head: headOne, Conclusion: record.RunSucceeded}},
 			Statuses: []record.CommitStatus{keptStatus("ci", "failure", 1, earlier)}})
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
-			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
+		apply("approve", reviewAt(7, "approved",
+			headOne))
 		told := reviewStuckNotices(t, pool)
 		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded. The daemon reads the base's rules only on a conflicting read`
 		if len(told) != 1 || !strings.Contains(told[0].Reason, want) {

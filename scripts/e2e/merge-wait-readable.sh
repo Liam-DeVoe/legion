@@ -12,11 +12,13 @@
 # check runs counted; an issue whose round waits on nothing and an issue whose pull request the
 # record does not hold open carry no such key at all; and the wait ends when GitHub answers a state
 # the issue may advance on. The whole daemon is booted by the function `legion start` calls, over a
-# real PostgreSQL and a real nats-server, and driven only through GitHub envelopes on the
+# real PostgreSQL and a real nats-server, and driven through GitHub envelopes on the
 # ENVOY_NOTIFICATIONS stream — CI's settlements, the reviews, the push, the synchronize and the
-# pushes onto the base that ask the daemon to read a head again; every step is read back from GET
-# /legion/v1/state, from the object it decodes to and from the body's own keys, which is what the
-# negative control holds (packages/daemon/internal/daemon/merge_wait_readable_live_test.go, which
+# pushes onto the base that ask the daemon to read a head again — with the reviewer's verdict, which
+# no agent here sends, written to the reviewer's phases row as its completion writes it; every step
+# is read back from GET /legion/v1/state, from the object it decodes to and from the body's own
+# keys, which is what the negative control holds
+# (packages/daemon/internal/daemon/merge_wait_readable_live_test.go, which
 # this script builds with `-tags e2e`). Each check prints `== <name>`, what it observed and
 # `ok <name>`; the first that fails ends the run non-zero, naming it.
 #

@@ -139,7 +139,7 @@ func TestTheReadFollowsAPushAboveAnApprovalAsANewHead(t *testing.T) {
 	if n := headReads(t, pool, "push-read"); n != 1 {
 		t.Fatalf("the read applied %d pushes it rebuilt from the branch's activity, want the one code..pushed", n)
 	}
-	lateWebhookPushDecidesNothing(t, pool, w, webhookPush("code", "pushed", implementerLogin))
+	lateWebhookPushDecidesNothing(t, pool, w, webhookPush("code", "pushed"))
 }
 
 // The read lists its records once, when it starts, and a webhook can move one before the read
@@ -425,10 +425,10 @@ func lateWebhookPushDecidesNothing(t *testing.T, pool *store.Pool, w *workflowRu
 	}
 }
 
-// reviewAppLogin and implementerLogin are the bot accounts GitHub names the review App's and the
-// implement App's pushes by, in the push webhook's pusher.name and in the branch's activity alike.
+// appLogin and implementerLogin are bot accounts GitHub names in the push webhook's pusher.name and
+// in the branch's activity: appLogin is the one App's, the login every role acts as.
 const (
-	reviewAppLogin   = "legion-review[bot]"
+	appLogin         = "legion-review[bot]"
 	implementerLogin = "legion-implementer[bot]"
 )
 
@@ -511,7 +511,7 @@ func (g *activityGitHub) serve(t *testing.T) *httptest.Server {
 			}
 			w.Write([]byte(g.reviews))
 		case "/repos/acme/widgets/collaborators/a-writer/permission":
-			w.Write([]byte(`{"permission":"write","user":{"login":"a-writer"}}`))
+			w.Write([]byte(`{"permission":"write","user":{"login":"a-writer","type":"User"}}`))
 		case "/repos/acme/widgets/rules/branches/main":
 			w.Write([]byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-checks-result"}]}}]`))
 		case "/repos/acme/widgets/branches/main":
@@ -522,20 +522,20 @@ func (g *activityGitHub) serve(t *testing.T) *httptest.Server {
 	}})
 }
 
-// reviewAppRuntime is readRuntime whose workflow knows the review App by reviewAppLogin, as a
+// reviewAppRuntime is readRuntime whose workflow knows the one App by appLogin, as a
 // workflow boot always does.
 func reviewAppRuntime(pool *store.Pool, api string, log *slog.Logger) *workflowRuntime {
 	w := readRuntime(pool, api, log)
 	w.engine = workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
-		ReviewAppLogin: reviewAppLogin, ProductionCheckRole: claim.RoleTester, ReadMergeState: w.queueMergeState}, log)
-	w.handlers, w.reviewAppLogin = []intake.Handler{w.engine}, reviewAppLogin
+		AppLogin: appLogin, ProductionCheckRole: claim.RoleTester, ReadMergeState: w.queueMergeState}, log)
+	w.handlers, w.appLogin = []intake.Handler{w.engine}, appLogin
 	return w
 }
 
 // webhookPush is the intake.Push the push webhook of legion/CAPTURE-1 from before to after carries
-// (intake's decodePush): its two commits and its pusher.
-func webhookPush(before, after, pusher string) intake.Push {
-	return intake.Push{Repo: "acme/widgets", Branch: "legion/CAPTURE-1", Before: before, After: after, Pusher: pusher}
+// (intake's decodePush): its two commits.
+func webhookPush(before, after string) intake.Push {
+	return intake.Push{Repo: "acme/widgets", Branch: "legion/CAPTURE-1", Before: before, After: after}
 }
 
 // The review App pushes the tester's red tests twice, and both push webhooks are lost, with the
@@ -549,8 +549,8 @@ func TestTheReadRebuildsTheReviewAppsRedTestPushesLost(t *testing.T) {
 	seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
 	github := &activityGitHub{}
 	github.moved("more-red-tests", at,
-		activityEntry("legion/CAPTURE-1", "push", "red-tests", "more-red-tests", reviewAppLogin, at.Add(-time.Minute)),
-		activityEntry("legion/CAPTURE-1", "push", "code", "red-tests", reviewAppLogin, at.Add(-2*time.Minute)),
+		activityEntry("legion/CAPTURE-1", "push", "red-tests", "more-red-tests", appLogin, at.Add(-time.Minute)),
+		activityEntry("legion/CAPTURE-1", "push", "code", "red-tests", appLogin, at.Add(-2*time.Minute)),
 		activityEntry("legion/CAPTURE-1", "push", "base", "code", implementerLogin, at.Add(-time.Hour)))
 	w := reviewAppRuntime(pool, github.serve(t).URL, quietLogger())
 	readCapture(t, w)
@@ -564,8 +564,8 @@ func TestTheReadRebuildsTheReviewAppsRedTestPushesLost(t *testing.T) {
 	if counts := github.reads.counts(); counts["/repos/acme/widgets/activity"] != 1 {
 		t.Fatalf("the read read %v, want the branch's activity once", counts)
 	}
-	lateWebhookPushDecidesNothing(t, pool, w, webhookPush("code", "red-tests", reviewAppLogin))
-	lateWebhookPushDecidesNothing(t, pool, w, webhookPush("red-tests", "more-red-tests", reviewAppLogin))
+	lateWebhookPushDecidesNothing(t, pool, w, webhookPush("code", "red-tests"))
+	lateWebhookPushDecidesNothing(t, pool, w, webhookPush("red-tests", "more-red-tests"))
 }
 
 // The implementer pushes onto the recorded head and the push webhook is lost with the synchronize,
@@ -586,7 +586,7 @@ func TestTheReadRebuildsAPushLostWhateverTheActivityCallsIt(t *testing.T) {
 			if pr.HeadSHA != "rewritten" || pr.Run != nil || headReads(t, pool, "push-read") != 1 {
 				t.Fatalf("after the read head %q run %+v, want rewritten judged with the push the read rebuilt", pr.HeadSHA, pr.Run)
 			}
-			lateWebhookPushDecidesNothing(t, pool, w, webhookPush("code", "rewritten", implementerLogin))
+			lateWebhookPushDecidesNothing(t, pool, w, webhookPush("code", "rewritten"))
 		})
 	}
 }

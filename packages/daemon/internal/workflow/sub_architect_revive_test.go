@@ -42,8 +42,7 @@ func seedReviveTree(t *testing.T, pool *pgxpool.Pool, rootAt phase.Phase) {
 }
 
 // seedRoleClaim records the claim token of issue's role in state, suspended by by when it is
-// suspended, as the claim store holds it, on the session ses-<role>: the reviewer's is the
-// session its reviews' footer names (reviewBody).
+// suspended, as the claim store holds it, on the session ses-<role>.
 func seedRoleClaim(t *testing.T, pool *pgxpool.Pool, token claim.Token, issue string, role claim.Role, state supervise.ClaimState, by supervise.SuspendSource) {
 	t.Helper()
 	session := "ses-" + string(role)
@@ -110,12 +109,11 @@ var plannerCompletes = reviveMove{
 	},
 }
 
-// reviewerApproves is the review App's approval of the head the issue's pull request stands at,
-// its checks green and GitHub reporting it clean, which moves the issue to accepting: a phase
-// whose role is the architect, so no worker is started. The reviewer's claim is seeded under the
-// token the daemon starts the reviewer under, on the session ses-reviewer (seedRoleClaim), which
-// the approval's footer names (reviewBody): a review of the review App decides its round only when
-// its footer names the session that claim records (byReviewer).
+// reviewerApproves is the reviewer's approval of the head the issue's pull request stands at, its
+// verdict sent with its completion of reviewing, its checks green and GitHub reporting it clean,
+// which moves the issue to accepting: a phase whose role is the architect, so no worker is
+// started. The reviewer's claim is seeded under the token the daemon starts the reviewer under
+// (seedRoleClaim).
 var reviewerApproves = reviveMove{
 	name: "the reviewer's approval", from: phase.Reviewing, to: phase.Accepting,
 	seed: func(t *testing.T, pool *pgxpool.Pool, key string) {
@@ -132,8 +130,10 @@ var reviewerApproves = reviveMove{
 	},
 	apply: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 		t.Helper()
-		applyFacts(t, pool, engine)("approved-"+key, intake.PullRequestReview{Repo: "sjawhar/legion", Number: 43, State: "approved",
-			CommitID: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
+		if result := applyFacts(t, pool, engine)("approved-"+key, intake.HandoffComplete{Generation: 1, Issue: key, Role: claim.RoleReviewer,
+			Claim: "review-claim", Summary: "approved", Verdict: "approve", Commit: headOne, HandoffRecord: "review-" + key, HandoffVersion: 1}); result.Refusal != nil {
+			t.Fatalf("the reviewer's approval of %s was refused: %+v", key, result.Refusal)
+		}
 	},
 }
 

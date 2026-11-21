@@ -6,8 +6,9 @@
 // workspace stands on, is answered by the daemon and not by the tool's push checks, which a phase
 // the role left runs none of: `409 HANDOFF_NOT_CURRENT_PHASE` in one request, naming its own
 // implement record; a finished tester that completes again, naming its own test record, is
-// refused the same in one request; and a reviewer whose own approval moved the issue to
-// accepting before it completed has its completion taken, naming its own review record.
+// refused the same in one request; and a reviewer whose round a person's request for changes ended
+// by moving the issue to implementing before it completed has its completion taken, naming its own
+// review record.
 // scripts/e2e/late-completion.sh builds this driver with `-tags e2e` and owns the nats-server and
 // the PostgreSQL it runs against.
 //
@@ -43,9 +44,9 @@
 // REST stand-in for the one pull request (liveGitHub, in live_issue_proof_test.go), which this
 // driver starts itself (serveGitHub): the pull request at its head, mergeable and clean, with no
 // reviews, and listed open on the issue's branch, which the implementer's completion reads. The
-// review that moves reviewing on is published as the GitHub envelope Envoy relays, written as the
-// review App submits one: approved, by the App's bot login, with the Legion footer naming the
-// reviewer's own session and the head it read. The two Apps' tokens are workflowTokenRecorder's
+// review that moves reviewing on is published as the GitHub envelope Envoy relays: a request for
+// changes by a person the stand-in gives write access to (the one GitHub review that decides a
+// round, workflow's RefusesRound), at the head. The two Apps' tokens are workflowTokenRecorder's
 // placeholders, and Envoy's listener is the package's noticeListener, with each pane registering
 // at a listener of its own (newPaneListener).
 //
@@ -189,7 +190,7 @@ func TestLateCompletionsThroughTheRealLegionToolLive(t *testing.T) {
 	r.step("step2-the-finished-implementer-calls-handoff-complete-again-over-the-testers-commit-in-the-shared-workspace", r.finishedImplementerRepeats)
 	r.step("step3-the-tester-pane-completes-testing-through-the-real-tool-naming-its-own-test-record", r.testerCompletes)
 	r.step("step4-the-finished-tester-calls-handoff-complete-again-and-one-request-reaches-the-daemon", r.finishedTesterRepeats)
-	r.step("step5-the-reviewer-pane-completes-after-its-own-approval-moved-the-issue-to-accepting", r.reviewerCompletesLate)
+	r.step("step5-the-reviewer-pane-completes-after-a-persons-request-for-changes-moved-the-issue-to-implementing", r.reviewerCompletesLate)
 	r.step("step6-each-repeat-is-refused-not-current-phase-in-one-request-and-the-late-completion-is-taken-naming-the-review-record", r.eachAnswerIsTheBranchs)
 }
 
@@ -281,8 +282,10 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 		map[string]any{"op": "handoff_complete", "summary": "Implemented the change at the head the implement record names, pushed to the branch."}, true)
 	r.testerCall = r.panes[r.token(claim.RoleTester)].arm("Phase: testing.",
 		map[string]any{"op": "handoff_complete", "summary": "Tested the head the test record names: it passes.", "verdict": "pass"}, true)
+	// The reviewer's completion carries its verdict, as the completion route requires of a
+	// reviewer's; the round it is of has already ended when it lands.
 	r.reviewerCall = r.panes[r.token(claim.RoleReviewer)].arm("Phase: reviewing.",
-		map[string]any{"op": "handoff_complete", "summary": "Reviewed the head the review record names and approved it."}, true)
+		map[string]any{"op": "handoff_complete", "summary": "Reviewed the head the review record names: it needs changes.", "verdict": "changes"}, true)
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
@@ -540,25 +543,20 @@ func (r *lateCompletionLive) finishedTesterRepeats() {
 
 // Step 5. The reviewer the tester's pass started takes its reviewing task, and its turn is held
 // at the stand-in. Meanwhile the driver writes the reviewer's review record as that pane's own
-// session and publishes the review App's approval of the head, its footer naming the reviewer's
-// session and that head, as Envoy relays a GitHub review; the daemon moves the issue to
-// accepting. Then the turn goes on and calls handoff_complete. The step records the tool's answer
-// and the daemon's one line for it, and holds that the issue stays in accepting. Step 6 judges
-// the answer.
+// session and publishes a person's request for changes of the head, as Envoy relays a GitHub
+// review; the daemon moves the issue back to implementing. Then the turn goes on and calls
+// handoff_complete. The step records the tool's answer and the daemon's one line for it, and holds
+// that the issue stays in implementing. Step 6 judges the answer.
 func (r *lateCompletionLive) reviewerCompletesLate() {
 	t := r.t
 	reviewer := r.token(claim.RoleReviewer)
 	session := r.heldTurn(claim.RoleReviewer, phase.Reviewing, r.reviewerCall).Session
 	r.reviewRecord = r.writeRecord(session, "review")
-	login, err := r.tokens.AppLogin(context.Background())
-	if err != nil {
-		t.Fatalf("read the review App's login: %v", err)
-	}
-	event := r.publishApproval(login, session)
+	event := r.publishChangesRequested()
 	r.waitProcessed(event)
-	r.note("published the review App's approval of head %s on pull request #%d as %s, its footer naming session %s (event %s), and the daemon processed it",
-		r.head, r.number, login, session, event)
-	moved := r.waitPhase(phase.Accepting)
+	r.note("published %s's request for changes of head %s on pull request #%d (event %s), and the daemon processed it",
+		lateCompletionPerson, r.head, r.number, event)
+	moved := r.waitPhase(phase.Implementing)
 	r.note("read back: %s is in %s while the reviewer's turn is still held; the reviewer's phases row holds record %s",
 		r.key, moved.Phase, heldRecord(moved, claim.RoleReviewer))
 	mark := time.Now()
@@ -567,10 +565,10 @@ func (r *lateCompletionLive) reviewerCompletesLate() {
 	r.note("the stand-in's turn called legion %s; the tool answered (error %t): %s", inputOf(r.reviewerCall), result.isError, result.text)
 	line := r.settledAnswer("the reviewer's late completion", mark, reviewer)
 	r.note("daemon: %s", answeredLine(line))
-	if after := r.issue(r.key); after.Phase != phase.Accepting {
-		t.Fatalf("%s is in %s after the reviewer's late completion, want accepting: a completion of a phase the issue left moves nothing", r.key, after.Phase)
+	if after := r.issue(r.key); after.Phase != phase.Implementing {
+		t.Fatalf("%s is in %s after the reviewer's late completion, want implementing: a completion of a phase the issue left moves nothing", r.key, after.Phase)
 	}
-	r.note("read back: %s is still in %s", r.key, phase.Accepting)
+	r.note("read back: %s is still in %s", r.key, phase.Implementing)
 	r.late = lateAnswer{result: result, lines: []loggedRecord{line}}
 }
 
@@ -660,24 +658,27 @@ func recordHeadOf(body string) string {
 	return named.Head
 }
 
-// publishApproval publishes the review App's approval of the head as Envoy relays a GitHub review
-// (intake's decodeReview reads it): submitted by login, at the head, with the Legion footer
-// naming session and that head (legionFooter), which is what lets a review App's review decide
-// the round (workflow's DecidesRound and refusesRound). It returns the event id.
-func (r *lateCompletionLive) publishApproval(login, session string) string {
+// lateCompletionPerson is the person whose request for changes ends the reviewer's round: an
+// account of type User the GitHub stand-in gives write access to the repository (serveGitHub).
+const lateCompletionPerson = "a-writer"
+
+// publishChangesRequested publishes lateCompletionPerson's request for changes of the head as
+// Envoy relays a GitHub review (intake's decodeReview reads it), the one GitHub review that decides
+// a round (workflow's RefusesRound). It returns the event id.
+func (r *lateCompletionLive) publishChangesRequested() string {
 	r.t.Helper()
 	n := strconv.Itoa(r.number)
 	payload, err := json.Marshal(map[string]string{
 		"kind": "review", "action": "submitted", "repo": liveRepo, "number": n, "title": r.title, "parent_kind": "pr",
-		"author": login, "url": "https://github.com/" + liveRepo + "/pull/" + n + "#review", "state": "approved",
+		"author": lateCompletionPerson, "url": "https://github.com/" + liveRepo + "/pull/" + n + "#review", "state": "changes_requested",
 		"review_id": n, "submitted_at": time.Now().UTC().Format(time.RFC3339), "commit_id": r.head, "head_sha": r.head,
-		"body": "Approved: the head is the code this review read." + legionFooter(session, r.head),
+		"body": "Rename the widget before this merges.",
 	})
 	if err != nil {
 		r.t.Fatalf("encode the review payload: %v", err)
 	}
 	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), r.number)
-	return r.publish(subject, "github", fmt.Sprintf("review-%d-approved", r.number), string(payload))
+	return r.publish(subject, "github", fmt.Sprintf("review-%d-changes-requested", r.number), string(payload))
 }
 
 // waitPhase waits for the issue to reach want.
@@ -814,7 +815,9 @@ func inputOf(call *paneCall) string {
 // stand-in answers only where a proof sets one); its reviews as none, since the one review the
 // proof reads is the envelope step 5 publishes; and, beyond the stand-in's own answers (its
 // also), the same pull request listed open on the issue's branch, which is the read the
-// implementer's completion in implementing makes of GitHub (api's implementationPullRequest).
+// implementer's completion in implementing makes of GitHub (api's implementationPullRequest), and
+// the write access of lateCompletionPerson, an account of type User, which step 5's request for
+// changes is decided by (daemon's reviewerCanWrite).
 func (r *lateCompletionLive) serveGitHub() {
 	branch := "legion/" + r.key
 	r.github = &liveGitHub{
@@ -823,7 +826,9 @@ func (r *lateCompletionLive) serveGitHub() {
 			"number": r.number, "state": "open",
 			"base": map[string]string{"ref": "main"},
 			"head": map[string]string{"ref": branch, "sha": r.head},
-		}}},
+		}}, "/collaborators/" + lateCompletionPerson + "/permission": map[string]any{
+			"permission": "write", "user": map[string]string{"login": lateCompletionPerson, "type": "User"},
+		}},
 	}
 	r.github.url = githubtest.Server(r.t, githubtest.Spec{Handle: r.github.ServeHTTP})
 }

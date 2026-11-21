@@ -146,8 +146,8 @@ const (
 // every task of the reviewer (queuedRow, namingTheReviewRound): in reviewing, while the row holds
 // the task of an entry, they name that entry. The reason is the reviewer's normal path: one
 // waiting for CI it cannot judge yet is released after the idle period and woken by the CI
-// settlement, so the wake is its newest task, and the review it then submits moves the commit it
-// read only when its footer names the entry that stands. The text here names no entry itself.
+// settlement, so the wake is its newest task, and the verdict it then sends with its completion is
+// held to the entry that stands. The text here names no entry itself.
 func WakeTask(kind, detail string, stop WakeStop) string {
 	preamble := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "

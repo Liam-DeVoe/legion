@@ -8,15 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // The three GitHub clients a tree recorded before its repository's transfer reaches that no other
 // rename test drives: the required-checks pass's read of a recorded pull request
-// (github_reads.go's readPullRequest), the reviewer's read of a review author's permission
-// (review_permission.go's reviewAppClient) and the read a record's repository and default branch
+// (github_reads.go's readPullRequest), the read of a review author's permission
+// (review_permission.go's permissionClient) and the read a record's repository and default branch
 // are filled from (defaultbranch.go's fetch). Each is one of the places the issue's first
 // requirement names, and each takes a repository a record names — sjawhar/legion, the name the
 // record keeps for its whole life — into a GitHub call and a token mint.
@@ -61,13 +60,13 @@ func TestEachGitHubClientOfATreeRecordedBeforeItsTransferAddressesTheRepositoryG
 			},
 		},
 		{
-			name:  "the reviewer's read of a review author's permission",
-			lease: string(appauth.SetReviewer), path: "/collaborators/a-writer/permission",
-			answer: func(string) string { return `{"permission":"write","user":{"login":"a-writer"}}` },
+			name:  "the read of a review author's permission",
+			lease: "read", path: "/collaborators/a-writer/permission",
+			answer: func(string) string { return `{"permission":"write","user":{"login":"a-writer","type":"User"}}` },
 			call: func(t *testing.T, repos *repositories, api string) {
 				t.Helper()
 				w := &workflowRuntime{tokens: roleTokens{}, repositories: repos, githubAPI: api, log: quietLogger(),
-					reviewAppLogin: "legion-reviewer[bot]"}
+					appLogin: "legion-reviewer[bot]"}
 				canWrite, err := w.readPermission(context.Background(), recorded, "a-writer")
 				if err != nil {
 					t.Fatalf("read a-writer's permission: %v", err)

@@ -74,15 +74,13 @@ type Config struct {
 	// already open, whose role its own row holds.
 	ProductionCheckRole claim.Role
 	Clock               func() time.Time
-	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A review
-	// it submits is the reviewer's own only when its Legion footer also names the session the
-	// reviewer's claim records (byReviewer), and only then does it decide a round whatever GitHub
-	// gives its bot account (DecidesRound) or answer a round the reviewer left undecided
-	// (reviewersAnswer); while that claim records no session, it waits (RefusedWhileNoSession). A
-	// push by it is recorded as the review App's (record.ClassifiedPush.ByReviewApp). Empty matches
-	// no one. A workflow boot never leaves it empty: it refuses an App that names no login
+	// AppLogin is the bot login (<slug>[bot]) of the one GitHub App every role acts as, from its
+	// boot read. A GitHub review written with its token decides no round (RefusesRound): every
+	// role holds that token, so the login says nothing of who wrote the review, and the reviewer's
+	// verdict reaches the daemon with its completion instead (handoff). Empty matches no one. A
+	// workflow boot never leaves it empty: it refuses an App that names no login
 	// (daemon.appLoginAtBoot).
-	ReviewAppLogin string
+	AppLogin string
 	// Repositories is the daemon's in-memory view of the project's repositories, which the workflow
 	// records an issue's repository and default branch from when it first records the issue.
 	Repositories Repositories
@@ -189,10 +187,10 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 
 func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
 
-// byReviewApp says whether login is the review App's bot (Config.ReviewAppLogin). With no login
-// configured, it is no one's.
-func (e *Engine) byReviewApp(login string) bool {
-	return e.cfg.ReviewAppLogin != "" && login == e.cfg.ReviewAppLogin
+// appWrote says whether login is the one App's bot (Config.AppLogin). With no login configured, it
+// is no one's.
+func (e *Engine) appWrote(login string) bool {
+	return e.cfg.AppLogin != "" && login == e.cfg.AppLogin
 }
 
 // sameRepository is whether a and b name one repository: the same name, compared without case as
@@ -838,6 +836,29 @@ func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return run.Claim != nil, nil
 }
 
+// staleEntryRefusal holds a completion of the phase the issue stands in to the entry the role's
+// row names, once more and under the fact's lock: the completion route holds it there first (api's
+// entryFence), but it reads the row before the fact's own transaction, and a completion can wait
+// on Dispatch's read of its handoff record between the two while the phase is left and entered
+// again in the same generation. The entry the route held it to rides the fact (Entry), so a
+// completion of an earlier entry - a reviewer's request for changes of the head before, say -
+// cannot decide the round the phase was entered again for. The rule is the route's: either entry
+// zero, or the two the same, is nothing to compare; one above the row's is refused; one behind it
+// is taken only at the head the record holds, in a phase whose handoff record its role writes, on
+// an entry no move back raised (record.BehindEntryTaken). It answers the refusal and true, or
+// false where the completion goes on.
+func staleEntryRefusal(issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, row record.PhaseRow, pr *record.PullRequest) (intake.Result, bool) {
+	if fact.Entry == 0 || row.Entry == 0 || fact.Entry == row.Entry {
+		return intake.Result{}, false
+	}
+	_, writer, recordBacked := phase.Handoff(reported)
+	if fact.Entry < row.Entry && recordBacked && writer == fact.Role && record.BehindEntryTaken(fact.Commit, pr, row.EntryMovedBack) {
+		return intake.Result{}, false
+	}
+	return refused("HANDOFF_STALE_ENTRY", fmt.Sprintf("the %s's completion of phase %s of %s is of entry %d, and the phase is on entry %d: it was entered again while this completion was on its way, and nothing was recorded. End this turn without completing: the task of entry %d is owed to this claim, and the daemon sends it by itself",
+		fact.Role, reported, issue.Key, fact.Entry, row.Entry, row.Entry)), true
+}
+
 func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -856,9 +877,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if fact.Role == claim.RoleArchitect {
 		return refused("ACCEPTANCE_IS_SIGN_OFF", fmt.Sprintf("the architect accepts %s with sign_off, not handoff_complete; this completion changed nothing", issue.Key)), nil
 	}
-	// A role can still be mid-turn in a phase the issue has left: the review event moves reviewing
-	// on, so a reviewer's own request for changes starts the implementer before the reviewer's
-	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase),
+	// A role can still be mid-turn in a phase the issue has left: a person's request for changes
+	// moves reviewing on, and starts the implementer before the reviewer's handoff lands. Its
+	// completion is recorded on its own row and moves nothing (leftItsPhase),
 	// and the handoff it names is the report of the run of its step the move ended
 	// (reportEndedStep).
 	//
@@ -901,6 +922,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// since the review a landed merge forward asks of the reviewer is made with none
 	// (record.MergeForwardReview).
 	if current {
+		if refusal, fenced := staleEntryRefusal(*issue, fact, reported, row, pr); fenced {
+			return refusal, nil
+		}
 		if refusal, fenced := mergedForwardRefusal(*issue, fact.Role, reported, fact.Commit, pr); fenced {
 			return refusal, nil
 		}
@@ -935,6 +959,24 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	found := e.reviewRound(*issue, row, pr)
 	row.Claim, row.HandoffCommit, row.Verdict, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Verdict, fact.Summary, e.now()
 	row.HandoffRecord, row.HandoffVersion = fact.HandoffRecord, fact.HandoffVersion
+	// The reviewer's verdict is the round's decision (decisionOf): approve or changes at the commit
+	// it names, with the tester's pass it carries there. That commit is also the code the reviewer
+	// read, which the task of its next round names (record.PhaseRow.ReviewedHead), while the row
+	// holds the task of the entry that stands: a row a new generation's clear emptied, or one the
+	// entry upgrade filled with no task, keeps its commit until the next entry's start, so the
+	// first review of a re-admitted tree reads the whole change. Only a completion of reviewing
+	// while the round is open writes either: one the issue has left moves nothing (leftItsPhase),
+	// and its round was ended by something else. A completion with no verdict, which a reviewer
+	// before the verdict sent, leaves the decision as it stands, and a round it completes with none
+	// is stuck (stuckUndecided).
+	if current && issue.Phase == phase.Reviewing && fact.Role == claim.RoleReviewer {
+		if decision := decisionOf(fact); decision != nil {
+			row.Decision = decision
+			if row.EntryTask != "" {
+				row.ReviewedHead = fact.Commit
+			}
+		}
+	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return intake.Result{}, err
 	}
@@ -2129,7 +2171,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// dropped rather than sent (supervise.Deps's PhaseHolds). A move between two phases of one role -
 	// retro back to implementing on the implementer's own backward move - hands the running worker
 	// the new phase's task once its turn is over, as any start of a working claim does. A move no
-	// completion records - the review App's decision on a round the reviewer had not completed -
+	// completion records - a person's request for changes on a round the reviewer had not completed -
 	// starts the next role the same way: that role keeps its turn, its jobs, its process and its
 	// session, and the start waits for none of them.
 	starting := phase.RoleFor(row.To)

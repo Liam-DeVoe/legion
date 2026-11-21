@@ -45,9 +45,9 @@ func IntakeHandlerLimitLine(cfg config.Config) (line string, derived bool) {
 func intakeHandlerLimitLine(cfg config.Config) (line string, aboveCeiling, derived bool) {
 	limit, derived := intake.HandlerLimitFor(cfg.WorkerRPCTimeout)
 	aboveCeiling = limit > intake.HandlerLimitCeiling
-	// Both shapes name the same three reads in the same words, from one string, so an operator
+	// Both shapes name the same two reads in the same words, from one string, so an operator
 	// who has read one sentence has read the other's middle.
-	reads := fmt.Sprintf("worker_rpc_timeout_seconds (%d) bounds each read a review makes — whether its pull request is recorded, its truncated body and its author's repository permission",
+	reads := fmt.Sprintf("worker_rpc_timeout_seconds (%d) bounds each read a review makes — whether its pull request is recorded and its author's repository permission",
 		int(cfg.WorkerRPCTimeout.Seconds()))
 	if !derived {
 		// What the window alone would derive, and nothing about what is left over: the limit

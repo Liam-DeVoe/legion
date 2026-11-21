@@ -90,16 +90,17 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 	approved.Decision = &record.ReviewDecision{State: "approved", Head: headOne}
 	approvedAndCompleted := approved
 	approvedAndCompleted.HandoffRecord, approvedAndCompleted.HandoffVersion, approvedAndCompleted.Summary = "review-1", 1, "reviewed"
-	approval := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
-		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)}
+	approval := reviewAt(7, "approved",
+		headOne)
+
 	merge := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge", HeadSHA: headOne}
 	mergeOfAnotherHead := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge", HeadSHA: headTwo}
 	mergeNamingNoHead := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}
-	deletion := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: record.NoCommit, Pusher: "author", Sender: "author"}
+	deletion := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: record.NoCommit, Sender: "author"}
 	// pushFromHead is a push from headOne to headTwo, to a branch kept in place.
-	pushFromHead := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: "author", Sender: "author"}
+	pushFromHead := intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Sender: "author"}
 	// heldPush is pushFromHead as the push handler records it (classify.ApplyPushDropping): by its
-	// sender, and not the review App's, since the pusher is the author.
+	// sender.
 	heldPush := []record.ClassifiedPush{{SHA: headTwo, Before: headOne, Sender: "author"}}
 	// storedDeletion is the deletion of the branch from head as the push handler stored it before
 	// the deletion guard: a push like any other, from the head to no commit.

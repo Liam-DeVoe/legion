@@ -43,7 +43,7 @@ func TestReworkRoundAdvancesOnlyOnThatRoundsHandoff(t *testing.T) {
 			t.Fatalf("ApplyFact %s refused: %+v", eventID, *result.Refusal)
 		}
 	}
-	apply("changes-requested", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "changes_requested", CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("fix the widget", headOne)})
+	apply("changes-requested", reviewAt(7, "changes_requested", headOne))
 	assertPhase(t, pool, phase.Implementing)
 
 	apply("rework-push", intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headTwo})
@@ -187,15 +187,17 @@ func TestArchitectUnchangedByAWorkersCompletionAtAdmitted(t *testing.T) {
 // tester and the reviewer send one only when their record names a head, so a taken completion
 // can hold a record and no commit. Such a role has reported its phase. Once the issue has left
 // that phase, a further completion of the role - here the reviewer's, naming a newer record after
-// the request for changes moved the issue to implementing - is refused HANDOFF_NOT_CURRENT_PHASE,
-// and the row keeps the completion that was taken (engine's leftItsPhase).
+// a person's request for changes moved the issue to implementing - is refused
+// HANDOFF_NOT_CURRENT_PHASE, and the row keeps the completion that was taken (engine's
+// leftItsPhase).
 func TestAFurtherCompletionOfALeftPhaseWhoseTakenCompletionNamedNoCommitIsRefused(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	applyRefusingNothing(t, pool, engine,
 		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
-		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "changes_requested", CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("rename the widget", headOne)})
+		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "changes_requested", CommitID: headOne, HeadSHA: headOne,
+			Author: "a-writer", AuthorCanWrite: true, Body: "rename the widget"})
 	assertPhase(t, pool, phase.Implementing)
 	taken := phaseRowOf(t, pool, claim.RoleReviewer)
 	if taken.HandoffRecord != "review-1" || taken.HandoffCommit != "" {
@@ -238,7 +240,7 @@ func TestAnApprovalBeforeTheChecksSettleAdvancesWithoutThem(t *testing.T) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffRecord: "review-1", HandoffVersion: 1})
 	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
 	engine := testEngine(config.DesignGateRootIssues, nil)
-	if _, err := intake.ApplyFact(ctx, pool, "github", "approved", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)}, engine, admissionStub{}); err != nil {
+	if _, err := intake.ApplyFact(ctx, pool, "github", "approved", reviewAt(7, "approved", headOne), engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact approval: %v", err)
 	}
 	assertPhase(t, pool, phase.Accepting)
@@ -289,19 +291,19 @@ func TestAHandoffMustBeNewSinceTheRolesPreviousPhase(t *testing.T) {
 }
 
 // toSecondReviewRound takes LEGION-208, seeded in its first review round (seedReviewOf at head),
-// through that round by record — its reviewer's request for changes and completion — and through
-// implementing and testing, each completed by record, into its second review round, whose reviewer
-// has not completed. The implementer's push to head-2 arrives with its synchronize, so no head run
-// holds a red at head-2. The reviewer's row then holds no handoff record, and keeps the first
-// round's as the record it last named.
+// through that round by record — its reviewer's completion with its request for changes — and
+// through implementing and testing, each completed by record, into its second review round, whose
+// reviewer has not completed. The implementer's push to head-2 arrives with its synchronize, so no
+// head run holds a red at head-2. The reviewer's row then holds no handoff record, and keeps the
+// first round's as the record it last named.
 func toSecondReviewRound(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	t.Helper()
 	applyRefusingNothing(t, pool, engine,
-		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "changes_requested", CommitID: headOne, Author: testReviewApp, Body: reviewBody("rename the widget", headOne)},
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed",
+			Verdict: "changes", Commit: headOne, HandoffRecord: "review-1", HandoffVersion: 1})
 	assertPhase(t, pool, phase.Implementing)
 	applyRefusingNothing(t, pool, engine,
-		pushedFromTo(headOne, headTwo, "legion-implementer[bot]"),
+		pushedFromTo(headOne, headTwo),
 		intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headTwo},
 		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "renamed", Commit: "round-2", HandoffRecord: "implement-2", HandoffVersion: 2})
 	assertPhase(t, pool, phase.Testing)
@@ -333,25 +335,26 @@ func phaseRowOf(t *testing.T, pool *pgxpool.Pool, role claim.Role) record.PhaseR
 // A reviewer whose first round completed by record starts its second round not completed: the
 // record its first completion named is cleared with the round, so a completion naming it again is
 // no completion of this round (HANDOFF_NOT_NEW), and the round's own record is what its second
-// completion names. The push to head-2 took GitHub's answer with it, as every head move does, so
-// the approval of head-2 waits on the daemon's read of the merge state for that head and the
-// round ends there rather than at either completion.
+// completion names, with its verdict. The push to head-2 took GitHub's answer with it, as every
+// head move does, so the approval of head-2 waits on the daemon's read of the merge state for that
+// head and the round ends there rather than at the completion.
 func TestASecondReviewRoundIsNotCompletedByTheFirstRoundsRecord(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	toSecondReviewRound(t, pool, engine)
-	applyRefusingNothing(t, pool, engine,
-		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headTwo, HeadSHA: headTwo, Author: testReviewApp, Body: reviewBody("ship it", headTwo)})
-	assertPhase(t, pool, phase.Reviewing)
 	result, err := intake.ApplyFact(t.Context(), pool, "api", "review-2-stale", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
-		Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1}, engine, admissionStub{})
+		Claim: reviewClaim, Summary: "reviewed", Verdict: "approve", Commit: headTwo, HandoffRecord: "review-1", HandoffVersion: 1}, engine, admissionStub{})
 	if err != nil || result.Refusal == nil || result.Refusal.Code != "HANDOFF_NOT_NEW" {
 		t.Fatalf("round 2's completion naming round 1's record = %+v, %v; want HANDOFF_NOT_NEW", result.Refusal, err)
 	}
 	assertPhase(t, pool, phase.Reviewing)
+	if reviewer := phaseRowOf(t, pool, claim.RoleReviewer); reviewer.Decision != nil {
+		t.Fatalf("the round-2 reviewer's row holds the decision %+v after a refused completion, want none", reviewer.Decision)
+	}
 	applyRefusingNothing(t, pool, engine,
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-2", HandoffVersion: 2})
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed",
+			Verdict: "approve", Commit: headTwo, HandoffRecord: "review-2", HandoffVersion: 2})
 	if reviewer := phaseRowOf(t, pool, claim.RoleReviewer); !reviewer.Completed() || reviewer.HandoffRecord != "review-2" || reviewer.HandoffVersion != 2 {
 		t.Fatalf("the round-2 reviewer's row = %+v, want it completed at its own record review-2 version 2", reviewer)
 	}

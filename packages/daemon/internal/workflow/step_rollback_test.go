@@ -139,12 +139,12 @@ func TestAMembersMergeRunsOnThroughARootReadmittedAcrossARollback(t *testing.T) 
 	assertEnd(t, after[0], "merge", 0, 3, "passed", nil)
 }
 
-// A review the review event approves before the reviewer completes ends passed with no report, and
-// the reviewer's completion names its handoff on that ended run's record when it lands
-// (reportEndedStep). A rollback between the two, under which the earlier release signs the issue
-// off into the retro, starts no review: the review's place is none that release may have run
-// again, so the roll forward leaves its counted run ended, and the late completion's report lands
-// on the record this release counted.
+// A review a person's request for changes ends before the reviewer completes ends with no report,
+// and the reviewer's completion names its handoff on that ended run's record when it lands
+// (reportEndedStep). A rollback between the two, under which the earlier release moves the issue
+// on into the retro, starts no review: the review's place is none that release may have run again,
+// so the roll forward leaves its counted run ended, and the late completion's report lands on the
+// record this release counted.
 func TestALateReviewersReportLandsOnItsCountedRecordAcrossARollback(t *testing.T) {
 	const report = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
 	pool := migratedPool(t)
@@ -160,14 +160,14 @@ func TestALateReviewersReportLandsOnItsCountedRecordAcrossARollback(t *testing.T
 		return engine.StartStepRecord(ctx, tx, *issue)
 	})
 	apply := applyFacts(t, pool, engine)
-	apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, Author: testReviewApp,
-		Body: reviewBody("the review", headOne)})
-	if got := issueAt(t, pool, "LEGION-208"); got != phase.Accepting {
-		t.Fatalf("LEGION-208 stands at %s after the approval, want accepting", got)
+	apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "changes_requested", CommitID: headOne,
+		Author: "a-writer", AuthorCanWrite: true, Body: "rename the widget"})
+	if got := issueAt(t, pool, "LEGION-208"); got != phase.Implementing {
+		t.Fatalf("LEGION-208 stands at %s after the person's request for changes, want implementing", got)
 	}
 	rollBackStepRecords(t, pool)
-	// The earlier release signs the issue off: accepting moves to the retro, whose start raises
-	// the implementer's entry.
+	// The earlier release moves the issue on to the retro, whose start raises the implementer's
+	// entry.
 	execSQL(t, pool, `update issues set phase = 'retro' where key = 'LEGION-208'`)
 	execSQL(t, pool, `update phases set entry = entry + 1 where issue = 'LEGION-208' and role = 'implementer'`)
 	rollForwardStepRecords(t, pool)

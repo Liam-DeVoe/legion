@@ -343,7 +343,7 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 	updatedAt := time.Date(2026, 9, 22, 14, 12, 13, 456000000, time.UTC)
 	approved := 7
 	pushes := []ClassifiedPush{
-		{SHA: "b1c2d3", Before: "a0b1c2", ByReviewApp: true},
+		{SHA: "b1c2d3", Before: "a0b1c2", Sender: "legion-implement[bot]"},
 		{SHA: "c2d3e4", Before: "b1c2d3"},
 	}
 	pr := PullRequest{
@@ -357,7 +357,7 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		Statuses: []CommitStatus{{Context: "ci/license", State: CommitStatusError, CreatedAt: updatedAt.Add(-time.Minute), Head: "b1c2d3"},
 			{Context: "test", State: CommitStatusSuccess, CreatedAt: updatedAt.Add(-2 * time.Minute), Head: "b1c2d3"}},
 		Snapshot: "snapshot-4", Pushes: pushes, Moves: []Move{{Before: "9f8e7d", SHA: "a0b1c2"},
-			{Before: "a0b1c2", SHA: "b1c2d3", Pushed: true, Repeats: []ClassifiedPush{{SHA: "b1c2d3", Before: "a0b1c2", ByReviewApp: true}, {SHA: "b1c2d3", Before: "a0b1c2", Sender: "legion-implement[bot]"}}}},
+			{Before: "a0b1c2", SHA: "b1c2d3", Pushed: true, Repeats: []ClassifiedPush{{SHA: "b1c2d3", Before: "a0b1c2"}, {SHA: "b1c2d3", Before: "a0b1c2", Sender: "legion-implement[bot]"}}}},
 		State: PullRequestMerged, MergeSHA: "d4e5f6",
 		// Every column pullRequestColumns selects is written here and compared by
 		// samePullRequest: a field the store persists and the comparison passes over is a field
@@ -688,34 +688,6 @@ func TestGateRoundTripsTheReviewsItRecords(t *testing.T) {
 		}
 		if got, want := read(), (DesignGate{Issue: issue.Key, Step: DesignStepSpec, ArtifactID: "artifact-209", LatestVersion: 4, EverOpened: true}); !reflect.DeepEqual(got, &want) {
 			t.Fatalf("gate whose approval an older daemon cleared = %#v, want %#v with no mark", got, want)
-		}
-	})
-}
-
-// ClaimSession is the session claims records for the token (the workflow reads it for the
-// reviewer's claim to tell the reviewer's own review-App session from another's by the Legion
-// footer each carries). An unknown token answers "" and no error.
-func TestClaimSessionAnswersTheSeededSessionOrEmpty(t *testing.T) {
-	ctx := context.Background()
-	st := migratedStore(t)
-	records := NewStore()
-	inTx(t, st, func(tx pgx.Tx) {
-		_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-			values ($1, $2, $3, $4, $5, 0, $6, '', $7, 0, 0, 0, 0)`,
-			"review-claim", "LEGION", "LEGION-208", "LEGION-208", string(claim.RoleReviewer), "ses-reviewer", string(supervise.StateWorking))
-		must(t, err)
-	})
-	inTx(t, st, func(tx pgx.Tx) {
-		got, err := records.ClaimSession(ctx, tx, "review-claim")
-		must(t, err)
-		if got != "ses-reviewer" {
-			t.Fatalf("ClaimSession(review-claim) = %q, want ses-reviewer", got)
-		}
-		got, err = records.ClaimSession(ctx, tx, "no-such-claim")
-		must(t, err)
-		if got != "" {
-			t.Fatalf("ClaimSession(no-such-claim) = %q, want \"\"", got)
 		}
 	})
 }

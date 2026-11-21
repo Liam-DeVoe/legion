@@ -1,5 +1,5 @@
 // Package reviewround writes the two sentences that end each task a reviewer is given: the
-// commit the reviewer's newest recorded deciding review read, and the entry of its round. Two
+// commit the reviewer's newest recorded verdict named, and the entry of its round. Two
 // places write them, and both through Sentences: the workflow, onto each task of the reviewer it
 // queues (workflow's namingTheReviewRound), and the claim's send of a task that no such queue
 // named, a task the release before this one queued or an operator wrote (supervise's
@@ -15,9 +15,9 @@ import "strconv"
 const CommitLabel = "Last reviewed commit"
 
 // EntryLabel labels the entry of the round a reviewer's task names (record.PhaseRow.Entry). The
-// reviewer writes that number into the Legion footer of each review it submits for the task
-// (intake.PullRequestReview.LegionEntry), and only a review that names the entry that stands moves
-// the commit the reviewer read (workflow's reviewedCommitStays).
+// daemon reads the number back from no review: the reviewer's verdict reaches it with the
+// reviewer's completion of reviewing (workflow's handoff), which the completion route already
+// holds to the entry its claim serves (api/handoff.go's entry fence).
 const EntryLabel = "Review entry"
 
 // none is what each sentence names where there is no value for it: no commit, or no entry. A

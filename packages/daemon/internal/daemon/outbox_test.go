@@ -2191,13 +2191,14 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 // the approved head, never "Phase: implementing" again — without relaunching it.
 func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		review intake.PullRequestReview
-		accept bool
-		want   string
+		name    string
+		verdict string
+		summary string
+		accept  bool
+		want    string
 	}{
-		{name: "approved, accepted into retro", review: intake.PullRequestReview{State: "APPROVED"}, accept: true, want: "Phase: retro."},
-		{name: "changes requested into the next round", review: intake.PullRequestReview{State: "CHANGES_REQUESTED", Body: "scripted changes requested, round 3"}, want: "round 3"},
+		{name: "approved, accepted into retro", verdict: "approve", accept: true, want: "Phase: retro."},
+		{name: "changes requested into the next round", verdict: "changes", summary: "scripted changes requested, round 3", want: "round 3"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
@@ -2211,9 +2212,8 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			// at all: an issue past its review holds none, so that start carries no mark and is
 			// claimable the moment it commits (record.PhaseKeepsSlot, workflow.StartOrOwe).
 			holdSlot(t, pool, issue.Key)
-			// The head is spelled as GitHub spells one, since a review the review App submits
-			// decides a round only when its Legion footer names the pull request's head
-			// (workflow's refusesRound).
+			// The head is spelled as GitHub spells one, the commit each of the reviewer's verdicts
+			// names.
 			const head = "16973163c4b8a90d2e5f1736a8b0c4d9e2f51637"
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				// The settlement is the head's own, which the approval reads nothing of; GitHub's
@@ -2224,15 +2224,11 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 				t.Fatalf("put the pull request: %v", err)
 			}
 			// The reviewer's claim, which the daemon started it on, under the token it names the
-			// claim by, holding the session its agent registered, which the review's footer names
-			// (workflow's ReviewerSession): its completion arrives after its own review has moved
-			// the issue, and is recorded on its row (workflow's leftItsPhase).
+			// claim by: each of its completions carries it, with its verdict.
 			const reviewerClaim = "legion-legion-legion-208-reviewer"
-			seedReviewerSession(t, pool, "LEGION", "LEGION-208", "ses-reviewer")
 			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 			sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
-			const reviewApp = "legion-reviewer[bot]"
-			engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 10, ReviewAppLogin: reviewApp}, quietLogger())
+			engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 10, AppLogin: "legion-reviewer[bot]"}, quietLogger())
 			clock := time.Now()
 			runner := &outbox{
 				dispatchProject: "LEGION",
@@ -2268,13 +2264,9 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			conn := fake.NewConn()
 			sup.deps.Conns.(*fake.Conns).Register(implementer, conn)
 
-			// The reviewer asks for round 2, and the implementer starts on its task.
-			apply("review:round-2", intake.PullRequestReview{Repo: "acme/widgets", Number: 118, State: "CHANGES_REQUESTED", CommitID: head, HeadSHA: head, Author: reviewApp,
-				Body: "scripted changes requested, round 2" + legionFooter("ses-reviewer", head)})
-			// The review itself ended the round; the reviewer's completion follows it, recorded on
-			// the reviewer's own row with the issue already in implementing.
+			// The reviewer asks for round 2 with its verdict, and the implementer starts on its task.
 			apply("handoff:reviewer:reviewing:1", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
-				Claim: reviewerClaim, HandoffRecord: "review-round-1", HandoffVersion: 1})
+				Claim: reviewerClaim, Summary: "scripted changes requested, round 2", Verdict: "changes", Commit: head, HandoffRecord: "review-round-1", HandoffVersion: 1})
 			due("the round-2 start")
 			machine, found := sup.Machine(implementer)
 			if !found {
@@ -2319,15 +2311,11 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 					got.State, got.Pending, len(rt.CallsOf("Suspend")))
 			}
 
-			// The tester passes, and the reviewer decides.
+			// The tester passes, and the reviewer decides with its verdict.
 			apply("handoff:tester:testing:2", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleTester, Claim: tester, HandoffRecord: "test-round-2", HandoffVersion: 1, Verdict: "pass"})
 			due("the move to reviewing")
-			review := tc.review
-			review.Repo, review.Number, review.CommitID, review.HeadSHA, review.Author = "acme/widgets", 118, head, head, reviewApp
-			review.Body += legionFooter("ses-reviewer", head)
-			apply("review:after-round-2", review)
 			apply("handoff:reviewer:reviewing:2", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
-				Claim: reviewerClaim, HandoffRecord: "review-round-2", HandoffVersion: 2})
+				Claim: reviewerClaim, Summary: tc.summary, Verdict: tc.verdict, Commit: head, HandoffRecord: "review-round-2", HandoffVersion: 2})
 			if tc.accept {
 				apply("signoff", intake.SignOff{Issue: issue.Key})
 			}

@@ -22,17 +22,17 @@ import (
 // The two sentences are the task's last two whatever the row holds, so no text of the task can
 // stand where one of the daemon's sentences stands: a retry's reason or a title that ends with the
 // words ` Last reviewed commit: <sha>.` is followed by the daemon's own sentence, `none` where the
-// row holds no commit. A `none` changes nothing a review can move: the commit moves only for a
-// review of the reviewer's own whose footer names the entry its row stands at while the row holds
-// that entry's task (reviewedCommitStays), which reads the row, never the task.
+// row holds no commit. A `none` changes nothing a verdict can move: the commit moves only for the
+// reviewer's verdict while the row holds the task of the entry that stands (handoff), which reads
+// the row, never the task.
 //
 // It is one of the two places the sentences enter a task, and its two callers are the places every
 // reviewer's task this release composes passes: the queue, for every task it queues (queuedRow),
 // and the raise of an entry, which stores its task through it (enter). The other is the claim's
 // send of a task no such queue named (supervise's Delivery.message), which names `none` for both.
 // So the reviewer reads the difference from the commit to the head, or the whole change for
-// `none`, and writes the number of the newest entry a task of its session named into the footer of
-// its review.
+// `none`, and its completion of the round is held to the entry its task named (api's entry fence,
+// staleEntryRefusal).
 //
 // Each sentence is in a task once because of a fact the start carries, never a reading of its
 // text: the stored task of an entry (enter), which already holds them, is sent marked so

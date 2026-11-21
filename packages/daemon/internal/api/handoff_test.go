@@ -2010,8 +2010,10 @@ func TestHandoffCompleteAdoptsTheRunOfTheTaskTheClaimIsHolding(t *testing.T) {
 		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("the completion of the held task = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
-	if completion := lastCompletion(t, facts); completion.Generation != 1 {
-		t.Fatalf("the completion names generation %d, want the held task's 1", completion.Generation)
+	// The entry the route held the completion to rides the fact, so the workflow holds it to the
+	// role's row again under the fact's lock (workflow's staleEntryRefusal).
+	if completion := lastCompletion(t, facts); completion.Generation != 1 || completion.Entry != 1 {
+		t.Fatalf("the completion names generation %d and entry %d, want the held task's 1 and 1", completion.Generation, completion.Entry)
 	}
 }
 

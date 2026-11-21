@@ -42,7 +42,8 @@ func TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody(t *testing.T) {
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
 
 	applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
-		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "looks right",
+			Verdict: "approve", Commit: headOne, HandoffRecord: "review-2", HandoffVersion: 2})
 
 	assertPhase(t, pool, phase.Accepting)
 	var status string

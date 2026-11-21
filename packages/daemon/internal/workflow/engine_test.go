@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -267,15 +266,16 @@ func TestCapturedArtifactVersionAndApprovalFlowThroughConsume(t *testing.T) {
 	})
 }
 
-// The captured review's author, `reviewer`, is not the review App, so the approval decides the round
-// only because GitHub gives that account write access to the repository, which the consumer reads
-// before the fact reaches the engine: the review's whole path, decode, permission read and apply,
-// runs through the real consumer.
-func TestCapturedApprovedReviewFlowsThroughConsumeToAccepting(t *testing.T) {
+// The captured review's author, `reviewer`, is a person GitHub gives write access to the
+// repository, and the review's whole path, decode and apply, runs through the real consumer. It is
+// an approval, and on a Legion head a person's approval decides nothing (workflow's RefusesRound):
+// the consumer asks GitHub nothing about its author (intake.PullRequestReview.Decides), the event
+// is processed, and the issue stays in reviewing with no decision and nothing written to the
+// outbox.
+func TestCapturedApprovedReviewFlowsThroughConsumeAndDecidesNothing(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "captured review", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
-	// The base requires no check, so the head's settlement gives no verdict, and an approval waits on none.
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-captured", CheckedHead: "head-captured", Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "review-1"})
 	var mu sync.Mutex
@@ -290,18 +290,24 @@ func TestCapturedApprovedReviewFlowsThroughConsumeToAccepting(t *testing.T) {
 	stop := startConsume(t, js, pool, testEngine(config.DesignGateRootIssues, nil), writers)
 	defer stop()
 	publishCaptured(t, js, "notifications.github.sjawhar.legion.pr.42.review", "../intake/testdata/github/review.json")
-	testwait.Eventually(t, "captured approval reaches accepting", func() bool {
-		var gotPhase, status string
-		if err := pool.QueryRow(ctx, "select phase, status from issues where key = $1", "LEGION-208").Scan(&gotPhase, &status); err != nil {
+	testwait.Eventually(t, "captured approval processed", func() bool {
+		var processed int
+		if err := pool.QueryRow(ctx, "select count(*) from processed_events").Scan(&processed); err != nil {
 			return false
 		}
-		return gotPhase == string(phase.Accepting) && status == "needs_review"
+		return processed > 0
 	})
-	assertOutboxKinds(t, pool, []string{"notice"})
+	if got := issuePhase(t, pool); got != phase.Reviewing {
+		t.Fatalf("after the person's approval the issue is in %s, want reviewing: only the reviewer's verdict approves a Legion head", got)
+	}
+	if got := reviewerRow(t, pool).Decision; got != nil {
+		t.Fatalf("the round's decision = %+v, want none", got)
+	}
+	assertOutboxKinds(t, pool, nil)
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []string{"sjawhar/legion reviewer"}; !slices.Equal(asked, want) {
-		t.Fatalf("the consumer asked GitHub about %v, want %v", asked, want)
+	if len(asked) != 0 {
+		t.Fatalf("the consumer asked GitHub about %v, want nothing: an approval decides no round whoever writes it", asked)
 	}
 }
 
@@ -321,7 +327,7 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Rounds: 2})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
-	if _, err := intake.ApplyFact(ctx, pool, "github", "changes-requested", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "changes_requested", CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("fix the widget", headOne)}, engine, admissionStub{}); err != nil {
+	if _, err := intake.ApplyFact(ctx, pool, "github", "changes-requested", reviewAt(7, "changes_requested", headOne), engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact review: %v", err)
 	}
 	assertOutboxKinds(t, pool, []string{"dispatch_message", "notice", "dispatch_status", "supervise", "notice"})
@@ -403,9 +409,7 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 // The reviewer is told the commit its later round reads from, and the entry of each round, by
 // the labels its task carries (reviewround.Sentences), and its prompt and the merge gate of
 // skill://legion-worker, which the prompt sends it to, name those fields, so a rename of a label
-// in the writer alone, in the reviewer's prompt alone or in the merge gate alone fails here. The
-// reviewer writes the entry into its review's footer, so a prompt that did not name the field
-// would leave every review moving no commit.
+// in the writer alone, in the reviewer's prompt alone or in the merge gate alone fails here.
 func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 	mergeGate := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "merge-gate.md")
 	body, err := os.ReadFile(mergeGate)
@@ -644,7 +648,7 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 				seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
 			},
 			fact: func() intake.Fact {
-				return intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)}
+				return reviewAt(7, "approved", headOne)
 			},
 			wantPhase: phase.Accepting, wantStatus: "needs_review", wantOutbox: []string{"notice"},
 		},
@@ -878,15 +882,15 @@ func seedRecord(t *testing.T, pool *pgxpool.Pool, put func(pgx.Tx) error) {
 	}
 }
 
-// testReviewApp is the review App's bot login the test engines configure: a review it submits
-// decides a round.
-const testReviewApp = "legion-reviewer[bot]"
+// testAppLogin is the one App's bot login the test engines configure: a review written with its
+// token decides no round (RefusesRound).
+const testAppLogin = "legion-reviewer[bot]"
 
 // testEngine is the engine the workflow tests drive, under the design gate policy given and
 // logging to log (the default logger when nil).
 func testEngine(policy config.DesignGate, log *slog.Logger) *Engine {
 	return New(record.NewStore(), Config{
-		Project: "LEGION", Steps: policy.Steps(), ReviewRoundCap: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
+		Project: "LEGION", Steps: policy.Steps(), ReviewRoundCap: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester, AppLogin: testAppLogin, Repositories: testRepositories,
 		Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, log)
 }
@@ -1093,8 +1097,9 @@ func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Rounds: 2})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
-	if _, err := intake.ApplyFact(ctx, pool, "github", "changes-requested", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42,
-		State: "changes_requested", CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("fix the widget", headOne)}, engine, admissionStub{}); err != nil {
+	if _, err := intake.ApplyFact(ctx, pool, "github", "changes-requested", reviewAt(7,
+		"changes_requested", headOne),
+		engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact the review that requested changes: %v", err)
 	}
 

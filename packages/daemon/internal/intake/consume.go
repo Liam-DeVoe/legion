@@ -27,8 +27,8 @@ const (
 	defaultAckWait  = 30 * time.Second
 	defaultNakDelay = 30 * time.Second
 	// defaultHandlerLimit is the floor the derived limit never goes below (HandlerLimitFor). The
-	// derivation gives one window to each bounded read and one more to the rest, four in all, so
-	// every window at or below 2m30s yields these ten minutes. No caller outside this package
+	// derivation gives one window to each bounded read and one more to the rest, three in all, so
+	// every window at or below 3m20s yields these ten minutes. No caller outside this package
 	// needs the number: HandlerLimitFor's second answer says whether the window lifted the limit
 	// above it.
 	defaultHandlerLimit = 10 * time.Minute
@@ -41,13 +41,13 @@ const (
 )
 
 // boundedReadsPerFact is the most bounded reads one fact's handling makes, each of them bounded
-// at AckWait. A review makes three — whether its pull request is recorded (recordedPullRequest),
-// its truncated body (resolveReviewBody) and its author's repository permission
-// (resolveReviewPermission) — and handleMessage makes them one after another, so they add up
-// rather than overlap. Every other fact makes one read or none. The operator's sentence for the
-// limit names those three reads in its own words (daemon.IntakeHandlerLimitLine), written by
-// hand there, so a read added here has to be named there by hand too.
-const boundedReadsPerFact = 3
+// at AckWait. A review makes two — whether its pull request is recorded (recordedPullRequest) and
+// its author's repository permission (resolveReviewPermission) — and handleMessage makes them one
+// after another, so they add up rather than overlap. Every other fact makes one read or none. The
+// operator's sentence for the limit names those two reads in its own words
+// (daemon.IntakeHandlerLimitLine), written by hand there, so a read added here has to be named
+// there by hand too.
+const boundedReadsPerFact = 2
 
 // HandlerLimitCeiling is the derived limit above which a wedged handler's message no longer
 // returns to the stream within one operator's look, which is what the limit is for. Nothing
@@ -69,16 +69,16 @@ const WindowsPerLimit = boundedReadsPerFact + 1
 // lifted the limit above that floor. boundedReadsPerFact of those windows are the bounded reads
 // one fact may make, each of which handleMessage bounds at ackWait; the one window more is for
 // what nothing bounds, ApplyFact's wait on the one advisory lock plus the transaction itself.
-// So the bounded reads never take more than three quarters of the limit.
+// So the bounded reads never take more than two thirds of the limit.
 //
 // That one window of headroom is a judgement, and what it is a judgement about is the lock wait:
 // ApplyFact's wait on pg_advisory_xact_lock(hashtext('legion.apply_fact')) cannot be derived from
 // the window at all, because Run works three durable consumers at once and the daemon's own
 // lifecycle writes take the same lock, so what a fact waits for is what else is applying, not how
-// long a read is given. The limit therefore states a share — a quarter of it left for the
+// long a read is given. The limit therefore states a share — a third of it left for the
 // unbounded part — instead of a duration.
 //
-// The floor is there so that every window at or below 2m30s keeps the ten minutes this daemon has
+// The floor is there so that every window at or below 3m20s keeps the ten minutes this daemon has
 // always had, which leaves every existing caller and the default configuration unchanged. An
 // ackWait of zero or less, which normalizedSpec has defaulted away before it asks, derives a
 // bound at or below zero and so yields the floor too.
@@ -164,7 +164,7 @@ type ConsumerSpec struct {
 	// and when Lag measures a stall and the oldest waiting message's age; nil is time.Now.
 	Now func() time.Time
 	// ReviewPermission answers whether review's author has write access or higher to its
-	// repository, which is what lets a review decide a review round
+	// repository, which is what lets a person's request for changes decide a review round
 	// (PullRequestReview.AuthorCanWrite). The workflow decides inside a transaction and performs no
 	// I/O, so the answer is read here, before the fact is applied, only for a review that decides
 	// (PullRequestReview.Decides) and has an author, and within AckWait, which bounds this one read
@@ -173,19 +173,9 @@ type ConsumerSpec struct {
 	// slow GitHub answer from holding the fact. An author GitHub gives no write access is false;
 	// a lookup that fails is an error, and the message is retried, after NakDelay
 	// or the longer wait a RetryLater names, rather than applied with a permission nobody read. No
-	// resolver (a test, or a daemon without one) leaves every review's AuthorCanWrite false, so
-	// only the review App's own reviews decide.
+	// resolver (a test, or a daemon without one) leaves every review's AuthorCanWrite false, so no
+	// review decides a round.
 	ReviewPermission func(ctx context.Context, review PullRequestReview) (bool, error)
-	// ReviewBody restores a review-App review's full body from GitHub when Envoy's normalizer
-	// capped it (PullRequestReview.BodyTruncated), since the capped body can cut the trailing
-	// Legion footer the workflow reads to tell the reviewer's review from any other review-App
-	// session's (PullRequestReview.LegionSession). It is read here, before the fact is applied,
-	// within AckWait, the same bound on the one read rather than on the delivery (ReviewPermission),
-	// and only for a review the review App submitted, with an id and a truncated body
-	// (resolveReviewBody); a failed read is returned, and the message is retried the same way a
-	// failed ReviewPermission read is. No resolver (a test, or a daemon without one) leaves every
-	// truncated review's body capped.
-	ReviewBody func(ctx context.Context, review PullRequestReview) (string, error)
 	// RepositoryMapping reads the project's repository mapping again, for Dispatch's
 	// settings.repo_project.updated on the project (RepoMappingChanged): it runs before the event
 	// is acknowledged, within AckWait, which bounds this read alone (ReviewPermission), and in no
@@ -1003,11 +993,7 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 		return nakOutcome("prepare the review's issue", "nak the review's issue preparation", err)
 	}
 	decoded.Fact = prepared
-	withBody, err := resolveReviewBody(work, spec, decoded.Fact)
-	if err != nil {
-		return nakOutcome("restore the review's truncated body", "nak the review body restore", err)
-	}
-	fact, err := resolveReviewPermission(work, spec, withBody)
+	fact, err := resolveReviewPermission(work, spec, decoded.Fact)
 	if err != nil {
 		return nakOutcome("read the reviewer's repository permission", "nak the reviewer's permission read", err)
 	}
@@ -1076,7 +1062,7 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 // already open when its repository was transferred is recorded under the name it moved from,
 // while the fact names the one it moved to. It is one read of the pool per name within the one
 // AckWait, in no transaction and under no lock, made before the review's GitHub reads
-// (resolveReviewBody, resolveReviewPermission): the workflow applies either fact only to a
+// (resolveReviewPermission): the workflow applies either fact only to a
 // recorded pull request, so one of any other pull request is acknowledged with no transaction
 // under the fact lock (ApplyFact) and no GitHub read, whatever the number of other pull requests
 // a mapped repository reviews and checks. A pull request recorded after this read, by a later
@@ -1152,12 +1138,14 @@ func resolveReviewPermission(ctx context.Context, spec ConsumerSpec, fact Fact) 
 
 // ResolveAuthorCanWrite fills review's AuthorCanWrite from permission, the daemon's reader of the
 // author's repository permission, for a webhook's review (resolveReviewPermission) and the daemon's
-// own read of a pull request's reviews alike, so the workflow's DecidesRound judges both on the same
-// answer. Only a review that decides (Decides) and names its author is looked up: a comment decides
-// nothing whoever writes it, so it costs no GitHub call. No reader (a test, or a daemon without one)
-// leaves AuthorCanWrite false. A failed read is returned with the review unchanged.
+// own read of a pull request's reviews alike, so the workflow's RefusesRound judges both on the
+// same answer. Only a review that decides (Decides: a request for changes), names its author and
+// came by its webhook is looked up: any other review decides nothing whoever writes it - a listed
+// one is refused for the list (PullRequestReview.ReadFromList) - so it costs no GitHub call. No
+// reader (a test, or a daemon without one) leaves AuthorCanWrite false. A failed read is returned
+// with the review unchanged.
 func ResolveAuthorCanWrite(ctx context.Context, review PullRequestReview, permission func(context.Context, PullRequestReview) (bool, error)) (PullRequestReview, error) {
-	if permission == nil || review.Author == "" || !review.Decides() {
+	if permission == nil || review.Author == "" || review.ReadFromList || !review.Decides() {
 		return review, nil
 	}
 	canWrite, err := permission(ctx, review)
@@ -1165,30 +1153,6 @@ func ResolveAuthorCanWrite(ctx context.Context, review PullRequestReview, permis
 		return review, err
 	}
 	review.AuthorCanWrite = canWrite
-	return review, nil
-}
-
-// resolveReviewBody restores a truncated review-App review's body from GitHub
-// (ConsumerSpec.ReviewBody), before the fact enters its transaction and before
-// resolveReviewPermission reads its author's permission, since a restored body carries the Legion
-// footer the workflow needs. Only a review the normalizer capped (BodyTruncated), with an id to
-// look it up by and an author, is read: one with no id (a listener that predates it) keeps its
-// capped body and BodyTruncated true, so the workflow sets it aside as footer-less rather than
-// guessing at a footer it cannot restore. Every other fact, and a review the normalizer did not
-// cap, passes through untouched.
-func resolveReviewBody(ctx context.Context, spec ConsumerSpec, fact Fact) (Fact, error) {
-	review, ok := fact.(PullRequestReview)
-	if !ok || spec.ReviewBody == nil || !review.BodyTruncated || review.ID == 0 || review.Author == "" {
-		return fact, nil
-	}
-	read, cancel := context.WithTimeout(ctx, spec.AckWait)
-	defer cancel()
-	body, err := spec.ReviewBody(read, review)
-	if err != nil {
-		return nil, err
-	}
-	review.Body = body
-	review.BodyTruncated = false
 	return review, nil
 }
 

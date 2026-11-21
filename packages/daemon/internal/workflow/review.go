@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
@@ -587,193 +588,45 @@ func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 	return walk.Owner(issue, false), nil
 }
 
-// answerSkew bounds how far GitHub's clock, which stamps a review's submission, and the daemon's,
-// which stamps the reviewer's completion (record.PhaseRow.CompletedAt), may disagree. No ordering
-// between the two avoids comparing those clocks: the delivery order is the race itself, and the
-// completion has no GitHub-side stamp. GitHub's review ids come closest, but GitHub assigns one
-// when a review is created, not when it is submitted, so a draft created before the completion
-// and submitted after it would read as already seen; reading them would also put a GitHub call on
-// the completion path. The bound is sized to skew alone, since a real answer follows the completion
-// within the minute the stuck notice, the architect's request and the reviewer's review take. Its
-// two costs: a GitHub clock more than answerSkew ahead makes a review submitted before the
-// completion read as the reviewer's answer, and tell again; an answer submitted within answerSkew
-// of the completion reads as delivered late, and tells only when the round's stuck cause or head
-// changes (stuckAs).
-const answerSkew = 10 * time.Second
-
-// byReviewer says whether review is the reviewer's own review-App session, not merely a review the
-// review App submitted: the controller now holds the review App's token too, so every role's
-// review arrives under the same bot login (Config.ReviewAppLogin). What tells the reviewer's
-// review from any other review-App session's - the controller's, an architect's, a sibling tree's
-// role - is the Legion footer every Legion role appends to a pull-request review
-// (intake.PullRequestReview.LegionSession), matched against reviewerSession, the session the
-// claims record holds for the claim the daemon starts the reviewer under (reviewersClaim), in the
-// reviewer's first round as in every later one. It is the one predicate of the reviewer's own
-// review: it says who decides a round (DecidesRound), whose review is the reviewer's answer
-// (reviewersAnswer), and whose review moves the commit the reviewer read
-// (record.PhaseRow.ReviewedHead). With no session recorded, no review is the reviewer's, since
-// nothing recorded says one is: the outbox makes the reviewer's claim with none, and the claim
-// holds none until the reviewer's agent registers, nor again after its session is forgotten until
-// the next one registers. A review-App review that comes then waits (RefusedWhileNoSession).
-func (e *Engine) byReviewer(review intake.PullRequestReview, reviewerSession string) bool {
-	return e.byReviewApp(review.Author) && reviewerSession != "" && review.LegionSession() == reviewerSession
-}
-
-// DecidesRound says whether review may decide a review round: it is the reviewer's own review-App
-// session (byReviewer, with reviewerSession as ReviewerSession reads it), or its author has write
-// access or higher to the repository, which intake read from GitHub before the fact reached this
-// transaction (intake.ResolveAuthorCanWrite, for a webhook's review and the daemon's own read of a
-// pull request's reviews alike). On a public repository any account can review a pull request, so
-// anyone else's review decides nothing. GitHub's 404, or a 403 that is not its rate limit, reads as
-// no write access; any other failed read is retried before the review reaches here. A review-App
-// review that is not the reviewer's own session decides nothing either, in the reviewer's first
-// round as in every later one: it is set aside, not counted as a writer's - the daemon never asks
-// GitHub about the review App's own login (daemon's reviewerCanWrite) - or dropped as a
-// stranger's. It is the half of the whole judgement (RefusesRound) that answers for who wrote a
-// review. A refusal it leaves stands at every head (RefusedAtEveryHead), since an account's
-// standing and a session's claim are not things the record's next head changes, save one: a
-// review-App review that comes while the reviewer's claim records no session waits
-// (RefusedWhileNoSession), since the session the claim records later says whose it is.
-func (e *Engine) DecidesRound(review intake.PullRequestReview, reviewerSession string) bool {
-	return e.byReviewer(review, reviewerSession) || review.AuthorCanWrite
-}
-
-// RoundRefusal is RefusesRound's answer: why a review must not decide a review round, and how long
-// that refusal stands. Both places that judge a review must know how long one stands - the webhook
-// path keeps on the reviewer's row only a refusal the round could still be spared (review), and
-// the daemon's read of GitHub's list remembers only one that will stand on the read after it
-// (daemon's reviewToApply) - and they read it here rather than judging the review a second time.
-type RoundRefusal struct {
-	// Reason is the whole of why the review must not decide the round, "" when nothing refuses it.
-	Reason string
-	// Lasts is how long the refusal stands, read only where Reason is not "".
-	Lasts RefusalLasts
-}
-
-// RefusalLasts is how long a refusal of a review stands (RoundRefusal.Lasts), one of its three
-// values. The zero value is none of them, so a refusal whose writer names no Lasts stands at no
-// head: the reviewer's row keeps nothing of it (review), and the daemon's read does not remember
-// it (daemon's reviewToApply).
-type RefusalLasts int
-
-const (
-	// RefusedAtThisHead is a refusal at the head the record holds now and no further: a review-App
-	// review refused for the head its footer names, since the head the record holds changes. It is
-	// the one refusal the reviewer's row keeps for the stuck notice (review), as a decision the
-	// round could still have had, and the next read of the pull request's reviews judges the review
-	// again at the head the record holds then (daemon's reviewToApply).
-	RefusedAtThisHead RefusalLasts = iota + 1
-	// RefusedAtEveryHead is a refusal that stands whatever the record comes to hold: who wrote the
-	// review (DecidesRound), and a person's review read from GitHub's list, whose commit_id is
-	// GitHub's own and moves with the pull request. It is no decision the round lost, so the
-	// reviewer's row keeps nothing of it, and the daemon's read remembers it (reviewToApply).
-	RefusedAtEveryHead
-	// RefusedWhileNoSession is the refusal of a review App's review only because the reviewer's
-	// claim records no session yet, so that nothing recorded says whether it is the reviewer's own:
-	// the review waits. It is no decision the round lost, so the reviewer's row keeps nothing of it
-	// for the stuck notice (review), and it does not stand at every head: the next read of the pull
-	// request's reviews (daemon's reviewToApply) judges it again by the session recorded then.
-	RefusedWhileNoSession
-)
-
-// RefusesRound is the whole of why review, one that decides (intake.PullRequestReview.Decides),
-// must not decide pr's round, a RoundRefusal with no reason when nothing refuses it: who wrote it
-// (DecidesRound, with reviewerSession as ReviewerSession reads it), then the head it says it read
-// (refusesRound). A review-App review judged while reviewerSession is "" waits
-// (RefusedWhileNoSession). Two places judge a review - this engine, for the review a webhook
-// delivers, and the daemon's read of GitHub's list of a pull request's reviews (daemon's
-// reviewToApply), which applies only a review this would take - and both ask this one judgement,
-// so neither judges by a narrower rule than the other, and neither asks a second one to learn how
-// long a refusal stands: the answer carries that (RoundRefusal.Lasts).
-func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullRequest, reviewerSession string) RoundRefusal {
-	if !e.DecidesRound(review, reviewerSession) {
-		switch {
-		case !e.byReviewApp(review.Author):
-			return RoundRefusal{Reason: "its author is neither the review App nor an account with write access to the repository", Lasts: RefusedAtEveryHead}
-		case reviewerSession == "":
-			return RoundRefusal{Reason: "the reviewer's claim records no session, so the next read of the pull request's reviews judges it again", Lasts: RefusedWhileNoSession}
-		}
-		return RoundRefusal{Reason: "the review App submitted it from a session that is not the reviewer's", Lasts: RefusedAtEveryHead}
-	}
-	return e.refusesRound(review, pr)
-}
-
-// refusesRound is the second half of that judgement (RefusesRound): why a review that decides
-// (intake.PullRequestReview.Decides) and that DecidesRound counts must still not decide pr's
-// round, a RoundRefusal with no reason when nothing refuses it. The whole rule, in this order:
+// RefusesRound is why review, one that decides (intake.PullRequestReview.Decides: a request for
+// changes), must not decide its pull request's review round, "" when nothing refuses it. A
+// round's verdict is the reviewer's, which reaches the daemon with its completion of reviewing
+// (handoff, decisionOf), so the one GitHub review that decides is a person's request for changes,
+// which refuses the head; no approval decides at all, since on a head a Legion issue owns only the
+// reviewer's verdict approves it, which is what writes its success. Two places judge a review -
+// this engine, for the review a webhook delivers, and the daemon's read of GitHub's list of a pull
+// request's reviews (daemon's reviewToApply), which applies only a review this takes - and both
+// ask this one judgement, so neither judges by a narrower rule than the other. The whole rule, in
+// this order:
 //
-//   - A review the daemon read from GitHub's list of pr's reviews
-//     (intake.PullRequestReview.ReadFromList) that the review App did not submit decides nothing,
-//     at every head the record can come to hold. The list answers with GitHub's own commit_id for
-//     every review it holds, and that id moves to the pull request's current head
-//     (dispatch://INFRA-1557), so a person's listed approval would stand for code it never read,
-//     and no head the record reaches makes the list's answer evidence of the code it read. The
-//     same person's review by webhook decides as it always has, on the commit_id the event
-//     carried.
-//   - A review the review App submitted, listed or by webhook, decides only when the head its
-//     Legion footer names (intake.PullRequestReview.LegionHead) is pr's current head, compared
-//     exactly, so its refusal stands at the head the record holds now and no further. The footer
-//     is the review's own word for the code it read, written in the body it was submitted with; no
-//     clock answers for a force push that puts an earlier head back, and GitHub's commit_id for
-//     the review moves with the pull request.
-//   - Every other review - a person's, delivered by its webhook - decides as it did before.
-func (e *Engine) refusesRound(review intake.PullRequestReview, pr record.PullRequest) RoundRefusal {
-	if !e.byReviewApp(review.Author) {
-		if review.ReadFromList {
-			return RoundRefusal{Reason: "a person's review read from the list", Lasts: RefusedAtEveryHead}
-		}
-		return RoundRefusal{}
+//   - A review written with a token of the one App (Config.AppLogin) decides nothing. Every role
+//     acts as that App, so its login says nothing of who wrote the review, and the reviewer posts
+//     its findings as a COMMENT, which decides nothing either.
+//   - A review the daemon read from GitHub's list of the pull request's reviews
+//     (intake.PullRequestReview.ReadFromList) decides nothing. The list answers with GitHub's own
+//     commit_id for every review it holds, and that id moves to the pull request's current head
+//     (dispatch://INFRA-1557), so a listed review is no evidence of the code it read.
+//   - A request for changes from an account with no write access to the repository, or of
+//     another type than User (intake.PullRequestReview.AuthorCanWrite, which the daemon's
+//     reviewerCanWrite reads from GitHub before the fact reaches this transaction), decides
+//     nothing: on a public repository any account can review, and a bot is an App whose token an
+//     agent can hold.
+//   - A person's request for changes, delivered by its webhook, refuses the head on the commit_id
+//     the event carried, and so decides the round.
+//
+// No rule turns on the head the record holds, so a refusal stands at every head the record can
+// come to hold, which is what lets the daemon's read judge a listed review once (daemon's
+// refusedReviews).
+func (e *Engine) RefusesRound(review intake.PullRequestReview) string {
+	switch {
+	case e.appWrote(review.Author):
+		return "the one App wrote it, and no review of the App decides a round"
+	case review.ReadFromList:
+		return "a person's review read from the list"
+	case !review.AuthorCanWrite:
+		return "its author is no account of type User with write access to the repository"
 	}
-	switch head := review.LegionHead(); {
-	case head == "":
-		return RoundRefusal{Reason: "footer names no head", Lasts: RefusedAtThisHead}
-	case head != pr.HeadSHA:
-		return RoundRefusal{Reason: fmt.Sprintf("footer names %s, not the head %s", head, pr.HeadSHA), Lasts: RefusedAtThisHead}
-	}
-	return RoundRefusal{}
-}
-
-// ReviewerSession is the session of issue's reviewer, the session a review-App review's Legion
-// footer must name to be the reviewer's own (byReviewer), read as review reads it
-// (reviewersClaim): "" when the issue has no record, the reviewer's claim has no row, or its
-// session is empty, in which case no review-App review is the reviewer's, and each waits
-// (RefusedWhileNoSession). The daemon's read of a pull request's reviews reads it before it judges
-// one (RefusesRound), as review does, so both judge a review-App review alike, in the reviewer's
-// first round as in every later one.
-func (e *Engine) ReviewerSession(ctx context.Context, tx pgx.Tx, issue string) (string, error) {
-	recorded, err := e.store.Issue(ctx, tx, issue)
-	if err != nil || recorded == nil {
-		return "", err
-	}
-	_, session, err := e.reviewersClaim(ctx, tx, *recorded)
-	return session, err
-}
-
-// reviewersClaim is the claim the daemon starts issue's reviewer under (reviewerToken) and the
-// session the claims record holds for it (record.Store.ClaimSession), the session of that claim's
-// current launch: the one reading of who issue's reviewer is, for every judgement of a review-App
-// review (byReviewer). It finds the claim by that token, never by the claim the reviewer's row
-// names: the completion handler is the one writer of record.PhaseRow.Claim, and the reviewer
-// submits the review of its first round before it completes, so read from the row no session
-// would be recorded in round 1, and no review-App review, the reviewer's own among them, could
-// decide that round. The session is "" when the claim has no row or records none: the outbox makes
-// the claim with none, and only the registration of the reviewer's agent writes one.
-func (e *Engine) reviewersClaim(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Token, string, error) {
-	token, err := reviewerToken(issue)
-	if err != nil {
-		return "", "", err
-	}
-	session, err := e.store.ClaimSession(ctx, tx, token)
-	return token, session, err
-}
-
-// reviewersAnswer says whether fact is the reviewer's answer to a round it completed undecided: a
-// review from the reviewer's own review-App session (byReviewer), more than answerSkew after the
-// completion was applied. A review submitted before the completion but delivered after it is not,
-// since the completion comes through the API and the review by webhook; nor is one with no
-// submission time, or anyone else's, the review App's other sessions included.
-func (e *Engine) reviewersAnswer(fact intake.PullRequestReview, reviewer record.PhaseRow, reviewerSession string) bool {
-	return e.byReviewer(fact, reviewerSession) && fact.SubmittedAt.After(reviewer.CompletedAt.Add(answerSkew))
+	return ""
 }
 
 func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestReview) (intake.Result, error) {
@@ -789,81 +642,38 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// reviewerSession is the session of the reviewer's claim (reviewersClaim), "" when none is
-	// recorded, in which case a review-App review waits (RefusedWhileNoSession). It is read only for
-	// a review the review App submitted: no other author's review ever reaches the compare.
-	var reviewerClaim claim.Token
-	var reviewerSession string
-	if e.byReviewApp(fact.Author) {
-		reviewerClaim, reviewerSession, err = e.reviewersClaim(ctx, tx, *issue)
-		if err != nil {
-			return intake.Result{}, err
-		}
-	}
-	// The reviewer's answer tells whenever it leaves the round stuck; any other review, only when it
-	// changes how the round is stuck.
-	before, by := e.reviewRound(*issue, reviewer, pr), byOtherReview
-	if e.reviewersAnswer(fact, reviewer, reviewerSession) {
-		before, by = round{}, byAnswer
-	}
-	// Only changes_requested and approved decide anything, and one judgement says whether such a
-	// review may decide this round (RefusesRound): who wrote it, and the head it says it read.
-	// Any other review orders nothing either, so a comment written after a decision but
-	// delivered before it, or an outsider's review, cannot make the decision look old.
+	// No review is the reviewer's answer to a round it left undecided: its answer is a verdict
+	// with its completion (handoff). So a review tells the architect only when it changes how the
+	// round is stuck.
+	before := e.reviewRound(*issue, reviewer, pr)
+	// Only a request for changes decides anything (intake.PullRequestReview.Decides), and one
+	// judgement says whether it may decide this round (RefusesRound). Any other review orders
+	// nothing either, so a comment or an approval written after a decision but delivered before
+	// it, or an outsider's review, cannot make the decision look old.
 	state := strings.ToLower(fact.State)
 	decides := fact.Decides()
-	// refused is why a review the round's rules otherwise count was refused the round at the head
-	// the record holds now (RefusedAtThisHead). It is kept on the reviewer's row below, since nothing
-	// else would say why the round has no decision. A refusal that stands at every head
-	// (RefusedAtEveryHead) leaves none: a stranger's review is no decision the round lost, and the
-	// round is undecided the way one nobody reviewed is. Nor does a review that waits for the
-	// reviewer's session (RefusedWhileNoSession): no rule of the round counts it yet, and the read
-	// that judges it again by the session recorded then either takes it or refuses it afresh.
-	refused := ""
 	if decides {
-		if refusal := e.RefusesRound(fact, *pr, reviewerSession); refusal.Reason != "" {
+		if reason := e.RefusesRound(fact); reason != "" {
 			args := []any{"issue", issue.Key, "pull_request", pr.Number, "author", fact.Author, "state", state,
-				"footer_session", fact.LegionSession(), "reviewer_session", reviewerSession, "reviewer_claim", string(reviewerClaim),
-				"footer_head", fact.LegionHead(), "head", pr.HeadSHA, "read_from_list", fact.ReadFromList,
-				"body_truncated", fact.BodyTruncated}
-			switch {
-			case refusal.Lasts == RefusedWhileNoSession:
-				e.warnOnCommit(ctx, "workflow: a review of the review App waits: "+refusal.Reason, args...)
-			case e.byReviewApp(fact.Author):
-				e.warnOnCommit(ctx, "workflow: a review decides nothing: "+refusal.Reason, args...)
-			default:
-				e.logOnCommit(ctx, "workflow: a review decides nothing: "+refusal.Reason, args...)
+				"commit_id", fact.CommitID, "head", pr.HeadSHA, "read_from_list", fact.ReadFromList}
+			// A request for changes the App wrote is a role acting as a reviewer did before the
+			// verdict, which the operator is told of; any other is an account that may not decide.
+			if e.appWrote(fact.Author) {
+				e.warnOnCommit(ctx, "workflow: a review decides nothing: "+reason, args...)
+			} else {
+				e.logOnCommit(ctx, "workflow: a review decides nothing: "+reason, args...)
 			}
 			decides = false
-			if refusal.Lasts == RefusedAtThisHead {
-				refused = refusal.Reason
-			}
 		}
 	}
 	if !decides {
-		// The stuck notice of a round nothing decided is built from the record when the reviewer
-		// completes (reviewRound, stuckUndecided), which is after the refused review arrived, so
-		// the refusal is kept on the reviewer's row for it to name. It is written only on a row
-		// that holds no deciding decision, so a refusal reaching a round an approval already
-		// decided cannot erase it, and it lives with that decision, which every entry into
-		// reviewing clears (clearHandoff): no later round inherits the refusal of an earlier one.
-		if refused != "" && (reviewer.Decision == nil || reviewer.Decision.State == "") {
-			reviewer.Decision = &record.ReviewDecision{Refused: refused}
-			if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
-				return intake.Result{}, err
-			}
-		}
-		_, err := e.settleRound(ctx, tx, *issue, reviewer, pr, before, by)
+		_, err := e.settleRound(ctx, tx, *issue, reviewer, pr, before, byReview)
 		return intake.Result{}, err
 	}
 	// Deciding reviews are ordered by when they were submitted, then by GitHub's review id
-	// (record.ReviewOrder). Among reviews that all carry a time and arrive before the round ends,
-	// the newest decides whatever order they are delivered in; with a review without a time in
-	// play, the outcome can depend on delivery order. A round ends once both of its halves are in,
-	// so a review arriving after that decides nothing for it. The pull request keeps the newest it
-	// has had across rounds, so a review submitted before one already processed - redelivered, or
-	// from an earlier round - records nothing. A review without an id is ordered by when it
-	// arrives.
+	// (record.ReviewOrder), so a review submitted before one already processed - redelivered, or
+	// from an earlier round - records nothing. The pull request keeps the newest it has had across
+	// rounds. A review without an id is ordered by when it arrives.
 	if fact.ID != 0 {
 		order := fact.Order()
 		if !order.After(pr.ReviewSeen) {
@@ -875,99 +685,55 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 		}
 	}
 	// The decision belongs to the review round, not to the pull request's head: the round must
-	// still know, when the reviewer completes, what the review decided, on which head, and what
-	// it said for the next round's implementer. The round is open while the issue stands in
-	// reviewing, a hold from reviewing counted as standing there (record.StandsIn, the one shape
-	// every question about where an issue stands is written over), since the retry puts it back
-	// there with the reviewer's work kept. A review outside the round decides nothing and counts
-	// no round. An approval is judged against the head it names when the review ends
-	// (classify.ApprovalStands).
+	// still know what refused it, on which head, and what it said for the next round's
+	// implementer. The round is open while the issue stands in reviewing, a hold from reviewing
+	// counted as standing there (record.StandsIn, the one shape every question about where an
+	// issue stands is written over), since the retry puts it back there with the reviewer's work
+	// kept. A review outside the round decides nothing and counts no round. The person's request
+	// for changes is recorded on the commit_id its webhook carried, the head it was written on,
+	// and leaves the commit the reviewer read where it stands (record.PhaseRow.ReviewedHead),
+	// since the reviewer did not read the person's.
 	if !record.StandsIn(*issue, phase.Reviewing) {
 		return intake.Result{}, nil
 	}
-	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
-	// The commit the reviewer's own review read outlives the round, where the decision does not
-	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
-	// (namingTheReviewRound). Only the reviewer's own review moves it: a review-App review whose
-	// Legion footer names the session the reviewer's claim records (byReviewer). A person's review
-	// decides the round and leaves the commit where it stands, since the reviewer never read the
-	// commit the person did; while the reviewer's claim records no session, no review-App review
-	// gets here, since it waits (RefusedWhileNoSession). And the review must be of the entry that
-	// stands (reviewedCommitStays).
-	if e.byReviewer(fact, reviewerSession) {
-		if why := reviewedCommitStays(fact, reviewer); why != "" {
-			e.logOnCommit(ctx, "workflow: the reviewer's own review moves no reviewed commit: "+why,
-				"issue", issue.Key, "pull_request", pr.Number, "head", reviewer.Decision.Head, "footer_entry", fact.LegionEntry(), "entry", reviewer.Entry)
-		} else {
-			reviewer.ReviewedHead = reviewer.Decision.Head
-		}
-	}
+	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: fact.CommitID}
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 		return intake.Result{}, err
 	}
-	_, err = e.settleRound(ctx, tx, *issue, reviewer, pr, before, by)
+	_, err = e.settleRound(ctx, tx, *issue, reviewer, pr, before, byReview)
 	return intake.Result{}, err
 }
 
-// reviewedCommitStays is why review, a deciding review of the reviewer's own session (byReviewer)
-// that its round has just taken, leaves the commit the reviewer read where it stands
-// (record.PhaseRow.ReviewedHead), reviewer being the reviewer's row, and "" where the review moves
-// it to the head its footer names. That head is never empty here: the round took the review, so
-// RefusesRound gave no reason for it, and it refuses a review-App review whose footer names no
-// head (refusesRound).
-//
-// A review moves the commit only when it is of the entry that stands. The reviewer's row holds the
-// task of an entry, which a new generation's clear empties until the next entry is raised
-// (record.Store.ClearTreeGeneration, StartPromotedWorker), and the review's footer names that
-// entry (intake.PullRequestReview.LegionEntry), the number every task the reviewer is given in
-// reviewing ends with (reviewround.EntryLabel). The number is never reset and each entry raises it, so a
-// review of an earlier entry - submitted before a re-admission and applied after it, however
-// late, or before a carried hand-over's promotion and applied after it - names a number the row
-// has left and moves nothing, and the first review of a new generation reads the whole change. No
-// time is compared: a review's submission time is GitHub's clock and an entry's is the daemon's,
-// and nothing orders the two. A row that the entry upgrade filled (20261111225552_phase_entry) can
-// hold no task, and a review of that round moves nothing. Where the commit stays, the cost is a
-// next round that reads more: from an older commit, or the whole change. Who decides the round is
-// not changed by any of this.
-func reviewedCommitStays(review intake.PullRequestReview, reviewer record.PhaseRow) string {
-	switch named := review.LegionEntry(); {
-	case reviewer.EntryTask == "":
-		return "the reviewer's row holds no entry's task"
-	case named == 0:
-		return "its footer names no entry"
-	case named != reviewer.Entry:
-		return fmt.Sprintf("its footer names entry %d and the reviewer's row stands at entry %d", named, reviewer.Entry)
+// decisionOf is the round's decision the reviewer's verdict writes on its row (handoff): approve
+// as approved and changes as changes_requested, at the commit the verdict names, the head the
+// reviewer reviewed, with the summary its completion carried as the body and the commit of the
+// tester's pass the verdict carries to that head ("" for none); nil for no verdict, which decides
+// nothing and leaves the round stuck (stuckUndecided). The state keeps a GitHub review's
+// spelling, which a daemon of the release before the verdict reads in the same column
+// (record.ReviewDecision).
+func decisionOf(fact intake.HandoffComplete) *record.ReviewDecision {
+	var state string
+	switch store.VerdictWord(fact.Verdict) {
+	case store.VerdictApprove:
+		state = "approved"
+	case store.VerdictChanges:
+		state = "changes_requested"
+	default:
+		return nil
 	}
-	return ""
-}
-
-// reviewHead is the head review read, which is the head its decision is recorded against and the
-// head an approval of it is weighed at when the round ends (classify.ApprovalStands). The two
-// sources differ because only one of them is the review's own word. A review the review App
-// submitted names the head it read in its Legion footer (intake.PullRequestReview.LegionHead),
-// which is why it decides the round at all (refusesRound); GitHub's commit_id for that same
-// review is the pull request's head as GitHub holds it, and GitHub moves it onto each later head
-// (dispatch://INFRA-1557). Recorded from commit_id, an approval of the head its footer names
-// would stand for the head after it the moment that head arrived, approving code the reviewer
-// never read. A person's review carries no footer, so it is recorded on the commit_id its
-// webhook was delivered with, the head it decides on and the one GitHub had not yet moved.
-func (e *Engine) reviewHead(review intake.PullRequestReview) string {
-	if e.byReviewApp(review.Author) {
-		return review.LegionHead()
-	}
-	return review.CommitID
+	return &record.ReviewDecision{State: state, Body: fact.Summary, Head: fact.Commit, TestedCommit: fact.TestedCommit}
 }
 
 // The fact that wrote a review-stuck notice, its summary. The architect prompt
-// (prompts/go/architect-common.md) reads a notice the reviewer's completion or answer wrote after
-// the architect asked as the reviewer answering, and every other as news about the round.
+// (prompts/go/architect-common.md) reads a notice the reviewer's completion wrote after the
+// architect asked as the reviewer answering, and every other as news about the round; byReview's
+// words are the ones that prompt reads, so they stay as they are until the prompt names them anew.
 const (
-	byCompletion  = "the reviewer's completion"
-	byAnswer      = "the reviewer's review"
-	byOtherReview = "a review that is not the reviewer's answer"
-	byPush        = "a push"
-	byMergeState  = "GitHub's merge state for the head"
-	byMerge       = "the pull request's merge"
+	byCompletion = "the reviewer's completion"
+	byReview     = "a review that is not the reviewer's answer"
+	byPush       = "a push"
+	byMergeState = "GitHub's merge state for the head"
+	byMerge      = "the pull request's merge"
 )
 
 // roundOutcome is what a review round comes to after a fact (reviewRound).
@@ -979,16 +745,18 @@ const (
 	// from reviewing ends only once the retry restores it; or an approval that stands on the head
 	// of a pull request closed without merging, which the architect decides (reviewRound).
 	roundOpen roundOutcome = iota
-	// roundApproved ends the round: its approval approves the head's code (classify.ApprovalStands),
-	// which GitHub answers for with a merge state the issue may advance on, or which the pull
-	// request has already merged at. No CI verdict is read: the reviewer reads the head's checks on
-	// GitHub before it approves, and a settlement moves no issue (dispatch://INFRA-714/spec R1).
+	// roundApproved ends the round: the reviewer's approval approves the head's code
+	// (classify.ApprovalStands), which GitHub answers for with a merge state the issue may advance
+	// on, or which the pull request has already merged at. No CI verdict is read: the reviewer
+	// reads the head's checks on GitHub before it approves, and a settlement moves no issue
+	// (dispatch://INFRA-714/spec R1).
 	roundApproved
-	// roundRejected ends the round: its reviewer requested changes, whether or not it has
-	// completed (reviewRound).
+	// roundRejected ends the round: the reviewer's verdict asked for changes, or a person with
+	// write access requested them, whether or not the reviewer has completed (reviewRound).
 	roundRejected
 	// roundStuck is a round that nothing on its way will end (stuckCause): one its reviewer
-	// completed without a decision of the head, or one whose approval GitHub will not merge from.
+	// completed with no verdict, one whose approval is of other code than the head's, or one whose
+	// approval GitHub will not merge from.
 	roundStuck
 )
 
@@ -996,8 +764,8 @@ const (
 type stuckCause int
 
 const (
-	// stuckUndecided: no review decided it. A COMMENT decides nothing, and neither does a review in
-	// any state but approved or changes_requested, nor one DecidesRound does not count.
+	// stuckUndecided: its reviewer completed with no verdict. No GitHub review stands in for one:
+	// a COMMENT decides nothing, and neither does any review RefusesRound refuses.
 	stuckUndecided stuckCause = iota + 1
 	// stuckApprovedOtherCode: its approval is of a head whose code the current head may not carry.
 	stuckApprovedOtherCode
@@ -1005,8 +773,8 @@ const (
 	// with a merge state it would not merge from - blocked on a check or a review the repository
 	// requires, behind its base, a draft. Nothing the daemon does moves it: GitHub's answer is
 	// about the head on the branch, and only a push that earns the answer the base wants changes
-	// it. This cause alone does not wait for the reviewer's completion: the approval has already
-	// decided the round, and the completion is no part of what holds it.
+	// it. The reviewer's verdict has decided the round, so no new verdict of the same head moves it
+	// either.
 	stuckMergeState
 )
 
@@ -1074,10 +842,11 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 }
 
 // reviewRound is what issue's review round comes to, row being its reviewer's and pr its pull
-// request as a fact left them. The review event decides it, and the reviewer's handoff records its
-// findings (dispatch://INFRA-714/spec R1): a request for changes ends the round whether or not the
-// reviewer has completed, and the completion that follows is recorded on the reviewer's own row
-// (engine's leftItsPhase). An approval ends it once it approves the head's code
+// request as a fact left them. The reviewer's verdict decides it, which its completion of reviewing
+// carries and the daemon records as the round's decision at the commit it names (handoff,
+// decisionOf), and a person's request for changes ends it too, whether or not the reviewer has
+// completed: the reviewer's completion that follows is recorded on its own row (engine's
+// leftItsPhase). An approval ends it once it approves the head's code
 // (classify.ApprovalStands) and GitHub reports that head one the issue may advance on
 // (record.MergeState.Mergeable), or once the pull request has merged at that head: a merged pull
 // request has nothing left to merge, GitHub answers `unknown` for it for good, and the daemon
@@ -1116,9 +885,10 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // decides no round - only whether every check reported has concluded, which is what GitHub's own
 // state is waiting for - and the reviewer reads the head's checks on GitHub itself. A completed round
 // that nothing on its way would end is stuck, its reason naming the
-// head, since the decision it needs is of the head: no review decided it (stuckUndecided), or its
-// approval is of other code than the head's (stuckApprovedOtherCode). An approval of a head that
-// code is on its way from keeps the round open, and classify.CodeOnItsWay says when that is.
+// head, since the decision it needs is of the head: its reviewer completed with no verdict
+// (stuckUndecided), or its approval is of other code than the head's (stuckApprovedOtherCode). An
+// approval of a head that code is on its way from keeps the round open, and classify.CodeOnItsWay
+// says when that is.
 func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record.PullRequest) round {
 	if issue.Phase != phase.Reviewing {
 		return round{}
@@ -1173,28 +943,28 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 	case !completed:
 		return round{}
 	case decided == "":
-		return round{outcome: roundStuck, cause: stuckUndecided, head: pr.HeadSHA, reason: undecidedReason(row, *pr)}
+		return round{outcome: roundStuck, cause: stuckUndecided, head: pr.HeadSHA, reason: undecidedReason(*pr)}
 	case classify.ApprovalSetAside(*pr, row.Decision.Head):
 		return round{outcome: roundStuck, cause: stuckApprovedOtherCode, head: pr.HeadSHA,
-			reason: fmt.Sprintf("the reviewer approved %s on pull request #%d, which does not approve head %s: a push since may have changed code, so only an APPROVE of %s or a REQUEST_CHANGES ends the round",
-				row.Decision.Head, pr.Number, pr.HeadSHA, pr.HeadSHA)}
+			reason: fmt.Sprintf("the reviewer approved %s on pull request #%d, which does not approve head %s: a push since may have changed code, so only %s or a person's request for changes ends the round",
+				row.Decision.Head, pr.Number, pr.HeadSHA, verdictThatEnds(pr.HeadSHA))}
 	}
 	return round{}
 }
 
-// undecidedReason is what the architect is told of a round its reviewer completed with no review
-// that decided it (stuckUndecided): what would end the round, and, when the daemon set a review
-// aside that would otherwise have decided it, why it did (record.ReviewDecision.Refused). The
-// refusal is the only thing that says why the round has no decision - the review is on GitHub,
-// approving what looks like the head - so a reader who was not told it would look for a review
-// that never came.
-func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
-	reason := fmt.Sprintf("the reviewer completed its round on pull request #%d with no review that decides it: only an APPROVE of head %s or a REQUEST_CHANGES ends the round, from an account with write access to the repository or from the reviewer's own session as the review App (its Legion footer naming the session recorded on the reviewer's claim, and naming %s as the head it read: a review-App review whose footer names no head, or another head, is set aside and decides nothing, since GitHub's commit_id for a review moves with the pull request), and a COMMENT decides nothing",
-		pr.Number, pr.HeadSHA, pr.HeadSHA)
-	if row.Decision != nil && row.Decision.Refused != "" {
-		reason += "; a review that would otherwise have decided this round was set aside - " + row.Decision.Refused
-	}
-	return reason
+// undecidedReason is what the architect is told of a round its reviewer completed with no verdict
+// (stuckUndecided), as a reviewer before the verdict completed: what would end the round, and what
+// does not, so a reader looking at an approval on GitHub does not wait for it to count.
+func undecidedReason(pr record.PullRequest) string {
+	return fmt.Sprintf("the reviewer completed its round on pull request #%d with no verdict: only %s or a person's request for changes ends the round; no GitHub review written with the one App's token, no person's approval and no COMMENT decides it",
+		pr.Number, verdictThatEnds(pr.HeadSHA))
+}
+
+// verdictThatEnds is what a stuck round's reason names as the reviewer's way to end it: a verdict
+// of head, sent with a completion of reviewing that names a handoff record of its own (the
+// workflow refuses one naming the record the reviewer already named, HANDOFF_NOT_NEW).
+func verdictThatEnds(head string) string {
+	return fmt.Sprintf("the reviewer's verdict of head %s - its completion of reviewing with verdict approve or changes, commit %s and a handoff record written since -", head, head)
 }
 
 // implementationReady moves issue from implementing to testing on the implementer's completion of
@@ -1211,7 +981,7 @@ func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue recor
 // pr its pull request as the fact left them), and says whether it moved the issue. An ended round
 // moves on, its request for changes back to implementing; a stuck round is told to the architect,
 // in a notice whose summary is by, the fact that wrote it - unless it was told already. For the
-// two causes a review decides, that is the round having been stuck the same way (stuckAs) before
+// two causes the reviewer's verdict decides, that is the round having been stuck the same way (stuckAs) before
 // that fact, which is before: each caller passes the round as its own fact found it, so a round
 // stuck at a head the architect was told of is told once and no fact about the same head tells it
 // again. The issue stays in reviewing, and the notice names the reviewer's role topic, which the
@@ -1229,7 +999,15 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, row.Decision.Body)
+		// The implementer's task names the reviewer's verdict only where that verdict is what
+		// rejected the round: a person's request for changes can reject a round the reviewer
+		// approved, and an approve beside that request's reason would tell the implementer the
+		// opposite of what sent the work back.
+		handoff := row
+		if handoff.Verdict != string(store.VerdictChanges) {
+			handoff.Verdict = ""
+		}
+		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", handoff, pr, row.Decision.Body)
 	case roundApproved:
 		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, "", row, pr, "")
 	case roundStuck:
@@ -1326,7 +1104,8 @@ func told(row record.PhaseRow, r round) bool {
 //
 // Every fact that can change GitHub's answer asks, and the list is this function's switch rather
 // than a sentence in a comment and nine calls spread through the handlers: the pull request's own
-// events, a push to it, a review, a CI settlement, and a push to the base it sits on. The switch
+// events, a push to it, a review, the reviewer's verdict, a CI settlement, and a push to the base
+// it sits on. The switch
 // also names which of them move the head (classify.MergeStateFactHeadMove): the pull request
 // opened or reopened, and a synchronize, which is the fact that moves the head a push to the
 // branch carries (its case says why the push is not one). Apply calls it once, after the handler,
@@ -1364,6 +1143,14 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	case intake.PullRequestReview:
 		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+	case intake.HandoffComplete:
+		// The reviewer's verdict decides the round with its completion, so its approval is the
+		// fact that leaves the round waiting on GitHub's answer for the head; no other role's
+		// completion changes what GitHub answers.
+		if fact.Role != claim.RoleReviewer {
+			return nil
+		}
+		pr, err = e.store.PullRequest(ctx, tx, fact.Issue)
 	case intake.BasePush:
 		// Asked for inside the walk that records the push, which is the last reader of what
 		// tells a redelivery from a first delivery (basePush).

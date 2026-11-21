@@ -103,19 +103,20 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 }
 
 // Dispatch does not answer while step records are due, and no phase waits for it.
-// The handoff records of planning, implementing and testing are Dispatch's own, which the daemon
-// reads at each of those completions, so Dispatch stops once the issue is in reviewing, with the
-// record of every step from there on still to be written; the review, the acceptance, the retro
-// and the merge then walk the issue to done, and once Dispatch is back on the same database the
-// issue's seven records reach it, each ended. The control holds the outage real: while Dispatch is
-// stopped, the outbox holds the issue's step records unfinished and the read finds no server.
+// The handoff records of planning, implementing, testing and reviewing are Dispatch's own, which
+// the daemon reads at each of those completions - the reviewer's verdict among them - so Dispatch
+// stops once the issue is in accepting, with the record of every step from there on still to be
+// written; the acceptance, the retro and the merge then walk the issue to done, and once Dispatch
+// is back on the same database the issue's seven records reach it, each ended. The control holds
+// the outage real: while Dispatch is stopped, the outbox holds the issue's step records unfinished
+// and the read finds no server.
 func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
 	r.test()
-	r.dispatch.stop()
 	r.review("APPROVED", phase.Accepting)
+	r.dispatch.stop()
 	r.accept()
 	r.retro()
 	r.merge()
@@ -400,7 +401,7 @@ func TestAChildsAcceptanceRecordNamesItsOwningArchitect(t *testing.T) {
 		writePrompt(t, r.cfg, own)
 		r.restart()
 		architect := r.workerOf(child, claim.RoleArchitect)
-		r.publishReview(number, "APPROVED")
+		r.approveChild(child, number)
 		r.waitPhaseOf(child, phase.Accepting)
 		architect.model = "stand-in/child-architect-first"
 		architect.answer()
@@ -423,15 +424,35 @@ func TestAChildsAcceptanceRecordNamesItsOwningArchitect(t *testing.T) {
 	})
 }
 
-// childInAccepting seeds a child of the walk's root in reviewing (seedChildInReviewing) and has a
-// person approve its pull request's head (publishReview), which moves it to accepting, the step of
-// the architect that owns it; it answers the child's key once the child stands there.
+// childInAccepting seeds a child of the walk's root in reviewing (seedChildInReviewing) and has its
+// reviewer's approval end the round (approveChild), which moves it to accepting, the step of the
+// architect that owns it; it answers the child's key once the child stands there.
 func (r *stepRecordsRig) childInAccepting() string {
 	r.t.Helper()
 	child, number := r.seedChildInReviewing()
-	r.publishReview(number, "APPROVED")
+	r.approveChild(child, number)
 	r.waitPhaseOf(child, phase.Accepting)
 	return child
+}
+
+// approveChild records child's reviewer's approval of stepRecordsHead as the reviewer's verdict
+// writes it (workflow's handoff, decisionOf), and has a person comment on the child's pull request
+// number, a fact the workflow settles the round on (publishReview): the round ends on the
+// approval of the clean head. The seeded child has no reviewer this rig launched, so the verdict
+// is written to its record rather than sent through the completion route, which the walk's own
+// reviewer exercises (review).
+func (r *stepRecordsRig) approveChild(child string, number int) {
+	t := r.t
+	t.Helper()
+	ctx := context.Background()
+	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+		return r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: child, Role: claim.RoleReviewer, Claim: r.tokenOf(child, claim.RoleReviewer),
+			HandoffRecord: "review-" + child, HandoffVersion: 1, LastHandoff: "review-" + child, Summary: "the work holds", Verdict: "approve",
+			HandoffCommit: stepRecordsHead, CompletedAt: time.Now(), Decision: &record.ReviewDecision{State: "approved", Body: "the work holds", Head: stepRecordsHead}})
+	}); err != nil {
+		t.Fatalf("record the approval of %s's reviewer: %v", child, err)
+	}
+	r.publishReview(number, "COMMENTED")
 }
 
 // A step's record, by the daemon's own wiring: the planner's completion reaches the daemon on its

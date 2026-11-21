@@ -394,7 +394,7 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			name:    "branch push",
 			subject: "notifications.github.sjawhar.legion.push.branch.legion/LEGION-208",
 			file:    "github/push.json",
-			want:    Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: "before-captured", After: "head-captured", Pusher: "author", Sender: "author"},
+			want:    Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: "before-captured", After: "head-captured", Sender: "author"},
 		},
 		{
 			name:    "base branch push",
@@ -504,8 +504,8 @@ func TestASynchronizeFromAListenerWithoutBeforeNamesNoMove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode a push without sender: %v", err)
 	}
-	if p, ok := got.Fact.(Push); !ok || p.Sender != "" || p.Pusher != "author" {
-		t.Fatalf("push fact = %#v, want one with no sender and its pusher", got.Fact)
+	if p, ok := got.Fact.(Push); !ok || p.Sender != "" || p.Before != "before-captured" {
+		t.Fatalf("push fact = %#v, want one with no sender and its before", got.Fact)
 	}
 }
 
@@ -924,7 +924,7 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 				t.Fatalf("%s's %s event decoded no fact", repository, kind)
 			}
 			if kind == "push" {
-				// decodePush reads before, pusher and sender with `, _`, so a listener that stopped
+				// decodePush reads before and sender with `, _`, so a listener that stopped
 				// sending one of them would leave the decode above green and lose the field. The
 				// golden is the listener's own output, so comparing the whole decoded fact with the
 				// golden's payload is the cross-package contract: a key the daemon reads may not go.
@@ -941,7 +941,6 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 					Branch: issueBranch,
 					Before: field("before"),
 					After:  field("after"),
-					Pusher: field("pusher"),
 					Sender: field("sender"),
 				}
 				if got, ok := decoded.Fact.(Push); !ok || got != want {
@@ -1856,31 +1855,19 @@ func TestDecodingCarriesTheReviewOrder(t *testing.T) {
 			t.Fatalf("review with the time %#v = %#v, unread %q, %v; want it untimed and nothing reported", absent, decoded.Fact, decoded.Unread, err)
 		}
 	}
-	// A capped review's body is marked (`body_truncated: "true"`), so a truncated review-App review
-	// can be told apart from one whose full body simply carries no Legion footer.
-	decoded, err = withPayload(t, "review.json", reviewSubject, map[string]any{"body_truncated": "true"})
-	if review, ok := decoded.Fact.(PullRequestReview); err != nil || !ok || !review.BodyTruncated {
-		t.Fatalf("review with body_truncated true = %#v, %v; want BodyTruncated set", decoded.Fact, err)
-	}
-	decoded, err = withPayload(t, "review.json", reviewSubject, map[string]any{"body_truncated": "false"})
-	if review, ok := decoded.Fact.(PullRequestReview); err != nil || !ok || review.BodyTruncated {
-		t.Fatalf("review with body_truncated false = %#v, %v; want BodyTruncated clear", decoded.Fact, err)
-	}
-	decoded, err = withPayload(t, "review.json", reviewSubject, nil)
-	if review, ok := decoded.Fact.(PullRequestReview); err != nil || !ok || review.BodyTruncated {
-		t.Fatalf("review with no body_truncated field = %#v, %v; want BodyTruncated clear", decoded.Fact, err)
-	}
 }
 
 // The workflow decides a review round inside a transaction and performs no I/O, so whether the
 // review's author may write to the repository is read before the fact is applied, and only for a
-// review that decides a round and names its author: a comment costs no GitHub call, and neither
-// does a review the producer gave no author. A request for changes in GitHub's upper case is
-// looked up as the workflow counts it (PullRequestReview.Decides). A read that fails is returned,
-// so the delivery is retried rather than applied with a permission nobody read, and a daemon with
-// no reader leaves every review's write access false.
+// review that decides a round, names its author and came by its webhook: an approval and a
+// comment cost no GitHub call, since neither decides a round whoever writes it, and neither does
+// a review the producer gave no author or one the daemon read from GitHub's list, which the
+// workflow refuses for the list. A request for changes in GitHub's upper case is looked up as the
+// workflow counts it (PullRequestReview.Decides). A read that fails is returned, so the delivery
+// is retried rather than applied with a permission nobody read, and a daemon with no reader
+// leaves every review's write access false.
 func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing.T) {
-	review := PullRequestReview{Repo: "acme/widgets", Number: 42, State: "approved", Author: "a-writer", CommitID: "head"}
+	review := PullRequestReview{Repo: "acme/widgets", Number: 42, State: "changes_requested", Author: "a-writer", CommitID: "head"}
 	var asked []string
 	answering := func(canWrite bool, err error) ConsumerSpec {
 		return ConsumerSpec{AckWait: time.Second, ReviewPermission: func(_ context.Context, review PullRequestReview) (bool, error) {
@@ -1892,6 +1879,8 @@ func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing
 		review.Author = author
 		return review
 	}
+	listed := review
+	listed.ReadFromList = true
 	for _, tc := range []struct {
 		name     string
 		fact     Fact
@@ -1899,17 +1888,18 @@ func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing
 		want     bool
 		wantAsks []string
 	}{
-		{name: "an approval by an account with write access", fact: review, spec: answering(true, nil), want: true,
+		{name: "a request for changes by an account with write access", fact: review, spec: answering(true, nil), want: true,
 			wantAsks: []string{"acme/widgets#42 a-writer"}},
-		{name: "an approval by an account without it", fact: review, spec: answering(false, nil),
-			wantAsks: []string{"acme/widgets#42 a-writer"}},
-		{name: "a request for changes", fact: withState(review, "changes_requested"), spec: answering(true, nil), want: true,
+		{name: "a request for changes by an account without it", fact: review, spec: answering(false, nil),
 			wantAsks: []string{"acme/widgets#42 a-writer"}},
 		{name: "a request for changes in upper case", fact: withState(review, "CHANGES_REQUESTED"), spec: answering(true, nil), want: true,
 			wantAsks: []string{"acme/widgets#42 a-writer"}},
+		{name: "an approval, which decides no round whoever writes it", fact: withState(review, "approved"), spec: answering(true, nil),
+			wantAsks: nil},
 		{name: "a comment, which decides nothing whoever writes it", fact: withState(review, "commented"), spec: answering(true, nil),
 			wantAsks: nil},
-		{name: "an approval with no author", fact: withAuthor(review, ""), spec: answering(true, nil), wantAsks: nil},
+		{name: "a request for changes read from the list", fact: listed, spec: answering(true, nil), wantAsks: nil},
+		{name: "a request for changes with no author", fact: withAuthor(review, ""), spec: answering(true, nil), wantAsks: nil},
 		{name: "a daemon with no reader", fact: review, spec: ConsumerSpec{}, wantAsks: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1932,83 +1922,6 @@ func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing
 	}
 	other := PullRequestChecks{Repo: "acme/widgets", Number: 42}
 	if got, err := resolveReviewPermission(context.Background(), answering(true, nil), other); err != nil || !reflect.DeepEqual(got, Fact(other)) {
-		t.Fatalf("a fact that is not a review = %#v, %v; want it unchanged", got, err)
-	}
-}
-
-// resolveReviewBody restores a truncated review-App review's body from GitHub
-// (ConsumerSpec.ReviewBody) before resolveReviewPermission reads its author's permission, since a
-// restored body carries the Legion footer the workflow needs. It is read only for a review the
-// normalizer capped, with an id and an author; a review with no id keeps its capped body and
-// BodyTruncated true, and a failed read naks the delivery the same way a failed permission read
-// does.
-func TestResolveReviewBodyRestoresATruncatedReviewsBody(t *testing.T) {
-	truncated := PullRequestReview{Repo: "acme/widgets", Number: 42, ID: 7, State: "approved", Author: "legion-reviewer[bot]",
-		Body: "a capped body", BodyTruncated: true}
-	var asked []PullRequestReview
-	answering := func(body string, err error) ConsumerSpec {
-		return ConsumerSpec{AckWait: time.Second, ReviewBody: func(_ context.Context, review PullRequestReview) (string, error) {
-			asked = append(asked, review)
-			return body, err
-		}}
-	}
-	t.Run("a truncated review is replaced with the answer and BodyTruncated is cleared", func(t *testing.T) {
-		asked = nil
-		got, err := resolveReviewBody(context.Background(), answering("the full body with a footer", nil), truncated)
-		if err != nil {
-			t.Fatalf("resolve the review's body: %v", err)
-		}
-		resolved, ok := got.(PullRequestReview)
-		if !ok || resolved.Body != "the full body with a footer" || resolved.BodyTruncated {
-			t.Fatalf("the review = %#v, want the restored body with BodyTruncated cleared", got)
-		}
-		if len(asked) != 1 {
-			t.Fatalf("GitHub was asked %d times, want once", len(asked))
-		}
-	})
-	t.Run("a review with no id is not looked up", func(t *testing.T) {
-		asked = nil
-		noID := truncated
-		noID.ID = 0
-		got, err := resolveReviewBody(context.Background(), answering("ignored", nil), noID)
-		if err != nil {
-			t.Fatalf("resolve the review's body: %v", err)
-		}
-		resolved, ok := got.(PullRequestReview)
-		if !ok || resolved.Body != "a capped body" || !resolved.BodyTruncated || len(asked) != 0 {
-			t.Fatalf("a review with no id = %#v, asked %v; want its capped body kept and no call made", got, asked)
-		}
-	})
-	t.Run("a review that was not truncated is not looked up", func(t *testing.T) {
-		asked = nil
-		full := truncated
-		full.BodyTruncated = false
-		got, err := resolveReviewBody(context.Background(), answering("ignored", nil), full)
-		if err != nil {
-			t.Fatalf("resolve the review's body: %v", err)
-		}
-		resolved, ok := got.(PullRequestReview)
-		if !ok || resolved.Body != "a capped body" || len(asked) != 0 {
-			t.Fatalf("an untruncated review = %#v, asked %v; want it unchanged and no call made", got, asked)
-		}
-	})
-	t.Run("a daemon with no reader leaves the capped body", func(t *testing.T) {
-		got, err := resolveReviewBody(context.Background(), ConsumerSpec{}, truncated)
-		if err != nil {
-			t.Fatalf("resolve the review's body: %v", err)
-		}
-		resolved, ok := got.(PullRequestReview)
-		if !ok || resolved.Body != "a capped body" || !resolved.BodyTruncated {
-			t.Fatalf("with no reader = %#v, want the capped body kept", got)
-		}
-	})
-	t.Run("a failed read naks the delivery", func(t *testing.T) {
-		if _, err := resolveReviewBody(context.Background(), answering("", errors.New("GitHub answered 502")), truncated); err == nil {
-			t.Fatal("a failed body read resolved; want the error, so the delivery is retried")
-		}
-	})
-	other := PullRequestChecks{Repo: "acme/widgets", Number: 42}
-	if got, err := resolveReviewBody(context.Background(), answering("ignored", nil), other); err != nil || !reflect.DeepEqual(got, Fact(other)) {
 		t.Fatalf("a fact that is not a review = %#v, %v; want it unchanged", got, err)
 	}
 }
@@ -2123,7 +2036,7 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			stop := startConsume(t, js, spec, pool, writeHandler("applied", nil))
 			defer stop()
 
-			publish(t, js, "notifications.github.sjawhar.legion.pr.42.review", capturedGitHubEnvelope(t, "review.json"))
+			publish(t, js, "notifications.github.sjawhar.legion.pr.42.review", reviewRequestingChanges(t))
 			testwait.Eventually(t, "the review applied once its read passed", func() bool { return writeCount(t, pool) == 1 })
 			mu.Lock()
 			defer mu.Unlock()

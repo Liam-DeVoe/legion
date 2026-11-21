@@ -37,14 +37,14 @@ const (
 // decides both the sentence's last clause and the boot line's level: a window that moves one of
 // those answers must move the other, and a table split in two could drift.
 //
-// The pair that carries the row is 900 s and 901 s. Four windows of 900 s derive exactly the
+// The pair that carries the row is 1200 s and 1201 s. Three windows of 1200 s derive exactly the
 // one-hour ceiling, which is not above it, so that window earns no clause and still logs at Info;
-// 901 s derives 3604 s and earns both. The test in the code is `>`, and turning it into `>=`
-// reddens the 900 s case of both rows, which is why the pair is here.
+// 1201 s derives 3603 s and earns both. The test in the code is `>`, and turning it into `>=`
+// reddens the 1200 s case of both rows, which is why the pair is here.
 var intakeHandlerLimitWindows = []struct {
 	name   string
 	window time.Duration
-	// limitSeconds is the limit the sentence names: four windows, floored at intake's ten minutes.
+	// limitSeconds is the limit the sentence names: three windows, floored at intake's ten minutes.
 	limitSeconds int
 	// decidedBy is what the sentence must say decided that limit, as the words it puts straight
 	// after those seconds: intakeFloorDecided for the windows the floor covers, intakeWindowDecided
@@ -65,34 +65,34 @@ var intakeHandlerLimitWindows = []struct {
 }{
 	{
 		name: "the daemon's default window", window: 5 * time.Second,
-		limitSeconds: 600, decidedBy: intakeFloorDecided, windowsClause: "this window alone would derive 20s",
+		limitSeconds: 600, decidedBy: intakeFloorDecided, windowsClause: "this window alone would derive 15s",
 		derived: false, ceilingClause: false, level: slog.LevelInfo,
 	},
 	{
-		name: "the last window the floor covers", window: 150 * time.Second,
+		name: "the last window the floor covers", window: 200 * time.Second,
 		limitSeconds: 600, decidedBy: intakeFloorDecided, windowsClause: "this window alone would derive 600s",
 		derived: false, ceilingClause: false, level: slog.LevelInfo,
 	},
 	{
-		name: "the first window that derives a limit", window: 151 * time.Second,
-		limitSeconds: 604, decidedBy: intakeWindowDecided,
+		name: "the first window that derives a limit", window: 201 * time.Second,
+		limitSeconds: 603, decidedBy: intakeWindowDecided,
 		derived: true, ceilingClause: false, level: slog.LevelInfo,
 	},
 	{
-		name: "the window that derives the ceiling itself", window: 900 * time.Second,
+		name: "the window that derives the ceiling itself", window: 1200 * time.Second,
 		limitSeconds: 3600, decidedBy: intakeWindowDecided,
 		derived: true, ceilingClause: false, level: slog.LevelInfo,
 	},
 	{
-		name: "the first window above the ceiling", window: 901 * time.Second,
-		limitSeconds: 3604, decidedBy: intakeWindowDecided,
+		name: "the first window above the ceiling", window: 1201 * time.Second,
+		limitSeconds: 3603, decidedBy: intakeWindowDecided,
 		derived: true, ceilingClause: true, level: slog.LevelWarn,
 	},
 	{
 		// The largest value a legion.yaml may carry for a duration key: config's timer bound,
 		// 2147483 s, the largest whole seconds whose milliseconds fit a signed 32-bit timer.
 		name: "the largest window a legion.yaml may carry", window: 2147483 * time.Second,
-		limitSeconds: 8589932, decidedBy: intakeWindowDecided,
+		limitSeconds: 6442449, decidedBy: intakeWindowDecided,
 		derived: true, ceilingClause: true, level: slog.LevelWarn,
 	},
 }

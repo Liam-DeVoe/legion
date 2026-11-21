@@ -17,24 +17,19 @@ import (
 )
 
 // publishReviewAs publishes a review of the pull request numbered number at head, as Envoy relays
-// a GitHub pull-request review (intake's decodeReview reads it). It is the review App's own, its
-// body ending with footer, the Legion footer the caller writes: legionFooter naming a session and
-// head, which is what lets it decide the round at all (workflow's refusesRound) when the head is
-// the pull request's current head, or legionEntryFooter naming the entry of its round too. The
-// session is held to the one the claims record holds for the claim the daemon starts the reviewer
-// under, in the first round as in every later one (workflow's byReviewer): only a review naming
-// that session decides the round, and while that claim records no session the review waits and
-// decides nothing (workflow's RefusedWhileNoSession). Of the reviewer's own reviews, only one whose
-// footer names the entry the reviewer's phases row stands at moves the commit the reviewer read
-// (workflow's review); no time is compared. seq numbers the envelope and reviewID the review: each
-// review a run publishes carries an id above the one before it, and its submitted_at is the moment
-// of the publish to the second, as GitHub's is, so none is ordered behind a review already applied
-// (record.ReviewOrder, which orders two reviews of one second by their ids).
+// a GitHub pull-request review (intake's decodeReview reads it). It is a review written with the
+// one App's token, its body ending with footer, a Legion footer the caller writes
+// (legionEntryFooter) or none. Such a review decides no round (workflow's RefusesRound): the
+// reviewer's verdict reaches the daemon with its completion of reviewing. seq numbers the envelope
+// and reviewID the review: each review a run publishes carries an id above the one before it, and
+// its submitted_at is the moment of the publish to the second, as GitHub's is, so none is ordered
+// behind a review already applied (record.ReviewOrder, which orders two reviews of one second by
+// their ids).
 func (p *liveProof) publishReviewAs(number int, state, head, footer string, seq, reviewID int64) {
 	p.t.Helper()
 	payload, err := json.Marshal(map[string]string{
 		"kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "action": "submitted",
-		"state": state, "commit_id": head, "head_sha": head, "author": reviewAppLogin,
+		"state": state, "commit_id": head, "head_sha": head, "author": appLogin,
 		"body":           "the reviewer's " + state + " of " + head + footer,
 		"body_truncated": "false", "review_id": strconv.FormatInt(1000+reviewID, 10),
 		"submitted_at": time.Now().UTC().Format(time.RFC3339),
@@ -44,6 +39,13 @@ func (p *liveProof) publishReviewAs(number int, state, head, footer string, seq,
 	}
 	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", p.subjectRepo(), number)
 	p.waitProcessed(p.publish(subject, "github", fmt.Sprintf("review-%d-%d", number, seq), string(payload)))
+}
+
+// legionEntryFooter is the footer a reviewer appended to the review it submitted before the
+// reviewer's verdict: the session that wrote it, the head it read and the entry of the round the
+// review is of, as a quoted number (`"entry":"<n>"`). The daemon reads no footer.
+func legionEntryFooter(session, head string, entry int64) string {
+	return fmt.Sprintf("\n\n<!-- legion: {\"session\":%q,\"phase\":\"review\",\"head\":%q,\"entry\":\"%d\"} -->", session, head, entry)
 }
 
 // publishPushOf publishes the implementer's push of to onto from on issue's branch, changing code,
