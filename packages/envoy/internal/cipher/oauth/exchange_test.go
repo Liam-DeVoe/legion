@@ -20,6 +20,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
@@ -1497,7 +1498,7 @@ func (a *fakeAccess) Access(_ context.Context, key, who string) (projectaccess.A
 		return projectaccess.Answer{}, errors.New("dispatch could not be reached")
 	}
 	if a.refused {
-		return projectaccess.Answer{}, fmt.Errorf("%w: dispatch answered 403", projectaccess.ErrBrokerRefused)
+		return projectaccess.Answer{}, fmt.Errorf("%w: dispatch answered 403", dispatchread.ErrBrokerRefused)
 	}
 	if !slices.Contains(a.held, key) {
 		return projectaccess.Answer{}, projectaccess.ErrProjectNotFound
@@ -1513,7 +1514,7 @@ func (a *fakeAccess) MemberKind(_ context.Context, who string) (string, error) {
 		return "", errors.New("dispatch could not be reached")
 	}
 	if a.refused {
-		return "", fmt.Errorf("%w: dispatch answered 403", projectaccess.ErrBrokerRefused)
+		return "", fmt.Errorf("%w: dispatch answered 403", dispatchread.ErrBrokerRefused)
 	}
 	if kind, held := a.kinds[who]; held {
 		return kind, nil

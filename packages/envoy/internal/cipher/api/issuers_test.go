@@ -80,9 +80,10 @@ func (ts *testServer) enrolledPod(t *testing.T, key *ecdsa.PrivateKey, credentia
 // TestATokenOfAnIssuerTheBrokerCannotReadIsAnswered503OnEveryRoute: while the broker cannot read
 // the second issuer — its discovery document, or its key set — a token of that issuer is answered
 // 503 OIDC_ISSUER_UNAVAILABLE, with Dispatch's sentence, at enrollment, renewal, the token login,
-// the pod-session registration's body token, a route of the listed caller and the service route,
-// whose caller presents its own login token. Every entry names both issuers, so nothing but the
-// read can refuse it, and the first issuer's tokens are served throughout.
+// the pod-session registration's body token, a route of the listed caller, the service route,
+// whose caller presents its own login token, and the edge listener's GET /v1/project-repositories.
+// Every entry names both issuers, so nothing but the read can refuse it, and the first issuer's
+// tokens are served throughout.
 func TestATokenOfAnIssuerTheBrokerCannotReadIsAnswered503OnEveryRoute(t *testing.T) {
 	both := []string{"first", "second"}
 	for _, fault := range []struct {
@@ -96,7 +97,10 @@ func TestATokenOfAnIssuerTheBrokerCannotReadIsAnswered503OnEveryRoute(t *testing
 			second := oidctest.New(t)
 			secondKey := second.PublishKey(t, "second-key")
 			fault.apply(second)
-			ts := newTestServerWith(t, withNamedIssuers(second, both))
+			ts := newTestServerWith(t, func(d *api.Deps) {
+				withNamedIssuers(second, both)(d)
+				d.EdgeListeners = edgeListeners(t, "edge-listener/edge-a/PRIV="+edgeAccount+"=first,second", d.Enroll.Issuers)
+			})
 			credentialID, key := ts.mintServiceLauncherCredential(t)
 			podUID := uuid.NewString()
 			enrollmentID, podKey := ts.enrolledPod(t, key, credentialID, podUID, ts.podToken(t, workerAccount, podUID))
@@ -128,6 +132,13 @@ func TestATokenOfAnIssuerTheBrokerCannotReadIsAnswered503OnEveryRoute(t *testing
 				}},
 				{"service route", func() (int, []byte) {
 					return ts.registerPodSession(t, issuedToken(t, second, secondKey, daemonAccount, ""), ts.podToken(t, workerAccount, uuid.NewString()), "example-session")
+				}},
+				{"edge listener's route", func() (int, []byte) {
+					status, body, err := askRepositories(ts.URL, issuedToken(t, second, secondKey, edgeAccount, ""), "PRIV")
+					if err != nil {
+						t.Fatal(err)
+					}
+					return status, body
 				}},
 			} {
 				t.Run(route.name, func(t *testing.T) {

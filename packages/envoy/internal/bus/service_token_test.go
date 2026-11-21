@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -53,7 +54,7 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 	var mu sync.Mutex
 	var presented []string
 	// The one issuer of a bare BROKER_K8S_OIDC_ISSUER URL, whose name, "", the stub answers.
-	services, err := natscallout.ParseServices("listener/example-hub/*="+serviceTokenAccount, []oidc.NamedIssuer{{URL: "https://cluster.example"}})
+	services, err := config.ParseNATSServices("listener/example-hub/*="+serviceTokenAccount, []oidc.NamedIssuer{{URL: "https://cluster.example"}})
 	require.NoError(t, err)
 	service, err := natscallout.Start(t.Context(), natscallout.Settings{
 		URLs: []string{url}, SeedFile: write("service.seed", keys.ServiceSeed),

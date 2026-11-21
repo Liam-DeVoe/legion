@@ -21,6 +21,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
@@ -64,7 +65,7 @@ func newRig(t *testing.T, introspect func(context.Context, string) (oauthwire.In
 		return path
 	}
 	// The one issuer of a bare BROKER_K8S_OIDC_ISSUER URL, whose name, "", the stubs answer.
-	services, err := natscallout.ParseServices("daemon/-/*="+daemonAccount, []oidc.NamedIssuer{{URL: "https://cluster.example"}})
+	services, err := config.ParseNATSServices("daemon/-/*="+daemonAccount, []oidc.NamedIssuer{{URL: "https://cluster.example"}})
 	require.NoError(t, err)
 	log := &logtest.Buffer{}
 	registry := metrics.New()

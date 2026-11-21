@@ -193,14 +193,14 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			},
 			reachable: func(cfg Config) (string, bool) {
 				return "the NATS auth service runs, and BROKER_NATS_SERVICES names " + adaAccount,
-					cfg.NATS.Enabled() && cfg.NATS.Services == "daemon/-/*="+adaAccount && cfg.ServiceLogins[adaAccount].Service == adaLoginService
+					cfg.NATS.Enabled() && entryTexts(cfg.NATS.Services) == "daemon/-/*="+adaAccount && cfg.ServiceLogins[adaAccount].Service == adaLoginService
 			},
 			names: []string{"the BROKER_NATS_SERVICES entry " + strconv.Quote("daemon/-/*="+adaAccount) + " names it"},
 		},
 		{
 			// The entry ends in the issuer names its account's token is taken from, which
-			// mappedAccountRefusal cuts off before it reads the account, as natscallout.ParseServices
-			// does (CutNATSServiceEntry).
+			// ParseNATSServices cuts off before it reads the account; mappedAccountRefusal reads
+			// that account from cfg.NATS.Services.
 			name: "a BROKER_NATS_SERVICES entry that names its issuers names it",
 			env: func() map[string]string {
 				e := namedIssuersEnv()
@@ -214,7 +214,8 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			},
 			reachable: func(cfg Config) (string, bool) {
 				return "the NATS auth service runs, and BROKER_NATS_SERVICES names " + adaAccount + " with the issuers first and second",
-					cfg.NATS.Enabled() && cfg.NATS.Services == "daemon/-/*="+adaAccount+"=first,second" &&
+					cfg.NATS.Enabled() && entryTexts(cfg.NATS.Services) == "daemon/-/*="+adaAccount+"=first,second" &&
+						cfg.NATS.Services[0].Account == adaAccount && reflect.DeepEqual(cfg.NATS.Services[0].Issuers, []string{firstIssuer.Name, secondIssuer.Name}) &&
 						reflect.DeepEqual(cfg.ServiceLogins[adaAccount], enroll.ServiceLogin{Service: adaLoginService, Issuers: []string{firstIssuer.Name}})
 			},
 			names: []string{"the BROKER_NATS_SERVICES entry " + strconv.Quote("daemon/-/*="+adaAccount+"=first,second") + " names it"},
