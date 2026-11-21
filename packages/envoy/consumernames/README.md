@@ -100,11 +100,15 @@ revision:
   - every setting no update changes is as the family's create gives it (`Config.Adopt`;
     `bus.Client.ConsumerAdoptable` compares the server's own answer with the family's whole create
     configuration). That means explicit acks, no start time, instant replay, the stream's storage,
-    no deliver group, no flow control, no heartbeat, no pause (nats-server keeps a pause across
-    every update), neither direct nor sourcing. For a session it also means a pull consumer at the
-    server's default max waiting; for the listener's durable, a push consumer delivering to a reply
-    inbox. The comparison is an allowlist: a setting the server answers that this build does not
-    know is refused too.
+    no deliver group, no flow control, no heartbeat, no pause, neither direct nor sourcing. For a
+    session it also means a pull consumer at the server's default max waiting; for the listener's
+    durable, a push consumer delivering to a reply inbox. The comparison is an allowlist: a setting
+    the server answers that this build does not know is refused too.
+  - A paused candidate is refused, never corrected. nats-server v2.15.1 sets a consumer's own
+    pause back on every create or update of a consumer that exists (server/jetstream_api.go
+    :5261-5264, server/jetstream_cluster.go :12678-12680), so only a `CONSUMER.PAUSE` request
+    changes it, and no listener grant holds that request. Its operation stays open, as for any
+    refused candidate, until an operator repairs the key.
 
   Every setting an update changes is then written back to the family's create (the filters, max
   batch, headers only, ack wait and the others; `bus.CorrectedConfig`), in place, before anything is
@@ -155,10 +159,19 @@ missing marker cannot tell a store before its cutover from one whose state was l
 | a key whose last message is a KV delete or purge marker | `ErrRecordDeleted` |
 | a key holding something other than its own record | `ErrMalformedRecord` |
 | a missing current with no safe start | `ErrNoSafeStart` |
+| an open create's candidate that another principal made first, with the key's own metadata and a setting the family's create never gives and no update changes | `ErrUnexpectedConsumer`, naming the candidate and the setting. A session's registrations are refused for that session alone. The listener's own durable stops the listener at every start (`subscribe refused, shutting down`, as a refused durable does today). An accepted residual: it fails closed. The remedy is the operator's `envoy-infra consumer-names replace --listener` for the durable, and a replay of the key (`consumer-names replay`) for a session |
+| in the fixed mode, a cutover marker read answered "stream not found" (10059) by a cluster member that has not yet applied the bucket's create | read as no bucket, so no marker. A stated limit: the session bucket is created, recreated and restored only inside a writer hold, while every creator is held, and the hold's restart round waits for the stream before it releases them, so no fixed-mode reader meets that answer outside a hold |
 
 A key never written, while the sentinel is present, is a new name, and the family's first-create
 rule applies. A family can refuse that too (`Config.MissingRecord`): Dispatch's two durables, and a
 daemon's checkpoint with no record. `IsSelectionStateLost` reports the lost-state errors together.
+
+**What this does not stop.** A NATS user that receives every reply on the account (`_INBOX.>`, as
+the Legion daemon's does) can read a pending candidate's name and the messages the listener pulls;
+that is the user's grant, not this package's. A login that shares a family's Postgres database can
+write rows under another family's keys, and a well-formed record there is read (its consumer still
+passes the owner check only with the key's own metadata); that is the database's access, not this
+package's.
 
 ## Recovery
 
