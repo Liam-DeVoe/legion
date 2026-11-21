@@ -42,10 +42,11 @@ jobs:
     # step then compiles a hooked nats-server and the packages above it under the detector again,
     # up to 5 minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each; the
     # listener's and consumernames' rows add their own race test binaries to each step's compile,
-    # 10 minutes more apiece, so 86 in all. Delivery's forced-order rows add 30 minutes to their
-    # v2.10.29 step (its -timeout 30m: they took 17 minutes on a dev box at a load of about 1,000)
-    # and its held-write row 5 on the linked nats-server, so 121 in all.
-    timeout-minutes: 125
+    # 10 minutes more apiece, so 86 in all, 95 with its margin. Delivery's held-write row adds a
+    # step on each nats-server: on a dev box at a load of about 1,000, with an empty build cache as
+    # CI's is, they took 202 s on the linked v2.15.1 and 274 s on v2.10.29, compile included
+    # (2026-11-21), 476 s together, so 12 minutes with half again for margin, and 107 in all.
+    timeout-minutes: 107
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -82,10 +83,10 @@ jobs:
       # refuses it and the step fails until the hooks are ported. The second step hooks v2.10.29.
       # The script also fails a package that declares no such test. Neither step sets an
       # environment variable: check-ci-filters.sh reduces no go command of a job one of whose
-      # steps sets a GO* name, so the delivery steps pass go test's -run and -timeout after the
-      # package, where the later flag wins. Delivery's rows other than its held write use no hold
-      # point and run on the linked nats-server in the race step above already, so the first step
-      # runs the held write alone and the second runs them all on v2.10.29.
+      # steps sets a GO* name, so the delivery steps pass go test's -run after the package, where
+      # the later flag wins. Delivery's rows other than its held write use no hold point and run on
+      # the linked nats-server in the race step above already, so its steps run the held write
+      # alone, on each nats-server.
       - name: Forced-order tests on the hooked nats-server the module links
         run: scripts/forced-order.sh ./internal/testnats/hooktest/ ./internal/bus/ ./consumernames/ ./cmd/listener/
         working-directory: packages/envoy
@@ -95,8 +96,8 @@ jobs:
       - name: Forced-order tests on the hooked nats-server v2.10.29
         run: scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/ ./internal/bus/ ./consumernames/ ./cmd/listener/
         working-directory: packages/envoy
-      - name: Delivery's forced-order tests on the hooked nats-server v2.10.29
-        run: scripts/forced-order.sh -server 2.10.29 ./internal/dispatch/delivery/ -timeout 30m
+      - name: Delivery's held-write forced-order test on the hooked nats-server v2.10.29
+        run: scripts/forced-order.sh -server 2.10.29 ./internal/dispatch/delivery/ -run '^TestForcedOrderAPredecessorsHeldWriteReachesNoSuccessor$'
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

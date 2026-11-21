@@ -129,6 +129,27 @@ func TestForcedOrderAPredecessorsHeldWriteReachesNoSuccessor(t *testing.T) {
 					}
 					return successor != "" && len(hooks.Events(testnats.Point("write.done"), testnats.Consumer(successor), testnats.After(mark))) > 0
 				}, func() string { return "the take-over made no successor with a write of its own" })
+				// The late write must be the last write the successor's name gets before the restart,
+				// as a predecessor's write that lands after its successor's state stops changing is:
+				// with the handlers held, the successor stops once it has delivered every message, or
+				// its ack-pending bound, and has written that state. Released earlier, the late write
+				// can be overwritten by the successor's next write, and the row then passes on the
+				// build before the fresh mode by chance (a probe of that build's delivery-jobs run at
+				// 2026-11-21T06:22Z: the late write, floor 51, landed after the successor's last
+				// write, delivered 60, and the successor came back with floor 51).
+				_, settling := hub.admin(t)
+				waitFor(t, 30*time.Second, func() bool {
+					info, err := settling.ConsumerInfo(bus.Stream, successor)
+					if err != nil || (info.NumPending != 0 && info.NumAckPending < info.Config.MaxAckPending) {
+						return false
+					}
+					for _, e := range hooks.Events(testnats.Point("write.done"), testnats.Consumer(successor), testnats.After(mark)) {
+						if e.State != nil && e.State.Delivered.Stream == info.Delivered.Stream {
+							return true
+						}
+					}
+					return false
+				}, func() string { return "the successor " + successor + " never wrote a settled state" })
 
 				released := hooks.Mark()
 				write.Release()
