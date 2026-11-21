@@ -59,6 +59,41 @@ func (h *HubFlags) Register(flags *flag.FlagSet) {
 	flags.StringVar(&h.ConfigMap, "configmap", h.ConfigMap, "the hub's ConfigMap")
 }
 
+// HubFlagNames are the names of the flags Register defines.
+func HubFlagNames() []string {
+	flags := flag.NewFlagSet("", flag.ContinueOnError)
+	var h HubFlags
+	h.Register(flags)
+	var names []string
+	flags.VisitAll(func(f *flag.Flag) { names = append(names, f.Name) })
+	return names
+}
+
+// Problems names each flag of h a held command lacks: the broker's (--broker-url, --token-file,
+// --verify-keys), the signing key's (--signing-key-secret) and the hub's client URLs (--nats), and,
+// with no --hold (holdID empty), what setting a hold of its own takes (--minters-report,
+// --probe-token-file), each "--<name> is required".
+func (h HubFlags) Problems(holdID string) []string {
+	var problems []string
+	need := func(name, value string) {
+		if value == "" {
+			problems = append(problems, "--"+name+" is required")
+		}
+	}
+	need("broker-url", h.BrokerURL)
+	need("token-file", h.TokenFile)
+	need("verify-keys", h.VerifyKeys)
+	need("signing-key-secret", h.KeySecret)
+	if len(h.NATS) == 0 {
+		problems = append(problems, "--nats is required: the hub's client URLs")
+	}
+	if holdID == "" {
+		need("minters-report", h.MintersReport)
+		need("probe-token-file", h.ProbeTokenFile)
+	}
+	return problems
+}
+
 // Records opens the operator's client of the broker's hold routes, with the signing key from
 // Secret Manager when signing.
 func (h HubFlags) Records(ctx context.Context, signing bool) (*holdrecord.Client, error) {

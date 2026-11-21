@@ -1,7 +1,6 @@
 package writerhold
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -10,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -17,7 +17,6 @@ import (
 	"github.com/nats-io/nuid"
 
 	"github.com/sjawhar/envoy/infra/internal/flagerr"
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -60,20 +59,14 @@ Exit codes: 0 done; 1 refused, naming what; 2 a usage error, or UNKNOWN: a readi
 whole, which is never a pass.
 `
 
-// stringList is a repeatable flag.
-type stringList []string
-
-func (l *stringList) String() string     { return strings.Join(*l, ",") }
-func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
-
 // options are a run's flags.
 type options struct {
 	HubFlags
 	action                   string
 	holdID, workflow, reason string
 	bootstrap                bool
-	restored, snapshots      stringList
-	daemonDatabases          stringList
+	restored, snapshots      flagerr.StringList
+	daemonDatabases          flagerr.StringList
 }
 
 // KeyStore is the Secret Manager store of the operator's hold signing key: keygen writes its first
@@ -112,7 +105,7 @@ func Command(ctx context.Context, args []string, stdout, stderr io.Writer, reade
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, e env) int {
 	actions := []string{actionStatus, actionPrepare, actionSet, actionAbort, actionRelease, actionRestore, actionProve, actionKeygen}
-	if len(args) == 0 || !contains(actions, args[0]) {
+	if len(args) == 0 || !slices.Contains(actions, args[0]) {
 		fmt.Fprint(stderr, usage)
 		if len(args) > 0 && (args[0] == "-h" || args[0] == "-help" || args[0] == "--help") {
 			return 0
@@ -124,15 +117,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, e env) in
 		return code
 	}
 	err := dispatch(ctx, o, stdout, stderr, e)
-	return report(stderr, o.action, err)
+	return ExitCode(stderr, "envoy-infra hold "+o.action, err)
 }
 
 // parse reads args into options, or answers the exit code of a usage error (or of --help).
 func parse(args []string, stderr io.Writer) (options, int) {
 	o := options{action: args[0]}
 	flags := flag.NewFlagSet("envoy-infra hold "+o.action, flag.ContinueOnError)
-	var parsed bytes.Buffer
-	flags.SetOutput(&parsed)
 	o.HubFlags.Register(flags)
 	flags.StringVar(&o.holdID, "hold", "", "the hold's id")
 	flags.StringVar(&o.workflow, "workflow", "", "the hold's workflow")
@@ -141,37 +132,8 @@ func parse(args []string, stderr io.Writer) (options, int) {
 	flags.Var(&o.restored, "restored", "a restored target and its disk or volume, <target>=<disk>")
 	flags.Var(&o.snapshots, "snapshot", "a restored target and its snapshot, <target>=<snapshot>")
 	flags.Var(&o.daemonDatabases, "daemon-database", "for hub-restore's abort: a daemon store's database, <project>=<file> (the file's first line holds its URL, its second the Cloud SQL instance that URL reaches); repeat")
-	if err := flags.Parse(args[1:]); err != nil {
-		switch {
-		case errors.Is(err, flag.ErrHelp):
-			fmt.Fprint(stderr, parsed.String())
-			return o, 0
-		case strings.HasPrefix(err.Error(), "flag needs an argument: -"):
-			fmt.Fprintf(stderr, "envoy-infra hold: %v\n%s", err, usage)
-		default:
-			if name := flagerr.Malformed(flags, err); name != "" {
-				fmt.Fprintf(stderr, "envoy-infra hold: --%s: a malformed value (not echoed)\n%s", name, usage)
-			} else {
-				fmt.Fprintf(stderr, "envoy-infra hold: a flag this command does not take, or a malformed one (not echoed)\n%s", usage)
-			}
-		}
-		return o, 2
-	}
-	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "envoy-infra hold: word %d after \"hold\" is no flag and no flag's value (not echoed)\n%s", len(args)-flags.NArg()+1, usage)
-		return o, 2
-	}
-	// A flag's value reaches the lines the command writes and the hold's records, so a value that
-	// holds an nkey seed is refused naming the flag, never the value, as seed and buckets refuse one.
-	var seeded []string
-	flags.Visit(func(set *flag.Flag) {
-		if bus.HoldsSeed(set.Value.String()) {
-			seeded = append(seeded, "--"+set.Name)
-		}
-	})
-	if len(seeded) > 0 {
-		fmt.Fprintf(stderr, "envoy-infra hold: %s: an nkey seed, which is never an argument (not echoed)\n", strings.Join(seeded, ", "))
-		return o, 2
+	if code := flagerr.Parse(flags, args[1:], "hold", usage, stderr); code >= 0 {
+		return o, code
 	}
 	if problem := o.usageProblem(); problem != "" {
 		fmt.Fprintf(stderr, "envoy-infra hold %s: %s\n%s", o.action, problem, usage)
@@ -220,7 +182,7 @@ func (o options) usageProblem() string {
 		if o.holdID != "" && o.workflow != "" {
 			add("--hold and --workflow are not taken together: a prepared hold's workflow is in its record")
 		}
-		add(need("minters-report", o.MintersReport))
+		problems = append(problems, o.HubFlags.Problems("")...)
 	case actionAbort, actionRelease:
 		add(need("hold", o.holdID))
 	case actionRestore:
@@ -233,13 +195,13 @@ func (o options) usageProblem() string {
 			add("--restored is required: a prove names each target it proves")
 		}
 	}
-	if o.action == actionSet || o.action == actionProve {
-		if len(o.NATS) == 0 {
-			add("--nats is required: the hub's client URLs")
-		}
+	if o.action == actionProve {
+		problems = append(problems, o.HubFlags.Problems(o.holdID)...)
 		add(need("probe-token-file", o.ProbeTokenFile))
 	}
-	if o.workflow != "" && !contains(workflows(), o.workflow) {
+	slices.Sort(problems)
+	problems = slices.Compact(problems)
+	if o.workflow != "" && !slices.Contains(workflows(), o.workflow) {
 		add(fmt.Sprintf("--workflow %q is not one of %s", o.workflow, strings.Join(workflows(), ", ")))
 	}
 	for _, pair := range append(append([]string{}, o.restored...), o.snapshots...) {
@@ -265,35 +227,6 @@ func workflows() []string {
 		string(holdrecord.WorkflowBucketsCreate), string(holdrecord.WorkflowBucketsRecreate), string(holdrecord.WorkflowBucketsRestore),
 		string(holdrecord.WorkflowStreamsUpdate), string(holdrecord.WorkflowHubRestore), string(holdrecord.WorkflowStreamsCensus),
 	}
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
-// report writes err's line and answers the exit code: 0 for none, 2 for an UNKNOWN reading (an
-// *Unknown, or holdrecord.ErrUnknown, a row or record that does not verify), and 1 for every
-// refusal.
-func report(stderr io.Writer, action string, err error) int {
-	if err == nil {
-		return 0
-	}
-	var unknown *Unknown
-	if errors.As(err, &unknown) || errors.Is(err, holdrecord.ErrUnknown) {
-		line := err.Error()
-		if !strings.HasPrefix(line, "UNKNOWN") {
-			line = "UNKNOWN " + line
-		}
-		fmt.Fprintf(stderr, "envoy-infra hold %s: %s\n", action, line)
-		return 2
-	}
-	fmt.Fprintf(stderr, "envoy-infra hold %s: %v\n", action, err)
-	return 1
 }
 
 func dispatch(ctx context.Context, o options, stdout, stderr io.Writer, e env) error {

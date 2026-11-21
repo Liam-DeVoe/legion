@@ -3464,7 +3464,10 @@ envoy-infra streams check --nats-url <urls> (--token-file <file> | --nkey-seed-f
 under those names and runs each inside a hold of its own workflow (`streams-update`; `streams-census`,
 the cutover and `hub-restore`), around the `Update` and `Census` functions of this package, and
 writes the hold journal's intent, done and stop entries. The census is the final command of its
-workflows, so its done entry completes the record that `hold release` needs.
+workflows, so its done entry completes the record that `hold release` needs. They parse their flags
+as `envoy-infra hold` and `envoy-infra buckets` do: a usage error echoes no word they could not
+read, a flag value that holds an nkey seed is refused naming the flag, and each line they write is
+headed `envoy-infra streams update` or `envoy-infra streams census`.
 
 - `check`, run by each deploy, unattended, as the measurement job: it reads each declared stream
   and prints `FAIL` for one that is missing, one with fewer copies than the deployment's count,

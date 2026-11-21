@@ -36,7 +36,6 @@
 package buckets
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -147,17 +146,11 @@ On one machine with no auth service, a missing bucket is created as the environm
   --connz URL          the server's monitoring URL, whose connections it reads first, repeatable
 `
 
-// stringList is a repeatable flag.
-type stringList []string
-
-func (l *stringList) String() string     { return strings.Join(*l, ",") }
-func (l *stringList) Set(v string) error { *l = append(*l, v); return nil }
-
 // options are a run's flags.
 type options struct {
 	writerhold.HubFlags
 	action, holdID, reason, from, to, operator, workflow string
-	buckets, connz                                       stringList
+	buckets, connz                                       flagerr.StringList
 	breakGlass                                           bool
 	replicas                                             int
 }
@@ -178,17 +171,13 @@ func command(ctx context.Context, args []string, stdout, stderr io.Writer, e env
 	if o.breakGlass {
 		return breakGlassCreate(ctx, stdout, stderr, o, e.http)
 	}
-	return report(stderr, o.action, run(ctx, o, stdout, e))
+	return writerhold.ExitCode(stderr, "envoy-infra buckets "+o.action, run(ctx, o, stdout, e))
 }
 
 // parse reads args into options, or answers the exit code of a usage error or of --help.
 func parse(args []string, stderr io.Writer) (options, int) {
 	o := options{action: args[0]}
 	flags := flag.NewFlagSet("envoy-infra buckets "+o.action, flag.ContinueOnError)
-	// The flag package's own message quotes a value it could not parse, so what it writes is
-	// printed only after --help, whose listing holds no word given (see below).
-	var parsed bytes.Buffer
-	flags.SetOutput(&parsed)
 	o.HubFlags.Register(flags)
 	flags.StringVar(&o.holdID, "hold", "", "the hold to run in")
 	flags.StringVar(&o.reason, "reason", "", "why, as the hold records it")
@@ -200,46 +189,15 @@ func parse(args []string, stderr io.Writer) (options, int) {
 	flags.BoolVar(&o.breakGlass, "break-glass", false, "create each missing --bucket as the environment's NATS user")
 	flags.StringVar(&o.operator, "operator", "", "who runs a --break-glass create")
 	flags.Var(&o.connz, "connz", "the server's monitoring URL")
-	// No word the command was given is echoed where the parse could not read it as one of its own:
-	// a seed may have been pasted there, and `envoy-infra seed` and `render` echo none either. A
-	// stray argument is named by its position, a malformed value by its flag, and any other word
-	// the parse refused not at all.
-	if err := flags.Parse(args[1:]); err != nil {
-		switch {
-		case errors.Is(err, flag.ErrHelp):
-			fmt.Fprint(stderr, parsed.String())
-			return o, 0
-		case strings.HasPrefix(err.Error(), "flag needs an argument: -"):
-			fmt.Fprintf(stderr, "envoy-infra buckets: %v\n%s", err, usage)
-		default:
-			if name := flagerr.Malformed(flags, err); name != "" {
-				fmt.Fprintf(stderr, "envoy-infra buckets: --%s: a malformed value (not echoed: a seed may have been pasted there)\n%s", name, usage)
-			} else {
-				fmt.Fprintf(stderr, "envoy-infra buckets: a flag this command does not take, or a malformed one (not echoed: a seed may have been pasted there)\n%s", usage)
-			}
-		}
-		return o, 2
+	if code := flagerr.Parse(flags, args[1:], "buckets", usage, stderr); code >= 0 {
+		return o, code
 	}
-	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "envoy-infra buckets: word %d after \"buckets\" is no flag and no flag's value (not echoed: a seed may have been pasted there)\n%s", len(args)-flags.NArg()+1, usage)
-		return o, 2
-	}
-	// A flag's value reaches the lines the command writes and the hold's records, so a value that
-	// holds an nkey seed (bus.HoldsSeed), whole or inside it, is refused naming the flag, never the
-	// value, before anything reads it, as seed and render refuse one.
-	var seeded, given []string
+	var given []string
 	replicasSet := false
 	flags.Visit(func(set *flag.Flag) {
 		given = append(given, set.Name)
 		replicasSet = replicasSet || set.Name == "replicas"
-		if bus.HoldsSeed(set.Value.String()) {
-			seeded = append(seeded, "--"+set.Name)
-		}
 	})
-	if len(seeded) > 0 {
-		fmt.Fprintf(stderr, "envoy-infra buckets: %s: an nkey seed, which is never an argument (not echoed)\n", strings.Join(seeded, ", "))
-		return o, 2
-	}
 	for _, bucket := range o.buckets {
 		if _, ok := bus.CopiedBucketConfig(bucket, 1); !ok {
 			fmt.Fprintf(stderr, "envoy-infra buckets: %s is no bucket a listener copies (%s)\n", bucket, strings.Join(bus.CopiedBuckets(), ", "))
@@ -278,8 +236,17 @@ func parse(args []string, stderr io.Writer) (options, int) {
 	return o, -1
 }
 
-// holdFlags are the flags of the hold, which a break-glass create does not take.
-var holdFlags = []string{"hold", "reason", "broker-url", "token-file", "verify-keys", "signing-key-secret", "minters-report", "probe-token-file", "kube-namespace", "statefulset", "configmap"}
+// holdFlags are the flags of the hold, which a break-glass create does not take: --hold, --reason
+// and every flag writerhold.HubFlags defines but --nats, which names the break-glass's server.
+func holdFlags() []string {
+	names := []string{"hold", "reason"}
+	for _, name := range writerhold.HubFlagNames() {
+		if name != "nats" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
 
 // usageProblem is what the flags given lack or misuse for the run's action, or "".
 func (o options) usageProblem(given []string) string {
@@ -291,7 +258,7 @@ func (o options) usageProblem(given []string) string {
 		}
 		var hold []string
 		for _, name := range given {
-			if slices.Contains(holdFlags, name) || name == "from" || name == "to" {
+			if slices.Contains(holdFlags(), name) || name == "from" || name == "to" {
 				hold = append(hold, "--"+name)
 			}
 		}
@@ -320,12 +287,8 @@ func (o options) usageProblem(given []string) string {
 			add("--%s is required", name)
 		}
 	}
-	need("broker-url", o.BrokerURL)
-	need("token-file", o.TokenFile)
-	need("verify-keys", o.VerifyKeys)
-	if len(o.NATS) == 0 {
-		add("--nats is required: the hub's client URLs")
-	}
+	problems = append(problems, o.HubFlags.Problems(o.holdID)...)
+	need("reason", o.reason)
 	switch o.action {
 	case "backup":
 		need("to", o.to)
@@ -338,12 +301,6 @@ func (o options) usageProblem(given []string) string {
 			}
 		} else if o.workflow != "" {
 			add("--workflow is not taken with --hold: the hold's workflow is in its record")
-		}
-		need("signing-key-secret", o.KeySecret)
-		need("reason", o.reason)
-		if o.holdID == "" {
-			need("minters-report", o.MintersReport)
-			need("probe-token-file", o.ProbeTokenFile)
 		}
 		return strings.Join(problems, "; ")
 	case "recreate":
@@ -367,32 +324,7 @@ func (o options) usageProblem(given []string) string {
 	if o.action != "restore" && o.from != "" {
 		add("--from is restore's")
 	}
-	need("signing-key-secret", o.KeySecret)
-	need("reason", o.reason)
-	if o.holdID == "" {
-		need("minters-report", o.MintersReport)
-		need("probe-token-file", o.ProbeTokenFile)
-	}
 	return strings.Join(problems, "; ")
-}
-
-// report writes err's line and answers the exit code: 0 for none, 2 for an UNKNOWN reading, 1 for
-// every refusal.
-func report(stderr io.Writer, action string, err error) int {
-	if err == nil {
-		return 0
-	}
-	var unknown *writerhold.Unknown
-	if errors.As(err, &unknown) || errors.Is(err, holdrecord.ErrUnknown) {
-		line := err.Error()
-		if !strings.HasPrefix(line, "UNKNOWN") {
-			line = "UNKNOWN " + line
-		}
-		fmt.Fprintf(stderr, "envoy-infra buckets %s: %s\n", action, line)
-		return 2
-	}
-	fmt.Fprintf(stderr, "envoy-infra buckets %s: %v\n", action, err)
-	return 1
 }
 
 // run runs a held command, or a backup.

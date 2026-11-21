@@ -1,6 +1,13 @@
 package writerhold
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+
+	"github.com/sjawhar/envoy/internal/holdrecord"
+)
 
 // The steps of a hold, as a finding names them.
 const (
@@ -49,4 +56,25 @@ func (u *Unknown) Unwrap() error { return u.Err }
 // unknownf is an Unknown of step, caused by err, its subject formatted.
 func unknownf(step string, err error, format string, args ...any) *Unknown {
 	return &Unknown{Step: step, What: fmt.Sprintf(format, args...), Err: err}
+}
+
+// ExitCode writes err's line, under program, the command's whole name ("envoy-infra streams
+// update"), and answers the exit code: 0 for none, 2 for an UNKNOWN reading (an *Unknown, or
+// holdrecord.ErrUnknown, a row or record that does not verify), and 1 for every refusal.
+// `envoy-infra hold`, `buckets` and `streams update|census` each end through it.
+func ExitCode(stderr io.Writer, program string, err error) int {
+	if err == nil {
+		return 0
+	}
+	var unknown *Unknown
+	if errors.As(err, &unknown) || errors.Is(err, holdrecord.ErrUnknown) {
+		line := err.Error()
+		if !strings.HasPrefix(line, "UNKNOWN") {
+			line = "UNKNOWN " + line
+		}
+		fmt.Fprintf(stderr, "%s: %s\n", program, line)
+		return 2
+	}
+	fmt.Fprintf(stderr, "%s: %v\n", program, err)
+	return 1
 }

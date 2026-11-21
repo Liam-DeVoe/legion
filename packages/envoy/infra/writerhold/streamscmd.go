@@ -1,7 +1,6 @@
 package writerhold
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -77,9 +76,9 @@ Exit: 0 clean, 1 a failure or a refusal, 2 UNKNOWN or a usage error.
 type streamsOptions struct {
 	HubFlags
 	word, holdID, reason              string
-	families, machineIDs, daemons     stringList
+	families, machineIDs, daemons     flagerr.StringList
 	replicas, maxBytes, sessionMaxAge string
-	daemonDatabases                   stringList
+	daemonDatabases                   flagerr.StringList
 	dispatchDatabaseFile              string
 }
 
@@ -291,9 +290,8 @@ func runStreams(ctx context.Context, args []string, stdout, stderr io.Writer, e 
 		return 2
 	}
 	o := streamsOptions{word: args[0]}
-	flags := flag.NewFlagSet("envoy-infra streams "+o.word, flag.ContinueOnError)
-	var parsed bytes.Buffer
-	flags.SetOutput(&parsed)
+	program := "envoy-infra streams " + o.word
+	flags := flag.NewFlagSet(program, flag.ContinueOnError)
 	o.HubFlags.Register(flags)
 	flags.StringVar(&o.holdID, "hold", "", "the hold to run in")
 	flags.StringVar(&o.reason, "reason", "", "why, as the hold records it")
@@ -305,34 +303,12 @@ func runStreams(ctx context.Context, args []string, stdout, stderr io.Writer, e 
 	flags.StringVar(&o.replicas, "replicas", os.Getenv(bus.ReplicasEnvVar), "the deployment's replica count")
 	flags.StringVar(&o.maxBytes, "stream-max-bytes", os.Getenv(bus.StreamMaxBytesEnvVar), "the notification stream's byte limit")
 	flags.StringVar(&o.sessionMaxAge, "session-max-age", os.Getenv(bus.SessionMaxAgeEnvVar), "the session bucket's age")
-	if err := flags.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprint(stderr, parsed.String())
-			return 0
-		}
-		if name := flagerr.Malformed(flags, err); name != "" {
-			fmt.Fprintf(stderr, "envoy-infra streams %s: --%s: a malformed value (not echoed)\n%s", o.word, name, streamsUsage)
-		} else {
-			fmt.Fprintf(stderr, "envoy-infra streams %s: a flag this command does not take, or a malformed one (not echoed)\n%s", o.word, streamsUsage)
-		}
-		return 2
+	if code := flagerr.Parse(flags, args[1:], "streams", streamsUsage, stderr); code >= 0 {
+		return code
 	}
-	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "envoy-infra streams %s: word %d after \"streams\" is no flag and no flag's value (not echoed)\n", o.word, len(args)-flags.NArg()+1)
-		return 2
-	}
-	var problems []string
-	for name, value := range map[string]string{"broker-url": o.BrokerURL, "token-file": o.TokenFile, "verify-keys": o.VerifyKeys,
-		"signing-key-secret": o.KeySecret, "reason": o.reason} {
-		if value == "" {
-			problems = append(problems, "--"+name+" is required")
-		}
-	}
-	if len(o.NATS) == 0 {
-		problems = append(problems, "--nats is required: the hub's client URLs")
-	}
-	if o.holdID == "" && (o.MintersReport == "" || o.ProbeTokenFile == "") {
-		problems = append(problems, "--minters-report and --probe-token-file are required to set the hold, with no --hold")
+	problems := o.HubFlags.Problems(o.holdID)
+	if o.reason == "" {
+		problems = append(problems, "--reason is required")
 	}
 	if o.word == "census" && len(o.families) == 0 {
 		problems = append(problems, "census needs at least one --family")
@@ -347,12 +323,12 @@ func runStreams(ctx context.Context, args []string, stdout, stderr io.Writer, e 
 	}
 	if len(problems) > 0 {
 		slices.Sort(problems)
-		fmt.Fprintf(stderr, "envoy-infra streams %s: %s\n%s", o.word, strings.Join(problems, "; "), streamsUsage)
+		fmt.Fprintf(stderr, "%s: %s\n%s", program, strings.Join(problems, "; "), streamsUsage)
 		return 2
 	}
 	code, err := heldStreams(ctx, o, settings, shapes, stdout, e)
 	if err != nil {
-		return report(stderr, "streams "+o.word, err)
+		return ExitCode(stderr, program, err)
 	}
 	return code
 }
