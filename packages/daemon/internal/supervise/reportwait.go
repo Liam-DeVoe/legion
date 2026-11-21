@@ -116,7 +116,8 @@ import (
 const reportWaitsLine = "supervise: the report of the take's turn is still to come; what is held for that turn waits for it"
 
 // putBackWaitsLine is the line of a put-back that leaves work waiting for the take (putBack), at
-// Info, with the task's number: the work waits for the take's own turn to start, or for R5's
+// Info, with the task's number and whether a held suspension and a held stale-plugin relaunch
+// wait ("suspension", "relaunch"): the work waits for the take's own turn to start, or for R5's
 // second bound.
 const putBackWaitsLine = "supervise: the take awaits its turn again; what is held for it waits for that turn to start, or for the second bound"
 
@@ -197,7 +198,7 @@ func (m *Machine) reportWaitNow() waitPhase {
 		return waitTurn
 	case p == nil || !p.taken() || m.endFrameFinishes():
 		return waitNone
-	case !p.TurnStarted:
+	case p.awaitsTurn():
 		return waitTake
 	case m.finishOwed:
 		return waitFinish
@@ -229,6 +230,18 @@ func (m *Machine) reportHolds() bool {
 // running, and the take's report or that report's owed finish still to land. A decision that ends
 // the wait reads it before it settles the take, for afterTurn.
 func (m *Machine) heldWaits() bool { return m.held != nil && m.reportHolds() }
+
+// heldRunsNow is whether the held suspension waits for nothing now and its stop may run: held, no
+// turn or compaction running (busy), whose end it waits for, and not waiting behind the wait for
+// the report of its take's turn (heldWaits). reready and reconnectDeadline run it then.
+func (m *Machine) heldRunsNow() bool { return m.held != nil && !m.busy() && !m.heldWaits() }
+
+// logSuspensionWaits writes reportWaitsLine for the held suspension that begins to wait for the
+// report of the take's turn, with the hold's source and its deadline (compactEnded,
+// holdForReport, turnEnded).
+func (m *Machine) logSuspensionWaits() {
+	m.log.Info(reportWaitsLine, "task", m.claim.Pending.Number, "held", "suspension", "by", m.held.By, "deadline", m.held.Deadline)
+}
 
 // reportBounded is the pending take whose report the wait's own bound runs on, and false for none:
 // the wait's second phase, the take's turn over and its report not come (waitReport: a report

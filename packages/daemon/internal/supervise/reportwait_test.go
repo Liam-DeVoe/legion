@@ -272,7 +272,7 @@ func TestASuspensionOfAClaimWhoseReportIsToComeWaitsForIt(t *testing.T) {
 }
 
 // A ready the agent sends again while a held suspension waits past its take's turn for the report
-// leaves that hold waiting (reready, reportOwed): the report finishes the task once, and
+// leaves that hold waiting (reready, heldWaits): the report finishes the task once, and
 // the stop runs after it; with no report, the hold's deadline stops the claim and takes the task
 // back with the note of a cut turn first. pi-legion sends its ready again from its capability
 // schedule while its session is idle.
@@ -527,7 +527,8 @@ func (h *harness) wantTakesTurnStanding(number uint64, when string) {
 //
 // The negative control is 7ade1c0c, where the stale-plugin relaunch's wait for the report, armed
 // at G's end for the stop timeout, takes back as a cut turn the take whose turn T is running, in
-// the first two orders, and the relaunched worker runs the task again (R3-1 of review round 3).
+// the first two orders, and the relaunched worker runs the task again (R3-1 of review round 3
+// of #3993).
 func TestHeldWorkOverARunGivenTheTakeRunsAfterTheTakesOwnTurn(t *testing.T) {
 	for _, held := range []heldBehindTheTake{staleRelaunchHeld, daemonSuspensionHeld} {
 		t.Run(held.name+", G's report first", func(t *testing.T) {
@@ -605,7 +606,7 @@ func TestHeldWorkOverARunGivenTheTakeRunsAfterTheTakesOwnTurn(t *testing.T) {
 //
 // The negative control is 7ade1c0c, where the put-back leaves the suspension waiting for a report
 // no longer owed (heldForReport), and both holds keep R5's second wait from arming (claimHold): no
-// bound ever ends them, and the claim stays idle and held (R3-2 of review round 3).
+// bound ever ends them, and the claim stays idle and held (R3-2 of review round 3 of #3993).
 func TestAPutBackLeavesHeldWorkToTheTakesTurnOrTheSecondBound(t *testing.T) {
 	for _, held := range []heldBehindTheTake{daemonSuspensionHeld, staleRelaunchHeld} {
 		t.Run(held.name, func(t *testing.T) {

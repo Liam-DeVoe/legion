@@ -1456,7 +1456,7 @@ func TestTaskResponseGolden(t *testing.T) {
 	golden(t, "task.json", claim.TaskResponse{Finished: 4})
 }
 
-// What `claims/task` answers a caller at contract 216 or later whose turn holds the take of
+// What `claims/task` answers a caller at contract 212 or later whose turn holds the take of
 // another claim of its issue: its own value and finished number beside `holds`, each held take's
 // role and its task's number. task.json above carries no `holds`, since the key is written only
 // where a take is held.
@@ -1800,7 +1800,6 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "phase-retry.json", PhaseRetryResponse{})
 	golden(t, "signoff.json", SignOffResponse{})
 	golden(t, "root-close.json", EmptyResponse{})
-	golden(t, "child-park.json", EmptyResponse{})
 	golden(t, "child-rerun.json", EmptyResponse{})
 }
 

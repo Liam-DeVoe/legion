@@ -253,7 +253,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	t.Logf("before the migration the task number write is refused: %v", err)
 
 	// The fixture stands just below this migration, so the run applies it and every embedded
-	// migration above it — at this release the eighteen recorded after it,
+	// migration above it — at this release the nineteen recorded after it,
 	// 20261113181500_architect_stalled_notices, 20261113182000_architect_entry_upgrade,
 	// 20261114020537_claim_entry_handshake, 20261114031356_merge_queue_removal,
 	// 20261114061900_phase_entry_verbatim, 20261115194357_project_pause,
@@ -263,7 +263,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	// 20261117004117_step_starts, 20261117023932_outbox_kinds_with_the_plan_record,
 	// 20261117064152_step_starts_roll_forward, 20261117112334_pull_request_statuses,
 	// 20261117200337_update_ask_marks_at_delivery,
-	// 20261119003157_conflict_reads_and_merge_forward,
+	// 20261119003157_conflict_reads_and_merge_forward, 20261120012547_set_back_observed_seq,
 	// 20261120042902_claim_agent_resume_generation and
 	// 20261120055717_dispatch_issue_value_sequences, which run after its fill and touch no column
 	// the fill writes or this test reads — and nothing else. So the fill runs here before the

@@ -258,8 +258,8 @@ func TestAHeldReportPutsBackNoRestoredTakeWhoseOwnTurnMayHaveRun(t *testing.T) {
 
 // A restored take's anchor reads the first connection after the daemon start as one that carries
 // every frame its shim held while no daemon was connected (bindRestoredAnchor), but a shim's
-// backlog drops its oldest frames past its bound. The probe of review round 3 (R3-5): the run the
-// daemon before the restart gave the take was running at the restart; while no daemon was
+// backlog drops its oldest frames past its bound. The probe of review round 3 of #3993 (R3-5): the
+// run the daemon before the restart gave the take was running at the restart; while no daemon was
 // connected it ended and the take's own turn started, and the backlog dropped both frames; that
 // run's report, saying the take's text was held, lands before the first hello. Nothing puts the
 // take back, so the report of its own turn finishes the task, and the next task's start is its
@@ -276,8 +276,7 @@ func TestAHeldReportPutsBackNoRestoredTakeWhoseOwnTurnMayHaveRun(t *testing.T) {
 func TestAHeldReportPutsBackNoRestoredTakeOverAReplayThatMayHaveLostFrames(t *testing.T) {
 	droppedHello := func(h *harness) {
 		h.conn.SetStreaming(true)
-		h.conns.Register(h.token, h.conn)
-		h.must(StreamHello{Claim: h.token, Generation: h.generation()})
+		h.cutHello()
 	}
 	for _, tc := range []struct {
 		name  string

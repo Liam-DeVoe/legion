@@ -4616,9 +4616,10 @@ func HoldsCapability(state ClaimState) bool {
 // plugin reports ready, so a publish then still reaches the session that held the role before.
 //
 // The ready comes before the Envoy role as well — the plugin claims the role right after its
-// ready has answered (dispatch://INFRA-2811) — so a claim this answers true for may not
-// answer to its name yet: for the moment between the two, and, for a pane the daemon relaunched,
-// while it waits out the standing claim of the process it replaced (the listener's live window).
+// ready, and the read of its task value after it, have answered (dispatch://INFRA-2811) — so a
+// claim this answers true for may not answer to its name yet: for the moment between the two,
+// and, for a pane the daemon relaunched, while it waits out the standing claim of the process it
+// replaced (the listener's live window).
 // The listener refuses a keep: false publish to a role no live session holds with 404
 // (notify.ErrNoHolder), and what that costs is the sending row's own, not one rule:
 // noticeAnswered, mergeQueue and the merge forward's message each decide it for the rows they

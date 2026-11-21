@@ -59,7 +59,8 @@ const (
 	// runs it as a slash command and never re-emits it, as the stand-in's "/rename" does.
 	crossSlashTask = "/rename the task Claude Code runs as a slash command"
 	// crossTurnStartBound is R5's second bound where a test sets it (supervise's
-	// Timeouts.TurnStart): no other wait arms a timer for as long.
+	// Timeouts.TurnStart). The wait for a take's report arms its bound (TimerReport) for as long
+	// too, which a put-back disarms; no other wait arms a timer for as long.
 	crossTurnStartBound = 25 * time.Minute
 )
 
@@ -128,7 +129,8 @@ func TestTakeAcrossTheDaemonAndTheBridgeAfterAProviderErrorIsMadeOnce(t *testing
 // process's turns is not known: the bridge reports that turn naming no task and naming the task's
 // number held, which gives the take its turn back (supervise's heldUnrun), and R5's second bound
 // then takes the task back and writes its value again, which the bridge takes. The report and
-// the turn's frames reach the machine in either order, and either way the take awaits its turn
+// the turn's frames may reach the machine in either order, which the test does not control: the
+// report travels over HTTP while the test hands the frames. Either way the take awaits its turn
 // once both have: a report ahead of the turn's start has that start given no take.
 //
 // The negative control is the bridge before R3-4, which reported that turn holding nothing: the
@@ -169,8 +171,14 @@ func TestATaskTextClaudeCodeNeverTookIsOfferedAgainAfterADaemonRestart(t *testin
 	}
 	b.handTask(again)
 	d.answered(t, "/legion/v1/claims/take", takes+1)
-	if texts := b.userTexts(t); len(texts) == 0 || texts[0] != crossSlashTask {
-		t.Fatalf("Claude Code read %q, want the task's text first", texts)
+	// No user message but the take's text reaches Claude Code here, so the second one it reads
+	// must be that text again.
+	var texts []string
+	if !testwait.Holds(10*time.Second, 5*time.Millisecond, func() bool {
+		texts = b.userTexts(t)
+		return len(texts) >= 2
+	}) || texts[1] != crossSlashTask {
+		t.Fatalf("Claude Code read %q, want the task's text, then the same text again", texts)
 	}
 }
 

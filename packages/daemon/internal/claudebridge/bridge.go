@@ -919,7 +919,7 @@ func (b *bridge) result(res resultLine) {
 	// (ask), so no take is accepted during a task's turn and the two never meet.
 	refusal, task, held := b.refusal, b.run.task, b.heldNumber()
 	if task != 0 && !b.run.taken && refusal == nil {
-		b.log.Printf("Claude Code ended task %d's turn without re-emitting its text, so it never took it: the turn is reported as no task's, with the task held unrun, which gives its take its turn back on the daemon; the bridge takes the task again at the next revision of its value the daemon writes", task)
+		b.log.Printf("Claude Code ended task %d's turn without re-emitting its text, so it never took it: the turn is reported as no task's, naming the task held, which gives its take its turn back on the daemon; the bridge takes the task again at the next revision of its value the daemon writes", task)
 		task, held = 0, task
 	}
 	b.inRun, b.refusal, b.run = false, nil, taskRun{}

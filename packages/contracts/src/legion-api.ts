@@ -1567,9 +1567,9 @@ export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
 
 /** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
  * bucket holds it now, null where it holds none, and the number of the last task the claim
- * finished, 0 for none (contract 207). `holds` (contract 216, `claim.HeldTake`) is the takes of
+ * finished, 0 for none (contract 207). `holds` (contract 212, `claim.HeldTake`) is the takes of
  * the issue's other claims held behind the caller's turn, each the held claim's `role` and its
- * task's number; absent where none is held, and served only to a caller at contract 216 or a
+ * task's number; absent where none is held, and served only to a caller at contract 212 or a
  * later one. */
 export const LegionTaskResponse = z.object({
   ...taskReadingFields,
@@ -1967,7 +1967,7 @@ export type LegionGrant = z.output<typeof LegionGrantResponse>;
 /** Every completed fact route returns an intentional empty JSON object. The shape names no field,
  * so it accepts any JSON object and refuses a body that is not one (an array, a string); a field
  * the daemon adds to a fact route is caught by the golden drift test in `legion-api.test.ts`,
- * where each of the eight fact-route goldens is `{}`, not at runtime. */
+ * where each fact-route golden is `{}`, not at runtime. */
 export const LegionEmptyResponse = z.object({});
 /** `api.HandoffCompleteResponse`: an empty object. The merger merges and the daemon merges
  * nothing, so no completion has anything to answer with. */
@@ -2249,9 +2249,9 @@ export const LegionRootCloseRequest = z.strictObject({
   reason: nonEmptyString,
 });
 
-/** `api.ChildRequest`, an architect's park_child or rerun_child of one issue it owns: any child of
- * its tree for the tree root's architect, and only an issue under its own issue for a child's own
- * architect (`ISSUE_NOT_OWNED` otherwise). */
+/** `api.ChildRequest`, an architect's rerun_child of one issue it owns: any child of its tree for
+ * the tree root's architect, and only an issue under its own issue for a child's own architect
+ * (`ISSUE_NOT_OWNED` otherwise). */
 export const LegionChildRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
@@ -2420,7 +2420,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   // `task-take.ts` holds the value a read answers and the number of the task the claim last
   // finished, and runs the text of an accepted take or logs the hold a refused one met
   // (contract 207). `holds-read.ts` keeps the takes held behind the caller's turn, and each host
-  // notes each one by its role and its task's number (contract 216).
+  // notes each one by its role and its task's number (contract 212).
   LegionTaskResponse: [
     "task",
     "task.number",

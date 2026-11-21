@@ -99,9 +99,7 @@ func TestTheControllersStaleRelaunchDuringACompactionWaitsForTheReport(t *testin
 
 	h.wantState(StateWorking)
 	h.wantCalls("Resume", 0)
-	if p := h.pending(); p.Number != number || !p.turnStarted() || p.Interrupted {
-		t.Fatalf("the claim holds %+v under the compaction, want task %d's turn waiting for its report", p, number)
-	}
+	h.wantTakesTurnStanding(number, "under the compaction,")
 	release()
 	if err := <-compacted; err != nil {
 		t.Fatalf("the compaction answered %v, want the claim given back", err)

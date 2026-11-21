@@ -134,9 +134,9 @@ So each figure that names a task names its claim too.
     After a daemon restart under a live worker, the daemon has lost its count of the worker's turns, and such a report is the only one that puts the first take back.
     The daemon loses that count in the same way when the worker's shim reconnects with a hello that does not say that its shim dropped no frame while no daemon was connected, because a turn that the shim dropped whole would leave the count one turn short, and it writes `supervise: the shim's hello does not say its backlog is whole; the count of its process's turns is no longer known`.
     A take that the daemon accepted before the restart is put back the same way, unless the daemon before the restart saw the end of the turn it gave that take: the daemon after it cannot tell then whether the take's own turn also ran before the restart, and that take's report puts nothing back.
-    When that report arrives before the start of its turn, the daemon gives that turn no take, and writes `supervise: a turn started that the producer said ran with the accepted take's text held; the turn is no task's, and the take awaits its turn`.
-    The command counts that turn as a turn with no cause, since its lines name no task.
     A take that the daemon accepted before the restart is not put back either when the worker's first hello after the restart does not say that its shim dropped no frame while no daemon was connected, or when the worker does not answer on that connection: frames lost in the restart could hide the take's own turn, and the daemon writes `supervise: the first hello after the daemon start does not show its connection carries every frame its shim held; no report gives the restored take its turn back`.
+    When a `held` report arrives before the start of its turn, the daemon gives that turn no take, and writes `supervise: a turn started that the producer said ran with the accepted take's text held; the turn is no task's, and the take awaits its turn`.
+    The command counts that turn as a turn with no cause, since its lines name no task.
     A take whose turn the daemon counted ended, and whose report naming its task never came, is taken back when no report of it comes within the second bound, `worker_turn_start_timeout_seconds`, from the end of the last turn that ran.
     That happens when the worker's host dropped the task's text, so the turn the daemon gave the take reported no task, and no report puts the take back.
     The daemon writes `supervise: the report of the take's turn did not come by its bound; the task is taken back with the note of a cut turn, and what waited for the report runs or its value is written again` and `supervise: a task was taken back`, writes the value again under the same number, and charges nothing.
@@ -147,7 +147,7 @@ So each figure that names a task names its claim too.
   The expected value is 1.
   After a hello that does not say that the worker's shim dropped no frame, a task can take 0 turns.
   The shim can have dropped the whole turn of the task.
-  Also, when the worker's report of a turn arrives before the start of that turn, the daemon does not wait for that start, so a start that does come names no task.
+  Also, after such a hello, while the daemon does not know the count of the worker's turns, when the worker's report of a turn arrives before the start of that turn, the daemon does not wait for that start, so a start that does come names no task.
 
 - `numbers written by origin` is the number of tasks that the daemon wrote as values, by the origin of each task.
 

@@ -40,7 +40,7 @@ func restoreStaleTake(t *testing.T) *harness {
 // The negative control is the head before this change (1d8f65eb), where the deadline runs the
 // held suspension with no look at the take: it stops the process in the take's own turn and takes
 // the task back as a cut turn, though that turn runs whole and its report comes, so the task runs
-// again on resume (the class of R3-1 of review round 3).
+// again on resume (the class of R3-1 of review round 3 of #3993).
 func TestAReconnectDeadlineLeavesAHeldSuspensionToTheTakesTurnAndReport(t *testing.T) {
 	t.Run("a hello, the ask unanswered, and the take's turn running at the deadline", func(t *testing.T) {
 		h := restoreStaleTake(t)
@@ -99,7 +99,7 @@ func TestAReconnectDeadlineLeavesAHeldSuspensionToTheTakesTurnAndReport(t *testi
 // The negative control is the head before this change (1d8f65eb), whose second wait reads the
 // pause's hold first and arms nothing (claimHold): a stop with no deadline waits for a turn the
 // worker may never start, and the claim stays idle and held while the pause stands (the class of
-// R3-2 of review round 3).
+// R3-2 of review round 3 of #3993).
 func TestChargeOnceAtTheSecondBoundForAPutBackWhilePausedThenThePausesStopLands(t *testing.T) {
 	h, flag, stops := pauseHarness(t, queuedClaim(), withWaits, currentPlugin)
 	h.manualTakes()

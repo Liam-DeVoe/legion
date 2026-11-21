@@ -2981,6 +2981,46 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
+// 205: dispatch://INFRA-3178 -- the owning architect moves a child out of the workflow by its own
+// status write in Dispatch, and the operation that made that move through the daemon goes. The
+// daemon takes the owning architect's done, backlog, icebox or triage on a child of its tree as it
+// takes a person's move (workflow's sessionStatusWrite). The child route that operation called
+// stays in the route table only to refuse an older plugin's call (removedChildRoute): it reads no
+// body, applies no fact and answers 410 ROUTE_REMOVED with a reason that says which status to
+// write in Dispatch. The `legion` tool loses the operation, `@legion/pi-shared`'s
+// `LegionDaemonClient` loses its call, and `packages/contracts/fixtures/daemon-api` loses the
+// fixture of the route's answer. That directory gains `end-child-rule.json`, the rules for ending
+// a child and the sentence on a status the daemon has not taken yet, which the daemon's refusals
+// and notices over children carry (`record.EndChildRule` and `record.StatusNotTakenYet`), and the
+// `legion` tool's description is held to that file word for word. `api.ChildRequest` and
+// contracts' `LegionChildRequest` stay, because rerun_child takes them. A plugin below 205 still
+// offers the operation to its agents. On a daemon at 205 that call gets the refusal as its result,
+// so the agent reads the status to write.
+// Contract 205 is served with no code of its own (193's entry): no key path or value of any
+// answer moves, so a caller at 205 is served what one at 202 is, and 205's records are 202's under
+// its own number. The route leaves the empty object's row of answers.go's Answers, since no plugin
+// at 205 parses that answer there, and an older plugin parses the refusal it gets as it parses any
+// refusal. `ROUTE_REMOVED` is a value of the refusal's `code`, which no reader enumerates. The
+// request records of 193, 199 and 202 hold the route's body (`request-shapes.json`). The route
+// leaves the request types the gate walks, reads no body and answers that body with the refusal,
+// and requests.go's RemovedRoutes declares it removed at 205, so the record of 205 and of every
+// later contract holds no body for it.
+// (This entry took 191 at first, the lowest number above main's 188 that no other open pull
+// request declared at a reading that ended at 2026-11-20T10:18:19Z, and the forward merge of
+// 2026-11-20 that brought in 0ec9ed84 left main at 188 and found 191 still free. The forward merge
+// of 2026-11-21 that brought in 43b9c9c3 brought main's 199 (INFRA-4605's entry above). A reading
+// of every open pull request at that merge, which ended at 2026-11-21T02:21:13Z, found 200
+// (#4049), 201 (#4611), 202 (#3712, #4273, #4392, #4432, #4493, #4580 and #4590), 203 (#4065,
+// #4175, #4553, #4592 and #4661) and 204 (#4030) declared, so this entry moved to 205, the lowest
+// number above main's 199 that no other open pull request declares. The forward merge of
+// 2026-11-21 that brought in 1cdf5b9c brought main's 202 (INFRA-4401's entry above). A reading of
+// every open pull request at that merge, which ended at 2026-11-21T03:41:04Z, found 203 (#4065,
+// #4175, #4553, #4592 and #4661) and 204 (#3831 and #4030) declared and 205 declared by no other,
+// so this entry kept 205. The forward merge of 2026-11-21 that brought in 52f925ee left main at
+// 202, and a reading of every open pull request at that merge, which ended at
+// 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
+// number and every open pull request again at every forward merge rather than from this line.)
+//
 // 207: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
 // The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
 // `legion_tasks` bucket, which the listener relays to the session holding that role, and the
@@ -2996,19 +3036,20 @@ package api
 // the take whose turn it reports, which finishes that task, `providerError`
 // (`{status, provider, model, message, retryable}`), which keeps the task under its number and
 // starts the wait before its value is written again, and `held`, the number of the accepted take
-// whose text the producer still held unrun when the turn ended, which puts that take back to await
-// its own turn also where the daemon has lost its count of the process's turns (a daemon restarted
-// under it); each is optional, and a report without `held` is read as before. The worker shim's
-// `hello2` carries `backlogWhole`, true where the backlog the shim holds for a daemon that is not
-// connected dropped no frame since its last connection took it (shimwire.Hello2.BacklogWhole),
-// and left out when false; a hello without it, from a shim that dropped frames or one built before
-// the member, is read as a backlog that may have dropped them, on which no report gives a take a
-// daemon start restored its turn back, and a daemon built before the member ignores it. The three
-// task routes refuse in the coded shape (`{code, error}`), so a worker that sends a take or a seen
-// report again on a 502, 503 or 504 naming no code never reads a refusal of the daemon's own as an
-// outage; and none of them refuses a stale plugin with the stale-contract 409: a stale claim's take
-// is refused with the hold `stale-plugin`, and its read and its seen report are answered as any
-// claim's. Nor does
+// whose text had not run when the turn ended — the producer held it for a turn of its own, or
+// began the turn with it and the agent never took it — which puts that take back to await its own
+// turn also where the daemon has lost its count of the process's turns (a daemon restarted under
+// it, or a hello that does not say its backlog is whole); each is optional, and a report without
+// `held` is read as before. The worker shim's `hello2` carries `backlogWhole`, true where the
+// backlog the shim holds for a daemon that is not connected dropped no frame since its last
+// connection took it (shimwire.Hello2.BacklogWhole), and left out when false; a hello without it,
+// from a shim that dropped frames or one built before the member, is read as a backlog that may
+// have dropped them, with every effect shimwire.Hello2's doc lists, and a daemon built before the
+// member ignores it. The three task routes refuse in the coded shape (`{code, error}`), so a
+// worker that sends a take or a seen report again on a 502, 503 or 504 naming no code never reads
+// a refusal of the daemon's own as an outage; and none of them refuses a stale plugin with the
+// stale-contract 409: a stale claim's take is refused with the hold `stale-plugin`, and its read
+// and its seen report are answered as any claim's. Nor does
 // `claims/turn-outcome` refuse one: a report naming a take's number is the only thing that
 // finishes that task for a plugin at this contract or above it, so a stale claim's report is
 // applied, and the stale-plugin lane relaunches the claim behind the finish. A claim
@@ -3121,16 +3162,19 @@ package api
 // that merge found 199 to 202 taken, so 203 was the lowest number above 199 that none declared.
 // It took 207 at the forward merge of 2026-11-21 that brought main in at
 // 1cdf5b9ceba6b5c5e2c73fa748234d8b73be6596, which carried 202, cybermonklabs/legion#4493's
-// INFRA-4401, the entry right above and the number the base now carries: a reading of
+// INFRA-4401, two entries above and the number the base then carried: a reading of
 // `const DaemonAPIVersion` at refs/pull/<n>/head for every one of the 343 open pull requests at
 // that merge found 203 (declared by seven of them) and 204 to 206 taken, so 207 was the lowest
-// number above 202 that none declared.
+// number above 202 that none declared. It kept 207 at the forward merge of 2026-11-21 that brought
+// main in at a155b5a33a4a9e086f135162ede386b74e3d4849, which carried 205,
+// cybermonklabs/legion#4573's INFRA-3178, the entry right above and the number the base now
+// carries: 207 was still above it.
 // Read the base's own number and every open pull request again at the next merge rather than from
 // this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 216: INFRA-4130 -- holds on POST /legion/v1/claims/task, the takes of other claims of the issue
+// 212: INFRA-4130 -- holds on POST /legion/v1/claims/task, the takes of other claims of the issue
 // held behind the caller's turn. The answer of `claims/task` takes an optional `holds`
 // (`claim.TaskResponse.Holds`, contracts' `LegionTaskResponse`), `[{role, task}]`: each a take
 // of another claim of the caller's issue that was refused `issue-in-turn` while the caller is
@@ -3139,7 +3183,7 @@ package api
 // the turn ends and the held take is accepted. The key is absent where none is held, and the
 // registration's answer never carries it, since a registering process is in no turn. This daemon
 // serves it down through the shaping 193 brought: a caller whose header states a contract below
-// 216 is answered without it (shapeAnswer's AnswerTask row, taskHoldsContract). The record of a
+// 212 is answered without it (shapeAnswer's AnswerTask row, taskHoldsContract). The record of a
 // held take is the daemon's memory alone (supervise's ClaimView.HeldTask), so it adds no store
 // migration, and no shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
 // `supervise.TaskTakeContract` stays 207.
@@ -3154,14 +3198,20 @@ package api
 // the entry right above: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every
 // one of the 357 open pull requests from 2026-11-21T05:46:01Z to 05:57:04Z found 207 (#3993,
 // #4030, #4392, #4432, #4590 and #4592) and 208 (#4611) declared by open pull requests, so 209
-// was the lowest number above 207 that none declared. It takes 216 at the forward merge of
+// was the lowest number above 207 that none declared. It took 216 at the forward merge of
 // 2026-11-21 that brought #3993's branch in at a7d7d94ec9a48826e2c5248f5bb23fdd6f535fc3, which
 // declares 207: a reading of `const DaemonAPIVersion` at the head of every one of the 411 open
 // pull requests from 2026-11-21T19:52:35Z to 20:13:23Z found 208 (#2230), 209 (#4049 and #4580),
 // 210 (#4661), 211 (#4611), 212 (#4771), 213 (#4030 and #4553), 214 (#4592 and #4596) and 215
 // (#4065) declared by open pull requests, so 216 was the lowest number above 207 that none
-// declared. Read the base's own number and every open pull request again at the next merge rather
-// than from this line, as
+// declared. It takes 212 at the forward merge of 2026-11-21 that brought #3993's branch in at
+// fe79c4d9dd2b0958b976abeae350ae3ca8e95931, which declares 207: a reading of
+// `const DaemonAPIVersion` at the head of every one of the 421 open pull requests from
+// 2026-11-21T22:15:53Z to 22:21:36Z found 208 (#4175), 209 (#4049 and #4580), 210 (#4661), 211
+// (#4611 and #4902), 213 (#4030 and #4553), 214 (#4592 and #4596), 215 (#4065), 216 (#3831,
+// #4173 and #4259) and 217 (#2230, #4273 and #4771) declared by open pull requests, so 212 was the
+// lowest number above 207 that none declared. Read the base's own number and every open pull
+// request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 216
+const DaemonAPIVersion = 212

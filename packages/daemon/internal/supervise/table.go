@@ -1434,10 +1434,9 @@ func enrolledOnly(m *Machine, ctx context.Context, _ Event) error { return m.ens
 // process's turns and the mark of a start still to come (readBacklog).
 func reconnected(m *Machine, ctx context.Context, ev Event) error {
 	m.disarm(TimerRegistration)
-	if err := m.bindRestoredAnchor(ctx, ev.(StreamHello)); err != nil {
+	if err := m.readHello(ctx, ev.(StreamHello)); err != nil {
 		return err
 	}
-	m.readBacklog(ev.(StreamHello))
 	if err := m.ensureEnrolled(ctx); err != nil {
 		return err
 	}
@@ -1448,6 +1447,17 @@ func reconnected(m *Machine, ctx context.Context, ev Event) error {
 		m.askRestoredTurn(ctx)
 	}
 	return m.offerPending(ctx)
+}
+
+// readHello reads what a hello to a live claim says of the process, for reconnected and
+// reconnectedMidTurn alike: a restored take's anchor is given the hello's connection first
+// (bindRestoredAnchor), and the shim's backlog is read after it (readBacklog).
+func (m *Machine) readHello(ctx context.Context, hello StreamHello) error {
+	if err := m.bindRestoredAnchor(ctx, hello); err != nil {
+		return err
+	}
+	m.readBacklog(hello)
+	return nil
 }
 
 // askRestoredTurn asks the agent of a claim a daemon start restored ready or idle whether it is
@@ -1552,10 +1562,9 @@ func (m *Machine) markRestoredTurnUnseen() {
 // hello says of the shim's backlog as that does (readBacklog).
 func reconnectedMidTurn(m *Machine, ctx context.Context, ev Event) error {
 	m.disarm(TimerRegistration)
-	if err := m.bindRestoredAnchor(ctx, ev.(StreamHello)); err != nil {
+	if err := m.readHello(ctx, ev.(StreamHello)); err != nil {
 		return err
 	}
-	m.readBacklog(ev.(StreamHello))
 	if err := m.ensureEnrolled(ctx); err != nil {
 		return err
 	}
@@ -1917,7 +1926,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 			// (reportwait.go), whose finish runs it (reportedTask, afterTurn), or behind its bound.
 			// The end asks reportOwed rather than reportHolds, for the reasons reportOwed gives.
 			m.claim.State = StateIdle
-			m.log.Info(reportWaitsLine, "task", p.Number, "held", "suspension", "by", m.held.By, "deadline", m.held.Deadline)
+			m.logSuspensionWaits()
 			return m.persist(ctx)
 		}
 		// Where this turn was a task's, the settle that follows the stop finishes the task, by
@@ -1947,14 +1956,14 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	if finishes {
 		m.armEndFrameBound(p.ID)
 	}
-	if finishes || m.reportOwed() {
+	if owed := m.reportOwed(); finishes || owed {
 		// The task's turn is over and its report is what finishes it, or the end-frame bound for
 		// a plugin that names no number; what is held for the turn runs at its finish instead
 		// (finishTask, reportedTask, finishAtTurnsEnd). A stale-plugin relaunch held for the
 		// turn of a take only its report settles now waits for that report, and one held over a
 		// take a report put back while this turn ran waits for that take's own turn
 		// (reportwait.go).
-		if held := m.staleRelaunch; held != nil && m.reportOwed() {
+		if held := m.staleRelaunch; held != nil && owed {
 			m.log.Info(reportWaitsLine, "task", p.Number, "held", "relaunch", "trigger", *held)
 		}
 		return nil
@@ -2306,7 +2315,7 @@ func finishReady(m *Machine, ctx context.Context) error {
 // refused still (claimHold). pi-legion sends its ready again from its capability schedule while it
 // reads its session idle, and a turn can start before that ready reaches the daemon.
 func reready(m *Machine, ctx context.Context, _ Event) error {
-	if m.held != nil && !m.busy() && !m.heldWaits() {
+	if m.heldRunsNow() {
 		return m.suspendHeld(ctx)
 	}
 	return finishReady(m, ctx)
