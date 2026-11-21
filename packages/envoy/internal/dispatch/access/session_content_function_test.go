@@ -96,6 +96,55 @@ func TestTheRuleFunctionsReadTheirTablesWhateverTheCallersSearchPath(t *testing.
 	}
 }
 
+// TestTheListenerTriggerWritesPublicsTablesWhateverTheWritersSearchPath: route_roster's trigger
+// function (sync_route_roster_session_projects, migration 20261121150500) runs under the
+// search_path of whoever writes the listener record and sets none, so it names each table it
+// writes by its schema, as the rule functions name theirs. A writer whose search_path is
+// `shadow, public`, where shadow holds a route_roster_session_projects and a
+// session_reached_projects of its own, records ses_listed, listed with PRIV, in public's projection
+// and public's reached pairs, the tables access.SessionClause and access.SessionContentClause read,
+// and in neither of shadow's.
+//
+// Control: the trigger's tables named without their schema (the migration's first text), and the
+// projection and the pair land in shadow's tables.
+func TestTheListenerTriggerWritesPublicsTablesWhateverTheWritersSearchPath(t *testing.T) {
+	ctx := context.Background()
+	database := seedAccess(t)
+	if _, err := database.Pool.Exec(ctx, `
+		create schema shadow;
+		create table shadow.route_roster_session_projects (id boolean primary key, projects jsonb not null);
+		create table shadow.session_reached_projects (session_id text, project_key text);
+	`); err != nil {
+		t.Fatalf("seed the shadow schema: %v", err)
+	}
+	connection, err := pgx.ConnectConfig(ctx, database.Pool.Config().ConnConfig.Copy())
+	if err != nil {
+		t.Fatalf("open a connection of its own: %v", err)
+	}
+	defer connection.Close(ctx)
+	if _, err := connection.Exec(ctx, `set search_path = shadow, public`); err != nil {
+		t.Fatalf("set search_path = shadow, public: %v", err)
+	}
+	if _, err := connection.Exec(ctx, `
+		insert into route_roster (answered, sessions, sent_at, expires_at)
+		values (true, '[{"session_id":"ses_listed","projects":["PRIV"]}]', now(), now() + interval '1 hour')
+	`); err != nil {
+		t.Fatalf("write the listener record under search_path shadow, public: %v", err)
+	}
+	var listed, reached, shadowed int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from public.route_roster_session_projects where projects ? 'ses_listed'),
+		       (select count(*) from public.session_reached_projects where session_id = 'ses_listed' and project_key = 'PRIV'),
+		       (select count(*) from shadow.route_roster_session_projects) + (select count(*) from shadow.session_reached_projects)
+	`).Scan(&listed, &reached, &shadowed); err != nil {
+		t.Fatalf("read the projection and the pairs: %v", err)
+	}
+	if listed != 1 || reached != 1 || shadowed != 0 {
+		t.Errorf("a listener record written under search_path shadow, public left public's projection naming ses_listed %d times, "+
+			"public's reached pair (ses_listed, PRIV) %d times and shadow's tables %d rows; want 1, 1 and 0", listed, reached, shadowed)
+	}
+}
+
 // TestTheContentRuleAsksItsFunctionOncePerSessionAndNeverUnderR9: SessionContentClause asks
 // session_content_visible about every row its own SQL does not answer. For a read over fifty
 // sessions, by an open viewer and by one that is not open, of a deployment that holds a private
