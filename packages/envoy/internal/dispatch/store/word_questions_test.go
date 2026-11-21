@@ -290,3 +290,31 @@ func TestTheRecordsVerdictsWordsAndCounts(t *testing.T) {
 		t.Errorf("alice's words past the last = %+v total %d err %v, want none of 3", words, total, err)
 	}
 }
+
+// A word's times is how many of the person's records name it (GET /api/v1/readers/{login}/words),
+// so one record whose verdict names the word twice, in two cases, counts once. The records job's
+// model can give a word twice: a reply that asks about "lane" and then "the Lane" is one question.
+func TestAWordOneRecordNamesTwiceCountsOnce(t *testing.T) {
+	ctx := context.Background()
+	store := openWordRecordsStore(t)
+	day := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	person := map[string]any{"kind": "user", "id": "alice"}
+	question := insertLogEvent(t, store, "comment.created", person, map[string]any{"body": "What is a lane? I mean the Lane in your reply."}, day)
+	if _, err := store.WordRecordsIntake(ctx, day.Add(-time.Hour), question, 10, usersTexts); err != nil {
+		t.Fatalf("intake: %v", err)
+	}
+	due, err := store.DueWordQuestions(ctx, 10)
+	if err != nil || len(due) != 1 {
+		t.Fatalf("due = %+v, %v; want the one text", due, err)
+	}
+	if err := store.RecordWordVerdict(ctx, due[0].ID, WordVerdict{Verdict: "asks_word_meaning", Words: []string{"lane", "Lane"}, Model: "stand-in"}); err != nil {
+		t.Fatalf("record the verdict: %v", err)
+	}
+	words, err := store.ReaderWords(ctx, "alice", time.Time{})
+	if err != nil {
+		t.Fatalf("read alice's words: %v", err)
+	}
+	if len(words) != 1 || words[0].Times != 1 {
+		t.Errorf("words = %+v, want lane once, named by one record", words)
+	}
+}
