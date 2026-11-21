@@ -52,7 +52,15 @@ const root = resolve(process.env.OWNER_STEPS_CLIENT_ROOT || resolve(import.meta.
 // modules cannot be imported statically.
 const clientModule = await import(resolve(root, "packages/pi-shared/src/daemon-client.ts"));
 const phaseOps = await import(resolve(root, "packages/pi-shared/src/legion-phase-ops.ts"));
-const client = clientModule.createLegionDaemonClient(request.daemon);
+// Each client states the contract its own tree's plugin speaks, read from that tree's manifest, as
+// the plugin passes its own `legion.daemonApiVersion` (`packages/pi-legion/src/claim-session.ts`):
+// the daemon serves each caller the shape of the contract it states.
+const manifest = await import(resolve(root, "packages/pi-legion/package.json"), {
+  with: { type: "json" },
+});
+const client = clientModule.createLegionDaemonClient(request.daemon, {
+  pluginContract: manifest.default.legion.daemonApiVersion,
+});
 const methods = Object.keys(client).sort();
 const claim = request.claim;
 const args = request.args;
