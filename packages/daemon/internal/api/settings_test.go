@@ -574,7 +574,7 @@ func TestEndpointOfMasksUserinfoAndKeepsThePath(t *testing.T) {
 	}
 }
 
-// pluginSourceOf leaves a version and an absolute tarball path as written and rides the URL form
+// PluginSourceOf leaves a version and an absolute tarball path as written and rides the URL form
 // through endpointOf, masking its userinfo as xxxxx@ and dropping its query and fragment.
 func TestPluginSourceOfMasksOnlyTheURLForm(t *testing.T) {
 	for _, tc := range []struct{ source, want string }{
@@ -584,8 +584,8 @@ func TestPluginSourceOfMasksOnlyTheURLForm(t *testing.T) {
 		{"https://legion:secret@plugins.internal.example/pi-legion-10.4.0.tgz?X-Amz-Signature=abc#frag", "https://xxxxx@plugins.internal.example/pi-legion-10.4.0.tgz"},
 		{"http://plugins.internal.example/x.tgz?token=t", "http://plugins.internal.example/x.tgz"},
 	} {
-		if got := pluginSourceOf(tc.source); got != tc.want {
-			t.Errorf("pluginSourceOf(%q) = %q, want %q", tc.source, got, tc.want)
+		if got := PluginSourceOf(tc.source); got != tc.want {
+			t.Errorf("PluginSourceOf(%q) = %q, want %q", tc.source, got, tc.want)
 		}
 	}
 }

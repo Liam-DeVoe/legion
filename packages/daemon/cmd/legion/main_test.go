@@ -1402,17 +1402,24 @@ func TestConfigCheckRefusesARequestItCannotRender(t *testing.T) {
 
 // `legion config check`'s plugins line names the pair runtime.kubernetes.plugins sets, "from
 // legion.yaml", or, absent that, this binary's linked pair, "from the binary"; absent both, the
-// gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). When
-// worker_backends runs any role on Claude Code, the line gains one sentence naming those roles,
-// whose plugin is the worker image's and never an install.
+// gap (TestConfigCheckReportsTheConfigurationsCapabilityGaps's pluginsGap). A source in URL form is
+// printed as the state shows it: a made-up user name, password and signature in a private
+// tarball URL's userinfo and query are not. When worker_backends runs any role on Claude Code, the
+// line gains one sentence naming those roles, whose plugin is the worker image's and never an
+// install.
 func TestConfigCheckNamesTheResolvedPluginPair(t *testing.T) {
 	legionState(t)
 	const claudeSentence = ". Claude Code runs implementer, tester, whose plugin is the worker image's: " +
 		"a plugin-contract change for such a role is answered by a new image, not by an install."
 	const claudeRoles = "worker_backends: {implementer: claude, tester: claude}\n"
+	// Built from its parts, so that no source line holds a URL with a password.
+	const pluginCredential = "madeUpPluginUser0123:madeUpPluginPassword0123"
+	const privateURL = "https://" + pluginCredential + "@cache.example/pi-legion.tgz?X-Amz-Signature=madeUpSignature0123"
 	for _, tc := range []struct{ name, extra, legion, envoy, want string }{
 		{"the file's own pair", "    plugins: {pi_legion: 9.7.0, pi_envoy: 9.6.1}\n", "", "",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
+		{"a private tarball URL, printed without its credential", "    plugins: {pi_legion: \"" + privateURL + "\", pi_envoy: 9.6.1}\n", "", "",
+			"plugins: @sjawhar/pi-legion https://xxxxx@cache.example/pi-legion.tgz @sjawhar/pi-envoy 9.6.1 (from legion.yaml)\n"},
 		{"the binary's linked pair, the file setting none", "", "9.7.0", "9.6.1",
 			"plugins: @sjawhar/pi-legion 9.7.0 @sjawhar/pi-envoy 9.6.1 (from the binary)\n"},
 		{"the file's pair wins over the binary's", "    plugins: {pi_legion: 9.7.1, pi_envoy: 9.6.2}\n", "9.7.0", "9.6.1",

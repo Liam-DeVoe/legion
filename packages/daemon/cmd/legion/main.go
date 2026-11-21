@@ -178,7 +178,9 @@ func pluginsSourceWords(source string) string {
 
 // pluginsLine is `legion config check`'s plugins line: the pair this daemon would install for a
 // stale-plugin relaunch and where it came from (pluginsSourceWords), or the gap when it knows
-// none. When worker_backends runs any role on Claude Code, the line gains one sentence naming
+// none. A source in URL form is printed as the state shows it (api.PluginSourceOf), without its
+// userinfo, query or fragment, where a private or pre-signed tarball URL carries its credential.
+// When worker_backends runs any role on Claude Code, the line gains one sentence naming
 // those roles: their plugin is the worker image's claude-envoy, which no relaunch installs (the
 // daemon package's stalePluginInstall refuses such a claim), so a plugin-contract change for one
 // of them is answered by a new image.
@@ -186,7 +188,7 @@ func pluginsLine(cfg config.Config) string {
 	line := "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract"
 	if pair, source := daemon.ResolvedPlugins(cfg); pair != nil {
 		line = fmt.Sprintf("plugins: @sjawhar/pi-legion %s @sjawhar/pi-envoy %s (from %s)",
-			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
+			api.PluginSourceOf(pair.PiLegion), api.PluginSourceOf(pair.PiEnvoy), pluginsSourceWords(source))
 	}
 	// The roles Claude Code may run at all (runtime.Backends), in the order the workflow reaches
 	// them: a role worker_backends puts on it is always one of them, since the loader refuses any
