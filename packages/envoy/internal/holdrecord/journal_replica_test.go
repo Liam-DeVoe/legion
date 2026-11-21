@@ -160,6 +160,36 @@ func replicaRows(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("a cohort the routes deleted is not put back, on a replica that never read it", func(t *testing.T) {
+		// The second replica's floor never saw the cohort, so only the signed delete the store keeps
+		// stands against a put of its key at gen 0. Fails while the store inserts a deleted key again:
+		// the cohort is back at gen 1.
+		r := newRig(t)
+		c := r.client(t)
+		const holdID = "h-cohort-again"
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhasePrepare, holdID, "prepare"); err != nil {
+			t.Fatal(err)
+		}
+		value := json.RawMessage(`{"raised":["a"]}`)
+		if _, err := c.PutRecord(ctx, holdID, "cohort", "cohort", 0, value); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.DeleteCohort(ctx, holdID); err != nil {
+			t.Fatal(err)
+		}
+		r.UseReplica(true)
+		defer r.UseReplica(false)
+		var refusal *holdrecord.RouteError
+		if got, err := c.PutRecord(ctx, holdID, "cohort", "cohort", 0, value); !errors.As(err, &refusal) || refusal.Code != "gen_mismatch" {
+			t.Errorf("PutRecord of the deleted cohort on the second replica answered %+v, %v; want 409 gen_mismatch", got, err)
+		}
+		var n int
+		if err := r.Pool.QueryRow(ctx, `select count(*) from nats_hold_records where hold_id = $1 and kind = 'cohort'`, holdID).Scan(&n); err != nil || n != 0 {
+			t.Errorf("after the refused put the table holds %d cohort records (%v), want 0", n, err)
+		}
+	})
 }
 
 // savedHoldRow is the hold row's every column as the table holds it, for a database writer to put
@@ -366,6 +396,13 @@ func rowFloorRows(t *testing.T) {
 		}
 		if got, err := c.Row(ctx); !errors.Is(err, holdrecord.ErrUnknown) {
 			t.Fatalf("Row with a released row swapped in at gen %d answered %+v, %v; want ErrUnknown", held.Gen, got, err)
+		}
+		// A move from the swapped row is a move from a fork: 409 below_floor, read as unknown,
+		// not gen_mismatch, which would send the operator to read the same row again.
+		var refusal *holdrecord.RouteError
+		if moved, err := c.MoveRow(ctx, held.Gen, natsgrant.OperatorPhaseReleased, "h-swapped", "release from the swapped row"); !errors.Is(err, holdrecord.ErrUnknown) ||
+			!errors.As(err, &refusal) || refusal.Code != "below_floor" {
+			t.Errorf("MoveRow(%d, released) from the swapped row answered %+v, %v; want 409 below_floor, read as ErrUnknown", held.Gen, moved, err)
 		}
 	})
 }

@@ -600,12 +600,12 @@ func routes() []apiRoute {
 		// an earlier hold held; prepare to held with the same hold id; prepare or held to released
 		// with the same hold id, which the row keeps. The body is signed by a key of
 		// BROKER_NATS_HOLD_SIGNING_KEYS over the gen it will store (400 bad_signature otherwise).
-		// A move from a row the floor reads so is 409 gen_mismatch with no row, and one whose gen
-		// the log already holds (a row put back below the log) 409 below_floor with no row; a gen
-		// the row no longer holds is 409 gen_mismatch and a hold id not the row's 409
-		// hold_mismatch, each with the row, and any other move 400 bad_transition. The move commits
-		// before it answers, so every decision of the auth service that starts after the answer
-		// reads the new phase.
+		// A move from an older row put back is 409 gen_mismatch with no row, and one from another
+		// row at the gen the floor took (a fork), or whose gen the log already holds (a row put back
+		// below the log), 409 below_floor with no row; a gen the row no longer holds is 409
+		// gen_mismatch and a hold id not the row's 409 hold_mismatch, each with the row, and any
+		// other move 400 bad_transition. The move commits before it answers, so every decision of
+		// the auth service that starts after the answer reads the new phase.
 		{http.MethodPut, "/v1/nats-hold", operatorAuth((*server).moveNATSHold)},
 		// Write the writer hold's row while there is none, the first row or one a database admin
 		// deleted, judged by the log's latest entry, which must verify (409 below_floor otherwise,
@@ -621,8 +621,9 @@ func routes() []apiRoute {
 		// conversion's saved set, its journal or its selection-recovery inputs, signed over the
 		// gen it will store. expected_gen 0 inserts a record that is not there, and any other gen
 		// updates the record that holds it, one above; a record moved since is 409 gen_mismatch,
-		// and so is a write storing a gen at or below the record's floor (recordFloors), and a hold
-		// id other than the row's 409 hold_mismatch.
+		// and so is a write storing a gen at or below the record's floor (recordFloors), an insert
+		// of a key the routes deleted while its signed delete verifies, and a hold id other than
+		// the row's 409 hold_mismatch.
 		{http.MethodPut, "/v1/nats-hold/records", operatorAuth((*server).putNATSHoldRecord)},
 		// List one hold's records of one kind (?hold_id= and ?kind=), each with its gen, when it
 		// was stored and its signature; a record below its floor, or one the floor has seen that

@@ -294,10 +294,10 @@ type holdMoveBody struct {
 
 // moveNATSHold moves the hold row, once its signature verifies over the gen it will store, and
 // only from a row this broker's floor of the row (holdRowFloor) accepts, checked on the row the
-// move's own transaction holds: a move from a row it reads as a replay or a fork, an older row put
-// back or another row at the gen it served, is 409 gen_mismatch with no row. A move whose gen the
-// log already holds, from a row put back below the log on a replica whose floor never passed it,
-// is 409 below_floor with no row, which the operator's client reads as unknown.
+// move's own transaction holds: a move from an older row put back (a replay) is 409 gen_mismatch
+// with no row, and from another row at the gen the floor took (a fork) 409 below_floor with no row,
+// which the operator's client reads as unknown. A move whose gen the log already holds, from a row
+// put back below the log on a replica whose floor never passed it, is 409 below_floor with no row.
 func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator string) {
 	var body holdMoveBody
 	if !readHoldBody(w, r, &body) {
@@ -319,8 +319,11 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:
-	case errors.Is(err, signedrecord.ErrReplay), errors.Is(err, signedrecord.ErrFork):
-		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", fmt.Sprintf("the hold row the move starts from reads as unknown: %v: an older row put back, or another row at the gen this broker served or wrote", err), nil)
+	case errors.Is(err, signedrecord.ErrReplay):
+		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", fmt.Sprintf("the hold row the move starts from reads as unknown: %v: an older row put back", err), nil)
+		return
+	case errors.Is(err, signedrecord.ErrFork):
+		writeHoldRefusal(w, http.StatusConflict, "below_floor", fmt.Sprintf("the hold row the move starts from reads as unknown: %v: another row at the gen this broker served, read or wrote", err), nil)
 		return
 	case !errors.As(err, &conflict):
 		writeUnavailable(w, "DATABASE_UNAVAILABLE", "move the hold row", err)
@@ -523,7 +526,8 @@ type holdRecord struct {
 }
 
 // putNATSHoldRecord writes one record of the hold row's hold, once its signature verifies over
-// the gen it will store.
+// the gen it will store. A record the routes deleted stays deleted while its signed delete stands
+// and verifies: putting its key again is 409 gen_mismatch, on every replica.
 func (s *server) putNATSHoldRecord(w http.ResponseWriter, r *http.Request, _ string) {
 	var body holdRecordBody
 	if !readHoldBody(w, r, &body) {
@@ -543,9 +547,12 @@ func (s *server) putNATSHoldRecord(w http.ResponseWriter, r *http.Request, _ str
 		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", fmt.Sprintf("this broker has written or served the record at gen %d, so a write storing gen %d is a replay", floor, gen), nil)
 		return
 	}
+	deletedByRoutes := func(d natshold.Deletion) bool {
+		return signedrecord.Verify(s.deps.NATSHold.Keys, d.Sig, signedrecord.RecordDelete(body.HoldID, body.Kind, d.Key, d.Gen)) == nil
+	}
 	stored, err := s.holdStore().PutRecord(r.Context(), natshold.Record{
 		HoldID: body.HoldID, Kind: body.Kind, Key: body.Key, Value: body.Value, Sig: body.Sig,
-	}, uint64(body.ExpectedGen))
+	}, uint64(body.ExpectedGen), deletedByRoutes)
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:

@@ -423,15 +423,33 @@ func scanRecord(row pgx.Row, holdID, kind string) (Record, error) {
 // PutRecord writes rec's value and signature at gen expectedGen+1 and answers the record it
 // stored: expectedGen 0 inserts a record that is not there, and any other updates the record
 // whose gen is expectedGen. It writes only while the hold row's hold id is rec.HoldID, whatever
-// its phase, holding the row so no move commits between the check and the write. It refuses with
-// a Conflict: ErrHoldMismatch, and ErrGenMismatch for a record that exists at expectedGen 0 or
-// does not hold expectedGen.
-func (s Store) PutRecord(ctx context.Context, rec Record, expectedGen uint64) (Record, error) {
+// its phase, holding the row so no move commits between the check and the write. An insert of a
+// key the routes deleted (nats_hold_record_deletes) is refused while deleted, the caller's check of
+// that delete's signature, answers true, so a deleted cohort is not put back on any replica. It
+// refuses with a Conflict: ErrHoldMismatch, and ErrGenMismatch for a record that exists at
+// expectedGen 0, one whose delete stands, or one that does not hold expectedGen.
+func (s Store) PutRecord(ctx context.Context, rec Record, expectedGen uint64, deleted func(Deletion) bool) (Record, error) {
 	var stored Record
 	err := s.in(ctx, pgx.ReadWrite, func(tx pgx.Tx) error {
 		current, err := s.heldBy(ctx, tx, rec.HoldID, "")
 		if err != nil {
 			return err
+		}
+		if expectedGen == 0 {
+			d := Deletion{HoldID: rec.HoldID, Kind: rec.Kind, Key: rec.Key}
+			var gen int64
+			err := tx.QueryRow(ctx, `select gen, deleted_at, sig from `+s.table("nats_hold_record_deletes")+` where hold_id = $1 and kind = $2 and key = $3`,
+				rec.HoldID, rec.Kind, rec.Key).Scan(&gen, &d.DeletedAt, &d.Sig)
+			switch {
+			case errors.Is(err, pgx.ErrNoRows):
+			case err != nil:
+				return fmt.Errorf("natshold: read the record's delete: %w", err)
+			case gen >= 1:
+				d.Gen = uint64(gen)
+				if deleted(d) {
+					return &Conflict{Err: fmt.Errorf("%w: the routes deleted the record at gen %d", ErrGenMismatch, d.Gen), Current: &current}
+				}
+			}
 		}
 		statement := `insert into ` + s.table("nats_hold_records") + ` (hold_id, kind, key, value, gen, written_at, sig)
 			values ($1, $2, $3, $4::jsonb, 1, now(), $5)

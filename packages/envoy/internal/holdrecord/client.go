@@ -844,6 +844,8 @@ func jsonFailure(err error) string {
 }
 
 // exchange sends one request with the operator's token and returns the answer's status and body.
+// No error it answers carries the request's URL: a DELETE's query holds the operator's signature,
+// and net/http's *url.Error quotes the URL whole (withoutURL).
 func (c *Client) exchange(ctx context.Context, method, path string, query url.Values, body any) (int, []byte, error) {
 	target := strings.TrimSuffix(c.cfg.BrokerURL, "/") + path
 	if len(query) > 0 {
@@ -859,7 +861,7 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, payload)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, err)
+		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, withoutURL(err))
 	}
 	token, err := c.cfg.Token(ctx)
 	if err != nil {
@@ -875,14 +877,28 @@ func (c *Client) exchange(ctx context.Context, method, path string, query url.Va
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, err)
+		return 0, nil, fmt.Errorf("holdrecord: %s %s: %w", method, path, withoutURL(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer))
 	if err != nil {
-		return 0, nil, fmt.Errorf("holdrecord: read the answer to %s %s: %w", method, path, err)
+		return 0, nil, fmt.Errorf("holdrecord: read the answer to %s %s: %w", method, path, withoutURL(err))
 	}
 	return resp.StatusCode, data, nil
+}
+
+// withoutURL is err with every *url.Error in its chain replaced by the error it wraps, so the
+// request's URL, its query and the signature in it, reaches no error; the caller names the method
+// and the route instead. An error with no *url.Error is answered as it is.
+func withoutURL(err error) error {
+	var withURL *url.Error
+	for errors.As(err, &withURL) {
+		if withURL.Err == nil {
+			return fmt.Errorf("the request failed: %s", withURL.Op)
+		}
+		err = withURL.Err
+	}
+	return err
 }
 
 // refusal is the error a refused request answers: a *RouteError for an answer coded with one of
