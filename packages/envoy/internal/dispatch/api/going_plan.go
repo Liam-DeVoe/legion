@@ -529,21 +529,49 @@ func goingInnerNewIssueRef(value any) string {
 	return ""
 }
 
-// goingNewIssueRefusal says why the first value of arguments that names a new issue of its plan
-// (goingNewIssueRef) where the row may not name one is refused, "" for none, in the model's
-// words, which name each change by its index as the model's plan does, and which name the
-// argument and its value; the row is row index of a plan whose rows are rows, runs a tool of
-// entry and needs the rows needs. A row names, as "$N", the key of the issue row N creates in an
-// argument of its tool that takes one (goingNewIssueArguments), as the argument's value or an
-// item of its list, where row N is a row before it that creates an issue (dispatch_issue) and is
-// among the rows it needs, so it runs only once that issue is made and the server puts the
-// issue's key in its place (AgentListener.resolveNewIssues). A "$N" deeper in such an argument -
-// in an object, or in a list within its list - is refused, since no key is put in there and it
-// would be sent as written. The item a row changes, an argument a route of its tool takes into
-// its path, is never a new issue: the plan reads that item before anything runs, so a "$N" there
-// is refused too. Every other argument is text, which is sent as written and never refused for
-// reading as "$N".
-func goingNewIssueRefusal(entry GoingAction, index int, arguments map[string]any, needs []int, rows []goingPlanRowStored) string {
+// goingNewIssueMisuse is why a value of a row's arguments that names a new issue of its plan
+// ("$N") is refused there (goingMisplacedNewIssueOf).
+type goingNewIssueMisuse int
+
+const (
+	// goingNewIssueIsItem: the argument names the item the row changes.
+	goingNewIssueIsItem goingNewIssueMisuse = iota + 1
+	// goingNewIssueInside: the "$N" is in an object of the argument, or in a list within its list.
+	goingNewIssueInside
+	// goingNewIssueNoEarlier: row N is no row of the plan before the row.
+	goingNewIssueNoEarlier
+	// goingNewIssueNoCreate: row N creates no issue.
+	goingNewIssueNoCreate
+	// goingNewIssueNotNeeded: row N creates an issue, and the row does not need row N.
+	goingNewIssueNotNeeded
+)
+
+// goingMisplacedNewIssue is a value of a row's arguments that names a new issue of its plan where
+// the row may not name one: why, the argument that holds it and the "$N" as written; and for a
+// "$N" that is the argument's value or an item of its list, its N and where row N is among the
+// plan's rows, -1 for none.
+type goingMisplacedNewIssue struct {
+	misuse   goingNewIssueMisuse
+	argument string
+	value    string
+	change   int
+	at       int
+}
+
+// goingMisplacedNewIssueOf is the first value of arguments that names a new issue of its plan
+// (goingNewIssueRef) where the row may not name one, and whether there is one; the row is row
+// index of a plan whose rows are rows, runs a tool of entry and needs the rows needs. A row names,
+// as "$N", the key of the issue row N creates in an argument of its tool that takes one
+// (goingNewIssueArguments), as the argument's value or an item of its list, where row N is a row
+// before it that creates an issue (dispatch_issue) and is among the rows it needs, so it runs only
+// once that issue is made and the server puts the issue's key in its place
+// (AgentListener.resolveNewIssues). A "$N" deeper in such an argument - in an object, or in a list
+// within its list - is misplaced, since no key is put in there and it would be sent as written.
+// The item a row changes, an argument a route of its tool takes into its path, is never a new
+// issue: the plan reads that item before anything runs, so a "$N" there is misplaced too. Every
+// other argument is text, which is sent as written and never read as "$N".
+func goingMisplacedNewIssueOf(entry GoingAction, index int, arguments map[string]any, needs []int, rows []goingPlanRowStored,
+) (goingMisplacedNewIssue, bool) {
 	items := map[string]bool{}
 	for _, route := range entry.Routes {
 		for _, argument := range route.path {
@@ -553,9 +581,8 @@ func goingNewIssueRefusal(entry GoingAction, index int, arguments map[string]any
 	for _, argument := range slices.Sorted(maps.Keys(arguments)) {
 		value := arguments[argument]
 		if _, named := goingNewIssueRef(value); named && items[argument] {
-			return fmt.Sprintf("argument %q is %q, but %q names the item this change changes, which the plan reads before anything runs: "+
-				"a new issue may only be a value a change writes, such as parent or blocked_by; propose a change of the new issue itself once it exists",
-				argument, value, argument)
+			text, _ := value.(string)
+			return goingMisplacedNewIssue{misuse: goingNewIssueIsItem, argument: argument, value: text, at: -1}, true
 		}
 		if !slices.Contains(goingNewIssueArguments[entry.Action], argument) {
 			continue
@@ -564,26 +591,125 @@ func goingNewIssueRefusal(entry GoingAction, index int, arguments map[string]any
 			change, named := goingNewIssueRef(item)
 			if !named {
 				if inner := goingInnerNewIssueRef(item); inner != "" {
-					return fmt.Sprintf("argument %q holds %q inside it, where no key is put in: name a new issue as the argument's value or an item of its list",
-						argument, inner)
+					return goingMisplacedNewIssue{misuse: goingNewIssueInside, argument: argument, value: inner, at: -1}, true
 				}
 				continue
 			}
-			at := slices.IndexFunc(rows, func(row goingPlanRowStored) bool { return row.row == change })
+			text, _ := item.(string)
+			misplaced := goingMisplacedNewIssue{argument: argument, value: text, change: change}
+			misplaced.at = slices.IndexFunc(rows, func(row goingPlanRowStored) bool { return row.row == change })
 			switch {
-			case change < 0 || change >= index || at < 0:
-				return fmt.Sprintf("argument %q is %q, which names change %d, and that is no change before change %d: "+
-					"\"$N\" names the issue an earlier change of this plan creates", argument, item, change, index)
-			case rows[at].tool != goingIssueCreateTool:
-				return fmt.Sprintf("argument %q is %q, which names change %d, and change %d is %s, which creates no issue: "+
-					"\"$N\" names only the issue a %s change of this plan creates", argument, item, change, change, rows[at].tool, goingIssueCreateTool)
+			case change < 0 || change >= index || misplaced.at < 0:
+				misplaced.misuse, misplaced.at = goingNewIssueNoEarlier, -1
+			case rows[misplaced.at].tool != goingIssueCreateTool:
+				misplaced.misuse = goingNewIssueNoCreate
 			case !slices.Contains(needs, change):
-				return fmt.Sprintf("argument %q is %q, the issue change %d creates, but change %d does not need change %d: "+
-					"add %d to its needs, so it runs once that issue is made", argument, item, change, index, change, change)
+				misplaced.misuse = goingNewIssueNotNeeded
+			default:
+				continue
 			}
+			return misplaced, true
 		}
 	}
-	return ""
+	return goingMisplacedNewIssue{}, false
+}
+
+// goingNewIssueRefusal says why the first value of arguments that names a new issue of its plan
+// where the row may not name one (goingMisplacedNewIssueOf) is refused, "" for none, in the
+// model's words, which name each change by its index as the model's plan does, and which name the
+// argument and its value; the row is row index of a plan whose rows are rows, runs a tool of
+// entry and needs the rows needs.
+func goingNewIssueRefusal(entry GoingAction, index int, arguments map[string]any, needs []int, rows []goingPlanRowStored) string {
+	misplaced, found := goingMisplacedNewIssueOf(entry, index, arguments, needs, rows)
+	if !found {
+		return ""
+	}
+	argument, value, change := misplaced.argument, misplaced.value, misplaced.change
+	switch misplaced.misuse {
+	case goingNewIssueIsItem:
+		return fmt.Sprintf("argument %q is %q, but %q names the item this change changes, which the plan reads before anything runs: "+
+			"a new issue may only be a value a change writes, such as parent or blocked_by; propose a change of the new issue itself once it exists",
+			argument, value, argument)
+	case goingNewIssueInside:
+		return fmt.Sprintf("argument %q holds %q inside it, where no key is put in: name a new issue as the argument's value or an item of its list",
+			argument, value)
+	case goingNewIssueNoEarlier:
+		return fmt.Sprintf("argument %q is %q, which names change %d, and that is no change before change %d: "+
+			"\"$N\" names the issue an earlier change of this plan creates", argument, value, change, index)
+	case goingNewIssueNoCreate:
+		return fmt.Sprintf("argument %q is %q, which names change %d, and change %d is %s, which creates no issue: "+
+			"\"$N\" names only the issue a %s change of this plan creates", argument, value, change, change, rows[misplaced.at].tool, goingIssueCreateTool)
+	default:
+		return fmt.Sprintf("argument %q is %q, the issue change %d creates, but change %d does not need change %d: "+
+			"add %d to its needs, so it runs once that issue is made", argument, value, change, index, change, change)
+	}
+}
+
+// goingNewIssueApprovalRefusal says why the first value of arguments, the values row runs with
+// once the person's edits are put in, that names a new issue of its plan where the row may not
+// name one (goingMisplacedNewIssueOf) refuses the person's approval, "" for none, in the words the
+// page shows them. The page names a row by its label (goingRowLabel) and a new issue by its title
+// and "(new)" (goingNewIssueShown, with the person's edit of the title in ticks), never by their
+// number, and an approval sends values alone, never a row's needs. The words name the argument
+// and its value, say why the row may not hold it, and say which values the argument takes in the
+// row: an issue's key, or the "$N" of each new issue the row waits for (a create of the plan
+// before it that it needs), with the issue it names.
+func goingNewIssueApprovalRefusal(entry GoingAction, row goingPlanRowStored, arguments map[string]any, rows []goingPlanRowStored,
+	ticks map[int]goingPlanTick,
+) string {
+	misplaced, found := goingMisplacedNewIssueOf(entry, row.row, arguments, row.needs, rows)
+	if !found {
+		return ""
+	}
+	argument, value := misplaced.argument, misplaced.value
+	var why string
+	switch misplaced.misuse {
+	case goingNewIssueIsItem:
+		return fmt.Sprintf("%q cannot be %q: %q is what this change changes, which must exist before the plan runs, "+
+			"so it takes only something that exists already, never a new issue of this plan", argument, value, argument)
+	case goingNewIssueInside:
+		why = fmt.Sprintf("%q holds %q inside it, where no new issue's key is put in", argument, value)
+	case goingNewIssueNoEarlier:
+		why = fmt.Sprintf("%q cannot be %q, which names no new issue this plan makes before this change", argument, value)
+	case goingNewIssueNoCreate:
+		why = fmt.Sprintf("%q cannot be %q, which names %s, a change that makes no new issue", argument, value, goingRowLabel(rows[misplaced.at]))
+	default:
+		created := rows[misplaced.at]
+		why = fmt.Sprintf("%q cannot be %q, %s, since this change does not wait for that issue to be made",
+			argument, value, goingNewIssueShown(created, ticks[created.row].Values))
+	}
+	var waited []string
+	for _, create := range rows {
+		if create.row < row.row && create.tool == goingIssueCreateTool && slices.Contains(row.needs, create.row) {
+			waited = append(waited, fmt.Sprintf(`"$%d" for %s`, create.row, goingNewIssueShown(create, ticks[create.row].Values)))
+		}
+	}
+	takes := strconv.Quote(argument)
+	if _, isList := arguments[argument].([]any); isList {
+		takes = "each item of " + takes
+	}
+	switch len(waited) {
+	case 0:
+		return fmt.Sprintf("%s; %s may be an issue's key here, as this change waits for no new issue of this plan", why, takes)
+	case 1:
+		return fmt.Sprintf("%s; %s may be an issue's key here, or %s, the new issue this change waits for", why, takes, waited[0])
+	default:
+		return fmt.Sprintf("%s; %s may be an issue's key here, or %s, the new issues this change waits for", why, takes, strings.Join(waited, " or "))
+	}
+}
+
+// goingNewIssueShown is the issue create, a create of an issue, makes, as a value naming it shows
+// on the page as the person approves its plan (plan-rows.ts newIssueTitles and issueText): its
+// title, with their edit of it in edited where they made one, and "(new)".
+func goingNewIssueShown(create goingPlanRowStored, edited map[string]any) string {
+	title := ""
+	if arguments, err := goingRowArguments(create.arguments); err == nil {
+		title = goingText(arguments, "title")
+	}
+	if _, held := edited["title"]; held {
+		title = goingText(edited, "title")
+	}
+	return strings.TrimSpace(title + " (new)")
 }
 
 // planCall is a plan call (agentwire.KindPlan): the run's model proposes its plan, which the
@@ -1004,8 +1130,9 @@ type goingPlanRejectInput struct {
 // version that is not the plan's now - another page read the plan again since, and the rows it
 // shows moved - is 409 GOING_PLAN_CHANGED, with nothing written, so a person approves only what
 // their page showed; a row the body names that is no waiting row of the plan, a value its tool's
-// schema refuses, or a value naming a new issue of the plan ("$N") that the row may not name
-// (goingNewIssueRefusal), 400 GOING_PLAN_VALUES.
+// schema refuses, or a value naming a new issue of the plan ("$N") that the row may not name,
+// 400 GOING_PLAN_VALUES; the last in the person's words (goingNewIssueApprovalRefusal), which
+// name rows and new issues as the page does.
 func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 	login, run, plan, ok := s.planRoute(w, r)
 	if !ok {
@@ -1083,7 +1210,7 @@ func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 			maps.Copy(arguments, edited)
 		}
 		if entry, held := s.going.Lookup(row.tool); err == nil && held {
-			if why := goingNewIssueRefusal(entry, row.row, arguments, row.needs, plan.rows); why != "" {
+			if why := goingNewIssueApprovalRefusal(entry, row, arguments, plan.rows, ticks); why != "" {
 				err = GoingArgumentError{Action: row.tool, Reason: why}
 			}
 		}

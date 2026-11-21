@@ -45,6 +45,10 @@ func newGoingPlanRigOver(t *testing.T, writes goingWritesRig) goingPlanRig {
 // goingRowNumbered matches a row named by its number, which no page shows.
 var goingRowNumbered = regexp.MustCompile(`\brows? \d`)
 
+// goingChangeNumbered matches a row named as the model's plan names it, a change by its number,
+// which no page shows either.
+var goingChangeNumbered = regexp.MustCompile(`\bchanges? \d`)
+
 // goingChange is one change of a proposed plan: tool with arguments, needing the changes needs. A
 // change that needs none leaves needs out, as propose_plan's schema takes no null for it.
 func goingChange(tool string, arguments map[string]any, needs ...int) map[string]any {
@@ -784,7 +788,8 @@ func TestAFailedChangeSkipsWhatNeedsIt(t *testing.T) {
 // sent; so is a move whose create found an issue Dispatch already held, whose sub-issue keeps its
 // parent. A text that reads as "$N" is no new issue, and is kept and sent as written. A "$N" a
 // change may not hold is refused when the plan is made, and the model is told which change, which
-// argument and which value; an approval whose edit puts one in is refused 400 GOING_PLAN_VALUES.
+// argument and which value; an approval whose edit puts one in is refused 400 GOING_PLAN_VALUES,
+// in words that name the row and each new issue as the page does, never by number.
 func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 	rig := newGoingPlanRig(t)
 	// split is an epic with a sub-issue, and the create and the move under the new issue that
@@ -968,15 +973,30 @@ func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 		})
 		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
 		rig.waiting(t, run)
-		for _, edited := range []string{"$5", "$1"} {
-			refused := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/plan/approve", map[string]any{
-				"plan": 1, "rows": []map[string]any{{"row": 2, "tick": true, "values": map[string]any{"parent": edited}}},
-			}, "alice")
+		for _, edit := range []struct {
+			parent string
+			// title is the person's edit of the first new issue's title in the same approval, ""
+			// for none.
+			title string
+			// shown are the new issues the words must name, as the page shows them.
+			shown []string
+		}{
+			{parent: "$5", shown: []string{"First edited half (new)"}},
+			{parent: "$1", title: "First renamed half", shown: []string{"Second edited half (new)", "First renamed half (new)"}},
+		} {
+			rows := []map[string]any{{"row": 2, "tick": true, "values": map[string]any{"parent": edit.parent}}}
+			if edit.title != "" {
+				rows = append([]map[string]any{{"row": 0, "tick": true, "values": map[string]any{"title": edit.title}}}, rows...)
+			}
+			refused := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/plan/approve", map[string]any{"plan": 1, "rows": rows}, "alice")
 			said := decodeBody[errorBody](t, refused)
-			if refused.Code != http.StatusBadRequest || said.Code != codeGoingPlanValues ||
-				!strings.Contains(said.Error, `"parent"`) || !strings.Contains(said.Error, strconv.Quote(edited)) {
-				t.Errorf("an approval setting parent to %s answered %d %+v, want 400 %s naming the argument and the value",
-					edited, refused.Code, said, codeGoingPlanValues)
+			facts := append([]string{"issue update " + child + ": ", `"parent"`, strconv.Quote(edit.parent)}, edit.shown...)
+			unnamed := slices.DeleteFunc(facts, func(fact string) bool { return strings.Contains(said.Error, fact) })
+			if refused.Code != http.StatusBadRequest || said.Code != codeGoingPlanValues || len(unnamed) > 0 ||
+				goingRowNumbered.MatchString(said.Error) || goingChangeNumbered.MatchString(said.Error) || strings.Contains(said.Error, "needs") {
+				t.Errorf("an approval setting parent to %s answered %d %+v, want 400 %s naming the row, the argument, the value and %v as the page does, "+
+					"no row or change by number, and no needs, which an approval cannot send; it does not name %v",
+					edit.parent, refused.Code, said, codeGoingPlanValues, edit.shown, unnamed)
 			}
 		}
 		if plan := rig.plan(t, run); plan.State != "waiting" || !slices.Equal(rowStates(plan), []string{"waiting", "waiting", "waiting"}) {

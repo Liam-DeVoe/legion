@@ -252,10 +252,13 @@ func (a *AgentListener) resolveNewIssues(ctx context.Context, request agentwire.
 // found in place of making one, and whether it found one: the create route answers 201 for an
 // issue it made and 200 for the issue it holds for the external issue the create names
 // (respondWithExistingExternalIssue). landed is the key the create's landing recorded beside a
-// status other than 201 (goingCreatedKeysSQL), "" for none. A create that found its issue commits
-// nothing, so its request records no landing (goingRunLanding.step): its status is then read off
-// the row's own record (recordRow), and its issue off the external issue it names, which resolves
-// to that issue as it did for the route; "an issue" where it no longer resolves.
+// status other than 201 (goingCreatedKeysSQL), "" for none, and is the issue where there is one.
+// A create that found its issue commits nothing, so its request records no landing
+// (goingRunLanding.step), and the record holds no key of that issue: whether it found one is read
+// off the row's own record, its status (recordRow), and the key is read now, off the external
+// issue the create's arguments name (resolveIssueRef), which is the issue Dispatch holds for it
+// now. Where the arguments do not read or that external issue no longer resolves, the issue is
+// named "an issue".
 func (a *AgentListener) foundIssue(ctx context.Context, create goingPlanRowStored, landed string) (string, bool) {
 	if landed != "" {
 		return landed, true

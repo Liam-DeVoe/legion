@@ -49,7 +49,9 @@ const NEW_ISSUE = /^\$(\d+)$/u;
 
 /** The arguments of each tool that may name a new issue of the plan as "$N": the ones whose tool
  *  takes an issue key there as a value the change writes, which the server reads "$N" in alone
- *  (going_plan.go `goingNewIssueArguments`). Every other value is text, shown as written. */
+ *  (going_plan.go `goingNewIssueArguments`). Every other value is text, shown as written. An
+ *  update's before and after show in no field of their own: its read names them as the field
+ *  rank, whose new value is the move they make (`moveText`), each issue as these show it. */
 const NEW_ISSUE_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
   dispatch_issue: ["parent", "blocked_by"],
   dispatch_issue_update: ["parent", "blocked_by", "before", "after"],
@@ -88,7 +90,9 @@ export function valueText(
 
 /** One field a row writes: its name, its value now and the value the row writes, the person's
  *  edit where they made one, whether the person can edit it (a value of text), and whether its
- *  value may name a new issue of the plan as "$N" (`NEW_ISSUE_ARGUMENTS`). */
+ *  value may name a new issue of the plan as "$N" (`NEW_ISSUE_ARGUMENTS`). An update's rank is
+ *  the move its before and after make, whose new value is that move's words (`moveText`), which
+ *  the person cannot edit: rank is no argument the change takes. */
 export interface RowChange {
   readonly field: string;
   readonly now: unknown;
@@ -100,22 +104,50 @@ export interface RowChange {
 /** The fields a new issue's row names, in the order the row shows them. */
 const NEW_ISSUE_FIELDS = ["title", "project", "parent", "priority", "labels"] as const;
 
+/** The arguments of an update that move its issue on its project's board, in the order a move
+ *  reads: the update's read names them as the one field rank (going_observe.go
+ *  `goingIssueFields`). */
+const MOVE_ARGUMENTS = ["after", "before"] as const;
+
+/** The move an update's arguments `args` make, as its rank's new value: "after <key>",
+ *  "before <key>", or both, each key as its argument shows it (`valueText`), a new issue of the
+ *  plan ("$N", `newIssues`' row N) as its title and "(new)"; undefined for a row that names
+ *  neither. */
+function moveText(args: Arguments, newIssues: ReadonlyMap<number, string>): string | undefined {
+  const takes = NEW_ISSUE_ARGUMENTS.dispatch_issue_update ?? [];
+  const places = MOVE_ARGUMENTS.filter((place) => args[place] !== undefined).map(
+    (place) => `${place} ${valueText(args[place], takes.includes(place) ? newIssues : undefined)}`
+  );
+  return places.length === 0 ? undefined : places.join(", ");
+}
+
 /** What a row changes, field by field: the fields its item's read names, each with its value now
- *  and the new value; a new issue's title, project, parent, priority and labels, none of which has
- *  a value now. A row that names no field shows its item alone. */
-export function rowChanges(row: GoingPlanRow, edits: Arguments | undefined): RowChange[] {
+ *  and the new value, an update's rank the move its before and after make (`moveText`, which
+ *  shows a new issue of the plan by its title in `newIssues`); a new issue's title, project,
+ *  parent, priority and labels, none of which has a value now. A row that names no field shows
+ *  its item alone. */
+export function rowChanges(
+  row: GoingPlanRow,
+  edits: Arguments | undefined,
+  newIssues: ReadonlyMap<number, string>
+): RowChange[] {
   const args = { ...argumentsOf(row), ...edits };
   const fields = makesIssue(row)
     ? NEW_ISSUE_FIELDS.filter((field) => args[field] !== undefined)
     : (row.fields ?? []);
   const now = objectOf(row.now);
-  return fields.map((field) => ({
-    editable: typeof args[field] === "string",
-    field,
-    namesNewIssue: NEW_ISSUE_ARGUMENTS[row.tool]?.includes(field) ?? false,
-    next: args[field],
-    now: makesIssue(row) ? undefined : (now[field] ?? (fields.length === 1 ? row.now : undefined)),
-  }));
+  return fields.map((field) => {
+    const moves = row.tool === "dispatch_issue_update" && field === "rank";
+    return {
+      editable: !moves && typeof args[field] === "string",
+      field,
+      namesNewIssue: NEW_ISSUE_ARGUMENTS[row.tool]?.includes(field) ?? false,
+      next: moves ? moveText(args, newIssues) : args[field],
+      now: makesIssue(row)
+        ? undefined
+        : (now[field] ?? (fields.length === 1 ? row.now : undefined)),
+    };
+  });
 }
 
 /** One piece of a document change: the text it takes out and the text it puts in. */

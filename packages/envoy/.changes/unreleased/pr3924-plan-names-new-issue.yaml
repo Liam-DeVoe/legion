@@ -12,7 +12,8 @@ body: |-
   stays `"$100"`. The plan is refused `CALL_REFUSED` where change `N` is no create of an issue
   before it, is not among the change's needs, or where `"$N"` names the item a change changes or
   sits inside an object, and the model is told which change, which argument and why; an approval
-  whose edit does the same is refused `GOING_PLAN_VALUES` with the same reason. A change whose
+  whose edit does the same is refused `GOING_PLAN_VALUES`, in words that name the row and each new
+  issue as the page does and say which values the argument takes there. A change whose
   create failed is skipped, and nothing of it is sent; so is a change whose create made no new
   issue because Dispatch already held one for the external issue it names, and the skip names
   that issue. The plan shows such a value as the new issue's title and "(new)", which the person

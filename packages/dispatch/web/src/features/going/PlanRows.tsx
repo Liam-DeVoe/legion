@@ -179,9 +179,9 @@ export function PlanRowView({
   const ticked = !draft.unticked.has(row.row);
   const edits = draft.edits.get(row.row);
   const document = documentChange(row, plan.summary);
-  const changes = rowChanges(row, edits);
   const rows = plan.rows ?? [];
   const newIssues = newIssueTitles(rows, draft);
+  const changes = rowChanges(row, edits, newIssues);
   const label = rowLabel(row);
   const resultMessage = rowResultMessage(row);
   return (

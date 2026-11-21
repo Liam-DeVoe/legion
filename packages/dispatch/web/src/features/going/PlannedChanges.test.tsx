@@ -322,6 +322,53 @@ test('titles "$100" and "$0" show as written, and only the parent "$0" shows the
   }
 });
 
+// An update's before and after move its issue on its project's board, and its read names them as
+// the field rank: the row shows where the move puts the issue, before or after the issue it names,
+// a new issue of the plan by its title and "(new)", and offers no edit of those words.
+test("a board move shows rank as before or after the issue it names, a new issue by its title and (new)", async () => {
+  const moves: GoingPlanAnswer = {
+    ...plan,
+    rows: [
+      ...(plan.rows ?? []).slice(0, 1),
+      row(1, {
+        arguments: { before: "CORE-9", issue: "CORE-3" },
+        fields: ["rank"],
+        issue: "CORE-3",
+        item: "CORE-3",
+        now: { rank: "a0" },
+      }),
+      row(2, {
+        arguments: { after: "$0", issue: "CORE-4" },
+        fields: ["rank"],
+        issue: "CORE-4",
+        item: "CORE-4",
+        needs: [0],
+        now: { rank: "a1" },
+      }),
+    ],
+  };
+  const { restore } = await openPlan("over", async () => moves);
+  const rank = (row: number): HTMLElement => {
+    const drawn = within(screen.getByTestId("going-plan-card-rows")).getAllByTestId(
+      "going-plan-row"
+    )[row] as HTMLElement;
+    return within(drawn)
+      .getAllByTestId("going-plan-field")
+      .find((element) => element.getAttribute("data-field") === "rank") as HTMLElement;
+  };
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    expect(within(rank(1)).getByTestId("going-plan-next").textContent).toBe("before CORE-9");
+    expect(within(rank(2)).getByTestId("going-plan-next").textContent).toBe(
+      "after The second half (new)"
+    );
+    expect(within(rank(1)).queryByRole("button", { name: "Edit rank" })).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
 // A plan that could not be read is said to be, with its Retry, in the card that would show it:
 // the conversation's plan waits, and the card is the one place the person can answer it.
 test("a plan that cannot be read says so in the card, and Retry reads it again", async () => {
