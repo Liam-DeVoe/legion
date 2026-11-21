@@ -20,10 +20,11 @@ func appendUniqueByScan(list []string, values ...string) []string {
 }
 
 // TestUniqueStringsHoldsEachDistinctValueInItsSetOnce counts what keeping values once holds: over
-// the 10,943 distinct citations a 64 KiB body of bare references makes, each added twice, the set
-// holds exactly one entry for each distinct value, and so does the list. Membership is then one
-// set lookup a value, whatever the list's length; a scan of the list for each value, which cost
-// 193 ms against 6 ms for one repeated value, holds no set at all and fails here.
+// the 10,943 distinct citations a 64 KiB body of bare references makes, each added three times,
+// the set holds exactly one entry for each distinct value, and so does the list, so membership is
+// kept in the set. A scan of the list for each value, which cost 193 ms against 6 ms for one
+// repeated value, keeps no set and fails here. A scan added beside the set passes: no count a
+// test can read sees the comparisons a scan makes.
 func TestUniqueStringsHoldsEachDistinctValueInItsSetOnce(t *testing.T) {
 	var body strings.Builder
 	for i := 10; body.Len() < 65536-8; i++ {
