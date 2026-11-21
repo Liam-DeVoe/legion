@@ -179,15 +179,15 @@ func TestWithNoPrivateProjectTheSweepResolvesAMentionAsBefore(t *testing.T) {
 		t.Fatalf("sweep: %v", err)
 	}
 	awaitBackgroundWrites(t, walk.server)
-	var state string
-	var session, failure *string
+	var state, session, failure string
 	if err := walk.database.Pool.QueryRow(ctx, `
-		select state, session_id, error from comment_deliveries where comment_id = $1::uuid and target = $2 and attempt = 1`,
+		select state, coalesce(session_id, ''), coalesce(error, '') from comment_deliveries
+		where comment_id = $1::uuid and target = $2 and attempt = 1`,
 		commentID, target).Scan(&state, &session, &failure); err != nil {
 		t.Fatalf("read attempt 1: %v", err)
 	}
-	if (state != model.DeliveryStateSent && state != "queued") || session == nil || *session != privateSession {
-		t.Errorf("PRIV public: the sweep answers alice's stranded attempt 1 %s to %v (error %v), want it sent to %s, as before",
+	if (state != model.DeliveryStateSent && state != "queued") || session != privateSession {
+		t.Errorf("PRIV public: the sweep answers alice's stranded attempt 1 %s to %q (error %q), want it sent to %s, as before",
 			state, session, failure, privateSession)
 	}
 	sent := false
