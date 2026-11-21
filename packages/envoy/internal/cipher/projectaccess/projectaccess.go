@@ -299,11 +299,11 @@ func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *
 // freshKey marks a context whose questions are asked of Dispatch whatever the cache holds (Fresh).
 type freshKey struct{}
 
-// Fresh is ctx for questions Dispatch must answer now rather than the cache: Access and
-// MemberKind under it ask Dispatch even while the cache holds a young answer, and keep what it
-// answers as any other answer is kept. It is for a check that must see a change younger than
-// CacheTTL, as the model judge's approval does when it checks the project rule again before it
-// is written (requests.Machine.ApplyJudgeDecision): the run's own reads filled the cache well
+// Fresh is ctx for questions Dispatch must answer now rather than the cache: Access, MemberKind
+// and PrivateProjects under it ask Dispatch even while the cache holds a young answer, and keep
+// what it answers as any other answer is kept. It is for a check that must see a change younger
+// than CacheTTL, as the model judge's approval does when it checks the project rule again before
+// it is written (requests.Machine.ApplyJudgeDecision): the run's own reads filled the cache well
 // inside CacheTTL, so a check that read them back could not see a project that turned private
 // while the model was asked.
 func Fresh(ctx context.Context) context.Context {
@@ -451,30 +451,40 @@ func (c *Client) States(ctx context.Context, projects []string) (map[string]Answ
 
 // PrivateProjects is every private project Dispatch holds, with the Slack channels each one's
 // owner named, from the cache while the list it kept is younger than CacheTTL, aged from before
-// its question was sent. It never answers a short list: a 401 or a 403 is ErrBrokerRefused, and
-// any other status but 200, a 404 of any code included, an answer it cannot decode, one with no
-// projects key, a null projects, a projects that is not an array and an entry with no key are each
-// an error, never kept and never an empty list, so every caller treats them as a list it could
-// not read. Only "projects": [] is the empty list. An entry with no slack_channels key is kept,
-// SlackChannelsPresent false, for the caller to fail closed on by name.
+// its question was sent, unless ctx is one Fresh made. It never answers a short list: a 401 or a
+// 403 is ErrBrokerRefused, and any other status but 200, a 404 of any code included, an answer it
+// cannot decode, one with no projects key, a null projects, a projects that is not an array and an
+// entry with no key are each an error, never kept and never an empty list, so every caller treats
+// them as a list it could not read. Only "projects": [] is the empty list. An entry with no
+// slack_channels key is kept, SlackChannelsPresent false, for the caller to fail closed on by name.
 func (c *Client) PrivateProjects(ctx context.Context) ([]PrivateProject, error) {
+	projects, _, err := c.PrivateProjectsAsOf(ctx)
+	return projects, err
+}
+
+// PrivateProjectsAsOf is PrivateProjects, answering beside the list when its question was asked:
+// the kept list's own time, or this call's, read before the question was sent. A caller that
+// decides on the list ages it as it ages any other answer (Stale), so a list kept 29 seconds is
+// not decided on 2 seconds later. It is a method of *Client alone, beside PrivateLister, so that
+// interface and every implementation of it are unchanged.
+func (c *Client) PrivateProjectsAsOf(ctx context.Context) ([]PrivateProject, time.Time, error) {
 	c.mu.Lock()
 	held := c.private
 	c.mu.Unlock()
-	if held != nil && c.now().Sub(held.at) < CacheTTL {
-		return held.projects, nil
+	if held != nil && !fresh(ctx) && c.now().Sub(held.at) < CacheTTL {
+		return held.projects, held.at, nil
 	}
 	asked := c.now()
 	projects, err := c.readPrivateProjects(ctx)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	c.mu.Lock()
 	if c.private == nil || c.private.at.Before(asked) {
 		c.private = &cachedPrivate{projects: projects, at: asked}
 	}
 	c.mu.Unlock()
-	return projects, nil
+	return projects, asked, nil
 }
 
 // PrivateProjectsFresh is every private project as Dispatch answers it now: the request and the

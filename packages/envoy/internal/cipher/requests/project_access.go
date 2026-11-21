@@ -187,34 +187,39 @@ func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []str
 // reads Dispatch further before it decides and so checks the age of everything it read at once
 // (atDecision): the approval's decision, the judge's project check and the listings.
 func (m *Machine) collectProjectFacts(ctx context.Context, e enrollmentRow, names []string, set *policy.Set) (projectFacts, error) {
-	fenced, err := m.privateChannelsNamed(ctx, names, set)
+	fenced, fenceAsked, err := m.privateChannelsNamed(ctx, names, set)
 	if err != nil {
 		return projectFacts{}, err
 	}
 	facts, err := m.credentialFacts(ctx, e, names, set)
 	facts.privateChannelsNamed = fenced
+	// The fence's answer is one the decision rests on too, so its age is the facts' when it is
+	// the older: a list kept 29 seconds and decided on after a 2-second read of the credential's
+	// projects is a 31-second-old answer, which atDecision asks again.
+	facts.asked = projectaccess.Oldest(facts.asked, fenceAsked)
 	return facts, err
 }
 
 // privateChannelsNamed reports, for a request or release of names under set, whether some private
 // project's owner names a Slack channel: read from the public fence (privateChannels) only when a
 // name of names carries a project-channels tag and has no airlock entry, the one case Evaluate
-// reads it for (policy.Requester.PrivateChannelsNamed). Every other request asks nothing here. A
-// fence the broker could not read is ErrProjectAccessUnavailable: whether such a name may leave
-// the airlock is unknown, so nothing is decided until Dispatch answers.
-func (m *Machine) privateChannelsNamed(ctx context.Context, names []string, set *policy.Set) (bool, error) {
+// reads it for (policy.Requester.PrivateChannelsNamed). Every other request asks nothing here. It
+// answers beside it when the list it read was asked, and zero when it read none. A fence the
+// broker could not read is ErrProjectAccessUnavailable: whether such a name may leave the airlock
+// is unknown, so nothing is decided until Dispatch answers.
+func (m *Machine) privateChannelsNamed(ctx context.Context, names []string, set *policy.Set) (bool, time.Time, error) {
 	outside := slices.ContainsFunc(names, func(name string) bool {
 		secret := set.Secrets[name]
 		return secret.ProjectChannels != "" && secret.AirlockDigest == ""
 	})
 	if !outside {
-		return false, nil
+		return false, time.Time{}, nil
 	}
 	fence := m.privateChannels(ctx)
 	if fence.unread {
-		return false, fmt.Errorf("%w: the private projects' Slack channels could not be read, so a project-channels secret with no airlock entry is decided once they can", ErrProjectAccessUnavailable)
+		return false, time.Time{}, fmt.Errorf("%w: the private projects' Slack channels could not be read, so a project-channels secret with no airlock entry is decided once they can", ErrProjectAccessUnavailable)
 	}
-	return len(fence.excluded) > 0, nil
+	return len(fence.excluded) > 0, fence.asked, nil
 }
 
 // credentialFacts is collectProjectFacts' read of the credential and the tagged projects.
@@ -441,10 +446,19 @@ func (m *Machine) logChannelsMissing(project string) {
 const PrivateChannelsUnreadMessage = "the broker could not read which Slack channels belong to private projects; a project-channels secret serves no call to a credential that names no private project until it can"
 
 // privateFence is the public fence one AirlockValues call reads: every Slack channel id a private
-// project's owner named, sorted and each once, and whether the broker could not read them.
+// project's owner named, sorted and each once, whether the broker could not read them, and when
+// the list it read was asked (zero when it read none, or its lister keeps no clock).
 type privateFence struct {
 	excluded []string
 	unread   bool
+	asked    time.Time
+}
+
+// privateListAsOf is a PrivateLister that also answers when the list it answers was asked:
+// *projectaccess.Client.PrivateProjectsAsOf. A lister without it is a source that keeps no clock,
+// whose answer is never stale (projectaccess.Stale).
+type privateListAsOf interface {
+	PrivateProjectsAsOf(ctx context.Context) ([]projectaccess.PrivateProject, time.Time, error)
 }
 
 // privateChannels is the public fence: the channels a credential that names no private project
@@ -469,7 +483,14 @@ func (m *Machine) privateChannels(ctx context.Context) privateFence {
 	if !declared && !m.PrivateList.SawPrivate() {
 		return privateFence{}
 	}
-	projects, err := m.PrivateList.PrivateProjects(ctx)
+	var projects []projectaccess.PrivateProject
+	var asked time.Time
+	var err error
+	if timed, ok := m.PrivateList.(privateListAsOf); ok {
+		projects, asked, err = timed.PrivateProjectsAsOf(ctx)
+	} else {
+		projects, err = m.PrivateList.PrivateProjects(ctx)
+	}
 	if err != nil {
 		m.logPrivateUnread("", err)
 		return privateFence{unread: true}
@@ -483,7 +504,7 @@ func (m *Machine) privateChannels(ctx context.Context) privateFence {
 		excluded = append(excluded, project.SlackChannels...)
 	}
 	slices.Sort(excluded)
-	return privateFence{excluded: slices.Compact(excluded)}
+	return privateFence{excluded: slices.Compact(excluded), asked: asked}
 }
 
 // logPrivateUnread writes PrivateChannelsUnreadMessage once per projectaccess.CacheTTL for project,

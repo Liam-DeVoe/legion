@@ -7,6 +7,7 @@
 package requests
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"errors"
 	"slices"
@@ -23,8 +24,9 @@ import (
 // token with no airlock entry, asked for by a session that names no project, is denied
 // project-channels-need-airlock while a private project's owner names a channel, since released
 // outside the airlock it could read that channel; it is granted as before while no private
-// project names one; a fence the broker cannot read decides nothing (503); and a grant made before
-// a private project named a channel is not released after it.
+// project names one; a fence the broker cannot read decides nothing (503); a fence answer aged
+// past projectaccess.CacheTTL is not decided on but asked again; and a grant made before a private
+// project named a channel is not released after it.
 func TestAProjectChannelsSecretLeavesTheAirlockToNoCredentialWhilePrivateChannelsAreNamed(t *testing.T) {
 	if (proxyrules.Rules{}).Digest(slackToken) != "" {
 		t.Fatalf("empty rules give %s an airlock entry; this test needs it to have none", slackToken)
@@ -60,6 +62,22 @@ func TestAProjectChannelsSecretLeavesTheAirlockToNoCredentialWhilePrivateChannel
 		}
 	})
 
+	t.Run("a fence answer aged past the bound is asked again", func(t *testing.T) {
+		b := newOutsideBroker(t, fenceRows())
+		// The first list is one kept since before PRIV named a channel, and aged past the bound
+		// by the time the decision rests on it; Dispatch, asked again, names the channel.
+		lister := &agedFence{answers: []agedList{
+			{asked: time.Now().Add(-projectaccess.CacheTTL - time.Second), projects: []projectaccess.PrivateProject{{Key: privProject, SlackChannels: []string{}, SlackChannelsPresent: true}}},
+			{asked: time.Now(), projects: []projectaccess.PrivateProject{{Key: privProject, SlackChannels: []string{privChannel}, SlackChannelsPresent: true}}},
+		}}
+		b.m.PrivateList = lister
+		request, err := b.create(t)
+		deniedFor(t, "a session naming no project asking for "+slackToken+" outside the airlock, on a fence answer aged past the bound", request, err, slackToken, policy.ReasonProjectChannelsNeedAirlock)
+		if lister.calls != 2 {
+			t.Fatalf("the fence was read %d time(s); want 2: the aged answer, then Dispatch's own", lister.calls)
+		}
+	})
+
 	t.Run("a grant made before a private project named a channel is not released after it", func(t *testing.T) {
 		b := newOutsideBroker(t, noChannels())
 		request, err := b.create(t)
@@ -72,6 +90,37 @@ func TestAProjectChannelsSecretLeavesTheAirlockToNoCredentialWhilePrivateChannel
 		}
 	})
 }
+
+// agedList is one answer agedFence gives: the list, and when its question was asked.
+type agedList struct {
+	asked    time.Time
+	projects []projectaccess.PrivateProject
+}
+
+// agedFence is a PrivateLister that answers its lists in turn, the last again for every call
+// after, each with its own time, as a *projectaccess.Client answers a list it kept: how a row
+// gives the fence an answer that aged before the decision rests on it.
+type agedFence struct {
+	answers []agedList
+	calls   int
+}
+
+func (f *agedFence) PrivateProjectsAsOf(context.Context) ([]projectaccess.PrivateProject, time.Time, error) {
+	answer := f.answers[min(f.calls, len(f.answers)-1)]
+	f.calls++
+	return answer.projects, answer.asked, nil
+}
+
+func (f *agedFence) PrivateProjects(ctx context.Context) ([]projectaccess.PrivateProject, error) {
+	projects, _, err := f.PrivateProjectsAsOf(ctx)
+	return projects, err
+}
+
+func (f *agedFence) PrivateProjectsFresh(ctx context.Context) ([]projectaccess.PrivateProject, error) {
+	return f.PrivateProjects(ctx)
+}
+
+func (f *agedFence) SawPrivate() bool { return true }
 
 // outsideBroker is a broker whose rules give the Slack token no airlock entry, whose settings
 // declare PRIV and SYNTH private, and whose session names no project.
