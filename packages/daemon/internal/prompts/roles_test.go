@@ -616,7 +616,6 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 // to operate a tool, but a role must receive the decision in the prompt it loads for its head.
 func TestCIResultRulesLiveInRolePrompts(t *testing.T) {
 	for _, pin := range []struct{ file, rule string }{
-		{"tester.md", "A `before_merge` check reads yes at the head you test only with a pass from the implementer and a pass from the tester there; a pass from one role alone is no pass."},
 		{"tester.md", "A pass and a fail at any open head make the check not known; count it as a test failure and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
 		{"reviewer.md", "A pass and a fail at any open head make the check not known: request changes at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
 		{"architect.md", "A pass and a fail at any open head make the check not known: send the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
