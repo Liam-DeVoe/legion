@@ -291,7 +291,8 @@ async function listen(server: Server, socket: string): Promise<void> {
 function proxyServer(run: DispatchProxyRun, tally: Tally): Server {
   const server = createServer((request, response) => {
     serve(request, response, run, tally).catch((error: unknown) => {
-      if (response.headersSent) response.destroy();
+      // As in giveBack's catch: `response.destroy()` would drop headers queued but not yet sent.
+      if (response.headersSent) response.socket?.destroy();
       else answerRefusal(response, DISPATCH_UNREACHABLE, messageFor(error));
     });
   });
