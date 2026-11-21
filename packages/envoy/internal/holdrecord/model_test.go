@@ -30,7 +30,12 @@ package holdrecord
 // after it. The sentinel-repair workflow (SentinelRepair) runs its one command, `consumer-names
 // repair-sentinel`, the same way: its change is the selection bucket's sentinel, one conditional
 // write, and it may fail for good before it, as when the broker's records give no sentinel or the
-// key holds no value, or after it.
+// key holds no value, or after it. The consumer-cleanup workflow (ConsumerCleanup) runs its
+// commands, `consumer-names cleanup` and `consumer-names replace`, each alone and with `--final`
+// (scenarios says why `consumer-names cleanup --gone` is left out), the same way: its change is the
+// consumer names it deletes or creates and the records it writes, and it may fail for good before
+// it, as when a store a family needs cannot be read, or after it, as when a delete is refused after
+// others succeeded.
 //
 // It explores every reachable state breadth-first, for every workflow, with two operator
 // processes. An admission is what the code does: with AtomicAdmit, one compare-and-swap step that
@@ -80,7 +85,7 @@ var (
 	v62 = func() rules {
 		r := currentRules
 		r.Name, r.WayOut, r.EveryCommandStoppable, r.EndIsFinal, r.BackupCommand = "v62", false, false, false, false
-		r.Enroll, r.SentinelRepair = false, false
+		r.Enroll, r.SentinelRepair, r.ConsumerCleanup = false, false, false
 		return r
 	}()
 )
@@ -442,6 +447,16 @@ func scenarios(r rules, fail, ownRunOnly bool) []modelScenario {
 	if r.SentinelRepair {
 		out = append(out, modelScenario{Name: "sentinel-repair", W: WorkflowSentinelRepair, Slots: slots, Init: []modelState{prep},
 			Ops: ops("consumer-names repair-sentinel")})
+	}
+	if r.ConsumerCleanup {
+		// Two of its three commands, each alone and with --final. tableFor builds the three
+		// commands' rows in one loop, so cleanup --gone's rows are cleanup's, and no transition here
+		// names any of them. All six names find no counterexample at bounds 2 and 3 too, but they
+		// add 1,492,844 states at bound 2 and 2,066,898 at bound 3, and the test's peak memory goes
+		// from 3 GB to 16 GB; the journal's rows run all six (journal_test.go,
+		// TestAConsumerCleanupCompletesOnARunWithFinal).
+		out = append(out, modelScenario{Name: "consumer-cleanup", W: WorkflowConsumerCleanup, Slots: slots, Init: []modelState{prep},
+			Ops: ops("consumer-names cleanup", "consumer-names cleanup --final", "consumer-names replace", "consumer-names replace --final")})
 	}
 	out = append(out, hub)
 	for i := range out {
@@ -1713,23 +1728,29 @@ var (
 // 114 counterexamples to the control without WayOut (190,795 and 14,631), 922 states and no
 // counterexample to the one without EveryCommandStoppable (165,266 and 7,058), since its row makes
 // its command Stoppable, and 1,018 states and 12 counterexamples to OwnRunOnly (220,595 and 156).
+// The consumer-cleanup workflow then added 117,852 states to the current rules (211,682 before),
+// 93,203 states and no counterexample to the control without WayOut (191,448 and 14,745), since
+// another command's run with --final ends a failed one, 117,852 states and no counterexample to the
+// one without EveryCommandStoppable (166,188 and 7,058), since its rows make its commands
+// Stoppable, and 170,594 states and 48 counterexamples to OwnRunOnly (221,613 and 168).
 var pinnedBound2 = map[string]modelCount{
-	"v66":                       {211682, 0, nil},
-	"v66-WayOut":                {191448, 14745, map[string]int{classWayOut: 14745}},
-	"v66-EveryCommandStoppable": {166188, 7058, map[string]int{classWayOut: 7058}},
-	"v66-OwnRunOnly":            {221613, 168, map[string]int{classEveryRun: 168}},
+	"v66":                       {329534, 0, nil},
+	"v66-WayOut":                {284651, 14745, map[string]int{classWayOut: 14745}},
+	"v66-EveryCommandStoppable": {284040, 7058, map[string]int{classWayOut: 7058}},
+	"v66-OwnRunOnly":            {392207, 216, map[string]int{classEveryRun: 216}},
 }
 
 // The current rules' runs by workflow, pinned from this model at bounds 2 and 3.
 var (
 	pinnedCurrentBound2 = map[string]int{"cutover": 55228, "rollback": 6625, "selection-recovery": 9415, "buckets-create": 922,
 		"buckets-recreate": 2730, "buckets-restore": 4117, "streams-update": 922, "streams-census": 1302, "hub-restore": 128577,
-		"enroll": 922, "sentinel-repair": 922}
+		"enroll": 922, "sentinel-repair": 922, "consumer-cleanup": 117852}
 	pinnedCurrentBound3 = map[string]int{"cutover": 78968, "rollback": 9216, "selection-recovery": 12992, "buckets-create": 1270,
 		"buckets-recreate": 3750, "buckets-restore": 5658, "streams-update": 1270, "streams-census": 1799, "hub-restore": 765341,
-		"enroll": 1270, "sentinel-repair": 1270}
-	// pinnedCurrentBound3Total was 881,534 before the sentinel-repair workflow's 1,270 states.
-	pinnedCurrentBound3Total = 882804
+		"enroll": 1270, "sentinel-repair": 1270, "consumer-cleanup": 162794}
+	// pinnedCurrentBound3Total was 881,534 before the sentinel-repair workflow's 1,270 states, and
+	// 882,804 before the consumer-cleanup workflow's 162,794.
+	pinnedCurrentBound3Total = 1045598
 )
 
 // The model of the hold's workflows, run on this package's journal and table. The frozen bundle's
@@ -1737,18 +1758,21 @@ var (
 // (31,948 states) and at three (139,812), and every earlier rule set and every rule set with one of
 // v62's fixes removed is a control that finds a counterexample of each class it names, asserted by
 // the class's name, with the bundle's counts. The current rules add WayOut, EveryCommandStoppable,
-// EndIsFinal, BackupCommand and the enroll and sentinel-repair workflows, and are run with a command
-// of any workflow but hub-restore that fails for good after its intent: they find no counterexample,
-// at bounds 2 and 3, with pinned state counts. Their controls without WayOut and without
-// EveryCommandStoppable find the stranded hold (classWayOut), the first in every workflow but
-// hub-restore and the second in cutover, rollback, selection-recovery and both streams workflows,
-// whose rows do not make their commands Stoppable as the buckets, enroll and sentinel-repair rows
-// do; their control in which a stop records its own run alone (OwnRunOnly) finds hold release moving
-// the row over an earlier run's change (classEveryRun). At every hub-restore state of the current
-// rules the package's Step1, Proven, Epoch, Expected and Moved read the record as the model does.
+// EndIsFinal, BackupCommand and the enroll, sentinel-repair and consumer-cleanup workflows, and are
+// run with a command of any workflow but hub-restore that fails for good after its intent: they
+// find no counterexample, at bounds 2 and 3, with pinned state counts. Their controls without
+// WayOut and without EveryCommandStoppable find the stranded hold (classWayOut), the first in every
+// workflow but hub-restore and consumer-cleanup and the second in cutover, rollback,
+// selection-recovery and both streams workflows, whose rows do not make their commands Stoppable as
+// the buckets, enroll, sentinel-repair and consumer-cleanup rows do. In consumer-cleanup a command
+// that fails for good strands nothing even without WayOut: another command's run with --final
+// completes the record, and hold release follows it. Their control in which a stop records its own
+// run alone (OwnRunOnly) finds hold release moving the row over an earlier run's change
+// (classEveryRun). At every hub-restore state of the current rules the package's Step1, Proven,
+// Epoch, Expected and Moved read the record as the model does.
 func TestTheHoldJournalModel(t *testing.T) {
 	if currentRules.Name != "v66" || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal || v62.BackupCommand ||
-		v62.Enroll || v62.SentinelRepair {
+		v62.Enroll || v62.SentinelRepair || v62.ConsumerCleanup {
 		t.Fatalf("the current rules are %q, and v62 carries a rule added since; the counts below are v62's and v66's", currentRules.Name)
 	}
 	for _, w := range tableFor(currentRules).Workflows() {
@@ -1835,6 +1859,12 @@ func TestTheHoldJournalModel(t *testing.T) {
 					if got.classIn[classWayOut][w] == 0 {
 						t.Errorf("control %s found no %s in %s", p.Name, classWayOut, w)
 					}
+				}
+				// consumer-cleanup's way out of a failed command needs no WayOut: another command's
+				// run with --final completes the record, and hold release follows it.
+				if n := got.classIn[classWayOut]["consumer-cleanup"]; n != 0 {
+					t.Errorf("control %s found %d of %s in consumer-cleanup, where another command's final run ends a failed one",
+						p.Name, n, classWayOut)
 				}
 			}
 		})

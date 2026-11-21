@@ -344,7 +344,8 @@ func TestTheHoldJournal(t *testing.T) {
 		for i, w := range []holdrecord.Workflow{holdrecord.WorkflowCutover, holdrecord.WorkflowRollback,
 			holdrecord.WorkflowSelectionRecovery, holdrecord.WorkflowBucketsCreate, holdrecord.WorkflowBucketsRecreate,
 			holdrecord.WorkflowBucketsRestore, holdrecord.WorkflowStreamsUpdate, holdrecord.WorkflowHubRestore,
-			holdrecord.WorkflowStreamsCensus, holdrecord.WorkflowEnroll, holdrecord.WorkflowSentinelRepair} {
+			holdrecord.WorkflowStreamsCensus, holdrecord.WorkflowEnroll, holdrecord.WorkflowSentinelRepair,
+			holdrecord.WorkflowConsumerCleanup} {
 			holdID := "h-order-" + strconv.Itoa(i)
 			prepare(t, c, holdID, w, twoDisks)
 			// hold set's own check refused in held: its stop entry ends its intent with no done.
@@ -1370,5 +1371,153 @@ func TestASentinelRepairStopLeavesTheHoldReleasable(t *testing.T) {
 		_, err := c.Admit(ctx, "h-repair-done", cmd(cmdRepairSentinel), nil)
 		refused(t, "repair-sentinel after its done entry", err, holdrecord.ErrAlreadyDone, "complete")
 		release(t, c, "h-repair-done")
+	})
+}
+
+// The consumer-cleanup workflow's commands, as its table names them: each word with the flag that
+// picks its mode, and each run with --final, as selection-recovery's table names replay --final.
+const (
+	cmdCleanup     = "consumer-names cleanup"
+	cmdCleanupGone = "consumer-names cleanup --gone"
+	cmdReplace     = "consumer-names replace"
+	finalRun       = " --final"
+)
+
+// consumer-cleanup on the broker's own routes over Postgres. Inside the workflow each of cleanup,
+// cleanup --gone and replace is admitted, writes its intent and its done entry, and is admitted
+// again (Repeatable). Control: none of those done entries completes the record, so without a run
+// with --final hold release is refused ErrOutOfOrder. A run with --final completes the record in
+// its done entry's write, with hold_gen the row's gen, and hold release is then admitted; after
+// completion a run is admitted again, as replay is in selection-recovery, and leaves the record
+// incomplete until the next run with --final. A refused run stops, and hold release then follows
+// the general stop rule (TestAnEnrollStopLeavesTheHoldReleasable): admitted after a stop that left
+// nothing changed; control: refused after a stop that recorded a change, where hold abort, carrying
+// the stop's record, ends the hold. A stopped run runs again. Control: a cutover hold's table names
+// none of the commands, so they are refused there ErrNotAdmitted.
+func TestAConsumerCleanupCompletesOnARunWithFinal(t *testing.T) {
+	ctx := context.Background()
+	const (
+		reason  = "a retired name's delete was refused"
+		changed = "deleted dsp_a~1 from the notification stream; dsp_b~2 left retired"
+	)
+	commands := []string{cmdCleanup, cmdCleanupGone, cmdReplace}
+	inputs := map[string]map[string]string{cmdCleanup: nil, cmdCleanupGone: {"daemon": "P"}, cmdReplace: {"listener": "m-1"}}
+	releaseRefused := func(t *testing.T, c *holdrecord.Client, holdID, after string) {
+		t.Helper()
+		_, err := c.Admit(ctx, holdID, cmd(holdrecord.CommandRelease), nil)
+		refused(t, holdID+": hold release after "+after, err, holdrecord.ErrOutOfOrder, "the record is not complete")
+	}
+	released := func(t *testing.T, c *holdrecord.Client, holdID string) {
+		t.Helper()
+		if after := row(t, c); after.Phase != natsgrant.OperatorPhaseReleased {
+			t.Fatalf("%s: after the hold's end the row is %s", holdID, after.Phase)
+		}
+	}
+
+	t.Run("each command runs again, and only a run with --final completes the record", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		held := hold(t, c, "h-cleanup", holdrecord.WorkflowConsumerCleanup, nil)
+		for round := 1; round <= 2; round++ {
+			for _, command := range commands {
+				if w, err := c.Admit(ctx, "h-cleanup", cmd(command), inputs[command]); err != nil || w != holdrecord.WorkflowConsumerCleanup {
+					t.Fatalf("run %d of %s: Admit = %q, %v", round, command, w, err)
+				}
+				d, _ := journal(t, c, "h-cleanup")
+				if e := last(t, d); e.Command != command || e.State != "intent" {
+					t.Fatalf("run %d of %s: the journal ends %+v, want its intent", round, command, e)
+				}
+				if err := c.AppendDone(ctx, "h-cleanup", command, map[string]string{"removed": "dsp_a~1"}); err != nil {
+					t.Fatalf("run %d of %s: its done entry: %v", round, command, err)
+				}
+				d, _ = journal(t, c, "h-cleanup")
+				if e := last(t, d); d.Complete || e.Command != command || e.State != "done" {
+					t.Fatalf("run %d of %s: complete %v, the journal ending %+v", round, command, d.Complete, e)
+				}
+				releaseRefused(t, c, "h-cleanup", command+" with no run with --final")
+			}
+		}
+		for i, command := range []string{cmdReplace, cmdCleanup, cmdCleanupGone} {
+			if i > 0 { // after completion a run is admitted again, and leaves the record incomplete
+				run(t, c, "h-cleanup", cmd(command), inputs[command], nil)
+				if d, _ := journal(t, c, "h-cleanup"); d.Complete {
+					t.Fatalf("%s after completion left the record complete", command)
+				}
+				releaseRefused(t, c, "h-cleanup", command+" after completion")
+			}
+			final := command + finalRun
+			if _, err := c.Admit(ctx, "h-cleanup", cmd(final), inputs[command]); err != nil {
+				t.Fatalf("Admit of %s: %v", final, err)
+			}
+			_, gen := journal(t, c, "h-cleanup")
+			if err := c.AppendDone(ctx, "h-cleanup", final, nil); err != nil {
+				t.Fatalf("%s's done entry: %v", final, err)
+			}
+			d, after := journal(t, c, "h-cleanup")
+			if e := last(t, d); !d.Complete || d.HoldGen == 0 || d.HoldGen != held.Gen || after != gen+1 || e.Command != final ||
+				e.State != "done" {
+				t.Fatalf("after %s's done entry: complete %v, hold_gen %d (row gen %d), record gen %d from %d, ending %+v",
+					final, d.Complete, d.HoldGen, held.Gen, after, gen, e)
+			}
+		}
+		release(t, c, "h-cleanup")
+		released(t, c, "h-cleanup")
+	})
+
+	t.Run("a stop that left nothing changed leaves hold release admitted", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		for i, command := range commands {
+			holdID := "h-cleanup-unchanged-" + strconv.Itoa(i)
+			stoppedIn(t, c, holdID, holdrecord.WorkflowConsumerCleanup, command, inputs[command], reason, holdrecord.LeftUnchanged)
+			d, _ := journal(t, c, holdID)
+			if e := last(t, d); d.Complete || e.Command != command || e.State != "stop" || e.Outputs["left"] != holdrecord.LeftUnchanged {
+				t.Fatalf("after %s's stop: complete %v, the journal ending %+v", command, d.Complete, e)
+			}
+			release(t, c, holdID)
+			released(t, c, holdID)
+		}
+	})
+
+	t.Run("control: a stop that records a change keeps hold release refused, and hold abort ends the hold", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		for i, command := range commands {
+			holdID := "h-cleanup-changed-" + strconv.Itoa(i)
+			stoppedIn(t, c, holdID, holdrecord.WorkflowConsumerCleanup, command, inputs[command], reason, changed)
+			releaseRefused(t, c, holdID, command+"'s stop")
+			abortAfterStop(t, c, holdID, command, changed)
+			released(t, c, holdID)
+		}
+	})
+
+	t.Run("a stopped run runs again, and a run with --final then completes the record", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		stoppedIn(t, c, "h-cleanup-rerun", holdrecord.WorkflowConsumerCleanup, cmdCleanupGone, inputs[cmdCleanupGone], reason, changed)
+		run(t, c, "h-cleanup-rerun", cmd(cmdCleanupGone), inputs[cmdCleanupGone], nil)
+		releaseRefused(t, c, "h-cleanup-rerun", "the rerun's done entry")
+		run(t, c, "h-cleanup-rerun", cmd(cmdCleanupGone+finalRun), inputs[cmdCleanupGone], nil)
+		if d, _ := journal(t, c, "h-cleanup-rerun"); !d.Complete {
+			t.Fatalf("%s after the rerun did not complete the record", cmdCleanupGone+finalRun)
+		}
+		release(t, c, "h-cleanup-rerun")
+		released(t, c, "h-cleanup-rerun")
+	})
+
+	t.Run("control: a cutover hold refuses every consumer-cleanup command", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-cleanup-cutover", holdrecord.WorkflowCutover, nil)
+		_, before := journal(t, c, "h-cleanup-cutover")
+		for _, command := range commands {
+			for _, name := range []string{command, command + finalRun} {
+				_, err := c.Admit(ctx, "h-cleanup-cutover", cmd(name), inputs[command])
+				refused(t, "Admit of "+name+" in cutover", err, holdrecord.ErrNotAdmitted, "cutover")
+			}
+		}
+		if _, after := journal(t, c, "h-cleanup-cutover"); after != before {
+			t.Fatalf("the refused admissions wrote: the record's gen moved from %d to %d", before, after)
+		}
 	})
 }

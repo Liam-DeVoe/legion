@@ -31,6 +31,16 @@ const (
 	// every run of it left (AppendStopLeft), and its way out is enroll's: `hold release` after a stop
 	// that left nothing changed, else its rerun or `hold abort`.
 	WorkflowSentinelRepair Workflow = "sentinel-repair"
+	// WorkflowConsumerCleanup removes and replaces consumer names after the window: its commands,
+	// `consumer-names cleanup` (the names every family's records retired), `consumer-names cleanup
+	// --gone` (the consumers of a daemon store that is gone) and `consumer-names replace` (one
+	// listener's durable, by a fresh name), are each Repeatable and Stoppable, and each run writes
+	// its intent and its done entry. A run of any of them with `--final` completes the record, as
+	// `replay --final` completes a selection-recovery hold, and after completion each is admitted
+	// again, leaving the record incomplete until the next run with `--final`. Its stops and its way
+	// out are enroll's: `hold release` once the record is complete or after stops that left nothing
+	// changed, else a rerun or `hold abort`.
+	WorkflowConsumerCleanup Workflow = "consumer-cleanup"
 )
 
 // Operation is one journal entry. State is `intent`, `done` or `stop`. An `intent` entry carries

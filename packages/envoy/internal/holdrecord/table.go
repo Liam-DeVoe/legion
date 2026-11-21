@@ -1,6 +1,9 @@
 package holdrecord
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // rules are the rule choices that changed between versions of the hold's design, so the model in
 // model_test.go runs the table of each version and of each rule set with one fix removed.
@@ -58,24 +61,41 @@ type rules struct {
 	// value was stored over it. A workflow, not a fix, so no control removes it; its stop and its way
 	// out are enroll's.
 	SentinelRepair bool
+	// ConsumerCleanup: the consumer-cleanup workflow, whose commands, `consumer-names cleanup`,
+	// `consumer-names cleanup --gone` and `consumer-names replace`, delete and replace consumer
+	// names after the window. Each is Repeatable and Stoppable, and its run with --final is final
+	// and Repeatable too, as selection-recovery's replay --final is, so after completion each is
+	// admitted again and a run with --final completes the record again (afterComplete). A
+	// workflow, not a fix, so no control removes it; its stops and its way out are enroll's.
+	ConsumerCleanup bool
 }
 
 // currentRules are the hold's rules as its design stands: the frozen model's v62 (every fix, with
 // no account move) and the rules added since, WayOut, EveryCommandStoppable, EndIsFinal,
-// BackupCommand, the enroll workflow (v66) and the sentinel-repair workflow. The name stays v66: a
-// workflow adds states to the model's pinned counts, which are re-frozen under it, and changes no
-// rule a control removes.
+// BackupCommand, the enroll workflow (v66), the sentinel-repair workflow and the consumer-cleanup
+// workflow. The name stays v66: a workflow adds states to the model's pinned counts, which are
+// re-frozen under it, and changes no rule a control removes.
 var currentRules = rules{Name: "v66", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true,
 	AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true, AtomicAdmit: true, Serialize: true,
 	StopEntries: true, SetCommand: true, Step1Whole: true, ExpectedMap: true, ConvertStoppable: true,
 	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, WayOut: true, EveryCommandStoppable: true,
-	EndIsFinal: true, BackupCommand: true, Enroll: true, SentinelRepair: true}
+	EndIsFinal: true, BackupCommand: true, Enroll: true, SentinelRepair: true, ConsumerCleanup: true}
 
 var current = tableFor(currentRules)
 
 // commandBackup is `envoy-infra buckets backup` (BackupCommand). Its stop records LeftUnchanged:
 // it writes only the archive and its manifest, outside the hub.
 const commandBackup = "buckets backup"
+
+// consumerCleanupCommands are the consumer-cleanup workflow's commands as its journal names them:
+// the word and the flag that picks its mode, as rollback's `restore --key` is named, and none of the
+// flags that only carry a value, as replay's --key is not (replace's --listener, the one mode it
+// has). Each is in the table twice: alone, and with finalRun.
+var consumerCleanupCommands = []string{"consumer-names cleanup", "consumer-names cleanup --gone", "consumer-names replace"}
+
+// finalRun is the flag a consumer-cleanup command's final run adds to its name, as selection-recovery
+// names `replay --final`.
+const finalRun = " --final"
 
 type entry struct {
 	name       string
@@ -155,6 +175,17 @@ func tableFor(r rules) table {
 		// As enroll's: final and not Repeatable, and admitted again after a stop or a crash.
 		rows[WorkflowSentinelRepair] = []entry{{name: "consumer-names repair-sentinel", final: true, stoppable: stop}}
 	}
+	if r.ConsumerCleanup {
+		// Each command Repeatable, and its run with --final final and Repeatable, as replay and
+		// replay --final are in selection-recovery; neither requires the other, so a hold may run
+		// any of them first, and a command that fails for good leaves another one's final run.
+		var cleanup []entry
+		for _, c := range consumerCleanupCommands {
+			cleanup = append(cleanup, entry{name: c, repeatable: true, stoppable: stop},
+				entry{name: c + finalRun, final: true, repeatable: true, stoppable: stop})
+		}
+		rows[WorkflowConsumerCleanup] = cleanup
+	}
 	if r.WayOut { // hold abort, every workflow's way out; hub-restore names it already
 		for w := range rows {
 			if w != WorkflowHubRestore {
@@ -190,6 +221,9 @@ func (t table) Workflows() []Workflow {
 	}
 	if t.Rules.SentinelRepair {
 		out = append(out, WorkflowSentinelRepair)
+	}
+	if t.Rules.ConsumerCleanup {
+		out = append(out, WorkflowConsumerCleanup)
 	}
 	return out
 }
@@ -384,6 +418,8 @@ func (t table) afterComplete(d Done, req modelRequest) bool {
 		return true
 	case d.Workflow == WorkflowHubRestore && req.Command == CommandProve && !req.Plain && req.DisksMoved && t.Rules.ProveEpochs:
 		return true
+	case d.Workflow == WorkflowConsumerCleanup && slices.Contains(consumerCleanupCommands, strings.TrimSuffix(req.Command, finalRun)):
+		return true // each command and its final run, Repeatable, so a final run can follow again
 	}
 	return false
 }
