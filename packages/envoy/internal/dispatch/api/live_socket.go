@@ -108,10 +108,11 @@ type liveSocket struct {
 	// waiting.
 	closed chan struct{}
 	// deadline orders the pong handler's extension of the read deadline with the last one the
-	// writer sets once it has closed; closing stops further extensions. readsEnd is that deadline:
-	// a timer on clock (Deps.LiveSocketClock, clock.Real() where that is nil) that ends the page's
-	// reads once it fires, as a read deadline on the connection does once it passes (endReadsNow),
-	// and each awaitPong and endReads moves it, as each SetReadDeadline replaces the one before.
+	// writer sets once it has closed, or the drain of a frame past the read limit (drainReads);
+	// closing stops further extensions. readsEnd is that deadline: a timer on clock
+	// (Deps.LiveSocketClock, clock.Real() where that is nil) that ends the page's reads once it
+	// fires, as a read deadline on the connection does once it passes (endReadsNow), and each
+	// awaitPong, endReads and drainReads moves it, as each SetReadDeadline replaces the one before.
 	deadline sync.Mutex
 	closing  bool
 	clock    clock.Clock
@@ -254,6 +255,18 @@ func (socket *liveSocket) stopReadDeadline() {
 	if socket.readsEnd != nil {
 		socket.readsEnd.Stop()
 	}
+}
+
+// drainReads gives the rest of a frame past the read limit wait from now to arrive, on the
+// socket's clock: the drain's deadline replaces the pong deadline, as a SetReadDeadline replaces
+// the one before, so a pong deadline that falls due inside the drain does not cut it short. A read
+// deadline the pong deadline already set, had it passed before the drain began, is lifted with it.
+func (socket *liveSocket) drainReads(wait time.Duration) {
+	socket.deadline.Lock()
+	defer socket.deadline.Unlock()
+	socket.closing = true
+	_ = socket.conn.SetReadDeadline(time.Time{})
+	socket.endReadsInLocked(wait)
 }
 
 // close sends the page a close frame with code and reason, and waits for its reply.
@@ -453,7 +466,7 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(readErr, gws.ErrReadLimit) {
 		// The rest of the frame past the limit is still arriving. Reading it off before closing makes
 		// the close a FIN behind the 1009 gorilla wrote, not a reset that can overtake it.
-		_ = conn.NetConn().SetReadDeadline(time.Now().Add(liveSocketCloseWait))
+		socket.drainReads(liveSocketCloseWait)
 		_, _ = io.Copy(io.Discard, conn.NetConn())
 	}
 }

@@ -371,7 +371,9 @@ func TestStopAndReset(t *testing.T) {
 
 // StepWall moves what Now reads, forward and back, and fires no timer: the timers stay on the
 // fake's own moment, as Go's run on the monotonic clock whatever the wall clock does, and fire
-// when a move of that moment reaches them.
+// when a move of that moment reaches them. What a channel timer sends carries the steps, as Go's
+// sends the moment it fell due read on the wall clock as it sends (time.sendTime): both the timer
+// a move fires and one armed for a moment the fake has already reached, which fires as it is armed.
 func TestStepWallMovesNowAndFiresNoTimer(t *testing.T) {
 	c := clocktest.New(epoch)
 	channel := c.NewTimer(time.Minute)
@@ -396,13 +398,17 @@ func TestStepWallMovesNowAndFiresNoTimer(t *testing.T) {
 	}
 
 	c.Advance(time.Minute)
-	if got := testwait.Receive(t, "the channel timer's send once the fake's own moment reached it", channel.C()); !got.Equal(epoch.Add(time.Minute)) {
-		t.Errorf("the channel timer sent %s, want its deadline on the fake's own moment, %s", got, epoch.Add(time.Minute))
+	stepped := epoch.Add(-time.Hour + time.Minute)
+	if got := testwait.Receive(t, "the channel timer's send once the fake's own moment reached it", channel.C()); !got.Equal(stepped) {
+		t.Errorf("the channel timer sent %s, want its deadline plus the steps, %s", got, stepped)
+	}
+	if got := testwait.Receive(t, "the send of a channel timer armed for the moment the fake has reached", c.NewTimer(0).C()); !got.Equal(stepped) {
+		t.Errorf("a channel timer armed for the fake's present sent %s, want that moment plus the steps, %s", got, stepped)
 	}
 	if !ran {
 		t.Error("the AfterFunc did not run once the fake's own moment reached it")
 	}
-	if now := c.Now(); !now.Equal(epoch.Add(-time.Hour + time.Minute)) {
-		t.Errorf("after the move the fake reads %s, want its moment plus the steps, %s", now, epoch.Add(-time.Hour+time.Minute))
+	if now := c.Now(); !now.Equal(stepped) {
+		t.Errorf("after the move the fake reads %s, want its moment plus the steps, %s", now, stepped)
 	}
 }

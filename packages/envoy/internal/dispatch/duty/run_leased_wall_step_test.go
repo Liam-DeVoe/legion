@@ -29,9 +29,9 @@ var wallStepStart = time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 // read: the ran line and the served skip.
 var leasedLine = regexp.MustCompile(`msg="dispatch duty: leased pass (ran|skipped)" lease=` + wallStepLease + ` due=(\S+) period=(\S+)`)
 
-// wallStepTick is one fire of one loop: the wall clock's reading at it (the fake's moment plus
-// every step), what the loop handed Exclusive there (due) and the period that fell in, and whether
-// its pass ran.
+// wallStepTick is one fire of one loop: the moment it fired on the wall clock (its deadline on the
+// fake's own moment, plus every step), what the loop handed Exclusive there (due) and the period
+// that fell in, and whether its pass ran.
 type wallStepTick struct {
 	wall, due, period time.Time
 	ran               bool
@@ -110,17 +110,18 @@ func (r *wallStepRig) tick(t *testing.T, loops int) wallStepTick {
 	return wallStepTick{wall: at.Add(r.stepped), due: due, period: period, ran: fields[1] == "ran"}
 }
 
-// requireBucketsOnTheWall holds the rule both rows check. Each fire hands Exclusive the wall
-// clock's reading at it, so it buckets into the wall's period, and every fire in one wall period,
-// whichever process made it, takes that one period. Every wall period a fire falls in runs once:
-// the first fire into it runs, and every later one, of either process, is refused.
+// requireBucketsOnTheWall holds the rule both rows check. Each fire hands Exclusive the moment it
+// fired, read on the wall clock, so it buckets into the wall's period at its fire, and every fire
+// in one wall period, whichever process made it and whenever that process took it, takes that one
+// period. Every wall period a fire falls in runs once: the first fire into it runs, and every later
+// one, of either process, is refused.
 func requireBucketsOnTheWall(t *testing.T, ticks []wallStepTick) {
 	t.Helper()
 	runs := map[time.Time]int{}
 	for i, tick := range ticks {
 		wallPeriod := duty.PeriodBoundary(tick.wall, wallStepInterval)
 		if !tick.due.Equal(tick.wall) || !tick.period.Equal(wallPeriod) {
-			t.Errorf("fire %d, at %s on the wall clock, handed Exclusive %s and took the period at %s; want the wall's reading and its period, at %s",
+			t.Errorf("fire %d, at %s on the wall clock, handed Exclusive %s and took the period at %s; want the moment it fired on the wall clock and its period, at %s",
 				i+1, tick.wall.Format(time.TimeOnly), tick.due.UTC().Format(time.TimeOnly), tick.period.UTC().Format(time.TimeOnly), wallPeriod.Format(time.TimeOnly))
 		}
 		if first := runs[wallPeriod] == 0; tick.ran != first {
@@ -134,11 +135,12 @@ func requireBucketsOnTheWall(t *testing.T, ticks []wallStepTick) {
 }
 
 // A step forward of the wall clock between two of a loop's fires. Each fire hands Exclusive the
-// clock's reading at it, so each process buckets on the wall clock, as the time.Ticker this loop
-// ran on before handed the time it sent each tick. A second process, started after the step, whose
-// grid began on the stepped clock, takes the first process's period at every fire it makes there.
-// The wall period the step jumped over has no fire in it and so no run: that is the ticker's
-// behaviour, whose tick after a step carries the stepped wall, and not a period this loop skips.
+// moment it fired, read on the stepped wall clock, as the time.Ticker this loop ran on before
+// handed the value it sent each tick, so each process buckets on the wall clock. A second process,
+// started after the step, whose grid began on the stepped clock, takes the first process's period
+// at every fire it makes there. The wall period the step jumped over has no fire in it and so no
+// run: that is the ticker's behaviour, whose tick after a step carries the stepped wall, and not a
+// period this loop skips.
 //
 // A grid's due handed instead puts the second process one period off the first: the first's grid
 // began before the step, so its fire after the step hands the period the wall stepped over.

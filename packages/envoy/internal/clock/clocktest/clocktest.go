@@ -98,8 +98,10 @@ func (c *Fake) Now() time.Time {
 // StepWall steps the wall clock that Now reads by d, forward or back, as an operator or NTP steps
 // a machine's clock, and fires no timer. The timers, Armed, AwaitArmed, Advance, Set and SetWhen
 // stay on the fake's own moment, as Go's timers run on the monotonic clock whatever the wall clock
-// does, and a channel timer sends its deadline on that moment. A fake that never steps is a fake
-// whose Now is its moment.
+// does. What a channel timer sends carries the steps, as what Go's sends does: Go sends the moment
+// a timer fell due read on the wall clock as it sends (time.sendTime, Now less the lateness), so a
+// channel timer here sends its deadline plus every step made. A fake that never steps is a fake
+// whose Now is its moment, and whose channel timers send their deadlines.
 //
 // What the fake cannot model: a Go time.Time that time.Now returns carries a monotonic reading
 // beside its wall one, and Go compares and subtracts two such times by the monotonic one, so code
@@ -187,7 +189,7 @@ func (c *Fake) moveLocked(target time.Time, back bool) {
 			// Under the lock, so a Stop or Reset that returned before it never leaves this value
 			// behind for a later receive.
 			select {
-			case next.c <- next.at:
+			case next.c <- next.at.Add(c.stepped):
 			default:
 			}
 			c.mu.Unlock()
@@ -320,7 +322,7 @@ func (c *Fake) placeLocked(t *timer, at time.Time) func() {
 	switch {
 	case t.c != nil:
 		select {
-		case t.c <- at:
+		case t.c <- at.Add(c.stepped):
 		default:
 		}
 		return func() {}
