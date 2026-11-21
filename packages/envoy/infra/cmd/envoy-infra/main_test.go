@@ -130,7 +130,7 @@ func TestHelpNamesVersion(t *testing.T) {
 		"usage: envoy-infra --version\n",
 		"usage: envoy-infra seed {check|generate|verify}",
 		"usage: envoy-infra render {nats-start-script|webhook-listener-env|metric-filters}",
-		"envoy-infra streams check  --nats-url <urls>",
+		"envoy-infra streams check --nats-url <urls>",
 		"usage: envoy-infra buckets create|recreate|restore [--hold ID] --reason R [options]",
 		"usage: envoy-infra hold status|prepare|set|abort|release|restore|prove|keygen",
 		"usage: envoy-infra routes record --namespace <ns> --statefulset <name> --out <file>",
