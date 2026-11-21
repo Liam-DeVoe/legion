@@ -318,6 +318,14 @@ const EVERY_SESSION: readonly LegionToolSession[] = [
   { kind: "controller", sessionID: "ses_controller" },
 ];
 
+/** Each session kind with the article a refusal names it with: "an architect", "a phase-worker",
+ * "a controller". */
+const KIND_WORDS: Readonly<Record<LegionToolSession["kind"], string>> = {
+  architect: "an architect",
+  "phase-worker": "a phase-worker",
+  controller: "a controller",
+};
+
 const toolFor = (active: LegionToolSession) =>
   createLegionTool({
     pi,
@@ -675,7 +683,12 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   for (const session of [architect, worker]) {
     await expect(run(session, { op: "read_state" })).resolves.toMatchObject({
       isError: true,
-      content: [{ type: "text", text: `read_state is not available to a ${session.kind} session` }],
+      content: [
+        {
+          type: "text",
+          text: `read_state is not available to ${KIND_WORDS[session.kind]} session`,
+        },
+      ],
     });
     await expect(
       run(session, { op: "set_status", issue: "LEGION-208", status: "todo" })
@@ -2217,7 +2230,10 @@ test("pause and resume are offered to no architect and no phase worker", async (
     for (const parameters of [{ op: "pause", reason: "the provider is down" }, { op: "resume" }]) {
       await expect(tool.execute("", parameters, undefined, undefined, context())).resolves.toEqual({
         content: [
-          { type: "text", text: `${parameters.op} is not available to a ${session.kind} session` },
+          {
+            type: "text",
+            text: `${parameters.op} is not available to ${KIND_WORDS[session.kind]} session`,
+          },
         ],
         details: {},
         isError: true,

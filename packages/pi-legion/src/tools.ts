@@ -532,7 +532,9 @@ export function createLegionTool(deps: {
         const active = session(context);
         const operation = requiredString(parameters, "legion", "op");
         if (!OPERATIONS[active.kind].includes(operation)) {
-          throw new Error(`${operation} is not available to a ${active.kind} session`);
+          // "an architect", "a phase-worker", "a controller": the article the kind's first sound takes.
+          const article = /^[aeiou]/.test(active.kind) ? "an" : "a";
+          throw new Error(`${operation} is not available to ${article} ${active.kind} session`);
         }
         if (active.kind !== "controller" && isPhaseOp(operation)) {
           const answer = await executePhaseOp(
