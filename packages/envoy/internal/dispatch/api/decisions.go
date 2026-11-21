@@ -35,7 +35,10 @@ import (
 // answer from the store (R11, ruling F4): decisions is each decision node and each answered ask
 // in model.Decision's shape, in the order of entries, and document is the address of the issue's
 // decisions document while it stands (decisions_documents()), null once it is retired or where
-// the issue holds none.
+// the issue holds none. A link of an entry's shaped and of a decision's links is one value
+// (model.DecisionLink): its stale is the release before's rule, the decision's own words changed
+// after the tie and the spec node has not changed since they did, which the page of the release
+// before reads too, and its changed_since_tie is R5's, the spec node's text changed after the tie.
 //
 // kept for one release: compat-objects
 type issueDecisions struct {
@@ -197,8 +200,11 @@ func (s *server) specOpenQuestions(
 // decision reads them: an ask's text is its question, and a decision's text its own words.
 // shaped is one link for each spec node the node's current `shaped` tuples reach, each with the
 // tuple's own event, the event that wrote the version the node's text last changed in
-// (text_changed_event), and stale. readings are the live `reading` nodes whose part_of reaches
-// this node, each with the far end of its authored_by tuple, null where it holds none.
+// (text_changed_event), stale, true when the decision's own words changed after the tuple and the
+// node's text has not changed since they did, and changed_since_tie, true when the node's text
+// changed after the tuple (model.DecisionLink). readings are the live `reading` nodes whose
+// part_of reaches this node, each with the far end of its authored_by tuple, null where it holds
+// none.
 type decisionEntry struct {
 	Node     decisionEntryNode      `json:"node"`
 	Ref      string                 `json:"ref"`

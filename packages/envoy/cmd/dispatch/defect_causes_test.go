@@ -65,8 +65,8 @@ func (entry defectsEntry) node() string {
 	return entry.Node.Kind + ":" + entry.Node.ID
 }
 
-// shaped is each spec node the entry's shaped answers, written kind:id, with the tuple's event and
-// whether the link is stale, for a message to print.
+// shaped is each spec node the entry's shaped answers, written kind:id, with the tuple's event,
+// whether the link is stale and whether its node changed since the tie, for a message to print.
 func (entry defectsEntry) shaped() string {
 	if len(entry.Shaped) == 0 {
 		return "no shaped link"
@@ -77,7 +77,7 @@ func (entry defectsEntry) shaped() string {
 		if link.Event != nil {
 			event = fmt.Sprintf("event %d", *link.Event)
 		}
-		links[index] = fmt.Sprintf("%s:%s (%s, stale %t)", link.To.Kind, link.To.ID, event, link.Stale)
+		links[index] = fmt.Sprintf("%s:%s (%s, stale %t, changed since the tie %t)", link.To.Kind, link.To.ID, event, link.Stale, link.ChangedSinceTie)
 	}
 	return "the shaped links " + strings.Join(links, ", ")
 }

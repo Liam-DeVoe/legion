@@ -90,6 +90,25 @@ func shapedLink(t *testing.T, entry decisionEntry, target string) model.Decision
 	return model.DecisionLink{}
 }
 
+// decisionMemberLink is the link to the spec node target of the decision at ref in the read's old
+// decisions member.
+func decisionMemberLink(t *testing.T, read issueDecisions, ref, target string) model.DecisionLink {
+	t.Helper()
+	for _, decision := range read.Decisions {
+		if decision.Ref != ref {
+			continue
+		}
+		for _, link := range decision.Links {
+			if link.To.ID == target {
+				return link
+			}
+		}
+		t.Fatalf("the decisions member's %s answers no link to %s; it answers %s", ref, target, entryJSON(t, decision.Links))
+	}
+	t.Fatalf("the decisions member answers no decision %s; it answers %s", ref, entryJSON(t, read.Decisions))
+	return model.DecisionLink{}
+}
+
 // agentUploadAs uploads content as the issue's document name through the agent's session,
 // carrying body's other members beside name, content and actor. An upload over a document the
 // issue already holds under name names the token of the version it replaces, and a first upload
@@ -398,10 +417,12 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 	t.Logf("the agent's decision's entry as the read answers it: %s", entryJSON(t, d1))
 	requireEntriesReadOwnDocuments(t, database, issue.Key)
 
-	// The link goes stale when the requirement's words change after the tie, and the decision's
-	// own version moves only with its own words.
-	if link := shapedLink(t, d1, spec.address("r1")); link.Stale || link.Event == nil || link.TextChangedEvent == nil {
-		t.Fatalf("the link %s of %s reads %s before the requirement changed, want stale false, with both events", spec.address("r1"), entryKey(d1), entryJSON(t, link))
+	// A link carries two facts (model.DecisionLink). changed_since_tie goes true when the
+	// requirement's words change after the tie; stale, the release before's rule, goes true when
+	// the decision's own words change after the tie and the requirement has not changed since they
+	// did. The decision's own version moves only with its own words.
+	if link := shapedLink(t, d1, spec.address("r1")); link.Stale || link.ChangedSinceTie || link.Event == nil || link.TextChangedEvent == nil {
+		t.Fatalf("the link %s of %s reads %s before the requirement changed, want stale and changed_since_tie false, with both events", spec.address("r1"), entryKey(d1), entryJSON(t, link))
 	}
 	wroteD1, wroteD1At := d1.ChangedVersion, d1.ChangedAt
 	if wroteD1 != 1 || wroteD1At == nil || !wroteD1At.Equal(versionCreatedAt(t, database, choices.id, 1)) {
@@ -409,12 +430,12 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 	}
 	reworded := editSpec(t, handler, issue.Key, []map[string]any{{"op": "replace", "find": "One.", "with": "One, rewritten."}})
 	d1 = requireEntry(t, readEntries(t, handler, issue.Key), "the agent's decision", entryKey(d1))
-	if link := shapedLink(t, d1, spec.address("r1")); !link.Stale || link.TextChangedEvent == nil || link.Event == nil || *link.TextChangedEvent <= *link.Event {
-		t.Errorf("the link %s of %s reads %s after version %d rewrote the requirement, want stale true, its text changed after the tie",
+	if link := shapedLink(t, d1, spec.address("r1")); !link.ChangedSinceTie || link.Stale || link.TextChangedEvent == nil || link.Event == nil || *link.TextChangedEvent <= *link.Event {
+		t.Errorf("the link %s of %s reads %s after version %d rewrote the requirement, want changed_since_tie true, its text changed after the tie, and stale false, the decision's words unchanged since the tie",
 			spec.address("r1"), entryKey(d1), entryJSON(t, link), reworded.Number)
 	}
-	if link := shapedLink(t, d1, spec.address("r2")); link.Stale {
-		t.Errorf("the link %s reads stale after a version that left it alone", spec.address("r2"))
+	if link := shapedLink(t, d1, spec.address("r2")); link.Stale || link.ChangedSinceTie {
+		t.Errorf("the link %s reads %s after a version that left it and the decision alone, want stale and changed_since_tie false", spec.address("r2"), entryJSON(t, link))
 	}
 	if d1.ChangedVersion != wroteD1 || d1.ChangedAt == nil || !d1.ChangedAt.Equal(*wroteD1At) {
 		t.Errorf("after the requirement's words changed the decision reads changed_version %d at %v, want %d at %v, unchanged",
@@ -422,10 +443,29 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 	}
 	agentUploadAs(t, handler, issue.Key, "choices.md", choicesText("REST for every public service this quarter.", ""), nil)
 	ownWords := latestVersion(t, database, choices.id)
-	d1 = requireEntry(t, readEntries(t, handler, issue.Key), "the agent's decision", entryKey(d1))
+	view := readIssueDecisions(t, handler, issue.Key)
+	d1 = requireEntry(t, view.Entries, "the agent's decision", entryKey(d1))
 	if d1.ChangedVersion != ownWords.Number || d1.ChangedAt == nil || !d1.ChangedAt.Equal(versionCreatedAt(t, database, choices.id, ownWords.Number)) {
 		t.Errorf("after its own words changed in version %d the decision reads changed_version %d at %v, want that version and its created_at %v",
 			ownWords.Number, d1.ChangedVersion, d1.ChangedAt, versionCreatedAt(t, database, choices.id, ownWords.Number))
+	}
+	// The decision reworded after its tie, with r2's words unchanged since the tie: stale, and not
+	// changed since the tie. r1, rewritten after the tie and before the decision's new words, is
+	// both.
+	if link := shapedLink(t, d1, spec.address("r2")); !link.Stale || link.ChangedSinceTie {
+		t.Errorf("the link %s of %s reads %s after version %d reworded the decision, want stale true, the decision changed after the tie and the requirement not since, and changed_since_tie false",
+			spec.address("r2"), entryKey(d1), entryJSON(t, link), ownWords.Number)
+	}
+	if link := shapedLink(t, d1, spec.address("r1")); !link.Stale || !link.ChangedSinceTie {
+		t.Errorf("the link %s of %s reads %s after version %d reworded the decision, want stale and changed_since_tie true",
+			spec.address("r1"), entryKey(d1), entryJSON(t, link), ownWords.Number)
+	}
+	// The same links read through the old decisions member read the same two facts.
+	for _, link := range d1.Shaped {
+		if old := decisionMemberLink(t, view, d1.Ref, link.To.ID); old.Stale != link.Stale || old.ChangedSinceTie != link.ChangedSinceTie {
+			t.Errorf("the link %s of %s reads stale %t and changed_since_tie %t in the decisions member and %t and %t in entries, want the same",
+				link.To.ID, d1.Ref, old.Stale, old.ChangedSinceTie, link.Stale, link.ChangedSinceTie)
+		}
 	}
 	// A reading written under it moves its block's row and none of its words: the version its
 	// words last changed in stands.

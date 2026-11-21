@@ -7,13 +7,15 @@ import { type DecisionsRead, isDecisionEntry, withEntries } from "./decision-ent
 
 const KEY = "CORE-1";
 
-const link: DecisionLink = {
+/** A link as a server of the release before answers it: its `stale`, whose meaning this build
+ *  keeps, and no `changed_since_tie`, which that server never sends. */
+const link = {
   created_at: "2026-11-01T00:00:00Z",
   created_version: 1,
   from_block: "h-store",
   stale: true,
   to: graphNode({ block_id: "p1", id: `${KEY}/spec#p1`, kind: "block" }),
-};
+} as DecisionLink;
 
 /** A Decisions read as a server of the release before answers it: no `entries`, one open
  *  question, and two sections of the issue's decisions document, the agent's and a person's. */
