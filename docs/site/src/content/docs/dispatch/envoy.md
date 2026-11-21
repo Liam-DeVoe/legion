@@ -473,7 +473,7 @@ the project works in) and
 It sends its own notices to roles and to the
 controller through the listener's HTTP API, not over NATS.
 
-A daemon started with `ENVOY_CONSUMER_NAMES=fresh` keeps those three names as logical names
+A daemon whose `legion.yaml` sets `consumer_names: fresh` keeps those three names as logical names
 only: each creation of a durable is a consumer named `<logical name>~<id>`, never made twice,
 carrying the metadata `envoy.logical=<logical name>`, and the logical name's row in the daemon's
 own `intake_consumers` table selects the one it reads. The grant below covers those names as it
