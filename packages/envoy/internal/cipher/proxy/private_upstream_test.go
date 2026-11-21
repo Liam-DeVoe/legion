@@ -244,12 +244,12 @@ func writeRefusedAtConnect(t *testing.T, r *rig, standIn *dispatchStandIn, want 
 	}
 }
 
-// connectRefused fails t unless a CONNECT to target with the result grant's password is refused
-// 403 with nothing dialled, and answers the refusal's body.
-func connectRefused(t *testing.T, r *rig, target string) string {
+// connectRefused fails t unless a CONNECT to target with password as the proxy's password is
+// refused 403 with nothing dialled, and answers the refusal's Airlock-Code and body.
+func connectRefused(t *testing.T, r *rig, target, password string) (string, string) {
 	t.Helper()
 	before := r.dials.Load()
-	answer, _, _ := r.connectRaw(target, basic(resultsPlaceholder))
+	answer, _, _ := r.connectRaw(target, basic(password))
 	// The status first: a CONNECT answered 200 is an open tunnel, whose body never ends.
 	if answer.StatusCode != http.StatusForbidden {
 		t.Fatalf("CONNECT %s = %d after %d dial(s) to %v; want 403 and none", target, answer.StatusCode, r.dials.Load()-before, r.dialedAddresses())
@@ -258,7 +258,7 @@ func connectRefused(t *testing.T, r *rig, target string) string {
 	if after := r.dials.Load(); after != before {
 		t.Fatalf("CONNECT %s dialled %d time(s); want none", target, after-before)
 	}
-	return body
+	return answer.Header.Get("Airlock-Code"), body
 }
 
 // TestThePrivateUpstreamTakesTheBoundRouteAlone: the allowed write to the destination's bound host
@@ -268,7 +268,11 @@ func connectRefused(t *testing.T, r *rig, target string) string {
 // other the proxy refuses: a request the rules do not allow, a CONNECT to the destination's name or
 // address, a plain-HTTP request to it, a CONNECT to each kind of private, loopback, link-local and
 // cluster address, and a grant whose names do not bind dispatch.test sending to it are each refused
-// 403 with nothing dialled.
+// 403 with nothing dialled. The result grant's CONNECT and plain request anywhere but its bound host
+// are refused by its one-host rule (RESULT_GRANT_HOST_ONLY) before anything is resolved, so the
+// address rule that keeps every other grant from the destination's address is read through a
+// secret grant's, which the airlock lets tunnel to any host its names do not bind: refused
+// ADDRESS_REFUSED.
 func TestThePrivateUpstreamTakesTheBoundRouteAlone(t *testing.T) {
 	r, standIn := newPrivateRig(t, privateAddress, []netip.Prefix{serviceRange})
 
@@ -295,20 +299,32 @@ func TestThePrivateUpstreamTakesTheBoundRouteAlone(t *testing.T) {
 		t.Fatalf("GET /api/v1/issues dialled %d time(s); want none", after-before)
 	}
 
-	connectRefused(t, r, net.JoinHostPort(privateName, privatePort))
-	connectRefused(t, r, net.JoinHostPort(privateAddress.String(), privatePort))
-
-	before = r.dials.Load()
-	answer, body = r.get(r.client(resultsPlaceholder), "http://"+net.JoinHostPort(privateName, privatePort)+"/healthz")
-	if answer.StatusCode != http.StatusForbidden || answer.Header.Get("Airlock-Code") != codeAddressRefused {
-		t.Fatalf("plain http to %s answered %d %q; want 403 %s", privateName, answer.StatusCode, body, codeAddressRefused)
+	for _, target := range []string{net.JoinHostPort(privateName, privatePort), net.JoinHostPort(privateAddress.String(), privatePort)} {
+		if code, body := connectRefused(t, r, target, resultsPlaceholder); code != codeResultHostOnly {
+			t.Errorf("CONNECT %s with the result grant was refused %s (%q); want %s", target, code, body, codeResultHostOnly)
+		}
+		if code, body := connectRefused(t, r, target, workerPlaceholder); code != codeAddressRefused {
+			t.Errorf("CONNECT %s with a secret grant was refused %s (%q); want %s", target, code, body, codeAddressRefused)
+		}
 	}
-	if after := r.dials.Load(); after != before {
-		t.Fatalf("plain http to %s dialled %d time(s); want none", privateName, after-before)
+
+	for _, c := range []struct{ password, code string }{{resultsPlaceholder, codeResultHostOnly}, {workerPlaceholder, codeAddressRefused}} {
+		before = r.dials.Load()
+		answer, body = r.get(r.client(c.password), "http://"+net.JoinHostPort(privateName, privatePort)+"/healthz")
+		if answer.StatusCode != http.StatusForbidden || answer.Header.Get("Airlock-Code") != c.code {
+			t.Fatalf("plain http to %s answered %d %q; want 403 %s", privateName, answer.StatusCode, body, c.code)
+		}
+		if after := r.dials.Load(); after != before {
+			t.Fatalf("plain http to %s dialled %d time(s); want none", privateName, after-before)
+		}
 	}
 
 	for _, addr := range []string{"10.11.12.13", "172.16.0.1", "192.168.1.1", "100.64.0.1", "fd00::1", "127.0.0.1", "169.254.169.254", "34.118.224.10"} {
-		connectRefused(t, r, net.JoinHostPort(addr, "443"))
+		for _, c := range []struct{ password, code string }{{resultsPlaceholder, codeResultHostOnly}, {workerPlaceholder, codeAddressRefused}} {
+			if code, body := connectRefused(t, r, net.JoinHostPort(addr, "443"), c.password); code != c.code {
+				t.Errorf("CONNECT %s:443 was refused %s (%q); want %s", addr, code, body, c.code)
+			}
+		}
 	}
 
 	// The rig's own grant, whose one name binds example.com: dispatch.test is no host of it, so

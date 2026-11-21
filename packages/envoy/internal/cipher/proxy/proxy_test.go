@@ -630,7 +630,9 @@ func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 	t.Run("the private destination's bound host is sent its allowed request at a ClusterIP", func(t *testing.T) {
 		// BROKER_AIRLOCK_PRIVATE_UPSTREAM's one exception to the ranges: the destination resolves
 		// to a ClusterIP inside them, and the allowed write to its bound host reaches the service
-		// there, while a CONNECT to that ClusterIP, or to the destination's name, is refused.
+		// there, while a CONNECT to that ClusterIP, or to the destination's name, is refused: by a
+		// secret grant, which may tunnel to a host its names do not bind, naming the ranges, and by
+		// the result grant, which reaches its bound host alone, by that rule.
 		r, standIn := newPrivateRig(t, clusterIP, options.ClusterRanges)
 		answer, body, err := r.writeResult()
 		if err != nil || answer.StatusCode != http.StatusCreated || len(standIn.writes()) != 1 {
@@ -640,8 +642,11 @@ func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 			t.Fatalf("the proxy dialled %v; want the ClusterIP %s:%s alone (%s)", dialed, clusterIP, privatePort, body)
 		}
 		for _, target := range []string{net.JoinHostPort(clusterIP.String(), privatePort), net.JoinHostPort(privateName, privatePort)} {
-			if refusal := connectRefused(t, r, target); !strings.Contains(refusal, clusterRangeRule) {
-				t.Errorf("the refusal of CONNECT %s reads %q; want it to name %q", target, refusal, clusterRangeRule)
+			if _, refusal := connectRefused(t, r, target, workerPlaceholder); !strings.Contains(refusal, clusterRangeRule) {
+				t.Errorf("the refusal of a secret grant's CONNECT %s reads %q; want it to name %q", target, refusal, clusterRangeRule)
+			}
+			if code, refusal := connectRefused(t, r, target, resultsPlaceholder); code != codeResultHostOnly {
+				t.Errorf("the result grant's CONNECT %s was refused %s (%q); want %s", target, code, refusal, codeResultHostOnly)
 			}
 		}
 	})
