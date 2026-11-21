@@ -5089,7 +5089,8 @@ It needs no Docker, no cluster, no tmux, no GitHub and no deployed Dispatch.
 Its host must be loopback, and the driver also makes Dispatch's own database on that server, so the DSN's role must be allowed to create databases and the server must offer `pgvector`.
 The runs of the change passed `DISPATCH_TEST_DATABASE_URL` beside it, naming the same server, and the script reads nothing of it.
 The broker is the run's own: Dispatch publishes its events on it, and the daemon consumes them from it.
-A whole run of the seven cases took 82 s on a shared devbox with a warm Go build cache: 6 s building the driver and 74 s of proof, most of it the panes' start and completion-before-event's 10 s hold.
+A whole run of the seven cases took 75 s on a shared devbox with a warm Go build cache: 14 s building the driver and 60 s of proof, most of it the panes' start and completion-before-event's 10 s hold.
+A case whose answer never comes waits a minute past its bound before it fails.
 The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 Before them the script refuses a host with no `jj`, no `git`, no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`.
 It also exports `nats_pid`, the variable in which that file holds the pid of the broker it starts, so the case `completion-before-event` stops that broker by the pid the run started it with.
@@ -5115,13 +5116,20 @@ A case then gives that pane an operator's task (`legion claims deliver`).
 The pane's model stand-in answers that task's turn with one `tool_use` block that calls the `legion` tool's `handoff_complete` with a summary and no verdict (`late_completion_live_test.go`'s `completionStandin`).
 So the completion the daemon answers is the request the shipped plugin builds.
 Each bound of 10 s is measured from the operation that triggers the answer, never from the read that sees it:
+
 - after a result, from the start of its `dispatch result` command, against the daemon's own time of the matching log record;
+
 - after the tester's completion, from the moment the turn that completes reached the tester's model, which comes before the tool's request reaches the daemon;
+
 - after the broker comes back, from the `SIGCONT`.
+
 A case reads on for a minute past its bound, so an answer that comes late fails at `<assertion>-within` and says how late it came, apart from an answer that never comes.
 A case reads three things:
+
 - the daemon's phase from `GET /legion/v1/state`, where an answer that holds no such issue is `UNKNOWN`;
+
 - the implementer's task in the daemon's store: where the issue goes back, the claim's pending delivery, which the implementers' stand-in keeps pending by holding the turn; where it does not, that the store holds no pending task of the implementer and the runtime never launched the implementer's pane;
+
 - every row of `check_results` and `ci_check_results` of the issue in Dispatch's own database, which must be exactly the results the case recorded, each by its role at the head.
 
 | case | driven by | read back as |
@@ -5138,11 +5146,18 @@ Every move a case reads also prints the states Dispatch published of the issue (
 
 A watchdog continues the stopped broker after a minute, whatever happens to the driver: the cleanup of `lib/live-daemon-proof.sh` sends the broker `TERM` and waits for it.
 What the proof stands in for lies outside the move:
-- Each issue's open pull request is staged in Dispatch's database as the `pull_request` envelope Envoy relays would have stored it: one `pull_request_heads` row, attributed to the issue and read just now. The trigger on that table marks the issue owed, as the envelope's own write does.
+
+- Each issue's open pull request is staged in Dispatch's database as the `pull_request` envelope Envoy relays would have stored it: one `pull_request_heads` row, attributed to the issue and read just now.
+  The trigger on that table marks the issue owed, as the envelope's own write does.
+
 - GitHub's REST API, as the daemon reads it, is the driver's stand-in for those pull requests.
+
 - Envoy's listener is the package's `noticeListener`.
+
 - The Apps' tokens are placeholders.
+
 - Every pane but a tester's talks to a model stand-in that answers text.
+
 The issues, pull requests, slots and the testers' claims are seeded through the store, as every daemon test seeds its fixture.
 `CHECK_STATES_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`), each pane's (`panes/`) and the driver's output.
 
