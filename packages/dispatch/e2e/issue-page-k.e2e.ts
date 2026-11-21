@@ -1,6 +1,7 @@
 import type { Locator, Page, Route } from "@playwright/test";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
+  ANSWER_LINES,
   BLOCK_ATTRIBUTE_LABELS,
   DECLARED_WORDS,
   EMPTY_STATE_LINES,
@@ -43,6 +44,7 @@ import {
   seedPlanMarks,
   stepLayouts,
 } from "./issue-page-k";
+import { refuseTreeRead } from "./issue-page-t";
 import { expect, test } from "./test";
 import { assertPageFits } from "./unclipped";
 
@@ -245,38 +247,30 @@ async function expectChartAfterAFailedRead(page: Page, seeded: WholeIssueSeed): 
   }
 }
 
-/** A first read that fails (`slots/view-plan.tsx`): with every read of the plan document's
- *  blocks refused, the page's two retries included, the page still opens on the question that
- *  waits on the reader, the spec's open question. `t p` from the conversation then opens Plan,
- *  which says in the page's words that it could not load the plan, with a Retry that holds the
- *  focus, and draws no bar and no switch. `t p` pressed from a control that holds the focus, the
- *  Spec control of the view row, puts the focus on that Retry too: the chord focuses the view's
- *  tree, and the stage the view is drawn in hands the focus on to the Retry
+/** A first read that fails (`slots/view-plan.tsx`): with every request of the issue's tree read
+ *  refused (`refuseTreeRead`), the page's two retries included, the page still opens, and its
+ *  outline says in the page's words that it could not load the outline
+ *  (`tree-read/view-read.tsx`'s `TreeReadFailed`). The plan's blocks are the tree read's
+ *  (`tree-read/tree-read.ts`'s `blocksOf`), as the outline's rows are, so the question that waits
+ *  on the reader is refused with them and the page has none to open on. `t p` from the page then
+ *  opens Plan, which says in the page's words that it could not load the plan, with a Retry that
+ *  holds the focus, and draws no bar and no switch. `t p` pressed from a control that holds the
+ *  focus, the Spec control of the view row, puts the focus on that Retry too: the chord focuses
+ *  the view's tree, and the stage the view is drawn in hands the focus on to the Retry
  *  (`web/src/features/issue-page/slots/stage.tsx`). With the read let through, Enter on that Retry
  *  asks it again, and the view draws the chart with the focus on its first row. */
 async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSeed): Promise<void> {
-  let refusing = true;
-  const refuse = async (route: Route) => {
-    if (refusing && route.request().url().includes(seeded.planArtifactId)) {
-      await route.fulfill({ status: 500 });
-      return;
-    }
-    await route.continue();
-  };
-  await page.route(BLOCKS_READ, refuse);
+  const treeRead = await refuseTreeRead(page, seeded.key);
   try {
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    // The page places its first focus once, when the reads its first rows come from have
-    // answered: on the question that waits on the reader, whatever reads failed (`IssueTree.tsx`).
-    // The focus is moved to the page only after that, or the first focus could land after the
-    // move and keep the focus off the page.
-    const question = blockNodeId(await primarySlug(seeded.key), seeded.openQuestion.blockId);
-    await expect
-      .poll(() => focusedNodeId(page), {
-        message: "the conversation does not open on the question that waits on the reader",
-      })
-      .toBe(question);
+    // The outline's line is drawn once the tree read has failed, its two retries included. The
+    // focus is moved to the page only after that, or a focus the page places as its reads settle
+    // could land after the move and keep the focus off the page.
+    await expect(
+      issuePage(page).locator("[data-tree-unreadable]"),
+      "the outline whose tree read was refused does not say it could not load the outline"
+    ).toContainText(ANSWER_LINES.outline_unreadable);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("p");
@@ -326,7 +320,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
         message: "t p from the Spec control leaves the plan's focused Retry off the screen",
       })
       .toBe(true);
-    refusing = false;
+    await treeRead.lift();
     await page.keyboard.press("Enter");
     await expect(
       planView(page, "chart"),
@@ -343,7 +337,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
       })
       .toBe(first);
   } finally {
-    await page.unroute(BLOCKS_READ, refuse);
+    await treeRead.lift();
   }
 }
 
