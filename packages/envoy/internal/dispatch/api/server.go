@@ -189,7 +189,7 @@ type Deps struct {
 	// under the outside origin (Passkeys.Issuer), where passkey sign-in is on (cmd/dispatch:
 	// DISPATCH_SIGNIN_PASSKEY=1); nil where it is off. An owner makes a link and resets a person
 	// only where it is set (project_access.go), and a broker token whose account is a passkey's
-	// is held to it as one of the sign-in issuer's is (brokerTokenSubject).
+	// is held to it as one of the sign-in issuer's is (brokerTokenAccount).
 	Passkeys *store.PgPasskeys
 	// WorkspaceAddress reports whether an email is on a domain of the company's Workspace
 	// (identity.PasskeyRule.WorkspaceAddress), set with Passkeys: no link is made for such an
@@ -1662,8 +1662,7 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 }
 
 // codeScopeRequired refuses a caller whose credential does not hold an OAuth scope the route
-// needs: the deployment's shared token and a pod's projected token hold none, and a personal
-// token holds the set its own row names.
+// needs. What each credential holds is said once, above routeScopes.
 const codeScopeRequired = "OAUTH_SCOPE_REQUIRED"
 
 // insufficientScopeChallenge is the WWW-Authenticate header RFC 6750 section 3.1 gives a refusal
@@ -1692,11 +1691,9 @@ func missingScopeError(scope, message string) *apiError {
 
 // gateRouteScopes is the one place a route's OAuth scopes are enforced: register wraps every row
 // that declares any (routeScopes) in it, ahead of the keyed, project and session layers, so the
-// table is what decides and a handler restates nothing. A credential the deployment configured
-// rather than a person — the shared token, a pod's service-account token, a broker-issued token
-// scoped to a project — holds none of them; a personal token holds the set its own row names.
-// The first scope the credential lacks, in the order the row declares them, is 403
-// OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
+// table is what decides and a handler restates nothing. What each credential holds is said once,
+// above routeScopes. The first scope the credential lacks, in the order the row declares them, is
+// 403 OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
 // through writeAuthenticationError, as every gate on this server does.
 //
 // The caller it resolved rides along (resolvedCallerKey), so no layer behind it verifies the

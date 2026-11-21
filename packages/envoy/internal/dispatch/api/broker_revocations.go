@@ -29,7 +29,7 @@ import (
 // refuses it anything new, and leaves the new holder's credentials alone, whenever they were made.
 //
 // Dispatch itself holds each broker token naming the address to the account its credential records
-// (brokerPersonAdmitted, brokerTokenSubject), from the replacing commit, whether or not the broker
+// (brokerPersonAdmitted, brokerTokenAccount), from the replacing commit, whether or not the broker
 // has paid: the new holder's own acts, the replaced account's is refused since people no longer
 // records its account, and one recording no account is refused when its credential was made before
 // the replacing sign-in recorded its account, which every credential the replaced account holds
