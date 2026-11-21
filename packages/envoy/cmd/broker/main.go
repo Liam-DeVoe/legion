@@ -507,7 +507,7 @@ func main() {
 		// The key set discoverVerifiers read for Google, for the same reason the cluster's is
 		// shared: BROKER_GOOGLE_OIDC_AUDIENCE is what made it read one, so this is never nil.
 		exchangeConfig.Google = oauth.IssuerConfig{Issuer: cfg.GoogleOIDCIssuer, Audience: cfg.GoogleOIDCAudience, Keys: discovered.GoogleKeys}
-		exchangeConfig.MachineCredentials = machineCredentials(enr)
+		exchangeConfig.MachineCredentials = enr.MachineCredentials()
 	}
 	if cfg.SignInDeviceAudience != "" {
 		// A person signs in through Google, which is also the issuer of the machine's actor
@@ -515,7 +515,7 @@ func main() {
 		// share the key set read above. What a person may be is BROKER_SIGNIN_DOMAIN's to say,
 		// which the exchange's policy already holds.
 		exchangeConfig.PersonAudience = cfg.SignInDeviceAudience
-		exchangeConfig.PersonSignIns = personSignIns()
+		exchangeConfig.PersonSignIns = enroll.PersonSignIns()
 		slog.Info("google person sign-in", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
 	}
 	if cfg.ExchangeGitHubIssuer != "" {
@@ -1439,73 +1439,6 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 	// metadata server already hands it.
 	found.GoogleIdentities = oidc.NewWithKeys(cfg.GoogleOIDCIssuer, cfg.GoogleOIDCAudience, googleKeys)
 	return found, nil
-}
-
-// machineCredentials is oauth.ExchangeConfig.MachineCredentials over the enrollment service: the
-// launcher credential a trade mints or moves, written in the exchange's own transaction
-// (enroll.Service.IssueTokenLoginTx), so the credential and the access token that names it land
-// together. Both trades that mint one come through here — a machine's own, which carries its
-// fleet's service and no person, and a person's sign-in on such a machine, which carries that
-// person as its operator — so there is one way a credential is minted and not two. A key
-// another live credential holds is oauth.ErrMachineKeyTaken, which the exchange answers
-// invalid_grant.
-func machineCredentials(enr *enroll.Service) oauth.MachineCredentials {
-	return func(ctx context.Context, cred oauth.MachineCredential) (string, error) {
-		tx, ok := oauthstore.TxFrom(ctx)
-		if !ok {
-			return "", errors.New("broker: a machine's launcher credential is minted in the exchange's transaction")
-		}
-		id, err := enr.IssueTokenLoginTx(ctx, tx, enroll.TokenLogin{
-			Subject:      cred.Subject,
-			Service:      cred.Service,
-			Host:         cred.Host,
-			Operator:     cred.Operator,
-			TokenExpires: cred.Expires,
-			Thumbprint:   cred.Thumbprint,
-			JWK:          cred.JWK,
-			Expires:      cred.Expires,
-		})
-		if store.IsUniqueViolation(err) {
-			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
-		}
-		if err != nil {
-			return "", err
-		}
-		return id.String(), nil
-	}
-}
-
-// personSignIns is oauth.ExchangeConfig.PersonSignIns over the broker's store: the sign-in a
-// person's trade belongs to, written in the exchange's own transaction
-// (enroll.RecordPersonSignIn, which ends a sign-in recording no account and everything it held
-// before it writes the trade's own), so the sign-in and the access token minted under it land
-// together. An account that no longer holds the person's address is
-// store.ErrSignInSubjectReplaced, a box key that person has revoked store.ErrSignInRevoked, and
-// one whose sign-in was made on another machine or by another account
-// store.ErrSignInMachineChanged or store.ErrSignInSubjectChanged; the exchange answers each
-// invalid_grant saying which.
-func personSignIns() oauth.PersonSignIns {
-	return func(ctx context.Context, in oauth.PersonSignIn) error {
-		tx, ok := oauthstore.TxFrom(ctx)
-		if !ok {
-			return errors.New("broker: a person's sign-in is recorded in the exchange's transaction")
-		}
-		err := enroll.RecordPersonSignIn(ctx, tx, store.SignInTrade{
-			Person: in.Person, Thumbprint: in.Thumbprint, MachineAccount: in.Machine,
-			Account: store.IssuerSubject{Issuer: in.Issuer, Subject: in.Subject},
-		})
-		switch {
-		case errors.Is(err, store.ErrSignInSubjectReplaced):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectReplaced, err)
-		case errors.Is(err, store.ErrSignInRevoked):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInRevoked, err)
-		case errors.Is(err, store.ErrSignInMachineChanged):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInMachineChanged, err)
-		case errors.Is(err, store.ErrSignInSubjectChanged):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectChanged, err)
-		}
-		return err
-	}
 }
 
 // issuerKeys reads issuer's published signing keys: the source a token's own key is resolved

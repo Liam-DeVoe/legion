@@ -11,8 +11,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -232,8 +230,9 @@ func WithHoldRequiresDeadline() Option {
 }
 
 // WithPersonSignIns lets the rig accept Google person trades from machineAccount. NewRig binds
-// the option to its real enrollment and store functions once those exist, so a successful trade
-// creates the same launcher credential and person-sign-in rows as the broker command.
+// the option to the broker command's own writers (enroll.Service.MachineCredentials and
+// enroll.PersonSignIns) once its enrollment service exists, so a successful trade creates the
+// same launcher credential and person-sign-in rows as the broker command.
 func WithPersonSignIns(google *oidctest.Issuer, machineAccount string) Option {
 	return func(c *rigConfig) {
 		c.personSignIns = &personSignInConfig{google: google, machineAccount: machineAccount}
@@ -343,8 +342,8 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		providerOptions = append(providerOptions, func(c *providerConfig) {
 			c.google = signIns.google
 			c.machineAccount = signIns.machineAccount
-			c.machineCredentials = tokenMachineCredentials(enr)
-			c.personSignInRecords = brokerPersonSignIns()
+			c.machineCredentials = enr.MachineCredentials()
+			c.personSignInRecords = enroll.PersonSignIns()
 		})
 	}
 	provider := NewOAuthProvider(t, st, issuer, providerOptions...)
@@ -498,52 +497,6 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 		t.Fatalf("oauth.New: %v", err)
 	}
 	return provider
-}
-
-// tokenMachineCredentials is the real broker-store writer cmd/broker gives Google token trades.
-func tokenMachineCredentials(enr *enroll.Service) oauth.MachineCredentials {
-	return func(ctx context.Context, cred oauth.MachineCredential) (string, error) {
-		tx, ok := oauthstore.TxFrom(ctx)
-		if !ok {
-			return "", errors.New("broker test rig: a machine credential is minted in the exchange transaction")
-		}
-		id, err := enr.IssueTokenLoginTx(ctx, tx, enroll.TokenLogin{
-			Subject: cred.Subject, Service: cred.Service, Host: cred.Host, Operator: cred.Operator,
-			TokenExpires: cred.Expires, Thumbprint: cred.Thumbprint, JWK: cred.JWK, Expires: cred.Expires,
-		})
-		if store.IsUniqueViolation(err) {
-			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
-		}
-		if err != nil {
-			return "", err
-		}
-		return id.String(), nil
-	}
-}
-
-// brokerPersonSignIns is the real broker-store writer cmd/broker gives person trades.
-func brokerPersonSignIns() oauth.PersonSignIns {
-	return func(ctx context.Context, in oauth.PersonSignIn) error {
-		tx, ok := oauthstore.TxFrom(ctx)
-		if !ok {
-			return errors.New("broker test rig: a person sign-in is recorded in the exchange transaction")
-		}
-		err := enroll.RecordPersonSignIn(ctx, tx, store.SignInTrade{
-			Person: in.Person, Thumbprint: in.Thumbprint, MachineAccount: in.Machine,
-			Account: store.IssuerSubject{Issuer: in.Issuer, Subject: in.Subject},
-		})
-		switch {
-		case errors.Is(err, store.ErrSignInSubjectReplaced):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectReplaced, err)
-		case errors.Is(err, store.ErrSignInRevoked):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInRevoked, err)
-		case errors.Is(err, store.ErrSignInMachineChanged):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInMachineChanged, err)
-		case errors.Is(err, store.ErrSignInSubjectChanged):
-			return fmt.Errorf("%w: %v", oauth.ErrSignInSubjectChanged, err)
-		}
-		return err
-	}
 }
 
 // request issues method against baseURL+path through client, with an optional body (marshaled to
