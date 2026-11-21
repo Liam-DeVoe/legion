@@ -312,3 +312,77 @@ func TestASuggestionOnASpecIsGradedOnItsDocument(t *testing.T) {
 		t.Errorf("document-01 with a suggestion on DEMO-3's spec that puts the back-link first graded %+v; want a pass", verdict)
 	}
 }
+
+// TestSuggestionsAreGradedWhereEachStands: a try's open suggestions read as the document would be
+// if each were accepted on it as it stands, whatever order their comments' ids sort in. Two that
+// swap two lines swap them; one that inserts a line and one that deletes the line's old copy move
+// it; one whose quote matches only as plain words (an escape, a line break) replaces the text it
+// stands for; and of two whose places overlap, the one that starts first is applied.
+func TestSuggestionsAreGradedWhereEachStands(t *testing.T) {
+	document := StoredDocument{ID: "spec", Text: "Intro.\n\nFirst line.\n\nSecond line.\n\nUse the \\_config\\_\nfile.\n\nPart of DEMO-3.\n"}
+	type suggestion struct{ quote, with string }
+	for _, test := range []struct {
+		name        string
+		suggestions [2]suggestion
+		want        string
+	}{
+		{
+			name:        "a swap of two lines",
+			suggestions: [2]suggestion{{"First line.", "Second line."}, {"Second line.", "First line."}},
+			want:        "Intro.\n\nSecond line.\n\nFirst line.\n\nUse the \\_config\\_\nfile.\n\nPart of DEMO-3.\n",
+		},
+		{
+			name:        "an insert of a line before the delete of its old copy",
+			suggestions: [2]suggestion{{"Intro.", "Part of DEMO-3.\n\nIntro."}, {"Part of DEMO-3.", ""}},
+			want:        "Part of DEMO-3.\n\nIntro.\n\nFirst line.\n\nSecond line.\n\nUse the \\_config\\_\nfile.\n\n\n",
+		},
+		{
+			name:        "a quote that matches as plain words beside one that matches as written",
+			suggestions: [2]suggestion{{"Use the _config_ file.", "Use the settings file."}, {"Intro.", "Opening."}},
+			want:        "Opening.\n\nFirst line.\n\nSecond line.\n\nUse the settings file.\n\nPart of DEMO-3.\n",
+		},
+		{
+			name:        "two places that overlap",
+			suggestions: [2]suggestion{{"line.", "row."}, {"First line.", "One."}},
+			want:        "Intro.\n\nOne.\n\nSecond line.\n\nUse the \\_config\\_\nfile.\n\nPart of DEMO-3.\n",
+		},
+	} {
+		for _, ids := range [][2]string{{"a", "b"}, {"b", "a"}} {
+			t.Run(test.name+", ids "+ids[0]+" then "+ids[1], func(t *testing.T) {
+				after := &Store{Comments: map[string]StoredComment{}}
+				for index, s := range test.suggestions {
+					after.Comments[ids[index]] = StoredComment{
+						ID: ids[index], Artifact: document.ID, Quote: s.quote, Suggestion: &Suggested{ReplaceWith: s.with},
+					}
+				}
+				text, open := withSuggestions(after, document, map[string]bool{"a": true, "b": true})
+				if open != 2 || text != test.want {
+					t.Errorf("withSuggestions = %q, %d open; want %q, 2 open", text, open, test.want)
+				}
+			})
+		}
+	}
+}
+
+// TestPlainSpansReadsTextAsPlainDoes: plainSpans' text is plain's, and each byte of it stands for
+// the bytes of the text it was read from.
+func TestPlainSpansReadsTextAsPlainDoes(t *testing.T) {
+	for _, text := range []string{
+		"", "  \n\t ", "  Use the \\_config\\_\n\n file.  ", "\\\\_x", "a\\ b\\", "x\u00a0y\u2028z", "caf\u00e9 \xff end", "\\*bold\\* and \\é",
+	} {
+		flat, spans := plainSpans(text)
+		if flat != plain(text) || len(spans) != len(flat) {
+			t.Fatalf("plainSpans(%q) = %q with %d spans; want plain's %q with a span a byte", text, flat, len(spans), plain(text))
+		}
+		for index, span := range spans {
+			read := text[span.from:span.to]
+			if flat[index] == ' ' {
+				if strings.TrimSpace(read) != "" {
+					t.Fatalf("plainSpans(%q): the space at %d stands for %q; want white space", text, index, read)
+				}
+			} else if read[len(read)-1] != flat[index] {
+				t.Fatalf("plainSpans(%q): byte %d (%q) stands for %q", text, index, flat[index], read)
+			}
+		}
+	}
+}

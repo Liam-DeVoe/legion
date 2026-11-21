@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -804,9 +806,25 @@ func valueRow(issue StoredIssue, want Want, what string, assignment map[string]s
 }
 
 // withSuggestions is the text of document d with every open suggestion the try made on it
-// (fresh) applied, each replacing the first place its quote stands, and how many there are.
+// (fresh) applied as if each were accepted on d as it stands, and how many there are. Each
+// suggestion is located in d's text before any is applied. The store keeps a suggestion's quote
+// and no place in d's text: the anchor's block and mark name places in the live document, which
+// the stored markdown does not carry. So a suggestion stands where its quote first stands in d's
+// text, or else where its quote first stands with both read as plain words (plain). The
+// replacements are then written in one pass over d's text, which is applying them from the last
+// place to the first: no replacement moves the place of another, and the order of the comments'
+// ids changes nothing. Of suggestions whose places overlap, the one whose place starts first is
+// applied and the others are skipped, as a suggestion whose quote an earlier one had rewritten
+// was skipped before.
 func withSuggestions(store *Store, d StoredDocument, fresh map[string]bool) (string, int) {
-	text := d.Text
+	type place struct {
+		from, to int
+		with     string
+	}
+	var places []place
+	var flat string
+	var spans []plainSpan
+	flattened := false
 	open := 0
 	for _, c := range sortedValues(store.Comments) {
 		if c.Artifact != d.ID || c.Suggestion == nil || c.Suggestion.Accepted != nil || c.Resolved || !fresh[c.ID] {
@@ -816,14 +834,36 @@ func withSuggestions(store *Store, d StoredDocument, fresh map[string]bool) (str
 		if c.Quote == "" {
 			continue
 		}
-		if i := strings.Index(text, c.Quote); i >= 0 {
-			text = text[:i] + c.Suggestion.ReplaceWith + text[i+len(c.Quote):]
-		} else if i := strings.Index(plain(text), plain(c.Quote)); i >= 0 {
-			flat := plain(text)
-			text = flat[:i] + c.Suggestion.ReplaceWith + flat[i+len(plain(c.Quote)):]
+		if i := strings.Index(d.Text, c.Quote); i >= 0 {
+			places = append(places, place{from: i, to: i + len(c.Quote), with: c.Suggestion.ReplaceWith})
+			continue
+		}
+		quote := plain(c.Quote)
+		if quote == "" {
+			continue
+		}
+		if !flattened {
+			flat, spans = plainSpans(d.Text)
+			flattened = true
+		}
+		if i := strings.Index(flat, quote); i >= 0 {
+			places = append(places, place{from: spans[i].from, to: spans[i+len(quote)-1].to, with: c.Suggestion.ReplaceWith})
 		}
 	}
-	return text, open
+	// A stable sort keeps the comments' order between places that start together.
+	slices.SortStableFunc(places, func(a, b place) int { return cmp.Compare(a.from, b.from) })
+	var text strings.Builder
+	at := 0
+	for _, p := range places {
+		if p.from < at {
+			continue
+		}
+		text.WriteString(d.Text[at:p.from])
+		text.WriteString(p.with)
+		at = p.to
+	}
+	text.WriteString(d.Text[at:])
+	return text.String(), open
 }
 
 // markdownEscape is a backslash before a punctuation mark, which the stored markdown writes and
@@ -833,6 +873,59 @@ var markdownEscape = regexp.MustCompile(`\\([[:punct:]])`)
 // plain is text with its markdown escapes undone and every run of white space one space.
 func plain(text string) string {
 	return strings.Join(strings.Fields(markdownEscape.ReplaceAllString(text, "$1")), " ")
+}
+
+// plainSpan is the bytes of a text that one byte of its plain form stands for.
+type plainSpan struct{ from, to int }
+
+// plainSpans is plain(text) with, for each of its bytes, the bytes of text it stands for: the
+// byte itself, an escape's backslash and mark for the mark, or a run of white space for the one
+// space the run becomes. A match in plain(text) from byte i to byte j stands for text from
+// spans[i].from to spans[j-1].to. It reads text as plain does: an escape is a backslash before an
+// ASCII punctuation mark (markdownEscape), and white space is what strings.Fields splits at.
+func plainSpans(text string) (string, []plainSpan) {
+	var out strings.Builder
+	out.Grow(len(text))
+	spans := make([]plainSpan, 0, len(text))
+	// space is where a run of white space not yet written starts, or -1 for none. A run before
+	// the first word or after the last is never written.
+	space := -1
+	for i := 0; i < len(text); {
+		escaped := text[i] == '\\' && i+1 < len(text) && asciiPunct(text[i+1])
+		width := 2
+		if !escaped {
+			r, size := utf8.DecodeRuneInString(text[i:])
+			if unicode.IsSpace(r) {
+				if space < 0 {
+					space = i
+				}
+				i += size
+				continue
+			}
+			width = size
+		}
+		if space >= 0 && out.Len() > 0 {
+			out.WriteByte(' ')
+			spans = append(spans, plainSpan{from: space, to: i})
+		}
+		space = -1
+		if escaped {
+			out.WriteByte(text[i+1])
+			spans = append(spans, plainSpan{from: i, to: i + 2})
+		} else {
+			out.WriteString(text[i : i+width])
+			for offset := range width {
+				spans = append(spans, plainSpan{from: i + offset, to: i + offset + 1})
+			}
+		}
+		i += width
+	}
+	return out.String(), spans
+}
+
+// asciiPunct reports whether b is an ASCII punctuation mark, as [[:punct:]] reads one.
+func asciiPunct(b byte) bool {
+	return '!' <= b && b <= '/' || ':' <= b && b <= '@' || '[' <= b && b <= '`' || '{' <= b && b <= '~'
 }
 
 // textHolds reports whether text holds each of holds and none of lacks, compared with no regard
