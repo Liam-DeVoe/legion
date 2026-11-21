@@ -163,7 +163,9 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 		return refusalFile{project: "    experiments: [plan-length]\n"}.refuse(t)
 	},
 	`projects.<KEY>.experiments key "…" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`: func(t *testing.T) string {
-		return refusalFile{project: "    experiments: {Plan Length: {variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
+		// A name of the key grammar, with a "_" the experiment pattern refuses: a name outside the
+		// grammar is named by its line instead (the `unknown key` row).
+		return refusalFile{project: "    experiments: {plan_length: {variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
 	},
 	`projects.<KEY>.experiments.<NAME>.mode must be off, on, or random (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {plan-length: {mode: sometimes, variants: [{name: long}, {name: control}]}}\n"}.refuse(t)

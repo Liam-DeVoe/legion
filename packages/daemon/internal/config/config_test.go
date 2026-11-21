@@ -2375,6 +2375,51 @@ func TestLoadReadsCapabilityDecisions(t *testing.T) {
 	}
 }
 
+// An unknown key whose name has no key's shape (keyShape, the configuration's grammar) is named by
+// its line alone, wherever it stands, so a credential pasted where a key goes prints nowhere: at the
+// root, under a described mapping, under a project, under capabilities.decided, in a controller
+// configuration, and as an entry of the lists keyed by a role, a pod or an experiment. The keys are
+// made-up tokens in two shapes the earlier rule (letters, digits, "_" and "-") named whole: one
+// holding "-", longer than the 32 characters an experiment's name takes, and one holding
+// upper-case letters. A key of the grammar is still named as written.
+func TestAnUnknownKeyOfNoKeyShapeIsNamedByItsLine(t *testing.T) {
+	load := func(path string) error { _, err := Load(path, noEnv); return err }
+	validate := func(path string) error { _, err := LoadForValidation(path, noEnv); return err }
+	controller := func(path string) error { _, err := LoadController(path, ""); return err }
+	for _, token := range []string{"madeup-dash-token-0123456789-abcdefgh", "ghp_MadeUpToken0123456789abcdef"} {
+		for name, tc := range map[string]struct {
+			load        func(path string) error
+			body, under string
+		}{
+			"the root":                     {load, minimalFile + token + ": 1\n", ", whose name"},
+			"a described mapping":          {validate, kubernetesFile + "    " + token + ": 1\n", " under runtime.kubernetes, whose name"},
+			"a project":                    {load, strings.Replace(minimalFile, "DEMO: {}", "DEMO: { "+token+": 1 }", 1), " under projects.DEMO, whose name"},
+			"capabilities.decided":         {load, minimalFile + "capabilities: {decided: {" + token + ": because}}\n", " under capabilities.decided, whose name"},
+			"the controller configuration": {controller, requiredControllerKeys + token + ": 1\n", ", whose name"},
+			"worker_backends":              {load, minimalFile + "worker_backends: {" + token + ": claude}\n", " under worker_backends, whose name"},
+			"role_config_files":            {load, minimalFile + "role_config_files: {" + token + ": [/etc/a.yml]}\n", " under role_config_files, whose name"},
+			"worker_stall_backstop_hours":  {load, minimalFile + "worker_stall_backstop_hours: {" + token + ": 6}\n", " under worker_stall_backstop_hours, whose name"},
+			"runtime.kubernetes.resources": {validate, kubernetesFile + "    resources: {" + token + ": {cpu: 1}}\n", " under runtime.kubernetes.resources, whose name"},
+			"an experiment":                {load, strings.Replace(minimalFile, "DEMO: {}", "DEMO: { experiments: {"+token+": {variants: [{name: only}]}} }", 1), " under projects.DEMO.experiments, whose name"},
+		} {
+			t.Run(name+"/"+token[:3], func(t *testing.T) {
+				err := tc.load(writeConfigFile(t, tc.body))
+				if err == nil || !regexp.MustCompile(`unknown key at line \d+`+regexp.QuoteMeta(tc.under)).MatchString(err.Error()) {
+					t.Fatalf("the refusal is %v, want the key named by its line%s", err, tc.under)
+				}
+				for i := 0; i+10 <= len(token); i++ {
+					if strings.Contains(err.Error(), token[i:i+10]) {
+						t.Fatalf("the refusal %q holds %q of the key", err, token[i:i+10])
+					}
+				}
+			})
+		}
+	}
+	if _, err := Load(writeConfigFile(t, minimalFile+"dispach_url: x\n"), noEnv); err == nil || err.Error() != "unknown key dispach_url" {
+		t.Fatalf("a typo of a key = %v, want it named as written", err)
+	}
+}
+
 // A legion.yaml, a controller.yaml and a pod file that yaml.v3 cannot decode are refused in fixed
 // words (yamlerr.Reason), never in yaml.v3's: a value written after a "*", here a made-up
 // password, is an anchor yaml.v3's own error names.

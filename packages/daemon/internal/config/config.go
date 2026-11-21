@@ -545,10 +545,15 @@ func classify(node *yaml.Node) error {
 	return fmt.Errorf("unknown key %s", key)
 }
 
-// keyShape is the shape of a name a configuration file could mean as a key: letters, digits, "_"
-// and "-", from a letter. A name of another shape (one holding ":", "/", "@" or a space, as a URL
-// does) is no typo of a key.
-var keyShape = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
+// keyShape is the configuration's key grammar: lower-case letters, digits and "_", from a letter,
+// 40 characters at most. An unknown key of that shape is named as written, so a typo keeps its
+// help (`unknown key dispach_url`); any other name, one holding an upper-case letter, a "-", a
+// ":", a "/", an "@" or a space, as a token (`sk-ant-…`, `ghp_…`) or a URL does, is no typo of a
+// key, and is named by its line alone (unknownKeyAt).
+var keyShape = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
+
+// keyShapeWords is keyShape as a refusal says it.
+const keyShapeWords = "lower-case letters, digits and _, from a letter, 40 at most"
 
 // unknownKeyAt is the refusal of an unknown key whose name has no key's shape (keyShape), under the
 // mapping under names ("" at the file's root): its line, never its text. Such a name is no typo of
@@ -557,9 +562,9 @@ var keyShape = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
 // character that ends a URL in a text, a "'" among them, stands in its userinfo.
 func unknownKeyAt(node *yaml.Node, under string) string {
 	if under == "" {
-		return fmt.Sprintf("unknown key at line %d, whose name has no key's shape (letters, digits, _ and -)", node.Line)
+		return fmt.Sprintf("unknown key at line %d, whose name has no key's shape (%s)", node.Line, keyShapeWords)
 	}
-	return fmt.Sprintf("unknown key at line %d under %s, whose name has no key's shape (letters, digits, _ and -)", node.Line, under)
+	return fmt.Sprintf("unknown key at line %d under %s, whose name has no key's shape (%s)", node.Line, under, keyShapeWords)
 }
 
 // readRuntime reads `runtime`: the `tmux` scalar (no block), or a one-key mapping, `{kubernetes:

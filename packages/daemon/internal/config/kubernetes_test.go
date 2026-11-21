@@ -999,9 +999,10 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			want: "runtime.kubernetes.scheduling.tolerations[0] must be a mapping",
 		},
 		{
+			// A camelCase name is no key of the grammar, so it is named by its line.
 			name: "a toleration with an unknown member",
 			body: kubernetesFile + "    scheduling: {tolerations: [{key: spot, operator: Exists, effect: NoSchedule, tolerationSeconds: 5}]}\n",
-			want: "unknown key runtime.kubernetes.scheduling.tolerations[0].tolerationSeconds",
+			want: "unknown key at line 24 under runtime.kubernetes.scheduling.tolerations[0], whose name has no key's shape (lower-case letters, digits and _, from a letter, 40 at most)",
 		},
 		{
 			name: "a toleration with no key",
