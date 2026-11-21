@@ -2525,7 +2525,7 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-// Contract 212: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
+// Contract 214: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
 // wait, closed, on an ancestor's open approval request (`pending_on_basis`), each with the `basis`
 // that names the approval or the request, and every root the daemon records says whether its
 // tree runs (`treeRuns`). The state golden carries LEGION-207's step open on LEGION-200's
@@ -2622,12 +2622,12 @@ test("the state golden carries a step on an ancestor's basis and whether each ro
   expect(LegionStateResponse.safeParse(notBoolean).success).toBeFalse();
 });
 
-// `legionGatedStepView`'s status as contracts 55 to 211 hold it: four words, in an enum. Every
+// `legionGatedStepView`'s status as contracts 55 to 213 hold it: four words, in an enum. Every
 // plugin parses the state with the schema of the contract it was built at, so this reader is live
-// in every pod still on an image before 212. It reads every step of the golden that stands on no
-// basis, and refuses the two words of 212 — and with them the whole state body, since
+// in every pod still on an image before 214. It reads every step of the golden that stands on no
+// basis, and refuses the two words of 214 — and with them the whole state body, since
 // `gatedSteps` is an array it parses whole — which is why the state route serves a caller below
-// 212 no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis` and
+// 214 no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis` and
 // `withoutUnadmittedStepStatuses`, pinned on the Go side): neither `waiting` nor `approved` is true
 // of such a step, so it serves no entry of that issue rather than a wrong one.
 const gatedStepStatusBeforeBasis = z.object({
@@ -2654,7 +2654,7 @@ test("a reader before the basis words reads every gated step but those on a basi
   }
 });
 
-// The architect's registration on an ancestor's basis (contract 212): the three fields come
+// The architect's registration on an ancestor's basis (contract 214): the three fields come
 // together, the document is a UUID, the version positive and the reason a sentence; a request
 // that names none of them is the request it was.
 test("a gate registration names a basis by its document, its version and a reason", () => {
@@ -2741,12 +2741,12 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   expect(block.data?.caches).toEqual(live.caches);
 
   // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract` and
-  // the keys contract 212 added aside: the mark names the contract the caller is served at, 199,
+  // the keys contract 214 added aside: the mark names the contract the caller is served at, 199,
   // the recorded contract below the 201 the caller states (`recordedContractAtOrBelow`),
   // INFRA-4605's, which moved no answer's shape, and the lowest plugin contract reports the claims
   // of the snapshot the route projected the body from, a pod at 201, which `state.json`'s own
   // fixture does not hold. No band stands between 199 and 202 but the repositories block's, and
-  // the one band above 202 is contract 212's, which takes every root's `treeRuns` and the
+  // the one band above 202 is contract 214's, which takes every root's `treeRuns` and the
   // `gatedSteps` of each issue with a step on an ancestor's basis (`api`'s `withoutGateBasis`), so
   // the narrowing changes this one block and those keys and nothing beside them.
   const { daemonApiVersion } = z
