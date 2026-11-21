@@ -3097,13 +3097,11 @@ package api
 // `settings.projects.<KEY>.experiments.<name>.variants[].plan` came with it: a key below
 // `projects`, which no reader types, so no record holds it and nothing is served down
 // (answers.go's typedSettings).
-// (This entry takes 216, the lowest number above 211, the number of the branch it stands on, that
-// no open pull request declared and no other branch of this change holds: a reading of `const
+// (This entry takes 216, above each number an open pull request declared: a reading of `const
 // DaemonAPIVersion` at refs/pull/<n>/head for each of the 413 open pull requests, made between
-// 2026-11-21T17:54:36Z and 17:55:04Z, read all 413 and found 211 declared by #4611, 212 by #4065,
-// #4596 and #4771, 213 by #4030 and #4553, 214 by #4592, and nothing above 214, and 215 is held
-// for another branch of this change that has no pull request yet. From this entry the last number
-// of answers.go's
-// SupportedContracts is `api.assignmentPlanContract`. Read the base's own number and every open
-// pull request again at the next merge rather than from this line.)
+// 2026-11-21T19:40:57Z and 19:41:27Z, read all 413 and found 211 declared by #4611, 212 by #4065
+// and #4771, 213 by #4030 and #4553, 214 by #4592 and #4596, and nothing above 214. From this
+// entry the last number of answers.go's SupportedContracts is `api.assignmentPlanContract`. Read
+// the base's own number and every open pull request again at the next merge rather than from this
+// line.)
 const DaemonAPIVersion = 216
