@@ -1,3 +1,4 @@
+import type { LegionOwed } from "@legion/contracts/legion-api";
 import { lastCustomEntry } from "./custom-entry";
 import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
 
@@ -21,24 +22,31 @@ import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
  * The machine keeps the reminder's rhythm and nothing of the issue's phase: whether
  * a settle is reminded at all is the daemon's answer alone, asked at that settle. A process that
  * restarts, or a pod that is replaced, therefore changes nothing about whether a role is
- * reminded: it holds no state a restart could reset, and an inbound message moves the rhythm and
- * nothing else, so the daemon's own update message reaching a role whose phase has finished
- * reminds it of nothing (dispatch://INFRA-2746).
+ * reminded: it holds no state a restart could reset, and a message from outside the session
+ * (news or a daemon prompt) moves the rhythm and nothing else, so the daemon's own update
+ * message reaching a role whose phase has finished reminds it of nothing (dispatch://INFRA-2746).
+ *
+ * The same answer says whether a wait the worker declared with the `legion` tool's
+ * `declare_wait` stands, and whether the closed design gate holds a merger
+ * (dispatch://INFRA-2040). While either stands, the reminder sends nothing but the one for a tool
+ * call written as text (`heldReminderText`). A WAITING line in the worker's reply buys nothing:
+ * only the worker's own background work keeps the quiet wait (`waitingMs`).
  */
 
 /** Where the reminder's rhythm stands:
  * - `active`: a turn that settles now earns a reminder, if the daemon answers that the claim
  *   owes work;
- * - `waiting`: the worker's last reply said with a WAITING line what it waits on, or its turn
- *   ended with background work of its own still running; both buy the longer quiet wait
- *   `LEGION_STALL_WAITING_MS` before the next reminder;
+ * - `waiting`: the worker's turn ended with background work of its own still running, which buys
+ *   the longer quiet wait `LEGION_STALL_WAITING_MS` before the next reminder. A WAITING line in
+ *   the worker's reply buys nothing: a worker that waits on something outside its own work
+ *   declares the wait with `declare_wait`, and the daemon's answer says while it stands;
  * - `awaiting-update`: the worker has answered the daemon's update message (`ready_for_update`),
  *   so it is to start nothing until the daemon comes back to it. This wait earns no reminder and
  *   no wait of any length, because the daemon is what wakes the worker: a round, once opened,
  *   ends only by replacing its pod or because that pod is gone, so the process is replaced and the
  *   session comes back on the new pod with the task the round held behind it (`endPodUpdate` in
- *   `packages/daemon/internal/supervise/table.go`). That task arrives as the daemon's own prompt,
- *   which is an inbound message and makes the rhythm `active` again. A reminder steered into
+ *   `packages/daemon/internal/supervise/table.go`). That task arrives as the daemon's own prompt
+ *   (`prompt`), which makes the rhythm `active` again. A reminder steered into
  *   this wait would instead start a turn of work the replacement throws away, and before the
  *   round's bound a turn in progress holds that replacement back (INFRA-484).
  * The reminding never stops where a reminder is the worker's only wake: one that changes nothing
@@ -54,10 +62,16 @@ export interface PhaseStallState {
 }
 
 export type PhaseStallInput =
-  /** A message arrived from outside the session (`isInbound`): the daemon's task, an Envoy
-   * delivery, a person's direct message. It says nothing of what the claim owes, which is the
-   * daemon's answer at the next settle; it is something happening, so the count starts again. */
-  | { readonly kind: "inbound" }
+  /** News reached the session from outside it: an Envoy delivery, a message to the role, a
+   * person's direct message. It says nothing of what the claim owes, which is the daemon's answer
+   * at the next settle; it is something happening, so the count starts again. It is also the one
+   * input that ends a wait the worker declared: the reminder reports it to the daemon
+   * (`PhaseReminder.news` in `src/phase-reminder.ts`). */
+  | { readonly kind: "news" }
+  /** A prompt of the daemon's reached the session: a task, the resume task, the update task, the
+   * wait's own task. It starts the count again as news does, and ends no wait the worker
+   * declared. */
+  | { readonly kind: "prompt" }
   /** The `legion` tool's `ready_for_update` returned without throwing: the worker has pushed
    * what it wants kept and answered the daemon's update message on its pod (INFRA-484). */
   | { readonly kind: "update-answered" }
@@ -99,12 +113,18 @@ export interface PhaseStallStep {
  * the daemon relaunches with `--resume` restores it from its branch. */
 export const PHASE_STALL_ENTRY = "legion-phase-stall";
 
-/** A line of the final message that starts with WAITING (after any markdown emphasis or quoting). */
-const WAITING_REPLY = /^\W*WAITING\b/m;
-
 /** The opening of a tool call written as text in the Anthropic invoke markup, with or without a
  * namespace prefix: the shape the Stage 3 model emitted in place of a `tool_use` block. */
 const TOOL_CALL_SHAPED = /<(?:[\w-]+:)?(?:function_calls\b|invoke\s+name\s*=|parameter\s+name\s*=)/;
+
+/** What the reminder tells a worker that waits on something outside its own work: declare the
+ * wait with the `legion` tool's `declare_wait`, and what ends it. A message to the worker ends the
+ * wait and wakes the worker; one whose wake is lost waits until the wait's time. */
+const DECLARE_WAIT =
+  "If you are waiting on something outside your own work (CI, a review, a person), call the " +
+  "`legion` tool with op `declare_wait`, `waiting_on` naming what you wait on and `wake_at` the " +
+  "RFC 3339 time to wake you, then end your turn. A message to you ends the wait and wakes you; a " +
+  "message whose wake is lost waits until the wait's time.";
 
 /** What a worker whose turn ended with `work` owed is told, `work` being the daemon's own name for
  * it (`LegionOwed.work`: "the testing phase of LEGION-208", "the production check of
@@ -115,24 +135,22 @@ export function owedReminder(work: string): string {
   return (
     `Your turn ended with ${work} still owed: the Legion daemon's record holds it open for your ` +
     "role. If that work is done, call the `legion` tool now with op `handoff_complete` and the " +
-    "fields your role's instructions give. If you are waiting on something (CI, a review, a " +
-    "person), reply with a line starting WAITING that names what you are waiting on: that buys a " +
-    "quiet wait, and then this reminder comes again. This reminder repeats at the end of every " +
-    "turn for as long as the daemon's record holds that work open."
+    `fields your role's instructions give. ${DECLARE_WAIT} No reminder comes while the wait ` +
+    "stands. This reminder repeats at the end of every turn for as long as the daemon's record " +
+    "holds that work open and no wait stands."
   );
 }
 
 /** What a worker is told when the daemon's answer did not arrive: an error, a timeout, a refusal,
  * or an answer the contract does not describe. It still nudges, since an unreachable daemon is
  * exactly when a stalled worker must still be nudged, and it says that it could not read the
- * record. It names no phase and no operation, because it read neither. */
+ * record. It names no phase and no operation that ends one, because it read neither: the one
+ * operation it names is `declare_wait`, which a worker that waits needs whatever the record says. */
 export const UNREAD_REMINDER =
   "Your turn ended, and this reminder could not read the Legion daemon's record of what your " +
   "role owes, so it cannot say whether any work is still yours. If your role's instructions " +
-  "leave work of yours unfinished, finish it now with a real tool call. If you are waiting on " +
-  "something (CI, a review, a person), reply with a line starting WAITING that names what you " +
-  "are waiting on: that buys a quiet wait, and then this reminder comes again. This reminder " +
-  "repeats at the end of every turn for as long as the record cannot be read.";
+  `leave work of yours unfinished, finish it now with a real tool call. ${DECLARE_WAIT} This ` +
+  "reminder repeats at the end of every turn for as long as the record cannot be read.";
 
 const TEXT_TOOL_CALL =
   "Your last message holds a tool call written as text, so it did not run: make it a real tool call. ";
@@ -147,6 +165,38 @@ export function reminderText(lastAssistantText: string, work: string | undefined
   return TOOL_CALL_SHAPED.test(lastAssistantText) ? TEXT_TOOL_CALL + reminder : reminder;
 }
 
+/** The closed design gate that holds a merger, as the owed answer gives it (`LegionOwed.hold`):
+ * the gated step whose row holds it, the document registered for that step, and the version of it
+ * that is with its reviewer. */
+export type GateHold = NonNullable<LegionOwed["hold"]>;
+
+/** The one reminder a settling message earns while a wait the worker declared stands, or the
+ * closed design gate holds the claim (the owed `answer`'s `hold`): the reminder for a tool call
+ * written as text, which says that the call did not run and asks for a real one, and asks for no
+ * `handoff_complete`. Undefined when the message holds no tool call written as text: then nothing
+ * is due while the wait or the hold stands.
+ *
+ * During a hold it also carries the closed note's sentence (dispatch://INFRA-2040, D15), word for
+ * word the closed form of the daemon's `workflow.MergerGateNote`, which every task of a held merger
+ * opens with, so a merger told to repeat its call is told in the same words that the gate holds
+ * its merge. `tree` is the key of the claim's tree root (`ClaimCapability.tree`), the tree the
+ * daemon names: the owed answer names none, and the gate is the tree's. */
+export function heldReminderText(
+  lastAssistantText: string,
+  tree: string,
+  answer: Pick<LegionOwed, "hold">
+): string | undefined {
+  if (!TOOL_CALL_SHAPED.test(lastAssistantText)) return undefined;
+  const hold = answer.hold;
+  if (hold === undefined) return TEXT_TOOL_CALL.trimEnd();
+  return (
+    TEXT_TOOL_CALL +
+    `The design gate of ${tree} closed: version ${hold.version} of its ${hold.step} document ` +
+    `(${hold.artifactId}) is with its reviewer. Merge nothing, enqueue nothing, and take a pull ` +
+    "request you queued back out of the merge queue."
+  );
+}
+
 /**
  * The next state, and whether the settle has earned a reminder. The count moves only on
  * `reminded`, which the host applies once it has actually put the reminder in front of the worker,
@@ -156,9 +206,12 @@ export function reminderText(lastAssistantText: string, work: string | undefined
  */
 export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): PhaseStallStep {
   switch (input.kind) {
-    case "inbound":
-      // A delivery may be what the worker waited on, and the daemon's task is what ends the
-      // update wait: either way something happened, and the count starts again.
+    case "news":
+    case "prompt":
+      // News may be what the worker waited on, and the daemon's task is what ends the update
+      // wait: either way something happened, and the count starts again. Whether news ends a wait
+      // the worker declared is the daemon's to answer, so the reminder reports it there
+      // (`src/phase-reminder.ts`); the rhythm is the same for both.
       return { state: { state: "active", count: 0 } };
     case "update-answered":
       // The worker has answered the update message and is to start nothing until the daemon comes
@@ -184,10 +237,12 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
       // Either wait stands as it is until whatever ends that wait ends it.
       if (state.state !== "active") return { state };
       // A worker waiting on its own background job is not stalled: the job's own result starts
-      // the next turn. It buys the same quiet wait a WAITING line does, which is also what bounds
+      // the next turn. That is the one thing that buys the quiet wait, which is also what bounds
       // it — a job that never finishes is a wait the host's waiting delay ends, and the reminder
-      // comes again then rather than never.
-      if (input.backgroundWork === true || WAITING_REPLY.test(input.lastAssistantText)) {
+      // comes again then rather than never. A WAITING line buys nothing: a worker that waits on
+      // something outside its own work declares it (`declare_wait`), and the daemon's answer
+      // says while that wait stands.
+      if (input.backgroundWork === true) {
         return { state: { state: "waiting", count: state.count } };
       }
       return { state, remind: true };
@@ -204,7 +259,9 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
  * among them, the Envoy extension's own notices and its wake for cards the host folded with no
  * turn, both carrying `LOCAL_ENVOY_NOTICE`, tool results, the model's replies) is not.
  * A reminder the plugin sends through `pi.sendMessage` carries its own custom type for that reason:
- * a `role: "user"` message or an `envoy-message` would make the reminder reset its own count. */
+ * a `role: "user"` message or an `envoy-message` would make the reminder reset its own count. The
+ * host tells news from a daemon prompt by kind among these messages (`news` and `prompt` of
+ * `PhaseStallInput`), since only news ends a wait the worker declared. */
 export function isInbound(message: unknown): boolean {
   if (typeof message !== "object" || message === null || !("role" in message)) return false;
   if (message.role === "user") return true;
@@ -348,11 +405,20 @@ function lastPhaseStallData(branch: readonly unknown[]): object | undefined {
  * keeps: a file and a transcript written on every settle hold no more than the notice can use. */
 export const LAST_MESSAGE_LIMIT = 500;
 
-/** What one recorded entry carries. The machine never reads `reported`, `reportKey` and
- * `lastMessage`, and each host persists them its own way — the Oh My Pi transcript entry, the
- * Claude Code state file — but they ride the same record, so a relaunch mid-run neither repeats an
- * accepted notice, nor loses the key a refused one is retried under, nor sends one that has
- * forgotten what the worker last said. */
+/** One report of news the daemon has not answered yet: the wait it names (`waitId`), and the
+ * reported delivery's own key, verbatim, absent for a person's message, which has none
+ * (`LegionWaitNewsRequest`). */
+export interface WaitNewsReport {
+  readonly waitId: string;
+  readonly deliveryKey?: string;
+}
+
+/** What one recorded entry carries. The machine never reads `reported`, `reportKey`,
+ * `lastMessage`, `waitId` and `unsentNews`, and each host persists them its own way — the Oh My
+ * Pi transcript entry, the Claude Code state file — but they ride the same record, so a relaunch
+ * mid-run neither repeats an accepted notice, nor loses the key a refused one is retried under,
+ * nor sends one that has forgotten what the worker last said, nor forgets the wait news is
+ * reported against or a report of news the daemon never answered. */
 export interface PhaseStallEntry {
   readonly state: RecordedPhaseStall;
   readonly count: number;
@@ -361,6 +427,13 @@ export interface PhaseStallEntry {
   /** The head (`LAST_MESSAGE_LIMIT`) of what the worker said as its last turn settled; absent
    * while it has said nothing, and in a record an earlier build wrote. */
   readonly lastMessage?: string;
+  /** The id of the wait the worker declared (`declare_wait`) that the plugin last knew to stand:
+   * news after it is reported against it. Absent where none is known. */
+  readonly waitId?: string;
+  /** The reports of news the daemon has not answered, oldest first: each is sent again at the
+   * next turn's end, timer or boot. A wait one of them names has ended in the plugin, whatever
+   * the daemon's answer still says. Absent where none is kept. */
+  readonly unsentNews?: readonly WaitNewsReport[];
 }
 
 /** Whether the architect has already been told about the run of reminders one record belongs to,
@@ -373,6 +446,18 @@ function phaseStallReportFrom(data: object): {
   const key =
     "reportKey" in data && typeof data.reportKey === "string" ? data.reportKey : undefined;
   return { reported, reportKey: key };
+}
+
+/** The report one recorded element holds, as a list of none or one, so a malformed element of a
+ * record is dropped rather than refusing the record. */
+function waitNewsReportFrom(value: unknown): WaitNewsReport[] {
+  if (typeof value !== "object" || value === null) return [];
+  if (!("waitId" in value) || typeof value.waitId !== "string" || value.waitId === "") return [];
+  const key =
+    "deliveryKey" in value && typeof value.deliveryKey === "string" && value.deliveryKey !== ""
+      ? value.deliveryKey
+      : undefined;
+  return [{ waitId: value.waitId, ...(key === undefined ? {} : { deliveryKey: key }) }];
 }
 
 /** The record one entry's data holds, or undefined when it holds no state this build understands.
@@ -388,12 +473,19 @@ export function phaseStallEntryFrom(data: object | undefined): PhaseStallEntry |
     "lastMessage" in data && typeof data.lastMessage === "string"
       ? data.lastMessage.slice(0, LAST_MESSAGE_LIMIT)
       : "";
+  const waitId = "waitId" in data && typeof data.waitId === "string" ? data.waitId : "";
+  const unsentNews =
+    "unsentNews" in data && Array.isArray(data.unsentNews)
+      ? data.unsentNews.flatMap(waitNewsReportFrom)
+      : [];
   return {
     state: stall.state,
     count: stall.count,
     reported: report.reported,
     ...(report.reportKey === undefined ? {} : { reportKey: report.reportKey }),
     ...(lastMessage === "" ? {} : { lastMessage }),
+    ...(waitId === "" ? {} : { waitId }),
+    ...(unsentNews.length === 0 ? {} : { unsentNews }),
   };
 }
 

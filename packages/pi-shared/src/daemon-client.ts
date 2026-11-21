@@ -105,6 +105,10 @@ export type ActivityInput = z.input<typeof LegionActivityRequest>;
  * the claim owes now. */
 export type OwedInput = z.input<typeof LegionOwedRequest>;
 
+/** `api.WaitNewsRequest`: the claim, the session it records, the registration's secret, the wait
+ * the news came after, and the delivery's own key when the news has one. */
+export type WaitNewsInput = z.input<typeof LegionWaitNewsRequest>;
+
 export interface LegionDaemonClient {
   /** The daemon's whole state. */
   readonly state: () => Promise<LegionState>;
@@ -162,9 +166,11 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionWaitResponse>>;
   /** `api.WaitNewsRequest`: news reached the session after the declaration of the wait `waitId`
    * names, so the daemon ends that wait. It is authenticated as `declareWait` is, and the answer
-   * says whether this report ended the wait. */
+   * says whether this report ended the wait. `signal` aborts the request, its answer's body
+   * included: the phase reminder bounds the report as it bounds the owed read. */
   readonly waitNews: (
-    input: z.input<typeof LegionWaitNewsRequest>
+    input: WaitNewsInput,
+    options?: { readonly signal?: AbortSignal }
   ) => Promise<z.output<typeof LegionWaitNewsResponse>>;
   /** The deployment's idle-release records of one window: every release, resume and hold the
    * daemon recorded at or after `since`, oldest first. It is authenticated by the claim, as
@@ -692,8 +698,14 @@ export function createLegionDaemonClient(
       post("/legion/v1/claims/owed", LegionOwedRequest, LegionOwedResponse, input, options?.signal),
     declareWait: (input) =>
       post("/legion/v1/claims/wait", LegionWaitRequest, LegionWaitResponse, input),
-    waitNews: (input) =>
-      post("/legion/v1/claims/wait-news", LegionWaitNewsRequest, LegionWaitNewsResponse, input),
+    waitNews: async (input, options) =>
+      post(
+        "/legion/v1/claims/wait-news",
+        LegionWaitNewsRequest,
+        LegionWaitNewsResponse,
+        input,
+        options?.signal
+      ),
     releaseRecords: (input) =>
       post(
         "/legion/v1/claims/release-records",

@@ -272,6 +272,7 @@ export default function legionExtension(pi: PiApi): void {
     saveEntry: (entry) => pi.appendEntry(PHASE_STALL_ENTRY, entry),
     claim: paneClaim,
     readOwed: (input, signal) => roleDaemon().owed(input, { signal }),
+    reportNews: (input, signal) => roleDaemon().waitNews(input, { signal }),
     publisher,
     project: process.env.LEGION_PROJECT,
     limits,
@@ -854,7 +855,7 @@ export default function legionExtension(pi: PiApi): void {
     phaseReminder.turnStarted();
     const injected =
       matchInjectedUserTurn(context.sessionManager.getSessionId(), event.message) !== undefined;
-    if (injected || isInbound(event.message)) phaseReminder.apply({ kind: "inbound" });
+    if (injected || isInbound(event.message)) phaseReminder.apply({ kind: "prompt" });
   });
 
   // An assistant message that settled: one that ended aborted closes every call the stall watch

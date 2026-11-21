@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto"
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import type { LegionOwed } from "@legion/contracts/legion-api"
+import type { LegionOwed, LegionWaitNews } from "@legion/contracts/legion-api"
 import { messageFor } from "@legion/envoy-client/errors"
-import type { ActivityInput, OwedInput } from "@legion/pi-shared/daemon-client"
+import type { ActivityInput, OwedInput, WaitNewsInput } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import {
   createPhaseReminder,
@@ -169,6 +169,9 @@ export interface PhaseHookDeps {
    * (`PhaseReminderDeps.readOwed`). An answer that does not arrive is the shared reminder's to
    * decide (`UNREAD_CHECK`, `@legion/pi-shared/phase-reminder`), as it is on Oh My Pi. */
   readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>
+  /** Reports news after the declaration of a wait to the daemon (`LegionDaemonClient.waitNews`),
+   * aborted with `signal` once the bound passes (`PhaseReminderDeps.reportNews`). */
+  readonly reportNews: (input: WaitNewsInput, signal: AbortSignal) => Promise<LegionWaitNews>
   /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
    * idle rule can decide whether the pane's pod may be released (INFRA-945). */
   readonly reportActivity: (input: ActivityInput) => Promise<void>
@@ -385,6 +388,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     saveEntry: saveRecord,
     claim: deps.claim,
     readOwed: deps.readOwed,
+    reportNews: deps.reportNews,
     // The server's own listener client, so the notice reaches the one this session already talks
     // to; Envoy off for the session leaves it undefined, the runner says so once at debug, and
     // the reminder keeps coming without a notice.
@@ -544,7 +548,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           dropTimer()
           const prompt = event.prompt ?? ""
           if (prompt === lastReminder) return {}
-          reminder.apply({ kind: "inbound" })
+          reminder.apply({ kind: "prompt" })
           return {}
         }
       }

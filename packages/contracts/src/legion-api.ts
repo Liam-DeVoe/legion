@@ -270,10 +270,13 @@ const legionDesignStep = z.enum(GATED_STEPS);
 
 /** `api.WaitView` — one wait as the daemon recorded it: the id it minted, what the wait waits on
  * (trimmed), when its time comes, and when the daemon recorded the declaration, to the
- * microsecond. The daemon writes all four, and each is optional here, since no plugin code reads
- * it yet (LEGION_ANSWER_READS). */
+ * microsecond. The daemon writes all four. `id` is required: the phase reminder reports news
+ * against it and reads whether the owed answer's wait is the one an unsent report names
+ * (`pi-shared/src/phase-reminder.ts`), and `declare_wait` hands it to its host
+ * (`pi-shared/src/legion-phase-ops.ts`). The other three are optional, since no plugin code reads
+ * them (LEGION_ANSWER_READS). */
 const legionWait = z.object({
-  id: nonEmptyString.optional(),
+  id: nonEmptyString,
   waitingOn: nonEmptyString.optional(),
   wakeAt: timestamp.optional(),
   declaredAt: timestamp.optional(),
@@ -281,12 +284,13 @@ const legionWait = z.object({
 
 /** `api.HoldView` — the closed design gate that holds a merger while the hold stands: the gated
  * step whose row holds it, the document registered for that step, and the version of that document
- * that is with its reviewer. The daemon writes all three, and each is optional here, since no
- * plugin code reads it yet (LEGION_ANSWER_READS). */
+ * that is with its reviewer. The daemon writes all three, and all three are required: the phase
+ * reminder builds the closed note's sentence from them (`heldReminderText` in
+ * `pi-shared/src/phase-stall.ts`, LEGION_ANSWER_READS). */
 const legionHold = z.object({
-  step: legionDesignStep.optional(),
-  artifactId: nonEmptyString.optional(),
-  version: z.number().int().positive().optional(),
+  step: legionDesignStep,
+  artifactId: nonEmptyString,
+  version: z.number().int().positive(),
 });
 
 /** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
@@ -1577,10 +1581,10 @@ export type LegionWaitRequestBody = z.output<typeof LegionWaitRequest>;
 
 /** `api.WaitResponse`, the body `POST /legion/v1/claims/wait` answers once the wait is recorded.
  * A claim keeps one standing wait: a new declaration ends the one it replaces. The daemon always
- * writes `wait`, and it is optional here, since no plugin code reads it yet
- * (LEGION_ANSWER_READS). */
+ * writes `wait`, and it is required: `declare_wait` answers it and hands its `id` to its host,
+ * which tells the phase reminder (`pi-shared/src/legion-phase-ops.ts`, LEGION_ANSWER_READS). */
 export const LegionWaitResponse = z.object({
-  wait: legionWait.optional(),
+  wait: legionWait,
 });
 
 export type LegionWait = z.output<typeof LegionWaitResponse>;
@@ -1612,9 +1616,11 @@ export type LegionWaitNewsRequestBody = z.output<typeof LegionWaitNewsRequest>;
  * answers `false` with `updateAsk: true`, during the round and after it: an update round and its
  * ask end no wait. Every other report, with any other key or none, is news, whether or not an
  * update round is open. `updateAsk` is absent from every other answer. The daemon always writes
- * `ended`, and it is optional here, since no plugin code reads it yet (LEGION_ANSWER_READS). */
+ * `ended`, and it is required: the phase reminder ends the wait in the plugin on `true` and keeps
+ * it standing on `false` (`pi-shared/src/phase-reminder.ts`, LEGION_ANSWER_READS). No plugin code
+ * reads `updateAsk`, so it stays optional. */
 export const LegionWaitNewsResponse = z.object({
-  ended: z.boolean().optional(),
+  ended: z.boolean(),
   updateAsk: z.literal(true).optional(),
 });
 
@@ -2279,7 +2285,13 @@ export const LegionChildRequest = z.strictObject({
  * The summary reads the state and never the record route. Its fields are in this list because
  * the summary reads them on the node that the two answers share. Each of them is `.optional()`
  * on `legionIssue`, so the record route refuses no body that does not carry one. A change that
- * makes one of them required for the state makes it required on the record route too. */
+ * makes one of them required for the state makes it required on the record route too.
+ *
+ * A claim view's `wait` and `hold` are the owed answer's own nodes (`legionWait`, `legionHold`),
+ * whose `wait.id` and `hold.step`, `hold.artifactId` and `hold.version` the phase reminder and
+ * `declare_wait` read off that answer and the declaration's: the read set names a field at every
+ * path the same parent and name reach, so they stand here too. Each claim view's `wait` and
+ * `hold` stay optional, so a claim that has neither is read as before. */
 const ISSUE_RECORD_READS = [
   "phase",
   "status",
@@ -2288,11 +2300,19 @@ const ISSUE_RECORD_READS = [
   "architect.state",
   "architect.lastTurnStart",
   "architect.lastTurnEnd",
+  "architect.wait.id",
+  "architect.hold.step",
+  "architect.hold.artifactId",
+  "architect.hold.version",
   "workers",
   "workers{}.claim",
   "workers{}.claim.state",
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
+  "workers{}.claim.wait.id",
+  "workers{}.claim.hold.step",
+  "workers{}.claim.hold.artifactId",
+  "workers{}.claim.hold.version",
   "check",
   "check.role",
   "check.looks",
@@ -2474,6 +2494,25 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   LegionTurnOutcomeResponse: ["refusedRun", "failed"],
   // `pi-shared/src/phase-reminder.ts` decides whether a due reminder goes out by `owes`, names
   // the work it gives by `work`, and sends the architect notice to `architect`, as the stall
-  // watch's notice does (`pi-legion/src/stall-evidence.ts`, contract 206).
-  LegionOwedResponse: ["owes", "work", "architect"],
+  // watch's notice does (`pi-legion/src/stall-evidence.ts`, contract 206). From contract 207 it
+  // holds every reminder but the one for a tool call written as text while the answer's `wait`
+  // stands, which it tells by the wait's `id`, or while its `hold` stands, whose step, document
+  // and version that reminder names (`heldReminderText` in `pi-shared/src/phase-stall.ts`).
+  LegionOwedResponse: [
+    "owes",
+    "work",
+    "architect",
+    "wait",
+    "wait.id",
+    "hold",
+    "hold.step",
+    "hold.artifactId",
+    "hold.version",
+  ],
+  // `declare_wait` (`pi-shared/src/legion-phase-ops.ts`) answers the wait the daemon recorded and
+  // hands its `id` to its host, which tells the phase reminder.
+  LegionWaitResponse: ["wait", "wait.id"],
+  // The phase reminder's report of news ends the wait in the plugin on `ended` true and keeps it
+  // standing on false.
+  LegionWaitNewsResponse: ["ended"],
 };

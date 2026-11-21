@@ -154,6 +154,7 @@ async function harness(
       turnsStarted += 1
     },
     readOwed: (question, signal) => daemon.owed(question, { signal }),
+    reportNews: (report, signal) => daemon.waitNews(report, { signal }),
     reportActivity: async (input) => {
       reports.push(input)
       if (options.reportActivityFails === true) throw new Error("the daemon refused the report")

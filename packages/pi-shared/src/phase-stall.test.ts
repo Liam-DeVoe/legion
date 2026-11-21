@@ -143,18 +143,22 @@ test("a record's last message reads back no longer than the notice quotes", () =
   });
 });
 
-// An inbound message moves the rhythm's count and nothing else: a user message (the daemon's
-// task, a person's direct message) and an Envoy delivery (the update round's message among them)
-// are each the same input, and none says anything of what the claim owes.
-test("every message from outside the session is one inbound input, and the reminder's own is none", () => {
+// A message from outside the session moves the rhythm's count and nothing else of the machine:
+// news (an Envoy delivery, a person's direct message) and a daemon prompt (its task, the update
+// round's) each start the count again, and neither says anything of what the claim owes. The two
+// differ in whether they end a wait the worker declared, which is the reminder's to report
+// (`src/phase-reminder.ts`), not the rhythm's.
+test("news and a daemon prompt each start the count again, and the reminder's own message is neither", () => {
   expect(isInbound({ role: "user", content: "Run the update." })).toBe(true);
   expect(isInbound({ role: "custom", customType: "envoy-message", details: {} })).toBe(true);
   expect(isInbound({ role: "custom", customType: "legion-phase-reminder" })).toBe(false);
   expect(isInbound({ role: "assistant", content: [] })).toBe(false);
-  for (const state of ["active", "waiting", "awaiting-update"] as const) {
-    expect(stepPhaseStall({ state, count: 3 }, { kind: "inbound" })).toEqual({
-      state: { state: "active", count: 0 },
-    });
+  for (const kind of ["news", "prompt"] as const) {
+    for (const state of ["active", "waiting", "awaiting-update"] as const) {
+      expect(stepPhaseStall({ state, count: 3 }, { kind })).toEqual({
+        state: { state: "active", count: 0 },
+      });
+    }
   }
 });
 
@@ -174,12 +178,12 @@ test("a worker that answered the update message stands in awaiting-update, where
     state: { state: "awaiting-update", count: 0 },
   });
   // What ends this wait is the daemon: the round replaces the pod, and the task it held behind
-  // the round arrives in the process that comes back as its own prompt, an inbound message.
-  expect(stepPhaseStall(answered.state, { kind: "inbound" })).toEqual({
+  // the round arrives in the process that comes back as its own prompt.
+  expect(stepPhaseStall(answered.state, { kind: "prompt" })).toEqual({
     state: { state: "active", count: 0 },
   });
   // Nothing reminds into this wait, so `reminded` can only be a timer armed before the answer;
-  // it is counted and the rhythm is active again, as it is out of a WAITING reply's wait.
+  // it is counted and the rhythm is active again, as it is out of background work's wait.
   expect(stepPhaseStall(answered.state, { kind: "reminded" })).toEqual({
     state: { state: "active", count: 1 },
   });
@@ -202,8 +206,8 @@ test("awaiting-update is recorded as the waiting it is a kind of", () => {
 
 // A worker whose turn ends while its own background job runs is not stalled: that job's
 // result starts the next turn, and a reminder in between would be telling a working worker that
-// it has done nothing. It buys the same quiet wait a WAITING line does, which is what bounds it:
-// a job that never finishes is a wait the host's waiting delay ends.
+// it has done nothing. It buys the quiet wait, which is what bounds it: a job that never finishes
+// is a wait the host's waiting delay ends.
 test("a settle with the worker's own background work running earns no reminder", () => {
   expect(
     stepPhaseStall(
@@ -222,6 +226,62 @@ test("a settle with no background work left running earns a reminder, as it alwa
       )
     ).toEqual({ state: { state: "active", count: 2 }, remind: true });
   }
+});
+
+// dispatch://INFRA-2040: a WAITING line buys nothing. A worker that waits on something outside
+// its own work declares the wait (`declare_wait`), and the daemon's answer says while it stands;
+// a reply that only says so earns what any other reply earns.
+test("a settle whose reply ends with a WAITING line earns the reminder a settle without it earns", () => {
+  for (const lastAssistantText of [
+    "WAITING: CI on the pull request",
+    "Pushed the change.\n**WAITING** on the reviewer.",
+    "> WAITING for the architect's answer",
+  ]) {
+    expect(
+      stepPhaseStall({ state: "active", count: 2 }, { kind: "settle", lastAssistantText })
+    ).toEqual(
+      stepPhaseStall(
+        { state: "active", count: 2 },
+        { kind: "settle", lastAssistantText: "Pushed the change." }
+      )
+    );
+  }
+});
+
+// The record carries the wait the plugin knows of and every report of news the daemon has not
+// answered, so a relaunched process reports news against that wait and sends those reports
+// again. A malformed report is dropped rather than refusing the record, and a record an earlier
+// build wrote, with neither key, still reads.
+test("a record carries the standing wait and the unsent reports of news, and reads them back", () => {
+  expect(
+    phaseStallEntryFrom({
+      state: "active",
+      count: 1,
+      reported: false,
+      waitId: "wait-1",
+      unsentNews: [
+        { waitId: "wait-1", deliveryKey: "publish.0123456789abcdef0123456789abcdef" },
+        { waitId: "wait-1" },
+        { waitId: "" },
+        { deliveryKey: "publish.0123456789abcdef0123456789abcdef" },
+        { waitId: "wait-1", deliveryKey: "" },
+        "wait-1",
+      ],
+    })
+  ).toEqual({
+    state: "active",
+    count: 1,
+    reported: false,
+    waitId: "wait-1",
+    unsentNews: [
+      { waitId: "wait-1", deliveryKey: "publish.0123456789abcdef0123456789abcdef" },
+      { waitId: "wait-1" },
+      { waitId: "wait-1" },
+    ],
+  });
+  expect(phaseStallEntryFrom({ state: "active", count: 1, waitId: 7, unsentNews: "none" })).toEqual(
+    { state: "active", count: 1, reported: false }
+  );
 });
 
 test("a settle in a quiet wait earns none, and the wait ends on a reminder", () => {
