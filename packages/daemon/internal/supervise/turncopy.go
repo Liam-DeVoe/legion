@@ -99,10 +99,11 @@ func (m *Machine) stopWaitsForTurnCopy() bool {
 }
 
 // heldStopWaitsAtEnd is the wait of a stop held for the end of a turn or of a compaction for the
-// copy a turn's end started (waitForTurnCopy), made where that end gives the claim back in back
-// (turnEnded, compactEnded): it reports whether the stop waits, and where it does the claim is
-// given back in back, holding the stop, and that state is written and reported to the daemon as a
-// durable transition (durableWrite), as the end's own idle is. The error is that write's.
+// copy a turn's end started (waitForTurnCopy), made where that end gives the claim back in the
+// state back names (turnEnded, compactEnded): it reports whether the stop waits, and where it does
+// the claim is given back in that state, holding the stop, and the state is written and reported
+// to the daemon as a durable transition (durableWrite), as the end's own idle is. The error is
+// that write's.
 func (m *Machine) heldStopWaitsAtEnd(ctx context.Context, back ClaimState) (bool, error) {
 	if !m.waitForTurnCopy() {
 		return false, nil
