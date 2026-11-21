@@ -209,6 +209,14 @@ fail() {
   exit 1
 }
 pass() { printf 'PASS: %s\n' "$*"; }
+# perm_bits PATH: PATH's permission bits in octal, without the setgid, setuid or sticky digit a
+# directory made under a setgid $TMPDIR inherits (every Legion pod's is): 2700 reads 700.
+perm_bits() {
+  local m
+  m=$(stat -c %a "$1")
+  ((${#m} == 4)) && m=${m#?}
+  printf '%s' "$m"
+}
 
 mkdir -p "$fake" "$bin" "$fake/stepdir"
 
@@ -241,14 +249,6 @@ for a in "$@"; do
 done
 $has_ns || printf '%s\n' "$*" >>"$FAKE_DIR/kubectl-no-ns.log"
 c=${cmd[*]:-}
-# perm_bits PATH: PATH's permission bits in octal, without the setgid, setuid or sticky digit a
-# directory made under a setgid $TMPDIR inherits (every Legion pod's is): 2700 reads 700.
-perm_bits() {
-  local m
-  m=$(stat -c %a "$1")
-  ((${#m} == 4)) && m=${m#?}
-  printf '%s' "$m"
-}
 # credential_reader JOB DIR LOG: the job a call that carries the copy's credentials starts here
 # (runner_start -c, replay_checksum) in place of loadgen: one line per file of DIR, "JOB FILE MODE
 # DIR-MODE CONTENT", appended to LOG -- what the job would read, and how the runner kept it.
