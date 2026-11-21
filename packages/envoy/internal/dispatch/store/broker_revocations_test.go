@@ -587,8 +587,10 @@ func TestSignInSubjectRecordsNoBrokerRevocationWhenItRollsBack(t *testing.T) {
 }
 
 // A recorded revocation announces itself on BrokerRevocationsChannel when its transaction commits,
-// which is what wakes the server's revocation loop; the loop's own claims and settlements announce
-// nothing, so they do not wake it again.
+// which is what wakes the server's revocation loop, and so does every change of an address's
+// account, a first sign-in's included (people_account_binding_replacement, migration
+// 20261121180429), so the loop's catch-up runs after it; the loop's own claims and settlements
+// announce nothing, so they do not wake it again.
 func TestSignInSubjectAnnouncesTheBrokerRevocationAtCommit(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
@@ -609,8 +611,8 @@ func TestSignInSubjectAnnouncesTheBrokerRevocationAtCommit(t *testing.T) {
 	}
 	const email = "a.person@example.com"
 	signInAll(t, people, email, "subject-1")
-	if announced() {
-		t.Fatal("a first sign-in announced a broker revocation")
+	if !announced() {
+		t.Fatalf("a first sign-in of %s committed without announcing its change of the account on %s", email, BrokerRevocationsChannel)
 	}
 	signInAll(t, people, email, "subject-2")
 	if !announced() {

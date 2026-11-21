@@ -238,11 +238,12 @@ func signInMemberKind(email string, kind model.MemberKind) error {
 // revocation stands on a replacement that build would have recorded without it. Such a sign-in
 // keeps its change, a replacement or the address's first recording, in its own transaction
 // (keepAccountChangeSQL, account_binding_replacements, migration 20261121121717), by the reading
-// it revoked nothing on, so the binding catches it up once it holds; the database's trigger keeps
-// the change a build without the binding makes. A sign-in that finds the binding holding catches
-// the address up first (CatchUpAccountBinding, logged at WARN: its kept changes, and the tokens the
-// binding refuses that outlived its recording), then deletes the one the trigger may keep for its
-// own change, which it revokes and owes itself.
+// it revoked nothing on, so the binding catches it up once it holds. It marks its transaction
+// (markBindingWriterSQL) before it writes sub, so the database's trigger, which keeps every change
+// a writer without the mark makes (a build without the binding's, whatever the fleet reads), keeps
+// nothing for it. A sign-in that finds the binding holding catches the address up first
+// (CatchUpAccountBinding, logged at WARN: its kept changes, and the tokens the binding refuses),
+// then revokes and owes its own change itself.
 //
 // A restricted sign-in (an account outside the Workspace) never takes a full member's address
 // (takesAMembersAddress): it writes nothing and returns auth.ErrAddressHeldByMember, read once
@@ -314,7 +315,12 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	// recording included, and ends every session of the address (the triggers of migrations
 	// 20261117175133 and 20261118041916, which no statement can bypass): a credential recording no
 	// account made before it is refused as the person, and no cookie issued before it acts. A
-	// sign-in under the account the row already records leaves both.
+	// sign-in under the account the row already records leaves both. The mark first, so the trigger
+	// that keeps a change of a writer without the binding keeps nothing for this one, which keeps or
+	// revokes its own change below.
+	if _, err := tx.Exec(ctx, markBindingWriterSQL); err != nil {
+		return fmt.Errorf("record sign-in of %q: mark the transaction a writer that knows the account binding: %w", email, err)
+	}
 	if _, err := tx.Exec(ctx, `
 		update people
 		set signed_in_at = now(), refresh_token = $2, confirmed_at = now(), sub = $3, member_kind = $4
@@ -325,12 +331,8 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 	if err := announceMemberKindChange(ctx, tx, storedKind, kind); err != nil {
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
-	if binding {
-		if _, err := tx.Exec(ctx, `delete from account_binding_replacements where email = $1`, email); err != nil {
-			return fmt.Errorf("record sign-in of %q: delete the replacement it revokes and owes itself: %w", email, err)
-		}
-	} else if replaced || firstRecording {
-		if _, err := tx.Exec(ctx, keepAccountChangeSQL, email, stored, BrokerRevocationsChannel); err != nil {
+	if !binding && (replaced || firstRecording) {
+		if _, err := tx.Exec(ctx, keepAccountChangeSQL, email, stored); err != nil {
 			return fmt.Errorf("record sign-in of %q: keep the account change it revokes and owes nothing for: %w", email, err)
 		}
 	}

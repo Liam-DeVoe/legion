@@ -10,38 +10,39 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// A personal token the account binding refuses that outlived its address's recording is revoked
-// once the binding holds, with everything it could have minted, and the broker is told, against a
-// real broker. At carol's address account-a holds two tokens, one recording account-a and one
-// recording no account, and account-b replaces account-a while no build without the binding is in
-// the fleet and with no sign-in of this build, so nothing is revoked and no change is kept: a
-// change the binding never caught up, as one made before it shipped, or through a process the fleet
-// did not see. Once the binding holds, both are refused (tokenAccountReplaced, by the account the
-// first records and by the time the second was made) but neither is revoked.
+// A personal token the account binding refuses is revoked once the binding holds, with everything
+// it could have minted, and the broker is told, against a real broker. At carol's address account-a
+// holds two tokens, one recording account-a and one recording no account, and account-b's
+// recording replaces account-a with nothing kept (storetest.TestOnlyRecordAccountUnkept: a
+// recording made before this release, whose trigger keeps every later change), so nothing is
+// revoked. Once the binding holds, both are refused (tokenAccountReplaced, by the account the first
+// records and by the time the second was made) but neither is revoked.
 //
 // Then a build without the binding is in the fleet. Both tokens act, as that build lets them, and
-// each mints a token that records no account and was made after account-b's recording, which no
-// arm of tokenAccountReplaced refuses; the one recording account-a passes an approve's re-read,
-// which names no account then, and the broker makes a machine login recording no approving account,
-// as it makes one from that approve; and at dave's address a token from before its recording mints
-// a token too, then revokes itself, so no refused token of dave is live. A pass of the revocation
-// loop then writes nothing and asks for the next within accountBindingCatchUpPoll, since the
-// binding is off and an address has something to catch up.
+// each mints a token that records no account and was made after account-b's recording; the one
+// recording account-a passes an approve's re-read, which names no account then, and the broker
+// makes a machine login recording no approving account, as it makes one from that approve; and at
+// dave's address a token from before its recording mints a token too, then revokes itself, so no
+// refused token of dave is live. A pass of the revocation loop then writes nothing and asks for the
+// next within accountBindingCatchUpPoll, since the binding is off and an address has something to
+// catch up.
 //
 // Once that build is gone and its mark has aged out, one pass revokes the two refused tokens and
-// the two tokens they minted, and dave's minted token, leaves account-b's own token recording
-// account-b, owes the broker account-a's revocation, naming account-b, and pays it: the broker
-// refuses account-a and ends the machine login, which records no approving account. The pass asks
-// for no poll, since nothing is left to catch up. A later build without the binding in the fleet
-// then admits none of those tokens, and the token recording account-a mints nothing.
+// the three tokens minted while one of them was live, dave's included, leaves account-b's own token
+// recording account-b, owes the broker account-a's revocation, naming account-b, and pays it: the
+// broker refuses account-a and ends the machine login, which records no approving account. The pass
+// asks for no poll, since nothing is left to catch up. A later build without the binding in the
+// fleet then admits none of those tokens, and the token recording account-a mints nothing.
 //
 // Controls, run by hand: with CatchUpAccountBinding's refused-token sweep removed (the RefusedLive
 // branch never taken, and AccountBindingCatchUpAddresses' second arm removed), the pass while off
 // asks for no poll and the pass that holds revokes nothing and owes nothing, and every assertion
-// after it fails; with the sweep reading only live refused tokens (its `t.revoked_at >
-// people.sub_recorded_at` arm removed), dave's minted token stays live.
+// after it fails; with MintedWhileRefusedLiveSQL reading only live refused tokens (its arm for one
+// revoked after the token's creation removed), dave's minted token stays live.
 func TestARefusedTokenThatOutlivedItsRecordingIsRevokedWithWhatItMintedOnceTheBindingHolds(t *testing.T) {
 	ctx := context.Background()
 	r := newRecoveryRig(t)
@@ -59,9 +60,7 @@ func TestARefusedTokenThatOutlivedItsRecordingIsRevokedWithWhatItMintedOnceTheBi
 	recordsNone, idRecordsNone := storeTokenOf(t, r.dispatch, carol, "carol's token recording no account", "")
 	daveNone, idDaveNone := storeTokenOf(t, r.dispatch, dave, "dave's token recording no account", "")
 	for _, email := range []string{carol, dave} {
-		if _, err := r.dispatch.Pool.Exec(ctx, `update people set sub = 'account-b' where email = $1`, email); err != nil {
-			t.Fatalf("record account-b for %s: %v", email, err)
-		}
+		storetest.TestOnlyRecordAccountUnkept(t, r.dispatch, email, "account-b")
 	}
 	var kept, owed int
 	if err := r.dispatch.Pool.QueryRow(ctx, `select (select count(*) from account_binding_replacements), (select count(*) from broker_revocations)`).Scan(&kept, &owed); err != nil || kept != 0 || owed != 0 {
@@ -175,5 +174,136 @@ func TestARefusedTokenThatOutlivedItsRecordingIsRevokedWithWhatItMintedOnceTheBi
 	}
 	if plaintext, _, response := mint(recordsA, "minted by the token recording account-a in a later overlap"); plaintext != "" || !refused(response) {
 		t.Errorf("beside a later build without the binding, the token recording account-a minted %d %s; want 401 TOKEN_REVOKED", response.Code, response.Body.String())
+	}
+}
+
+// refusedParentAndOverlapChild sets up, at owner's address, a token the binding refuses and a token
+// it minted while a build without the binding was in the fleet: account-a is recorded, a token
+// recording no account is made, and account-b's recording replaces account-a with nothing kept
+// (storetest.TestOnlyRecordAccountUnkept, a recording made before this release), so the token is
+// refused but live. Then a build without the binding registers, the token mints a child through
+// handler (201), and that build leaves and its mark ages out, so the binding holds. It answers the
+// child's plaintext and id.
+func refusedParentAndOverlapChild(t *testing.T, handler http.Handler, database *store.Store, owner string) (child, childID string) {
+	t.Helper()
+	seedPeople(t, database, owner)
+	storetest.TestOnlyRecordAccountUnkept(t, database, owner, "account-a")
+	parent, _ := storeTokenOf(t, database, owner, "account-a's token recording no account", "")
+	storetest.TestOnlyRecordAccountUnkept(t, database, owner, "account-b")
+	registerUnboundProcess(t, database)
+	minted := agentRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "the overlap child"}, parent)
+	if minted.Code != http.StatusCreated {
+		t.Fatalf("setup: beside a build without the binding, the refused token minted %d %s; want 201", minted.Code, minted.Body.String())
+	}
+	var made struct {
+		Token string `json:"token"`
+		ID    string `json:"id"`
+	}
+	if err := json.Unmarshal(minted.Body.Bytes(), &made); err != nil || made.Token == "" {
+		t.Fatalf("setup: read the overlap child: %v: %s", err, minted.Body.String())
+	}
+	clearUnboundFleet(t, database)
+	return made.Token, made.ID
+}
+
+// A token that a refused token minted while a build without the binding was in the fleet mints and
+// approves nothing as the holder once the binding holds, before any pass revokes it
+// (tokenAccountReplaced's store.MintedWhileRefusedLiveSQL arm): such a child records no account and
+// was made after the recording, so a mint by it would record the holder's account
+// (credentialSubjectSQL) and an approve by it would name the holder, and neither would be revoked
+// by the catch-up. Once the binding holds, the child answers 401 TOKEN_REVOKED, its mint is refused
+// 401 TOKEN_REVOKED and no grandchild exists, and an approve's re-read of it is refused
+// TOKEN_REVOKED. A token recording account-b, the holder's, acts throughout: the row's control
+// that the binding refuses the child, not every token.
+//
+// Control, run by hand: with that arm removed from tokenAccountReplaced, the child answers 200, its
+// mint answers 201 with a grandchild recording account-b, and the approve's re-read stands naming
+// account-b.
+func TestATokenMintedWhileARefusedTokenWasLiveMintsAndApprovesNothingOnceTheBindingHolds(t *testing.T) {
+	const google = "https://accounts.google.com"
+	handler, database, deps := newTestServer(t, testServerOptions{signInIssuer: google})
+	ctx := context.Background()
+	const carol = "carol@example.com"
+	child, childID := refusedParentAndOverlapChild(t, handler, database, carol)
+	holder, _ := storeTokenOf(t, database, carol, "account-b's token", "account-b")
+	refused := func(response *httptest.ResponseRecorder) bool {
+		return response.Code == http.StatusUnauthorized && strings.Contains(response.Body.String(), "TOKEN_REVOKED")
+	}
+	if response := agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, child); !refused(response) {
+		t.Errorf("once the binding holds, the overlap child answers %d %s; want 401 TOKEN_REVOKED", response.Code, response.Body.String())
+	}
+	if response := agentRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "the grandchild"}, child); !refused(response) {
+		t.Errorf("once the binding holds, the overlap child minted %d %s; want 401 TOKEN_REVOKED", response.Code, response.Body.String())
+	}
+	var grandchildren int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from agent_tokens where name = 'the grandchild'`).Scan(&grandchildren); err != nil || grandchildren != 0 {
+		t.Errorf("%d grandchildren exist, %v; want none", grandchildren, err)
+	}
+	owner := carol
+	standing := model.Actor{Kind: "session", Owner: &owner, ID: carol, Act: &model.ActorAct{TokenID: childID}}
+	subject, _, err := directServer(deps).approverStanding(httptest.NewRequest(http.MethodPost, "/api/v1/credential-requests/x/approve", nil), standing)
+	if err == nil {
+		t.Errorf("once the binding holds, an approve's re-read of the overlap child stood naming %q; want it refused", subject)
+	} else {
+		wantAPIError(t, err, http.StatusUnauthorized, "TOKEN_REVOKED", "an approve's re-read of the overlap child")
+	}
+	if response := agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, holder); response.Code != http.StatusOK {
+		t.Errorf("control: account-b's token answers %d %s; want 200", response.Code, response.Body.String())
+	}
+}
+
+// A change of the address's account that no row keeps still wakes the revocation loop: the trigger
+// people_account_binding_replacement announces every change of sub on BrokerRevocationsChannel,
+// kept or not (migration 20261121180429), so a token the binding refuses and what it minted are
+// revoked by the loop's next pass rather than at whatever wake comes next. The overlap child of a
+// refused token is set up (refusedParentAndOverlapChild), with the loop asleep; then a write of sub
+// marked as this build's sign-in's (markBindingWriterSQL, which the trigger keeps nothing for)
+// records account-c. It is announced, nothing is kept, and the pass the announcement wakes revokes
+// the overlap child.
+//
+// Control, run by hand: with the trigger announcing only a change it keeps, no announcement comes,
+// and the row fails at "announced".
+func TestAChangeOfTheAccountNoRowKeepsStillWakesTheRevocationLoop(t *testing.T) {
+	const google = "https://accounts.google.com"
+	handler, database, deps := newTestServer(t, testServerOptions{signInIssuer: google})
+	ctx := context.Background()
+	const carol = "carol@example.com"
+	_, childID := refusedParentAndOverlapChild(t, handler, database, carol)
+	listener, err := database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Release()
+	if _, err := listener.Exec(ctx, `listen `+store.BrokerRevocationsChannel); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `select set_config('dispatch.account_binding_writer', 'on', true)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `update people set sub = 'account-c' where email = $1`, carol); err != nil {
+		t.Fatalf("a marked write of account-c: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var kept int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from account_binding_replacements`).Scan(&kept); err != nil || kept != 0 {
+		t.Fatalf("setup: the marked write left %d changes kept, %v; want none", kept, err)
+	}
+	wait, cancel := context.WithTimeout(ctx, 10*time.Second)
+	_, err = listener.Conn().WaitForNotification(wait)
+	cancel()
+	if err != nil {
+		t.Fatalf("a change of sub that no row keeps was not announced on %s (%v); want the revocation loop woken", store.BrokerRevocationsChannel, err)
+	}
+	directServer(deps).revokeOwedBrokerCredentials(ctx)
+	var revoked bool
+	if err := database.Pool.QueryRow(ctx, `select revoked_at is not null from agent_tokens where id = $1::uuid`, childID).Scan(&revoked); err != nil || !revoked {
+		t.Errorf("after the pass the announcement wakes, the overlap child is revoked %t, %v; want it revoked", revoked, err)
 	}
 }

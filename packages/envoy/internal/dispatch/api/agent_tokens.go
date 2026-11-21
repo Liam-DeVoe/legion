@@ -623,17 +623,21 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 // recording one for the address, it is true for a token that recorded another account at its mint,
 // and for one that recorded none and was made before people recorded the address's account
 // (agent_tokens.created_at before people.sub_recorded_at, both from Dispatch's own clock): an
-// account that held the address before may have minted it. It is true too for a token that
-// recorded none and was made at or after a replacement of the address's account the database kept
-// while the binding was off (account_binding_replacements, migration 20261121121717): the replaced
-// account may have minted it then, through either build, so it is refused from the moment the
-// binding holds, before the catch-up revokes it (store.CatchUpAccountBinding). A token made after
-// the recording with no such replacement kept, an address recording no account or no recording
-// time, and a deployment whose sign-in records none are not replaced.
+// account that held the address before may have minted it (store.RefusedTokenSQL). It is true too
+// for a token that recorded none and was made while such a token of the address was live
+// (store.MintedWhileRefusedLiveSQL): that token, admitted by every build while a build without the
+// binding was in the fleet, may have minted it then, and refused, it mints and approves nothing as
+// the holder in the moments before the catch-up revokes both (store.CatchUpAccountBinding). And it
+// is true for a token that recorded none and was made at or after a replacement of the address's
+// account the database kept while the binding was off (account_binding_replacements, migration
+// 20261121121717): the replaced account may have minted it then, through either build, so it is
+// refused from the moment the binding holds, before the catch-up revokes it. A token made after
+// the recording while no refused token was live and with no such replacement kept, an address
+// recording no account or no recording time, and a deployment whose sign-in records none are not
+// replaced.
 func tokenAccountReplaced(recordsAccounts string) string {
-	return "coalesce(people.sub is not null and (" +
-		"(agent_tokens.subject is not null and agent_tokens.subject <> people.sub)" +
-		" or (agent_tokens.subject is null and people.sub_recorded_at is not null and agent_tokens.created_at < people.sub_recorded_at)" +
+	return "coalesce(people.sub is not null and (" + store.RefusedTokenSQL("agent_tokens", "people") +
+		" or " + store.MintedWhileRefusedLiveSQL("agent_tokens", "people") +
 		" or (agent_tokens.subject is null and exists (select from account_binding_replacements" +
 		" where account_binding_replacements.email = people.email and agent_tokens.created_at >= account_binding_replacements.replaced_at)))" +
 		" and " + recordsAccounts + ", false)"

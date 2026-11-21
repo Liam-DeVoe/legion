@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -524,21 +523,72 @@ func TestAReplacementMadeWhileTheBindingIsOffIsCaughtUpOnceItHolds(t *testing.T)
 	}
 }
 
-// The trigger that keeps an account change made while the binding is off reads the fleet itself
-// (keep_account_binding_replacement, migration 20261121121717), with the windows spelled in SQL,
-// since no caller passes them: they must be the ones AccountBindingHolds passes
-// (AccountBindingWindows), or a change would be kept, or not, on a fleet the binding reads the
-// other way. The row reads the function's source and holds its call to the two windows' seconds.
-func TestTheReplacementTriggerReadsTheFleetOverTheBindingsWindows(t *testing.T) {
+// The trigger keeps every change of an address's account that a writer without the binding makes,
+// whatever the fleet reads (keep_account_binding_replacement, migration 20261121180429), and nothing
+// for this build's sign-in, which marks its transaction and keeps or revokes its own change. With
+// no build without the binding registered and no mark, so the binding holds (a process the fleet
+// does not see, past the prune age with its last arrival more than an hour old): account-b's
+// sign-in through such a build (its update of sub, spelled here) is kept and announced, and the
+// catch-up revokes the token recording no account made after it and owes the broker account-a. A
+// first recording through it (an insert recording sub) is kept too. This build's sign-in of
+// account-c with the binding holding keeps nothing; with a build without the binding registered,
+// account-d's sign-in keeps its change once, by its own keep and not again by the trigger.
+//
+// Control, run by hand: with the trigger reading the fleet as 20261121121717 did (it keeps a change
+// only while account_binding_fleet_read finds a build without the binding), account-b's change and
+// the first recording are not kept, and the row fails at "kept".
+func TestTheTriggerKeepsEveryChangeAWriterWithoutTheBindingMakesWhateverTheFleetReads(t *testing.T) {
+	ctx := context.Background()
 	database := migratedEmptyStore(t)
-	var source string
-	if err := database.Pool.QueryRow(context.Background(),
-		`select pg_get_functiondef('public.keep_account_binding_replacement()'::regprocedure)`).Scan(&source); err != nil {
+	people := brokerPeople(database)
+	const email, first = "unmarked-writer@example.com", "unmarked-first@example.com"
+	signInAll(t, people, email, "account-a")
+	if holds, _ := bindingHolds(t, database); !holds {
+		t.Fatal("setup: the binding does not hold with no build without it registered")
+	}
+	listener, err := database.Pool.Acquire(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	legacy, mark := AccountBindingWindows()
-	if want := fmt.Sprintf("public.account_binding_fleet_read(%d, %d)", int(legacy), int(mark)); !strings.Contains(source, want) {
-		t.Errorf("keep_account_binding_replacement reads the fleet otherwise than %s, the windows AccountBindingHolds passes:\n%s", want, source)
+	defer listener.Release()
+	if _, err := listener.Exec(ctx, `listen `+BrokerRevocationsChannel); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `update people set signed_in_at = now(), confirmed_at = now(), sub = 'account-b' where email = $1`, email); err != nil {
+		t.Fatalf("account-b's sign-in through a build without the binding: %v", err)
+	}
+	if kept := keptReplacements(t, database, email); !slices.Equal(kept, []string{"account-a"}) {
+		t.Errorf("account-b's sign-in through a build without the binding, with the binding read as holding, left %q kept; want account-a's", kept)
+	}
+	wait, cancel := context.WithTimeout(ctx, 10*time.Second)
+	_, err = listener.Conn().WaitForNotification(wait)
+	cancel()
+	if err != nil {
+		t.Errorf("the kept change was not announced on %s (%v); want the revocation loop woken", BrokerRevocationsChannel, err)
+	}
+	madeSince := mintToken(t, database.Pool, email, "made after the change", "")
+	held, caught, err := CatchUpAccountBindingOf(ctx, database.Pool, email, testRevocationIssuer)
+	if err != nil || !held || !slices.Equal(caught.Replaced, []string{"account-a"}) || !slices.Equal(caught.Owed, []string{"account-a"}) || caught.Holder != "account-b" {
+		t.Errorf("the catch-up answered held %t, %+v, %v; want account-a's replacement caught up and owed, account-b holding", held, caught, err)
+	}
+	if _, revoked := tokenState(t, database.Pool, madeSince); !revoked {
+		t.Error("the catch-up left the token recording no account made after the change live; want it revoked")
+	}
+	if _, err := database.Pool.Exec(ctx, `insert into people (email, sub) values ($1, 'account-z')`, first); err != nil {
+		t.Fatalf("a first recording through a build without the binding: %v", err)
+	}
+	if kept := keptReplacements(t, database, first); !slices.Equal(kept, []string{""}) {
+		t.Errorf("a first recording through a build without the binding left %q kept; want the first recording", kept)
+	}
+
+	signInAll(t, people, email, "account-c")
+	if kept := keptReplacements(t, database, email); len(kept) != 0 {
+		t.Errorf("this build's sign-in with the binding holding left %q kept; want nothing, since it revokes and owes its own change", kept)
+	}
+	registerFleetProcess(t, database, OwnerLockProtocol, 0)
+	signInAll(t, people, email, "account-d")
+	if kept := keptReplacements(t, database, email); !slices.Equal(kept, []string{"account-c"}) {
+		t.Errorf("this build's sign-in beside a build without the binding left %q kept; want account-c's once, kept by the sign-in", kept)
 	}
 }
 
@@ -612,8 +662,8 @@ func holdUnboundPublish(t *testing.T, s *Store) pgx.Tx {
 // catch-up revokes and owes as a first recording with the binding on does.
 //
 // Controls, run by hand: with SignInSubject's keepAccountChangeSQL removed, every case keeps
-// nothing and fails at "kept"; with only its notification removed, every case fails at
-// "announced".
+// nothing and fails at "kept"; with the trigger announcing only a change it keeps (migration
+// 20261121180429), every case fails at "announced".
 func TestASignInThatReadsTheBindingOffKeepsItsChangeWhateverTheTriggerReads(t *testing.T) {
 	ctx := context.Background()
 	arrival := func(commit bool) func(t *testing.T, s *Store, email string, signIn func() error) {

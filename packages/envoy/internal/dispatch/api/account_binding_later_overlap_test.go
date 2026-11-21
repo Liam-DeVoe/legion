@@ -24,9 +24,10 @@ import (
 // tokenAccountReplaced nor a catch-up can see the minted token: only a refusal that follows the
 // mint back to account-a's token does.
 //
-// Control, in the test: account-b's own token mints a token in the same overlap, and that token
-// acts once the binding holds, so the refusal is of account-a's descendant, not of every token
-// minted in an overlap.
+// Control, in the test: account-b's own token mints a token in the same overlap, once account-a's
+// token was revoked, and that token acts once the binding holds, before and after a catch-up of the
+// address (store.CatchUpAccountBindingOf, what the revocation loop's pass runs): the refusal and the
+// revocation are of what a refused token could have minted, not of every token minted in an overlap.
 func TestATokenOfAReplacedAccountMintsNothingThatActsOnceTheBindingHoldsAgain(t *testing.T) {
 	const google = "https://accounts.google.com"
 	handler, database, _ := newTestServer(t, testServerOptions{signInIssuer: google})
@@ -101,5 +102,11 @@ func TestATokenOfAReplacedAccountMintsNothingThatActsOnceTheBindingHoldsAgain(t 
 	}
 	if response := whoami(childB); response.Code != http.StatusOK {
 		t.Errorf("control: once the binding holds again, the token account-b's token minted in the later overlap answers %d %s; want 200", response.Code, response.Body.String())
+	}
+	if held, _, err := store.CatchUpAccountBindingOf(ctx, database.Pool, carol, google); err != nil || !held {
+		t.Fatalf("the catch-up after the later overlap answered held %t, %v", held, err)
+	}
+	if response := whoami(childB); response.Code != http.StatusOK {
+		t.Errorf("control: after the catch-up, the token account-b's token minted in the later overlap answers %d %s; want 200: no refused token was live when it was made", response.Code, response.Body.String())
 	}
 }

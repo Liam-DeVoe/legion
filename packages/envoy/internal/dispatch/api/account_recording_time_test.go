@@ -30,9 +30,11 @@ import (
 //     did not record; a broker credential mints and approves nothing anyway (brokerPersonScopes);
 //   - at the boundary the broker credential's time crosses two clocks, so one made 1 minute after
 //     the recording is refused and one made 10 minutes after acts (brokerCredentialMargin);
-//   - a personal token made after the recording (Dispatch's own clock) acts;
-//   - a personal token recording no account made after the recording mints a token that records
-//     the address's account, so the no-account state stops there.
+//   - a personal token made after the recording (Dispatch's own clock) is refused while A's refused
+//     token is live (it may have minted it: store.MintedWhileRefusedLiveSQL), and acts once that
+//     token is revoked, made after the revocation;
+//   - a personal token recording no account made after the recording, while no refused token is
+//     live, mints a token that records the address's account, so the no-account state stops there.
 //
 // Control: tokenAccountReplaced and brokerAccountReplaced without the time arm (a no-account
 // credential never replaced); A's credentials made before the recording act.
@@ -94,7 +96,7 @@ func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t
 		}
 	}
 
-	exec(`update people set sub = 'account-b' where email = $1`, person)
+	storetest.TestOnlyRecordAccountUnkept(t, rig.database, person, "account-b")
 	storetest.SetRecordingTime(t, rig.database, person, nil)
 	tokenActs("the deploy control: a personal token recording no account, no recording time", beforeToken, true)
 	brokerActs("the deploy control: a broker credential recording no account, no recording time", broker(before), true)
@@ -102,7 +104,7 @@ func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t
 
 	storetest.SetRecordingTime(t, rig.database, person, recordedAt)
 	tokenActs("A's personal token made before B's recording", beforeToken, false)
-	tokenActs("a personal token made after B's recording", afterToken, true)
+	tokenActs("a personal token made after B's recording while A's refused token is live", afterToken, false)
 	brokerActs("A's broker credential made before B's recording", broker(before), false)
 	brokerActs("a broker credential whose creation time the broker did not record", broker(time.Time{}), false)
 	brokerActs("a broker credential made 1 minute after the recording, inside the margin", broker(recordedAt.Add(time.Minute)), false)
@@ -119,8 +121,8 @@ func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t
 	if err := standing(byToken(beforeID)); err == nil {
 		t.Error("an approve's re-read of A's personal token made before the recording stood, want it refused")
 	}
-	if err := standing(byToken(afterID)); err != nil {
-		t.Errorf("an approve's re-read of a personal token made after the recording: %v, want it to stand", err)
+	if err := standing(byToken(afterID)); err == nil {
+		t.Error("an approve's re-read of a personal token made after the recording while A's refused token is live stood, want it refused")
 	}
 
 	mint := func(tokenID *string) (string, error) {
@@ -149,9 +151,23 @@ func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t
 	if _, err := mint(&beforeID); !errors.Is(err, pgx.ErrNoRows) {
 		t.Errorf("a mint by A's personal token made before the recording answered %v, want nothing inserted", err)
 	}
-	if got, err := mint(&afterID); err != nil || got != "account-b" {
-		t.Errorf("a mint by a personal token recording no account made after the recording recorded %q (%v), want the address's account account-b", got, err)
+	if _, err := mint(&afterID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("a mint by a personal token made after the recording while A's refused token is live answered %v, want nothing inserted", err)
 	}
 	wantAPIError(t, mintCallerGone(&beforeID), http.StatusUnauthorized, "TOKEN_REVOKED",
 		"the refusal of a mint by A's personal token made before the recording")
+
+	exec(`update agent_tokens set revoked_at = now() where id in ($1::uuid, $2::uuid)`, beforeID, afterID)
+	var afterRevoke time.Time
+	if err := rig.database.Pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&afterRevoke); err != nil {
+		t.Fatal(err)
+	}
+	laterToken, laterID := personalToken("made after A's token was revoked", afterRevoke)
+	tokenActs("a personal token made after the recording, once A's refused token was revoked", laterToken, true)
+	if err := standing(byToken(laterID)); err != nil {
+		t.Errorf("an approve's re-read of a personal token made once A's refused token was revoked: %v, want it to stand", err)
+	}
+	if got, err := mint(&laterID); err != nil || got != "account-b" {
+		t.Errorf("a mint by a personal token recording no account made once A's refused token was revoked recorded %q (%v), want the address's account account-b", got, err)
+	}
 }

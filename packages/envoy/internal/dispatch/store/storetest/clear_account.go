@@ -17,6 +17,18 @@ func TestOnlyClearAccount(t testing.TB, database *store.Store, email string) {
 	execWithTriggerOff(t, database, "people", "people_binding_columns", `update people set sub = null where email = $1`, email)
 }
 
+// TestOnlyRecordAccountUnkept sets people.sub of email to subject with the trigger that keeps an
+// account change for the account binding's catch-up (people_account_binding_replacement,
+// migrations 20261121121717 and 20261121180429) turned off for that one transaction, standing in
+// for a recording made before this release, which nothing kept: the change still ends the
+// address's sessions and stamps sub_recorded_at, as every change does (people_binding_columns), but
+// no account_binding_replacements row names it. Only a test may write it, and the name and the
+// testing.TB it takes say so.
+func TestOnlyRecordAccountUnkept(t testing.TB, database *store.Store, email, subject string) {
+	t.Helper()
+	execWithTriggerOff(t, database, "people", "people_account_binding_replacement", `update people set sub = $2 where email = $1`, email, subject)
+}
+
 // TestOnlyWriteBrokerRevocations runs statement with args against broker_revocations with the
 // trigger that holds its columns to their writers (migration 20261118152422,
 // broker_revocations_binding_columns) turned off for that one transaction: it stands in for a
