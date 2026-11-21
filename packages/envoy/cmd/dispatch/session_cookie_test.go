@@ -16,7 +16,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -27,11 +26,6 @@ const (
 	hostSessionCookie  = "__Host-dsession"
 	plainSessionCookie = "dsession"
 )
-
-// googleOutsider is the account outside the domain the walk signs in with Google at the outside
-// origin: one of its own, listed on PRIV for that row, so no passkey row's binding of outsiderEmail
-// stands in its way.
-const googleOutsider = "gina@other.example"
 
 // issuedSessionCookie is the name a sign-in issues the session cookie under, at the outside origin
 // when outside is true and at the canonical origin otherwise. At the outside origin, which no
@@ -68,13 +62,11 @@ func isSessionCookie(cookie *http.Cookie) bool {
 }
 
 // cookieWalk is one setting's servers, each writing the session cookie: the Google sign-in at the
-// canonical origin and the passkey sign-ins of passkeyRig over a database; a server whose rule serves
-// the Google sign-in at the outside origin too (DISPATCH_SIGNIN_OUTSIDE=1), over another; and a dev
-// sign-in server.
+// canonical origin and the passkey sign-ins of passkeyRig over a database, and a dev sign-in
+// server.
 type cookieWalk struct {
 	insecure bool
 	rig      *passkeyRig
-	google   http.Handler
 	dev      http.Handler
 }
 
@@ -97,19 +89,13 @@ type sessionCookieWriter struct {
 // sessionCookieWriters is every route that writes the session cookie, at every origin that serves
 // it, each by the router method that serves it: the census below (sessionCookieWriterRoots) reads
 // those methods from the code, so a writer added without a row here fails the walk. The passkey
-// ceremonies are the outside origin's alone, and the dev sign-in is the canonical origin's alone (its
-// host fence); the Google callback and the sign-out are served at both, the callback at the outside
-// origin where the rule serves the Google sign-in there (identity.SignInRule.GoogleAtOutsideOrigin).
+// ceremonies are the outside origin's alone; Google's callback and the dev sign-in are the
+// canonical origin's alone (the outside origin serves no Google sign-in, and the dev sign-in has
+// its host fence); the sign-out is served at both.
 var sessionCookieWriters = []sessionCookieWriter{
 	{handler: "authCallback", route: "GET /auth/callback", person: "carol@example.com", write: func(t *testing.T, w *cookieWalk, prior *http.Cookie) *httptest.ResponseRecorder {
 		return w.googleSignIn(t, "carol@example.com", prior)
 	}, whoami: canonicalWhoami},
-	{handler: "authCallback", route: "GET /auth/callback", outside: true, person: googleOutsider, write: func(t *testing.T, w *cookieWalk, prior *http.Cookie) *httptest.ResponseRecorder {
-		w.rig.listOn(t, "PRIV", access.PrincipalPerson, googleOutsider)
-		return w.outsideGoogleSignIn(t, googleOutsider, prior)
-	}, whoami: func(w *cookieWalk, jar []*http.Cookie) *httptest.ResponseRecorder {
-		return call(w.google, passkeyOrigin, http.MethodGet, "/auth/whoami", nil, jar...)
-	}},
 	{handler: "authDevSignIn", route: "GET /auth/_dev/signin", person: "dave@example.com", write: func(_ *testing.T, w *cookieWalk, prior *http.Cookie) *httptest.ResponseRecorder {
 		return devSignInRequest(w.dev, http.MethodGet, "/auth/_dev/signin?login="+url.QueryEscape("dave@example.com"), "", func(r *http.Request) { r.AddCookie(prior) })
 	}, whoami: func(w *cookieWalk, jar []*http.Cookie) *httptest.ResponseRecorder {
@@ -166,26 +152,6 @@ func (w *cookieWalk) googleSignIn(t *testing.T, email string, cookies ...*http.C
 	}, cookies...)
 }
 
-// outsideGoogleSignIn runs a whole Google sign-in at the outside origin through the walk's server
-// that serves it there (DISPATCH_SIGNIN_OUTSIDE=1) as email, an account outside the domain that
-// PRIV's list names, from a browser carrying cookies beside the state cookie: its start and its
-// callback both at the outside origin, as the browser of a person from outside makes them. It
-// answers the callback's answer.
-func (w *cookieWalk) outsideGoogleSignIn(t *testing.T, email string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
-	t.Helper()
-	w.rig.pool.SignInAs(map[string]any{"sub": "google-" + email, "email": email, "email_verified": true})
-	start := call(w.google, passkeyOrigin, http.MethodGet, "/auth/start", nil)
-	if start.Code != http.StatusFound {
-		t.Fatalf("GET /auth/start at the outside origin answered %d %s, want a redirect to Google", start.Code, start.Body.String())
-	}
-	authURL, err := url.Parse(start.Header().Get("Location"))
-	if err != nil || authURL.Query().Get("redirect_uri") != passkeyOrigin+"/auth/callback" {
-		t.Fatalf("the outside origin's start redirected to %q (%v), want a redirect_uri of the outside origin's callback", start.Header().Get("Location"), err)
-	}
-	code, state := w.rig.pool.Authorize(t, authURL.String())
-	return call(w.google, passkeyOrigin, http.MethodGet, "/auth/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state), nil, append(start.Result().Cookies(), cookies...)...)
-}
-
 // enroll runs a whole enrollment of outsiderEmail's device with a fresh link from alice through the
 // rig's server, the finish from a browser carrying cookies, and answers the finish.
 func (w *cookieWalk) enroll(t *testing.T, device *virtualAuthenticator, cookies ...*http.Cookie) *httptest.ResponseRecorder {
@@ -216,11 +182,11 @@ func (w *cookieWalk) ceremonyCookie(response *httptest.ResponseRecorder) *http.C
 // writes it, at every origin that serves it, under each setting, from a browser holding another
 // person's session under the name the route does not issue there:
 //   - a sign-in sets one session, under the name its origin issues (issuedSessionCookie):
-//     `dsession` at the canonical origin (an issuer's callback, the dev sign-in), Secure as the
-//     setting says; `__Host-dsession`, Secure, at the https outside origin (Google's callback, a
-//     passkey enrollment or sign-in), whatever the setting says. It clears the other name, and the
-//     browser, keeping what those lines leave, is signed in as the person who signed in, not as
-//     the one whose cookie it held;
+//     `dsession` at the canonical origin (Google's callback, the dev sign-in), Secure as the
+//     setting says; `__Host-dsession`, Secure, at the https outside origin (a passkey enrollment or
+//     sign-in), whatever the setting says. It clears the other name, and the browser, keeping what
+//     those lines leave, is signed in as the person who signed in, not as the one whose cookie it
+//     held;
 //   - the sign-out clears both names, at either origin.
 //
 // The census reads the writers from the code: the functions of the module (its non-test files)
@@ -236,9 +202,9 @@ func (w *cookieWalk) ceremonyCookie(response *httptest.ResponseRecorder) *http.C
 //
 // Controls: issue `__Host-dsession` without Secure, and every outside sign-in row fails; issue
 // `__Host-dsession` at the canonical origin, and its Secure sign-in rows fail; issue `dsession` at
-// the outside origin, and its sign-in rows fail; let Google's callback skip the outside mark, and
-// its outside rows fail; leave out the clear of the other name, and every sign-in row fails; clear
-// one name alone at the sign-out, and its rows fail.
+// the outside origin, and its sign-in rows fail; let the outside origin's sign-ins skip the outside
+// mark, and their rows fail; leave out the clear of the other name, and every sign-in row fails;
+// clear one name alone at the sign-out, and its rows fail.
 func TestEverySessionCookieTheServerWritesIsHostOnlyAtTheRoot(t *testing.T) {
 	root := filepath.Join("..", "..")
 	var want []string
@@ -297,9 +263,6 @@ func TestEverySessionCookieTheServerWritesIsHostOnlyAtTheRoot(t *testing.T) {
 			if w.rig.boot.InsecureCookie != insecure {
 				t.Fatalf("the passkey rig's InsecureCookie is %t, want %t", w.rig.boot.InsecureCookie, insecure)
 			}
-			// The server serving Google's sign-in at the outside origin too, over the rig's
-			// database and its stand-in for Google.
-			w.google, _ = w.rig.serverWith(t, map[string]string{"DISPATCH_SIGNIN_OUTSIDE": "1", "DISPATCH_SIGNIN_PASSKEY": "", "DISPATCH_INSECURE_COOKIE": overrides["DISPATCH_INSECURE_COOKIE"]})
 			for _, writer := range sessionCookieWriters {
 				at := "canonical origin"
 				if writer.outside {
