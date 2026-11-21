@@ -362,8 +362,9 @@ It prints one line for each commit it rewrote,
 `legion jj: <role>: <old commit id> -> <new commit id>`, and then runs the push with the role's
 own arguments, but for a revision argument that names a commit the step moved.
 Before it rewrites anything, the step has jj resolve each argument of `--change`, `--named` and
-`--revisions`, and reads which of its mutable commits are hidden and which is the working-copy
-commit; a hidden commit whose change has one visible commit stands for that commit.
+`--revisions`, and reads which of its mutable commits that no remote bookmark holds are hidden and
+which is the working-copy commit; a hidden commit whose change has one visible commit stands for
+that commit, and for `@` where that commit is the working-copy commit.
 Where the commits an argument names include one that the step rewrote or rebased, or a hidden one
 that stands for another, the push gets `(<the argument as written>) ~ (<their old ids>) | <their
 new ids>`, with `@` for the working-copy commit, so that the push's own snapshot still resolves it.
@@ -372,8 +373,9 @@ id, a prefix of an id.
 An argument none of whose commits moved reaches the push as written, and so does one that jj, read
 again before the push, already resolves to the new commits, such as `@`, a bookmark or a change id;
 the text the step adds grows only with the commits it moved.
-A revset whose result depends on a commit's author, such as `author(...)` or `mine()`, is
-evaluated by the push, after the rewrite.
+A revset whose result depends on a commit's author, such as `author(...)` or `mine()`, still sends
+the commits it named before the rewrite, as rewritten, and the push's own evaluation can add a
+commit whose author the rewrite made match.
 It changes no commit that a remote bookmark holds and no immutable commit.
 It sets the author of no commit that has no `Legion-Role` trailer or whose role has no identity in
 the table.
@@ -383,8 +385,8 @@ A commit with an empty author whose trailer names a role of the table gets that 
 too, and `jj git push` still refuses one with no such trailer.
 The step adds no refusal.
 Where it cannot read the dry run, it prints one line, and the push runs as written, but for a
-commit id whose commit a metaedit of the step rewrote or rebased first, such as a commit whose
-empty author the step filled.
+revision argument that still names a commit a metaedit of the step rewrote or rebased first, such
+as a commit whose empty author the step filled.
 A push that names a commit that no jj command has imported yet, such as one that a `git commit`
 made, has a dry run that the step cannot read: the step's commands import nothing from git, so the
 dry run cannot find the commit, and the push imports it and sends it as it is.
