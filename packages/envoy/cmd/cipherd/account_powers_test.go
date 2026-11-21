@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -105,45 +106,79 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 	}
 
 	// Each row is one route accountAuth authenticates, with a request that reaches its handler:
-	// pattern is what the broker names in a refusal, path what this test calls.
+	// pattern is what the broker names in a refusal, path what this test calls, and status, key
+	// and value the answer the route's own caller gets. This broker holds no record, machine login,
+	// grant or sign-in, and asks no Dispatch, so each answer is the route's own for nothing found:
+	// a list route's empty list, a decision's 404 for an id nothing has. Holding each row to its
+	// own answer, rather than to "not the authority's refusal", is what makes a 401 or a 500 on the
+	// way to the handler a failure here.
+	emptyList := []any{}
 	for _, route := range []struct {
 		method, pattern, path, contentType, body string
 		// caller is the listed caller the route belongs to: the name whose own powers carry it.
 		// Every other listed caller is refused it, except that dispatch reaches introspection
 		// too, since the name that relays a person's decisions reads a token back as well.
 		caller string
+		// status is the answer's status for the route's own caller, and key and value one member
+		// of its body that only that answer carries: a refusal's code, an OAuth error's error, or
+		// a list.
+		status int
+		key    string
+		value  any
 	}{
+		// Introspection answers about the token, and the token nobody issued is simply not live.
 		{method: http.MethodPost, pattern: introspection, path: introspection,
-			contentType: "application/x-www-form-urlencoded", body: "token=a-token-nobody-issued", caller: listenerCaller},
+			contentType: "application/x-www-form-urlencoded", body: "token=a-token-nobody-issued", caller: listenerCaller,
+			status: http.StatusOK, key: "active", value: false},
 		// The revocation body names no client, so the dispatch caller it reaches is refused by
-		// the provider's own client authentication rather than answered 200 with an empty body:
-		// what this walk reads is the authority, and callBroker reads a JSON answer.
+		// the provider's own client authentication (RFC 6749's invalid_client) rather than
+		// answered 200 with an empty body: what this walk reads is the authority, and callBroker
+		// reads a JSON answer.
 		{method: http.MethodPost, pattern: "/v1/oauth/revoke", path: "/v1/oauth/revoke",
-			contentType: "application/x-www-form-urlencoded", body: "token=a-token-nobody-issued", caller: dispatchCaller},
-		{method: http.MethodGet, pattern: "/v1/pending", path: "/v1/pending?approver=" + powersApprover, caller: dispatchCaller},
+			contentType: "application/x-www-form-urlencoded", body: "token=a-token-nobody-issued", caller: dispatchCaller,
+			status: http.StatusUnauthorized, key: "error", value: "invalid_client"},
+		{method: http.MethodGet, pattern: "/v1/pending", path: "/v1/pending?approver=" + powersApprover, caller: dispatchCaller,
+			status: http.StatusOK, key: "pending", value: emptyList},
+		// The three decisions on a record id nothing has: writeNoSuchRecord.
 		{method: http.MethodPost, pattern: "/v1/credential-requests/{record}/approve", path: "/v1/credential-requests/" + unknownRecord + "/approve",
-			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
+			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller,
+			status: http.StatusNotFound, key: "code", value: "NOT_FOUND"},
 		{method: http.MethodPost, pattern: "/v1/credential-requests/{record}/deny", path: "/v1/credential-requests/" + unknownRecord + "/deny",
-			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
+			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller,
+			status: http.StatusNotFound, key: "code", value: "NOT_FOUND"},
 		{method: http.MethodPost, pattern: "/v1/credential-requests/{record}/dismiss", path: "/v1/credential-requests/" + unknownRecord + "/dismiss",
-			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
+			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller,
+			status: http.StatusNotFound, key: "code", value: "NOT_FOUND"},
+		// No pending machine login carries the code.
 		{method: http.MethodPost, pattern: "/v1/machine-logins/lookup", path: "/v1/machine-logins/lookup",
-			contentType: "application/json", body: `{"code":"EXAM-PLE1"}`, caller: dispatchCaller},
-		{method: http.MethodGet, pattern: "/v1/launcher-credentials", path: "/v1/launcher-credentials?approver=" + powersApprover, caller: dispatchCaller},
+			contentType: "application/json", body: `{"code":"EXAM-PLE1"}`, caller: dispatchCaller,
+			status: http.StatusNotFound, key: "code", value: "NO_SUCH_CODE"},
+		{method: http.MethodGet, pattern: "/v1/launcher-credentials", path: "/v1/launcher-credentials?approver=" + powersApprover, caller: dispatchCaller,
+			status: http.StatusOK, key: "credentials", value: emptyList},
+		// enroll.ErrNoCredential: no machine login has the id.
 		{method: http.MethodPost, pattern: "/v1/launcher-credentials/{id}/revoke-by-approver", path: "/v1/launcher-credentials/" + unknownID + "/revoke-by-approver",
-			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
-		{method: http.MethodGet, pattern: "/v1/grants", path: "/v1/grants?approver=" + powersApprover, caller: dispatchCaller},
+			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller,
+			status: http.StatusNotFound, key: "code", value: "NOT_FOUND"},
+		{method: http.MethodGet, pattern: "/v1/grants", path: "/v1/grants?approver=" + powersApprover, caller: dispatchCaller,
+			status: http.StatusOK, key: "grants", value: emptyList},
 		{method: http.MethodPost, pattern: "/v1/grants/{id}/revoke-by-approver", path: "/v1/grants/" + unknownID + "/revoke-by-approver",
-			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller},
-		{method: http.MethodGet, pattern: "/v1/person-signins", path: "/v1/person-signins?person=" + powersApprover, caller: dispatchCaller},
+			contentType: "application/json", body: `{"approver":"` + powersApprover + `"}`, caller: dispatchCaller,
+			status: http.StatusNotFound, key: "code", value: "NOT_FOUND"},
+		{method: http.MethodGet, pattern: "/v1/person-signins", path: "/v1/person-signins?person=" + powersApprover, caller: dispatchCaller,
+			status: http.StatusOK, key: "signins", value: emptyList},
+		// store.ErrNoSignIn: the person has no sign-in of that id.
 		{method: http.MethodPost, pattern: "/v1/person-signins/{id}/revoke", path: "/v1/person-signins/" + unknownID + "/revoke",
-			contentType: "application/json", body: `{"person":"` + powersApprover + `"}`, caller: dispatchCaller},
+			contentType: "application/json", body: `{"person":"` + powersApprover + `"}`, caller: dispatchCaller,
+			status: http.StatusNotFound, key: "code", value: "NOT_FOUND"},
 		// The review's own route, called for a period that closed long ago, so the answer the
-		// review gets here is a page of the grant log rather than a refusal of its period.
-		{method: http.MethodGet, pattern: grantLogRoute, path: grantLogQuery, caller: reviewCaller},
-		// The watch's own route, on a broker that asks no Dispatch: its answer is that the list is
-		// unknown, which is the route's own answer and not a refusal of the caller.
-		{method: http.MethodGet, pattern: privateListRoute, path: privateListRoute, caller: watchCaller},
+		// review gets here is a page of the grant log, empty on a broker nothing has happened on
+		// yet, rather than a refusal of its period.
+		{method: http.MethodGet, pattern: grantLogRoute, path: grantLogQuery, caller: reviewCaller,
+			status: http.StatusOK, key: "events", value: emptyList},
+		// The watch's own route, on a broker that asks no Dispatch: a list it cannot read in full
+		// is no list, which is the route's own answer and not a refusal of the caller.
+		{method: http.MethodGet, pattern: privateListRoute, path: privateListRoute, caller: watchCaller,
+			status: http.StatusServiceUnavailable, key: "code", value: "PRIVATE_LIST_UNKNOWN"},
 	} {
 		for _, who := range callers {
 			t.Run("as "+who.name+": "+route.method+" "+route.pattern, func(t *testing.T) {
@@ -164,37 +199,9 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 					}
 					return
 				}
-				switch route.pattern {
-				case introspection:
-					// Introspection answers about the token, and the token nobody issued is
-					// simply not live.
-					if status != http.StatusOK || body["active"] != false {
-						t.Fatalf("%s %s as %s = %d %v, want 200 and an inactive token: a caller listed to read a token back must reach it",
-							route.method, route.pattern, who.name, status, body)
-					}
-				case grantLogRoute:
-					// The grant log answers a page, empty on a broker nothing has happened on
-					// yet, which is still a page and not a refusal.
-					if status != http.StatusOK || body["events"] == nil {
-						t.Fatalf("%s %s as %s = %d %v, want 200 and a page of events: the review reads the closed period it asked for",
-							route.method, route.pattern, who.name, status, body)
-					}
-				case privateListRoute:
-					// This broker has no BROKER_PROJECT_ACCESS_URL, so it cannot read Dispatch's
-					// part of the list, and a list it cannot read in full is no list.
-					if status != http.StatusServiceUnavailable || body["code"] != "PRIVATE_LIST_UNKNOWN" {
-						t.Fatalf("%s %s as %s = %d %v, want 503 PRIVATE_LIST_UNKNOWN: the watch reaches its route, and a broker that asks no Dispatch cannot say which projects are private",
-							route.method, route.pattern, who.name, status, body)
-					}
-				default:
-					// A route may well answer 400 or 404 — this test sets up no record, no
-					// machine login and no grant for the ids and bodies it sends — so what is
-					// asserted is that the answer is not the authority's refusal: neither "this
-					// caller may not call that route" nor "this account is not listed".
-					if code, _ := body["code"].(string); status == http.StatusForbidden && (code == lacksPower || code == "ACCOUNT_NOT_LISTED") {
-						t.Fatalf("%s %s as %s = %d %v, want anything but the authority's refusal: this route is the caller's own",
-							route.method, route.pattern, who.name, status, body)
-					}
+				if status != route.status || !reflect.DeepEqual(body[route.key], route.value) {
+					t.Fatalf("%s %s as %s = %d %v, want %d with %s %v: the route's own answer for its own caller",
+						route.method, route.pattern, who.name, status, body, route.status, route.key, route.value)
 				}
 			})
 		}
