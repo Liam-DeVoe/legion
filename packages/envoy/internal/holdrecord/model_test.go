@@ -27,7 +27,10 @@ package holdrecord
 // command of a workflow but hub-restore: its change is the store's marker and the family's broker
 // cutover record, written in one step since its rerun writes whatever a crash left missing, and it
 // may fail for good before that change, as when the store or the stream holds what it refuses, or
-// after it.
+// after it. The sentinel-repair workflow (SentinelRepair) runs its one command, `consumer-names
+// repair-sentinel`, the same way: its change is the selection bucket's sentinel, one conditional
+// write, and it may fail for good before it, as when the broker's records give no sentinel or the
+// key holds no value, or after it.
 //
 // It explores every reachable state breadth-first, for every workflow, with two operator
 // processes. An admission is what the code does: with AtomicAdmit, one compare-and-swap step that
@@ -77,7 +80,7 @@ var (
 	v62 = func() rules {
 		r := currentRules
 		r.Name, r.WayOut, r.EveryCommandStoppable, r.EndIsFinal, r.BackupCommand = "v62", false, false, false, false
-		r.Enroll = false
+		r.Enroll, r.SentinelRepair = false, false
 		return r
 	}()
 )
@@ -435,6 +438,10 @@ func scenarios(r rules, fail, ownRunOnly bool) []modelScenario {
 	if r.Enroll {
 		out = append(out, modelScenario{Name: "enroll", W: WorkflowEnroll, Slots: slots, Init: []modelState{prep},
 			Ops: ops("consumer-names enroll")})
+	}
+	if r.SentinelRepair {
+		out = append(out, modelScenario{Name: "sentinel-repair", W: WorkflowSentinelRepair, Slots: slots, Init: []modelState{prep},
+			Ops: ops("consumer-names repair-sentinel")})
 	}
 	out = append(out, hub)
 	for i := range out {
@@ -1701,23 +1708,28 @@ var (
 
 // pinnedBound2 is this model's run at bound 2 of the rules added since the bundle, with a command
 // that fails for good modeled: the current rules and their three controls, the rules without
-// WayOut, without EveryCommandStoppable, and with each stop recording its own run alone.
+// WayOut, without EveryCommandStoppable, and with each stop recording its own run alone. The
+// sentinel-repair workflow added 922 states to the current rules (210,760 before), 653 states and
+// 114 counterexamples to the control without WayOut (190,795 and 14,631), 922 states and no
+// counterexample to the one without EveryCommandStoppable (165,266 and 7,058), since its row makes
+// its command Stoppable, and 1,018 states and 12 counterexamples to OwnRunOnly (220,595 and 156).
 var pinnedBound2 = map[string]modelCount{
-	"v66":                       {210760, 0, nil},
-	"v66-WayOut":                {190795, 14631, map[string]int{classWayOut: 14631}},
-	"v66-EveryCommandStoppable": {165266, 7058, map[string]int{classWayOut: 7058}},
-	"v66-OwnRunOnly":            {220595, 156, map[string]int{classEveryRun: 156}},
+	"v66":                       {211682, 0, nil},
+	"v66-WayOut":                {191448, 14745, map[string]int{classWayOut: 14745}},
+	"v66-EveryCommandStoppable": {166188, 7058, map[string]int{classWayOut: 7058}},
+	"v66-OwnRunOnly":            {221613, 168, map[string]int{classEveryRun: 168}},
 }
 
 // The current rules' runs by workflow, pinned from this model at bounds 2 and 3.
 var (
 	pinnedCurrentBound2 = map[string]int{"cutover": 55228, "rollback": 6625, "selection-recovery": 9415, "buckets-create": 922,
 		"buckets-recreate": 2730, "buckets-restore": 4117, "streams-update": 922, "streams-census": 1302, "hub-restore": 128577,
-		"enroll": 922}
+		"enroll": 922, "sentinel-repair": 922}
 	pinnedCurrentBound3 = map[string]int{"cutover": 78968, "rollback": 9216, "selection-recovery": 12992, "buckets-create": 1270,
 		"buckets-recreate": 3750, "buckets-restore": 5658, "streams-update": 1270, "streams-census": 1799, "hub-restore": 765341,
-		"enroll": 1270}
-	pinnedCurrentBound3Total = 881534
+		"enroll": 1270, "sentinel-repair": 1270}
+	// pinnedCurrentBound3Total was 881,534 before the sentinel-repair workflow's 1,270 states.
+	pinnedCurrentBound3Total = 882804
 )
 
 // The model of the hold's workflows, run on this package's journal and table. The frozen bundle's
@@ -1725,18 +1737,18 @@ var (
 // (31,948 states) and at three (139,812), and every earlier rule set and every rule set with one of
 // v62's fixes removed is a control that finds a counterexample of each class it names, asserted by
 // the class's name, with the bundle's counts. The current rules add WayOut, EveryCommandStoppable,
-// EndIsFinal, BackupCommand and the enroll workflow, and are run with a command of any workflow
-// but hub-restore that fails for good after its intent: they find no counterexample, at bounds 2
-// and 3, with pinned state counts. Their controls without WayOut and without EveryCommandStoppable
-// find the stranded hold (classWayOut), the first in every workflow but hub-restore and the second
-// in cutover, rollback, selection-recovery and both streams workflows, whose rows do not make
-// their commands Stoppable as the buckets and enroll rows do; their control in which a stop
-// records its own run alone (OwnRunOnly) finds hold release moving the row over an earlier run's
-// change (classEveryRun). At every hub-restore state of the current rules the package's Step1,
-// Proven, Epoch, Expected and Moved read the record as the model does.
+// EndIsFinal, BackupCommand and the enroll and sentinel-repair workflows, and are run with a command
+// of any workflow but hub-restore that fails for good after its intent: they find no counterexample,
+// at bounds 2 and 3, with pinned state counts. Their controls without WayOut and without
+// EveryCommandStoppable find the stranded hold (classWayOut), the first in every workflow but
+// hub-restore and the second in cutover, rollback, selection-recovery and both streams workflows,
+// whose rows do not make their commands Stoppable as the buckets, enroll and sentinel-repair rows
+// do; their control in which a stop records its own run alone (OwnRunOnly) finds hold release moving
+// the row over an earlier run's change (classEveryRun). At every hub-restore state of the current
+// rules the package's Step1, Proven, Epoch, Expected and Moved read the record as the model does.
 func TestTheHoldJournalModel(t *testing.T) {
 	if currentRules.Name != "v66" || v62.WayOut || v62.EveryCommandStoppable || v62.EndIsFinal || v62.BackupCommand ||
-		v62.Enroll {
+		v62.Enroll || v62.SentinelRepair {
 		t.Fatalf("the current rules are %q, and v62 carries a rule added since; the counts below are v62's and v66's", currentRules.Name)
 	}
 	for _, w := range tableFor(currentRules).Workflows() {
@@ -1819,7 +1831,7 @@ func TestTheHoldJournalModel(t *testing.T) {
 				// record keeps each stop, as the code writes it, so hold release reads the stopped
 				// command as a change in every workflow, the buckets ones included.
 				for _, w := range []string{"cutover", "rollback", "selection-recovery", "buckets-create", "buckets-recreate",
-					"buckets-restore", "streams-update", "streams-census", "enroll"} {
+					"buckets-restore", "streams-update", "streams-census", "enroll", "sentinel-repair"} {
 					if got.classIn[classWayOut][w] == 0 {
 						t.Errorf("control %s found no %s in %s", p.Name, classWayOut, w)
 					}

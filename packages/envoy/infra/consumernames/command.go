@@ -28,13 +28,14 @@ const (
 	actionRestore      = "restore"
 	actionReplace      = "replace"
 	actionEnroll       = "enroll"
+	actionRepair       = "repair-sentinel"
 )
 
 // actions are the words, in the usage's order.
 var actions = []string{actionStatus, actionPrepare, actionCreateBucket, actionReplay, actionConvert, actionCleanup,
-	actionRestore, actionReplace, actionEnroll}
+	actionRestore, actionReplace, actionEnroll, actionRepair}
 
-const usage = `usage: envoy-infra consumer-names status|prepare|create-bucket|replay|convert|cleanup|restore|replace|enroll [options]
+const usage = `usage: envoy-infra consumer-names status|prepare|create-bucket|replay|convert|cleanup|restore|replace|enroll|repair-sentinel [options]
 
   status         [--hold ID]                               (the row released)
   prepare        --hold ID                                 (the row prepare)
@@ -46,6 +47,7 @@ const usage = `usage: envoy-infra consumer-names status|prepare|create-bucket|re
   restore        --hold ID (--prepare | --finish | --key K --from SEQ)
   replace        --hold ID --listener MACHINE-ID
   enroll         --hold ID --daemon PROJECT-KEY
+  repair-sentinel --hold ID
 
   Every command: --broker-url U (the secrets broker), --token-file F (the operator's
   ServiceAccount token, for the broker's routes and the hub), --verify-keys K

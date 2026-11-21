@@ -198,11 +198,14 @@ func (rig *restoreRig) familyStore(nc *nats.Conn, family string) familyStore {
 
 // cutover runs a cutover hold that leaves conversions as convert leaves them, completes its journal
 // as create-bucket, convert and a clean streams census write it, releases it, and answers its id.
+// The hold's cohort record holds B = 1, the boundary the row writes into the bucket's sentinel, as
+// consumer-names prepare would have written it: repair-sentinel reads it after a rollback.
 func (rig *restoreRig) cutover(conversions ...restoreConversion) string {
 	t := rig.t
 	t.Helper()
 	ctx := context.Background()
 	id := rig.heldHold(holdrecord.WorkflowCutover)
+	createBucketCohort(t, rig.records(), id, 1)
 	nc, js := rig.operator()
 	if _, err := streamInfo(ctx, nc, "KV_"+selection.SessionBucket); err != nil {
 		// selection.CreateSessionBucket writes the sentinel at once, which on three copies can
@@ -493,8 +496,12 @@ func (rig *restoreRig) freshCreator(family string) *selection.Names {
 // TestCutoverRollbackThenUpgradeAgain (review H4): after the rollback every family's broker cutover
 // row and store marker read rolled_back, a creator in the fresh mode refuses every consumer call,
 // every restored fixed name delivers from its saved start, and a second cutover's convert converts
-// the restored fixed names. Control: with the rows and markers left at done (restoreRuleSet's
-// noMarkers), a creator in the fresh mode is admitted and serves the fixed name.
+// the restored fixed names and marks the bucket's sentinel with that cutover's B and hold, as the
+// session row names it; after a STREAM.INFO answer is stored over that sentinel, repair-sentinel
+// writes it again byte for byte from the broker's records. Control: with the rows and markers left
+// at done (restoreRuleSet's noMarkers), a creator in the fresh mode is admitted and serves the
+// fixed name. (The stream keeps its first message, so the second B equals the first, and the hold
+// is what tells the two cutovers' sentinels apart.)
 func TestCutoverRollbackThenUpgradeAgain(t *testing.T) {
 	ctx := context.Background()
 	t.Run("control: the rows and markers left at done", func(t *testing.T) {
@@ -569,6 +576,24 @@ func TestCutoverRollbackThenUpgradeAgain(t *testing.T) {
 			require.Equal(t, selection.CutoverDone, row.State)
 			require.Equal(t, again, row.HoldID)
 		}
+		cohort, found, err := readPrepareCohort(ctx, rig.records(), again)
+		require.NoError(t, err)
+		require.True(t, found, "the second cutover's prepare wrote no cohort record")
+		require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Boundary: cohort.Boundary, Hold: again}, rig.marker(familySession),
+			"the second cutover's sentinel names the cutover that converted it")
+		_, err = rig.records().Admit(ctx, again, holdrecord.Request{Command: "streams census"}, nil)
+		require.NoError(t, err)
+		require.NoError(t, rig.records().AppendDone(ctx, again, "streams census", nil))
+		require.NoError(t, rig.release(again))
+		converted := repairSentinelValue(t, rig.stack)
+		nc, _ := rig.listener()
+		repairPlant(t, rig.stack, nc)
+		nc.Close()
+		repair := rig.heldHold(holdrecord.WorkflowSentinelRepair)
+		code, _, stderr = rig.run(repairWord, "--hold", repair)
+		require.Zero(t, code, stderr)
+		require.Equal(t, string(converted), string(repairSentinelValue(t, rig.stack)), "repair-sentinel reproduces the second cutover's sentinel")
+		require.NoError(t, rig.release(repair))
 	})
 }
 

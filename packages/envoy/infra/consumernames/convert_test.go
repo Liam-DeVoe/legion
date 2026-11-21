@@ -228,10 +228,11 @@ func (rig *convertRig) requireFresh(m member, record selection.Record, start uin
 // it did not. convert writes each logical name's record with a fresh name created at its fixed
 // name's ack floor + 1 from the fixed name's configuration, with the member's metadata, deletes
 // every fixed name, writes each family's broker cutover row and store marker done (the bucket's
-// sentinel keeping B), marks its record complete and writes its done entry; after the release every
-// message the fixed names had not acknowledged arrives on the fresh names. Control, run first: the
-// same command while the row is released is refused and converts nothing. It fails when a fixed
-// name is left, a start is not its floor + 1, or a pending message does not arrive.
+// sentinel holding this cutover's B and hold), marks its record complete and writes its done
+// entry; after the release every message the fixed names had not acknowledged arrives on the fresh
+// names. Control, run first: the same command while the row is released is refused and converts
+// nothing. It fails when a fixed name is left, a start is not its floor + 1, or a pending message
+// does not arrive.
 func TestConvertConvertsEveryFamilysFixedNamesAtTheirFloors(t *testing.T) {
 	rig := newConvertRig(t, 0)
 	ctx := context.Background()
@@ -302,7 +303,7 @@ func TestConvertConvertsEveryFamilysFixedNamesAtTheirFloors(t *testing.T) {
 	nc, _ := rig.operator()
 	sentinel, err := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc}).State(ctx)
 	require.NoError(t, err)
-	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Boundary: cohort.Boundary}, sentinel)
+	require.Equal(t, selection.StoreState{Cutover: selection.CutoverDone, Boundary: cohort.Boundary, Hold: id}, sentinel)
 	stream, err := streamInfo(ctx, nc, notifications)
 	require.NoError(t, err)
 	dispatchState, err := selection.NewPGStore(dispatch).State(ctx)

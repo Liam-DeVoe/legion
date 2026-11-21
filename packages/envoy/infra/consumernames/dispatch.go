@@ -26,6 +26,8 @@ func (r *run) dispatch(ctx context.Context) error {
 		return r.replaceListener(ctx)
 	case actionEnroll:
 		return r.enroll(ctx)
+	case actionRepair:
+		return r.repairSentinel(ctx)
 	}
 	return fmt.Errorf("no action %q", r.o.action)
 }

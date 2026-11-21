@@ -177,3 +177,32 @@ func TestReplayInARecoveryFollowsCreateBucketAfterLoss(t *testing.T) {
 		require.Equal(t, step.args[3], formatSeq(got.Start))
 	}
 }
+
+// In a selection-recovery hold after create-bucket --after-loss, replay --key K --from SEQ replaces
+// a malformed session record: a STREAM.INFO answer stored under K through a reply subject, which
+// the readers' strict decode refuses (readSelectionValue). After it K's value is exactly a record
+// (strictRecord) with start SEQ, no current and no retired name, written over the answer's
+// revision; replay's intent and done entries are written. Control: today's library decode
+// (json.Unmarshal, selection.KVStore.Read) takes the answer as an empty record, which is what
+// replay reads and writes over, so replay replaces it with no change of its own.
+func TestReplayReplacesAMalformedSessionRecord(t *testing.T) {
+	h := newStack(t)
+	createBucketNotifications(t, h, 5)
+	id := h.heldHold(holdrecord.WorkflowSelectionRecovery)
+	code, _, stderr := h.run("create-bucket", "--hold", id, "--after-loss")
+	require.Equal(t, 0, code, stderr)
+
+	nc, _ := h.operator()
+	malformed := malformedReplyStore(t, nc, "ses_bad")
+	malformedRefused(t, "ses_bad", malformed)
+	malformedCases("ses_bad", "")[0].lenient(t, malformed)
+
+	code, _, stderr = h.run("replay", "--hold", id, "--key", "ses_bad", "--from", "3")
+	require.Equal(t, 0, code, stderr)
+	require.Equal(t, []string{"intent", "done"}, createBucketEntries(h.journal(id), replayCommand))
+	nc, _ = h.operator()
+	value := malformedValue(t, nc, "ses_bad")
+	record, err := strictRecord(value)
+	require.NoError(t, err, "ses_bad's value after replay is no exact record: %s", value)
+	require.Equal(t, selection.Record{Start: 3}, record)
+}

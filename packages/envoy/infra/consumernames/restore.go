@@ -83,6 +83,10 @@ type restoreRuleSet struct {
 	// refusal after a restore command's intent writes no stop entry, so its intent stays pending
 	// and only that command's rerun is admitted.
 	noStopEntry bool
+	// noCutoverHold is the rule before the saved set recorded the cutover hold (restoreSet's
+	// CutoverHold): repair-sentinel after the rollback then finds no hold whose cohort record gives
+	// the sentinel's boundary.
+	noCutoverHold bool
 }
 
 // restoreRules are the rules restore runs by (restoreRuleSet). A test that sets one runs alone.
@@ -116,6 +120,13 @@ func restoreAt(point, logical string) error {
 // creates each F from it.
 type restoreSet struct {
 	Names []restoreSetName `json:"names"`
+	// CutoverHold is the hold of the cutover this rollback undoes, as the session family's broker
+	// cutover row named it when restore --prepare built the set (restoreCutoverHold): restore
+	// --finish then writes that row rolled_back under this hold's id, and keeps the cutover's
+	// boundary and hold in the selection bucket's sentinel (restoreMark), so repair-sentinel
+	// follows this field to the cutover hold's cohort record. "" when no session row was done: a
+	// rollback of a convert that never finished.
+	CutoverHold string `json:"cutover_hold,omitempty"`
 }
 
 // restoreSetName is one logical name of a restoreSet.
@@ -456,17 +467,23 @@ func restoreFloor(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.St
 
 // readSet reads the hold's saved set, and false when restore --prepare has written none.
 func (rr *restoreRun) readSet(ctx context.Context) (restoreSet, bool, error) {
-	records, err := rr.records.Records(ctx, rr.r.o.holdID, restoreSetKind)
+	return readRestoreSet(ctx, rr.records, rr.r.o.holdID)
+}
+
+// readRestoreSet reads hold holdID's saved set (restoreSetKind, restoreSetKey), verified as
+// holdrecord.Client.Records verifies every record, and false when the hold holds none.
+func readRestoreSet(ctx context.Context, records *holdrecord.Client, holdID string) (restoreSet, bool, error) {
+	list, err := records.Records(ctx, holdID, restoreSetKind)
 	if err != nil {
 		return restoreSet{}, false, err
 	}
-	for _, record := range records {
+	for _, record := range list {
 		if record.Key != restoreSetKey {
 			continue
 		}
 		var set restoreSet
 		if err := json.Unmarshal(record.Value, &set); err != nil {
-			return restoreSet{}, false, unknownf(err, "hold %s's %s record %s", rr.r.o.holdID, restoreSetKind, restoreSetKey)
+			return restoreSet{}, false, unknownf(err, "hold %s's %s record %s", holdID, restoreSetKind, restoreSetKey)
 		}
 		return set, true, nil
 	}
@@ -501,9 +518,17 @@ func (rr *restoreRun) savedSet(ctx context.Context) (restoreSet, error) {
 }
 
 // buildSet reads every family's records and gives each logical name its target, its start and its
-// target's configuration.
+// target's configuration, and records the cutover hold the session family's broker cutover row
+// names (restoreCutoverHold).
 func (rr *restoreRun) buildSet(ctx context.Context) (restoreSet, error) {
 	var set restoreSet
+	if !restoreRules.noCutoverHold {
+		hold, err := restoreCutoverHold(rr.cutovers)
+		if err != nil {
+			return restoreSet{}, err
+		}
+		set.CutoverHold = hold
+	}
 	for _, family := range rr.families() {
 		entries, present, err := rr.entries(ctx, family)
 		if err != nil {
@@ -521,6 +546,26 @@ func (rr *restoreRun) buildSet(ctx context.Context) (restoreSet, error) {
 		}
 	}
 	return set, nil
+}
+
+// restoreCutoverHold is the hold of the cutover a rollback undoes: the hold id of the session
+// family's broker cutover row, which convert writes done once it converted every family
+// (convert.go convertRule.run). A row that reads anything but done is refused, naming it: a row
+// rolled_back is a rollback's already, and holds that rollback's hold id, not a cutover's. No
+// row is "": a convert that never finished wrote none, and its rollback (the interrupted
+// conversion's) has no cutover hold to record.
+func restoreCutoverHold(rows []holdrecord.CutoverRow) (string, error) {
+	for _, row := range rows {
+		if row.Family != familySession {
+			continue
+		}
+		if row.State != selection.CutoverDone {
+			return "", fmt.Errorf("the broker's %s cutover row reads %s from hold %s: restore --prepare records the hold of a cutover that is %s, which no rollback has undone",
+				familySession, row.State, row.HoldID, selection.CutoverDone)
+		}
+		return row.HoldID, nil
+	}
+	return "", nil
 }
 
 // planName is entry's name in the saved set: its target, its start (restoreStart) and the

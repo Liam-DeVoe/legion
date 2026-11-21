@@ -53,16 +53,23 @@ type rules struct {
 	// run of it left, by LeftUnchanged's rule, and its way out is WayOut's: hold release after a stop
 	// that left nothing changed, else its rerun or hold abort.
 	Enroll bool
+	// SentinelRepair: the sentinel-repair workflow, whose one command, `consumer-names
+	// repair-sentinel`, rewrites the selection bucket's sentinel from the broker's records after a
+	// value was stored over it. A workflow, not a fix, so no control removes it; its stop and its way
+	// out are enroll's.
+	SentinelRepair bool
 }
 
 // currentRules are the hold's rules as its design stands: the frozen model's v62 (every fix, with
 // no account move) and the rules added since, WayOut, EveryCommandStoppable, EndIsFinal,
-// BackupCommand and the enroll workflow (v66).
+// BackupCommand, the enroll workflow (v66) and the sentinel-repair workflow. The name stays v66: a
+// workflow adds states to the model's pinned counts, which are re-frozen under it, and changes no
+// rule a control removes.
 var currentRules = rules{Name: "v66", Step1Recorded: true, ProveEpochs: true, AbortMoveBeforeDone: true,
 	AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true, AtomicAdmit: true, Serialize: true,
 	StopEntries: true, SetCommand: true, Step1Whole: true, ExpectedMap: true, ConvertStoppable: true,
 	PrepareMarksUnresolved: true, CompletionSurvivesRowRestore: true, WayOut: true, EveryCommandStoppable: true,
-	EndIsFinal: true, BackupCommand: true, Enroll: true}
+	EndIsFinal: true, BackupCommand: true, Enroll: true, SentinelRepair: true}
 
 var current = tableFor(currentRules)
 
@@ -144,6 +151,10 @@ func tableFor(r rules) table {
 		// crashed enroll is admitted again, since Decide refuses only a command with a done entry.
 		rows[WorkflowEnroll] = []entry{{name: "consumer-names enroll", final: true, stoppable: stop}}
 	}
+	if r.SentinelRepair {
+		// As enroll's: final and not Repeatable, and admitted again after a stop or a crash.
+		rows[WorkflowSentinelRepair] = []entry{{name: "consumer-names repair-sentinel", final: true, stoppable: stop}}
+	}
 	if r.WayOut { // hold abort, every workflow's way out; hub-restore names it already
 		for w := range rows {
 			if w != WorkflowHubRestore {
@@ -176,6 +187,9 @@ func (t table) Workflows() []Workflow {
 		WorkflowBucketsRestore, WorkflowStreamsUpdate, WorkflowHubRestore, WorkflowStreamsCensus}
 	if t.Rules.Enroll {
 		out = append(out, WorkflowEnroll)
+	}
+	if t.Rules.SentinelRepair {
+		out = append(out, WorkflowSentinelRepair)
 	}
 	return out
 }

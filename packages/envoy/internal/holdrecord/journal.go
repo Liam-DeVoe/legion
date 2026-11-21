@@ -25,6 +25,12 @@ const (
 	// what every run of it left (AppendStopLeft): LeftUnchanged lets `hold release` end the hold,
 	// anything else leaves enroll's rerun or `hold abort` as the way out.
 	WorkflowEnroll Workflow = "enroll"
+	// WorkflowSentinelRepair rewrites the selection bucket's sentinel from the broker's records: its
+	// one command, `consumer-names repair-sentinel`, writes the sentinel the session family's cutover
+	// row and its hold's cohort record give over the value the key holds. Its stop records what
+	// every run of it left (AppendStopLeft), and its way out is enroll's: `hold release` after a stop
+	// that left nothing changed, else its rerun or `hold abort`.
+	WorkflowSentinelRepair Workflow = "sentinel-repair"
 )
 
 // Operation is one journal entry. State is `intent`, `done` or `stop`. An `intent` entry carries

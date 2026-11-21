@@ -264,12 +264,13 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 		return unknownf(err, "%s's state for the daemons' boundary", notifications)
 	}
 	daemon := convertDaemonMark{boundary: stream.State.LastSeq + 1, streamID: selection.StreamIdentity(stream)}
+	session := convertSessionMark{boundary: cohort.Boundary, hold: r.o.holdID}
 	families := c.families(r, set)
 	for _, family := range families {
 		if _, err := r.records.PutCutover(ctx, family, selection.CutoverDone, r.o.holdID); err != nil {
 			return fmt.Errorf("write the %s family's broker cutover row: %w", family, err)
 		}
-		if err := c.markDone(ctx, r, family, daemon); err != nil {
+		if err := c.markDone(ctx, r, family, daemon, session); err != nil {
 			return err
 		}
 	}
@@ -475,12 +476,24 @@ type convertDaemonMark struct {
 	streamID string
 }
 
+// convertSessionMark is what the selection bucket's sentinel holds beside its marker: this
+// cutover's boundary B, its cohort's, and its hold id. create-bucket wrote both in the cutover that
+// made the bucket; a second cutover after a rollback makes no bucket, so without this mark its
+// sentinel would keep the first cutover's B and hold while the session family's broker cutover row
+// names the second, and repair-sentinel, which reads the row, could not give it back.
+type convertSessionMark struct {
+	boundary uint64
+	hold     string
+}
+
 // markDone writes family's store marker cutover = done, keeping everything else its sentinel
-// holds (the selection bucket's B), and in a daemon's store daemon's boundary and stream identity,
-// with a write conditional on the sentinel's revision, read again after a refused one. A marker
-// already done, with a daemon's boundary already written, is left as it is.
-func (c convertRule) markDone(ctx context.Context, r *run, family string, daemon convertDaemonMark) error {
+// holds, and in a daemon's store daemon's boundary and stream identity, and in the selection bucket
+// session's boundary and hold, with a write conditional on the sentinel's revision, read again
+// after a refused one. A marker already done, with a daemon's boundary already written or the
+// selection bucket's boundary and hold already session's, is left as it is.
+func (c convertRule) markDone(ctx context.Context, r *run, family string, daemon convertDaemonMark, session convertSessionMark) error {
 	isDaemon := strings.HasPrefix(family, familyDaemonPrefix)
+	isSession := family == familySession
 	st, err := r.store(ctx, family)
 	if err != nil {
 		return err
@@ -496,13 +509,17 @@ func (c convertRule) markDone(ctx context.Context, r *run, family string, daemon
 		if err != nil {
 			return unknownf(err, "the %s family's store marker", family)
 		}
-		if state.Cutover == selection.CutoverDone && (!isDaemon || state.Boundary > 0) {
+		if state.Cutover == selection.CutoverDone && (!isDaemon || state.Boundary > 0) &&
+			(!isSession || (state.Boundary == session.boundary && state.Hold == session.hold)) {
 			return nil
 		}
 		state.Cutover = selection.CutoverDone
 		if isDaemon {
 			state.Boundary = daemon.boundary
 			state.StreamID = daemon.streamID
+		}
+		if isSession {
+			state.Boundary, state.Hold = session.boundary, session.hold
 		}
 		_, err = st.WriteSentinel(ctx, state, revision)
 		if errors.Is(err, selection.ErrConflict) {

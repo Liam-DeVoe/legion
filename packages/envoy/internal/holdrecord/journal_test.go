@@ -344,7 +344,7 @@ func TestTheHoldJournal(t *testing.T) {
 		for i, w := range []holdrecord.Workflow{holdrecord.WorkflowCutover, holdrecord.WorkflowRollback,
 			holdrecord.WorkflowSelectionRecovery, holdrecord.WorkflowBucketsCreate, holdrecord.WorkflowBucketsRecreate,
 			holdrecord.WorkflowBucketsRestore, holdrecord.WorkflowStreamsUpdate, holdrecord.WorkflowHubRestore,
-			holdrecord.WorkflowStreamsCensus, holdrecord.WorkflowEnroll} {
+			holdrecord.WorkflowStreamsCensus, holdrecord.WorkflowEnroll, holdrecord.WorkflowSentinelRepair} {
 			holdID := "h-order-" + strconv.Itoa(i)
 			prepare(t, c, holdID, w, twoDisks)
 			// hold set's own check refused in held: its stop entry ends its intent with no done.
@@ -1167,43 +1167,60 @@ func TestTheHoldJournal(t *testing.T) {
 // cmdEnroll is enroll's command, as the enroll workflow's table names it.
 const cmdEnroll = "consumer-names enroll"
 
+// cmdRepairSentinel is repair-sentinel's command, as the sentinel-repair workflow's table names it.
+const cmdRepairSentinel = "consumer-names repair-sentinel"
+
 // enrollStopped is an enroll hold whose enroll was admitted and whose own check refused: its stop
 // ends its intent and records left, what every run of it left (AppendStopLeft), or, with left
 // empty, nothing (AppendStop), which counts as changed.
 func enrollStopped(t *testing.T, c *holdrecord.Client, holdID, left string) {
 	t.Helper()
+	stoppedIn(t, c, holdID, holdrecord.WorkflowEnroll, cmdEnroll, map[string]string{"daemon": "P"}, "the store holds a checkpoint", left)
+}
+
+// stoppedIn is a hold of workflow w whose one command was admitted with inputs and whose own check
+// refused for reason: its stop ends its intent and records left, what every run of it left
+// (AppendStopLeft), or, with left empty, nothing (AppendStop), which counts as changed.
+func stoppedIn(t *testing.T, c *holdrecord.Client, holdID string, w holdrecord.Workflow, command string, inputs map[string]string, reason, left string) {
+	t.Helper()
 	ctx := context.Background()
-	hold(t, c, holdID, holdrecord.WorkflowEnroll, nil)
-	if w, err := c.Admit(ctx, holdID, cmd(cmdEnroll), map[string]string{"daemon": "P"}); err != nil || w != holdrecord.WorkflowEnroll {
-		t.Fatalf("Admit of %s = %q, %v", cmdEnroll, w, err)
+	hold(t, c, holdID, w, nil)
+	if got, err := c.Admit(ctx, holdID, cmd(command), inputs); err != nil || got != w {
+		t.Fatalf("Admit of %s = %q, %v", command, got, err)
 	}
 	var err error
 	if left == "" {
-		err = c.AppendStop(ctx, holdID, cmdEnroll, "the store holds a checkpoint")
+		err = c.AppendStop(ctx, holdID, command, reason)
 	} else {
-		err = c.AppendStopLeft(ctx, holdID, cmdEnroll, "the store holds a checkpoint", left)
+		err = c.AppendStopLeft(ctx, holdID, command, reason, left)
 	}
 	if err != nil {
-		t.Fatalf("%s's stop entry: %v", cmdEnroll, err)
+		t.Fatalf("%s's stop entry: %v", command, err)
 	}
 }
 
-// abortEnroll ends an enroll hold as hold abort does: its admission, whose intent must carry the
-// stop's record carried, the row's move to released, and its done entry, which completes the
-// record.
+// abortEnroll ends an enroll hold as hold abort does (abortAfterStop).
 func abortEnroll(t *testing.T, c *holdrecord.Client, holdID, carried string) {
+	t.Helper()
+	abortAfterStop(t, c, holdID, cmdEnroll, carried)
+}
+
+// abortAfterStop ends a hold whose command stopped as hold abort does: its admission, whose intent
+// must carry the stop's record carried, the row's move to released, and its done entry, which
+// completes the record.
+func abortAfterStop(t *testing.T, c *holdrecord.Client, holdID, command, carried string) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := c.Admit(ctx, holdID, cmd(holdrecord.CommandAbort), nil); err != nil {
-		t.Fatalf("%s: hold abort after enroll's stop: %v", holdID, err)
+		t.Fatalf("%s: hold abort after %s's stop: %v", holdID, command, err)
 	}
 	d, _ := journal(t, c, holdID)
 	abort, found := last(t, d), false
 	for _, v := range abort.Inputs {
-		found = found || v == cmdEnroll+": "+carried
+		found = found || v == command+": "+carried
 	}
 	if abort.Command != holdrecord.CommandAbort || abort.State != "intent" || !found {
-		t.Fatalf("%s: the journal ends %+v, want hold abort's intent carrying %q", holdID, abort, cmdEnroll+": "+carried)
+		t.Fatalf("%s: the journal ends %+v, want hold abort's intent carrying %q", holdID, abort, command+": "+carried)
 	}
 	current := row(t, c)
 	if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, holdID, "aborted"); err != nil {
@@ -1279,5 +1296,79 @@ func TestAnEnrollStopLeavesTheHoldReleasable(t *testing.T) {
 		_, err := c.Admit(ctx, "h-enroll-done", cmd(cmdEnroll), nil)
 		refused(t, "enroll after its done entry", err, holdrecord.ErrAlreadyDone, "complete")
 		release(t, c, "h-enroll-done")
+	})
+}
+
+// repair-sentinel on the broker's own routes over Postgres, under the general stop rule, as enroll
+// runs (TestAnEnrollStopLeavesTheHoldReleasable). A refused repair whose stop records that no run of
+// it changed anything (LeftUnchanged) leaves its sentinel-repair hold releasable. Control: the same
+// stop recording a change, or recording nothing, leaves hold release refused ErrOutOfOrder, so the
+// recorded LeftUnchanged is what admits it, and hold abort, which carries the stop's record, ends
+// the hold. A stopped repair is admitted again, and its done entry completes the record in the same
+// write, with hold_gen the row's gen; a repair after it is refused.
+func TestASentinelRepairStopLeavesTheHoldReleasable(t *testing.T) {
+	ctx := context.Background()
+	const (
+		reason  = "the selection bucket holds no envoy.bucket"
+		changed = "this hold's barrier key in KV_envoy_session_consumers; the sentinel of KV_envoy_session_consumers written"
+	)
+	inputs := map[string]string{"cutover": "done", "boundary": "1", "hold": "h-cutover"}
+	stopped := func(t *testing.T, c *holdrecord.Client, holdID, left string) {
+		t.Helper()
+		stoppedIn(t, c, holdID, holdrecord.WorkflowSentinelRepair, cmdRepairSentinel, inputs, reason, left)
+	}
+
+	t.Run("a stop that left nothing changed leaves hold release admitted", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		stopped(t, c, "h-repair-unchanged", holdrecord.LeftUnchanged)
+		d, _ := journal(t, c, "h-repair-unchanged")
+		if e := last(t, d); d.Complete || e.State != "stop" || e.Outputs["left"] != holdrecord.LeftUnchanged {
+			t.Fatalf("after repair-sentinel's stop: complete %v, the journal ending %+v", d.Complete, e)
+		}
+		release(t, c, "h-repair-unchanged")
+		if after := row(t, c); after.Phase != natsgrant.OperatorPhaseReleased {
+			t.Fatalf("after hold release the row is %s", after.Phase)
+		}
+	})
+
+	t.Run("control: a stop that records a change, or nothing, keeps hold release refused, and hold abort ends the hold", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		for _, s := range []struct{ holdID, left, carried string }{
+			{"h-repair-changed", changed, changed},
+			{"h-repair-unrecorded", "", "nothing recorded, so counted as changed"},
+		} {
+			stopped(t, c, s.holdID, s.left)
+			_, err := c.Admit(ctx, s.holdID, cmd(holdrecord.CommandRelease), nil)
+			refused(t, s.holdID+": hold release after repair-sentinel's stop", err, holdrecord.ErrOutOfOrder, "the record is not complete")
+			abortAfterStop(t, c, s.holdID, cmdRepairSentinel, s.carried)
+			if after := row(t, c); after.Phase != natsgrant.OperatorPhaseReleased {
+				t.Fatalf("%s: after hold abort the row is %s", s.holdID, after.Phase)
+			}
+		}
+	})
+
+	t.Run("a stopped repair runs again, and its done entry completes the record with hold_gen", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		stopped(t, c, "h-repair-done", changed)
+		if _, err := c.Admit(ctx, "h-repair-done", cmd(cmdRepairSentinel), inputs); err != nil {
+			t.Fatalf("Admit of %s after its stop: %v", cmdRepairSentinel, err)
+		}
+		held := row(t, c)
+		_, gen := journal(t, c, "h-repair-done")
+		if err := c.AppendDone(ctx, "h-repair-done", cmdRepairSentinel, map[string]string{"sentinel_was": "a malformed value"}); err != nil {
+			t.Fatalf("%s's done entry: %v", cmdRepairSentinel, err)
+		}
+		d, after := journal(t, c, "h-repair-done")
+		if e := last(t, d); !d.Complete || d.HoldGen == 0 || d.HoldGen != held.Gen || after != gen+1 || e.Command != cmdRepairSentinel ||
+			e.State != "done" {
+			t.Fatalf("after repair-sentinel's done entry: complete %v, hold_gen %d (row gen %d), record gen %d from %d, ending %+v",
+				d.Complete, d.HoldGen, held.Gen, after, gen, e)
+		}
+		_, err := c.Admit(ctx, "h-repair-done", cmd(cmdRepairSentinel), nil)
+		refused(t, "repair-sentinel after its done entry", err, holdrecord.ErrAlreadyDone, "complete")
+		release(t, c, "h-repair-done")
 	})
 }

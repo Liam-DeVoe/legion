@@ -3440,6 +3440,7 @@ envoy-infra consumer-names cleanup        --hold ID
 envoy-infra consumer-names restore        --hold ID (--prepare | --finish | --key K --from SEQ)
 envoy-infra consumer-names replace        --hold ID --listener MACHINE-ID
 envoy-infra consumer-names enroll         --hold ID --daemon PROJECT-KEY
+envoy-infra consumer-names repair-sentinel --hold ID
 ```
 
 - `status` lists each family's records (the current name, an open operation, the start, the last
@@ -3466,6 +3467,15 @@ envoy-infra consumer-names enroll         --hold ID --daemon PROJECT-KEY
   mode's procedure is in `deploy/README.md`). `enroll`, in an `enroll` hold, marks a daemon store
   made after the cutover converted, with the stream's boundary and identity, only when no consumer,
   checkpoint or record of its own already exists.
+- `repair-sentinel`, in a `sentinel-repair` hold, writes the selection bucket's sentinel
+  `envoy.bucket` again from the broker's records alone, over whatever value was stored there
+  (any client whose grant holds a JetStream API request can store the server's answer under it
+  through a reply subject, and every session consumer call then fails closed): the session
+  family's cutover row gives its state, `done` or `rolled_back`; the hold that row names, or for
+  `rolled_back` the cutover hold the rollback's `restore --prepare` recorded, gives the hold; and
+  that hold's cohort record gives the boundary. It refuses when no such row or record exists, and
+  never writes over a missing sentinel, a delete marker or a selection recovery's sentinel, which
+  are `create-bucket --after-loss`'s.
 
 Every command takes the hold's flags as `envoy-infra hold` takes them: `--broker-url`,
 `--token-file`, `--verify-keys` and `--nats`, and every command but `status` `--signing-key-secret`;
