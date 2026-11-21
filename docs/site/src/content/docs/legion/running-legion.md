@@ -945,7 +945,9 @@ What each part is for:
   (5 minutes). `LEGION_STALL_STEP_MS` is the gap between the ladder's steps, 120000 (2 minutes).
   Four more variables of the same family set the worker's phase reminder rather than its call
   watch: `LEGION_STALL_REMINDER_MS` (300000, how long after a settle that earned a reminder the
-  reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, what a WAITING reply buys),
+  reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, the quiet wait that a turn ending
+  with background work of the worker's own buys, while a wait the worker declares with the
+  `legion` tool's `declare_wait` holds the reminder until that wait ends),
   `LEGION_STALL_RESUME_MS` (120000, after a resume, when the daemon answers that the claim owes
   work) and
   `LEGION_STALL_ARCHITECT_AFTER` (3: how many delivered reminders in a row change nothing before

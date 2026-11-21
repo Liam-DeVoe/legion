@@ -850,7 +850,7 @@ assignment_delivered() {
 gate_finish "$root1"
 until_true 600 "the daemon's assignment to reach $root1's planner" assignment_delivered "$root1" planner
 marker_plan="PHASE-STALL-PLANNER-$stamp"
-send_agent "$root1" planner "Acceptance planning operation ($marker_plan): write the required plan handoff file, commit it and push the issue branch as your instructions require, then end your turn WITHOUT calling the legion tool's handoff_complete: reply with one line saying the handoff is committed and pushed, and wait. Do not call handoff_complete in this turn, and do not begin any line with WAITING."
+send_agent "$root1" planner "Acceptance planning operation ($marker_plan): write the required plan handoff file, commit it and push the issue branch as your instructions require, then end your turn WITHOUT calling the legion tool's handoff_complete: reply with one line saying the handoff is committed and pushed, and wait. Do not call handoff_complete or declare_wait in this turn."
 gate_finish "$root2"
 until_true 600 "the daemon's assignment to reach $root2's planner" assignment_delivered "$root2" planner
 send_agent "$root2" planner "Acceptance planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
@@ -869,8 +869,9 @@ row_read=0
 db_value "select coalesce(handoff_commit, '') || '|' || coalesce(summary, '') from phases where issue = '$root1' and role = 'planner'" >"$evidence/phase-stall-planner-row-before-follow-up.txt" || row_read=$?
 note "planner phase row before the follow-up: '$(cat "$evidence/phase-stall-planner-row-before-follow-up.txt")' (psql exit $row_read; no row, or an empty handoff: nothing completed)"
 # The planner's turn ended with its phase not completed, so the daemon answers that its claim owes
-# that phase and the reminder comes; the rig's instructions let it answer WAITING. Once the
-# reminder is in its session, it is given 60 s to complete on its own, then told to.
+# that phase and the reminder comes; the instruction forbade `declare_wait`, so no declared wait
+# holds the reminder back. Once the reminder is in its session, it is given 60 s to complete on its
+# own, then told to.
 followup_seen() { grep -qF -- "$followup_needle" "$(root1_planner_file)"; }
 until_true 600 "the phase stall's follow-up to reach $root1's planner" followup_seen
 if ! until_true_quiet 60 issue_phase "$root1" implementing; then

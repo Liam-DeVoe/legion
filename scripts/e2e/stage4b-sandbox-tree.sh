@@ -1899,7 +1899,7 @@ death_charge() {
 # that answers in seconds, which is how a run lost three ends after their turns.
 hold_end_charged() {
   local claim=$1 charge out
-  local task="Stage 4b proof: your previous process was ended after its task's turn was over, so this is a new task for the same phase. Read what your role says to read, then reply WAITING and wait for the targeted message; before you reply WAITING, whatever your role, run \`sleep 300\` as one bash call (its timeout 600 seconds), so this turn stays open while the proof ends your process. Change nothing."
+  local task="Stage 4b proof: your previous process was ended after its task's turn was over, so this is a new task for the same phase. Read what your role says to read, then declare a wait on the targeted message with the \`legion\` tool's \`declare_wait\`, its \`wake_at\` 23 hours from now, and end your turn. Before you declare the wait, whatever your role, run \`sleep 300\` as one bash call (its timeout 600 seconds), so this turn stays open while the proof ends your process. Change nothing."
   charge=$(death_charge "$claim" "$ended_incarnation") ||
     fail "the daemon log has no death of $claim's process $ended_incarnation, which the proof ended"
   if [ "$charge" != uncharged ]; then
@@ -3540,12 +3540,14 @@ says: it writes the spec in the issue's own primary document and registers the g
 Apart from that, do not act until
 a targeted human Dispatch message gives the next exact proof operation. A phase worker's first
 message is the daemon's task line (`Continue <title>. Issue: <key>. Phase: <phase>.`): it names your
-phase and is not that message. Read what your role says to read, then reply WAITING and wait for
-the targeted message. An implementer, on the daemon's task line and on a new task for the same
-phase (one that says its previous process was ended), runs `sleep 300` as one bash call (its
-timeout set to 600 seconds) before it replies WAITING: the proof holds a tree by ending an
-implementer's launches while its task is outstanding, an end that lands after the task's turn is
-over charges nothing, and the end takes up to a minute to land on a loaded host, so that turn must
+phase and is not that message. Read what your role says to read, then declare a wait on the
+targeted message with the `legion` tool's `declare_wait`, its `wake_at` 23 hours from now, and end
+your turn. The targeted message ends the wait. When the daemon refuses the wait, end your turn all
+the same. An implementer, on the daemon's task line and on a new task for the same phase (one that
+says its previous process was ended), runs `sleep 300` as one bash call (its timeout set to 600
+seconds) before it declares the wait: the proof holds a tree by ending an implementer's launches
+while its task is outstanding, an end that lands after the task's turn is over charges nothing,
+and the end takes up to a minute to land on a loaded host, so that turn must
 last long enough to be ended inside. A production check's task (its first line `Production check of
 <key>: …`, handed to the tester once the merge closed its issue) is no phase's task line and
 waits for no targeted message, since the proof sends none to it. Run no
@@ -3577,7 +3579,7 @@ parks the others in `backlog`, the last of them while its root waits in `merging
 rest of its tree; each child's planner holds for the driver like every other role. The daemon
 starts a child's own architect with the child's first phase. That architect does not start its
 child from its `catch-up` notice. It reads the catch-up, which names its child and every issue
-under it. Then it replies WAITING and waits for the targeted message. It files no child, writes
+under it. Then it ends its turn and waits for the targeted message. It files no child, writes
 no spec and sends no message until then. A
 `child-closed` or `child-status` notice of this run needs no action from the root architect:
 start, re-run, park or close nothing for it, write nothing about it, and keep waiting for the
@@ -4679,7 +4681,7 @@ begin conflict-no-takeover
 # started it, so the witness file is the proof that the role's work was left alone.
 tester_pod=$(claim_sandbox "$tree1" tester) || fail "tree 1's tester has no Sandbox"
 witness=/tmp/stage4b-conflict-witness control=/tmp/stage4b-conflict-control
-send_agent "$tree1" tester "Stage 4b proof control operation: run exactly this as one bash tool call, with the tool's timeout at least 1800 seconds, and change nothing else: /usr/bin/sleep 20 && date -u +%FT%TZ > $control && echo CONTROL-WRITTEN. Then reply WAITING and wait for the next targeted message."
+send_agent "$tree1" tester "Stage 4b proof control operation: run exactly this as one bash tool call, with the tool's timeout at least 1800 seconds, and change nothing else: /usr/bin/sleep 20 && date -u +%FT%TZ > $control && echo CONTROL-WRITTEN. Then declare a wait on the next targeted message with the legion tool's declare_wait, its wake_at 23 hours from now, and end your turn."
 on_tree "$tree1" until_true 300 "the tester's control command to write $control" pod_file "$tester_pod" tester "$control"
 on_tree "$tree1" until_true 300 "tree 1's tester to go idle after the control" resident_idle "$tree1" tester
 note "the control: the tester's /usr/bin/sleep 20 chain wrote $control in pod $tester_pod"

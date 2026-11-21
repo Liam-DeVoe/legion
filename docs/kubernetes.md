@@ -7068,7 +7068,8 @@ A pod qualifies once it has had no turn in progress and no turn due for the idle
 A turn is due when the next phase reminder of a phase worker whose phase the daemon's record holds open falls inside the idle period:
 the worker's session reports when its next reminder timer is due, and the daemon reads from its own record whether the phase is open.
 The reminder keeps no phase of its own: when its timer is due it asks the daemon what the claim owes (`POST /legion/v1/claims/owed`), and it reminds only when the answer says the claim owes work, or when no answer arrives within 3 seconds (`OWED_READ_BOUND_MS`), when it nudges in words that name no phase.
-A phase worker whose phase is open is reminded five minutes after a turn that did not complete it, and fifteen minutes after one whose reply opened with a `WAITING` line or that ended with background work of its own still running (`reminderMs` and `waitingMs`, `packages/pi-shared/src/stall-limits.ts`), so of the workers in an open phase only one that said what it waits on is released.
+A phase worker whose phase is open is reminded five minutes after a turn that did not complete it, and fifteen minutes after one that ended with background work of its own still running (`reminderMs` and `waitingMs`, `packages/pi-shared/src/stall-limits.ts`).
+While a wait that the worker declared with the `legion` tool's `declare_wait` stands, no reminder is due, so of the workers in an open phase only one whose declared wait stands is released.
 Each live claim of the pod must also have reported to the daemon, after its last turn, that it runs no background work, and the pod must run the image the daemon's configuration names with every live claim on the daemon's current contract.
 The pod of a root that waits on a person's answer in `awaiting_person` is kept until that answer comes; its children are not.
 A pod held past the idle period is held for one of those reasons, and the daemon records which one.
@@ -7152,8 +7153,12 @@ The wakes are these:
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 
+- the time of a wait that a phase worker of the pod declared with the `legion` tool's `declare_wait` (its `wake_at`), if nothing ended the wait before it: the daemon then sends the worker a task that gives the wait's text and says that its time came;
+
 - the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
+  The backstop wakes no phase worker whose declared wait stands: the wait's time wakes it instead.
+  So a message to that worker whose wake is lost waits until the wait's time, not until the backstop.
   An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
   The backstop of a merger that the closed design gate holds waits for the gate's opening.
 

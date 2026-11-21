@@ -1205,7 +1205,7 @@ The checks, in order, which is the tmux proof's:
 
 - `stop-hook-reminds-the-open-phase`: while the implementer still holds its phase
   — open in the daemon's record since its start task, and not yet completed
-  — it is told to answer in one line of prose, to call nothing and to begin no line with WAITING, so it ends a turn with that phase open and the pod's `legion` MCP server answers Claude Code's `Stop` hook with `{"decision":"block","reason":…}`.
+  — it is told to answer in one line of prose and to call nothing, the `legion` tool included, so it declares no wait with `declare_wait`, ends a turn with that phase open, and the pod's `legion` MCP server answers Claude Code's `Stop` hook with `{"decision":"block","reason":…}`.
   The instruction is an Envoy delivery, which puts the run of reminders back at zero (the `inbound` case of `packages/pi-shared/src/phase-stall.ts`).
   Once the daemon has the phase's completion, it answers that the claim owes nothing and no reminder comes:
   that is why this check runs before `claude-implementer-handoff` completes the phase, never after.
@@ -2843,7 +2843,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   `legion controller start` registers with the Sandbox daemon, and the controller's first turn starts itself:
   its session's first user message is the start message (LEGION_CONTROLLER_START_MESSAGE, cmd/legion/controller.go) that pi-legion's `/legion-controller-start`, the word `legion controller start` puts on Oh My Pi's command line, sends once Oh My Pi's startup is over, that command claiming the controller and sending it once registered, right before the role claim and the live wake subscription a tick could race it on, and the model answers it, with nothing typed into its pane.
   Tree 3's planner is told to plan, and each launch of its implementer is killed once its agent is ready or in a turn with its task outstanding, so every death is charged whatever a relaunch's boot takes;
-  the proof's instructions have an implementer run `sleep 300` on its task line (and on a new task after a missed end) before it replies WAITING, so the end lands inside the turn even when the kill takes a minute on a loaded host, where a resumed session's short turn would otherwise end first and the daemon would rightly charge nothing.
+  the proof's instructions have an implementer run `sleep 300` on its task line (and on a new task after a missed end) before it declares its wait with `declare_wait`, so the end lands inside the turn even when the kill takes a minute on a loaded host, where a resumed session's short turn would otherwise end first and the daemon would rightly charge nothing.
   A kill that lands after the task's turn has ended is charged nothing, since the turn's end retired the task:
   the driver reads each death's charge from the daemon log, gives such a relaunch a new task with `legion claims deliver` (a Dispatch message sets no delivery of the daemon's), and kills again, at most twice per hold loop (`hold_rearm_limit`), failing on a third miss;
   a miss counts toward no hold ([`lib/stage4b-hold.test.ts`](lib/stage4b-hold.test.ts)).
@@ -4838,7 +4838,8 @@ The driver boots the whole daemon through `run`, the function `legion start` cal
 Each pane is a real `omp --mode rpc` under the real `legion worker-shim`, started by the package's own local runtime (`internal/daemon/localruntime_live_test.go`) with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own, and told the same Dispatch as `DISPATCH_URL` and `DISPATCH_TOKEN_FILE`, as the tmux runtime tells a pane its daemon's Dispatch.
 Each pane's model is a stand-in of the driver's own that answers the turn a step arms with one `tool_use` block calling the `legion` tool with `{op: "handoff_complete", ...}`, in the events the plugins' own pane harness scripts for one (`packages/pi-shared/test/omp-harness.ts`, `messageStream`), so the request the daemon answers is the one the shipped plugin builds: its record lookup in Dispatch, its grant and its post.
 The call names the tool as the request offers it, which Oh My Pi spells `_legion` to an Anthropic Messages endpoint on the build measured.
-The tool's answer comes back to the stand-in as the next request's tool result, which the step records, and the stand-in answers it with a line starting `WAITING`, so the phase-stall reminder adds no turn of its own.
+The tool's answer comes back to the stand-in as the next request's tool result, which the step records, and the stand-in answers it with a line of plain text.
+The phase-stall reminder adds no turn of its own after it, because by then the daemon owes that claim nothing: the record took the completion, or the issue had left the role's phase.
 Every handoff record is written to Dispatch's own route as the pane's own Oh My Pi session, the session its claim registered, with a body naming the pull request's head under `head`.
 For each completion the daemon writes one line, `api: handoff completion answered`, naming the record and the commit the call carried and the status and code it was answered with, and the proof reads every answer from that line and from the tool's result.
 The seed is one issue in `implementing` on an open pull request at the implementer's pushed head, which GitHub's stand-in answers mergeable and clean, its implementer's claim mid-launch holding the task its phase's start left pending;
