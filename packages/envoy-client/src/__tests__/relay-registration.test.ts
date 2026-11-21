@@ -554,6 +554,42 @@ describe("a relay socket", () => {
     await restoredOnlyOnceAccepted(outage, told);
   });
 
+  test("a trade for the session the host left that fails after the move tells the session the host is on nothing", async () => {
+    // The socket was opened for session A, and its 4401 sends it to trade again for A. The host
+    // moves to session B while that trade is being asked for, and before it moves the socket
+    // (`follow`). The trade fails: the report is B's by now, and A's failed trade is not B's outage.
+    const server = standIn();
+    const { told, outage } = sharedOutage();
+    let session = "ses_a";
+    const tradeFails = { count: 0 };
+    // Each time the relay asks for the upgrade's headers; the host moves on at the second ask.
+    const asks = { count: 0 };
+    await opened(
+      server,
+      () => {
+        if (asks.count >= 2) session = "ses_b";
+        return session;
+      },
+      { outage, tradeFails, asks }
+    );
+    tradeFails.count = 1;
+    server.close(4401, "credential_expired");
+    await until(
+      () => tradeFails.count === 0,
+      10_000,
+      () =>
+        `the trade after the 4401 was never asked for; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    // The trade's failure has had its turn: the open after it is asked for, or it already opened.
+    await until(
+      () => asks.count >= 3 || opens(server).length === 2,
+      10_000,
+      () => `no open after the failed trade; upgrades ${JSON.stringify(server.upgrades)}`
+    );
+    expect(session).toBe("ses_b");
+    expect(told).toEqual([]);
+  });
+
   test("a topic the edge refuses for the session's projects is dropped, and the rest go on being delivered", async () => {
     // An edge listener refuses a registration naming a topic of no project of the token's
     // (`repository_not_in_project`, `topic_not_in_project`) and names each refused topic as the

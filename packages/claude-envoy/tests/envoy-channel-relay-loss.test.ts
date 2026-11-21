@@ -16,11 +16,16 @@
 //   id's still queued when the `/clear` is read; a `/clear` undone before it is taken up leaves
 //   the old conversation's outage told; the connection that replaces the closed one takes the
 //   `/clear` up in its own registration;
+// - a topic the listener refused for the session's projects is told to the id it was refused for:
+//   the notice still queued when a `/clear` is taken up is not shown to the new conversation;
+// - the relay socket's refused token trade under the id Claude Code left while a `/clear` waits is
+//   told to no one, as that id's registrations are;
 // - the relay subscription ends as the session shuts down, with a registration still queued for
 //   it: the leaving session is told no outage, and nothing registers behind the DELETE.
 import { expect, spyOn, test } from "bun:test"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
-import type { SubscribeInput } from "@legion/envoy-client/transport"
+import type { RelayOutage } from "@legion/envoy-client/listener-relay"
+import { EnvoyApiError, type SubscribeInput } from "@legion/envoy-client/transport"
 import type { ChannelNotification } from "../src/envoy-channel-server"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { readReplayState, replayStateFile } from "../src/replay-state"
@@ -904,6 +909,126 @@ test("a registration queued behind a held listener call as the session shuts dow
     )
   } finally {
     held.resolve()
+    await session.shutdown()
+  }
+}, 30_000)
+
+// An edge listener refuses a registration naming a topic of no project of the session's token: the
+// topic is dropped and the session told which (`refusedTopicsNoticeText`), a notice that waits its
+// turn behind every write queued before it. A `/clear` taken up while it waits moves Claude Code to
+// a conversation that never followed the topic: the notice names the id it was refused for, and is
+// refused at its turn.
+test("a refused topic's notice still queued when a /clear is taken up is not shown to the new conversation", async () => {
+  const SESSION = "ses_topic_refused"
+  const NEXT = "ses_topic_refused_next"
+  const REFUSED = "notifications.team.alerts"
+  const directory = scratchState()
+  const handoff = sessionHandoffFile(directory, 801)
+  await writeSessionHandoff(handoff, SESSION)
+  const notifier = new HoldingNotifier("evt-held")
+  const registered: string[] = []
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: new FakeNats(),
+      followSession: async () => undefined,
+      notifier,
+      heartbeatMs: 60_000,
+      handoffPid: 801,
+      client: recordingClient([], {
+        subscribe: async (input) => {
+          registered.push(input.sessionID)
+          if (input.topics.includes(REFUSED)) {
+            throw new EnvoyApiError({
+              method: "POST",
+              url: "http://listener.example/v1/interests/subscribe",
+              status: 403,
+              responseBody: JSON.stringify({
+                error: "no project",
+                reason: "topic_not_in_project",
+                refused: [REFUSED],
+              }),
+            })
+          }
+          return noInterest(input.sessionID)
+        },
+      }),
+    }),
+  )
+  try {
+    const writing = session.delivery.enqueue(peerFrame(SESSION, "evt-held"))
+    await notifier.holding.promise
+    // Refused for the session's projects: dropped, and its notice queued behind the held write.
+    await session.follow([REFUSED])
+    expect(session.topics()).not.toContain(REFUSED)
+    // Claude Code moves to the new conversation, and the next registration takes the `/clear` up.
+    await writeSessionHandoff(handoff, NEXT)
+    await session.follow(["notifications.team.deploy"])
+    expect(registered).toContain(NEXT)
+    notifier.release()
+    await writing
+    // A write queued after the notice has its turn after the notice's.
+    await session.delivery.enqueue(peerFrame(NEXT, "evt-after"))
+    expect(notices(notifier, "Envoy topics refused")).toEqual([])
+  } finally {
+    notifier.release()
+    await session.shutdown()
+  }
+}, 30_000)
+
+// The relay socket tells the session's outage report when a token trade fails
+// (`ListenerRelay.reportOutagesTo`). While a `/clear` waits (the listener refused the old id's
+// DELETE), the socket is the id Claude Code left: its refused trade is told to no one, as that id's
+// registrations are (`handoffWaitingOutage`). Told, it would log an outage and queue a notice that
+// the `/clear` refuses at its turn.
+test("a refused socket trade under the id Claude Code left while a /clear waits tells no outage", async () => {
+  const SESSION = "ses_socket_refused"
+  const NEXT = "ses_socket_refused_next"
+  const directory = scratchState()
+  const handoff = sessionHandoffFile(directory, 803)
+  await writeSessionHandoff(handoff, SESSION)
+  const notifier = new FakeNotifier()
+  let socketOutage: RelayOutage | undefined
+  let deleteRefusals = 0
+  const stderr = captureStderr()
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
+      connection: new FakeNats(),
+      followSession: async () => undefined,
+      notifier,
+      heartbeatMs: 60_000,
+      handoffPid: 803,
+      reportOutagesTo: (outage) => {
+        socketOutage = outage
+      },
+      client: recordingClient([], {
+        // Every DELETE of the old id is refused, so the `/clear` waits.
+        unregisterSession: async ({ sessionID }) => {
+          if (sessionID !== SESSION) return
+          deleteRefusals += 1
+          throw new Error("listener unavailable")
+        },
+      }),
+    }),
+  )
+  try {
+    await writeSessionHandoff(handoff, NEXT)
+    // The handoff file's watch asks for a heartbeat, whose take-up of the `/clear` fails at the DELETE.
+    await waitFor(
+      async () => stderr.lines("envoy-channel: registry heartbeat failed") >= 1,
+      "the /clear's take-up refused at the old id's DELETE",
+      () => JSON.stringify({ deleteRefusals }),
+    )
+    if (socketOutage === undefined) throw new Error("the session gave the socket no outage report")
+    socketOutage.refused(new Error("the secrets broker refused the trade"))
+    // A write queued after any notice the refusal queued has its turn after that notice's.
+    await session.delivery.enqueue(peerFrame(SESSION, "evt-after"))
+    expect(stderr.lines("envoy-channel: this session receives nothing (")).toBe(0)
+    expect(
+      stderr.lines("envoy-channel: the session could not be told that it receives nothing"),
+    ).toBe(0)
+    expect(notices(notifier, "Envoy inbound unavailable")).toEqual([])
+  } finally {
+    stderr.restore()
     await session.shutdown()
   }
 }, 30_000)
