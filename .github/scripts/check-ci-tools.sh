@@ -160,10 +160,12 @@
 #        * its `digest` is 64 lower-case bare hex, the file `pinned_in` names can be read as
 #          text, and that digest occurs in it, each refused in its own words, so one source
 #          never means no checksum;
-#        * where it also carries `pinned_as: ARG <NAME>`, its `digest` is the value of the last
-#          `ARG <NAME>=` line of that file, exactly: an occurrence alone is met by a comment
-#          that kept an old digest after the ARG moved, which is what this key closes for an
-#          entry pinned by a Dockerfile ARG;
+#        * where its `pinned_in` is a Dockerfile (a file named `Dockerfile`, `Dockerfile.<x>` or
+#          `<x>.Dockerfile`), it carries `pinned_as: ARG <NAME>`, and its `digest` is the value
+#          of the last `ARG <NAME>=` line of that file, exactly. A Dockerfile checks a digest it
+#          holds as a build argument, and an occurrence alone is met by a comment that kept an
+#          old digest after the ARG moved; an entry with no `pinned_as` is refused naming the
+#          `ARG` line of that file that holds its digest, or saying none does;
 #        * no row already covers its repository, compared without regard to case because
 #          github.com reads an owner and a repository that way, so a decline never bypasses a
 #          tool that has a second source;
@@ -395,6 +397,8 @@ ARG_MISE_SHA256 = re.compile(r"^ARG\s+MISE_SHA256=(\S+)\s*$")
 ARG_JJ_TOOL = re.compile(r"^ARG\s+JJ_TOOL=(\S+)\s*$")
 ARG_UV_VERSION = re.compile(r"^ARG\s+UV_VERSION=(\S+)\s*$")
 ARG_UV_SHA256 = re.compile(r"^ARG\s+UV_SHA256=(\S+)\s*$")
+# Any `ARG <name>=<value>` line, for the line of a Dockerfile that holds a declined URL's digest.
+ARG_LINE = re.compile(r"^ARG\s+(\w+)=(\S+)\s*$")
 # The Go constant the live programs pin the docker provider plugin at, read as the Dockerfile's
 # ARGs are: one line, one value, and the last one the file declares.
 DOCKER_PLUGIN_VERSION = re.compile(r'^const\s+DockerPluginVersion\s*=\s*"([^"]*)"\s*$')
@@ -786,6 +790,13 @@ def last_arg(pattern: re.Pattern[str], text: str) -> str:
         if match:
             found = match.group(1)
     return found
+
+
+def is_dockerfile(path: Path) -> bool:
+    """Whether <path> is named as Docker names a build file: `Dockerfile`, `Dockerfile.<x>` or
+    `<x>.Dockerfile`, the three forms this repository's Dockerfiles take."""
+    name = path.name
+    return name == "Dockerfile" or name.startswith("Dockerfile.") or name.endswith(".Dockerfile")
 
 
 mise_version = mise_sha256 = jj_tool = uv_version = uv_sha256 = ""
@@ -1185,6 +1196,26 @@ for entry, repository in declines:
             f"{CI_TOOLS}:{key_line(entry, 'digest')}: this entry's digest {digest} does not occur "
             f"in {pinned_in}, the file it names as the pin, so nothing checks the bytes this "
             f"entry declines a second source for. One source never means no checksum."
+        )
+    elif not str(entry.get("pinned_as") or "").strip() and is_dockerfile(pinned_in):
+        holders = [
+            (number, match[1])
+            for number, line in enumerate(pin_text.splitlines(), 1)
+            if (match := ARG_LINE.match(line)) and match[2] == digest
+        ]
+        where = (
+            f"{pinned_in}:{holders[-1][0]} holds it as ARG {holders[-1][1]}: add "
+            f"`pinned_as: ARG {holders[-1][1]}` to this entry."
+            if holders
+            else f"No ARG line of {pinned_in} holds {digest}: declare the digest the install "
+            f"checks as an ARG of that file, and name it in `pinned_as`."
+        )
+        problems.append(
+            f"{CI_TOOLS}:{key_line(entry, 'pinned_in')}: this entry names {pinned_in}, a "
+            f"Dockerfile, as the file that pins these bytes, and carries no `pinned_as: ARG "
+            f"<NAME>`. A Dockerfile checks a digest it holds as a build argument, and without that "
+            f"argument's name this gate can only find the digest somewhere in the file, which a "
+            f"comment that kept it after the ARG moved also satisfies. {where}"
         )
     elif str(entry.get("pinned_as") or "").strip():
         pinned_as = str(entry["pinned_as"]).strip()

@@ -102,7 +102,9 @@
 # read by the gate alone.
 # The gate holds an entry to rules of its own: its `url` is written by some file under .github/,
 # its `digest` occurs in the file its `pinned_in` names, that file is neither this manifest nor a
-# test's fixture, no row already covers its repository, and its `why` is a sentence.
+# test's fixture, an entry a Dockerfile pins names the ARG that holds its digest in `pinned_as`
+# and that ARG's value is its digest, no row already covers its repository, and its `why` is a
+# sentence.
 # WHETHER THAT REASON IS TRUE IS THE REVIEWER'S JUDGEMENT, not the gate's; the rules before it
 # are the whole of what a program can check.
 # THE LIST HOLDS TWO ENTRIES TODAY, the release lane's gitleaks and the Oh My Pi archive
