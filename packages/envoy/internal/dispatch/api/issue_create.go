@@ -466,7 +466,8 @@ func (n *issueNearCopy) filed(key string) *issueNearCopy {
 // write answers with (nil for a held issue's post, which answers nobody), its spec's document,
 // the spec as the seed stored it, and the near-copy gate's row the filing writes after its commit
 // (nil where it wrote it in its transaction or has none). A hold's dry run, which writes no issue,
-// answers the advice, the spec and assignee, the person the issue is filed under.
+// answers the advice, the spec, assignee, the person the issue is filed under, and the issue as
+// the dry run read it back before its rollback.
 type issueWritten struct {
 	issue      model.Issue
 	event      model.Event
@@ -482,7 +483,7 @@ type issueWritten struct {
 // project's sequence, which createIssue does, and a held issue's post passes the number its hold
 // reserved (held, whose row the write phase takes first and marks posted in the same
 // transaction). A hold's dry run answers errHeldDryRun, before the commit, with what the write
-// would have answered: its advice, its spec as the seed stored it and its assignee.
+// would have answered: its advice, its spec as the seed stored it, its assignee and the issue.
 func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, actor model.Actor, number int, held *heldPost) (issueWritten, error) {
 	parentKey, assignee := create.Parent, create.Assignee
 	// A create with blockers can close a wait cycle, and a create with a parent adds a link the
@@ -736,7 +737,7 @@ func (s *server) writeIssue(ctx context.Context, tx pgx.Tx, create issueCreate, 
 		nearCopy = nil
 	}
 	if err := held.dryRunEndsOn(ctx, ledger); err != nil {
-		return issueWritten{advice: advice, markdown: markdown, assignee: assignee}, err
+		return issueWritten{issue: issue, advice: advice, markdown: markdown, assignee: assignee}, err
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return issueWritten{}, err

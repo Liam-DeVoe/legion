@@ -284,11 +284,12 @@ type ReaderWord struct {
 const readerWordsLimit = 200
 
 // readerWordsAsked is each word of login's ($1) word questions, Define uses included, written
-// before $2 where it is not null, with when it was written.
+// before $2 where it is not null: the record that names it, when it was written, and where in the
+// record's words it stands, so a record that names a word twice is still one record.
 const readerWordsAsked = `
 	with asked as (
-		select btrim(word) as word, q.written_at
-		from word_questions q, unnest(q.words) as word
+		select q.id, btrim(word) as word, q.written_at, place
+		from word_questions q, unnest(q.words) with ordinality as named(word, place)
 		where q.person = $1 and q.state = 'done' and q.about_words
 			and ($2::timestamptz is null or q.written_at < $2) and btrim(word) <> ''
 	)`
@@ -309,9 +310,12 @@ func (s *Store) ReaderWordsPage(ctx context.Context, login string, before time.T
 		until = &before
 	}
 	// The count over every word rides on each word of the page, so the page and its total are one
-	// reading. A page past the last word holds no word to carry it, and is counted on its own.
+	// reading. A page past the last word holds no word to carry it, and is counted on its own. A
+	// word's times counts the records that name it, once each however often or in whatever case a
+	// record names it, and its last writing is the latest record's last naming of it.
 	rows, err := s.Pool.Query(ctx, readerWordsAsked+`
-		select (array_agg(word order by written_at desc))[1], count(*)::int, max(written_at), count(*) over ()::int
+		select (array_agg(word order by written_at desc, id desc, place desc))[1], count(distinct id)::int,
+			max(written_at), count(*) over ()::int
 		from asked group by lower(word)
 		order by max(written_at) desc, 1 limit $3 offset $4`, login, until, limit, offset)
 	if err != nil {

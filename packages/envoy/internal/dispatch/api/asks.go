@@ -386,7 +386,7 @@ func (s *server) writeAsk(ctx context.Context, tx pgx.Tx, create askCreate, acto
 		)
 	}
 	if err := held.dryRunEndsOn(ctx, ledger); err != nil {
-		return askWritten{advice: advice}, err
+		return askWritten{ask: ask, advice: advice}, err
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return askWritten{}, err

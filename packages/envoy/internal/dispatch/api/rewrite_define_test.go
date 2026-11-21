@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -11,8 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/reviewer"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -137,6 +141,13 @@ func keptRewrite(t *testing.T) string {
 // answers rules before its default rewrite of rewriteQuestion and its definition of `store`.
 func newRewriteRig(t *testing.T, capabilities []string, rules ...modeltest.Rule) *rewriteRig {
 	t.Helper()
+	return newClockedRewriteRig(t, nil, capabilities, rules...)
+}
+
+// newClockedRewriteRig is newRewriteRig on a server whose clock is clock (Deps.Now), nil for
+// time.Now.
+func newClockedRewriteRig(t *testing.T, clock func() time.Time, capabilities []string, rules ...modeltest.Rule) *rewriteRig {
+	t.Helper()
 	rules = append(rules,
 		modeltest.Rule{Contains: rewriteMarker, Reply: modeltest.Reply{Text: keptRewrite(t)}},
 		modeltest.Rule{Contains: defineMarker, Reply: modeltest.Reply{Text: `{"definitions":[{"words":"store","meaning":"The table where a held text waits until it posts.","links":[]}]}`}},
@@ -145,7 +156,7 @@ func newRewriteRig(t *testing.T, capabilities []string, rules ...modeltest.Rule)
 	listenerURL, listener := newRewriteListener(t, capabilities...)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		rewriteDefine: NewRewriteDefine(RewriteDefineConfig{Model: reviewerModel(stand.URL), Rules: reviewer.DefaultRules, SideQuestionWait: 15 * time.Second}),
-		envoyURL:      listenerURL, envoyTimeout: 2 * time.Second,
+		envoyURL:      listenerURL, envoyTimeout: 2 * time.Second, clock: clock,
 	})
 	rig := &rewriteRig{t: t, handler: handler, database: database, served: served, stand: stand, listener: listener}
 	rig.issue = createInteractionIssue(t, handler, "RWD", "Rewrite issue", "The store holds the held texts.\n").Key
@@ -629,6 +640,59 @@ func TestARewriteOfADecisionBlockKeepsItsPicture(t *testing.T) {
 	}
 }
 
+// A refusal of the document's own write reaches the person as the failed rewrite's reason, in the
+// words the edit route would answer it with (handlerRefusalOf), and not as Dispatch's own failure:
+// a rewrite of a decision block that would grow its document past the 1 MiB one upload may hold
+// fails with the document's 413 reason, and the block keeps its question.
+func TestARewriteTheDocumentRefusesFailsWithTheDocumentsReason(t *testing.T) {
+	// The rewrite keeps the block's first line and its options and adds about 4,500 bytes to its
+	// question; the document leaves 1,500 bytes under the cap, which the block's settlement takes
+	// a little of, so the block is stored and its rewrite cannot be.
+	longer := "Ship the reviewer?\n" + strings.Repeat("The held ask's test fails on its first call. ", 100)
+	rig := newRewriteRig(t, []string{"steer"}, modeltest.Rule{
+		Contains: rewriteMarker,
+		Reply:    modeltest.Reply{Text: rewriteJSON(t, longer, false, option("Ship it", "Release it today."), option("Do not file", "Wait."))},
+	})
+	block := rewriteDocument("Wait.")
+	padding := strings.TrimSuffix(strings.Repeat("word ", (pmdoc.MaxDocumentBytes-len(block)-1500)/len("word ")), " ")
+	id := rig.uploadBlock(block + "\n" + padding + "\n")
+	original := rig.question(id)
+	rig.rewrite(id)
+	reason := rig.waitRewrite(id, model.RewriteFailed)
+	if !strings.Contains(reason, docs.ErrDocumentTooLarge.Error()) || !strings.Contains(reason, "shorten the change, or split the document") {
+		t.Fatalf("the failed rewrite's reason is %q, want the document's own refusal of a document too large", reason)
+	}
+	if got := rig.question(id); got != original {
+		t.Fatalf("the block asks %q after a rewrite that was not applied", got)
+	}
+}
+
+// rewriteRefusal decides a rewrite's failure as a held text's post decides its own: an error the
+// edit route would answer below 500 is refused with that route's words, a document's refusal as
+// much as the handler's own, but for one a later write clears (heldPostRetried), which is no reason
+// the rewrite cannot be written, as a server fault is none.
+func TestARewriteRefusalIsDecidedAsItsRouteWouldAnswerIt(t *testing.T) {
+	tooLarge := fmt.Errorf("set the block's text: %w: this change would make the document's markdown 1048600 bytes", docs.ErrDocumentTooLarge)
+	anchorGone := fmt.Errorf("edit the block: %w", docs.ErrAnchorMissing)
+	for name, test := range map[string]struct {
+		err    error
+		reason string
+	}{
+		"no error":                 {nil, ""},
+		"the handler's refusal":    {errorf(http.StatusConflict, "ASK_NOT_OPEN", "the ask is answered"), "the ask is answered"},
+		"a document too large":     {tooLarge, tooLarge.Error()},
+		"a block gone":             {anchorGone, anchorGone.Error()},
+		"a full queue of edits":    {fmt.Errorf("edit the block: %w", docs.ErrPreconditionBusy), ""},
+		"a newer build's document": {fmt.Errorf("edit the block: %w", docs.ErrDocNewerContent), ""},
+		"the handler's own 500":    {errorf(http.StatusInternalServerError, codeInternal, "internal server error"), ""},
+		"a server fault":           {errors.New("connection reset by peer"), ""},
+	} {
+		if got := rewriteRefusal(test.err); got != test.reason {
+			t.Errorf("%s: the reason is %q, want %q", name, got, test.reason)
+		}
+	}
+}
+
 // The asking agent's edit while a rewrite runs is never written over: the rewrite fails and the
 // ask keeps the agent's words.
 func TestARewriteIsNotAppliedOverTheAgentsEdit(t *testing.T) {
@@ -744,12 +808,13 @@ func TestADefinitionKeepsTheAgentsAnswerWithNoMessageAndNoEvent(t *testing.T) {
 
 // A Define use is counted on its day: GET /api/v1/writing-check/counts for that day gives the
 // person define_uses 1 on the ask's project, beside no text and no word question, which count the
-// texts the person wrote.
+// texts the person wrote. The server's clock is fixed at lastTenthOfADay, which dates the use, so
+// the day the test reads is the use's.
 func TestADefineUseIsCountedOnItsDay(t *testing.T) {
-	rig := newRewriteRig(t, nil)
+	rig := newClockedRewriteRig(t, fixedClock(lastTenthOfADay), nil)
 	askID := rig.ask(rewriteQuestion + " The store holds it.")
 	rig.define("alice", map[string]any{"ask_id": askID, "words": []string{"store"}})
-	day := time.Now().UTC().Format(time.DateOnly)
+	day := lastTenthOfADay.Format(time.DateOnly)
 	response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?first="+day+"&last="+day, nil, "bob")
 	if response.Code != http.StatusOK {
 		t.Fatalf("the counts of %s: %d %s", day, response.Code, response.Body.String())

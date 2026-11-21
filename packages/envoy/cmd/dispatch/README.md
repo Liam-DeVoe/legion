@@ -3655,6 +3655,8 @@ It reads no text a person writes, none the Legion daemon writes, and none whose 
 It is built whenever the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`) is set, whatever the kinds say, so the draft route answers; with the group unset it reads nothing.
 
 - `hold` keeps the text in `held_texts` alone: the write answers at once, `201` in its own shape under the id the hold reserved (an issue's key from its project's sequence, else a uuid), with an added `held` object `{state, deadline, waits_on?}`, and no person sees it.
+  The answer states what the post writes as the write's dry run (below) wrote it: an ask's anchor; a comment's anchor, turn, mentions, the block it replies to and the agent text it answers; a message's block it replies to; an issue's assignee, repository, priorities and components, those it inherits from its parent included.
+  It leaves out what only the post makes: an anchor's `mark_id`, an issue's rank, spec document and `last_seq`, and the deliveries the post sends; a text beside a held parent runs no dry run, and its answer states the request's own fields alone.
   Before the hold, the write runs its own path in a transaction that is rolled back, so a write that path refuses is refused at once, as with the reviewer off.
   The answer carries the advice the same write gets with the reviewer off, the related-item check (which no `related_checks` row records) and the near-copy gate's answer included, all worked out before the id is reserved, so a near copy the gate refuses is refused at once and nothing is held.
   The review runs in the background: a clean review posts the text (`passed`); findings go to the writer session as a turn of its own, a `message.created` frame from Dispatch whose message id is the held text's id, with no message row and no event, and the writer has `DISPATCH_REVIEWER_WRITER_WINDOW` to edit or post it; a writer session that has gone, or that does not act in time, gets the setting's choice (`DISPATCH_REVIEWER_UNEDITED`: `rewrite_posted` or `posted_as_written`); a model that fails or runs past `DISPATCH_REVIEWER_TIMEOUT` posts the text as written (`posted_unreviewed`).
@@ -3767,7 +3769,7 @@ It runs while `DISPATCH_WORD_RECORDS` is `on` and its model group (`DISPATCH_WOR
 
 - A Define use is a word question of its own (`store.RecordDefineUse`).
 
-`GET /api/v1/readers/{login}/words` answers one page of the words the reader asked about, `{items, total, limit, offset}` (`limit` 1 to 200, default 50): each word once, `{word, times, last}`, the most recently asked first; `?before=` (RFC 3339) keeps the records written before it.
+`GET /api/v1/readers/{login}/words` answers one page of the words the reader asked about, `{items, total, limit, offset}` (`limit` 1 to 200, default 50): each word once, `{word, times, last}`, `times` the reader's records that name it, each record once however often it names the word, the most recently asked first; `?before=` (RFC 3339) keeps the records written before it.
 Any agent's token reads any reader's words, because the reviewer and the written rules read them, and a person at a browser their own; another person's are `403 READER_WORDS_FORBIDDEN`.
 
 A day's word questions, by person:
@@ -3903,11 +3905,13 @@ The table also admits the reviewer's outcomes (`held`, `passed`, `edited`, `post
 A write that carries no prose text is not recorded, and neither is a write the route refuses after the check (a closed issue, an unknown check, a delivery never made), which writes nothing else either.
 Nor is a call a reply route answers with a 2xx status and nothing written: a reply to an attempt already answered, which posts nothing, and an error report repeated on an attempt already failed.
 The server inserts the row once the route answered the write with a 2xx status, outside the write's transaction, which has ended by then, and before the request ends; an insert that fails is logged with the route and the write stands.
-A daily sweep deletes the rows the counts' rows read (below) once they are older than 366 days, the longest range the counts route reads, and every other row once it is older than 90 days (`store.SweepWritingCheckEvents`, Background loops, above).
+A daily sweep deletes the rows the counts' rows read (below) once they are older than 366 days, the days the counts route reads back from today, and every other row once it is older than 90 days (`store.SweepWritingCheckEvents`, Background loops, above).
 
 `GET /api/v1/writing-check` answers the check as this process runs it:
 `enabled`, the `rules` it applies, `rules_left_out` with each reason, the check's own `detector`, off, with why (the phrase detector runs as the reviewer's `detector` rule set), and `bundle_model_id`.
-`GET /api/v1/writing-check/counts?first=YYYY-MM-DD&last=YYYY-MM-DD` counts the UTC days `first` to `last`, both counted, at most 366 (default: the 14 days to today), for any signed-in caller, and answers `{first, last, days, items, total, limit, offset}`:
+`GET /api/v1/writing-check/counts?first=YYYY-MM-DD&last=YYYY-MM-DD` counts the UTC days `first` to `last`, both counted, at most 366 and none before the 366 days to today (default: the 14 days to today), for any signed-in caller, and answers `{first, last, days, items, total, limit, offset}`.
+A `first` before the oldest of the 366 days to today is 400 `INVALID_QUERY`: the sweep has deleted that day's decisions, all of them or its first hours', while `word_questions` and the event log keep its texts, so its rows would count the texts beside decisions no longer there.
+The answer holds:
 
 - `days`: each day of the range, `{day, total, outcomes, routes}`, the rows of `writing_check_events` counted by outcome and by route.
   A day older than 90 days counts only the outcomes the rows below read, which the sweep keeps for 366 days.

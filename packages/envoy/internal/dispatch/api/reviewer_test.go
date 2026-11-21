@@ -273,13 +273,20 @@ func testReviewer(cfg ReviewerConfig) *Reviewer {
 // newReviewRig builds the rig with cfg, its model pointed at stand (reviewStandIn where nil).
 func newReviewRig(t *testing.T, cfg ReviewerConfig, stand *modeltest.Model) *reviewRig {
 	t.Helper()
+	return newClockedReviewRig(t, cfg, stand, nil)
+}
+
+// newClockedReviewRig is newReviewRig on a server whose clock is clock (Deps.Now), nil for
+// time.Now.
+func newClockedReviewRig(t *testing.T, cfg ReviewerConfig, stand *modeltest.Model, clock func() time.Time) *reviewRig {
+	t.Helper()
 	if stand == nil {
 		stand = reviewStandIn(t)
 	}
 	cfg.Model = reviewerModel(stand.URL)
 	listenerURL, listener := newFakeReviewListener(t, heldWriter)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		reviewer: testReviewer(cfg), envoyURL: listenerURL, envoyTimeout: 2 * time.Second,
+		reviewer: testReviewer(cfg), envoyURL: listenerURL, envoyTimeout: 2 * time.Second, clock: clock,
 	})
 	rig := &reviewRig{t: t, handler: handler, database: database, served: served, stand: stand, listener: listener}
 	rig.issue = createInteractionIssue(t, handler, "RVW", "Reviewer issue", "Seed paragraph here.\n").Key

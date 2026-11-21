@@ -1091,7 +1091,7 @@ func (s *server) writeComment(ctx context.Context, create commentCreate, actor m
 	}
 	events = append(events, event)
 	if err := held.dryRunEndsOn(ctx, ledger); err != nil {
-		return commentWritten{advice: advice}, err
+		return commentWritten{comment: comment, advice: advice}, err
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return commentWritten{}, err

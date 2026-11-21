@@ -209,6 +209,12 @@ type Deps struct {
 	// contracts.LiveSocketMaxAge), so the sockets a deploy opened together do not all end
 	// together; a test returns a fixed age.
 	LiveSocketAge func() time.Duration
+	// Now is the clock the server dates what R8's counts read by day with: the counts route's
+	// today (getWritingCheckCounts), a writing check or reviewer decision's row
+	// (recordWritingCheck) and a Define use (recordDefineUse). Nil reads time.Now, as every
+	// deployment does; a test returns a fixed time, so the day it counts is the one it set rather
+	// than the wall clock's, which a run across a UTC midnight moves under it.
+	Now func() time.Time
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that
@@ -654,6 +660,14 @@ type server struct {
 	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. The
 	// policy is delivery's; the server holds the one cache the process shares.
 	commitPulls delivery.CommitPullReads
+}
+
+// now is the server's clock (Deps.Now), time.Now where none is set.
+func (s *server) now() time.Time {
+	if s.deps.Now != nil {
+		return s.deps.Now()
+	}
+	return time.Now()
 }
 
 // warnedProductionRun keys server.warnedUnmatchedRuns: one deploy run under one configured set of

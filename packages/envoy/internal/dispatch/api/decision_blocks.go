@@ -491,7 +491,10 @@ func (s *server) releaseDecisionBlock(ctx context.Context, row heldRow, held *he
 			// The block cannot hold the reviewer's rewrite, which wrote nothing: the block posts
 			// as its writer wrote it rather than staying held for good. The decision weighed the
 			// rewrite against the block first (applicableDecision), so only a block changed
-			// since the decision reaches here.
+			// since the decision reaches here. Any refusal the edit route would answer below 500
+			// is such a reason (rewriteRefusal), the document's own among them - a document grown
+			// past what it may hold, a block gone - but for one a later write clears
+			// (heldPostRetried), which returns, so the sweep posts the block again.
 			slog.Warn("dispatch: the reviewer's rewrite of a decision block is not applied", "ask", ask.ID, "reason", reason)
 		case err != nil:
 			return err

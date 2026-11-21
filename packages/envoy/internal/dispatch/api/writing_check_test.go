@@ -215,6 +215,18 @@ func writingCheckOn() *WritingCheck {
 	return NewWritingCheck()
 }
 
+// lastTenthOfADay is the time a test that counts a day fixes the server's clock at (Deps.Now): a
+// tenth of a second before a UTC midnight, where a run on the wall clock would cross into the next
+// day while it writes. Every row the test counts is dated by that clock, and the test reads its day
+// from the same time, so the day counted is the one the test set however the wall clock moves; a
+// row the server dated by the wall clock would fall on another day, which the test would miss.
+var lastTenthOfADay = time.Date(2026, time.October, 20, 23, 59, 59, 900_000_000, time.UTC)
+
+// fixedClock is a clock that reads at every time.
+func fixedClock(at time.Time) func() time.Time {
+	return func() time.Time { return at }
+}
+
 type writingCheckRig struct {
 	t        *testing.T
 	handler  http.Handler
@@ -242,10 +254,17 @@ type writingCheckFixture struct {
 // replies, and a result checkWriter recorded for its retraction.
 func newWritingCheckRig(t *testing.T, check *WritingCheck) *writingCheckRig {
 	t.Helper()
+	return newClockedWritingCheckRig(t, check, nil)
+}
+
+// newClockedWritingCheckRig is newWritingCheckRig on a server whose clock is clock (Deps.Now),
+// nil for time.Now.
+func newClockedWritingCheckRig(t *testing.T, check *WritingCheck, clock func() time.Time) *writingCheckRig {
+	t.Helper()
 	listenerURL, _ := newFakeReviewListener(t, "s-reader")
 	var broken *invalidLoadOnceStore
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		writingCheck: check, writingCheckOff: check == nil, envoyURL: listenerURL,
+		writingCheck: check, writingCheckOff: check == nil, envoyURL: listenerURL, clock: clock,
 		persistence: func(database *store.Store) docs.VersionedStore {
 			broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
 			return broken
@@ -893,16 +912,16 @@ func TestTheWritingCheckReadsAMarkdownUploadAndNotAFile(t *testing.T) {
 // TestTheWritingCheckCountsAndStateRoutes reads the two read routes. The counts list every
 // outcome each day of the range recorded, the agent's broadcast's exempt_no_reader and a plugin's
 // generated reply's exempt_generated among them, and give the write that posted over a finding to
-// its reader.
+// its reader. The server's clock is fixed at lastTenthOfADay, which dates each decision and is
+// the counts' today, so the four writes are counted on the day the test reads.
 func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
-	rig := newWritingCheckRig(t, writingCheckOn())
+	rig := newClockedWritingCheckRig(t, writingCheckOn(), fixedClock(lastTenthOfADay))
 	comments := "/api/v1/issues/" + rig.fixture.issue + "/comments"
 	rig.asSession(http.MethodPost, comments, map[string]any{"body": badProse})
 	rig.asSession(http.MethodPost, comments, map[string]any{"body": cleanProse})
 	rig.asSessionGenerated(http.MethodPost, "/api/v1/messages/"+rig.fixture.message+"/reply", map[string]any{"body": badProse, "attempt": 1})
 	rig.asTokenFor(checkWriter, http.MethodPost, "/api/v1/broadcasts", map[string]any{"body": badProse, "delivery": "btw", "session_ids": []string{"s-reader"}})
-	now := time.Now().UTC()
-	today, yesterday := now.Format(time.DateOnly), now.AddDate(0, 0, -1).Format(time.DateOnly)
+	today, yesterday := lastTenthOfADay.Format(time.DateOnly), lastTenthOfADay.AddDate(0, 0, -1).Format(time.DateOnly)
 	response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?first="+yesterday+"&last="+today, nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("counts: %d %s", response.Code, response.Body.String())
@@ -959,12 +978,55 @@ func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
 	}
 }
 
+// GET /api/v1/writing-check/counts on a range older than the counts keep their decisions for: the
+// sweep deletes a decision the rows read once it is older than 366 days, while a person's records
+// (word_questions) are kept, so a day before the 366 days to today would count a Define use beside
+// no decision at all. The route refuses any range reaching before them, 400 INVALID_QUERY naming
+// the oldest day it counts, a range wholly older and one that only starts older alike, and counts a
+// range that starts on that oldest day. The server's clock is fixed at lastTenthOfADay, which is
+// the counts' today.
+func TestTheWritingCheckCountsRefuseADayOlderThanTheDecisionsTheyRead(t *testing.T) {
+	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{clock: fixedClock(lastTenthOfADay)})
+	ctx := context.Background()
+	today := time.Date(lastTenthOfADay.Year(), lastTenthOfADay.Month(), lastTenthOfADay.Day(), 0, 0, 0, 0, time.UTC)
+	oldest := today.AddDate(0, 0, -365)
+	swept := today.AddDate(0, 0, -400)
+	// A Define use 400 days ago, which no sweep removes, on a day whose decisions the sweep has.
+	if err := database.RecordDefineUse(ctx, store.DefineUse{
+		DefinitionID: "def-old", Person: "alice", Project: "WCK", Words: []string{"lane"}, At: swept.Add(12 * time.Hour),
+	}); err != nil {
+		t.Fatalf("record an old Define use: %v", err)
+	}
+	counts := func(first, last time.Time) *httptest.ResponseRecorder {
+		return dispatchRequest(t, handler, http.MethodGet, "/api/v1/writing-check/counts?first="+first.Format(time.DateOnly)+"&last="+last.Format(time.DateOnly), nil, "alice")
+	}
+	for name, query := range map[string][2]time.Time{
+		"a range wholly older":           {swept, swept.AddDate(0, 0, 10)},
+		"a range one day older at first": {oldest.AddDate(0, 0, -1), oldest.AddDate(0, 0, 10)},
+	} {
+		response := counts(query[0], query[1])
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "INVALID_QUERY") ||
+			!strings.Contains(response.Body.String(), "first must be no earlier than "+oldest.Format(time.DateOnly)) {
+			t.Errorf("%s (%s to %s): %d %s, want 400 INVALID_QUERY naming %s", name, query[0].Format(time.DateOnly), query[1].Format(time.DateOnly),
+				response.Code, response.Body.String(), oldest.Format(time.DateOnly))
+		}
+	}
+	response := counts(oldest, today)
+	if response.Code != http.StatusOK {
+		t.Fatalf("the 366 days to today: %d %s, want 200", response.Code, response.Body.String())
+	}
+	if whole := decodeBody[store.WritingCheckCounts](t, response); len(whole.Days) != 366 || whole.First != oldest.Format(time.DateOnly) {
+		t.Errorf("the 366 days to today = %d days from %s, want 366 from %s", len(whole.Days), whole.First, oldest.Format(time.DateOnly))
+	}
+}
+
 // GET /api/v1/writing-check/counts pages the rows of each day, project and person in that order:
 // limit of them from offset, total counting every row, a page past the last one empty with the
 // total still counted, the day's counts whole on every page, and a limit or an offset out of its
-// bounds 400 INVALID_QUERY.
+// bounds 400 INVALID_QUERY. The server's clock is fixed at lastTenthOfADay, so the day counted
+// stays inside the days the counts read.
 func TestTheWritingCheckCountsPageTheirRows(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{clock: fixedClock(lastTenthOfADay)})
 	ctx := context.Background()
 	for _, reader := range []string{"carol", "alice", "bob"} {
 		if err := database.InsertWritingCheckEvent(ctx, store.WritingCheckEvent{

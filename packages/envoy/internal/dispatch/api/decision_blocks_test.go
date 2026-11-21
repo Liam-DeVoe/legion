@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/modeltest"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // A decision block an agent writes in a document (INFRA-3231's R5, Decisions 3 and 23): with
@@ -241,6 +242,50 @@ func TestADecisionBlockWhoseRewriteDropsItsPicturePostsAsWritten(t *testing.T) {
 	}
 	if !strings.Contains(markdown, picture) {
 		t.Fatalf("the document lost its picture:\n%s", markdown)
+	}
+}
+
+// A held decision block whose document cannot hold the reviewer's rewrite at its post - the
+// rewrite would grow the document past the 1 MiB one upload may hold, the document's own refusal,
+// which no later post clears - posts as its writer wrote it rather than failing (releaseDecisionBlock,
+// rewriteRefusal): the held text posts and the block keeps its writer's question.
+func TestADecisionBlockTheDocumentRefusesToRewritePostsAsWritten(t *testing.T) {
+	longer := "Ship the reviewer? " + strings.Repeat("The test of the held ask fails on its first call. ", 100)
+	isReview := func(request modeltest.Request) bool { return strings.Contains(request.Text, reviewMarker) }
+	stand := modeltest.New(t,
+		modeltest.Rule{
+			Match: func(request modeltest.Request) bool {
+				return isReview(request) && strings.Contains(reviewedText(request), vacuousPhrase)
+			},
+			Reply: modeltest.Reply{Text: standInReview(t, vacuousPhrase, map[string]any{
+				"body": longer,
+				"options": []map[string]string{
+					{"label": "Ship it", "description": "Release it today."}, {"label": "Do not file", "description": "Wait."},
+				},
+				"multiple": false,
+			})},
+		},
+		modeltest.Rule{Match: isReview, Reply: modeltest.Reply{Text: noFindings}},
+	)
+	rig := newReviewRig(t, ReviewerConfig{DecisionBlocks: ReviewHold, WriterWindow: 300 * time.Millisecond, Unedited: UneditedRewrite}, stand)
+	// The document leaves 1,500 bytes under the cap, which the block's settlement takes a little
+	// of, and the rewrite adds about 4,900.
+	padding := strings.TrimSuffix(strings.Repeat("word ", (pmdoc.MaxDocumentBytes-len(decisionBlockDocument)-1500)/len("word ")), " ")
+	askID := rig.uploadDecisionBlockOf(decisionBlockDocument+"\n"+padding+"\n", false)
+	if held := rig.waitHeld(askID, heldAwaitingWriter); held.rewrite == nil || held.notApplied != "" {
+		t.Fatalf("the review gave rewrite %+v not applied %q, want a rewrite that keeps what a rewrite keeps", held.rewrite, held.notApplied)
+	}
+	time.Sleep(400 * time.Millisecond)
+	rig.served.sweepHeld(t.Context())
+	if decided := rig.waitDecided(askID); decided.state != heldPosted {
+		t.Fatalf("the block is %s (%s: %s), want it posted as its writer wrote it", decided.state, decided.outcome, decided.detail)
+	}
+	var question string
+	if err := rig.database.Pool.QueryRow(context.Background(), `select question from asks where id = $1::uuid`, askID).Scan(&question); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(question, vacuousPhrase) {
+		t.Fatalf("the block asks %q, want its writer's question", question)
 	}
 }
 

@@ -295,7 +295,8 @@ type heldWriteOf struct {
 // its post; a reply its route answers with no new text is answered so now, and nothing is held.
 // The answer carries the advice the write's own answer carries (heldAdvice), worked out before
 // the id is reserved, and, for a new issue, the assignee its post writes: the one its dry run filed
-// it under, else heldIssueAssignee's.
+// it under, else heldIssueAssignee's. What else the post writes it reads off the dry run
+// (heldAnswerOf).
 func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.Actor, write reviewedWrite, of heldWriteOf) {
 	ctx := r.Context()
 	request, err := json.Marshal(write.request)
@@ -396,7 +397,7 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 		s.detached.goDetached(s.postReady)
 	}
 	answer := heldState{State: state, WaitsOn: dependsOn}
-	WriteJSON(w, http.StatusCreated, heldAnswerOf(answered, id, actor, writtenAt, answer, wantsDisplayTrees(r), advice))
+	WriteJSON(w, http.StatusCreated, heldAnswerOf(answered, id, actor, writtenAt, answer, dry, wantsDisplayTrees(r), advice))
 }
 
 // reserveIssueNumber takes the next number of project's sequence, as an issue create takes it,
@@ -483,9 +484,17 @@ func (answer heldAnswer) MarshalJSON() ([]byte, error) {
 // heldAnswerOf is the answer a held write gets: today's response shape for its kind, built from
 // what the hold stored under the reserved id, with the `held` object. A new issue is in triage, as
 // every create files it, under the assignee its create names (holdWrite sets the one its post
-// writes). advice, where not nil, is the advice the write's own answer carries (heldAdvice),
-// merged in as that answer merges it.
-func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Time, held heldState, trees bool, advice any) heldAnswer {
+// writes). dry is the write's dry run, nil where none ran (a text beside a held parent, a reply
+// answered again): what the post writes beside the request's own fields is read off it, as the
+// dry run wrote it - an ask's anchor; a comment's anchor, turn, mentions, the block it replies to
+// and the agent text it answers; a message's block it replies to; an issue's repository, relations
+// to priorities and components (heldIssueWrites) - less what only the post makes: an anchor's mark
+// id, an issue's rank, document and sequence, the deliveries a post sends. advice, where not nil,
+// is the advice the write's own answer carries (heldAdvice), merged in as that answer merges it.
+func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Time, held heldState, dry *heldDryRun, trees bool, advice any) heldAnswer {
+	if dry == nil {
+		dry = &heldDryRun{}
+	}
 	var payload any = map[string]string{"id": id}
 	switch create := write.request.(type) {
 	case askCreate:
@@ -493,6 +502,9 @@ func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Tim
 			ID: id, IssueKey: create.Owner.IssueKey, ArtifactID: create.Owner.ArtifactID, Author: actor,
 			Kind: create.Kind, Question: create.Question, Options: create.Options, Multiple: create.Multiple,
 			Urgency: create.Urgency, State: "open", CreatedAt: at,
+		}
+		if wrote := dry.ask; wrote != nil {
+			ask.Anchor = heldAnchor(wrote.Anchor)
 		}
 		payload = newShapedAsk(ask, trees)
 	case commentCreate:
@@ -504,11 +516,21 @@ func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Tim
 		if create.Input.Suggestion != nil {
 			comment.Suggestion = &model.Suggestion{ReplaceWith: create.Input.Suggestion.ReplaceWith}
 		}
+		if wrote := dry.comment; wrote != nil {
+			comment.Anchor, comment.Turn, comment.Answers = heldAnchor(wrote.Anchor), wrote.Turn, wrote.Answers
+			comment.ReplyBlock, comment.RepliesToBlock = wrote.ReplyBlock, wrote.RepliesToBlock
+			if wrote.Mentions != nil {
+				comment.Mentions = wrote.Mentions
+			}
+		}
 		payload = commentWriteResponse{shapedComment: newShapedComment(comment, trees)}
 	case messageCreate:
 		message := model.Message{
 			ID: id, IssueKey: create.IssueKey, Author: actor, Body: create.Input.Body, Target: create.Input.Target,
 			InReplyTo: create.Input.InReplyTo, CreatedAt: at, Deliveries: []model.MessageDelivery{},
+		}
+		if wrote := dry.message; wrote != nil {
+			message.ReplyBlock, message.RepliesToBlock = wrote.ReplyBlock, wrote.RepliesToBlock
 		}
 		payload = newShapedMessage(message, trees)
 	case issueCreate:
@@ -528,6 +550,7 @@ func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Tim
 		if create.Parent != "" {
 			issue.Parent = &create.Parent
 		}
+		heldIssueWrites(&issue, create, dry.issue)
 		payload = issue
 	case heldReplay:
 		payload = replayAnswerOf(write.kind, create, id, actor, at, trees)
@@ -536,6 +559,49 @@ func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Tim
 		payload = withRawAdvice(payload, advice)
 	}
 	return heldAnswer{payload: payload, held: held}
+}
+
+// heldAnchor is the anchor a dry run wrote, as a held answer states it: its document, block, quote
+// and version, and no mark id, which only the post's own mark makes.
+func heldAnchor(wrote *model.Anchor) *model.Anchor {
+	if wrote == nil {
+		return nil
+	}
+	anchor := *wrote
+	anchor.MarkID = ""
+	return &anchor
+}
+
+// heldIssueWrites sets on issue, a held issue's answer, what the post of create writes beside its
+// row's own columns (writeIssue): its repository, its relations to priorities and its components,
+// with the external links a read answers, none, since a held create is never an import
+// (issueCreate's reviewedWrite). Where a dry run filed the issue (filed), each is the one it read
+// back, resolved as a read of the posted issue resolves it: the repository it targets, and the
+// priorities and the components it inherits from its parent. Where none ran, beside a held parent
+// that no issues row holds yet, each is the create's own: the repository it names, the priorities
+// it states and the components it chose, which is the inheriting issue's attachment where it
+// chose none.
+func heldIssueWrites(issue *model.Issue, create issueCreate, filed *model.Issue) {
+	if filed != nil {
+		issue.Repo, issue.ResolvedRepo = filed.Repo, filed.ResolvedRepo
+		issue.Advances, issue.Components, issue.ExternalLinks = filed.Advances, filed.Components, filed.ExternalLinks
+		return
+	}
+	issue.Repo, issue.ResolvedRepo = create.Repo, create.Repo
+	issue.Advances = make([]model.IssueAdvance, 0, len(create.Advances))
+	for _, id := range create.Advances {
+		issue.Advances = append(issue.Advances, model.IssueAdvance{ID: id})
+	}
+	issue.Components = model.IssueComponents{Mode: "inherit", IDs: []string{}, Unknown: []string{}}
+	if chose := create.Components; create.ComponentsProvided && chose != nil && chose.Mode != "inherit" {
+		issue.Components.Mode = chose.Mode
+		if chose.Mode == "explicit" {
+			issue.Components.IDs = slices.Compact(slices.Sorted(slices.Values(chose.IDs)))
+		} else {
+			issue.Components.Reason = &chose.Reason
+		}
+	}
+	issue.ExternalLinks = []model.ExternalLink{}
 }
 
 // heldAdvice is the advice a held write's answer carries, which is the advice the write's own
@@ -604,13 +670,18 @@ func (s *server) heldAdvice(r *http.Request, write reviewedWrite, actor model.Ac
 // heldDryRun is what a held write's dry run found (dryRunHeld): answered, the answer the route of
 // a reply kept whole gave in place of a pass (a refusal, or the stored reply of an attempt already
 // answered), which the write gets as its own; otherwise advice, the write advice the write's own
-// answer would carry (nil where its path gives none), and, for a new issue, markdown, its spec as
-// its seed would store it, and assignee, the person its create files it under.
+// answer would carry (nil where its path gives none), and what the dry run wrote and read back
+// before its rollback, the one of its kind: ask, comment, message, or, for a new issue, issue,
+// with markdown, its spec as its seed would store it, and assignee, the person it is filed under.
 type heldDryRun struct {
 	answered *replayAnswer
 	advice   *writeAdvice
 	markdown string
 	assignee *string
+	ask      *model.Ask
+	comment  *model.Comment
+	message  *model.Message
+	issue    *model.Issue
 }
 
 // dryRunHeld runs write as actor's under id in a transaction it rolls back before the commit
@@ -634,7 +705,7 @@ func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (
 		defer tx.Rollback(ctx)
 		var written askWritten
 		written, err = s.writeAsk(ctx, tx, create, actor, id, held)
-		dry.advice = written.advice
+		dry.advice, dry.ask = written.advice, &written.ask
 	case issueCreate:
 		tx, beginErr := s.begin(ctx)
 		if beginErr != nil {
@@ -643,13 +714,15 @@ func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (
 		defer tx.Rollback(ctx)
 		var written issueWritten
 		written, err = s.writeIssue(ctx, tx, create, actor, 0, held)
-		dry.advice, dry.markdown, dry.assignee = written.advice, written.markdown, written.assignee
+		dry.advice, dry.markdown, dry.assignee, dry.issue = written.advice, written.markdown, written.assignee, &written.issue
 	case commentCreate:
 		var written commentWritten
 		written, err = s.writeComment(ctx, create, actor, id, held)
-		dry.advice = written.advice
+		dry.advice, dry.comment = written.advice, &written.comment
 	case messageCreate:
-		_, dry.advice, err = s.writeMessage(ctx, create, actor, id, held)
+		var message model.Message
+		message, dry.advice, err = s.writeMessage(ctx, create, actor, id, held)
+		dry.message = &message
 	case heldReplay:
 		// The reply's route reads what its hold learned of the writer's role (roleHolderReplyOf).
 		held.roleHolder = create.RoleHolder
@@ -969,7 +1042,8 @@ func (s *server) postHeld(ctx context.Context, id string) bool {
 // document's queue of conditional edits full for now), DOC_NEWER_CONTENT (a newer build wrote the
 // document while two builds serve one database: the post goes through on that build, and on this
 // one once it is replaced) and DOCUMENT_UNLOADABLE (a history that does not load, the state a
-// rebuild repairs).
+// rebuild repairs). A rewrite's write (rewriteRefusal) reads such a refusal the same way: no
+// reason the rewrite cannot be written.
 func heldPostRetried(refusal handlerRefusal) bool {
 	return refusal.status == http.StatusTooManyRequests || refusal.code == codeDocNewerContent ||
 		refusal.code == codeDocumentUnloadable

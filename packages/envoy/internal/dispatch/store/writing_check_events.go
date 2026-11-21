@@ -85,6 +85,9 @@ type WritingCheckEvent struct {
 	// one row records names: a held text's id, else an id the server made for the write's request;
 	// "" for a row that is its write's only one. The counts count each write's text once by it.
 	WriteID string
+	// At is when the row was decided, which the counts read its UTC day from: the server's clock,
+	// which a test fixes; zero is the database's now().
+	At time.Time
 }
 
 // InsertWritingCheckEvent records one decision of the writing check. It runs in a transaction of
@@ -107,13 +110,18 @@ func (s *Store) InsertWritingCheckEvent(ctx context.Context, event WritingCheckE
 		return fmt.Errorf("record writing check event: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	var at *time.Time
+	if !event.At.IsZero() {
+		at = &event.At
+	}
 	if _, err := tx.Exec(ctx, `
 		insert into writing_check_events (
 			route, method, actor_kind, actor_id, act_session, token_id, outcome,
-			rules, fields, detail, reader, project, write_id
-		) values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, $9, nullif($10, ''), nullif($11, ''), nullif($12, ''), nullif($13, ''))
+			rules, fields, detail, reader, project, write_id, created_at
+		) values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, $8, $9, nullif($10, ''), nullif($11, ''), nullif($12, ''), nullif($13, ''),
+			coalesce($14::timestamptz, now()))
 	`, event.Route, event.Method, event.ActorKind, event.ActorID, event.ActSession, event.TokenID, event.Outcome,
-		rules, fields, event.Detail, event.Reader, event.Project, event.WriteID); err != nil {
+		rules, fields, event.Detail, event.Reader, event.Project, event.WriteID, at); err != nil {
 		return fmt.Errorf("record writing check event: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

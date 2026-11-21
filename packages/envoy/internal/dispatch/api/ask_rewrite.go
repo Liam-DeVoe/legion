@@ -393,10 +393,10 @@ func (s *server) askAddress(ctx context.Context, id string) string {
 // run's row: through rewriteDecisionBlock for a decision block, else through the edit route's
 // path, as Dispatch's quiet edit carrying record. It writes nothing, and answers "", where the run
 // is no longer the ask's run in progress; it writes nothing, and answers why, where the ask is no
-// longer open or its wording is no longer read, the wording the run read. A refusal of the
-// document's own edit path is a reason too. Everything up to Commit is the read phase
-// (Docs.Join): the edit and the run's row queue their writes on the ledger, and Commit sends them
-// as one batch.
+// longer open or its wording is no longer read, the wording the run read. A refusal of the edit
+// path, the document's or the route's own (rewriteRefusal), is a reason too. Everything up to
+// Commit is the read phase (Docs.Join): the edit and the run's row queue their writes on the
+// ledger, and Commit sends them as one batch.
 func (s *server) applyAskRewrite(ctx context.Context, run askRewriteRun, read, rewrite reviewer.Text, record model.AskRewriteEdit) (string, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -474,20 +474,27 @@ func sameAskWording(ask model.Ask, read reviewer.Text) bool {
 	return true
 }
 
-// rewriteRefusal is why the document's own edit path refused to write a rewrite into its decision
-// block, as a failed rewrite's reason; "" for an error that is no such refusal.
+// rewriteRefusal is why the edit path refused to write a rewrite into the ask, as a failed
+// rewrite's reason; "" for an error that is no such refusal. A decision block that cannot hold the
+// rewrite says so; any other refusal is decided as a held text's post decides its own (postHeld):
+// an error the edit route would answer below 500 (handlerRefusalOf), a document's refusal as much
+// as the handler's own, is refused with the message that route would answer, but for one a later
+// write can clear (heldPostRetried), which is no reason the rewrite cannot be written.
 func rewriteRefusal(err error) string {
+	if err == nil {
+		return ""
+	}
 	var (
 		unrepresentable *docs.ErrAskBlockUnrepresentable
 		invalid         *docs.ErrInvalidAskBlock
-		refusal         *apiError
 	)
 	switch {
 	case errors.As(err, &unrepresentable):
 		return "the decision block cannot hold the rewrite: " + unrepresentable.Reason
 	case errors.As(err, &invalid):
 		return "the decision block cannot hold the rewrite: " + invalid.Error()
-	case errors.As(err, &refusal) && refusal.status < http.StatusInternalServerError:
+	}
+	if refusal := handlerRefusalOf(err); refusal.status < http.StatusInternalServerError && !heldPostRetried(refusal) {
 		return refusal.message
 	}
 	return ""

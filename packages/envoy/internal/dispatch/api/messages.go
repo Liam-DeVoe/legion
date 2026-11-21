@@ -471,7 +471,7 @@ func (s *server) writeMessage(ctx context.Context, create messageCreate, actor m
 		return model.Message{}, nil, err
 	}
 	if err := held.dryRunEnds(); err != nil {
-		return model.Message{}, advice, err
+		return message, advice, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return model.Message{}, nil, err

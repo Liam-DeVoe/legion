@@ -191,6 +191,21 @@ func row(counts store.WritingCheckCounts, day, project, person string) store.Wri
 	return store.WritingCheckRow{}
 }
 
+// stampedDay is the UTC day of the first event where query holds, as the database stamped it
+// (events.created_at, the now() of the transaction that appended it): the day the records job and
+// the counts give the write that event records. A test that counts real writes reads each day from
+// that stamp, which is the clock the write path reads and Postgres's own, so no test can fix it;
+// reading it leaves no clock of the test's own to differ from it across a UTC midnight.
+func (rig *recordsRig) stampedDay(query string, args ...any) string {
+	rig.t.Helper()
+	var day string
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select (created_at at time zone 'UTC')::date::text from events where `+query+` order by id limit 1`, args...).Scan(&day); err != nil {
+		rig.t.Fatalf("read the day of the event where %s: %v", query, err)
+	}
+	return day
+}
+
 // words reads a reader's words with the agent token.
 func (rig *recordsRig) words(login string) []string {
 	rig.t.Helper()
@@ -208,9 +223,12 @@ func (rig *recordsRig) words(login string) []string {
 // A person's "What is a store?" on an agent's ask and "Approved, thanks." as a comment each return
 // before the stand-in records model's 5 seconds, with the job off and with it on and calling that
 // model. With it on, the job records each text, the question with the word it asks about and the
-// ask it answers; the day's counts give alice her texts, her question and the ask she answered
-// after a reply; the reader's words route answers "store" to an agent's token and to alice, and
-// refuses bob; and the written rules show alice's word.
+// ask it answers; the counts of each text's day give alice her texts and her questions, and those
+// of the answer's day the ask she answered after a reply; the reader's words route answers "store"
+// to an agent's token and to alice, and refuses bob; and the written rules show alice's word. Each
+// day is the one the database stamped the text's or the answer's event with (stampedDay), read
+// from the event and not from a fixed clock, which cannot date a write Postgres stamps, so the
+// writes of a run across a UTC midnight count on their own days.
 func TestWordRecordsRecordAQuestionAndNeverDelayAPersonsWrite(t *testing.T) {
 	rig := newRecordsRig(t)
 	stand := modeltest.New(t,
@@ -224,9 +242,9 @@ func TestWordRecordsRecordAQuestionAndNeverDelayAPersonsWrite(t *testing.T) {
 	}
 
 	// The job on: its backfill reads the two texts written while it was off, and holds the
-	// stand-in's call while alice writes two more.
-	today := time.Now().UTC()
-	rig.run(rig.job(stand, today.Add(-time.Hour)))
+	// stand-in's call while alice writes two more. It reads from an hour before now, which every
+	// text written above is younger than.
+	rig.run(rig.job(stand, time.Now().Add(-time.Hour)))
 	pollUntil(t, 10*time.Second, "the job's first call to the model", func() bool { return len(stand.Requests()) > 0 })
 	ask := rig.agentAsk("Which store should hold the logs?", "Disk", "Memory")
 	rig.writesWithinTheModelsWait(ask, "on")
@@ -234,26 +252,38 @@ func TestWordRecordsRecordAQuestionAndNeverDelayAPersonsWrite(t *testing.T) {
 	rig.timedWrite("alice answers the ask", http.MethodPost, "/api/v1/asks/"+ask+"/answer", answer, http.StatusOK)
 	pollUntil(t, 60*time.Second, "four records with a verdict", func() bool { return rig.done() == 4 })
 
-	day := today.Format(time.DateOnly)
+	want := map[string]store.WritingCheckRow{}
 	var questions, others int
 	for _, r := range rig.records() {
+		day := rig.stampedDay("id = $1", r.EventID)
+		counted := want[day]
+		counted.Texts++
 		switch {
 		case r.Person != "alice" || r.Day != day:
-			t.Errorf("record %+v, want alice's of %s", r, day)
+			t.Errorf("record %+v, want alice's of %s, the day of its event", r, day)
 		case r.Verdict == wordrecords.WordMeaning && slices.Equal(r.Words, []string{"store"}) && strings.HasPrefix(r.Answer, "ask:"):
 			questions++
+			counted.WordQuestions++
 		case r.Verdict == wordrecords.None && len(r.Words) == 0:
 			others++
 		default:
 			t.Errorf("record %+v", r)
 		}
+		want[day] = counted
 	}
 	if questions != 2 || others != 2 {
 		t.Errorf("%d questions about store and %d other texts, want 2 of each", questions, others)
 	}
-	if got := row(rig.counts(day, day), day, "WRD", "alice"); got.WordQuestions != 2 || got.Texts != 4 || got.TextsUnread != 0 ||
-		got.AsksAnswered != 1 || got.AsksRepliedBeforeAnswer != 1 {
-		t.Errorf("alice's counts of %s = %+v, want 2 word questions of 4 texts, and one ask answered after a reply", day, got)
+	answered := rig.stampedDay("type = 'ask.answered' and payload->>'id' = $1", ask)
+	counted := want[answered]
+	counted.AsksAnswered, counted.AsksRepliedBeforeAnswer = 1, 1
+	want[answered] = counted
+	for day, counted := range want {
+		if got := row(rig.counts(day, day), day, "WRD", "alice"); got.WordQuestions != counted.WordQuestions || got.Texts != counted.Texts ||
+			got.TextsUnread != 0 || got.AsksAnswered != counted.AsksAnswered || got.AsksRepliedBeforeAnswer != counted.AsksRepliedBeforeAnswer {
+			t.Errorf("alice's counts of %s = %+v, want %d word questions of %d texts, none unread, and %d asks answered of which %d after a reply",
+				day, got, counted.WordQuestions, counted.Texts, counted.AsksAnswered, counted.AsksRepliedBeforeAnswer)
+		}
 	}
 
 	if words := rig.words("alice"); !slices.Equal(words, []string{"store"}) {
@@ -293,7 +323,9 @@ func TestWordRecordsRecordAQuestionAndNeverDelayAPersonsWrite(t *testing.T) {
 }
 
 // The negative control: while the stand-in fails, the text is kept, failed, and no word is
-// recorded; once it answers, the text the job could not read is recorded.
+// recorded; once it answers, the text the job could not read is recorded. The day counted is the
+// one the database stamped the text's event with (stampedDay), read from the event and not from a
+// fixed clock, which cannot date a write Postgres stamps.
 func TestWordRecordsRetryAFailedTextUntilTheModelAnswers(t *testing.T) {
 	rig := newRecordsRig(t)
 	failing := modeltest.Reply{Status: http.StatusInternalServerError, Text: "the stand-in is down"}
@@ -313,7 +345,10 @@ func TestWordRecordsRetryAFailedTextUntilTheModelAnswers(t *testing.T) {
 	if len(records) != 1 || records[0].State != store.WordQuestionFailed || records[0].Attempts != 1 || records[0].Verdict != "" || len(records[0].Words) != 0 {
 		t.Fatalf("records while the model fails = %+v, want the text kept, failed once, with no verdict", records)
 	}
-	day := time.Now().UTC().Format(time.DateOnly)
+	day := rig.stampedDay("id = $1", records[0].EventID)
+	if records[0].Day != day {
+		t.Errorf("the record's day is %s, want %s, the day of its event", records[0].Day, day)
+	}
 	if words := rig.words("alice"); len(words) != 0 {
 		t.Errorf("alice's words while the model fails = %v, want none", words)
 	}

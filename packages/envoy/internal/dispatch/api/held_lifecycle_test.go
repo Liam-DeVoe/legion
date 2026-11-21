@@ -536,6 +536,235 @@ func TestAHeldIssuesAnswerReadsTriageAndTheAssigneeItPostsUnder(t *testing.T) {
 	}
 }
 
+// A held issue's answer states what its post writes beside the row's other columns, each as a read
+// of the posted issue answers it: the repository it names, the priorities it advances and the
+// components it chose. An issue stating its own, and one under a parent whose repository, priority
+// and components it inherits, which its dry run read back, answer as they post, field for field. A
+// child of a held issue, which runs no dry run, answers its own: no repository, the priority it
+// names and the components it chose, which is what the posted child holds of its own.
+func TestAHeldIssuesAnswerStatesTheRepoAdvancesAndComponentsItPosts(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	for _, id := range []string{"ship-the-daemon", "cut-the-queue"} {
+		createTestPriority(t, rig.handler, map[string]any{"id": id, "title": id, "owner": "alice"}, "alice")
+	}
+	for _, statement := range []string{
+		`insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by)
+			values ('RVW', 1, 'acme/arch', 'main', 1, '{"kind":"system","id":"test"}')`,
+		`insert into architecture_snapshots (id, project_key, commit, files) values (903, 'RVW', 'c1', '{}')`,
+		`insert into components (project_key, id, title, prose, parent, snapshot_id, source_id) values
+			('RVW', 'platform', 'The platform', '', null, 903, 1), ('RVW', 'api', 'Public API', '', 'platform', 903, 1)`,
+	} {
+		if _, err := rig.database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("seed RVW's component model: %v", err)
+		}
+	}
+	recorded := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": "The rollout of record", "force": true, "repo": "acme/gadgets",
+		"advances": []string{"cut-the-queue"}, "components": map[string]any{"mode": "explicit", "ids": []string{"platform"}},
+	}, "alice")
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("alice's issue of record: %d %s", recorded.Code, recorded.Body.String())
+	}
+	parent := decodeBody[model.Issue](t, recorded).Key
+	// writes is what the test compares of an issue, as its JSON reads.
+	writes := func(issue model.Issue) string {
+		t.Helper()
+		encoded, err := json.Marshal(map[string]any{
+			"repo": issue.Repo, "resolved_repo": issue.ResolvedRepo, "advances": issue.Advances, "components": issue.Components,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(encoded)
+	}
+	hold := func(body map[string]any) (string, model.Issue) {
+		t.Helper()
+		response := rig.asWriter(http.MethodPost, "/api/v1/issues", body)
+		return rig.held(response, "the held issue "+body["title"].(string)).ID, decodeBody[model.Issue](t, response)
+	}
+	read := func(key string) model.Issue {
+		t.Helper()
+		return decodeBody[model.Issue](t, dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice"))
+	}
+	own, ownAnswer := hold(map[string]any{
+		"project": "RVW", "title": "Held with its own relations", "spec": vacuousPhrase, "repo": "acme/widgets",
+		"advances": []string{"ship-the-daemon"}, "components": map[string]any{"mode": "explicit", "ids": []string{"api"}},
+	})
+	under, underAnswer := hold(map[string]any{"project": "RVW", "title": "Held under the rollout", "spec": vacuousPhrase, "parent": parent})
+	rig.waitHeld(own, heldAwaitingWriter)
+	rig.waitHeld(under, heldAwaitingWriter)
+	child, childAnswer := hold(map[string]any{
+		"project": "RVW", "title": "Held child of a held issue", "parent": own,
+		"advances": []string{"cut-the-queue"}, "components": map[string]any{"mode": "none", "reason": "It changes no component."},
+	})
+	rig.postHeldAsWritten(own)
+	rig.postHeldAsWritten(under)
+	rig.waitHeld(child, heldPosted)
+	for key, answer := range map[string]model.Issue{own: ownAnswer, under: underAnswer} {
+		if posted := read(key); writes(answer) != writes(posted) {
+			t.Errorf("%s's held answer states %s; it posted %s", key, writes(answer), writes(posted))
+		}
+	}
+	posted := read(child)
+	if childAnswer.Repo != nil || !slices.Equal(ownAdvances(childAnswer.Advances), ownAdvances(posted.Advances)) ||
+		writes(model.Issue{Components: childAnswer.Components}) != writes(model.Issue{Components: posted.Components}) {
+		t.Errorf("%s's held answer states %s; it posted %s, want the same repository, priorities and components of its own", child, writes(childAnswer), writes(posted))
+	}
+}
+
+// postedItem is the object of id in alice's read of target, wherever the read nests it, decoded
+// as T: a single read wraps its item beside what the read carries with it.
+func postedItem[T any](t *testing.T, handler http.Handler, target, id string) T {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("alice's read of %s: %d %s", target, response.Code, response.Body.String())
+	}
+	var tree any
+	if err := json.Unmarshal(response.Body.Bytes(), &tree); err != nil {
+		t.Fatal(err)
+	}
+	var found any
+	var walk func(any)
+	walk = func(node any) {
+		switch value := node.(type) {
+		case map[string]any:
+			if value["id"] == id && found == nil {
+				found = value
+				return
+			}
+			for _, child := range value {
+				walk(child)
+			}
+		case []any:
+			for _, child := range value {
+				walk(child)
+			}
+		}
+	}
+	walk(tree)
+	if found == nil {
+		t.Fatalf("alice's read of %s holds no %s: %s", target, id, response.Body.String())
+	}
+	var item T
+	if err := json.Unmarshal([]byte(jsonOf(t, found)), &item); err != nil {
+		t.Fatalf("decode %s in %s: %v", id, target, err)
+	}
+	return item
+}
+
+// jsonOf is value as its JSON reads, for a test comparing two answers' fields.
+func jsonOf(t *testing.T, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+// specOf is the id of issue's own document.
+func specOf(t *testing.T, database *store.Store, issue string) string {
+	t.Helper()
+	var id string
+	if err := database.Pool.QueryRow(context.Background(), `select id::text from artifacts where issue_key = $1 and is_primary`, issue).Scan(&id); err != nil {
+		t.Fatalf("read %s's document: %v", issue, err)
+	}
+	return id
+}
+
+// postedAsWritten waits for the held text id to await its writer, posts it as written and waits
+// for it to post.
+func (rig *reviewRig) postedAsWritten(id string) {
+	rig.t.Helper()
+	rig.waitHeld(id, heldAwaitingWriter)
+	rig.postHeldAsWritten(id)
+	rig.waitHeld(id, heldPosted)
+}
+
+// A held ask's answer states the anchor its post writes, as its dry run resolved it: the document,
+// the block and the quote the posted ask holds, and no mark id, which only the post's own mark
+// makes.
+func TestAHeldAsksAnswerStatesTheAnchorItPosts(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Asks: ReviewHold, WriterWindow: time.Minute}, nil)
+	response := rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", map[string]any{
+		"question": "Ship the reviewer?\n" + vacuousPhrase,
+		"options":  []map[string]string{{"label": "Ship it", "description": "Release it today."}, {"label": "Do not file", "description": "Wait."}},
+		"anchor":   map[string]any{"artifact": specOf(t, rig.database, rig.issue), "quote": "Seed paragraph"},
+	})
+	id := rig.held(response, "the held ask").ID
+	answer := decodeBody[model.Ask](t, response)
+	rig.postedAsWritten(id)
+	posted := postedItem[model.Ask](t, rig.handler, "/api/v1/asks/"+id, id)
+	if answer.Anchor == nil || posted.Anchor == nil || answer.Anchor.MarkID != "" || posted.Anchor.MarkID == "" {
+		t.Fatalf("the held ask's anchor %s, the posted one %s: want both, the held one with no mark id", jsonOf(t, answer.Anchor), jsonOf(t, posted.Anchor))
+	}
+	held, wrote := *answer.Anchor, *posted.Anchor
+	held.MarkID, wrote.MarkID = "", ""
+	if jsonOf(t, held) != jsonOf(t, wrote) {
+		t.Errorf("the held ask's anchor is %s; it posted %s", jsonOf(t, held), jsonOf(t, wrote))
+	}
+}
+
+// A held comment's answer states what its post writes beyond its body: a comment on a quote its
+// anchor, less the mark id only the post makes, and a reply on an ask the turn it hands on, each as
+// the posted comment holds it, with its mentions, the block it replies to and the agent text it
+// answers.
+func TestAHeldCommentsAnswerStatesTheAnchorAndTurnItPosts(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Comments: ReviewHold, WriterWindow: time.Minute}, nil)
+	asked := rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", map[string]any{"question": "Which port should the node use?"})
+	if asked.Code != http.StatusCreated {
+		t.Fatalf("the writer's ask: %d %s", asked.Code, asked.Body.String())
+	}
+	ask := decodeBody[model.Ask](t, asked).ID
+	comments := "/api/v1/issues/" + rig.issue + "/comments"
+	for name, body := range map[string]map[string]any{
+		"on a quote": {"body": "Status\nWe spin up the node. " + vacuousPhrase, "anchor": map[string]any{"artifact": specOf(t, rig.database, rig.issue), "quote": "Seed paragraph"}},
+		"on an ask":  {"body": "Status\nThe node answers on 8080. " + vacuousPhrase, "ask_id": ask},
+	} {
+		response := rig.asWriter(http.MethodPost, comments, body)
+		id := rig.held(response, "the held comment "+name).ID
+		answer := decodeBody[model.Comment](t, response)
+		rig.postedAsWritten(id)
+		posted := postedItem[model.Comment](t, rig.handler, "/api/v1/comments/"+id, id)
+		if (answer.Anchor == nil) != (body["anchor"] == nil) || (answer.Turn == nil) != (body["ask_id"] == nil) || (answer.Anchor != nil && answer.Anchor.MarkID != "") {
+			t.Errorf("%s: the held comment states anchor %s turn %v, want the anchor with no mark id or the turn its request makes", name, jsonOf(t, answer.Anchor), answer.Turn)
+		}
+		if posted.Anchor != nil {
+			posted.Anchor.MarkID = ""
+		}
+		writes := func(comment model.Comment) string {
+			return jsonOf(t, map[string]any{
+				"anchor": comment.Anchor, "turn": comment.Turn, "answers": comment.Answers, "reply_block": comment.ReplyBlock,
+				"mentions": comment.Mentions, "reply_to": comment.ReplyTo, "ask_id": comment.AskID,
+			})
+		}
+		if writes(answer) != writes(posted) {
+			t.Errorf("%s: the held comment states %s; it posted %s", name, writes(answer), writes(posted))
+		}
+	}
+}
+
+// A held message's answer states the block it replies to, as the posted message holds it.
+func TestAHeldMessagesAnswerStatesTheBlockItRepliesTo(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Messages: ReviewHold, WriterWindow: time.Minute}, nil)
+	messages := "/api/v1/issues/" + rig.issue + "/messages"
+	root := dispatchRequest(t, rig.handler, http.MethodPost, messages, map[string]any{"body": "One.\n\nTwo."}, "alice")
+	if root.Code != http.StatusCreated {
+		t.Fatalf("alice's message: %d %s", root.Code, root.Body.String())
+	}
+	response := rig.asWriter(http.MethodPost, messages, map[string]any{
+		"body": "Status\nWe spin up the node. " + vacuousPhrase, "in_reply_to": decodeBody[model.Message](t, root).ID, "in_reply_to_block": "b2",
+	})
+	id := rig.held(response, "the held message").ID
+	answer := decodeBody[model.Message](t, response)
+	rig.postedAsWritten(id)
+	posted := postedItem[model.Message](t, rig.handler, "/api/v1/messages/"+id, id)
+	if answer.ReplyBlock == nil || jsonOf(t, answer.ReplyBlock) != jsonOf(t, posted.ReplyBlock) {
+		t.Errorf("the held message replies to %s; it posted replying to %s", jsonOf(t, answer.ReplyBlock), jsonOf(t, posted.ReplyBlock))
+	}
+}
+
 // A project-scoped token's write on a held issue, ask or comment of its own project reaches the
 // hold, though no row of its own table holds the id yet: it is kept beside the held text for a
 // client that reads that answer, and refused 409 HELD_TEXT for one that does not. A held message
@@ -624,9 +853,10 @@ func TestAHeldReplySentAgainOnAnAnsweredDeliveryAnswersTheStoredReply(t *testing
 // finding in and the reviewer reviewed after its save (the request's own write id), and a comment
 // answering a held ask, which the check found a finding in, held beside the ask and reviewed after
 // its post (the held text's id), each count once beside the held ask posted as written over its
-// own findings.
+// own findings. The server's clock is fixed at lastTenthOfADay, which dates every row, so the day
+// counted is the rows' whatever the wall clock reads.
 func TestTheCountsCountAWritePostedOverAFindingOnce(t *testing.T) {
-	rig := newReviewRig(t, ReviewerConfig{Asks: ReviewHold, Comments: ReviewAfter, Documents: ReviewAfter, WriterWindow: time.Minute}, nil)
+	rig := newClockedReviewRig(t, ReviewerConfig{Asks: ReviewHold, Comments: ReviewAfter, Documents: ReviewAfter, WriterWindow: time.Minute}, nil, fixedClock(lastTenthOfADay))
 	const finding = badProse + " " + vacuousPhrase
 	if uploaded := rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/artifacts", map[string]any{
 		"name": "rollout.md", "content": "# Rollout notes\n\n" + finding + "\n",
@@ -648,9 +878,8 @@ func TestTheCountsCountAWritePostedOverAFindingOnce(t *testing.T) {
 	if checked := rig.outcomeCount(writingCheckFindings); checked != 2 {
 		t.Fatalf("the writing check found a finding in %d writes, want the document and the comment", checked)
 	}
-	now := time.Now().UTC()
-	response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?first="+
-		now.AddDate(0, 0, -1).Format(time.DateOnly)+"&last="+now.Format(time.DateOnly), nil, "alice")
+	day := lastTenthOfADay.Format(time.DateOnly)
+	response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?first="+day+"&last="+day, nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("the counts: %d %s", response.Code, response.Body.String())
 	}

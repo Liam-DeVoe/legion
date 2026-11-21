@@ -436,7 +436,7 @@ func replyAttemptOf(body []byte) replyAttempt {
 // writes none of its words.
 func (s *server) answerHeldReplyAgain(w http.ResponseWriter, r *http.Request, row heldRow, replay heldReplay) {
 	answer := heldAnswerOf(replay.reviewed(reviewer.Kind(row.kind)), row.id, row.actor, row.writtenAt,
-		heldState{State: row.state, Deadline: row.deadline, WaitsOn: row.dependsOn}, wantsDisplayTrees(r), nil)
+		heldState{State: row.state, Deadline: row.deadline, WaitsOn: row.dependsOn}, nil, wantsDisplayTrees(r), nil)
 	if read, isMessage := answer.payload.(replyRead); isMessage {
 		read.Duplicate = true
 		answer.payload = read

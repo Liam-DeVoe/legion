@@ -178,6 +178,10 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// clock is the server's clock (Deps.Now), which dates what R8's counts read by day; nil is
+	// time.Now. A test that counts a day passes a fixed one (fixedClock), so a run across a UTC
+	// midnight counts the day the test set.
+	clock func() time.Time
 	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
 	// mention's send waits for the earlier events of its owner the outbox still owes its session.
 	// False is the deployment with no outbox, which every test that runs none is.
@@ -368,7 +372,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
-	deps.LiveSocketAge = options.liveSocketAge
+	deps.LiveSocketAge, deps.Now = options.liveSocketAge, options.clock
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
 	maps.Copy(served.liveKinds, options.liveKinds)

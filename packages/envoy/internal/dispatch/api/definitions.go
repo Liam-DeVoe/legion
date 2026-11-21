@@ -398,7 +398,8 @@ func recordInputs(record reviewer.Record) []string {
 }
 
 // recordDefineUse records the Define use as person's question about words (R8): one
-// word_questions row with source define, the model that served it named.
+// word_questions row with source define, the model that served it named, dated by the server's
+// clock (server.now), whose UTC day the counts count it on.
 func (s *server) recordDefineUse(ctx context.Context, id, person string, where defineSubject, words []string, calls []reviewer.Call) {
 	served := ""
 	for _, call := range calls {
@@ -411,6 +412,7 @@ func (s *server) recordDefineUse(ctx context.Context, id, person string, where d
 	}
 	if err := s.deps.Store.RecordDefineUse(ctx, store.DefineUse{
 		DefinitionID: id, Person: person, Project: where.project, Words: words, Answers: where.answers, Model: served,
+		At: s.now(),
 	}); err != nil {
 		slog.Warn("dispatch: record a Define use", "definition", id, "error", err)
 	}

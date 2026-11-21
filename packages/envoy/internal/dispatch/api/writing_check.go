@@ -249,11 +249,13 @@ func (s *server) writingCheckTokenID(r *http.Request, actor model.Actor) string 
 }
 
 // recordWritingCheck inserts one decision of the check, on the pool and outside any transaction of
-// the write. A failure is logged: the record is the check's own, and no write fails for it.
+// the write, dated by the server's clock (server.now). A failure is logged: the record is the
+// check's own, and no write fails for it.
 func (s *server) recordWritingCheck(ctx context.Context, event store.WritingCheckEvent) {
 	if s.deps.Store == nil {
 		return
 	}
+	event.At = s.now()
 	if err := s.deps.Store.InsertWritingCheckEvent(ctx, event); err != nil {
 		slog.Warn("dispatch: record a writing check decision", "route", event.Method+" "+event.Route,
 			"outcome", event.Outcome, "error", err)
@@ -435,9 +437,9 @@ func (s *server) getWritingCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 // writingCheckCountsDays is the counts route's range when its query names none, the last 14 days
-// with today, and writingCheckCountsMostDays the longest range it counts: the days the sweep keeps
-// a row the counts read (store.WritingCheckCountedRetention), so a range that ends today counts
-// its rows whole.
+// with today, and writingCheckCountsMostDays the most days it counts back from today: the days the
+// sweep keeps a row the counts read (store.WritingCheckCountedRetention), so a range inside them
+// counts its rows whole.
 const (
 	writingCheckCountsDays     = 14
 	writingCheckCountsMostDays = int(store.WritingCheckCountedRetention / (24 * time.Hour))
@@ -445,8 +447,16 @@ const (
 
 // getWritingCheckCounts is GET /api/v1/writing-check/counts: R8's counts of the UTC days ?first=
 // to ?last=, both YYYY-MM-DD and both included, with one page of its rows (store.CountWritingCheck,
-// list_page.go). last is today where it is absent, and first the 13 days before last. Any
-// signed-in caller reads it (Decision 14 of INFRA-3231's plan).
+// list_page.go). last is today where it is absent, and first the 13 days before last; today is
+// the server's clock's (server.now). Any signed-in caller reads it (Decision 14 of INFRA-3231's
+// plan).
+//
+// The range holds at most writingCheckCountsMostDays days, and none before the oldest of the
+// writingCheckCountsMostDays days to today. A row mixes sources kept for different times: the
+// sweep deletes a writing_check_events row the counts read once it is older than
+// store.WritingCheckCountedRetention, while word_questions and the event log are never swept. On
+// a day before those the sweep has deleted the decisions, all of them or the first hours', so the
+// day's row would count the person's texts beside decisions no longer there.
 func (s *server) getWritingCheckCounts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -464,8 +474,9 @@ func (s *server) getWritingCheckCounts(w http.ResponseWriter, r *http.Request) {
 		}
 		return parsed, true
 	}
-	now := time.Now().UTC()
-	last, ok := day("last", time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC))
+	now := s.now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	last, ok := day("last", today)
 	if !ok {
 		return
 	}
@@ -473,12 +484,18 @@ func (s *server) getWritingCheckCounts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	oldest := today.AddDate(0, 0, 1-writingCheckCountsMostDays)
 	switch {
 	case first.After(last):
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "first must be no later than last")
 		return
 	case last.Sub(first) >= store.WritingCheckCountedRetention:
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("the range from first to last holds at most %d days", writingCheckCountsMostDays))
+		return
+	case first.Before(oldest):
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf(
+			"first must be no earlier than %s, the oldest of the %d days to today: the decisions these counts read are deleted once they are older, while the texts' records are kept, so an earlier day would count its texts beside decisions no longer there",
+			oldest.Format(time.DateOnly), writingCheckCountsMostDays))
 		return
 	}
 	page, err := parseListPage(query)
