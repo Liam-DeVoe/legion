@@ -21,25 +21,31 @@ import (
 // place: the names of the path to it from the root of the file, "*" for any name or index. A member
 // of such an object is an entry of a map: a record of the scenario, which the sweep puts null in the
 // place of and TestTakingOutAWholeRecordMovesAStateOnlyByItsRight takes out, and whose key the
-// sweep writes as a name that names nothing.
-var sweepMaps = map[string][][]string{
-	"history.json": {{"commits", "*", "files"}},
-	"ties.json":    {{}, {"*"}},
-	"uncited.json": {{}, {"*"}},
+// sweep writes as a name that names nothing. Like each table that a sweep reads, it is a function
+// that gives a new value at each call, not a variable of the package, so that no writer can change
+// what a sweep reads after it (packageValues).
+func sweepMaps() map[string][][]string {
+	return map[string][][]string{
+		"history.json": {{"commits", "*", "files"}},
+		"ties.json":    {{}, {"*"}},
+		"uncited.json": {{}, {"*"}},
+	}
 }
 
 // sweepPaths is each place of a repository path in the JSON files of a scenario: the keys of a tree
 // of the history, the entries of a tie, and the paths of a fault of a result. The sweep writes each
 // such path in the forms that name no repository path, which no tie entry covers.
-var sweepPaths = map[string]struct{ keysOf, values [][]string }{
-	"history.json": {keysOf: [][]string{{"commits", "*", "files"}}},
-	"ties.json":    {values: [][]string{{"*", "*", "*"}}},
-	"results.json": {values: [][]string{{"*", "fault_paths", "*"}}},
+func sweepPaths() map[string]struct{ keysOf, values [][]string } {
+	return map[string]struct{ keysOf, values [][]string }{
+		"history.json": {keysOf: [][]string{{"commits", "*", "files"}}},
+		"ties.json":    {values: [][]string{{"*", "*", "*"}}},
+		"results.json": {values: [][]string{{"*", "fault_paths", "*"}}},
+	}
 }
 
 // namesOfNothing are the texts that the sweep writes at each string place and as each key of a map:
 // no name, and a name of no letter and no digit.
-var namesOfNothing = []string{"", " "}
+func namesOfNothing() []string { return []string{"", " "} }
 
 // notRepoPaths are the forms of path that name no repository path, as the sweep writes them.
 func notRepoPaths(path string) []string {
@@ -371,15 +377,21 @@ func countedCommit(s Scenario, c Check, r Result) string {
 // addableMembers is each member that a record of a JSON file of a scenario can leave out (the
 // twelve members marked zero that a file can leave out, memberMark), by the place of the list of
 // its records and the kind of the values that the sweep gives it.
-var addableMembers = map[string]struct {
+func addableMembers() map[string]addableRecords {
+	return map[string]addableRecords{
+		"results.json": {nil, [][2]string{{"commit", "commit"}, {"deploy", "deploy"}, {"graph_tx", "graph_tx"}, {"job", "job"},
+			{"attempt", "attempt"}, {"fault_author", "author"}, {"test_authors", "authors"}, {"test_commit", "commit"},
+			{"planted_on", "commit"}, {"fault_paths", "paths"}}},
+		"subjects.json": {nil, [][2]string{{"graph_tx", "graph_tx"}}},
+		"history.json":  {[]string{"commits"}, [][2]string{{"parent", "commit"}}},
+	}
+}
+
+// addableRecords is the records of a JSON file to which the member sweep adds members: the place of
+// their list, and each member with its kind (addableMembers).
+type addableRecords struct {
 	records []string
 	members [][2]string // each member and its kind
-}{
-	"results.json": {nil, [][2]string{{"commit", "commit"}, {"deploy", "deploy"}, {"graph_tx", "graph_tx"}, {"job", "job"},
-		{"attempt", "attempt"}, {"fault_author", "author"}, {"test_authors", "authors"}, {"test_commit", "commit"},
-		{"planted_on", "commit"}, {"fault_paths", "paths"}}},
-	"subjects.json": {nil, [][2]string{{"graph_tx", "graph_tx"}}},
-	"history.json":  {[]string{"commits"}, [][2]string{{"parent", "commit"}}},
 }
 
 // A member that a record leaves out, added, states one more fact of the record. No such input may
@@ -423,18 +435,19 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 				}
 			}
 			var inputs []sweepInput
-			for _, file := range slices.Sorted(maps.Keys(addableMembers)) {
+			addable := addableMembers()
+			for _, file := range slices.Sorted(maps.Keys(addable)) {
 				var tree any
 				if err := json.Unmarshal(base[file].Data, &tree); err != nil {
 					t.Fatalf("%s: %v", file, err)
 				}
 				list := tree
-				for _, name := range addableMembers[file].records {
+				for _, name := range addable[file].records {
 					list = list.(map[string]any)[name]
 				}
 				for i, record := range list.([]any) {
-					place := append(slices.Clone(addableMembers[file].records), strconv.Itoa(i))
-					for _, m := range addableMembers[file].members {
+					place := append(slices.Clone(addable[file].records), strconv.Itoa(i))
+					for _, m := range addable[file].members {
 						if _, set := record.(map[string]any)[m[0]]; set {
 							continue
 						}
@@ -544,6 +557,7 @@ const pathOfOneSpace = `the path " " of the tree is a real path, which git holds
 func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 	t.Helper()
 	var inputs []sweepInput
+	entryMaps, pathPlaces := sweepMaps(), sweepPaths()
 	roundTrip := maps.Clone(base)
 	with := func(what, name string, want treeChange, write treeWriter) *sweepInput {
 		inputs = append(inputs, sweepInput{what: what, fsys: changedFile(t, base, name, want, write)})
@@ -565,8 +579,8 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 		walk = func(v any, at []string) {
 			switch v := v.(type) {
 			case map[string]any:
-				entries := slices.ContainsFunc(sweepMaps[name], func(p []string) bool { return placeMatches(p, at) })
-				paths := slices.ContainsFunc(sweepPaths[name].keysOf, func(p []string) bool { return placeMatches(p, at) })
+				entries := slices.ContainsFunc(entryMaps[name], func(p []string) bool { return placeMatches(p, at) })
+				paths := slices.ContainsFunc(pathPlaces[name].keysOf, func(p []string) bool { return placeMatches(p, at) })
 				for _, key := range slices.Sorted(maps.Keys(v)) {
 					place := append(slices.Clone(at), key)
 					with(name+" "+treePointer(place)+" as null", name, treeChange{place: place}, nullAt)
@@ -575,7 +589,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 					}
 					var renames []string
 					if entries {
-						renames = namesOfNothing
+						renames = namesOfNothing()
 					}
 					if paths {
 						renames = append(slices.Clone(renames), notRepoPaths(key)...)
@@ -597,8 +611,8 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 					walk(x, place)
 				}
 			case string:
-				forms := slices.Clone(namesOfNothing)
-				if slices.ContainsFunc(sweepPaths[name].values, func(p []string) bool { return placeMatches(p, at) }) {
+				forms := namesOfNothing()
+				if slices.ContainsFunc(pathPlaces[name].values, func(p []string) bool { return placeMatches(p, at) }) {
 					forms = append(forms, notRepoPaths(v)...)
 				}
 				for _, form := range forms {
@@ -660,12 +674,14 @@ func towardTrue(whole, got map[string]string) []string {
 // a check, by its file and its place: a result, a run of a job, a refusal of CI, a tie, a commit of
 // the history and a file of a commit's tree. The approved spec, the subjects and the units are what
 // the derivation judges and where, not records.
-var recordKinds = map[string][][]string{
-	"results.json": {{"*"}},
-	"jobs.json":    {{"*"}},
-	"uncited.json": {{"*"}, {"*", "*"}},
-	"ties.json":    {{"*"}, {"*", "*"}},
-	"history.json": {{"commits", "*"}, {"commits", "*", "files", "*"}},
+func recordKinds() map[string][][]string {
+	return map[string][][]string{
+		"results.json": {{"*"}},
+		"jobs.json":    {{"*"}},
+		"uncited.json": {{"*"}, {"*", "*"}},
+		"ties.json":    {{"*"}, {"*", "*"}},
+		"history.json": {{"commits", "*"}, {"commits", "*", "files", "*"}},
+	}
 }
 
 // A record taken out whole is another input, not one that says nothing: the history in which the
@@ -737,8 +753,9 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 			scenario: "carry", setup: carriedFailure, file: "history.json", place: []string{"commits", "1"},
 			subject: 1, check: c, with: "unknown", without: "true"},
 	}
-	for kind := range maps.Keys(recordKinds) {
-		for _, pattern := range recordKinds[kind] {
+	kinds := recordKinds()
+	for kind := range maps.Keys(kinds) {
+		for _, pattern := range kinds[kind] {
 			if !slices.ContainsFunc(rows, func(r row) bool { return r.file == kind && placeMatches(pattern, r.place) }) {
 				t.Errorf("no row takes out a record of %s at %s", kind, treePointer(pattern))
 			}

@@ -20,16 +20,19 @@ import (
 	"time"
 )
 
-// scenarioFileTypes is each JSON file of a scenario with the type that ReadScenario reads it into.
-var scenarioFileTypes = map[string]reflect.Type{
-	"approved.json": reflect.TypeFor[ApprovedFile](),
-	"subjects.json": reflect.TypeFor[[]ScenarioSubject](),
-	"history.json":  reflect.TypeFor[FixtureHistory](),
-	"ties.json":     reflect.TypeFor[map[string]map[string][]string](),
-	"results.json":  reflect.TypeFor[[]scenarioResult](),
-	"jobs.json":     reflect.TypeFor[[]JobRun](),
-	"uncited.json":  reflect.TypeFor[map[string]map[string]string](),
-	"units.json":    reflect.TypeFor[[]Unit](),
+// scenarioFileTypes is each JSON file of a scenario with the type that ReadScenario reads it into,
+// a new map at each call, as each table that a sweep reads is a function (sweepMaps).
+func scenarioFileTypes() map[string]reflect.Type {
+	return map[string]reflect.Type{
+		"approved.json": reflect.TypeFor[ApprovedFile](),
+		"subjects.json": reflect.TypeFor[[]ScenarioSubject](),
+		"history.json":  reflect.TypeFor[FixtureHistory](),
+		"ties.json":     reflect.TypeFor[map[string]map[string][]string](),
+		"results.json":  reflect.TypeFor[[]scenarioResult](),
+		"jobs.json":     reflect.TypeFor[[]JobRun](),
+		"uncited.json":  reflect.TypeFor[map[string]map[string]string](),
+		"units.json":    reflect.TypeFor[[]Unit](),
+	}
 }
 
 // libraryInputTypes is the type of each input that a caller of the library gives: an Input of
@@ -110,8 +113,9 @@ func structTypes(t reflect.Type, types []reflect.Type) []reflect.Type {
 // inputTypes is each struct type that a file of a scenario or an input of the library holds.
 func inputTypes() []reflect.Type {
 	var types []reflect.Type
-	for _, name := range slices.Sorted(maps.Keys(scenarioFileTypes)) {
-		types = structTypes(scenarioFileTypes[name], types)
+	fileTypes := scenarioFileTypes()
+	for _, name := range slices.Sorted(maps.Keys(fileTypes)) {
+		types = structTypes(fileTypes[name], types)
 	}
 	for _, t := range libraryInputTypes {
 		types = structTypes(t, types)
@@ -132,7 +136,7 @@ func TestEachMemberOfAnInputHasAMark(t *testing.T) {
 			files = append(files, name)
 		}
 	}
-	if got := slices.Sorted(maps.Keys(scenarioFileTypes)); !slices.Equal(got, slices.Sorted(slices.Values(files))) {
+	if got := slices.Sorted(maps.Keys(scenarioFileTypes())); !slices.Equal(got, slices.Sorted(slices.Values(files))) {
 		t.Errorf("the test reads the types of %q, and a scenario holds the JSON files %q", got, files)
 	}
 	types, marked := inputTypes(), 0
@@ -399,8 +403,9 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 		return v
 	}
 	checked := 0
-	for _, name := range slices.Sorted(maps.Keys(scenarioFileTypes)) {
-		for _, typ := range structTypes(scenarioFileTypes[name], nil) {
+	fileTypes := scenarioFileTypes()
+	for _, name := range slices.Sorted(maps.Keys(fileTypes)) {
+		for _, typ := range structTypes(fileTypes[name], nil) {
 			for _, m := range inputMembers(typ) {
 				if m.name == "" {
 					continue
@@ -413,7 +418,7 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 				zero := zeroJSON(t, m.field.Type)
 				// The element that leaves the member out: one that sets it, a non-zero value first, and for
 				// a result one of outcome fail; and an element beside it that sets it too.
-				objects := slices.DeleteFunc(objectsOf(read(t, name), scenarioFileTypes[name], "", typ), func(o object) bool { return o.members[m.name] == nil })
+				objects := slices.DeleteFunc(objectsOf(read(t, name), fileTypes[name], "", typ), func(o object) bool { return o.members[m.name] == nil })
 				slices.SortStableFunc(objects, func(a, b object) int {
 					return boolOrder(reflect.DeepEqual(a.members[m.name], zero), reflect.DeepEqual(b.members[m.name], zero))
 				})

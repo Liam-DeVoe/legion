@@ -48,7 +48,7 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 			if len(current.Checks) == 0 {
 				t.Fatal("the base holds no check")
 			}
-			names := append(slices.Clone(namesOfNothing), "no-such-node", current.Checks[0].ID)
+			names := append(namesOfNothing(), "no-such-node", current.Checks[0].ID)
 			var inputs []sweepInput
 			var tree any
 			if err := json.Unmarshal(base["approved.json"].Data, &tree); err != nil {
@@ -99,8 +99,9 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 // that moves one there, so the statement above it loses it, which can leave that one met.
 const parentLeftOut = "a statement or a component whose approved block leaves out its parent is at the top of the tree (R1, R15)"
 
-// blockAttributeText is one attribute of a block's opening line, with the space before it.
-var blockAttributeText = regexp.MustCompile(` ([a-z_]+)="[^"]*"`)
+// blockAttributeText is one attribute of a block's opening line, with the space before it: a
+// pattern compiled anew at each call, as each table that a sweep reads is a function (sweepMaps).
+func blockAttributeText() *regexp.Regexp { return regexp.MustCompile(` ([a-z_]+)="[^"]*"`) }
 
 // leftOutAttributes is, for each attribute of the opening line of each version of each node of
 // tree, the approved.json of base, base with the attribute left out of that block (A), and the same
@@ -109,12 +110,13 @@ var blockAttributeText = regexp.MustCompile(` ([a-z_]+)="[^"]*"`)
 func leftOutAttributes(t *testing.T, base fstest.MapFS, tree any) []sweepInput {
 	t.Helper()
 	var inputs []sweepInput
+	attributeText := blockAttributeText()
 	for n, node := range tree.(map[string]any)["nodes"].([]any) {
 		for v, version := range node.(map[string]any)["versions"].([]any) {
 			place := []string{"nodes", strconv.Itoa(n), "versions", strconv.Itoa(v), "block"}
 			block := version.(map[string]any)["block"].(string)
 			opening, _, _ := strings.Cut(block, "\n")
-			for _, at := range blockAttributeText.FindAllStringSubmatchIndex(opening, -1) {
+			for _, at := range attributeText.FindAllStringSubmatchIndex(opening, -1) {
 				right := ""
 				if opening[at[2]:at[3]] == "parent" {
 					right = parentLeftOut
@@ -138,25 +140,25 @@ func leftOutAttributes(t *testing.T, base fstest.MapFS, tree any) []sweepInput {
 	return inputs
 }
 
-// blockOpening is the opening line of a block, with what its braces hold, and blockAttribute the
-// id and each value of an attribute in it.
-var (
-	blockOpening   = regexp.MustCompile(`^:::[a-z]+\{(.*)\}$`)
-	blockAttribute = regexp.MustCompile(`#([^ }]*)|[a-z_]+="([^"]*)"`)
-)
+// blockOpening is the pattern of the opening line of a block, with what its braces hold, and
+// blockAttribute that of the id and each value of an attribute in it, each compiled anew at each
+// call (blockAttributeText).
+func blockOpening() *regexp.Regexp   { return regexp.MustCompile(`^:::[a-z]+\{(.*)\}$`) }
+func blockAttribute() *regexp.Regexp { return regexp.MustCompile(`#([^ }]*)|[a-z_]+="([^"]*)"`) }
 
 // blockTexts is the place of each text inside each block of text, as the offsets of its first and
 // its last byte and one: the id and each value of an attribute of the block's opening line, and
 // each line of its body, after the marker of a field of a check and its space where it has one.
 func blockTexts(text string) [][2]int {
 	var places [][2]int
+	opening, attribute := blockOpening(), blockAttribute()
 	inBlock, at := false, 0
 	for _, line := range strings.SplitAfter(text, "\n") {
 		body := strings.TrimSuffix(line, "\n")
-		switch open := blockOpening.FindStringSubmatchIndex(body); {
+		switch open := opening.FindStringSubmatchIndex(body); {
 		case !inBlock && open != nil:
 			inBlock = true
-			for _, m := range blockAttribute.FindAllStringSubmatchIndex(body[open[2]:open[3]], -1) {
+			for _, m := range attribute.FindAllStringSubmatchIndex(body[open[2]:open[3]], -1) {
 				for g := 2; g < len(m); g += 2 {
 					if m[g] >= 0 {
 						places = append(places, [2]int{at + open[2] + m[g], at + open[2] + m[g+1]})

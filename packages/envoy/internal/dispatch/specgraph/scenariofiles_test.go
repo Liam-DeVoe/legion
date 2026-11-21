@@ -42,13 +42,15 @@ func scenarioFS(t *testing.T, dir string) fstest.MapFS {
 // takes the file's tree, decoded for it alone, its own to build the new tree in, and gives the new
 // one; and reads the file back by its name, with each other file as a copy of fsys taken before the
 // call holds it (cloneFiles, filesRead), so that a writer that writes another file too fails by
-// name. The value that change writes is the caller's to read back, against what the caller states
-// before the call, and a writer of a sweep is a function of the package (refusalAt,
-// resultsWithout), so that it can name no variable of the sweep.
+// name, as does one that changes a value of the package (packageValuesKept). The value that change
+// writes is the caller's to read back, against what the caller states before the call, and a
+// writer of a sweep is a function of the package (refusalAt, resultsWithout), so that it can name
+// no variable of the sweep.
 func editTree(t *testing.T, fsys fstest.MapFS, name string, change func(any) any) {
 	t.Helper()
-	before := cloneFiles(fsys)
+	before, values := cloneFiles(fsys), packageValuesNow()
 	data := encodeTree(t, change(fileTree(t, fsys, name)))
+	packageValuesKept(t, name, values)
 	fsys[name] = &fstest.MapFile{Data: data}
 	filesRead(t, before, fsys, map[string][]byte{name: data}, nil)
 }
@@ -263,15 +265,17 @@ func valueAt(tree any, c treeChange) any   { return treeWith(tree, c.place, c.va
 // that copy, and want itself, with a copy of want taken before the call, as decoded values, not as
 // encodings, since encoding/json/v2 writes the members of an object in no fixed order (changeKept).
 // So a writer that writes another value or at another place fails by the read back, and one that
-// changes the value or the place that it is handed, before or after a right write, fails by name
-// too; and no later input of the sweep reads what a writer changed.
+// changes the value or the place that it is handed, before or after a right write, or a value of the
+// package (packageValuesKept), fails by name too; and no later input of the sweep reads what a
+// writer changed.
 func changedFile(t *testing.T, base fstest.MapFS, name string, want treeChange, write treeWriter) fstest.MapFS {
 	t.Helper()
 	meant := want.meant(t, base, name)
-	handed, before := want.copied(t), want.copied(t)
+	handed, before, values := want.copied(t), want.copied(t), packageValuesNow()
 	data := encodeTree(t, write(fileTree(t, base, name), handed))
 	changeKept(t, name, meant.at, "the writer's copy of the change", handed, before)
 	changeKept(t, name, meant.at, "the sweep's own change", want, before)
+	packageValuesKept(t, name, values)
 	fsys := maps.Clone(base)
 	fsys[name] = &fstest.MapFile{Data: data}
 	filesRead(t, base, fsys, nil, map[string]meantTree{name: meant})
@@ -313,17 +317,74 @@ func cloneFiles(fsys fstest.MapFS) fstest.MapFS {
 // caller builds from base before the call (filesRead). write is handed a copy of base of its own
 // (cloneFiles), which it changes, and the read back takes each other file from another copy of base,
 // taken before the call, so that a writer that writes another file, or writes through a file that
-// it is handed, fails by name. The input that filesWritten gives is a third copy, taken after the
-// read back, which no writer holds: so a writer that keeps the files that it was handed, and
-// changes them in a later call, changes no input of the sweep. Each writer is the function that a
-// function of the package gives (takenOut, textWritten, attributeOutOfFiles), of its own copies of
-// what it writes, so that it can name no variable of the sweep.
+// it is handed, fails by name, as does one that changes a value of the package (packageValuesKept).
+// The input that filesWritten gives is a third copy, taken after the read back, which no writer
+// holds: so a writer that keeps the files that it was handed, and changes them in a later call,
+// changes no input of the sweep. Each writer is the function that a function of the package gives
+// (takenOut, textWritten, attributeOutOfFiles), of its own copies of what it writes, so that it can
+// name no variable of the sweep.
 func filesWritten(t *testing.T, base fstest.MapFS, written map[string][]byte, write func(fsys fstest.MapFS)) fstest.MapFS {
 	t.Helper()
-	before, handed := cloneFiles(base), cloneFiles(base)
+	before, handed, values := cloneFiles(base), cloneFiles(base), packageValuesNow()
 	write(handed)
+	packageValuesKept(t, fmt.Sprintf("the files %q", slices.Sorted(maps.Keys(written))), values)
 	filesRead(t, before, handed, written, nil)
 	return cloneFiles(handed)
+}
+
+// packageValue is a value of the package that a sweep or a writer of a sweep reads, by its name
+// (packageValuesNow).
+type packageValue struct {
+	name  string
+	value any
+}
+
+// packageValuesNow is a copy, which shares no object with them, of each variable of the package
+// that a sweep or a writer of a sweep reads: the values of the check case from which memberScenario
+// builds the base of TestAMemberLeftOutOfAFileIsReadByItsMark, which a writer of a test that runs
+// beside it could reach, and checkFields and pointerToken of the package's own code, which
+// blockTexts and treePointer read. Each table that a sweep reads of its own is a function that
+// gives a new value at each call (sweepMaps, sweepPaths, namesOfNothing, addableMembers,
+// recordKinds, sweepFloors, scenarioFileTypes and the patterns of blockTexts), so that no writer
+// can change it. changedFile, filesWritten and editTree take this copy before each writer call and
+// compare it after (packageValuesKept).
+func packageValuesNow() []packageValue {
+	statement := func(s Statement) Statement {
+		s.Serves, s.About = slices.Clone(s.Serves), slices.Clone(s.About)
+		return s
+	}
+	check := func(c Check) Check {
+		if c.Test != nil {
+			test := *c.Test
+			c.Test = &test
+		}
+		return c
+	}
+	return []packageValue{
+		{"checkStateApproved", checkStateApproved},
+		{"checkStateRun", checkStateRun},
+		{"checkStateTop", statement(checkStateTop)},
+		{"checkStateLeaf", statement(checkStateLeaf)},
+		{"checkStateCheck", check(checkStateCheck)},
+		{"checkStateGraph", check(checkStateGraph)},
+		{"checkStateProductionProgram", check(checkStateProductionProgram)},
+		{"checkStateTie", slices.Clone(checkStateTie)},
+		{"checkFields", checkFields},
+		{"pointerToken", pointerToken},
+	}
+}
+
+// packageValuesKept fails the test unless each value of the package that before, the copy that
+// packageValuesNow took before a writer of the file name ran, holds, holds after the call, so that a
+// writer that changes one, for a later call of its own sweep or for a test that runs beside it,
+// fails by name.
+func packageValuesKept(t *testing.T, name string, before []packageValue) {
+	t.Helper()
+	for i, now := range packageValuesNow() {
+		if !reflect.DeepEqual(now.value, before[i].value) {
+			t.Fatalf("a writer of %s changed %s, a value of the package: it holds %+v after the writer ran, where it held %+v", name, now.name, now.value, before[i].value)
+		}
+	}
 }
 
 // takenOut is the writer of the tree sweep that takes the file name out of the files that it is
