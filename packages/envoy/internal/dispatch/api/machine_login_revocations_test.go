@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -506,5 +507,135 @@ func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 	}
 	if owed, _, err := revocations.Owing(ctx, accessErin); err != nil || !owed {
 		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after the pass at once, want it owed until a claim comes %s after the block", owed, err, machineLoginSettleAfter)
+	}
+}
+
+// TestASecondApproveOfThePersonWhileOneIsInFlightIsRefused: an approval Dispatch relays for a
+// restricted member holds a database connection, with their approval lock, until the broker
+// answers, so a burst of approves must not each hold one. erin's first browser approve of her own
+// machine login reaches the broker, which has not answered it; her second approve while it is in
+// flight is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT at once and reaches the broker as no decision.
+// Once the broker answers, the first approve is 200.
+//
+// Control: take the approval lock shared and waiting, as the head before this row did, and the
+// second approve reaches the broker and is answered 200, named.
+func TestASecondApproveOfThePersonWhileOneIsInFlightIsRefused(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, _, _ := newRegisteredAccessServer(t, testServerOptions{
+		signInOutside:   true,
+		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+	})
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	const approve = "POST /v1/credential-requests/rec-erin/approve"
+	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	reached, release := make(chan struct{}), make(chan struct{})
+	var arrivals atomic.Int32
+	rig.beforeAnswer[approve] = func() {
+		if arrivals.Add(1) == 1 {
+			close(reached)
+			<-release
+		}
+	}
+	answer := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(answer)
+	first := make(chan int, 1)
+	go func() {
+		first <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
+	}()
+	<-reached
+
+	second := dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin)
+	if second.Code != http.StatusConflict || !strings.Contains(second.Body.String(), `"code":"MACHINE_LOGIN_APPROVAL_IN_FLIGHT"`) {
+		t.Errorf("erin's second approve while her first is at the broker = %d %s, want 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT", second.Code, second.Body.String())
+	}
+	if got := arrivals.Load(); got != 1 {
+		t.Errorf("the broker was sent %d approves of erin's, want the first alone", got)
+	}
+	answer()
+	if code := <-first; code != http.StatusOK {
+		t.Errorf("erin's first approve answered %d once the broker answered, want 200", code)
+	}
+}
+
+// TestARemovalWaitingOnAnApprovalHoldsUpNoOtherWriteOfTheProject: a removal of a restricted member
+// waits for an approval of theirs that Dispatch is relaying, and must not hold the project's owner
+// lock while it does, or every other write of the project's access waits on the broker too.
+// erin's browser approve of her own machine login reaches the broker, which has not answered it;
+// alice's removal of erin from ACC waits for it; alice's addition of carol to ACC's list meanwhile
+// answers 200 without waiting. Once the broker answers, the removal is 200.
+//
+// Control: take the person's approval lock after the project's owner lock (in the record alone), as
+// the head before this row did, and carol's addition waits behind the removal, named.
+func TestARemovalWaitingOnAnApprovalHoldsUpNoOtherWriteOfTheProject(t *testing.T) {
+	rig := newFakeBrokerRig(t)
+	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
+		signInOutside:   true,
+		agentSecretsURL: rig.server.URL, agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+	})
+	ctx := t.Context()
+	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	const approve = "POST /v1/credential-requests/rec-erin/approve"
+	rig.bodyByRoute["POST /v1/machine-logins/lookup"] = erinsOwnLogin
+	reached, release := make(chan struct{}), make(chan struct{})
+	rig.beforeAnswer[approve] = func() {
+		close(reached)
+		<-release
+	}
+	answer := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(answer)
+	approved := make(chan int, 1)
+	go func() {
+		approved <- dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-requests/rec-erin/approve", map[string]any{"code": "ABCD-1234"}, accessErin).Code
+	}()
+	<-reached
+	lockWaiters := func() int {
+		var n int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&n); err != nil {
+			t.Fatalf("read how many writes wait on a lock: %v", err)
+		}
+		return n
+	}
+	removed := make(chan int, 1)
+	go func() {
+		removed <- dispatchRequest(t, served, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice").Code
+	}()
+	for giveUp := time.Now().Add(30 * time.Second); lockWaiters() == 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(giveUp) {
+			t.Fatalf("alice's removal of erin did not wait on erin's approval within 30 s")
+		}
+	}
+
+	added := make(chan int, 1)
+	go func() {
+		added <- dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessCarol, nil, "alice").Code
+	}()
+	addedCode := 0
+	for giveUp := time.Now().Add(30 * time.Second); addedCode == 0; time.Sleep(20 * time.Millisecond) {
+		select {
+		case addedCode = <-added:
+		default:
+			if waiting := lockWaiters(); waiting > 1 {
+				t.Errorf("alice's addition of carol to ACC waits on a lock behind erin's removal (%d writes waiting), want it answered while the removal waits on erin's approval", waiting)
+				answer()
+				addedCode = <-added
+			} else if time.Now().After(giveUp) {
+				t.Fatalf("alice's addition of carol to ACC neither finished nor waited on a lock within 30 s")
+			}
+		}
+	}
+	if addedCode != http.StatusOK {
+		t.Errorf("alice's addition of carol to ACC answered %d, want 200", addedCode)
+	}
+	answer()
+	if code := <-approved; code != http.StatusOK {
+		t.Errorf("erin's approve answered %d once the broker answered, want 200", code)
+	}
+	if code := <-removed; code != http.StatusOK {
+		t.Errorf("alice's removal of erin answered %d once erin's approval ended, want 200", code)
 	}
 }

@@ -17,14 +17,14 @@ import (
 //
 // Dispatch's database orders the approvals of a restricted member's machine logins against these
 // records, so the pass compares no clock of the broker's: an approval Dispatch relays holds the
-// person's approval lock shared from its check that nothing is owed until the broker answers it
-// (HoldMachineLoginApprovals), and a record takes the same lock exclusive first, so it waits for
-// every approval in flight and is ordered after it. While one is owed, Dispatch relays no approval
-// of the person's, so every machine login of theirs the broker lists was approved before the
-// record, and the pass revokes them all. An approval Dispatch gave up on before the broker
-// answered may still commit after the record, while the broker's handler of it runs; so a row
-// settles only to a claim that came the broker's bound on that handler after the record (Settle's
-// after), whose list holds every such login. Both times are this database's.
+// person's approval lock from its check that nothing is owed until the broker answers it
+// (HoldMachineLoginApprovals), and a record takes the same lock first (LockMachineLoginApprovals),
+// so it waits for an approval in flight and is ordered after it. While one is owed, Dispatch relays
+// no approval of the person's, so every machine login of theirs the broker lists was approved
+// before the record, and the pass revokes them all. An approval Dispatch gave up on before the
+// broker answered may still commit after the record, while the broker's handler of it runs; so a
+// row settles only to a claim that came the broker's bound on that handler after the record
+// (Settle's after), whose list holds every such login. Both times are this database's.
 type MachineLoginRevocations struct {
 	pool *Pool
 }
@@ -46,18 +46,32 @@ type OwedMachineLoginRevocation struct {
 }
 
 // machineLoginApprovalsLockSQL is the person's approval lock: $1 the address, as people.email holds
-// it; %s is pg_advisory_xact_lock or pg_advisory_xact_lock_shared.
+// it; %s is pg_advisory_xact_lock, which waits for it, or pg_try_advisory_xact_lock, which answers
+// at once whether it took it.
 const machineLoginApprovalsLockSQL = `select %s(hashtextextended('machine_login_approvals:' || lower(btrim($1)), 0))`
+
+// LockMachineLoginApprovals takes, for the rest of tx, the person email's approval lock, waiting
+// for an approval of theirs that Dispatch is relaying (HoldMachineLoginApprovals) to end. A removal
+// of the person from an access list takes it before the project's owner lock
+// (api.deleteProjectAccessPerson), so its wait for an approve the broker has not answered holds up
+// no other write of the project; the runbook's block for a broker restored alone takes it too.
+// Taking it again in tx returns at once.
+func LockMachineLoginApprovals(ctx context.Context, tx pgx.Tx, email string) error {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(machineLoginApprovalsLockSQL, "pg_advisory_xact_lock"), email); err != nil {
+		return fmt.Errorf("wait for the machine-login approvals of %s in flight: %w", email, err)
+	}
+	return nil
+}
 
 // RecordMachineLoginRevocation records in tx that Dispatch owes the broker the revocation of every
 // machine login email approved: owed anew, under the next generation, when one is owed or paid
 // already, so a pass that read an earlier one never settles this one. It takes the person's approval
-// lock exclusive first, so it waits for every approval of theirs in flight
-// (HoldMachineLoginApprovals) and the login it mints is one the pass lists. Its commit wakes the
-// revocation loop (machine_login_revocations_notify).
+// lock first (LockMachineLoginApprovals), so it waits for an approval of theirs in flight and the
+// login that approval mints is one the pass lists. Its commit wakes the revocation loop
+// (machine_login_revocations_notify).
 func RecordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, email string) error {
-	if _, err := tx.Exec(ctx, fmt.Sprintf(machineLoginApprovalsLockSQL, "pg_advisory_xact_lock"), email); err != nil {
-		return fmt.Errorf("wait for the machine-login approvals of %s in flight: %w", email, err)
+	if err := LockMachineLoginApprovals(ctx, tx, email); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into machine_login_revocations (email) values (lower(btrim($1)))
@@ -69,22 +83,28 @@ func RecordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, email string) 
 	return nil
 }
 
-// HoldMachineLoginApprovals takes, for the rest of tx, the person email's approval lock shared, and
-// reports whether a revocation of their machine logins is owed. An approval of theirs holds tx open
-// until the broker has answered it, and is relayed only when nothing is owed: a removal that records
-// a revocation meanwhile waits for it (RecordMachineLoginRevocation), so the login the approval mints
-// is listed when the pass runs, and once one is owed no approval is relayed until the pass settles
-// it.
-func HoldMachineLoginApprovals(ctx context.Context, tx pgx.Tx, email string) (owed bool, err error) {
-	if _, err := tx.Exec(ctx, fmt.Sprintf(machineLoginApprovalsLockSQL, "pg_advisory_xact_lock_shared"), email); err != nil {
-		return false, fmt.Errorf("hold the machine-login approvals of %s: %w", email, err)
+// HoldMachineLoginApprovals tries to take, for the rest of tx, the person email's approval lock,
+// and reports whether it took it and, when it did, whether a revocation of their machine logins is
+// owed. An approval of theirs holds tx open until the broker has answered it, and is relayed only
+// when it took the lock and nothing is owed: a removal that records a revocation meanwhile waits for
+// it (LockMachineLoginApprovals), so the login the approval mints is one the pass lists, and once
+// one is owed no approval is relayed until a pass settles it. It never waits: while another
+// approval of the person's holds the lock, or a removal or the runbook's restore block does, it
+// answers held false at once, so a person holds at most one database connection across a broker
+// call, whatever burst of approves they send.
+func HoldMachineLoginApprovals(ctx context.Context, tx pgx.Tx, email string) (held, owed bool, err error) {
+	if err := tx.QueryRow(ctx, fmt.Sprintf(machineLoginApprovalsLockSQL, "pg_try_advisory_xact_lock"), email).Scan(&held); err != nil {
+		return false, false, fmt.Errorf("hold the machine-login approvals of %s: %w", email, err)
+	}
+	if !held {
+		return false, false, nil
 	}
 	if err := tx.QueryRow(ctx, `
 		select exists (select 1 from machine_login_revocations where email = lower(btrim($1)) and done_at is null)
 	`, email).Scan(&owed); err != nil {
-		return false, fmt.Errorf("read whether the revocation of %s's machine logins is owed: %w", email, err)
+		return true, false, fmt.Errorf("read whether the revocation of %s's machine logins is owed: %w", email, err)
 	}
-	return owed, nil
+	return true, owed, nil
 }
 
 // Claim takes up to limit owed revocations no pass claimed within retry, those never tried first,

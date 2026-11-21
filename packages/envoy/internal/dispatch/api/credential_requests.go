@@ -332,9 +332,12 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 }
 
 // relayMachineLoginApproval relays a restricted member's approve of their own machine login while
-// holding their approval lock shared (store.HoldMachineLoginApprovals), in a transaction it keeps
-// open until the broker has answered, so a removal that records a revocation of their machine logins
-// waits for it and the pass lists the login it mints. While a revocation is owed it relays nothing:
+// holding their approval lock (store.HoldMachineLoginApprovals), in a transaction it keeps open
+// until the broker has answered, so a removal that records a revocation of their machine logins
+// waits for it and the pass lists the login it mints. It does not wait for the lock: while another
+// approve of the person's is at the broker, or a removal of theirs is being recorded, it relays
+// nothing and answers 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT, so a burst of approves holds at most one
+// database connection across a broker call. While a revocation is owed it relays nothing either:
 // 409 MACHINE_LOGIN_REVOCATION_OWED, for the person to approve again once a pass has revoked their
 // earlier logins and settled it, about a minute after a removal commits (machineLoginSettleAfter).
 // A read that fails is 503.
@@ -346,10 +349,15 @@ func (s *server) relayMachineLoginApproval(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	owed, err := store.HoldMachineLoginApprovals(ctx, tx, person)
+	held, owed, err := store.HoldMachineLoginApprovals(ctx, tx, person)
 	if err != nil {
 		writeError(w, "MACHINE_LOGIN_APPROVALS_UNREAD", http.StatusServiceUnavailable,
 			"whether a revocation of this person's machine logins is owed could not be read, so the approval was not relayed; try again in a minute")
+		return
+	}
+	if !held {
+		writeError(w, "MACHINE_LOGIN_APPROVAL_IN_FLIGHT", http.StatusConflict,
+			"another approval of this person's machine logins is being relayed to the secrets broker, or a removal of theirs from an access list is being recorded; approve again in a few seconds")
 		return
 	}
 	if owed {
