@@ -52,21 +52,17 @@ func taskHealthCheck(t *testing.T, a core.Authorization) (command, config string
 
 // runTaskHealthCheck runs the hub's image on config with healthCheckArgs, as the task's start
 // script execs nats-server, waits until monitoring answers on 127.0.0.1, and then runs the task's
-// health check command in the container, as ECS does. It fails as UNKNOWN when the container's
-// loopback has no IPv6 address: there `localhost` names 127.0.0.1 alone, and no run can tell a
-// health check that reads only 127.0.0.1 from one that reads either loopback.
-func runTaskHealthCheck(t *testing.T, a core.Authorization, config, command string) (int, string) {
+// health check command in the container, as ECS does. The container starts on config itself
+// (testnats.StartImageReady), not on another configuration it is then stopped and started again
+// on: a start after a stop publishes the client port again, and in envoy-infra-go another process
+// once took that port while the container was stopped, so the start failed, "address already in
+// use". It fails as UNKNOWN when the container's loopback has no IPv6 address: there `localhost`
+// names 127.0.0.1 alone, and no run can tell a health check that reads only 127.0.0.1 from one
+// that reads either loopback.
+func runTaskHealthCheck(t *testing.T, config, command string) (int, string) {
 	t.Helper()
 	ctx := context.Background()
-	start := a
-	start.Callout, start.PrivateProjects = nil, false
-	first, err := start.Render(nil)
-	require.NoError(t, err)
-	ctr, _ := testnats.StartImageConfig(t, testnats.HubImage, first, healthCheckArgs, false)
-	stop := 10 * time.Second
-	require.NoError(t, ctr.Stop(ctx, &stop))
-	require.NoError(t, ctr.CopyToContainer(ctx, []byte(config), "/etc/nats/nats-server.conf", 0o644))
-	require.NoError(t, ctr.Start(ctx))
+	ctr, _ := testnats.StartImageReady(t, testnats.HubImage, config, healthCheckArgs)
 
 	run := func(cmd string) (int, string) {
 		code, r, err := ctr.Exec(ctx, []string{"/bin/sh", "-c", cmd})
@@ -94,7 +90,7 @@ func TestThePrivateTasksHealthCheckPasses(t *testing.T) {
 	a := privateOnly()
 	command, config := taskHealthCheck(t, a)
 	require.Contains(t, config, "\nhttp: \"127.0.0.1:0\"\n", "the private start script binds monitoring to loopback")
-	code, out := runTaskHealthCheck(t, a, config, command)
+	code, out := runTaskHealthCheck(t, config, command)
 	require.Equal(t, 0, code, "the task's health check %q failed in the private task: %s", command, out)
 }
 
@@ -105,6 +101,6 @@ func TestThePublicTasksHealthCheckPasses(t *testing.T) {
 	a.PrivateProjects = false
 	command, config := taskHealthCheck(t, a)
 	require.NotContains(t, config, "http:")
-	code, out := runTaskHealthCheck(t, a, config, command)
+	code, out := runTaskHealthCheck(t, config, command)
 	require.Equal(t, 0, code, "the task's health check %q failed in the public task: %s", command, out)
 }

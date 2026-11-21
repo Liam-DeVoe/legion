@@ -53,6 +53,19 @@ func StartImageConfig(t testing.TB, image, config string, serverArgs []string, a
 	return ctr, uri
 }
 
+// StartImageReady runs the container StartImageConfig runs, on config, and returns it with its
+// client URL once nats-server logs that it is ready, with no client's wait: for a test that reads
+// the server from inside its container alone, on a configuration that admits no probe from
+// outside (an auth callout holds a client with no credential, and a task's configuration may name
+// no user the probe could be). Such a test starts the container on its final configuration rather
+// than stop it and start it again on another: Docker publishes the client port again at each
+// start, and while the container is stopped another process can take that port, so the start is
+// refused, "address already in use".
+func StartImageReady(t testing.TB, image, config string, serverArgs []string) (*tcnats.NATSContainer, string) {
+	t.Helper()
+	return startImage(t, image, config, serverArgs)
+}
+
 // startImage runs the container StartImageConfig runs and returns it with its client URL, before
 // any wait for the server to answer a client: each caller waits the way its configuration admits.
 // Where the Docker daemon is this machine (localDaemon), the client port is published on a
