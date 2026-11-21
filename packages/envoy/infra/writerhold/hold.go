@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -115,11 +116,13 @@ func readStep1(ctx context.Context, op *Operator) (map[string]string, error) {
 
 // prepare is `hold prepare`: the minter report checked, then the row moved from released to
 // prepare with a new hold id and the hold's journal inserted for its workflow. Clients are still
-// admitted. It prints the hold id.
+// admitted. It prints each allowance the minter run was given, then the hold id.
 func prepare(ctx context.Context, records *holdrecord.Client, op *Operator, o options, now func() time.Time, stdout io.Writer) error {
-	if err := PreflightMinters(ctx, op.Hub.Client, o.MintersReport, now); err != nil {
+	allowances, err := PreflightMinters(ctx, op.Hub.Client, o.MintersReport, now)
+	if err != nil {
 		return err
 	}
+	printAllowances(stdout, allowances)
 	id, err := startHold(ctx, records, op, holdrecord.Workflow(o.workflow), o.reason)
 	if err != nil {
 		return err
@@ -538,18 +541,19 @@ func onExpectedDisks(ctx context.Context, op *Operator, d holdrecord.Done) error
 // hub-restore, or `hold release` with nothing changed is admitted. A rerun that finds the row held
 // under its hold id is admitted again (Set), writes a new intent and runs the held steps again.
 func set(ctx context.Context, records *holdrecord.Client, op *Operator, o options, now func() time.Time, stdout io.Writer) error {
-	if err := PreflightMinters(ctx, op.Hub.Client, o.MintersReport, now); err != nil {
+	allowances, err := PreflightMinters(ctx, op.Hub.Client, o.MintersReport, now)
+	if err != nil {
 		return err
 	}
+	printAllowances(stdout, allowances)
 	id := o.holdID
 	if id == "" {
-		var err error
 		if id, err = startHold(ctx, records, op, holdrecord.Workflow(o.workflow), o.reason); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "prepared hold %s\n", id)
 	}
-	reading, err := Set(ctx, records, op, id, o.reason, restoreInputs(o))
+	reading, err := Set(ctx, records, op, id, o.reason, restoreInputs(o), allowanceOutputs(allowances))
 	if err != nil {
 		return err
 	}
@@ -576,13 +580,15 @@ func restoreInputs(o options) map[string]string {
 }
 
 // Set runs hold set's steps on the hold holdID, prepared already, and returns the report's clean
-// reading. inputs are its intent's (hub-restore's restore inputs). `envoy-infra buckets` and the
-// streams words run it for the hold of their one command. Unless its own intent is pending (the
-// rerun of a set that crashed), it is admitted through holdrecord.Admit before anything changes,
-// whatever the row's phase: the first run with the row prepare, and the rerun after its own stop
-// with the row held, so the rerun takes the one-command lock and writes a new intent before it
-// restarts any server, and its done entry follows that intent. A set already done is refused there.
-func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, reason string, inputs map[string]string) (*ReportReading, error) {
+// reading. inputs are its intent's (hub-restore's restore inputs), and recorded are entries its done
+// entry records beside the restart's (the preflight's minter allowances, minters_allowance.<i>).
+// `envoy-infra buckets` and the streams words run it for the hold of their one command. Unless its
+// own intent is pending (the rerun of a set that crashed), it is admitted through holdrecord.Admit
+// before anything changes, whatever the row's phase: the first run with the row prepare, and the
+// rerun after its own stop with the row held, so the rerun takes the one-command lock and writes a
+// new intent before it restarts any server, and its done entry follows that intent. A set already
+// done is refused there.
+func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, reason string, inputs, recorded map[string]string) (*ReportReading, error) {
 	row, err := records.Row(ctx)
 	if err != nil {
 		return nil, err
@@ -689,7 +695,10 @@ func Set(ctx context.Context, records *holdrecord.Client, op *Operator, holdID, 
 			}
 		}
 	}
-	outputs := map[string]string{}
+	outputs := maps.Clone(recorded)
+	if outputs == nil {
+		outputs = map[string]string{}
+	}
 	for _, r := range restarted {
 		outputs["server_id."+r.Pod] = r.Varz.ServerID
 		outputs["exit."+r.Pod] = r.Exit.String()

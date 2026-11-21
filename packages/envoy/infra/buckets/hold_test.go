@@ -81,7 +81,7 @@ func newHeldBuckets(t *testing.T) *heldBuckets {
 		t.Fatal(err)
 	}
 	h.report = filepath.Join(t.TempDir(), "minters.json")
-	report, _ := json.Marshal(map[string]any{"run_at": time.Now().UTC().Format(time.RFC3339), "findings": []any{}, "unknown": []any{}})
+	report, _ := json.Marshal(map[string]any{"run_at": time.Now().UTC().Format(time.RFC3339), "findings": []any{}, "unknown": []any{}, "allowances": []any{}})
 	if err := os.WriteFile(h.report, report, 0o600); err != nil {
 		t.Fatal(err)
 	}

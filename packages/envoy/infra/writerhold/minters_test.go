@@ -1,6 +1,7 @@
 package writerhold
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -75,7 +77,13 @@ func reportAt(runAt time.Time, findings []map[string]any, unknown []MinterUnknow
 	if unknown == nil {
 		unknown = []MinterUnknown{}
 	}
-	return map[string]any{"run_at": runAt.Format(time.RFC3339), "findings": findings, "unknown": unknown}
+	return map[string]any{"run_at": runAt.Format(time.RFC3339), "findings": findings, "unknown": unknown, "allowances": []any{}}
+}
+
+// preflightErr is PreflightMinters' error alone, for the rows that check its refusal or its pass.
+func preflightErr(ctx context.Context, client kubernetes.Interface, reportPath string, now func() time.Time) error {
+	_, err := PreflightMinters(ctx, client, reportPath, now)
+	return err
 }
 
 // TestHoldPreflightTheMinterReport shows the preflight's minter check (§3a "Who can mint the
@@ -107,18 +115,18 @@ func TestHoldPreflightTheMinterReport(t *testing.T) {
 
 	passing := minterReportFile(t, reportAt(fresh, []map[string]any{finding(applier, adminRole, infraProject, createToken)}, nil))
 	t.Run("a match passes", func(t *testing.T) {
-		require.NoError(t, PreflightMinters(ctx, client(list), passing, now), "a report whose one finding is accepted, 10 minutes old")
+		require.NoError(t, preflightErr(ctx, client(list), passing, now), "a report whose one finding is accepted, 10 minutes old")
 	})
 
 	withCI := minterReportFile(t, reportAt(fresh, []map[string]any{
 		finding(applier, adminRole, infraProject, createToken), finding(legionCI, adminRole, rootProject, createToken),
 	}, nil))
 	t.Run("a principal not in the accepted list", func(t *testing.T) {
-		requireRefusal(t, PreflightMinters(ctx, client(list), withCI, now), StepPreflight,
+		requireRefusal(t, preflightErr(ctx, client(list), withCI, now), StepPreflight,
 			"names holders that envoy-operator/envoy-operator-accepted-minters does not accept: "+legionCI+" (role "+adminRole+" on "+rootProject+")")
 	})
 	t.Run("the control: the report names legion-ci@ as a holder", func(t *testing.T) {
-		_, findings, _, err := readMinterReport(withCI)
+		_, findings, _, _, err := readMinterReport(withCI)
 		require.NoError(t, err)
 		var principals []string
 		for _, f := range findings {
@@ -135,22 +143,22 @@ func TestHoldPreflightTheMinterReport(t *testing.T) {
 	} {
 		t.Run("a hold writer: "+writer.permission, func(t *testing.T) {
 			report := minterReportFile(t, reportAt(fresh, []map[string]any{finding(writer.principal, writer.role, writer.resource, writer.permission)}, nil))
-			requireRefusal(t, PreflightMinters(ctx, client(list), report, now), StepPreflight, writer.principal+" (role "+writer.role+" on "+writer.resource+")")
+			requireRefusal(t, preflightErr(ctx, client(list), report, now), StepPreflight, writer.principal+" (role "+writer.role+" on "+writer.resource+")")
 		})
 	}
 	t.Run("the same principal with another role", func(t *testing.T) {
 		report := minterReportFile(t, reportAt(fresh, []map[string]any{finding(applier, "roles/container.developer", infraProject, createToken)}, nil))
-		requireRefusal(t, PreflightMinters(ctx, client(list), report, now), StepPreflight, applier+" (role roles/container.developer on "+infraProject+")")
+		requireRefusal(t, preflightErr(ctx, client(list), report, now), StepPreflight, applier+" (role roles/container.developer on "+infraProject+")")
 	})
 	t.Run("a report in the sentence form alone", func(t *testing.T) {
 		// The accepted list accepts the finding's principal and right, so only the shape stops it:
 		// a principal and the sentence right, with none of the structured fields.
 		old := minterReportFile(t, reportAt(fresh, []map[string]any{{"principal": applier, "right": adminRole}}, nil))
-		requireUnknown(t, PreflightMinters(ctx, client(list), old, now), StepPreflight, "findings[0] lacks its role, resource, permissions and granted_at")
+		requireUnknown(t, preflightErr(ctx, client(list), old, now), StepPreflight, "findings[0] lacks its role, resource, permissions and granted_at")
 	})
 	t.Run("an UNKNOWN step", func(t *testing.T) {
 		report := minterReportFile(t, reportAt(fresh, nil, []MinterUnknown{{Step: "project IAM policy", Reason: "legion-reader lacks resourcemanager.projects.getIamPolicy"}}))
-		requireUnknown(t, PreflightMinters(ctx, client(list), report, now), StepPreflight, "could not read: project IAM policy (legion-reader lacks resourcemanager.projects.getIamPolicy)")
+		requireUnknown(t, preflightErr(ctx, client(list), report, now), StepPreflight, "could not read: project IAM policy (legion-reader lacks resourcemanager.projects.getIamPolicy)")
 	})
 	for _, c := range []struct {
 		name  string
@@ -163,26 +171,26 @@ func TestHoldPreflightTheMinterReport(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			report := minterReportFile(t, reportAt(c.runAt, nil, nil))
-			requireRefusal(t, PreflightMinters(ctx, client(list), report, now), StepPreflight, c.age, "the hold takes a report under 1h0m0s old")
+			requireRefusal(t, preflightErr(ctx, client(list), report, now), StepPreflight, c.age, "the hold takes a report under 1h0m0s old")
 		})
 	}
 	t.Run("no report", func(t *testing.T) {
-		requireRefusal(t, PreflightMinters(ctx, client(list), "", now), StepPreflight, "no minter report")
+		requireRefusal(t, preflightErr(ctx, client(list), "", now), StepPreflight, "no minter report")
 	})
 	t.Run("a report that cannot be read", func(t *testing.T) {
-		requireUnknown(t, PreflightMinters(ctx, client(list), filepath.Join(t.TempDir(), "absent.json"), now), StepPreflight, "read the minter report")
+		requireUnknown(t, preflightErr(ctx, client(list), filepath.Join(t.TempDir(), "absent.json"), now), StepPreflight, "read the minter report")
 	})
 	for _, c := range []struct {
 		name   string
 		report any
 		what   string
 	}{
-		{"a report with no unknown list", map[string]any{"run_at": fresh.Format(time.RFC3339), "findings": []any{}}, "lacks its findings or its unknown list"},
-		{"a report with no run_at", map[string]any{"findings": []any{}, "unknown": []MinterUnknown{}}, "has no run_at"},
-		{"a report with a field the hold does not read", map[string]any{"run_at": fresh.Format(time.RFC3339), "findings": []any{}, "unknown": []MinterUnknown{}, "skipped": []string{"iam"}}, "decode the minter report"},
+		{"a report with no unknown list", map[string]any{"run_at": fresh.Format(time.RFC3339), "findings": []any{}, "allowances": []any{}}, "lacks its findings, its unknown list or its allowances"},
+		{"a report with no run_at", map[string]any{"findings": []any{}, "unknown": []MinterUnknown{}, "allowances": []any{}}, "has no run_at"},
+		{"a report with a field the hold does not read", map[string]any{"run_at": fresh.Format(time.RFC3339), "findings": []any{}, "unknown": []MinterUnknown{}, "allowances": []any{}, "skipped": []string{"iam"}}, "decode the minter report"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			requireUnknown(t, PreflightMinters(ctx, client(list), minterReportFile(t, c.report), now), StepPreflight, c.what)
+			requireUnknown(t, preflightErr(ctx, client(list), minterReportFile(t, c.report), now), StepPreflight, c.what)
 		})
 	}
 	// requireLacks requires err to be UNKNOWN whose finding ends with what, naming the finding's
@@ -199,25 +207,25 @@ func TestHoldPreflightTheMinterReport(t *testing.T) {
 			other := finding(legionCI, adminRole, rootProject, createToken)
 			delete(other, field)
 			report := minterReportFile(t, reportAt(fresh, []map[string]any{finding(applier, adminRole, infraProject, createToken), other}, nil))
-			requireLacks(t, PreflightMinters(ctx, client(list), report, now), "findings[1] lacks its "+field)
+			requireLacks(t, preflightErr(ctx, client(list), report, now), "findings[1] lacks its "+field)
 		})
 		t.Run("a finding with an empty "+field, func(t *testing.T) {
 			other := finding(legionCI, adminRole, rootProject, createToken)
 			other[field] = empty
 			report := minterReportFile(t, reportAt(fresh, []map[string]any{finding(applier, adminRole, infraProject, createToken), other}, nil))
-			requireLacks(t, PreflightMinters(ctx, client(list), report, now), "findings[1] lacks its "+field)
+			requireLacks(t, preflightErr(ctx, client(list), report, now), "findings[1] lacks its "+field)
 		})
 	}
 	t.Run("a finding with no field at all", func(t *testing.T) {
 		report := minterReportFile(t, reportAt(fresh, []map[string]any{{}}, nil))
-		requireLacks(t, PreflightMinters(ctx, client(list), report, now), "findings[0] lacks its principal, role, resource, permissions and granted_at")
+		requireLacks(t, preflightErr(ctx, client(list), report, now), "findings[0] lacks its principal, role, resource, permissions and granted_at")
 	})
 	t.Run("a finding whose permissions hold an empty entry", func(t *testing.T) {
 		report := minterReportFile(t, reportAt(fresh, []map[string]any{finding(legionCI, adminRole, rootProject, createToken, "")}, nil))
-		requireLacks(t, PreflightMinters(ctx, client(list), report, now), "findings[0] lacks its permissions")
+		requireLacks(t, preflightErr(ctx, client(list), report, now), "findings[0] lacks its permissions")
 	})
 	t.Run("no accepted list", func(t *testing.T) {
-		requireUnknown(t, PreflightMinters(ctx, client(), passing, now), StepPreflight, "read ConfigMap envoy-operator/envoy-operator-accepted-minters")
+		requireUnknown(t, preflightErr(ctx, client(), passing, now), StepPreflight, "read ConfigMap envoy-operator/envoy-operator-accepted-minters")
 	})
 	// requireEntryFinding requires err to be UNKNOWN whose finding ends naming entry i and exactly
 	// the fields it lacks, so a message that names every field at once does not pass.
@@ -234,23 +242,23 @@ func TestHoldPreflightTheMinterReport(t *testing.T) {
 		t.Run("an accepted entry with no "+field, func(t *testing.T) {
 			delete(other, field)
 			list := acceptedMinters(t, []map[string]string{whole, other})
-			requireEntryFinding(t, PreflightMinters(ctx, client(list), passing, now), 1, field)
+			requireEntryFinding(t, preflightErr(ctx, client(list), passing, now), 1, field)
 		})
 		t.Run("an accepted entry with an empty "+field, func(t *testing.T) {
 			other[field] = ""
 			list := acceptedMinters(t, []map[string]string{whole, other})
-			requireEntryFinding(t, PreflightMinters(ctx, client(list), passing, now), 1, field)
+			requireEntryFinding(t, preflightErr(ctx, client(list), passing, now), 1, field)
 		})
 	}
 	t.Run("an accepted entry with no field at all", func(t *testing.T) {
 		list := acceptedMinters(t, []map[string]string{{}})
-		requireEntryFinding(t, PreflightMinters(ctx, client(list), passing, now), 0, "principal, right, clause and answer")
+		requireEntryFinding(t, preflightErr(ctx, client(list), passing, now), 0, "principal, right, clause and answer")
 	})
 	t.Run("the empty list Sami has not yet answered", func(t *testing.T) {
 		empty := acceptedMinters(t, []AcceptedMinter{})
-		requireRefusal(t, PreflightMinters(ctx, client(empty), passing, now), StepPreflight, applier)
+		requireRefusal(t, preflightErr(ctx, client(empty), passing, now), StepPreflight, applier)
 		none := minterReportFile(t, reportAt(fresh, nil, nil))
-		require.NoError(t, PreflightMinters(ctx, client(empty), none, now), "a report with no finding")
+		require.NoError(t, preflightErr(ctx, client(empty), none, now), "a report with no finding")
 	})
 }
 
@@ -294,7 +302,7 @@ func TestHoldPreflightTheScriptsOwnMinterReport(t *testing.T) {
 		accepted = append(accepted, AcceptedMinter{Principal: f["principal"].(string), Right: f["role"].(string),
 			Clause: "8(d)", Answer: fmt.Sprintf("https://example.invalid/answers/%d", i)})
 	}
-	require.NoError(t, PreflightMinters(ctx, client(acceptedMinters(t, accepted)), report, now), "the script's report with every finding accepted")
+	require.NoError(t, preflightErr(ctx, client(acceptedMinters(t, accepted)), report, now), "the script's report with every finding accepted")
 
 	// Every entry of findings[0]'s principal and role accepts it for another role.
 	other := append([]AcceptedMinter(nil), accepted...)
@@ -303,16 +311,16 @@ func TestHoldPreflightTheScriptsOwnMinterReport(t *testing.T) {
 			other[i].Right = "roles/another.role"
 		}
 	}
-	requireRefusal(t, PreflightMinters(ctx, client(acceptedMinters(t, other)), report, now), StepPreflight,
+	requireRefusal(t, preflightErr(ctx, client(acceptedMinters(t, other)), report, now), StepPreflight,
 		findings[0]["principal"].(string)+" (role "+findings[0]["role"].(string))
 
 	withUnknown, _ := scriptReport(t, minterNow.Add(-5*time.Minute), true)
-	requireUnknown(t, PreflightMinters(ctx, client(acceptedMinters(t, accepted)), withUnknown, now), StepPreflight)
+	requireUnknown(t, preflightErr(ctx, client(acceptedMinters(t, accepted)), withUnknown, now), StepPreflight)
 
 	sentences := make([]map[string]any, len(findings))
 	for i, f := range findings {
 		sentences[i] = map[string]any{"principal": f["principal"], "right": f["right"]}
 	}
-	sentenceReport := minterReportFile(t, map[string]any{"run_at": minterNow.Add(-5 * time.Minute).UTC().Format(time.RFC3339), "findings": sentences, "unknown": []any{}})
-	requireUnknown(t, PreflightMinters(ctx, client(acceptedMinters(t, accepted)), sentenceReport, now), StepPreflight)
+	sentenceReport := minterReportFile(t, map[string]any{"run_at": minterNow.Add(-5 * time.Minute).UTC().Format(time.RFC3339), "findings": sentences, "unknown": []any{}, "allowances": []any{}})
+	requireUnknown(t, preflightErr(ctx, client(acceptedMinters(t, accepted)), sentenceReport, now), StepPreflight)
 }

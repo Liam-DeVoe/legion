@@ -56,11 +56,14 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 	if id == "" && c.Workflow == "" {
 		return "", refusef(StepPreflight, "%s names no hold and no workflow to set one of", c.Command)
 	}
+	var recorded map[string]string
 	if id == "" {
-		if err := PreflightMinters(ctx, op.Hub.Client, c.MintersReport, now); err != nil {
+		allowances, err := PreflightMinters(ctx, op.Hub.Client, c.MintersReport, now)
+		if err != nil {
 			return "", err
 		}
-		var err error
+		printAllowances(stdout, allowances)
+		recorded = allowanceOutputs(allowances)
 		if id, err = startHold(ctx, records, op, c.Workflow, c.Reason); err != nil {
 			return id, err
 		}
@@ -74,7 +77,7 @@ func RunHeld(ctx context.Context, records *holdrecord.Client, op *Operator, c He
 		return id, refusef(StepPreflight, "hold %s is a %s hold: %s runs only in a %s hold", id, d.Workflow, c.Command, c.Workflow)
 	}
 	if !latestIs(d, holdrecord.CommandSet, holdrecord.StateDone) {
-		reading, err := Set(ctx, records, op, id, c.Reason, nil)
+		reading, err := Set(ctx, records, op, id, c.Reason, nil, recorded)
 		if err != nil {
 			return id, err
 		}

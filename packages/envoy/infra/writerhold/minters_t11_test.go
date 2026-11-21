@@ -47,6 +47,10 @@ func t11ScriptReport(t *testing.T, now time.Time) map[string]any {
 	require.NotEmpty(t, report["findings"], "the script's report named no finding; this row would prove nothing")
 	report["run_at"] = now.Add(-time.Minute).Format(time.RFC3339)
 	report["unknown"] = []any{}
+	// The row-m report was recorded before the script wrote `allowances`; a run given none writes [].
+	if _, ok := report["allowances"]; !ok {
+		report["allowances"] = []any{}
+	}
 	return report
 }
 
@@ -60,7 +64,7 @@ func TestT11TheRenderedListReadsWhole(t *testing.T) {
 // script writes for exactly that holding is accepted.
 func TestT11AnAcceptedHoldingAsTheScriptReportsItIsAccepted(t *testing.T) {
 	now := time.Now().UTC()
-	err := PreflightMinters(context.Background(), fake.NewSimpleClientset(t11List(t)),
+	err := preflightErr(context.Background(), fake.NewSimpleClientset(t11List(t)),
 		minterReportFile(t, t11ScriptReport(t, now)), func() time.Time { return now })
 	require.NoError(t, err, "broker-ci@ holding roles/container.admin is accepted by t-11's list")
 }
@@ -77,11 +81,11 @@ func TestT11ControlTheReadersShapeIsAccepted(t *testing.T) {
 		f["granted_at"] = now.Add(-time.Hour).Format(time.RFC3339)
 		findings = append(findings, f)
 	}
-	ok := PreflightMinters(context.Background(), fake.NewSimpleClientset(t11List(t)),
+	ok := preflightErr(context.Background(), fake.NewSimpleClientset(t11List(t)),
 		minterReportFile(t, reportAt(now.Add(-time.Minute), findings, nil)), func() time.Time { return now })
 	require.NoError(t, ok)
 	findings[0]["principal"] = "serviceAccount:stranger@example-infra.iam.gserviceaccount.com"
-	refused := PreflightMinters(context.Background(), fake.NewSimpleClientset(t11List(t)),
+	refused := preflightErr(context.Background(), fake.NewSimpleClientset(t11List(t)),
 		minterReportFile(t, reportAt(now.Add(-time.Minute), findings, nil)), func() time.Time { return now })
 	require.ErrorContains(t, refused, "stranger@")
 }
@@ -94,7 +98,7 @@ func TestT11TheScriptsGrantedAtAlone(t *testing.T) {
 	for _, f := range report["findings"].([]any) {
 		delete(f.(map[string]any), "right")
 	}
-	err := PreflightMinters(context.Background(), fake.NewSimpleClientset(t11List(t)),
+	err := preflightErr(context.Background(), fake.NewSimpleClientset(t11List(t)),
 		minterReportFile(t, report), func() time.Time { return now })
 	t.Logf("result: %v", err)
 	require.NoError(t, err)
@@ -107,6 +111,6 @@ func TestT11AFieldTheScriptDoesNotWriteIsRefused(t *testing.T) {
 	now := time.Now().UTC()
 	report := t11ScriptReport(t, now)
 	report["findings"].([]any)[0].(map[string]any)["scope"] = "the whole project"
-	requireUnknown(t, PreflightMinters(context.Background(), fake.NewSimpleClientset(t11List(t)),
+	requireUnknown(t, preflightErr(context.Background(), fake.NewSimpleClientset(t11List(t)),
 		minterReportFile(t, report), func() time.Time { return now }), StepPreflight, `unknown field "scope"`)
 }

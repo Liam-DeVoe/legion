@@ -51,8 +51,8 @@ record) or `held`.
 
 | Command | What it does |
 |---|---|
-| `hold prepare --workflow W --reason R --minters-report F` | Checks the minter report against `envoy-operator/envoy-operator-accepted-minters`, moves the row to `prepare` under a new hold id, and starts the hold's journal. It prints the id. |
-| `hold set (--hold ID \| --workflow W --reason R) --minters-report F` | Runs §3a's steps, listed below, and moves the row to `held`. |
+| `hold prepare --workflow W --reason R --minters-report F` | Checks the minter report against `envoy-operator/envoy-operator-accepted-minters`, moves the row to `prepare` under a new hold id, and starts the hold's journal. It prints each allowance the minter run was given, then the id. |
+| `hold set (--hold ID \| --workflow W --reason R) --minters-report F` | Runs §3a's steps, listed below, and moves the row to `held`. It prints each allowance the minter run was given (`--service-agent`, `--rbac-only-member`, `--fleet none`, the report's `allowances`) and records each in its `done` entry as `minters_allowance.<i>`; an allowance refuses nothing, and a report with no `allowances` list, or an allowance it cannot read whole, is UNKNOWN. |
 | `hold abort --hold ID --reason R` | The way out of a hold: see "Abort" below. |
 | `hold release --hold ID --reason R` | Ends a hold whose stops all left nothing changed, or whose workflow is complete. In hub-restore, each claim must first be on its expected disk, and after its row move it reads the disks again: a disk that changed between its check and its move (a restore outside any hold) is named, and it exits 1 with the hold released. |
 | `hold restore [--bootstrap \| --hold ID] --reason R` | Writes a lost row back. See "Restore" below. |

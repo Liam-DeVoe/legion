@@ -117,7 +117,7 @@ func (h *heldStack) acceptMinters(t *testing.T) {
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 	h.report = filepath.Join(t.TempDir(), "minters.json")
-	report, err := json.Marshal(map[string]any{"run_at": time.Now().UTC().Format(time.RFC3339), "findings": []any{}, "unknown": []any{}})
+	report, err := json.Marshal(map[string]any{"run_at": time.Now().UTC().Format(time.RFC3339), "findings": []any{}, "unknown": []any{}, "allowances": []any{}})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(h.report, report, 0o600))
 }
