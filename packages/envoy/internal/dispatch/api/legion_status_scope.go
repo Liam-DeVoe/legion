@@ -87,7 +87,9 @@ const codeLegionStatusScopeRequired = "LEGION_STATUS_SCOPE_REQUIRED"
 // its first statement, before the plan's first write. It judges every step of the plan. on is
 // Deps.LegionStatusScope: off refuses nothing.
 //
-// A refused PATCH changes nothing, because the PATCH writes in one transaction. A refused
+// A refused PATCH writes no field and no event of the issue, because the PATCH writes in one
+// transaction. A close (status done) settles the issue's documents before that transaction
+// (settleIssueBeforeClose), so a refused close can still have settled them. A refused
 // POST /api/v1/issues/{key}/status-change can change some issues. Its plan is checked once before
 // the first write (planStatusChangeUnderLocks). Then each step commits in a transaction of its
 // own through writeIssue, which runs this check again. A step refused there stops the call after

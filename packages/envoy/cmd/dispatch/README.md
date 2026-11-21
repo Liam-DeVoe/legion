@@ -4507,7 +4507,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   - With `DISPATCH_LEGION_STATUS_SCOPE` on, three writes of a Legion issue need a credential that holds the `person` scope or `legion-status`: a status write, the removal of its `legion` label, and a move after which it is no longer a Legion issue.
     A Legion issue carries the `legion` label, in any letter case, or is under an issue that carries it, and Dispatch judges the issue before the call and after it.
-    Any other credential is `403 LEGION_STATUS_SCOPE_REQUIRED`, with an `insufficient_scope` challenge naming `legion-status`, and the call changes nothing.
+    Any other credential is `403 LEGION_STATUS_SCOPE_REQUIRED`, with an `insufficient_scope` challenge naming `legion-status`, and the call writes no field of the issue and no event of it.
+    A refused close (`status: done`) can still settle the issue's documents: the `PATCH` settles them before its transaction (`settleIssueBeforeClose`), and Dispatch judges the write after that.
     A Legion daemon's own broker token holds `legion-status`, and the shared token, a personal token without `person` and a project's other broker tokens hold neither scope.
 
   With `DISPATCH_PARENT_STATUS_RULE` on, a `status` or a `parent` that leaves a parent's status out of line with its children's is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, as `POST /api/v1/issues/{key}/status-change` (below) describes it.

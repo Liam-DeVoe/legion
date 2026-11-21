@@ -4,7 +4,8 @@
 // Legion issue's status, the removal of the legion label from an issue, and a move of a Legion
 // issue out from under every labelled issue. A Legion issue carries the label, in any case, or
 // is under an issue that carries it. The server refuses such a write from any other credential
-// with 403 LEGION_STATUS_SCOPE_REQUIRED and changes nothing.
+// with 403 LEGION_STATUS_SCOPE_REQUIRED, and the issue keeps its status, labels, parent and
+// events (requireLegionIssueUnchanged).
 //
 // The tests send their writes from the credentials of one inventory (newLegionStatusRig), so each
 // test reads the same list of the credentials that R26 refuses and the credentials it lets through.
