@@ -34,6 +34,8 @@ import {
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
   LegionOperatorProjectPauseRequest,
+  LegionOwedRequest,
+  LegionOwedResponse,
   LegionPauseFailureResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
@@ -152,6 +154,9 @@ const schemas: Record<string, z.ZodType> = {
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
+  // What a session reads at the end of its turn of what its claim owes now (`api.OwedResponse`):
+  // the reminder renders the `work` phrase and names no work of its own.
+  "owed.json": LegionOwedResponse,
   // What a phase worker's declared wait comes back as once the daemon recorded it: its id, its
   // text, its time and when the daemon recorded the declaration (`api.WaitResponse`).
   "wait.json": LegionWaitResponse,
@@ -1113,6 +1118,72 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   expect(parses()).toBeTrue();
 });
 
+// The state golden carries LEGION-210, whose repository Dispatch corrected, with the repository
+// it left and the instant the daemon applied the correction, and LEGION-212, for which Dispatch
+// has named a repository the daemon has not applied, with that repository and why it waits. An
+// issue neither has reached carries none of the four, so each is optional, and a daemon before
+// this contract sends none of them, whose state must still parse.
+//
+// LEGION-210's pull request is open on the repository it left, which the issue's `repo` and the
+// pull request's own name together: that is how a reader of one record reads that the issue has
+// open work on a repository it no longer works.
+test("the state golden carries an issue's repository correction and the change still to be applied", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  const corrected = state.issues["LEGION-210"];
+  const waiting = state.issues["LEGION-212"];
+  if (corrected === undefined || waiting === undefined) {
+    throw new Error("state fixture lacks LEGION-210 or LEGION-212");
+  }
+  expect({
+    repo: corrected.repo,
+    repoBefore: corrected.repoBefore,
+    repoCorrectedAt: corrected.repoCorrectedAt,
+  }).toEqual({
+    repo: "zeta/tools",
+    repoBefore: "acme/widgets",
+    repoCorrectedAt: "2026-09-22T07:40:00Z",
+  });
+  expect({
+    repo: (corrected.pullRequest as Record<string, unknown>).repo,
+    number: (corrected.pullRequest as Record<string, unknown>).number,
+    state: (corrected.pullRequest as Record<string, unknown>).state,
+  }).toEqual({ repo: "acme/widgets", number: 1251, state: "open" });
+  expect({
+    repo: waiting.repo,
+    repoChangePending: waiting.repoChangePending,
+    repoChangeReason: waiting.repoChangeReason,
+  }).toEqual({
+    repo: "acme/widgets",
+    repoChangePending: "acme/gadgets",
+    repoChangeReason: "the review App is not installed on acme/gadgets",
+  });
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  expect(parses()).toBeTrue();
+
+  // A state from a daemon before this contract, and an issue nothing changed.
+  for (const key of ["repoBefore", "repoCorrectedAt"]) {
+    delete corrected[key];
+  }
+  for (const key of ["repoChangePending", "repoChangeReason"]) {
+    delete waiting[key];
+  }
+  expect(parses()).toBeTrue();
+
+  // A repository that is no name, and a correction time that is no time.
+  corrected.repoBefore = "";
+  expect(parses()).toBeFalse();
+  corrected.repoBefore = "acme/widgets";
+  corrected.repoCorrectedAt = "the morning";
+  expect(parses()).toBeFalse();
+  corrected.repoCorrectedAt = "2026-09-22T07:40:00Z";
+  waiting.repoChangePending = "acme/gadgets";
+  waiting.repoChangeReason = "";
+  expect(parses()).toBeFalse();
+});
+
 // The state golden carries LEGION-207, closed by its merge, with its production check open: the
 // repository, pull request and merge commit the check looks for, the role that works it, its
 // looks, the wake that started the latest and when the next look is due. Its role is the
@@ -1953,6 +2024,15 @@ test("every request the plugin sends parses and names its required fields", () =
     ["activity", LegionActivityRequest, activityRequest],
     ["activity report", LegionSessionActivity, activity],
     [
+      "owed",
+      LegionOwedRequest,
+      {
+        claimToken: "legion-legion-legion-208-tester",
+        sessionId: "ses_tester_208",
+        secret: CLAIM_SECRET,
+      },
+    ],
+    [
       "release records",
       LegionReleaseRecordsRequest,
       {
@@ -2600,6 +2680,42 @@ test("the release records are read with the claim credential in the body", () =>
   ).toBeFalse();
 });
 
+// What a session reads of what its claim owes: a phrase when something is owed, and nothing when
+// nothing is. The two agree or the body is refused, so a reader never renders a phrase for work the
+// daemon did not say is owed, nor an empty phrase for work it did.
+test("what a claim owes names its work exactly when it owes some", () => {
+  const owed = { owes: true, work: "the testing phase of LEGION-208" };
+  expect(LegionOwedResponse.safeParse(owed).error?.issues ?? []).toEqual([]);
+  expect(
+    LegionOwedResponse.safeParse({ owes: true, work: "the production check of LEGION-208" }).success
+  ).toBeTrue();
+  expect(LegionOwedResponse.safeParse({ owes: false, work: "" }).success).toBeTrue();
+
+  expect(LegionOwedResponse.safeParse({ owes: true, work: "" }).success).toBeFalse();
+  expect(
+    LegionOwedResponse.safeParse({ owes: false, work: "the testing phase of LEGION-208" }).success
+  ).toBeFalse();
+  expect(LegionOwedResponse.safeParse({ owes: false }).success).toBeFalse();
+  expect(LegionOwedResponse.safeParse({ work: "" }).success).toBeFalse();
+});
+
+// The architect that owns the claim rides the answer whether or not anything is owed, and an
+// answer that names none is one an architect, the controller or a failed claim is given. A blank
+// name is no architect, and is refused rather than read as one.
+test("what a claim owes may name the architect that owns the claim, owed or not", () => {
+  const architect = "legion-legion-legion-209-architect";
+  for (const body of [
+    { owes: true, work: "the testing phase of LEGION-209", architect },
+    { owes: false, work: "", architect },
+  ]) {
+    expect(LegionOwedResponse.parse(body).architect).toBe(architect);
+  }
+  expect(LegionOwedResponse.parse({ owes: false, work: "" }).architect).toBeUndefined();
+  expect(
+    LegionOwedResponse.safeParse({ owes: false, work: "", architect: "" }).success
+  ).toBeFalse();
+});
+
 // `legionStrandedClaim` exactly as contract 45 holds it (`legion-v19.0.0`, this branch's base on
 // main): three keys, strict. Every plugin parses the state with the schema of the contract it
 // was built at, and a Kubernetes deployment relaunches no stale session (INFRA-945 spec R10),
@@ -2746,11 +2862,14 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // Every other key is the state golden's own, the `contract` mark, `lowestPluginContract` and
   // each claim view's `wait` and `hold` aside: the mark names the contract the caller is served at,
   // 199, the recorded contract below the 201 the caller states (`recordedContractAtOrBelow`),
-  // INFRA-4605's, which moved no answer's shape; the lowest plugin contract reports the claims of
-  // the snapshot the route projected the body from, a pod at 201, which `state.json`'s own fixture
-  // does not hold; and `wait` and `hold` arrived at 207, a band above 202 (`api.withoutWaitAndHold`),
-  // so a caller at 201 is served neither. No other band stands above 199, so the narrowing below
-  // 202 changes this one block and nothing beside it.
+  // INFRA-4605's, which moved no answer's shape, and the lowest plugin contract reports the claims
+  // of the snapshot the route projected the body from, a pod at 201, which `state.json`'s own
+  // fixture does not hold. Three bands stand above 199: the repositories block's, at 202; the
+  // repository correction's (dispatch://INFRA-3136), at 206, which serves each issue without its
+  // `repoBefore`, `repoCorrectedAt`, `repoChangePending` and `repoChangeReason`; and the wait's
+  // (dispatch://INFRA-2040), at 207, which serves each claim view without its `wait` and `hold`
+  // (`api.withoutWaitAndHold`). So the golden's issues are compared with those keys taken off,
+  // and nothing else beside the block moves.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2767,7 +2886,19 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     lowestPluginContract: _lowest,
     ...rest
   } = fixtureBody("state.json");
-  expect(narrowedRest).toEqual(withoutWaitAndHold(rest));
+  const correctionKeys = ["repoBefore", "repoCorrectedAt", "repoChangePending", "repoChangeReason"];
+  const issues = isJsonObject(rest.issues) ? rest.issues : {};
+  const withoutCorrection = Object.fromEntries(
+    Object.entries(issues).map(([key, issue]) => [
+      key,
+      isJsonObject(issue)
+        ? Object.fromEntries(
+            Object.entries(issue).filter(([field]) => !correctionKeys.includes(field))
+          )
+        : issue,
+    ])
+  );
+  expect(narrowedRest).toEqual(withoutWaitAndHold({ ...rest, issues: withoutCorrection }));
 
   // What serving the current block would do, and why it is not served: the reader of 152 refuses
   // it for the three keys it requires beside the `withoutWebhookApp` and `caches` the block keeps,
