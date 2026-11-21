@@ -67,7 +67,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus } from "../artifacts/ArtifactUpload";
-import { useQuoteInDocument } from "../doc/quote-in-document";
+import { UNDRAWN_QUOTE_WORDS, useQuoteInDocument } from "../doc/quote-in-document";
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
@@ -374,18 +374,23 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
 /** The words of the document a margin compose is about, above its field: the quote, while the
  *  page's text of the document still holds it, and otherwise a line saying it no longer does
  *  (`useQuoteInDocument`, which weighs only a read from after `anchoredAt`), since words a delete
- *  took out are a deleted post's. The draft and its controls stay as they are. */
+ *  took out are a deleted post's; and until the page holds a read that can tell, a line saying
+ *  the words are loading, or once each such read failed that they cannot be checked now. The
+ *  draft and its controls stay as they are. */
 function ComposerQuote({
   anchor,
   anchoredAt,
+  owner,
 }: {
   anchor: ComposerAnchor;
   anchoredAt: number | undefined;
+  owner: ComposerOwner;
 }): ReactNode {
-  if (!useQuoteInDocument(anchor, anchoredAt)) {
+  const inDocument = useQuoteInDocument(anchor, anchoredAt, owner);
+  if (inDocument !== "held") {
     return (
       <p className={`text-sm ${textMutedOnSurfaceMuted}`}>
-        The words this draft was for are no longer in the document.
+        {`The words this draft was for ${UNDRAWN_QUOTE_WORDS[inDocument]}.`}
       </p>
     );
   }
@@ -1332,7 +1337,7 @@ export function MentionComposer({
         </div>
       )}
       {compact || anchor === undefined ? null : (
-        <ComposerQuote anchor={anchor} anchoredAt={anchoredAt} />
+        <ComposerQuote anchor={anchor} anchoredAt={anchoredAt} owner={owner} />
       )}
       {onKindChange !== undefined && edit === undefined && owner.kind !== "session" && !closed ? (
         <>

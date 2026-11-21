@@ -124,7 +124,7 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
    *  reference pins version n) with that version's name, its comments
    *  (`["artifact", id, "comments"]`) and its asks with their threads (`["artifact", id, "asks"]`);
    *  the document's other reads hold no post. A pending insert's delete drops the reads of its
-   *  document's versions and blocks (`UNMARKED_TEXT_FAMILIES`). */
+   *  document's versions, blocks and live text (`UNMARKED_TEXT_FAMILIES`). */
   artifact: ofKind("comment", (answer, post, queryKey) => {
     if (queryKey.length === 2) {
       return withRenamedVersion(answer as Artifact, post);
@@ -283,9 +283,9 @@ interface FamilyDrop {
 
 /**
  * Every query family whose answer can give a document's text with no mark on it, with which of
- * its reads give it for one document (census class V of dispatch://INFRA-1523, rows V.23 and
- * V.26-V.34). A pending insert suggestion's words are its comment's own, and its delete takes
- * them out of the document; an answer that gives the document's text as it stood before the
+ * its reads give it for one document (census class V of dispatch://INFRA-1523, rows V.23,
+ * V.26-V.34 and V.40). A pending insert suggestion's words are its comment's own, and its delete
+ * takes them out of the document; an answer that gives the document's text as it stood before the
  * delete holds them, and carries no mark that tells them from the document's own words, so no
  * writer can take them out of it. The delete's correction drops each such read whole instead,
  * with every read still out that could answer such text (`dropUnmarkedText`). Each family here is
@@ -294,13 +294,17 @@ interface FamilyDrop {
  */
 export const UNMARKED_TEXT_FAMILIES: Readonly<Record<string, FamilyDrop>> = {
   /** A read of one stored version (`["artifact", id, "version", n]`, and `["artifact", id, n]`
-   *  where a reference pins version n), and the document's blocks (`["artifact", id, "blocks"]`).
-   *  The live text (`["artifact", id, "text"]`) carries each pending suggestion's mark, and the
+   *  where a reference pins version n), the document's blocks (`["artifact", id, "blocks"]`), and
+   *  its live text (`["artifact", id, "text"]`): only that read's tree carries each pending
+   *  suggestion's mark, its markdown none, and no surface that draws it reads the marks. The
    *  comments and the asks are posts, which the family's writer marks. */
   artifact: {
     reads: (queryKey, document) =>
       queryKey[1] === document.id &&
-      (queryKey[2] === "version" || queryKey[2] === "blocks" || typeof queryKey[2] === "number"),
+      (queryKey[2] === "version" ||
+        queryKey[2] === "blocks" ||
+        queryKey[2] === "text" ||
+        typeof queryKey[2] === "number"),
   },
   /** The issue's decisions (`["decisions", key]`) where its decisions document is this one, whose
    *  blocks each decision's heading and text are, or where a decision links a block of this
@@ -408,13 +412,13 @@ export const UNMARKED_TEXT_FAMILIES: Readonly<Record<string, FamilyDrop>> = {
  *   `["artifact", id, n]`).
  *
  * A pending insert suggestion's words are also its document's text, in every read that gives that
- * text as it stood before the delete: a stored version and the document's blocks, a block's text
- * and excerpts, the names of its blocks, and the issue's decisions, coverage, results and search
- * hits that quote them. Those reads carry no mark that tells the suggestion's words from the
- * document's own, so none of the delete's facts can be written into them. The delete of a comment
- * that emptied its anchor quote (`quoteCleared`) drops every such read of the document its anchor
- * names, with every read still out that could answer such text, and has each surface that draws
- * one read it again (`dropUnmarkedText`).
+ * text as it stood before the delete: a stored version, the document's live text and its blocks,
+ * a block's text and excerpts, the names of its blocks, and the issue's decisions, coverage,
+ * results and search hits that quote them. Those reads carry no mark that tells the suggestion's
+ * words from the document's own, so none of the delete's facts can be written into them. The
+ * delete of a comment that emptied its anchor quote (`quoteCleared`) drops every such read of the
+ * document its anchor names, with every read still out that could answer such text, and has each
+ * surface that draws one read it again (`dropUnmarkedText`).
  *
  * An edit writes its time (`edited_at`) on each of those copies that carries one, unless the copy
  * carries a later edit's already (`editedAfter`), and nothing else: an edit event's body can be

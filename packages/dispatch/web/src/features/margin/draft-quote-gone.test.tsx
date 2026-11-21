@@ -251,8 +251,10 @@ test("a draft quoting a deleted post's inserted words draws none of them once th
 
 // The control: words the document still holds are drawn, a selection across two blocks among
 // them, which the editor names with a line break where the document's words hold a space; and so
-// are they while the page holds no text of the document at all.
-test("a draft's words the document still holds are drawn, across a block break too, and so are they before the page reads the document", () => {
+// are they before the page reads the document, once it holds the margin's comment list, which
+// lists no insert of theirs deleted. With neither read held, none is drawn (the architect's ruling
+// of 2026-11-21 00:17Z, the two tests at the end of this file).
+test("a draft's words the document still holds are drawn, across a block break too, and so are they once the page holds its comments before it reads the document", () => {
   const across = "release.\nHold it";
   const held = renderSurfaces(across, textRead(AFTER));
   try {
@@ -262,7 +264,7 @@ test("a draft's words the document still holds are drawn, across a block break t
     held.view.unmount();
     held.client.clear();
   }
-  const unread = renderSurfaces(QUOTE, undefined);
+  const unread = renderSurfaces(QUOTE, undefined, { comments: [] });
   try {
     expect(timesDrawn(unread.view.container, QUOTE)).toBe(3);
   } finally {
@@ -495,9 +497,11 @@ test("a composer that mounts again after the delete, while the page's next read 
 // comment's pending insert, so each draft's anchor keeps the insert's mark
 // (`ComposerAnchor.insertMarks`), and the page's read of the text is the one from before the
 // delete, which holds the words. The delete's correction writes the insert's comment deleted into
-// the issue's comment list (`markCorrectedPost`), and no read of the text lands after it: the open
-// composer, the offer of a draft kept for the words and the margin's list of what its compose kept
-// each draw none of them.
+// the issue's comment list (`markCorrectedPost`), and drops that read (census row V.40); no read
+// of the text lands after it. Here the read from before the delete is put back, as a page that
+// held it and heard of the delete only through its comment list would hold it: the open composer,
+// the offer of a draft kept for the words and the margin's list of what its compose kept each draw
+// none of them.
 test("a draft whose words lie in a pending insert draws none of them on any surface once the page holds the insert's comment deleted, with no read of the document since", () => {
   const { client, view } = renderSurfaces(QUOTE, textRead(BEFORE), {
     comments: [INSERT_COMMENT],
@@ -510,6 +514,8 @@ test("a draft whose words lie in a pending insert draws none of them on any surf
     const readAt = client.getQueryState(textKey)?.dataUpdatedAt;
 
     act(() => markCorrectedPost(client, insertDeleted()));
+    const dropped = client.getQueryData(textKey);
+    act(() => land(client, textRead(BEFORE), readAt));
     const composer = screen.getByRole("form", { name: "Comment composer" });
     expect({
       composer:
@@ -517,17 +523,16 @@ test("a draft whose words lie in a pending insert draws none of them on any surf
           "The words this draft was for are no longer in the document."
         ) !== null,
       drawn: timesDrawn(view.container, QUOTE),
+      dropped,
       kept: screen.getByTestId("kept").textContent,
       offered: screen.getByTestId("offered").textContent,
-      // The only read of the document's text is still the one from before the delete.
-      readSince: client.getQueryState(textKey)?.dataUpdatedAt !== readAt,
     }).toEqual({
       composer: true,
       drawn: 0,
+      dropped: undefined,
       kept: "You wrote this draft for words that are no longer in the document. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft",
       offered:
         "You wrote this draft for other words, which are no longer in the document. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft",
-      readSince: false,
     });
   } finally {
     view.unmount();
@@ -627,6 +632,115 @@ test("after a reload, the drafts the tab kept for words in a deleted insert keep
     });
   } finally {
     others.unmount();
+    client.clear();
+  }
+});
+
+/** What each surface draws of a draft's quote: the composer's line in place of it, where it draws
+ *  one, how often the words stand in the page, and the two leads. */
+function drawnQuotes(container: HTMLElement) {
+  const composer = screen.getByRole("form", { name: "Comment composer" });
+  return {
+    composer: within(composer).queryByText(/^The words this draft was for /)?.textContent,
+    drawn: timesDrawn(container, QUOTE),
+    kept: screen.getByTestId("kept").textContent,
+    offered: screen.getByTestId("offered").textContent,
+  };
+}
+
+/** What `drawnQuotes` reads while no read that can check the words has landed. */
+const LOADING = {
+  composer: "The words this draft was for are still loading.",
+  drawn: 0,
+  kept: "You wrote this draft for words that are still loading. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft",
+  offered:
+    "You wrote this draft for other words, which are still loading. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft",
+};
+
+/** What `drawnQuotes` reads once the words are drawn on each surface again. */
+const DRAWN = {
+  composer: undefined,
+  drawn: 3,
+  kept: `You wrote this draft for the words “${QUOTE}”. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft`,
+  offered: `You wrote this draft for other words: “${QUOTE}”. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft`,
+};
+
+// The architect's ruling of 2026-11-21 00:17Z on dispatch://INFRA-1523 (census rows RM.1-RM.3 and
+// 11.9). After a reload the page holds no read of the document's text and none of the margin's
+// comment list, and neither the time gate nor the deleted insert's fact can speak. While the
+// page's first reads of the two are out, each surface draws a draft's quote as loading, with none
+// of its words and no failure; the quote is drawn again once a read lands that holds the words.
+test("after a reload, while the page's first reads of the document and its comments are out, no surface draws a word of a draft's quote, and each draws it once the text read lands holding the words", async () => {
+  const { client, view } = renderSurfaces(QUOTE, undefined, { insertMarks: [INSERT_MARK] });
+  const text = Promise.withResolvers<ArtifactText>();
+  const comments = Promise.withResolvers<Comment[]>();
+  try {
+    act(() => {
+      void client.prefetchQuery({ ...liveTextQueryOptions(DOCUMENT), queryFn: () => text.promise });
+      void client.prefetchQuery({ queryFn: () => comments.promise, queryKey: COMMENTS });
+    });
+    const loading = drawnQuotes(view.container);
+
+    await act(async () => {
+      text.resolve(textRead(BEFORE));
+      await text.promise;
+    });
+    expect({ landed: drawnQuotes(view.container), loading }).toEqual({
+      landed: DRAWN,
+      loading: LOADING,
+    });
+  } finally {
+    comments.resolve([]);
+    view.unmount();
+    client.clear();
+  }
+});
+
+// The same reload, whose first reads fail. One failed read with the other still out is a load
+// still under way, and the quote still draws as loading; once both have failed, each surface says
+// the words cannot be checked now, and draws none of them. The comment list read again lands with
+// the insert's comment standing, and each surface draws the quote again, the text read still
+// failed.
+test("after a reload whose first reads of the document and its comments both fail, each surface says a draft's words cannot be checked now and draws none of them, and draws them once the comments read lands", async () => {
+  const { client, view } = renderSurfaces(QUOTE, undefined, { insertMarks: [INSERT_MARK] });
+  const refused = new ApiError(503, { code: "UNAVAILABLE", error: "Dispatch is unavailable" });
+  const comments = Promise.withResolvers<Comment[]>();
+  try {
+    await act(async () => {
+      void client.prefetchQuery({ queryFn: () => comments.promise, queryKey: COMMENTS });
+      await client.prefetchQuery({
+        ...liveTextQueryOptions(DOCUMENT),
+        queryFn: () => Promise.reject(refused),
+      });
+    });
+    const oneFailed = drawnQuotes(view.container);
+
+    await act(async () => {
+      comments.reject(refused);
+      await comments.promise.catch(() => undefined);
+    });
+    const bothFailed = drawnQuotes(view.container);
+
+    act(() => client.setQueryData(COMMENTS, [INSERT_COMMENT]));
+    expect({
+      bothFailed,
+      commentsRead: drawnQuotes(view.container),
+      oneFailed,
+      text: client.getQueryState(liveTextQueryOptions(DOCUMENT).queryKey)?.status,
+    }).toEqual({
+      bothFailed: {
+        composer: "The words this draft was for cannot be checked now.",
+        drawn: 0,
+        kept: "You wrote this draft for words that cannot be checked now. It is kept here, and offered in the next compose you open on this document:Name who runs it.Discard my draft",
+        offered:
+          "You wrote this draft for other words, which cannot be checked now. It is kept here:Is this the review we agreed on?Use my draftDiscard my draft",
+      },
+      commentsRead: DRAWN,
+      oneFailed: LOADING,
+      text: "error",
+    });
+  } finally {
+    view.unmount();
     client.clear();
   }
 });

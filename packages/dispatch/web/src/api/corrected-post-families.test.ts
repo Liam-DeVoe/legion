@@ -1313,6 +1313,17 @@ const storedVersion = (text: string) => ({
   summary: null,
 });
 
+/** A document's live text holding `text`, as the text read answers it. */
+const liveText = (text: string) => ({
+  markdown: `${text}\n`,
+  markdown_tree: {
+    content: [{ content: [{ text, type: "text" }], type: "paragraph" }],
+    type: "doc",
+  },
+  token: "sha256:live",
+  version: 3,
+});
+
 /** A document's blocks: one table, whose one cell holds `text`. */
 const tableBlocks = (text: string) => [
   {
@@ -1437,6 +1448,14 @@ const DROP_ROWS: readonly DropRow[] = [
     family: "artifact",
     key: ["artifact", "doc-1", "blocks"],
     other: { answer: tableBlocks(OTHER_TEXT), key: ["artifact", "doc-2", "blocks"] },
+  },
+  // The document's live text: the current side of Diff vs current, the card of a reference to
+  // the document that pins no version, an issue card's spec, and a draft's quote check.
+  {
+    answer: liveText(INSERTED),
+    family: "artifact",
+    key: ["artifact", "doc-1", "text"],
+    other: { answer: liveText(OTHER_TEXT), key: ["artifact", "doc-2", "text"] },
   },
   // A reference to a block of the document: its card and every link title to it.
   {

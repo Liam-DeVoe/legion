@@ -3,6 +3,7 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 import { rowsOf } from "../../api/event-refresh";
 import type { ArtifactText, Comment, DisplayTree } from "../../api/types";
+import type { ComposerOwner } from "../conversation/composer-model";
 import { postDeletion } from "../refs/post-marks";
 import { wordsOf } from "../refs/tree-fragment";
 import { liveTextQueryOptions } from "./live-text-query";
@@ -16,6 +17,20 @@ export interface QuotedWords {
   readonly quote: string;
 }
 
+/** What the page can say now of the words a draft was written for (`useQuoteInDocument`): the
+ *  document still holds them (`"held"`), they left it (`"gone"`), no read that can tell has
+ *  landed yet (`"loading"`), or each such read failed (`"unchecked"`). Only `"held"` draws them. */
+export type QuoteInDocument = "gone" | "held" | "loading" | "unchecked";
+
+/** What a line drawn in place of a draft's quote says of the words, for each state that draws
+ *  none of them: the composer's "The words this draft was for …", and the leads of a kept draft,
+ *  "… for other words, which …" and "… for words that …". */
+export const UNDRAWN_QUOTE_WORDS = {
+  gone: "are no longer in the document",
+  loading: "are still loading",
+  unchecked: "cannot be checked now",
+} as const satisfies Record<Exclude<QuoteInDocument, "held">, string>;
+
 /** `text` with each run of whitespace read as one space. The editor names a selection's words with
  *  a line break between two blocks (`textBetween` in `dispatch-action-bar.ts`), where the
  *  document's words hold one space (`wordsOf`), so the two are compared in this form. */
@@ -27,11 +42,11 @@ function spaced(text: string): string {
  *  the open compose and each line that leads a kept draft read the same one. */
 const wordsOfRead = new WeakMap<ArtifactText, string>();
 
-/** The document's words as its text read gives them (`wordsOf` of `markdown_tree`); undefined for
- *  a read that carries no tree. */
-function documentWords(text: ArtifactText): string | undefined {
+/** The document's words as its text read gives them (`wordsOf` of `markdown_tree`); null for a
+ *  read that carries no tree. */
+function documentWords(text: ArtifactText): string | null {
   const tree = text.markdown_tree as DisplayTree | undefined;
-  if (tree === undefined) return undefined;
+  if (tree === undefined) return null;
   let words = wordsOfRead.get(text);
   if (words === undefined) {
     words = spaced(wordsOf(tree));
@@ -72,6 +87,26 @@ function holdsDeletedInsert(
     );
 }
 
+/** What the page's comment lists say of the words: a list holds deleted the comment of an insert
+ *  they lie in (`holdsDeletedInsert`); else the margin's own list, `margin`, holds an answer, so
+ *  the page has read the comments and holds none of them deleted; its read failed with no answer,
+ *  or there is no such list to read; or it holds no answer yet. */
+type ListedWords = "deleted" | "failed" | "read" | "unread";
+
+function listedWords(
+  client: QueryClient,
+  artifact: string,
+  marks: readonly string[] | undefined,
+  margin: QueryKey | undefined
+): ListedWords {
+  if (marks !== undefined && marks.length > 0 && holdsDeletedInsert(client, artifact, marks)) {
+    return "deleted";
+  }
+  const state = margin === undefined ? undefined : client.getQueryState(margin);
+  if (state?.data !== undefined) return "read";
+  return margin === undefined || state?.status === "error" ? "failed" : "unread";
+}
+
 /**
  * Whether the document `words` names still holds the words a draft was written for
  * (`words.quote`), as the page holds them now. This read asks for nothing itself.
@@ -85,7 +120,7 @@ function holdsDeletedInsert(
  * whose comment a comment list of the page's cache holds deleted (`holdsDeletedInsert`). The
  * delete's correction writes that into every such list the page holds (`markCorrectedPost`), and
  * the server answers them with the deleted comment in its place, so the page knows it whatever it
- * has read of the document's text, and however old that read is: false then.
+ * has read of the document's text, and however old that read is: gone then.
  *
  * Otherwise, words that left the document by any other edit: the live text read every open
  * document keeps (`liveTextQueryOptions`, `ProofDocument`), which the page reads again after an
@@ -93,44 +128,61 @@ function holdsDeletedInsert(
  * `anchoredAt`, when the draft's compose took the words, says they left. No keystroke and no
  * update from a collaborator reads the text again, so a read from before then can lack words the
  * reader had just typed and selected, which are on screen. A draft with no such time - one an
- * older release kept - counts as taken before every read. False only where the page holds such a
- * read of the document's text and it does not hold the words; while it holds none, the words are
- * drawn as before.
+ * older release kept - counts as taken before every read. Gone only where the page holds such a
+ * read of the document's text and it does not hold the words.
+ *
+ * Until then the words are drawn only once the page holds an answer that can check them: that
+ * text read, or the comment list the margin of the draft's `owner` reads (`useMarginItems`),
+ * which holds none of the inserts deleted. A page that has just loaded - a reload, with drafts the
+ * tab kept - holds neither, and a delete's correction drops the text read (`dropUnmarkedText`):
+ * while the page reads them the words are loading, and once each read has failed with no answer
+ * they cannot be checked now. Neither draws the words; the draft's own words stay.
  */
 export function useQuoteInDocument(
   { artifact, insertMarks, quote }: QuotedWords,
-  anchoredAt: number | undefined
-): boolean {
+  anchoredAt: number | undefined,
+  owner: ComposerOwner
+): QuoteInDocument {
   const client = useQueryClient();
-  const hasMarks = insertMarks !== undefined && insertMarks.length > 0;
-  // The first fact reads only the comment lists, and a change to one sends an event for it, so a
-  // draft whose words lie in no insert listens to nothing, and another one to those lists alone.
+  const margin =
+    owner.kind === "issue"
+      ? ["comments", owner.issueKey]
+      : owner.kind === "artifact"
+        ? ["artifact", owner.artifactId, "comments"]
+        : undefined;
+  // What the comment lists say changes only with one of them, and a change to one sends an
+  // event for it.
   const subscribe = useCallback(
     (changed: () => void) =>
-      hasMarks
-        ? client.getQueryCache().subscribe(({ query }) => {
-            if (isCommentList(query.queryKey)) {
-              changed();
-            }
-          })
-        : () => {},
-    [client, hasMarks]
+      client.getQueryCache().subscribe(({ query }) => {
+        if (isCommentList(query.queryKey)) {
+          changed();
+        }
+      }),
+    [client]
   );
-  const insertDeleted = useSyncExternalStore(
-    subscribe,
-    () => hasMarks && holdsDeletedInsert(client, artifact, insertMarks)
+  const listed = useSyncExternalStore(subscribe, () =>
+    listedWords(client, artifact, insertMarks, margin)
   );
-  const { data: words, dataUpdatedAt } = useQuery({
+  const {
+    data: words,
+    dataUpdatedAt,
+    isError: textFailed,
+  } = useQuery({
     ...liveTextQueryOptions(artifact),
     enabled: false,
     select: documentWords,
   });
-  return useMemo(
-    () =>
-      !insertDeleted &&
-      (words === undefined ||
+  return useMemo((): QuoteInDocument => {
+    if (listed === "deleted") return "gone";
+    if (words !== undefined) {
+      return words === null ||
         (anchoredAt !== undefined && dataUpdatedAt <= anchoredAt) ||
-        words.includes(spaced(quote))),
-    [anchoredAt, dataUpdatedAt, insertDeleted, quote, words]
-  );
+        words.includes(spaced(quote))
+        ? "held"
+        : "gone";
+    }
+    if (listed === "read") return "held";
+    return textFailed && listed === "failed" ? "unchecked" : "loading";
+  }, [anchoredAt, dataUpdatedAt, listed, quote, textFailed, words]);
 }

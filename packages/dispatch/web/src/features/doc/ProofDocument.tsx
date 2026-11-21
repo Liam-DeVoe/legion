@@ -1,5 +1,5 @@
 import { decodeBlockId, isIdPrefix } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { isCancelledError, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -450,7 +450,6 @@ export function ProofDocument({
     method: "POST",
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
-  const liveMarkdown = liveTextQuery.data?.markdown ?? "";
   const versionMarkdown =
     versionQuery.data !== undefined && "markdown" in versionQuery.data
       ? versionQuery.data.markdown
@@ -817,29 +816,39 @@ export function ProofDocument({
     // artifact event's invalidation, say - leaves a connected editor and its unsent edits alone.
     // A blocked admission waits for the next successful read of the text, which a repair upload
     // or a rebuild brings about, and is admitted again (`readmitRef`). An admission that found
-    // content this build cannot read yet reads the text again on its own timer instead.
-    const admit = () => {
-      const textRead = queryClient
+    // content this build cannot read yet reads the text again on its own timer instead. A pending
+    // insert's delete gives up a read of the text still out (`dropUnmarkedText`), since what it
+    // would land can hold the deleted words; that read decides nothing, and the admission reads
+    // again.
+    const readText = (): Promise<unknown> =>
+      queryClient
         .fetchQuery({ ...liveTextQueryOptions(artifact.id), staleTime: 0 })
-        .then(
-          () => undefined,
-          async (error: unknown) => {
-            if (isArtifactNotFound(error)) {
-              try {
-                const { deletePendingEdits } = await importWhenOnline(
-                  () => import("./pending-edits")
-                );
-                await deletePendingEdits(artifact.id);
-              } catch (deleteError) {
-                console.error(
-                  "Could not delete pending browser edits for a removed document",
-                  deleteError
-                );
-              }
-            }
-            return admissionBlock(error);
+        .catch((error: unknown) => {
+          if (mounted && isCancelledError(error)) {
+            return readText();
           }
-        );
+          throw error;
+        });
+    const admit = () => {
+      const textRead = readText().then(
+        () => undefined,
+        async (error: unknown) => {
+          if (isArtifactNotFound(error)) {
+            try {
+              const { deletePendingEdits } = await importWhenOnline(
+                () => import("./pending-edits")
+              );
+              await deletePendingEdits(artifact.id);
+            } catch (deleteError) {
+              console.error(
+                "Could not delete pending browser edits for a removed document",
+                deleteError
+              );
+            }
+          }
+          return admissionBlock(error);
+        }
+      );
       void Promise.all([textRead, loadTransport()])
         .then(([block, connect]) => {
           if (!mounted) {
@@ -1316,7 +1325,15 @@ export function ProofDocument({
       ) : versionMarkdown === undefined ? (
         <p>Loading version…</p>
       ) : showDiff ? (
-        <ChangeView after={liveMarkdown} before={versionMarkdown} />
+        liveTextQuery.data === undefined ? (
+          <p>
+            {liveTextQuery.isError
+              ? "Could not load the current version to compare."
+              : "Loading the current version…"}
+          </p>
+        ) : (
+          <ChangeView after={liveTextQuery.data.markdown} before={versionMarkdown} />
+        )
       ) : (
         <div data-testid="version-view">
           <VersionView
