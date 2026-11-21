@@ -1469,17 +1469,15 @@ func main() {
 	// retry at once (wakeReporter). It is built here because the delivery handlers below copy
 	// this configuration by value, so every seam of it must be set before they are built. An edge
 	// listener reports none: its grant may not publish the wake topic (natsgrant.Edge), and the
-	// shared listeners report every wake.
+	// shared listeners report every wake. It holds its delivery handlers to that grant instead: no
+	// kept role lane, and no delivery exception on a lane the grant leaves out (edgeGrant).
 	wakesCtx, stopWakeReports := context.WithCancel(context.Background())
 	var wakes *wakeReporter
-	if !edgeMode(cfg) {
-		wakes = newWakeReporter(wakesCtx, client)
-	}
-	// An edge listener holds its delivery handlers to its own grant: no kept role lane, and no
-	// delivery exception on a lane the grant leaves out (edgeGrant).
 	var edge *edgeGrant
 	if edgeMode(cfg) {
 		edge = newEdgeGrant(cfg.MachineID, cfg.EdgeProjects, met)
+	} else {
+		wakes = newWakeReporter(wakesCtx, client)
 	}
 
 	// Phase 6: Open the role lane and /v1 onto the stores, then bind the durable consumer.
