@@ -95,8 +95,9 @@ func callerFunctions(stack string) []string {
 // answer, so a path that applies search_text and then joins its runs fails here, named by the
 // function that called the parser. Each row names the functions that must hand the parser a text
 // of its shape, outermost first in the call stack, and fails when one of them handed none: a
-// recorder that sees nothing passes nothing. The comment, ask and message triggers remove no ask
-// block; their rows hold that a block between two runs keeps them apart there.
+// recorder that sees nothing passes nothing. Every row's text also holds a plain run of 600
+// segments, so a path that hands the parser its text raw fails too, the comment, ask and message
+// triggers among them, which remove no ask block.
 func TestSearchHandsTheParserNoRunJoinedAcrossAnAskBlock(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -116,8 +117,10 @@ func TestSearchHandsTheParserNoRunJoinedAcrossAnAskBlock(t *testing.T) {
 
 	conn, take := recordParserInput(t, ctx, database)
 
-	// Forty blocks between runs of fifteen segments: joined, one run of 600.
-	text := strings.Repeat(strings.Repeat("a_", 15)+":::ask{}:::", 40)
+	// Forty blocks between runs of fifteen segments, which a removal after search_text joins into
+	// one run of 600; then a plain run of 600, which reaches the parser whole if a path reads the
+	// text raw, though it removes no ask block.
+	text := strings.Repeat(strings.Repeat("a_", 15)+":::ask{}:::", 40) + "\n\n" + strings.Repeat("a_", 600)
 	const insertVersion = `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1, 1, $2, '[]')`
 	for _, row := range []struct {
 		name      string

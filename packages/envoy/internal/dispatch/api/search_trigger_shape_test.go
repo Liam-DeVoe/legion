@@ -88,12 +88,46 @@ func withoutCalls(src string, names ...string) string {
 	return src
 }
 
+// withoutSQLComments answers src with each `--` comment removed, leaving a `--` inside a string
+// literal where it is.
+func withoutSQLComments(src string) string {
+	var kept strings.Builder
+	for i := 0; i < len(src); i++ {
+		switch {
+		case src[i] == '\'':
+			end := min(sqlStringEnd(src, i), len(src)-1)
+			kept.WriteString(src[i : end+1])
+			i = end
+		case strings.HasPrefix(src[i:], "--"):
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+			if i < len(src) {
+				kept.WriteByte('\n')
+			}
+		default:
+			kept.WriteByte(src[i])
+		}
+	}
+	return kept.String()
+}
+
+// normalisedCall reports whether argument is wholly one call of search_text or
+// search_document_text: the call's own parenthesis closes it.
+func normalisedCall(argument string) bool {
+	opener := regexp.MustCompile(`(?i)^(search_text|search_document_text)\s*\(`).FindStringIndex(argument)
+	return opener != nil && sqlCallEnd(argument, opener[1]-1) == len(argument)
+}
+
 var (
-	sqlComment = regexp.MustCompile(`--[^\n]*`)
-	sqlString  = regexp.MustCompile(`'(?:[^']|'')*'`)
-	newRead    = regexp.MustCompile(`(?i)\bnew\b[^;,\n]*`)
-	// normalised is an argument that is wholly a call of one of the two normalising functions.
-	normalised = regexp.MustCompile(`(?is)^(search_text|search_document_text)\s*\(.*\)$`)
+	sqlString = regexp.MustCompile(`'(?:[^']|'')*'`)
+	newRead   = regexp.MustCompile(`(?i)\bnew\b[^;,\n]*`)
+	// directParse is a call of any of Postgres's functions that parse text into a vector:
+	// to_tsvector, json_to_tsvector, jsonb_to_tsvector, quoted or qualified.
+	directParse = regexp.MustCompile(`(?i)"?\w*to_tsvector"?\s*\(`)
+	// searchCall is a call that reaches the parser or a normaliser, which makes a trigger function
+	// one this test reads.
+	searchCall = regexp.MustCompile(`(?i)\b(search_vector|issue_search_vector|title_lexemes|search_text|search_document_text)\s*\(|"?\w*to_tsvector"?\s*\(`)
 )
 
 // Each search trigger hands Postgres's text-search parser its text only through the shared
@@ -103,22 +137,26 @@ var (
 // search_text joins underscore runs that search_text broke, which the parser reads in quadratic
 // time (20261121060636), and a text read raw reaches the parser with every run whole.
 //
-// For each function a search trigger runs, and the two functions that build a vector from the
-// columns a trigger passes them (issue_search_vector, title_lexemes): no direct call of
-// to_tsvector; each argument of search_vector is ” or a normalising call; a column that holds ask
-// blocks appears only inside search_document_text; and once the normalising calls (and the vector
-// functions this test also reads) are removed, no read of the row in any spelling is left - new.x,
-// (new).x, row_to_json(new) - other than the vector it writes and a key it looks a row up by. A
-// trigger this test does not know fails it, so a new search trigger is read here before it merges.
+// The test reads, outside comments and string literals, the source of every trigger function in
+// the database that calls the parser or a normaliser; the set must be the six it knows, so a new
+// one is read here before it merges. In each: no call of a parsing function (to_tsvector and its
+// json forms, in any spelling); each argument of search_vector is an empty literal or wholly one
+// normalising call; markdown, in any spelling, only inside search_document_text; and once the
+// normalising calls and the vector functions read below are removed, no read through `new` is
+// left - new.x, (new).x, row_to_json(new) - but the vector it writes and the artifact_id it looks
+// a row up by. It reads search_document_text's own body too, which must end in search_text, and
+// each parameter of the two vector functions those triggers call, which must appear only inside its
+// normaliser. A read of the row through another name, such as a variable assigned from new, is
+// beyond it; the parser-input test holds what reaches the parser at run time.
 func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 	database := storetest.Open(t)
-	rows, err := database.Pool.Query(context.Background(), `
-		select p.proname::text, p.prosrc
+	ctx := context.Background()
+	rows, err := database.Pool.Query(ctx, `
+		select distinct p.proname::text, p.prosrc
 		  from pg_trigger t join pg_proc p on p.oid = t.tgfoid
-		 where not t.tgisinternal
-		   and t.tgrelid in ('issues'::regclass, 'artifact_versions'::regclass, 'comments'::regclass, 'asks'::regclass, 'messages'::regclass)`)
+		 where not t.tgisinternal`)
 	if err != nil {
-		t.Fatalf("read the search triggers: %v", err)
+		t.Fatalf("read the trigger functions: %v", err)
 	}
 	triggers := map[string]string{}
 	for rows.Next() {
@@ -126,53 +164,61 @@ func TestEverySearchTriggerHandsTheParserOnlyNormalisedText(t *testing.T) {
 		if err := rows.Scan(&name, &source); err != nil {
 			t.Fatalf("read a trigger function: %v", err)
 		}
-		source = sqlComment.ReplaceAllString(source, "")
-		if regexp.MustCompile(`(?i)\b(search_vector|to_tsvector|issue_search_vector|title_lexemes|search_text|search_document_text)\s*\(`).MatchString(source) {
+		source = withoutSQLComments(source)
+		if searchCall.MatchString(sqlString.ReplaceAllString(source, "''")) {
 			triggers[name] = source
 		}
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read the search triggers: %v", err)
+		t.Fatalf("read the trigger functions: %v", err)
 	}
 	want := []string{"artifact_versions_issues_search", "artifact_versions_search", "asks_search", "comments_search", "issues_search", "messages_search"}
 	if got := slices.Sorted(maps.Keys(triggers)); !slices.Equal(got, want) {
-		t.Fatalf("the trigger functions that build a search vector are %v, want %v: read a new one here", got, want)
+		t.Fatalf("the trigger functions that reach the parser are %v, want %v: read a new one here", got, want)
 	}
 
-	// The row columns that hold ask blocks, and the parameters each vector function normalises.
-	const askColumn = "new.markdown"
+	source := func(name string) string {
+		var source string
+		if err := database.Pool.QueryRow(ctx,
+			`select prosrc from pg_proc where proname = $1 and pronamespace = 'public'::regnamespace`, name).Scan(&source); err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return withoutSQLComments(source)
+	}
+	body := strings.TrimSpace(source("search_document_text"))
+	if selected, ok := strings.CutPrefix(strings.ToLower(body), "select"); !ok || !normalisedCall(strings.TrimSpace(selected)) ||
+		!strings.HasPrefix(strings.TrimSpace(selected), "search_text") {
+		t.Errorf("search_document_text answers %q, which is not one search_text(…) call: a change made after search_text can join its runs again", body)
+	}
 	vectorFunctions := map[string]map[string]string{
 		"issue_search_vector": {"p_spec": "search_document_text", "p_key": "search_text", "p_title": "search_text"},
 		"title_lexemes":       {"title": "search_text"},
 	}
-	for name := range vectorFunctions {
-		var source string
-		if err := database.Pool.QueryRow(context.Background(),
-			`select prosrc from pg_proc where proname = $1 and pronamespace = 'public'::regnamespace`, name).Scan(&source); err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		for parameter, wrapper := range vectorFunctions[name] {
-			rest := sqlString.ReplaceAllString(withoutCalls(sqlComment.ReplaceAllString(source, ""), wrapper), "''")
+	for name, parameters := range vectorFunctions {
+		text := source(name)
+		for parameter, wrapper := range parameters {
+			rest := sqlString.ReplaceAllString(withoutCalls(text, wrapper), "''")
 			if regexp.MustCompile(`(?i)\b` + parameter + `\b`).MatchString(rest) {
-				t.Errorf("%s reads %s outside %s:\n%s", name, parameter, wrapper, source)
+				t.Errorf("%s reads %s outside %s:\n%s", name, parameter, wrapper, text)
 			}
 		}
 	}
 
 	for name, source := range triggers {
-		if calls, _ := sqlCalls(source, "to_tsvector"); len(calls) > 0 {
-			t.Errorf("%s calls the parser itself (%s): it must build its vector through search_vector or a vector function", name, calls[0])
+		code := sqlString.ReplaceAllString(source, "''")
+		if parse := directParse.FindString(code); parse != "" {
+			t.Errorf("%s calls the parser itself (%s…): it must build its vector through search_vector or a vector function", name, parse)
 		}
 		_, args := sqlCalls(source, "search_vector")
 		for _, arguments := range args {
 			for _, argument := range arguments {
-				if argument != "''" && !normalised.MatchString(argument) {
-					t.Errorf("%s hands search_vector %q, which is neither '' nor search_text(…) or search_document_text(…)", name, argument)
+				if argument != "''" && !normalisedCall(argument) {
+					t.Errorf("%s hands search_vector %q, which is neither '' nor one call of search_text or search_document_text", name, argument)
 				}
 			}
 		}
-		if strings.Contains(strings.ToLower(withoutCalls(source, "search_document_text")), askColumn) {
-			t.Errorf("%s reads %s, which holds ask blocks, outside search_document_text:\n%s", name, askColumn, source)
+		if regexp.MustCompile(`(?i)\bmarkdown\b`).MatchString(sqlString.ReplaceAllString(withoutCalls(source, "search_document_text"), "''")) {
+			t.Errorf("%s reads markdown, which holds ask blocks, outside search_document_text:\n%s", name, source)
 		}
 		rest := sqlString.ReplaceAllString(withoutCalls(source,
 			"search_document_text", "search_text", "issue_search_vector", "title_lexemes", "issue_embedding_spec"), "''")

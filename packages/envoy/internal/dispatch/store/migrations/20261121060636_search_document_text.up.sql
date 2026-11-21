@@ -23,11 +23,11 @@
 -- Dispatch writes a real ask block on a line of its own, at most after a list's indentation or a
 -- quote's `> `, so only `:::ask{…}:::` written inside a run, in a paragraph or a code block, is
 -- indexed differently; and where the parser reads the joined run as words, as it reads `a_a_…`,
--- the two texts give the same vector. Where it reads the run as one host name, path or URL, the
--- vector differs, in that run's lexemes and in the positions of the words after it. Such a row
--- keeps its vector until its document's next version, and while the release before this one still
--- serves, its picker and duplicate check build their text in the old order. create or replace
--- keeps each trigger bound to its function, so the migration takes no lock on any table.
+-- the two texts give the same vector. Where it reads the run as one host name, email address,
+-- path or URL, the vector differs, in that run's lexemes and in the positions of the words after
+-- it. Such a row keeps its vector until its document's next version, and while the release before
+-- this one still serves, its picker and duplicate check build their text in the old order. create
+-- or replace keeps each trigger bound to its function, so the migration takes no lock on any table.
 create function search_document_text(markdown text) returns text
 language sql immutable parallel safe strict as $$
   select search_text(regexp_replace(markdown, '(?s):::ask\{.*?:::', '', 'g'))

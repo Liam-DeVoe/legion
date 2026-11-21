@@ -9,8 +9,8 @@ body: |-
   and its related-item check gave up after 5 s. Each now takes under 0.2 s. Migration
   20261121060636 adds `search_document_text`, which all four use, and rewrites no stored vector:
   a vector differs only for `:::ask{…}:::` written inside a run whose joined form the parser reads
-  as one host name, path or URL, and such a row is indexed the new way at its document's next
-  version.
+  as one host name, email address, path or URL, and such a document keeps the vector its stored
+  version has until its next version, which is indexed the new way.
 time: 2026-11-21T07:45:06Z
 custom:
     Issue: pr4761
