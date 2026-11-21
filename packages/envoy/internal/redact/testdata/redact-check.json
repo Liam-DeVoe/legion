@@ -2204,7 +2204,7 @@
     {
       "id": "r4-withheld-beside-credential",
       "requirement": "r4-unchanged",
-      "package": "./brokeraddr",
+      "package": "./cipheraddr",
       "test": "TestAnAnswersWordsPrintOnlyBesideACleanAddress",
       "production": "cipheraddr.Address.Words"
     },
@@ -2302,7 +2302,7 @@
     {
       "id": "brokeraddr-words",
       "requirement": "r3-each-site",
-      "package": "./brokeraddr",
+      "package": "./cipheraddr",
       "test": "TestEachMarkerNamesItsOwnCase",
       "production": "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
       "function": "(github.com/sjawhar/envoy/cipheraddr.Address).Words",

@@ -166,7 +166,7 @@ for i in "${!files[@]}"; do
   step "bun test $file" $?
 done
 
-for package in contracts broker-client envoy-client; do
+for package in contracts cipher-client envoy-client; do
   (cd "$root/packages/$package" && bun run typecheck) >"$work/typecheck-$package.txt" 2>&1
   step "bun run typecheck in packages/$package" $?
 done
