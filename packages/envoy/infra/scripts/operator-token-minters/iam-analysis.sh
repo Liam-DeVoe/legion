@@ -151,6 +151,7 @@ member_project_iam() {
   local check="gke:$1"
   [ -z "${MEMBER_IAM_DONE[$1]:-}" ] || return 0
   MEMBER_IAM_DONE[$1]=1
+  know_project "$1"
   CHECK_STEP[$check]="live: GKE IAM on project $1, of a fleet member"
   CHECK_RESOURCE[$check]="//cloudresourcemanager.googleapis.com/projects/$1"
   CHECK_PERMS[$check]="${MEMBER_PERMISSIONS[*]}"

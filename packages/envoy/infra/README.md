@@ -4170,8 +4170,10 @@ service for GKE on, a fleet scope and an empty fleet read UNKNOWN too. A deploym
 project has no fleet passes `--fleet none`: an empty membership list then passes, and each
 membership listed is a finding. A fleet member that is no GKE cluster reads UNKNOWN, since its own
 cloud may grant beside its RBAC, unless `--rbac-only-member <membership>` says it does not. In the
-IAM steps only GKE's, GKE Hub's and Compute Engine's service agents are allowed by kind; another
-Google service agent the deployment needs is named with `--service-agent <email>`. Admission power
+IAM steps only GKE's, GKE Hub's and Compute Engine's service agents of the projects the check reads
+(`--project`, the pool project and each fleet member's project) are allowed; another project's
+agent is a finding naming its project number, and another Google service agent the deployment
+needs is named with `--service-agent <email>`. Admission power
 outside the admission objects counts too: the backend of a webhook that can match a guarded
 namespace, a policy engine's cluster-scoped resources, and an admission policy's parameter objects;
 a webhook that calls a URL outside the cluster reads UNKNOWN. It

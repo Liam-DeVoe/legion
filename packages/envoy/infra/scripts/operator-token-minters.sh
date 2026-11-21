@@ -273,9 +273,11 @@
 # In every IAM step a `user:` member is a person and allowed; a group the analysis expands is judged
 # by its members, and one it does not expand is a finding; the Google service agents the deployment
 # needs are allowed: GKE's (service-<number>@container-engine-robot), GKE Hub's
-# (service-<number>@gcp-sa-gkehub), Compute Engine's (service-<number>@compute-system) and each
-# --service-agent; every other member is a finding, another product's service-<number>@gcp-sa-*
-# agent included, since it acts for whoever uses that product in the project. A Policy Analyzer
+# (service-<number>@gcp-sa-gkehub) and Compute Engine's (service-<number>@compute-system) of a
+# project the check reads (--project, the pool project and each fleet member's project, each number
+# read from its project), and each --service-agent; every other member is a finding, such an agent
+# of another project (named with its number: it acts for whoever owns that project) and another
+# product's service-<number>@gcp-sa-* agent included. A Policy Analyzer
 # answer that lists no holder, or that was not fully explored, is UNKNOWN: a resource always has
 # holders (its project's owners at least), so an answer listing none saw nothing. The analysis runs
 # over the
