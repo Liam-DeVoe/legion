@@ -166,7 +166,7 @@ func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
 	}
 	state, err := decodeSentinel(SentinelKey, data)
 	if err == nil && state.Family != SessionFamily {
-		err = fmt.Errorf("%w: it names the family %q, not %q", ErrMalformedRecord, state.Family, SessionFamily)
+		err = fmt.Errorf("%w: %w: it names the family %q, not %q", ErrMalformedRecord, ErrSentinelFamily, state.Family, SessionFamily)
 	}
 	if err != nil {
 		return StoreState{}, 0, fmt.Errorf("%w: the bucket %s's %s at sequence %d holds no sentinel (%w)", ErrNoSentinel, s.bucket, SentinelKey, revision, err)

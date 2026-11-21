@@ -228,11 +228,31 @@ type durableBind struct {
 // bind (bus.ErrPublishDenied, returned as is: the grant refuses it again however often it is
 // sent, so waiting out deadline would only delay the start's end), deadline passes
 // (errListenerDurableBindExhausted, wrapping the last failure), or ctx ends (ctx.Err()). It logs
-// the first failure and then one every durableBindLogEvery, and the bind itself.
+// the first failure and then one every durableBindLogEvery, and the bind itself. A failure the
+// selection bucket's sentinel causes in the fresh mode (sentinelRefusal: absent, another family,
+// malformed) is logged once more each time its reason changes, naming the bucket, the key and
+// the reason, and its end once the sentinel stops refusing.
 func bindListenerDurable(ctx context.Context, client *bus.Client, consumer string, handler nats.MsgHandler, logger *logging.Logger, interval, deadline time.Duration) (durableBind, error) {
 	start := time.Now()
 	var bind durableBind
+	var sentinel string
+	sentinelChanged := func(err error) {
+		reason, _ := sentinelRefusal(err)
+		if reason == sentinel {
+			return
+		}
+		if reason == "" {
+			logger.Info("the selection bucket's sentinel no longer refuses the listener's durable",
+				slog.String("bucket", consumernames.SessionBucket), slog.String("key", consumernames.SentinelKey), slog.String("was", sentinel))
+		} else {
+			logger.Error("the listener's durable waits on the selection bucket's sentinel",
+				slog.String("bucket", consumernames.SessionBucket), slog.String("key", consumernames.SentinelKey),
+				slog.String("reason", reason), slog.String("error", err.Error()))
+		}
+		sentinel = reason
+	}
 	bound := func(autoResubscribe bool) (durableBind, error) {
+		sentinelChanged(nil)
 		logger.Info("durable bound",
 			slog.Int("attempts", bind.attempts),
 			slog.Int64("waited_ms", bind.waited.Milliseconds()),
@@ -252,6 +272,7 @@ func bindListenerDurable(ctx context.Context, client *bus.Client, consumer strin
 		if err == nil {
 			return bound(false)
 		}
+		sentinelChanged(err)
 		if durableRefused(err) {
 			return bind, err
 		}

@@ -594,11 +594,22 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // /v1/sessions keeps answering the copy, which it refuses only when the view cannot be served. The
 // answers writeDependencyHealth gives carry only status and error, as before: they report a fault
 // below the copy, not its freshness.
-func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
+func healthzHandler(deps *atomic.Pointer[listenerDeps], starting *atomic.Pointer[bus.Client]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		d := deps.Load()
 		if d == nil {
+			// A fresh start whose sentinel refuses every call never binds its durable: say so
+			// rather than "starting" for as long as the bind retries.
+			if starting != nil {
+				ctx, cancel := context.WithTimeout(r.Context(), healthzBudget)
+				defer cancel()
+				if body := startingSelectionHealth(ctx, starting.Load()); body != nil {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_ = json.NewEncoder(w).Encode(body)
+					return
+				}
+			}
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "starting"})
 			return
@@ -1186,8 +1197,10 @@ func main() {
 	// /metrics is always reachable — NOT gated by readiness.
 	mux.Handle("/metrics", met.Handler())
 
-	// /healthz is always reachable, before NATS setup as well as after it.
-	mux.HandleFunc("/healthz", healthzHandler(&deps))
+	// /healthz is always reachable, before NATS setup as well as after it. Before the durable binds
+	// it reads the selection bucket's sentinel through startingClient, once that client connects.
+	var startingClient atomic.Pointer[bus.Client]
+	mux.HandleFunc("/healthz", healthzHandler(&deps, &startingClient))
 
 	// /livez answers 204 and touches nothing: no flush to NATS, no cache ping and no read of the
 	// durable consumer. It says only that the process answers, for the startup and liveness
@@ -1241,6 +1254,7 @@ func main() {
 		// of a log that holds only "context deadline exceeded" cannot tell which step timed out.
 		log.Fatalf("connect to NATS and reconcile the %s stream: %v", bus.Stream, err)
 	}
+	startingClient.Store(client)
 	// starting is the context the bucket opens below run under, and it is context.Background() on
 	// purpose: do not replace it with a context a signal ends. The opens wait on the cluster until
 	// it answers them (a bucket's create, a raise's copies, a member applying a create, a stream's

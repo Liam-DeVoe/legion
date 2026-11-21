@@ -98,3 +98,44 @@ func awaitFixedNaming(ctx context.Context, gated gatedConnection, logger *loggin
 		}
 	}
 }
+
+// sentinelRefusal is why err, a read of the selection bucket in the fresh mode, refuses every
+// call over a bucket that exists: its sentinel key (consumernames.SentinelKey) holds nothing
+// ("absent"), a sentinel of another store's family ("another family"), or a value that is no
+// sentinel ("malformed"). ok is false for any other answer, a missing bucket and an admitted
+// sentinel among them.
+func sentinelRefusal(err error) (reason string, ok bool) {
+	switch {
+	case !errors.Is(err, consumernames.ErrNoSentinel):
+		return "", false
+	case errors.Is(err, consumernames.ErrSentinelFamily):
+		return "another family", true
+	case errors.Is(err, consumernames.ErrMalformedRecord):
+		return "malformed", true
+	}
+	return "absent", true
+}
+
+// startingSelectionHealth is /healthz's answer while the listener has not bound its durable
+// (healthzHandler, before main publishes its deps): in the fresh mode, a start whose selection
+// bucket's sentinel is absent, of another family or malformed binds nothing however long it
+// retries, so the answer is 503 not_ready naming the bucket, the key and why, read within ctx.
+// nil with no client yet, in the fixed mode, or when the sentinel refuses nothing.
+func startingSelectionHealth(ctx context.Context, client *bus.Client) map[string]interface{} {
+	if client == nil || client.ConsumerNames() != consumernames.ModeFresh {
+		return nil
+	}
+	_, err := client.SelectionStore().State(ctx)
+	reason, ok := sentinelRefusal(err)
+	if !ok {
+		return nil
+	}
+	return map[string]interface{}{
+		"status":         "not_ready",
+		"error":          dependencyUnavailable("session consumer selection bucket "+consumernames.SessionBucket, err),
+		"bucket":         consumernames.SessionBucket,
+		"key":            consumernames.SentinelKey,
+		"reason":         reason,
+		"consumer_names": string(consumernames.ModeFresh),
+	}
+}

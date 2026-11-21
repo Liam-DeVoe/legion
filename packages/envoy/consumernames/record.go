@@ -266,6 +266,9 @@ var (
 	// ErrBusy is an operation another process holds in flight that this call could not settle
 	// before its context ended.
 	ErrBusy = errors.New("consumer names: another process's operation is in flight")
+	// ErrSentinelFamily is a well-formed sentinel under a store's sentinel key that names another
+	// store's family (KVStore: any but SessionFamily): a missing sentinel, as ErrNoSentinel.
+	ErrSentinelFamily = errors.New("consumer names: the sentinel names another store's family")
 	// ErrUnexpectedConsumer is an operation's candidate the server holds that is not as the family
 	// creates it: a start or a setting no update can change differs from what the operation
 	// reserved (Names.adoptable). Such a candidate is refused, naming it, and never published.
