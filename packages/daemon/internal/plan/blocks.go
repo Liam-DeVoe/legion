@@ -167,8 +167,9 @@ func ChangedTasks(held, next Plan) []string {
 }
 
 // sameBlock says whether two tasks of one id say the same thing: their needs are compared as the
-// tasks they name and as the words that name no task.
+// tasks they name. Neither side holds a word that names no task: the held plan is read from stored
+// rows, and a later version passed Validate, which refuses each such word.
 func sameBlock(a, b Task) bool {
 	return a.Text == b.Text && a.PartOf == b.PartOf && a.Owner == b.Owner && a.Merges == b.Merges &&
-		slices.Equal(a.Needs, b.Needs) && slices.Equal(a.Unresolved, b.Unresolved) && slices.Equal(a.Steps, b.Steps)
+		slices.Equal(a.Needs, b.Needs) && slices.Equal(a.Steps, b.Steps)
 }

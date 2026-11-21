@@ -48,9 +48,7 @@ func ratingRecordOf() record.StepRecord {
 // steps in order and its needs, and the row is done. The owner's plan carries every field a default
 // plan leaves empty, a version that is not its run, and two tasks out of the order of their ids, one
 // of which needs the other, so a field the copy to Dispatch drops, or a sort of the tasks, changes
-// what Dispatch receives. The daemon queues no owner's plan yet (the workflow's defaultPlan is its
-// one plan): that case holds the copy to Dispatch of each field such a plan carries, which the
-// record's type already has. A row the release before wrote carries no needs, and its write carries
+// what Dispatch receives. A row the release before wrote carries no needs, and its write carries
 // none either, which Dispatch reads as needs not recorded.
 func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 	for _, tc := range []struct {

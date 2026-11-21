@@ -38,6 +38,7 @@ read_dispatch steps --issue "$issue"
 # of the issue's plan, which comes before its runs and is no run:
 #   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>
 #   task <task> needs <tasks|nothing>: <place> <step> <state>, …
+#   task <task> needs are not recorded: <place> <step> <state>, …
 awk -v issue="$issue" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit status }
   NR == 1 {
