@@ -76,6 +76,9 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 		}); err != nil {
 			return err
 		}
+		// Its row of the copy, so the root stands on a known Dispatch chain and its notices
+		// route to its own architect (R16, R18 of dispatch://INFRA-3320).
+		seedCopyRow(t, tx, issue, "", "in_progress", 1)
 		taken, err := records.Slots(context.Background(), tx)
 		if err != nil {
 			return err

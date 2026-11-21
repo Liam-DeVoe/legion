@@ -904,11 +904,15 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	}
 	records := record.NewStore()
 	held := runningRoot(issue, phase.Held)
-	held.Hold = &record.Hold{From: phase.Implementing}
+	// A hold keeps the status of the phase it holds, which keeps the issue in Legion's work (R20 of
+	// dispatch://INFRA-3320): the retry acts on an issue in work alone.
+	held.Hold, held.Status = &record.Hold{From: phase.Implementing}, workflow.PhaseStatus(phase.Implementing)
 	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, held); err != nil {
 			return err
 		}
+		// Its row of the copy: the retry reads the root's own chain (R16 of dispatch://INFRA-3320).
+		seedCopyRow(t, tx, issue, "", held.Status, 1)
 		suspend, err := record.NewFencedRow(ctx, tx, records, issue, record.SuperviseRequest{Op: "suspend", Tree: issue, Role: claim.RolePlanner, Generation: 1}, time.Now().UTC())
 		if err != nil {
 			return err

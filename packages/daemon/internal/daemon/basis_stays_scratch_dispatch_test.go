@@ -764,7 +764,12 @@ func (r *personHandoverRig) moveRecord(key string, to phase.Phase) {
 		if err != nil || issue == nil {
 			return fmt.Errorf("read the record of %s: %v", key, err)
 		}
+		// A parent the admission pass moved to awaiting_children for its open children (R9 of
+		// dispatch://INFRA-3320) carries the wait that phase holds, and the move out of it drops it.
 		issue.Phase = to
+		if to != phase.AwaitingChildren {
+			issue.ChildrenWait = nil
+		}
 		return records.PutIssue(t.Context(), tx, *issue)
 	}); err != nil {
 		t.Fatalf("record %s in %s: %v", key, to, err)
@@ -858,7 +863,12 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 	fields := map[string]any{"labels": []string{"legion"}}
 	if opt.place == ancestorMember {
 		run.owner = r.create(asSession, names[2], labelled)
-		r.admit(run.owner.Key)
+		ownerGrant := r.admit(run.owner.Key)
+		// The owner's architect registers the owner's own gate on the person's approval: every
+		// issue under the owner in Legion's work, R among them, waits for that gate (R19 of
+		// dispatch://INFRA-3320).
+		ownerApproval := r.approve(run.owner.PrimaryArtifactID)
+		r.registerApprovedGate(run.owner.Key, run.owner.PrimaryArtifactID, ownerApproval.Version, ownerGrant)
 		fields["parent"] = run.owner.Key
 	}
 	run.parent, _ = r.ancestor(names[1], fields, "p1", "p2", "p3")
@@ -871,6 +881,10 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 	switch opt.place {
 	case ancestorLive:
 		run.parentGrant = r.admit(run.parent.Key)
+		// P's architect registers P's own gate on the person's approval, as openRun's live P
+		// does: every issue under P in Legion's work waits for P's gate (R19 of
+		// dispatch://INFRA-3320), so R's step opening on P's approval is what then starts R.
+		r.registerApprovedGate(run.parent.Key, run.parent.PrimaryArtifactID, approved.Version, run.parentGrant)
 	case ancestorMember:
 		r.setStatus(run.parent.Key, "todo")
 		testwait.Eventually(t, "the daemon to record "+run.parent.Key+" as a member of "+run.owner.Key+"'s tree", func() bool {
@@ -1220,9 +1234,12 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 		}},
 		{"P in Dispatch's retro after the daemon refused its sign-off", []string{"Recycling bin sensor", "Citywide waste reduction"}, func(run pendingRun) string {
 			r.moveRecord(run.parent.Key, phase.Accepting)
+			// R is under P in Legion's work, so the sign-off is refused for R as a child still in
+			// the workflow, which acceptanceHeld reads before the roots resting on P (R8, R9 of
+			// dispatch://INFRA-3320).
 			refused := r.applyAsTheDaemon("api", "sign-off-"+run.parent.Key, intake.SignOff{Issue: run.parent.Key})
-			if refused.Refusal == nil || refused.Refusal.Code != "SIGNOFF_RESTING_ROOT_IN_WORKFLOW" || !strings.Contains(refused.Refusal.Message, run.root.Key) {
-				t.Fatalf("the sign-off of %s while %s waits on its request = %+v, want SIGNOFF_RESTING_ROOT_IN_WORKFLOW naming %s", run.parent.Key, run.root.Key, refused.Refusal, run.root.Key)
+			if refused.Refusal == nil || refused.Refusal.Code != "SIGNOFF_CHILD_IN_WORKFLOW" || !strings.Contains(refused.Refusal.Message, run.root.Key) {
+				t.Fatalf("the sign-off of %s while %s waits on its request = %+v, want SIGNOFF_CHILD_IN_WORKFLOW naming %s", run.parent.Key, run.root.Key, refused.Refusal, run.root.Key)
 			}
 			if standing := r.record(run.parent.Key).Phase; standing != phase.Accepting {
 				t.Fatalf("%s stands at %s after its refused sign-off, want accepting: the daemon does not record it in retro", run.parent.Key, standing)
@@ -1268,13 +1285,15 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 		t.Logf("%s ended the wait of %s", tc.name, run.root.Key)
 	}
 
-	// The person's approval of R's own document while the step waits: both notices.
+	// The person's approval of R's own document while the step waits: both notices. The step opens
+	// on that approval, and R stays at admitted: P's own gate is shut by v4 while the request waits,
+	// and R, under P in Legion's work, waits for it (R19 of dispatch://INFRA-3320).
 	own := r.pendingWorld([]string{"Chimney sweep roster", "Historic district upkeep"}, pendingOptions{place: ancestorLive})
 	r.registerOn(own.basisRun)
 	r.pendingRegistered(own.basisRun, own.ask, true, phase.Admitted)
 	r.approve(own.root.PrimaryArtifactID)
 	state, body := settled(t, r.d, "open the spec step of "+own.root.Key+" on the person's approval of its own document", func(s api.State) bool {
-		return stepOf(s, own.root.Key).Status == api.GatedStepApproved && s.Issues[own.root.Key].Phase == phase.Planning
+		return stepOf(s, own.root.Key).Status == api.GatedStepApproved && s.Issues[own.root.Key].Phase == phase.Admitted
 	})
 	if step := stepOf(state, own.root.Key); step.Basis != nil {
 		t.Fatalf("the spec step of %s = %+v (basis %+v), want it open on the person's approval with no basis\nstate %s", own.root.Key, step, step.Basis, body)
@@ -1355,7 +1374,14 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	r.boot()
 	testwait.Eventually(t, "the consumer to deliver and drop the person's approval of "+restarted.parent.Key, func() bool { return drop.count() == dropped+1 })
 	r.applied(r.newestEvent(restarted.parent.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == downApproval.Version }))
-	r.openedOnBasis(restarted.root, restarted.parent, 1, restarted.basisVersion)
+	// The boot's read opens R's step on P's approval; R itself stays at admitted, since the event
+	// the consumer dropped is the approval that would open P's own gate too, which R, under P in
+	// Legion's work, waits for (R19 of dispatch://INFRA-3320).
+	settled(t, r.d, "open the spec step of "+restarted.root.Key+" on the approval the consumer dropped", func(s api.State) bool {
+		step := stepOf(s, restarted.root.Key)
+		return step.Status == api.GatedStepOpenOnBasis && step.Basis != nil && step.Basis.Version == restarted.basisVersion &&
+			s.Issues[restarted.root.Key].Phase == phase.Admitted
+	})
 	t.Logf("the boot's pending-basis read opened %s on the approval the consumer dropped", restarted.root.Key)
 
 	// The approval inside the registration's window.

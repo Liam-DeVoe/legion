@@ -282,7 +282,8 @@ func (r *childArchitectRig) wantChildsArchitectToldItsIssues(want []string) {
 // the rows they write through the real outbox runner, and the architect's launch through its
 // claim's machine: the start creates and spawns the child's architect claim, on the child and in
 // the root's tree, and the first notice published to that architect is its catch-up, naming the
-// child and every issue under it. A child that waits for the issue it is held by gets no architect
+// child and every issue under it in Legion's work, the issues that architect acts on (R18 of
+// dispatch://INFRA-3320). A child that waits for the issue it is held by gets no architect
 // while it waits: the architect starts with the child's first phase and not with its entry.
 func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 	t.Run("release_children", func(t *testing.T) {
@@ -295,7 +296,9 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 		rig := newChildArchitectRig(t)
 		rig.put(rig.member(doorChild, doorRoot, phase.Done, "done", "V"), rig.member(doorGrandchild, doorChild, phase.Done, "done", "W"))
 		rig.written("rerun", childAt("todo", 2))
-		rig.wantChildsArchitectToldItsIssues([]string{doorChild, doorGrandchild})
+		// The grandchild stays done, out of Legion's work, so the child's architect does not act
+		// on it and its catch-up does not name it.
+		rig.wantChildsArchitectToldItsIssues([]string{doorChild})
 	})
 
 	t.Run("a person's todo under a live tree", func(t *testing.T) {
