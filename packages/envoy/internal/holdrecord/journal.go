@@ -109,14 +109,19 @@ const CommandProve = "hold prove"
 // ErrBusy while another command's `intent` is pending. Outside `hub-restore` it is admitted only
 // once a command's latest entry is a `stop`, a command that stopped and has not run again since,
 // and refused ErrOutOfOrder ("no command has stopped") otherwise, so it is the way out of a failed
-// command, not a way to end a workflow that is going well. In `hub-restore` a `done` CommandProve
-// entry excludes it until, after the latest done prove, a command's latest entry is a `stop` (a
-// census that fails for good, say), or until its own intent is pending, a rerun after a crash; a
-// stop from before the prove lifts nothing. Its disk check there passes only with each target's
-// disk its step-1 one, since it never releases over a restored disk: after a restore, the operator
-// puts each step-1 disk back before abort can release. Release stays refused, since hub-restore's
-// completion is its clean census. It moves the row to `released` before its `done` entry, which
-// completes the record; its `intent` carries each stop's record of what its command left (Admit).
+// command, not a way to end a workflow that is going well. In `hub-restore`, before any done
+// CommandProve, the hold's command passes its disk check only with each target's disk its step-1
+// one. After a done prove, abort is admitted only once the pending command's latest entry is a
+// `stop` (a stop after the latest done prove, a census that fails for good, say), and is refused
+// ErrExcluded otherwise; a stop from before the prove lifts nothing. It then releases
+// the row: the hold's command compares each disk with the done prove's record first, which is
+// t-10's check, not this package's. After a failed re-prove on a disk that moved, the operator
+// restores that target back onto the done prove's disk and then runs abort; if the proven disk is
+// gone, an operator ends the hold by hand by the documented route, recorded as such. The residual:
+// on this path clients reach the restored and proven hub before its census, until a
+// streams-census hold runs clean. Release stays refused, since hub-restore's completion is its
+// clean census. Abort moves the row to `released` before its `done` entry, which completes the
+// record; its `intent` carries each stop's record of what its command left (Admit).
 // It is refused after completion. From `prepare` it deletes the cohort (DeleteCohort) and moves
 // the row, and writes no entry. Like every command, its own pending intent admits it again, so two
 // processes running abort at once are both admitted: the operator runs one command of a hold at a

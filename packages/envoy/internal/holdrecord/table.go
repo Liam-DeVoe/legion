@@ -42,14 +42,19 @@ type rules struct {
 	// hold release's rule as every done entry does, so after a backup the way out of a recreate or
 	// restore that stops is hold abort.
 	BackupCommand bool
-	// HubAbortAfterStop: in hub-restore, a done hold prove excludes hold abort only until, after
-	// the latest done prove, a command's latest entry is a stop, as every other workflow admits
-	// abort after a stop, so a census that fails for good after a prove does not hold the hold. A
-	// crashed abort's own pending intent admits its rerun too, since the stop it followed may have
-	// been superseded since. A stop from before the prove lifts nothing: the prove moved the disks
-	// it judged. Abort still passes only with each target's disk its step-1 one, so after a restore
-	// the operator puts each step-1 disk back before abort can release; abort never releases over a
-	// restored disk. Hold release stays refused: hub-restore's completion is its clean census.
+	// HubAbortAfterStop: in hub-restore, after a done hold prove, hold abort is admitted only once
+	// the pending command's latest entry is a stop (a census that fails for good, say): a command
+	// whose latest entry, after the latest done prove, is a stop. With no stop there the prove still
+	// excludes it (ErrExcluded), and a stop from before the prove lifts nothing. A crashed abort's
+	// rerun needs nothing more: the stop that admitted it is still that command's latest entry. The abort
+	// releases the row, and its entry carries the stop's record of what was left. Hold release
+	// stays refused: hub-restore's completion is its clean census. Comparing each disk with the
+	// done prove's record before the abort releases is the hold's command's (t-10's), not this
+	// table's. After a failed re-prove on a disk that moved, the operator restores that target back
+	// onto the done prove's disk, a restore this table already admits, and then runs abort; if the
+	// proven disk is gone, an operator ends the hold by hand by the documented route, recorded as
+	// such. The residual: on this path clients reach the restored and proven hub before its census,
+	// until a streams-census hold runs clean.
 	HubAbortAfterStop bool
 }
 
@@ -84,8 +89,8 @@ type entry struct {
 	// ran again and finished).
 	needsStop bool
 	// stopLiftsExcludes is a command whose excludes refuse it only until, after the latest done
-	// hold prove, some command's latest entry is a stop, or until its own intent is pending, a
-	// rerun after a crash: hub-restore's hold abort under HubAbortAfterStop.
+	// hold prove, some command's latest entry is a stop: hub-restore's hold abort under
+	// HubAbortAfterStop.
 	stopLiftsExcludes bool
 }
 
@@ -260,7 +265,7 @@ func (t table) Decide(d Done, req modelRequest) error {
 		return wrap(ErrAlreadyDone, "the record is complete")
 	}
 	for _, x := range e.excludes {
-		if e.stopLiftsExcludes && (stoppedSinceProve(d) || slices.Contains(pending(d), c)) {
+		if e.stopLiftsExcludes && stoppedSinceProve(d) {
 			break
 		}
 		if hasDone(d.Ops, x) {

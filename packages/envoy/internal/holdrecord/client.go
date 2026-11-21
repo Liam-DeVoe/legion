@@ -18,16 +18,19 @@
 // not enforce: under A2 at most one command is past its intent at any time. Every command is
 // Stoppable: one whose own check refuses after its intent writes a `stop` entry (AppendStop,
 // AppendStopLeft), which ends the intent and records what the command left. `hold release` follows
-// only a complete record or one
-// whose stops all left nothing changed (LeftUnchanged), and `hold abort` is every workflow's way
-// out once a command has stopped and no intent is pending, so a command that can never succeed
-// cannot hold the hold. In hub-restore a done `hold prove` excludes abort until a command stops
-// after it; abort then passes only with each target's disk its step-1 one, since it never releases
-// over a restored disk, so the operator puts each step-1 disk back before running it. The workflow
-// table and Decide are the ones model_test.go explores: every workflow from its true start, with
-// crashes between any two writes, two operator processes, restores landing outside the hold, the
-// row lost and restored, and any command failing for good after its intent, in hub-restore the
-// census and a prove after a done prove.
+// only a complete record or one whose stops all left nothing changed (LeftUnchanged), and `hold
+// abort` is every workflow's way out once a command has stopped and no intent is pending, so a
+// command that can never succeed cannot hold the hold. In hub-restore, after a done `hold prove`,
+// abort is admitted only once the pending command's latest entry is a stop, and releases the row
+// over the proven disks, which the hold's command compares with the prove's record (t-10's check):
+// clients then reach the restored and proven hub before its census, until a streams-census hold
+// runs clean. After a failed re-prove on a disk that moved, the operator restores that target back
+// onto the done prove's disk before running abort; if the proven disk is gone, an operator ends the
+// hold by hand by the documented route, recorded as such. The workflow table and Decide are the
+// ones model_test.go explores: every workflow from its true start, with crashes between any two
+// writes, two operator processes, restores landing outside the hold, the row lost and restored,
+// and any command failing for good after its intent, in hub-restore the census and a prove after a
+// done prove.
 package holdrecord
 
 import (

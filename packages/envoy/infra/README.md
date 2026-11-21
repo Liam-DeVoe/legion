@@ -4067,11 +4067,15 @@ crash, so the operator runs one command of a hold at a time (assumption A2), and
 tell a rerun from a second process. A command whose own check refuses after its intent
 writes a `stop` entry naming what it left, and `hold abort` ends the hold once a command has
 stopped and no other command's intent is pending; `hold release` follows only a complete record or
-one whose stops all left nothing changed. In `hub-restore`, a done `hold prove` excludes `hold
-abort` until a command stops after it, a census that cannot read a stream, say. Abort never
-releases over a restored disk: its check passes only with each target's disk its step-1 one, so
-after a restore the operator puts each step-1 disk back and then runs `hold abort`. If a step-1 disk
-is gone, the hold stays held until the row is written by hand.
+one whose stops all left nothing changed. In `hub-restore`, before a done `hold prove`, `hold abort`
+passes its disk check only with each target's disk its step-1 one. After a done prove, `hold abort`
+is admitted only once the pending command's latest entry is a `stop` (a census that cannot read a
+stream, say), and is refused otherwise; it then releases the row, its entry carrying the stop's
+record of what was left, after `envoy-infra hold abort` compares each disk with the done prove's
+record. After a failed re-prove on a disk that moved, restore that target back onto the done
+prove's disk, then run `hold abort`. If the proven disk is gone, an operator ends the hold by hand
+by the documented route, and the hold's record says so. The residual: on this path clients reach
+the restored and proven hub before its census, until a `streams-census` hold runs clean.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the

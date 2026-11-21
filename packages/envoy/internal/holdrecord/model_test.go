@@ -21,10 +21,12 @@ package holdrecord
 // keeps each stop, as the code writes it, and a stop records what every run of its command in the
 // hold left (LeftUnchanged's rule), so a rerun that changes nothing itself still records an earlier
 // run's change. Hold abort, admitted in every workflow once a command has stopped and no intent is
-// pending (in hub-restore after a done prove, once a command stopped after it), ends the hold; once
-// a command has failed for good the operator may put a target's step-1 disk back, the one way
-// hub-restore's abort passes its disk check after a restore. Hold release never moves the row on a
-// record that is not complete while a run's change outside the journal stands.
+// pending (in hub-restore after a done prove, once a command stopped after it), ends the hold. In
+// hub-restore after a done prove, abort compares each disk with the prove's record, as the hold's
+// command does, and releases over the proven disks, the residual the design states; once a command
+// has failed for good there, the operator may restore a target back onto the done prove's disk.
+// Hold release never moves the row on a record that is not complete while a run's change outside
+// the journal stands.
 //
 // It explores every reachable state breadth-first, for every workflow, with two operator
 // processes. An admission is what the code does: with AtomicAdmit, one compare-and-swap step that
@@ -40,8 +42,10 @@ package holdrecord
 //   - no false completion: complete is true only when the workflow's final command is the last
 //     done entry and no command's intent is pending (but hold release's own, and hold abort's
 //     after a done prove, whose one effect, the row move, has not happened while the row is held);
-//   - hub-restore's safety: abort never releases over a restored disk, and a disk is judged only by
-//     its step-1 id as recorded, and never against a target the step-1 map lacks.
+//   - hub-restore's safety: abort never releases over a restored disk, but after a done prove
+//     under HubAbortAfterStop, where it releases over the disks that prove proved and never over
+//     another; a disk is judged only by its step-1 id as recorded, and never against a target the
+//     step-1 map lacks.
 //
 // The current rules must find no counterexample, and every earlier rule set and every rule set
 // with one fix removed must find a counterexample of each class it names, which the test asserts
@@ -273,7 +277,8 @@ type modelState struct {
 	Unresolved bool   // rollback: a logical name with no start, which only restore --key resolves
 	NoStart    bool   // cutover: a cohort member with no safe start, which only replay --key resolves
 	Doomed     string // a command that failed for good after its intent: every later run of it fails
-	StopLatest string // in the rule sets since the bundle (stopsRecorded), the commands whose latest entry is a stop, which hold abort's admission reads
+	StopLatest string // in the rule sets since the bundle (stopsRecorded), the commands whose latest entry is a stop written after the latest done prove (or with none done), which hold abort's admission reads
+	StopBefore string // likewise, the commands whose latest entry is a stop written before the latest done prove
 	Left       byte   // likewise, the stops of other commands than hold set and release: 0 none, 'U' each left nothing changed, 'C' one changed or recorded nothing
 	Wrote      string // under Fail, the commands a run of which changed something outside the journal: the hub, not buckets backup's archive
 	Cur        [2]modelDisk
@@ -463,19 +468,25 @@ func scenarios(r modelRules, fail, ownRunOnly bool) []modelScenario {
 // package are the state's.
 func toDone(sc modelScenario, s modelState) Done {
 	d := Done{Workflow: sc.W, Complete: s.Complete}
-	// Under WayOut, each command whose latest entry is a stop, after its done entries and before the
-	// intents. What hold release's rule reads of the stops of other commands than hold set and hold
-	// release is whether every one left nothing changed (Left), and every such stop carries that
-	// answer. StopLatest is set only in the rule sets since the bundle (stopsRecorded), so the
-	// bundle's profiles keep the bundle's record.
-	var stops []Operation
-	for _, c := range list(s.StopLatest) {
-		o := Operation{Command: c, State: stateStop}
-		if s.Left == 'U' {
-			o.Outputs = map[string]string{stopLeftKey: LeftUnchanged}
+	// Under WayOut, each command whose latest entry is a stop: one written before the latest done
+	// prove just before that prove's done entry (StopBefore), and every other after the done
+	// entries and before the intents (StopLatest), so the record keeps the order hold abort's
+	// admission in hub-restore reads. What hold release's rule reads of the stops of other commands
+	// than hold set and hold release is whether every one left nothing changed (Left), and every
+	// such stop carries that answer. Both are set only in the rule sets since the bundle
+	// (stopsRecorded), so the bundle's profiles keep the bundle's record.
+	stopsOf := func(set string) []Operation {
+		var out []Operation
+		for _, c := range list(set) {
+			o := Operation{Command: c, State: stateStop}
+			if s.Left == 'U' {
+				o.Outputs = map[string]string{stopLeftKey: LeftUnchanged}
+			}
+			out = append(out, o)
 		}
-		stops = append(stops, o)
+		return out
 	}
+	stops, before := stopsOf(s.StopLatest), stopsOf(s.StopBefore)
 	done := func(c string, out map[string]string) {
 		d.Ops = append(d.Ops, Operation{Command: c, State: stateDone, Outputs: out})
 	}
@@ -492,6 +503,7 @@ func toDone(sc modelScenario, s modelState) Done {
 				out["disk_id."+n] = strconv.Itoa(s.Proven[tg])
 			}
 		}
+		d.Ops = append(d.Ops, before...)
 		done(CommandProve, out)
 		for _, c := range list(s.Since) {
 			if c != s.Last {
@@ -587,8 +599,23 @@ type modelEdge struct {
 	unsafe string // a safety violation on this step
 }
 
-func released(s modelState, abort bool) string {
-	if abort && (s.Cur[0].Snap != 0 || s.Cur[1].Snap != 0) {
+// released is why the row's release in s is unsafe, or "". Abort never releases over a restored
+// disk, but after a done prove under HubAbortAfterStop: there it releases over the disks that prove
+// proved, the residual the hold's design states (clients reach the restored and proven hub before
+// its census, until a streams-census hold runs clean), and a release over a disk the done prove did
+// not prove is unsafe.
+func released(r modelRules, s modelState, abort bool) string {
+	switch {
+	case !abort:
+		return ""
+	case r.HubAbortAfterStop && s.Proved:
+		for tg := range targets {
+			if s.Cur[tg].ID != expected(s, tg) {
+				return "abort released over a disk the done prove did not prove"
+			}
+		}
+		return ""
+	case s.Cur[0].Snap != 0 || s.Cur[1].Snap != 0:
 		return "abort released over a restored disk"
 	}
 	return ""
@@ -703,18 +730,23 @@ func next(r modelRules, t modelTable, sc modelScenario, s modelState, bound int)
 				}
 			}
 		}
-		// Once a command has failed for good under Fail, the operator may put a target's step-1
-		// disk back, the one way hold abort's disk check passes after a restore landed: abort never
-		// releases over a restored disk, so after a done prove whose census fails for good, the hold
-		// ends by putting each step-1 disk back and running abort. The step is the operator's, so
-		// liveness may use it, and A1 holds it out of the window between abort's or release's disk
-		// check and its row move, as it holds a restore.
-		if sc.Fail && s.Doomed != "" && !window {
+		// Once a command has failed for good after a done prove under HubAbortAfterStop, the
+		// operator may restore a target back onto its expected disk (the done prove's recorded one,
+		// or step 1's for a target it did not name), a restore the table already admits after the
+		// failed re-prove: then abort, which compares each disk with the prove's record, passes after
+		// a disk moved and no prove can prove the new one. If that disk is gone, an operator ends the
+		// hold by hand by the documented route, the residual the docs state. The step is the
+		// operator's, so liveness may use it, and A1 holds it out of the window between abort's or
+		// release's disk check and its row move, as it holds a restore.
+		if sc.Fail && s.Doomed != "" && r.HubAbortAfterStop && s.Proved && !window {
 			for tg, n := range targets {
-				if s.Step1[tg].ID != 0 && s.Cur[tg] != s.Step1[tg] {
+				if want := expected(s, tg); s.Cur[tg].ID != want {
 					ns := s
-					ns.Cur[tg] = s.Step1[tg]
-					out = append(out, modelEdge{to: ns, label: "operator: puts target " + n + "'s step-1 disk back", op: true})
+					ns.Cur[tg] = modelDisk{ID: want, Snap: 'H'}
+					if s.ProvenSet&(1<<tg) == 0 {
+						ns.Cur[tg] = s.Step1[tg]
+					}
+					out = append(out, modelEdge{to: ns, label: "operator: restores " + n + " back onto the done prove's disk", op: true})
 				}
 			}
 		}
@@ -758,7 +790,7 @@ func admit(r modelRules, sc modelScenario, s modelState, k int, o modelOp) model
 
 func writeIntent(s modelState, c string) modelState {
 	s.Intent = addSet(s.Intent, c)
-	s.StopLatest = delSet(s.StopLatest, c)
+	s.StopLatest, s.StopBefore = delSet(s.StopLatest, c), delSet(s.StopBefore, c)
 	if c != CommandRelease {
 		s.Complete = false
 	}
@@ -776,6 +808,10 @@ func finish(t modelTable, sc modelScenario, s modelState, k int) modelState {
 			s.ProvenSet = sl.Set
 		}
 		s.Proved, s.Since = true, ""
+		for _, x := range list(s.StopLatest) { // stops written so far now precede the latest done prove
+			s.StopBefore = addSet(s.StopBefore, x)
+		}
+		s.StopLatest = ""
 		for tg := range targets {
 			s.Proven[tg] = 0
 			if s.ProvenSet&(1<<tg) != 0 {
@@ -786,7 +822,7 @@ func finish(t modelTable, sc modelScenario, s modelState, k int) modelState {
 		s.Since = addSet(s.Since, c)
 	}
 	s.Intent = delSet(s.Intent, c)
-	s.StopLatest = delSet(s.StopLatest, c)
+	s.StopLatest, s.StopBefore = delSet(s.StopLatest, c), delSet(s.StopBefore, c)
 	if t.final(sc.W, c) {
 		s.Complete, s.HoldGen = true, s.RowGen
 	}
@@ -811,7 +847,7 @@ func refuseLeft(r modelRules, t modelTable, sc modelScenario, s modelState, k in
 	if t.stoppable(sc.W, c) && inSet(s.Intent, c) {
 		ns.Intent = delSet(ns.Intent, c)
 		if stopsRecorded(r) {
-			ns.StopLatest = addSet(ns.StopLatest, c)
+			ns.StopLatest, ns.StopBefore = addSet(ns.StopLatest, c), delSet(ns.StopBefore, c)
 		}
 		label := c + ": " + why + ", stop entry"
 		if stopsRecorded(r) && c != cmdSet && c != CommandRelease {
@@ -984,7 +1020,7 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 		ns.Row = 'R'
 		u := ""
 		if sc.Hub {
-			u = released(ns, abort)
+			u = released(r, ns, abort)
 		}
 		if u == "" && othersRunning(ns, k) {
 			u = "the row is released while another command runs"
@@ -1167,12 +1203,23 @@ func steps(r modelRules, t modelTable, sc modelScenario, s modelState, k int) []
 			if lacks() {
 				return []modelEdge{refuse(r, t, sc, s, k, "UNKNOWN, a target the step-1 map lacks", false)}
 			}
+			// After a done prove under HubAbortAfterStop, abort compares each disk with the done
+			// prove's record (Expected), which the hold's command does; before one, with step 1's.
+			proved := r.HubAbortAfterStop && s.Proved
 			ok := true
 			for tg := range targets {
-				ok = ok && s.Cur[tg].ID == sl.Base[tg].ID && s.Cur[tg].Snap != 'H'
+				if proved {
+					ok = ok && s.Cur[tg].ID == expected(s, tg)
+				} else {
+					ok = ok && s.Cur[tg].ID == sl.Base[tg].ID && s.Cur[tg].Snap != 'H'
+				}
 			}
 			if !ok {
-				e := refuse(r, t, sc, s, k, "refused, a disk is not step 1's", false)
+				why := "refused, a disk is not step 1's"
+				if proved {
+					why = "refused, a disk is not the done prove's"
+				}
+				e := refuse(r, t, sc, s, k, why, false)
 				e.unsafe = reread()
 				return []modelEdge{e}
 			}
@@ -1763,20 +1810,20 @@ var (
 // without EveryCommandStoppable, without HubAbortAfterStop, and with each stop recording its own
 // run alone.
 var pinnedBound2 = map[string]modelCount{
-	"v63":                       {530922, 0, nil},
-	"v63-WayOut":                {511226, 14517, map[string]int{classWayOut: 14517}},
-	"v63-EveryCommandStoppable": {485428, 7058, map[string]int{classWayOut: 7058}},
-	"v63-HubAbortAfterStop":     {503298, 228792, map[string]int{classWayOut: 228792}},
-	"v63-OwnRunOnly":            {540661, 144, map[string]int{classEveryRun: 144}},
+	"v63":                       {532982, 0, nil},
+	"v63-WayOut":                {513286, 14517, map[string]int{classWayOut: 14517}},
+	"v63-EveryCommandStoppable": {487488, 7058, map[string]int{classWayOut: 7058}},
+	"v63-HubAbortAfterStop":     {414090, 123608, map[string]int{classWayOut: 123608}},
+	"v63-OwnRunOnly":            {542721, 144, map[string]int{classEveryRun: 144}},
 }
 
 // The current rules' runs by workflow, pinned from this model at bounds 2 and 3.
 var (
 	pinnedCurrentBound2 = map[string]int{"cutover": 55228, "rollback": 6625, "selection-recovery": 9415, "buckets-create": 922,
-		"buckets-recreate": 2730, "buckets-restore": 4117, "streams-update": 922, "streams-census": 1302, "hub-restore": 449661}
+		"buckets-recreate": 2730, "buckets-restore": 4117, "streams-update": 922, "streams-census": 1302, "hub-restore": 451721}
 	pinnedCurrentBound3 = map[string]int{"cutover": 78968, "rollback": 9216, "selection-recovery": 12992, "buckets-create": 1270,
-		"buckets-recreate": 3750, "buckets-restore": 5658, "streams-update": 1270, "streams-census": 1799, "hub-restore": 2985437}
-	pinnedCurrentBound3Total = 3100360
+		"buckets-recreate": 3750, "buckets-restore": 5658, "streams-update": 1270, "streams-census": 1799, "hub-restore": 3445625}
+	pinnedCurrentBound3Total = 3560548
 )
 
 // The model of the hold's workflows, run on this package's journal and table. The frozen bundle's

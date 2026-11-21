@@ -791,9 +791,10 @@ func TestTheHoldJournal(t *testing.T) {
 
 	// After a done prove, a census that stops (UNKNOWN) admits hold abort, its intent carrying the
 	// census's record of what it left; hold release stays refused, since hub-restore's completion is
-	// its clean census. Abort's disk check, outside the journal, passes once the operator has put
-	// each step-1 disk back; its row move and done entry then end the hold.
-	t.Run("hub-restore: after a done prove, a stopped census admits hold abort, which ends the hold", func(t *testing.T) {
+	// its clean census. The abort then releases the row, over the proven disks, which the hold's
+	// command compares with the done prove's record outside the journal (t-10's check), and its done
+	// entry completes the record.
+	t.Run("hub-restore: after a done prove, a stopped census admits hold abort, which releases the row", func(t *testing.T) {
 		r := newRig(t)
 		c := r.client(t)
 		hold(t, c, "h-hubstop", holdrecord.WorkflowHubRestore, twoDisks)
@@ -819,7 +820,7 @@ func TestTheHoldJournal(t *testing.T) {
 			t.Fatalf("the journal ends %+v, want hold abort's intent carrying the census's record %q", abort, "streams census: "+left)
 		}
 		current := row(t, c)
-		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, "h-hubstop", "aborted after the step-1 disks were put back"); err != nil {
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, "h-hubstop", "aborted over the proven disks"); err != nil {
 			t.Fatal(err)
 		}
 		if err := c.AppendDone(ctx, "h-hubstop", holdrecord.CommandAbort, nil); err != nil {
