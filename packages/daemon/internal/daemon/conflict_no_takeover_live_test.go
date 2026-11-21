@@ -94,11 +94,13 @@ const (
 
 // The heads the proof drives: the issue's seeded head, which the push onto the base leaves
 // conflicting; the head the implementer's merge forward pushes; and the control's head, which
-// GitHub answers conflicting from the start and on which ci passed.
+// GitHub answers conflicting from the start and on which ci passed. Each is a full commit id,
+// beginning a1, a2 and c1, since the check state the tester's completion is decided by names its
+// head as one.
 const (
-	conflictFirstHead   = "h1"
-	conflictMergedHead  = "h2"
-	conflictControlHead = "c1"
+	conflictFirstHead   = "a100000000000000000000000000000000000000"
+	conflictMergedHead  = "a200000000000000000000000000000000000000"
+	conflictControlHead = "c100000000000000000000000000000000000000"
 )
 
 // The lines the daemon logs for what it decides of a conflicting head, which the steps read its

@@ -96,10 +96,11 @@ const behindFenceBase = "main"
 // The two heads the proof drives: the implementer's seeded head, which the tester's first turn
 // tests, and the head the implementer pushes once the tester has sent the work back, which the
 // record holds from step 2 to the end. Nothing is pushed after it, so steps 5 and 8 differ in
-// nothing a reading of the heads can see.
+// nothing a reading of the heads can see. Each is a full commit id, beginning bf1 and bf2, since
+// the check state each completion is decided by names its head as one.
 const (
-	behindFenceFirstHead  = "bf1"
-	behindFenceSecondHead = "bf2"
+	behindFenceFirstHead  = "bf10000000000000000000000000000000000000"
+	behindFenceSecondHead = "bf20000000000000000000000000000000000000"
 )
 
 // behindFenceTakenSummary is the summary of the behind completion step 5 takes, which step 6

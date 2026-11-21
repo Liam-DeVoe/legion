@@ -216,8 +216,8 @@ func (r *handoffRecordsLive) seed() {
 	r.github = handoffRecordsDaemonGitHub(t, claim.IssueBranch(r.renew), int(number)+2)
 	r.seedIssues([]dispatchSeed{
 		{key: r.a3, phase: phase.Planning, role: claim.RolePlanner},
-		{key: r.a7, phase: phase.Testing, role: claim.RoleTester, pr: int(number) + 1, head: "head-" + r.a7},
-		{key: r.renew, phase: phase.Implementing, role: claim.RoleImplementer, pr: int(number) + 2, head: "head-" + r.renew},
+		{key: r.a7, phase: phase.Testing, role: claim.RoleTester, pr: int(number) + 1, head: headCommit(r.a7, "test")},
+		{key: r.renew, phase: phase.Implementing, role: claim.RoleImplementer, pr: int(number) + 2, head: headCommit(r.renew, "test")},
 		{key: r.a10, phase: phase.Planning, role: claim.RolePlanner},
 	})
 }
@@ -411,7 +411,10 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	}
 	r.note("Dispatch's test record of %s: version %d (id %s) by session %s, the body written byte for byte", r.a7, daemonRecord.Version, daemonRecord.ID, daemonRecord.Author.ID)
 
-	status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "tested", Commit: "head-" + r.a7, HandoffID: daemonRecord.ID, HandoffVersion: daemonRecord.Version})
+	// The head the tester tested, the one the issue's pull request was seeded at: a full commit id,
+	// since the check state its completion is decided by names its head as one.
+	head := headCommit(r.a7, "test")
+	status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "tested", Commit: head, HandoffID: daemonRecord.ID, HandoffVersion: daemonRecord.Version})
 	if status != http.StatusForbidden || failure.Code != "HANDOFF_SESSION_MISMATCH" ||
 		!strings.Contains(failure.Error, daemonSession) || !strings.Contains(failure.Error, tester.session) {
 		t.Fatalf("the tester's completion naming the daemon session's record = %d %+v, want 403 HANDOFF_SESSION_MISMATCH naming %s and %s",
@@ -427,8 +430,8 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	if again := r.dispatch.latest(r.a7, "test"); again.Body != daemonRecord.Body || again.Author.ID != tester.session {
 		t.Fatalf("the rewritten test record = %+v, want the same body under %s", again, tester.session)
 	}
-	testedAs(t, r.st.Pool(), r.a7, "head-"+r.a7, true)
-	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "tested", Commit: "head-" + r.a7, HandoffID: rewritten.id, HandoffVersion: rewritten.version})
+	testedAs(t, r.st.Pool(), r.a7, head, true)
+	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "tested", Commit: head, HandoffID: rewritten.id, HandoffVersion: rewritten.version})
 	if status != http.StatusOK {
 		t.Fatalf("the tester's completion naming its own record = %d %+v, want 200", status, failure)
 	}
@@ -479,8 +482,9 @@ func (r *handoffRecordsLive) notNew() {
 	r.note("the tester's shim was prompted: %q", task.Message)
 	test := r.write(tester.session, r.renew, "test", r.smallBody(r.renew, "test", "round 1 fails"))
 	r.note("handoff-write as %s: %s", tester.session, test.line)
-	testedAs(t, r.st.Pool(), r.renew, "head-"+r.renew, false)
-	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "a criterion fails", Commit: "head-" + r.renew, HandoffID: test.id, HandoffVersion: test.version})
+	head := headCommit(r.renew, "test")
+	testedAs(t, r.st.Pool(), r.renew, head, false)
+	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "a criterion fails", Commit: head, HandoffID: test.id, HandoffVersion: test.version})
 	if status != http.StatusOK {
 		t.Fatalf("the tester's failing completion = %d %+v, want 200", status, failure)
 	}

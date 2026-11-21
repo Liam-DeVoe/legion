@@ -94,10 +94,12 @@ const convergeBase = "main"
 
 // The two heads the proof drives: the implementer's seeded head, which the tester's first entry
 // is for, and the head the implementer pushes once the tester's fail has sent the work back, which
-// the second testing entry is for and the record holds from then on.
+// the second testing entry is for and the record holds from then on. Each is a full commit id,
+// beginning ce1 and ce2, since the check state each tester completion is decided by names its head
+// as one.
 const (
-	convergeFirstHead  = "pe1"
-	convergeSecondHead = "pe2"
+	convergeFirstHead  = "ce10000000000000000000000000000000000000"
+	convergeSecondHead = "ce20000000000000000000000000000000000000"
 )
 
 // convergeTesterReason is the summary of the tester's completion that fails the issue's check at
