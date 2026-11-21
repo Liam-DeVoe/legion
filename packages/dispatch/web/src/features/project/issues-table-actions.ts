@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
   api,
@@ -53,6 +53,17 @@ interface Confirmation {
   changes?: readonly string[];
   confirmLabel: string;
   run: () => void;
+  /** Told of a Cancel, an Escape or a press on the backdrop, beside the dialog closing: what a
+   *  Finish that waits on the answer hears. */
+  cancel?: () => void;
+}
+/** What a question says, before the page knows what its yes and its Cancel do. */
+type Question = Omit<Confirmation, "cancel" | "run">;
+/** What an action that moves issues under an epic is, as the question it asks says it: what the
+ *  action does (`lead`), said before the question's own sentences, and its name. */
+interface TargetAction {
+  readonly lead?: string;
+  readonly noun: "merge" | "move";
 }
 /** The epic whose name the reader is typing: a new one for the selected issues, or a rename. */
 export type EpicNaming =
@@ -89,7 +100,9 @@ function targetMustMove(
  *  written for it. */
 interface ResumableAction {
   describe: (record: TableAction) => string;
-  resume: (record: TableAction, current: readonly IssueSummary[]) => Promise<void>;
+  /** Finishes the action, and answers whether it did: false where the reader cancelled the
+   *  question its epic asks, which wrote nothing, so the action stays to be finished. */
+  resume: (record: TableAction, current: readonly IssueSummary[]) => Promise<boolean>;
 }
 
 export function useIssueTableActions({
@@ -112,6 +125,11 @@ export function useIssueTableActions({
   const [unansweredEpic, setUnansweredEpic] = useState<string>();
   const [naming, setNaming] = useState<EpicNaming>();
   const [confirming, setConfirming] = useState<Confirmation>();
+  /** Answers the question a Finish waits on (`intoWorkOnFinish`) while it is open. */
+  const answering = useRef<((yes: boolean) => void) | undefined>(undefined);
+  // The table going away ends the question a Finish waits on, as a Cancel does: the Finish ends,
+  // with nothing more written, rather than wait on a dialog nobody can see.
+  useEffect(() => () => answering.current?.(false), []);
   // The project a write of this table may name, which a scoped table has none of: the epic
   // actions are withheld rather than sent against a listing that belongs to no project.
   const project = "project" in listing ? listing.project : undefined;
@@ -286,17 +304,55 @@ export function useIssueTableActions({
     }
   };
   /**
+   * The question `askTarget` asks before the moves of `rows` under the epic `target` (D12), from
+   * the dry run of the epic's move into work (`INTO_WORK`): undefined where that finds the rule
+   * needs no move. The dry run reads the epic as Dispatch holds it now, which the listing may be
+   * behind. The question lists each change the dry run names; `action.lead` is said before its
+   * own sentences.
+   */
+  const targetQuestion = async (
+    target: string,
+    rows: readonly IssueSummary[],
+    action: TargetAction
+  ): Promise<Question | undefined> => {
+    const answer = await dryRunStatusChange(client, target, INTO_WORK);
+    const changed = answer.changed ?? [];
+    if (changed.length === 0 || !targetMustMove(answer.issue, rows)) return undefined;
+    const { key, title } = answer.issue;
+    const done = answer.issue.status === "done";
+    const why = done
+      ? `The epic ${key} “${title}” is done. A done epic holds no open issue.`
+      : `${inWorkOf(rows)}, and the epic ${key} “${title}” is not. An epic stays in work while an issue under it is in work.`;
+    return {
+      title: done ? `Reopen ${key} too?` : `Move ${key} into work too?`,
+      body: [action.lead, why, `Before the ${action.noun}, Dispatch makes these changes:`]
+        .filter((sentence) => sentence !== undefined)
+        .join(" "),
+      // A dry run's entries carry no issue: the epic is the answer's own, and a parent above it
+      // is named as the listing holds it, or by its key alone.
+      changes: changed.map((entry) => {
+        const known =
+          entry.key === key ? title : issues.find((issue) => issue.key === entry.key)?.title;
+        const issue = known === undefined ? entry.key : `${entry.key} “${known}”`;
+        return `${issue} moves to ${statusText(entry.status)}`;
+      }),
+      confirmLabel: done ? "Reopen it too" : "Move into work too",
+    };
+  };
+  /** What the table says where the dry run of `target`'s move into work was not answered. */
+  const checkFailed = (target: string, error: unknown) =>
+    `Nothing moved: Dispatch could not check ${target}. ${apiErrorMessage(error, "The page could not reach Dispatch.")}`;
+  /**
    * Starts an action that moves the issues `moving` under the epic `target` (D12). Where Dispatch's
    * rule needs the epic in work first, the page sends the dry run of its move into work and asks
-   * one question, which lists each change the dry run names: a yes is `go(true)`, which makes that
-   * status change before the action's own writes, and a Cancel writes nothing. Where the rule
-   * needs nothing, as the dry run finds the epic too, it is `go(false)` at once. `lead` is what
-   * the action does, said before the question's own sentences.
+   * one question (`targetQuestion`): a yes is `go(true)`, which makes that status change before
+   * the action's own writes, and a Cancel writes nothing. Where the rule needs nothing, as the
+   * dry run finds the epic too, it is `go(false)` at once.
    */
   const askTarget = (
     target: string,
     moving: readonly string[],
-    action: { lead?: string; noun: "merge" | "move" },
+    action: TargetAction,
     go: (intoWork: boolean) => void
   ) => {
     const rows = listed(moving);
@@ -309,45 +365,50 @@ export function useIssueTableActions({
     }
     setBusy(true);
     setNotice(undefined);
-    dryRunStatusChange(client, target, INTO_WORK).then(
-      (answer) => {
+    targetQuestion(target, rows, action).then(
+      (question) => {
         setBusy(false);
-        const changed = answer.changed ?? [];
-        // The dry run reads the epic as Dispatch holds it now, which the listing may be behind.
-        if (changed.length === 0 || !targetMustMove(answer.issue, rows)) {
-          go(false);
-          return;
-        }
-        const { key, title } = answer.issue;
-        const done = answer.issue.status === "done";
-        const why = done
-          ? `The epic ${key} “${title}” is done. A done epic holds no open issue.`
-          : `${inWorkOf(rows)}, and the epic ${key} “${title}” is not. An epic stays in work while an issue under it is in work.`;
-        setConfirming({
-          title: done ? `Reopen ${key} too?` : `Move ${key} into work too?`,
-          body: [action.lead, why, `Before the ${action.noun}, Dispatch makes these changes:`]
-            .filter((sentence) => sentence !== undefined)
-            .join(" "),
-          // A dry run's entries carry no issue: the epic is the answer's own, and a parent above
-          // it is named as the listing holds it, or by its key alone.
-          changes: changed.map((entry) => {
-            const known =
-              entry.key === key ? title : issues.find((issue) => issue.key === entry.key)?.title;
-            const issue = known === undefined ? entry.key : `${entry.key} “${known}”`;
-            return `${issue} moves to ${statusText(entry.status)}`;
-          }),
-          confirmLabel: done ? "Reopen it too" : "Move into work too",
-          run: () => go(true),
-        });
+        if (question === undefined) go(false);
+        else setConfirming({ ...question, run: () => go(true) });
       },
       (error: unknown) => {
         setBusy(false);
-        setNotice({
-          kind: "error",
-          text: `Nothing moved: Dispatch could not check ${target}. ${apiErrorMessage(error, "The page could not reach Dispatch.")}`,
-        });
+        setNotice({ kind: "error", text: checkFailed(target, error) });
       }
     );
+  };
+  /**
+   * A Finish's move of the epic `target` into work before it moves `rows` under it, where the
+   * rule needs it: `askTarget`'s question first, while Finish holds the table busy, and on a yes
+   * the status change (`moveIntoWork`), as a step of the action `id`. Answers whether Finish goes
+   * on: false for a Cancel, or for the table going away while it asks, after either of which
+   * Finish writes nothing.
+   */
+  const intoWorkOnFinish = async (
+    id: string,
+    target: string,
+    rows: readonly IssueSummary[],
+    action: TargetAction
+  ): Promise<boolean> => {
+    let question: Question | undefined;
+    try {
+      question = await targetQuestion(target, rows, action);
+    } catch (error) {
+      throw new Error(checkFailed(target, error), { cause: error });
+    }
+    if (!recovery.active(id)) return false;
+    if (question === undefined) return true;
+    const answer = Promise.withResolvers<boolean>();
+    answering.current = answer.resolve;
+    setConfirming({
+      ...question,
+      cancel: () => answer.resolve(false),
+      run: () => answer.resolve(true),
+    });
+    const yes = await answer.promise;
+    answering.current = undefined;
+    if (yes) await moveIntoWork(target, id);
+    return yes;
   };
   const moveTo = (keys: readonly string[], epic: string | null) => {
     const open = openSelected(keys);
@@ -593,14 +654,17 @@ export function useIssueTableActions({
     if (recovery.active(record.id))
       await apply([{ key: from, input: { status: "done" } }], record.id);
   };
+  /** What a merge of `from` into `into` does, moving `moving` open issues, said before any
+   *  question it asks. */
+  const mergeLead = (from: string, into: string, moving: number) =>
+    `${moving} open ${moving === 1 ? "issue moves" : "issues move"} from ${from} “${titleOf(from)}” to ${into} “${titleOf(into)}”, and ${from} closes as done.`;
   /** What a merge is about to do, in the page, before any write: a merge closes an issue, so
    *  it is the one table action that asks whatever the input device. Where the target must go
    *  into work first, that question is the one the merge asks. */
   const askMerge = (from: string, into: string) => {
     if (!canBegin()) return;
     const members = mergeMembers(issues, from);
-    const moving = members.length;
-    const lead = `${moving} open ${moving === 1 ? "issue moves" : "issues move"} from ${from} “${titleOf(from)}” to ${into} “${titleOf(into)}”, and ${from} closes as done.`;
+    const lead = mergeLead(from, into, members.length);
     askTarget(into, members, { lead, noun: "merge" }, (intoWork) => {
       if (intoWork) void mergeEpic(from, into, true);
       else
@@ -660,13 +724,19 @@ export function useIssueTableActions({
             issue.status !== "done" &&
             issue.parent !== record.target
         );
-        // Finish ends the action the reader began, so it takes the epic into work where the
-        // issues still to move need it, as the action did once the epic was made.
-        if (targetMustMove(target, adopting)) await moveIntoWork(target.key, record.id);
+        // Finish ends the action the reader began: where the issues still to move need the epic
+        // in work, it asks the action's question first, as the action asks it before its create,
+        // and a Cancel writes nothing.
+        if (
+          targetMustMove(target, adopting) &&
+          !(await intoWorkOnFinish(record.id, target.key, adopting, { noun: "move" }))
+        )
+          return false;
         await apply(
           adopting.map((issue) => ({ key: issue.key, input: { parent: record.target } })),
           record.id
         );
+        return true;
       },
     },
     startNext: {
@@ -677,29 +747,42 @@ export function useIssueTableActions({
           record,
           buildItems(current, () => "")
         );
+        return true;
       },
     },
     merge: {
       describe: (record) =>
         `Merge ${record.source} into ${record.target}: remaining open issues, the merge reason and closing the source still need to be checked.`,
       resume: async (record, current) => {
-        if (current.find((issue) => issue.key === record.source)?.status === "done") return;
-        const members = mergeMembers(current, record.source ?? "");
+        const source = record.source ?? "";
+        if (current.find((issue) => issue.key === source)?.status === "done") return true;
+        const members = mergeMembers(current, source);
         const target = current.find((issue) => issue.key === record.target);
         const moving = current.filter((issue) => members.includes(issue.key));
-        if (record.target !== undefined && targetMustMove(target, moving))
-          await moveIntoWork(record.target, record.id);
+        if (record.target !== undefined && targetMustMove(target, moving)) {
+          // A target closed since the merge began holds no open issue: Finish refuses it, as New
+          // epic's Finish refuses a closed epic, rather than reopen it unasked. One that left work
+          // is asked the merge's own question first, and a Cancel writes nothing.
+          if (target === undefined || target.status === "done")
+            throw new Error(
+              `The target epic ${record.target} is unavailable or closed. The source epic ${source} remains open, and its issues have not moved to it.`
+            );
+          const lead = mergeLead(source, record.target, members.length);
+          if (!(await intoWorkOnFinish(record.id, record.target, moving, { lead, noun: "merge" })))
+            return false;
+        }
         await apply(
           members.map((key) => ({ key, input: { parent: record.target } })),
           record.id
         );
-        if (!recovery.active(record.id)) return;
-        const remaining = mergeMembers(await listAll(), record.source ?? "");
+        if (!recovery.active(record.id)) return true;
+        const remaining = mergeMembers(await listAll(), source);
         if (remaining.length)
           throw new Error(
-            `The source epic ${record.source} remains open: ${remaining.join(", ")} still need to move.`
+            `The source epic ${source} remains open: ${remaining.join(", ")} still need to move.`
           );
         await closeMerge(record, true);
+        return true;
       },
     },
   };
@@ -713,7 +796,8 @@ export function useIssueTableActions({
       if (!record) return undefined;
       const current = await listAll();
       if (!recovery.active(record.id)) return undefined;
-      await kinds[record.kind].resume(record, current);
+      // A Cancel of the question its epic asks leaves the action to be finished, and says nothing.
+      if (!(await kinds[record.kind].resume(record, current))) return undefined;
       if (!recovery.active(record.id)) return undefined;
       recovery.dismiss();
       setUnansweredEpic(undefined);
@@ -737,7 +821,12 @@ export function useIssueTableActions({
     naming,
     cancelNaming: () => setNaming(undefined),
     confirming,
-    cancelConfirming: () => setConfirming(undefined),
+    // A Cancel tells a Finish that waits on the answer (`intoWorkOnFinish`).
+    cancelConfirming: () => {
+      const waiting = confirming;
+      setConfirming(undefined);
+      waiting?.cancel?.();
+    },
     confirmed: () => {
       const waiting = confirming;
       setConfirming(undefined);

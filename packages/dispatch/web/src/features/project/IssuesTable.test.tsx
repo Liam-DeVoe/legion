@@ -2623,33 +2623,185 @@ test.each([
   ]);
 });
 
-// A New epic a reload cut off after its create: Finish ends the action the reader began, so it
-// moves the epic into work before it adopts an issue in work, as the action would have.
-test("Finish of a New epic cut off after its create moves the epic into work before it adopts an issue in work", async () => {
+// An action a reload cut off, finished later: the epic it moves issues under may have left work or
+// closed meanwhile. Finish asks the action's own question before it moves a not-in-work epic into
+// work, and a Cancel writes nothing; it refuses a closed one, as it never reopens an epic unasked.
+
+/** A New epic a reload cut off after its create, with CORE-1 still to adopt into CORE-9. */
+const madeEpic = {
+  id: "made",
+  kind: "newEpic",
+  project: "CORE",
+  keys: ["CORE-1"],
+  target: "CORE-9",
+  writes: {},
+};
+
+/** A merge of CORE-1 into CORE-2 a reload cut off once it began, before any of its writes. */
+const mergeBegun = {
+  id: "merging",
+  kind: "merge",
+  project: "CORE",
+  keys: ["CORE-3"],
+  source: "CORE-1",
+  target: "CORE-2",
+  writes: {},
+};
+
+/** The table `mergeBegun` stopped on: the source in work, its issue CORE-3 in work, and the target
+ *  at `status` now. */
+function mergeRows(status: string): IssueSummary[] {
+  return [
+    issue("CORE-1", { labels: ["epic"], status: "in_progress", title: "Source" }),
+    issue("CORE-2", { labels: ["epic"], status, title: "Target" }),
+    issue("CORE-3", { parent: "CORE-1", status: "in_progress" }),
+  ];
+}
+
+/** Stores `action` as the table's interrupted action, as a reload finds it. */
+function interruptedBy(action: object) {
+  localStorage.setItem("dispatch.project-table.CORE", JSON.stringify({ action }));
+}
+
+/** Presses Finish on the interrupted action. */
+async function pressFinish(user: UserEvent) {
+  const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
+  await user.click(within(recovery).getByRole("button", { name: "Finish" }));
+}
+
+test("Finish of a New epic cut off after its create asks before it moves the epic into work, and on yes moves it before it adopts an issue in work", async () => {
   const user = userEvent.setup();
-  localStorage.setItem(
-    "dispatch.project-table.CORE",
-    JSON.stringify({
-      action: {
-        id: "made",
-        kind: "newEpic",
-        project: "CORE",
-        keys: ["CORE-1"],
-        target: "CORE-9",
-        writes: {},
-      },
-    })
-  );
   const sent = answerEpicWrites([epicIssue("CORE-9", "Platform", "triage")]);
+  interruptedBy(madeEpic);
   table([
     issue("CORE-1", { status: "in_progress" }),
     issue("CORE-9", { labels: ["epic"], status: "triage", title: "Platform" }),
   ]);
-  const recovery = await screen.findByRole("region", { name: "Interrupted table action" });
-  await user.click(within(recovery).getByRole("button", { name: "Finish" }));
+  await pressFinish(user);
+  const dialog = await screen.findByRole("dialog", { name: "Move CORE-9 into work too?" });
+  expect(dialog.textContent).toContain(
+    "CORE-1 “Work CORE-1” is in work, and the epic CORE-9 “Platform” is not. An epic stays in work while an issue under it is in work. Before the move, Dispatch makes these changes:"
+  );
+  expect(sent).toEqual([["status-change", "CORE-9", intoWorkDryRun]]);
+  await user.click(within(dialog).getByRole("button", { name: "Move into work too" }));
   await noticeOnceDone("Finished the interrupted action.");
   expect(sent).toEqual([
+    ["status-change", "CORE-9", intoWorkDryRun],
     ["status-change", "CORE-9", intoWork],
     ["PATCH", "CORE-1", { parent: "CORE-9" }],
   ]);
+});
+
+test("Finish of a merge whose target closed since refuses, as New epic's Finish refuses a closed epic, and writes nothing", async () => {
+  const user = userEvent.setup();
+  const sent = answerEpicWrites([epicIssue("CORE-2", "Target", "done")]);
+  interruptedBy(mergeBegun);
+  table(mergeRows("done"));
+  await pressFinish(user);
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "The target epic CORE-2 is unavailable or closed. The source epic CORE-1 remains open, and its issues have not moved to it."
+  );
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(sent).toEqual([]);
+  expect(screen.getByRole("region", { name: "Interrupted table action" })).toBeDefined();
+});
+
+test("Finish of a merge whose target left work asks the merge's question, and on yes moves the target into work, then finishes the merge", async () => {
+  const user = userEvent.setup();
+  const rows = mergeRows("backlog");
+  const sent = answerEpicWrites([epicIssue("CORE-2", "Target", "backlog")]);
+  // The listing answers from `rows`, so the move of CORE-3 reaches the merge's next read of it.
+  answerIssuePatches().mockImplementation(async (key, input) => {
+    sent.push(["PATCH", key, input]);
+    const at = rows.findIndex((row) => row.key === key);
+    const row = rows[at];
+    if (row !== undefined && input.parent !== undefined)
+      rows[at] = { ...row, parent: input.parent };
+    return savedIssue(key);
+  });
+  const messages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
+  restores.push(() => messages.mockRestore());
+  interruptedBy(mergeBegun);
+  table(rows);
+  await pressFinish(user);
+  const dialog = await screen.findByRole("dialog", { name: "Move CORE-2 into work too?" });
+  expect(dialog.textContent).toContain(
+    "1 open issue moves from CORE-1 “Source” to CORE-2 “Target”, and CORE-1 closes as done. CORE-3 “Work CORE-3” is in work, and the epic CORE-2 “Target” is not."
+  );
+  expect(sent).toEqual([["status-change", "CORE-2", intoWorkDryRun]]);
+  await user.click(within(dialog).getByRole("button", { name: "Move into work too" }));
+  await noticeOnceDone("Finished the interrupted action.");
+  expect(sent).toEqual([
+    ["status-change", "CORE-2", intoWorkDryRun],
+    ["status-change", "CORE-2", intoWork],
+    ["PATCH", "CORE-3", { parent: "CORE-2" }],
+    ["message", "CORE-1", { body: "Merged into CORE-2 (“Target”) from the issues table." }],
+    ["PATCH", "CORE-1", { status: "done" }],
+  ]);
+});
+
+/** Each interrupted action whose epic Finish finds not in work while an issue it still moves is,
+ *  with the question Finish asks of it. */
+const finishingActions = [
+  {
+    action: "New epic",
+    record: madeEpic,
+    rows: () => [
+      issue("CORE-1", { status: "in_progress" }),
+      issue("CORE-9", { labels: ["epic"], status: "triage", title: "Platform" }),
+    ],
+    epic: epicIssue("CORE-9", "Platform", "triage"),
+    question: "Move CORE-9 into work too?",
+  },
+  {
+    action: "merge",
+    record: mergeBegun,
+    rows: () => mergeRows("backlog"),
+    epic: epicIssue("CORE-2", "Target", "backlog"),
+    question: "Move CORE-2 into work too?",
+  },
+];
+
+test.each(
+  finishingActions
+)("Finish of a $action whose epic is not in work, its question cancelled, writes nothing and keeps the action", async ({
+  epic,
+  question,
+  record,
+  rows,
+}) => {
+  const user = userEvent.setup();
+  const sent = answerEpicWrites([epic]);
+  interruptedBy(record);
+  table(rows());
+  await pressFinish(user);
+  const dialog = await screen.findByRole("dialog", { name: question });
+  await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  // The action stays to be finished, and the dry run is the one request Finish sent.
+  expect(await screen.findByRole("region", { name: "Interrupted table action" })).toBeDefined();
+  expect(sent).toEqual([["status-change", epic.key, intoWorkDryRun]]);
+  expect(
+    within(screen.getByRole("region", { name: "Project issues" })).queryByRole("status")
+  ).toBeNull();
+});
+
+// The table going away while Finish's question is open ends the Finish, as a Cancel does: nothing
+// more is written, and nothing is left waiting on a dialog nobody can see.
+test("Finish's question, open when the table goes away, ends the Finish and writes nothing", async () => {
+  const user = userEvent.setup();
+  const sent = answerEpicWrites([epicIssue("CORE-2", "Target", "backlog")]);
+  interruptedBy(mergeBegun);
+  const { client, view } = table(mergeRows("backlog"));
+  await pressFinish(user);
+  await screen.findByRole("dialog", { name: "Move CORE-2 into work too?" });
+  const invalidated = spyOn(client, "invalidateQueries");
+  restores.push(() => invalidated.mockRestore());
+  view.unmount();
+  // Finish has ended: its last step reads the issues again.
+  await waitFor(() => expect(invalidated).toHaveBeenCalledWith({ queryKey: ["issues"] }));
+  expect(sent).toEqual([["status-change", "CORE-2", intoWorkDryRun]]);
+  expect(JSON.parse(localStorage.getItem("dispatch.project-table.CORE") ?? "{}").action?.id).toBe(
+    "merging"
+  );
 });

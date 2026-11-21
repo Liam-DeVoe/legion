@@ -940,7 +940,7 @@ func (s *server) claimRequestKey(
 			tag, err = pool.Exec(ctx, `
 				update request_keys set attempt = attempt + 1, leased_at = now()
 				where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
-				  and (recovery is null or not coalesce((recovery->>'finished')::boolean, false))
+				  and (recovery is null or not coalesce((recovery->>'`+pointFinished+`')::boolean, false))
 			`, login, key, held.attempt)
 		} else {
 			tag, err = pool.Exec(ctx, `
@@ -967,7 +967,7 @@ func (s *server) claimRequestKey(
 func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (held heldRequestKey, found bool, err error) {
 	err = s.deps.Store.Pool.QueryRow(ctx, `
 		select request_digest, method, path, attempt, status, headers, response,
-		       response is not null, `+recoveryPointRead+`, coalesce((recovery->>'finished')::boolean, false),
+		       response is not null, `+recoveryPointRead+`, coalesce((recovery->>'`+pointFinished+`')::boolean, false),
 		       committed_at is not null,
 		       leased_at is null or leased_at < now() - make_interval(secs => $3),
 		       created_at < now() - make_interval(secs => $4)
@@ -1287,21 +1287,23 @@ func outlivingTheClient(r *http.Request) context.Context {
 // point's shape. A status change's point is a head on the key's row - the ids of the events and
 // the asks its steps made, then the mark and the answer's issue - and one row per step in
 // request_key_steps holding the step's entry, which every reader reads back under changed
-// (recoveryPointRead). Each step writes its part in its own transaction, right after its write
-// phase's batch (writeIssue, through docs.Ledger.AfterWrites), since the step's issue as its write
-// answered it is known only once that batch has run, and the call marks the point finished in a
-// transaction of its own (markStatusChangeFinished).
+// (recoveryPointRead); status_change.go names each member once (pointChanged and the others).
+// Each step writes its part in its own transaction, right after its write phase's batch
+// (queueStatusChangeStep, which writeIssue queues through docs.Ledger.AfterWrites), since the
+// step's issue as its write answered it is known only once that batch has run, and the call
+// marks the point finished in a transaction of its own (markStatusChangeFinished).
 type recoveryPoint interface {
 	messageRecovery | broadcastRecovery | commentRecovery | statusChangeRecovery
 }
 
 // recoveryPointRead is a request_keys row's recovery point as every reader of it reads it: the
 // point the row holds, with, for a status change, the entry of each step that committed under
-// changed, in the order the steps committed (request_key_steps, migration 20261121043859). A row
-// that holds no point reads null, and one no step row names - every other route's - reads as it is
-// stored. It is an expression over request_keys, which a statement that reads it names unaliased.
+// pointChanged, in the order the steps committed (request_key_steps, migration 20261121043859). A
+// row that holds no point reads null, and one no step row names - every other route's - reads as
+// it is stored. It is an expression over request_keys, which a statement that reads it names
+// unaliased.
 const recoveryPointRead = `recovery || coalesce((
-		select jsonb_build_object('changed', jsonb_agg(s.entry order by s.id))
+		select jsonb_build_object('` + pointChanged + `', jsonb_agg(s.entry order by s.id))
 		from request_key_steps s
 		where s.login = request_keys.login and s.idempotency_key = request_keys.idempotency_key
 		having count(*) > 0), '{}')`

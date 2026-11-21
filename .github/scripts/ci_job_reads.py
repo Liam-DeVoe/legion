@@ -954,7 +954,10 @@ RULES = {
         (f"{DAEMON}/docker/legion-testpg",
          "internal/dispatch/testlimits/testlimits_test.go:31 os.ReadFile (legionTestPG :12, "
          "../../../../daemon/docker/legion-testpg): its max_connections literal must equal "
-         "testlimits.ServerConnections plus Postgres's default superuser reserve")),
+         "testlimits.ServerConnections plus Postgres's default superuser reserve, and "
+         "testlimits_test.go's TestTheDocumentsStateTheTestServersListenQueue holds the listen queue "
+         "its comment states (twice that max_connections) to the same sum through docnumbers.Check "
+         "under ../../../../..")),
     f"{ENVOY}/internal/dispatch/text/whitespace_fixture_test.go": reads(
         (f"{FIX}/go-unicode-isspace.json", "internal/dispatch/text/whitespace_fixture_test.go:34 os.ReadFile (goSpaceFixturePath :17, ../../../../contracts/fixtures)")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [

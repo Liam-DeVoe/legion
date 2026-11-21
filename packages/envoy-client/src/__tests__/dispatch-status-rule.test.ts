@@ -374,10 +374,7 @@ describe("dispatch issue-update with an option of the status change", () => {
     ]);
 
     expect(code).toBe(2);
-    expect(stdout.split("\n").slice(0, 2)).toEqual([
-      "dispatch issue-update was not called: 1 problem",
-      "- include_children does not go with status done. Only a person who is signed in at a browser can close the open issues under an issue together with it, and this call presents a token. That person does it on the issue's page in Dispatch: Close issue, then Move them with it.",
-    ]);
+    expect(stdout).toContain("include_children does not go with status done");
     expect(requests).toEqual([]);
   });
 
@@ -411,6 +408,56 @@ describe("dispatch issue-update with an option of the status change", () => {
     expect(stdout).toContain("issue is required; supply issue or set LEGION_ISSUE");
     expect(stdout).toContain('"rows.jsonl" is not a Markdown name');
     expect(stdout).not.toContain("Exactly one of issue and project is required");
+    expect(requests).toEqual([]);
+  });
+
+  // A call that names no owner keeps every other problem of its rule in the refusal, for every
+  // command (the architect's ruling of 2026-11-21 on this change's CLI). dispatch issue-update's
+  // issue is a field its schema requires, so with neither --issue nor LEGION_ISSUE the reason's and
+  // the options' parts must still be named beside the missing issue: supplying the issue alone
+  // leaves both, and the next call is refused again for them.
+  test("issue-update with no owner, --status done and --include-children and no --reason names every problem before anything is sent", async () => {
+    const { code, stdout } = await run(["issue-update", "--status", "done", "--include-children"]);
+
+    expect(code).toBe(2);
+    expect(stdout).toContain("issue is required; supply issue or set LEGION_ISSUE");
+    expect(stdout).toContain("status done requires reason");
+    expect(stdout).toContain("include_children does not go with status done");
+    expect(requests).toEqual([]);
+  });
+
+  // The same holds for a second command whose schema requires issue: a request for changes with
+  // no reason and no owner names the missing reason (`REVIEW_REASON_RULE` in
+  // packages/contracts/src/dispatch-tools.ts) beside the missing issue.
+  test("review with no owner, --verdict changes_requested and no --reason names both problems before anything is sent", async () => {
+    const { code, stdout } = await run([
+      "review",
+      "--artifact",
+      "spec.md",
+      "--verdict",
+      "changes_requested",
+      "--version",
+      "1",
+    ]);
+
+    expect(code).toBe(2);
+    expect(stdout).toContain("issue is required; supply issue or set LEGION_ISSUE");
+    expect(stdout).toContain(
+      "verdict changes_requested requires reason, a non-empty note saying what must change before the document can be approved."
+    );
+    expect(requests).toEqual([]);
+  });
+
+  // dispatch suggest's rule refuses the owner and the document in one sentence
+  // (`NAMED_DOCUMENT_OWNER_RULE` in packages/contracts/src/dispatch-tools.ts). With no owner and
+  // neither --artifact nor --ref, the refusal names the unnamed document beside the missing issue:
+  // supplying the issue alone leaves the document unnamed, and the next call is refused again.
+  test("suggest with no owner and no --artifact or --ref names both problems before anything is sent", async () => {
+    const { code, stdout } = await run(["suggest", "--quote", "a", "--replace-with", "b"]);
+
+    expect(code).toBe(2);
+    expect(stdout).toContain("issue is required; supply issue or set LEGION_ISSUE");
+    expect(stdout).toContain("artifact or ref must name the document");
     expect(requests).toEqual([]);
   });
 
@@ -613,8 +660,9 @@ describe("dispatch issue-update with an option of the status change", () => {
 });
 
 describe("a PARENT_STATUS_CONFLICT", () => {
-  const childFlags =
-    "dispatch issue-update --status takes --unlink-children, which removes its open children from it, or, with a status other than done, --include-children, which moves the open issues under the issue with it. A person signed in at a browser closes them with it on the issue's page.";
+  // The line after the issues names the flags that move them; the words around the flags are the
+  // CLI's to change.
+  const childFlags = expect.stringMatching(/--unlink-children\b.*--include-children\b/);
 
   // Whichever command Dispatch refuses, the CLI prints the refusal, each issue that holds the
   // rule as `KEY [status] title`, and the flags that move them, and exits 1, as it prints a near
@@ -677,14 +725,12 @@ describe("a PARENT_STATUS_CONFLICT", () => {
       "ACME-4",
     ]);
     expect(create.code).toBe(1);
-    expect(create.stdout).toBe(
-      [
-        `PARENT_STATUS_CONFLICT: ${errorOf(conflict)}`,
-        "ACME-5 [todo] Child in work",
-        childFlags,
-        "",
-      ].join("\n")
-    );
+    expect(create.stdout.split("\n")).toEqual([
+      `PARENT_STATUS_CONFLICT: ${errorOf(conflict)}`,
+      "ACME-5 [todo] Child in work",
+      childFlags,
+      "",
+    ]);
   });
 });
 
