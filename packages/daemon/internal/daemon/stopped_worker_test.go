@@ -411,18 +411,20 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	outOfTheLine(t, d, member, "once a slot stood free")
 
 	// The way back, which the stop leaves open: the issue is held and its architect retries the
-	// held phase, which writes the start again.
+	// held phase, which writes the start again. A slot stands free when it does, so the
+	// controller's next admission pass grants the issue that slot and the start launches its
+	// tester, and the row is gone once it has run. Those passes run on their own clock, so the
+	// start row and the waiting line hold the retry's start only until a pass the test cannot
+	// order against its reads: the start is read where it ends instead, the tester launched again
+	// and the issue holding the slot the line gave it.
 	heldAndRetried(t, pool, d, startedAgainEngine(cfg), member, claim.RoleTester)
-	if owed := startRowsOf(t, pool, member); len(owed) == 0 {
-		t.Fatalf("after the retry of the held phase %s owes the start rows %v, want the one row the retry writes: the retry is the way back the repair leaves",
-			member, owed)
-	}
-	if line := d.state().Admission.Waiting; !slices.Contains(line, member) {
-		t.Fatalf("after the retry the waiting line is %v, want %s in it: it holds no slot and owes its tester a start again", line, member)
-	}
 	testwait.Eventually(t, "the retried phase to launch its tester once a slot comes", func() bool {
 		return len(launchesOf(rt, tester)) > launches
 	})
+	if active := d.state().Admission.Active; !slices.Contains(active, member) {
+		t.Fatalf("after its tester launched again the admission slots are held by %v, want %s among them: the retry put it back in the line, and the line gave it the free slot",
+			active, member)
+	}
 }
 
 // A slot freed by the pass that meets a stop goes past the stopped issue to the next issue in
