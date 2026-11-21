@@ -908,15 +908,19 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 The people Dispatch has seen, either way, are the assignee picker's options and the only names an issue may be assigned to.
 
-The session cookie a sign-in issues is signed, HttpOnly, `SameSite=Strict`, host-only (`Path=/` and no `Domain`), lasts 30 days, and is `Secure` unless `DISPATCH_INSECURE_COOKIE` is set (`auth.SetSessionCookie`).
+The session cookie a sign-in issues is signed, HttpOnly, `SameSite=Strict`, host-only (`Path=/` and no `Domain`), and lasts 30 days (`auth.SetSessionCookie`).
+At `DISPATCH_SERVER_URL` it is `Secure` unless `DISPATCH_INSECURE_COOKIE` is set; at `DISPATCH_OUTSIDE_ORIGIN` it follows that origin's scheme (below).
 `DISPATCH_INSECURE_COOKIE=1` omits the `Secure` attribute for local plain-HTTP testing.
 Do not use it on an HTTPS deployment.
 
 The cookie's name depends on the origin, so that every release keeps the build before it working (Running more than one process, below):
 
-- At `DISPATCH_OUTSIDE_ORIGIN`, which no earlier release served, the session cookie is `__Host-dsession`, which a browser takes only from that host itself over HTTPS, so no other host under its domain and no answer over plain HTTP can set a session there.
-  A request there is read by that name alone: a `dsession` there is no session, and an unsafe request carrying one is no request with a session cookie.
-  Under `DISPATCH_INSECURE_COOKIE`, since a browser refuses a `__Host-` cookie that is not `Secure`, the cookie there is `dsession`, read alone too, as the passkey ceremony cookie is then `dispatch_passkey_ceremony`.
+- At `DISPATCH_OUTSIDE_ORIGIN` the session cookie has one name, which a sign-in there issues and a request there is read by alone.
+  It follows the outside origin's scheme, whatever `DISPATCH_INSECURE_COOKIE` says: at an `https` outside origin it is `__Host-dsession`, `Secure`, which a browser takes only from that host itself over HTTPS, so no other host under its domain and no answer over plain HTTP can set a session there; at an `http` one (a test harness's) it is `dsession`, not `Secure`, since a browser takes no `Secure` cookie, a `__Host-` one included, over plain HTTP.
+  Where it is `__Host-dsession`, a `dsession` there is no session, and an unsafe request carrying one is no request with a session cookie.
+  A request is the outside origin's for this whenever its `Host` names the outside origin's host, at any port: a browser sends one host's cookies to every port of it.
+  The one name holds because no browser holds a session for the outside origin that the build before this one issued: the first release that serves `DISPATCH_OUTSIDE_ORIGIN` must be this one or a later one.
+  A build that served it earlier issued `dsession` there; a deployment that ran it would sign each person from outside out once when this release rolls out, and a roll between the two builds would answer them `401 NO_IDENTITY`.
 
 - At `DISPATCH_SERVER_URL` the session cookie moves from `dsession` to `__Host-dsession` in three releases:
 
@@ -933,7 +937,7 @@ The cookie's name depends on the origin, so that every release keeps the build b
   So the `__Host-` prefix guards no session at `DISPATCH_SERVER_URL` before the next release.
   From it, a browser that has signed in holds `__Host-dsession`, and a `dsession` another host sets beside it signs in nobody else; until the third release, a browser that holds no `__Host-dsession` (one that has not signed in since, or has signed out) can still be given a session as `dsession` by another host under the domain or by an answer over plain HTTP.
 
-`POST /auth/logout` clears the cookie under both names at either origin (`auth.ClearSessionCookies`).
+`POST /auth/logout` clears the cookie under both names at either origin (`auth.ClearSessionCookies`), each clear `Secure` where that origin issues the cookie `Secure`, and the `__Host-` one always.
 Nothing else writes the cookie: no request re-issues or extends a session.
 
 `DISPATCH_DEV_SIGNIN=1` adds a second way to get the cookie on a local instance:
