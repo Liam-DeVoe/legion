@@ -22,8 +22,9 @@ body: |-
   that prefix, reads the stream and ends its start, naming it, when the server has none,
   subscribes no role lane,
   publishes no Legion wake report, keeps no role message and hands no kept lane over (a publish to
-  an unheld role is answered 404), and publishes no delivery exception on a lane its grant leaves
-  out, counting each on `envoy_edge_exceptions_withheld_total`.
+  an unheld role is answered 404), writes no takeover record and copies no frame to a kept lane
+  when a role moves between sessions, and publishes no delivery exception on a lane its grant
+  leaves out, counting each on `envoy_edge_exceptions_withheld_total`.
 time: 2026-11-20T18:47:39Z
 custom:
     Issue: edge-nats-grant
