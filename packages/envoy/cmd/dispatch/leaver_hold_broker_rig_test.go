@@ -36,7 +36,7 @@ import (
 // that use them there, each answering as every credential call of the rig answers.
 
 // withBrokerGate puts the broker's real project-access client in front of a Dispatch server, and
-// with it the broker's real hold gate, which ciphertest.WithProjectAccess builds from that client
+// with it the broker's real hold gate, which ciphertest.WithDispatchAccess builds from that client
 // as cmd/cipherd/main.go does.
 func withBrokerGate() leaverOption {
 	return func(c *leaverConfig) {
@@ -59,7 +59,7 @@ func withBrokerGate() leaverOption {
 			if err := os.WriteFile(accountFile, []byte(r.brokerAccountToken(t)+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			return []ciphertest.Option{ciphertest.WithProjectAccess(server.URL, ciphertoken.NewAccountToken(accountFile), r.brokerNow)}
+			return []ciphertest.Option{ciphertest.WithDispatchAccess(server.URL, ciphertoken.NewAccountToken(accountFile), r.brokerNow)}
 		})
 		c.built = append(c.built, func(t *testing.T, r *leaverRig) {
 			if r.brokerDispatch == nil {

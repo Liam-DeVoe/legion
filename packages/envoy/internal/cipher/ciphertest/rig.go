@@ -133,7 +133,7 @@ type Rig struct {
 	// Registry holds the policy's two metrics as cmd/cipherd/main.go builds them on its own
 	// registry: broker_policy_store_reads_total, counted from the first load on, and
 	// broker_unservable_secrets, registered once that load answered; and, for a Rig built
-	// WithProjectAccess, the hold gate's broker_hold_unchecked_total. A test reads them through
+	// WithDispatchAccess, the hold gate's broker_hold_unchecked_total. A test reads them through
 	// Registry.Handler(), the scrape main serves.
 	Registry *metrics.Registry
 	// Policy is the broker's live policy, for a test that reloads it as the broker's five-minute
@@ -164,9 +164,12 @@ type rigConfig struct {
 	minters       map[string]requests.Minter
 	personPods    []personPod
 	projectAccess *projectaccess.Client
-	// projectAccessNow is the clock WithProjectAccess gives the client and the gate; nil is the
+	// projectAccessNow is the clock WithDispatchAccess gives the client and the gate; nil is the
 	// wall clock.
 	projectAccessNow func() time.Time
+	// projects is WithProjectAccess: the token exchange's own check of projects and member kinds,
+	// for a test that gives it a reader of its own.
+	projects projectaccess.Access
 	// holdRequiresDeadline is WithHoldRequiresDeadline: the gate's RequireDeadline.
 	holdRequiresDeadline bool
 	personSignIns        *personSignInConfig
@@ -212,14 +215,15 @@ func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
 }
 
-// WithProjectAccess wires the rig's broker to Dispatch at baseURL as cmd/cipherd wires one whose
+// WithDispatchAccess wires the rig's broker to Dispatch at baseURL as cmd/cipherd wires one whose
 // BROKER_PROJECT_ACCESS_URL is set: one Dispatch client, which the token exchange, the enrollment,
 // the request machine and the policy loader's project checks read, and the hold gate built on that
 // client and the rig's store, given to every field of the broker that takes it. now is the
 // clock the client's 30-second cache of an answer (projectaccess.CacheTTL) and the gate's memories
 // are timed by, so a test can move it past an answer it would otherwise wait out; nil is the
-// wall clock, as main runs.
-func WithProjectAccess(baseURL string, account ciphertoken.Account, now func() time.Time) Option {
+// wall clock, as main runs. NewRig fails t when it is given with WithProjectAccess, which gives the
+// token exchange a reader of its own.
+func WithDispatchAccess(baseURL string, account ciphertoken.Account, now func() time.Time) Option {
 	return func(c *rigConfig) {
 		c.projectAccess = projectaccess.New(baseURL, account, nil)
 		if now != nil {
@@ -229,12 +233,20 @@ func WithProjectAccess(baseURL string, account ciphertoken.Account, now func() t
 	}
 }
 
+// WithProjectAccess gives the broker's token exchange access as its check of what Dispatch says
+// each person sees and what kind of member they are, as BROKER_PROJECT_ACCESS_URL does; none by
+// default, which is a broker that checks no project. It builds no hold gate: for a broker that
+// holds people too, WithDispatchAccess.
+func WithProjectAccess(access projectaccess.Access) Option {
+	return func(c *rigConfig) { c.projects = access }
+}
+
 // WithHoldRequiresDeadline sets the hold gate's deadline rule (hold.Config.RequireDeadline), as
 // cmd/cipherd sets it where BROKER_HOLD_REQUIRES_DEADLINE is true, which an IAP deployment's broker
 // sets: Dispatch's answer that a person is not held then serves only with the deadline such a
 // Dispatch puts on it (not_held_until), a person of whom the broker keeps no answer is not served
 // while Dispatch cannot be asked, and every refusal of a held person says the Workspace Directory
-// ends the hold (hold.Gate.HeldWords). NewRig fails t when it is given without WithProjectAccess,
+// ends the hold (hold.Gate.HeldWords). NewRig fails t when it is given without WithDispatchAccess,
 // as the broker's boot refuses the setting without BROKER_PROJECT_ACCESS_URL: that broker builds
 // no gate, so the rule would rule nothing and hold nobody.
 func WithHoldRequiresDeadline() Option {
@@ -283,7 +295,10 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		option(&config)
 	}
 	if config.holdRequiresDeadline && config.projectAccess == nil {
-		t.Fatal("ciphertest: WithHoldRequiresDeadline needs WithProjectAccess: the deadline rules the hold of refused people, which a broker builds only when it has a Dispatch to ask, as the broker's boot refuses BROKER_HOLD_REQUIRES_DEADLINE without BROKER_PROJECT_ACCESS_URL")
+		t.Fatal("ciphertest: WithHoldRequiresDeadline needs WithDispatchAccess: the deadline rules the hold of refused people, which a broker builds only when it has a Dispatch to ask, as the broker's boot refuses BROKER_HOLD_REQUIRES_DEADLINE without BROKER_PROJECT_ACCESS_URL")
+	}
+	if config.projectAccess != nil && config.projects != nil {
+		t.Fatal("ciphertest: WithDispatchAccess and WithProjectAccess each give the token exchange its reader of Dispatch; give one")
 	}
 	var params []string
 	if config.maxConns > 0 {
@@ -386,7 +401,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	// The hold gate, as main builds it where BROKER_PROJECT_ACCESS_URL is set: on the exchange's
 	// own Dispatch client, this rig's store and its registry, with the deadline rule where
 	// WithHoldRequiresDeadline sets it, as BROKER_HOLD_REQUIRES_DEADLINE does. Without
-	// WithProjectAccess there is none, and every field that takes one is nil, which holds nobody.
+	// WithDispatchAccess there is none, and every field that takes one is nil, which holds nobody.
 	var gate *hold.Gate
 	if config.projectAccess != nil {
 		gate = hold.New(hold.Config{Access: config.projectAccess, Store: st, Log: slog.Default(), Metrics: registry, Now: config.projectAccessNow, RequireDeadline: config.holdRequiresDeadline})
@@ -402,6 +417,11 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 			c.machineCredentials = enr.MachineCredentials()
 			c.personSignInRecords = enroll.PersonSignIns()
 		})
+	}
+	if config.projects != nil {
+		// WithProjectAccess: the token exchange's own check of projects and member kinds, and no
+		// hold gate.
+		providerOptions = append(providerOptions, func(c *providerConfig) { c.projectAccess = config.projects })
 	}
 	provider := NewOAuthProvider(t, st, issuer, providerOptions...)
 	mach := &machine.Service{
