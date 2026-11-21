@@ -63,7 +63,7 @@ const LONG_CASE = idFixture.cases
  *  `PrioritiesPage.tsx` passes, which `features/project/IssuesTable.tsx` names its table by with
  *  " table" after it. */
 const NO_PRIORITY_TABLE = "Active under no priority table";
-const PARKED_TABLE = "Parked priority work table";
+const BACKLOG_TABLE = "Priority work in backlog or icebox table";
 
 /** What the server says of a deployment with no live priority, in its own words
  *  (`priorityNoneWritten`, `internal/dispatch/api/priority_queries.go`): the empty page draws the
@@ -72,13 +72,13 @@ const NONE_LIVE =
   "No priority is live now, so the list is empty. Write one, then say which work advances it.";
 
 /** The columns each fault list opens with, by their headers (INFRA-2947, R6): the issue, its
- *  title, its status, who holds it, how long it has stood and its project; and on the parked
- *  list when it was moved there and by whom, beside the priority it is parked under. There the
+ *  title, its status, who holds it, how long it has stood and its project; and on the backlog-or-icebox
+ *  list when it was moved there and by whom, beside the priority it stands under. There the
  *  move is how long the work has stood, so Updated opens hidden, one tick away under Columns.
  *  Every other column of the Issues table opens hidden, for a reader to show from its column
  *  control; no list has a Reason column until a reason is recorded (dispatch://INFRA-2934). */
 const FAULT_COLUMNS = ["Key", "Title", "Status", "Claimed by", "Updated", "Project"] as const;
-const PARKED_COLUMNS = ["Advances", "Moved there"] as const;
+const BACKLOG_COLUMNS = ["Advances", "Moved there"] as const;
 const HIDDEN_COLUMNS = [
   "Priority",
   "Queue",
@@ -108,7 +108,7 @@ interface Seeded {
   readonly queue: string;
   /** `#3`'s work: an issue in `needs_review`, the parent that states the relation, the child
    *  in `backlog` that inherits it, and the issue in `backlog` that states it on its own row -
-   *  the one priority work that stands parked (`own`). */
+   *  the one priority work that stands in backlog or icebox (`own`). */
   readonly ledger: string;
   readonly cutover: string;
   readonly child: string;
@@ -148,8 +148,8 @@ async function seedPriorities(): Promise<Seeded> {
   const cutover = await createIssue({ project: "WEB", title: "Ledger cut-over" });
   // The child states nothing of its own: it advances `#3` because the issue above it does
   // (INFRA-2947, R4), which is what the issue page's inherited entry reads. Standing in the
-  // backlog, it is no parked work: the parked list holds the work whose own row names a
-  // priority, which the archive below is.
+  // backlog, it is not on the backlog-or-icebox list, which holds the work whose own row names
+  // a priority, which the archive below is.
   const child = await createIssue({
     parent: cutover.key,
     project: "WEB",
@@ -217,9 +217,9 @@ const PHONE = { height: 844, width: 390 } as const;
  *  the priorities page's three tabs or of a priority's page scrolls sideways. */
 const DESKTOP = { height: 800, width: 1280 } as const;
 
-/** The widest the parked list's Advances column stands at 1280 px: the chip and the priority's
+/** The widest the backlog-or-icebox list's Advances column stands at 1280 px: the chip and the priority's
  *  title wrapping after it, while Title takes the room every other column leaves. */
-const PARKED_ADVANCES_CAP = 180;
+const BACKLOG_ADVANCES_CAP = 180;
 
 const section = (page: Page, label: string): Locator =>
   page.locator(`section[aria-label="${label}"]`);
@@ -251,7 +251,7 @@ async function topOf(locator: Locator): Promise<number> {
 const TABS = {
   order: /^Priorities \d+$/,
   none: /^Active under no priority \d+$/,
-  parked: /^Parked priority work \d+$/,
+  backlog: /^Priority work in backlog or icebox \d+$/,
 } as const;
 
 /** Chooses one of the page's tabs, and waits for the address to name it. */
@@ -406,7 +406,7 @@ async function expectColumns(
 }
 
 /** Chooses a fault's tab and reloads the page, which opens on the tab the address kept. */
-async function chooseTabAndReload(page: Page, tab: "none" | "parked"): Promise<void> {
+async function chooseTabAndReload(page: Page, tab: "none" | "backlog"): Promise<void> {
   await chooseTab(page, tab);
   await page.reload();
   await expect(page).toHaveURL(new RegExp(`[?&]tab=${tab}(&|$)`));
@@ -447,7 +447,7 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     await expect(tabs).toHaveCount(3);
     await expect(tabs.nth(0)).toHaveAccessibleName(TABS.order);
     await expect(tabs.nth(1)).toHaveAccessibleName(TABS.none);
-    await expect(tabs.nth(2)).toHaveAccessibleName(TABS.parked);
+    await expect(tabs.nth(2)).toHaveAccessibleName(TABS.backlog);
     await expect(page.getByRole("tab", { name: TABS.order })).toHaveAttribute(
       "aria-selected",
       "true"
@@ -621,7 +621,7 @@ test("the priorities page opens on the order, and each fault list is a tab of it
       .toEqual(["In progress", "Needs review", "Retro", "Testing"]);
     // The table opens with R6's columns alone, and at 1440 by 900 they fit its box; its box
     // takes the window, down to the pager under it.
-    await expectColumns(unplacedTable, FAULT_COLUMNS, [...PARKED_COLUMNS, ...HIDDEN_COLUMNS]);
+    await expectColumns(unplacedTable, FAULT_COLUMNS, [...BACKLOG_COLUMNS, ...HIDDEN_COLUMNS]);
     await expect.poll(() => tablesOverflow(page)).toEqual({ [NO_PRIORITY_TABLE]: 0 });
     await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
     await expect.poll(() => pagerBelowWindow(page)).toBeLessThanOrEqual(0);
@@ -673,42 +673,44 @@ test("the priorities page opens on the order, and each fault list is a tab of it
 
     // The second fault's tab, whose one row is the child, which advances #3 through the issue
     // above it, and it names when it was moved out of the way and by whom.
-    await chooseTabAndReload(page, "parked");
-    const parked = section(page, "Parked priority work");
-    await expect(page.getByRole("tab", { name: "Parked priority work 1" })).toBeVisible();
+    await chooseTabAndReload(page, "backlog");
+    const backlog = section(page, "Priority work in backlog or icebox");
+    await expect(
+      page.getByRole("tab", { name: "Priority work in backlog or icebox 1" })
+    ).toBeVisible();
     await expect(main.getByText(/backlog or the icebox|\d+ issues? · /)).toHaveCount(0);
-    const parkedTable = page
+    const backlogTable = page
       .getByTestId("issues-table-scroll")
-      .getByRole("table", { exact: true, name: PARKED_TABLE });
-    await expect(parked.getByRole("table")).toHaveAccessibleName(PARKED_TABLE);
+      .getByRole("table", { exact: true, name: BACKLOG_TABLE });
+    await expect(backlog.getByRole("table")).toHaveAccessibleName(BACKLOG_TABLE);
     await expect(page.getByRole("table")).toHaveCount(1);
-    await expectRowOrder(parkedTable, [`${seed.archive} Ledger archive`]);
-    // It opens with the fault's columns but Updated, beside the priority each row is parked under
+    await expectRowOrder(backlogTable, [`${seed.archive} Ledger archive`]);
+    // It opens with the fault's columns but Updated, beside the priority each row stands under
     // and the move, which is how long the work has stood.
     await expectColumns(
-      parkedTable,
-      [...FAULT_COLUMNS.filter((name) => name !== "Updated"), ...PARKED_COLUMNS],
+      backlogTable,
+      [...FAULT_COLUMNS.filter((name) => name !== "Updated"), ...BACKLOG_COLUMNS],
       [...HIDDEN_COLUMNS.filter((name) => name !== "Advances"), "Updated", "Reason"]
     );
-    await expect.poll(() => tablesOverflow(page)).toEqual({ [PARKED_TABLE]: 0 });
+    await expect.poll(() => tablesOverflow(page)).toEqual({ [BACKLOG_TABLE]: 0 });
     await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
     // At 1280 by 800 too, where Title takes the room the others leave and Advances stands at its
     // cap: the chip, and the title wrapping whole after it.
     await page.setViewportSize(DESKTOP);
-    await expect.poll(() => tablesOverflow(page)).toEqual({ [PARKED_TABLE]: 0 });
+    await expect.poll(() => tablesOverflow(page)).toEqual({ [BACKLOG_TABLE]: 0 });
     expect(
-      await parkedTable
+      await backlogTable
         .getByRole("columnheader", { exact: true, name: "Advances" })
         .evaluate((header) => header.getBoundingClientRect().width)
-    ).toBeLessThanOrEqual(PARKED_ADVANCES_CAP);
+    ).toBeLessThanOrEqual(BACKLOG_ADVANCES_CAP);
     await priorityPage(page);
-    // The one parked row is the archive, whose own row names #3: the child that inherits #3 and
-    // stands in the backlog beside it is no parked work.
-    const childRow = parkedTable.getByRole("row", {
+    // The one row of that tab is the archive, whose own row names #3: the child that inherits #3 and
+    // stands in the backlog beside it is not on that tab.
+    const childRow = backlogTable.getByRole("row", {
       exact: true,
       name: `${seed.archive} Ledger archive`,
     });
-    const childCell = (header: string) => cellUnder(parkedTable, childRow, header);
+    const childCell = (header: string) => cellUnder(backlogTable, childRow, header);
     await expect((await childCell("Key")).getByRole("link")).toHaveAttribute(
       "href",
       `/issues/${seed.archive}`
@@ -719,7 +721,7 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     // every Issues table draws an issue nobody holds.
     await expect(await childCell("Claimed by")).toHaveText("");
     // Updated is one tick away under Columns, unticked.
-    await parked.getByRole("button", { name: "Columns" }).click();
+    await backlog.getByRole("button", { name: "Columns" }).click();
     await expect(
       page.getByRole("dialog", { name: "Columns" }).getByRole("checkbox", { name: "Updated" })
     ).not.toBeChecked();
@@ -729,8 +731,8 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     const moved = await childCell("Moved there");
     await expect(moved.locator("time")).toHaveCount(1);
     await expect(moved).toContainText("alice");
-    // Advances: the priority it is parked under, as the chip of its place in the order, #3, and
-    // then its title, drawn whole: which priority the work is parked under is what the tab is
+    // Advances: the priority it stands under, as the chip of its place in the order, #3, and
+    // then its title, drawn whole: which priority the work stands under is what the tab is
     // for, and a phone has no tooltip to read it in. Both are one link to that priority, whose
     // name and tooltip carry the title.
     const advancesCell = await childCell("Advances");
@@ -761,7 +763,7 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     // On a phone the page's document is no wider than the window on any tab: each fault's
     // sentence wraps and its counts take a line of their own, and a table scrolls inside its box.
     await page.setViewportSize(PHONE);
-    for (const tab of ["order", "none", "parked"] as const) {
+    for (const tab of ["order", "none", "backlog"] as const) {
       await chooseTab(page, tab);
       await expect(page.getByRole("table")).toHaveCount(1);
       await expect(page.getByRole("table")).toBeVisible();
@@ -1090,8 +1092,8 @@ test("a priority row opens its description, its title its page, and what is writ
         .locator("tr[data-issue-row]")
     ).toHaveCount(4);
     await expectNoForecast(page);
-    await chooseTab(page, "parked");
-    await expectRowOrder(page.getByRole("table", { exact: true, name: PARKED_TABLE }), [
+    await chooseTab(page, "backlog");
+    await expectRowOrder(page.getByRole("table", { exact: true, name: BACKLOG_TABLE }), [
       `${seed.archive} Ledger archive`,
     ]);
     await expectNoForecast(page);
@@ -1191,7 +1193,7 @@ test("the rail's Priorities count falls as work leaves flight and as a parent li
       document.documentElement.dataset.heldOpen = "yes";
     });
 
-    // Four in flight under no priority plus one parked. An issue that leaves `in_progress` is
+    // Four in flight under no priority plus one in backlog. An issue that leaves `in_progress` is
     // no longer in flight, so the first fault loses it - with no reload: the event that moved
     // it refreshes the two counts (`web/src/api/event-refresh.ts`).
     await patchIssue(seed.clock, { status: "done" });
@@ -1222,7 +1224,7 @@ test("another person's rename and delete of a priority redraw an open page with 
 }) => {
   const seed = await seedPriorities();
   // #3's one issue in flight leaves flight first, so the delete below moves no issue into the
-  // first fault list, and what the rail counts can only fall by the work parked under #3.
+  // first fault list, and what the rail counts can only fall by the work in backlog under #3.
   await patchIssue(seed.ledger, { status: "todo" });
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
@@ -1236,8 +1238,8 @@ test("another person's rename and delete of a priority redraw an open page with 
       document.documentElement.dataset.heldOpen = "yes";
     });
     const priorities = section(reader, "Priorities");
-    const parkedTable = reader.getByRole("table", { exact: true, name: PARKED_TABLE });
-    const childRow = parkedTable.getByRole("row", {
+    const backlogTable = reader.getByRole("table", { exact: true, name: BACKLOG_TABLE });
+    const childRow = backlogTable.getByRole("row", {
       exact: true,
       name: `${seed.archive} Ledger archive`,
     });
@@ -1247,11 +1249,11 @@ test("another person's rename and delete of a priority redraw an open page with 
       `#2 ${seed.titles[1]}`,
       `#3 ${seed.titles[2]}`,
     ]);
-    // Four in flight under no priority plus the one parked.
+    // Four in flight under no priority plus the one in backlog.
     await expect(badge).toHaveText("5");
 
     // Reader B: bob renames #3 on its own page. Alice's row takes the new title, and so does
-    // the parked work's Advances cell on its tab, which names a priority by the title a person
+    // the Advances cell of the work in backlog on its tab, which names a priority by the title a person
     // wrote: the title the page's one read of the priorities holds, which choosing a tab does
     // not read again.
     const renamed = "Retire the old ledger for good";
@@ -1265,20 +1267,22 @@ test("another person's rename and delete of a priority redraw an open page with 
       `#2 ${seed.titles[1]}`,
       `#3 ${renamed}`,
     ]);
-    await chooseTab(reader, "parked");
+    await chooseTab(reader, "backlog");
     await expect(childRow).toBeVisible();
-    // The Advances column opens shown on the parked tab: the priority each row is parked under,
+    // The Advances column opens shown on the backlog-or-icebox tab: the priority each row stands under,
     // whose chip carries the title in its name, and which draws the title after the chip.
-    const parkedUnder = await cellUnder(parkedTable, childRow, "Advances");
-    await expect(parkedUnder.getByRole("link")).toHaveAccessibleName(`#3 ${renamed}`);
-    await expect(parkedUnder.getByText(renamed, { exact: true })).toBeVisible();
+    const backlogUnder = await cellUnder(backlogTable, childRow, "Advances");
+    await expect(backlogUnder.getByRole("link")).toHaveAccessibleName(`#3 ${renamed}`);
+    await expect(backlogUnder.getByText(renamed, { exact: true })).toBeVisible();
 
     // Then bob retires #3, over the API, since neither page offers a delete. The archive
-    // advanced only #3, so it is no fault at all now: it leaves the parked list in front of
+    // advanced only #3, so it is no fault at all now: it leaves the backlog-or-icebox list in front of
     // alice, the tab's count and the rail's fall by it, and the order loses the row.
     await endPriority(seed.ids[2], { login: "bob" });
-    await expectRowNames(parkedTable, []);
-    await expect(reader.getByRole("tab", { name: "Parked priority work 0" })).toBeVisible();
+    await expectRowNames(backlogTable, []);
+    await expect(
+      reader.getByRole("tab", { name: "Priority work in backlog or icebox 0" })
+    ).toBeVisible();
     await expect(badge).toHaveText("4");
     await chooseTab(reader, "order");
     await expectRowOrder(priorities, [`#1 ${seed.titles[0]}`, `#2 ${seed.titles[1]}`]);
@@ -1463,17 +1467,17 @@ test("at 1280 by 800 a priority's work table leaves no empty room at its right, 
   // second.
   const work = await createIssue({ project: "CORE", title });
   const none = await createIssue({ project: "OPS", title });
-  const parked = await createIssue({ project: "WEB", title });
+  const inBacklog = await createIssue({ project: "WEB", title });
   const workLong = await createIssue({ project: "CORE", title: longTitle });
   const noneLong = await createIssue({ project: "OPS", title: longTitle });
-  const parkedLong = await createIssue({ project: "WEB", title: longTitle });
+  const backlogLong = await createIssue({ project: "WEB", title: longTitle });
   await Promise.all([
     patchIssue(work.key, { advances: [seed.ids[0]], status: "in_progress" }),
     patchIssue(none.key, { status: "in_progress" }),
-    patchIssue(parked.key, { advances: [seed.ids[0]], status: "backlog" }),
+    patchIssue(inBacklog.key, { advances: [seed.ids[0]], status: "backlog" }),
     patchIssue(workLong.key, { advances: [seed.ids[0]], status: "in_progress" }),
     patchIssue(noneLong.key, { status: "in_progress" }),
-    patchIssue(parkedLong.key, { advances: [seed.ids[0]], status: "backlog" }),
+    patchIssue(backlogLong.key, { advances: [seed.ids[0]], status: "backlog" }),
   ]);
   const context = await asUser(browser, "alice");
   try {
@@ -1556,9 +1560,9 @@ test("at 1280 by 800 a priority's work table leaves no empty room at its right, 
       `${seed.smoke} Daemon smoke suite`,
       `${work.key} ${title}`,
       `${workLong.key} ${longTitle}`,
-      // The parked ones advance #1 as well, so the work under #1 lists them.
-      `${parked.key} ${title}`,
-      `${parkedLong.key} ${longTitle}`,
+      // The ones in backlog advance #1 as well, so the work under #1 lists them.
+      `${inBacklog.key} ${title}`,
+      `${backlogLong.key} ${longTitle}`,
     ]);
     await expect.poll(() => tablesOverflow(page)).toEqual({ "Priority issues table": 0 });
 
@@ -1602,10 +1606,10 @@ test("at 1280 by 800 a priority's work table leaves no empty room at its right, 
     const noneTable = page.getByRole("table", { exact: true, name: NO_PRIORITY_TABLE });
     await expectWhole(noneTable, none.key, "the none tab");
     await expectEightLines(noneTable, noneLong.key, "the none tab");
-    await chooseTab(page, "parked");
-    const parkedTable = page.getByRole("table", { exact: true, name: PARKED_TABLE });
-    await expectWhole(parkedTable, parked.key, "the parked tab");
-    await expectEightLines(parkedTable, parkedLong.key, "the parked tab");
+    await chooseTab(page, "backlog");
+    const backlogTable = page.getByRole("table", { exact: true, name: BACKLOG_TABLE });
+    await expectWhole(backlogTable, inBacklog.key, "the backlog-or-icebox tab");
+    await expectEightLines(backlogTable, backlogLong.key, "the backlog-or-icebox tab");
   } finally {
     await context.close();
   }
@@ -1778,7 +1782,7 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
     await expectTablesAndToolbars("the Priorities tab");
 
     // The two fault tabs.
-    for (const tab of ["none", "parked"] as const) {
+    for (const tab of ["none", "backlog"] as const) {
       await chooseTab(page, tab);
       await expect(page.getByRole("table")).toHaveCount(1);
       await expect(page.locator("tbody tr[data-issue-row]").first()).toBeVisible();
@@ -2053,16 +2057,19 @@ test("on a phone the priorities tab keeps each place and title together as wide 
   }
 });
 
-// INFRA-2947 R7 (spec v86 to v89) and check 138e9e4d (Verification v64 to v66), read on data
+// INFRA-2947 R7 (spec v86 to v98) and check 138e9e4d (Verification v64 to v72), read on data
 // shaped as production's: a holder's claim chip on each fault tab drawn whole at 1280, its words
 // no wider than its box, for a holder named by a long session title, by a session title of 55
 // characters led by an emoji, and by a bare session id; at 1280 Title at least 260 px wide on
-// the Active tab and 200 px on the Parked tab, and on both no other column wider than its widest
-// header or cell needs, with its padding; and the status bar over the work under a priority, at
-// 1280 and at 390, and over each fault tab at 390, cutting no status's name - each name is whole
-// in its segment, in view, or whole in a legend under the bar - and at 390 drawing every count
-// inside the bar.
-// SLOW(>=2s): the seed, twelve more issues, six claims, and three pages read at two sizes.
+// the Active tab and 200 px on the backlog-or-icebox tab with the seed's own keys, and at least
+// 240 px and 155 px with an issue key of 12 characters among the rows, unsorted and sorted by
+// Claimed by; on both no other column wider than its widest header or cell needs, with its
+// padding; each column header's sort arrow clear of its filter; and the status bar over the work
+// under a priority, at 1280 and at 390, and over each fault tab at 390, cutting no status's
+// name - each name is whole in its segment, in view, or whole in a legend under the bar - and at
+// 390 drawing every count inside the bar.
+// SLOW(>=2s): the seed, twenty-four more issues, six claims, each header sorted, and three pages
+// read at two sizes.
 test("the fault tabs draw a holder's claim whole, and no status bar of these pages cuts a status's name", async ({
   browser,
 }) => {
@@ -2092,27 +2099,57 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
     },
     { id: "019a1c11-8f6d-7aa2-9b5c-6c3d7e0f1a11", kind: "session" as const },
   ];
-  const claimed: { holder: string; parked: string; unplaced: string }[] = [];
+  const claimed: { holder: string; backlog: string; unplaced: string }[] = [];
   for (const [at, holder] of holders.entries()) {
     const unplaced = await createIssue({
       project: "OPS",
       title: `Claimed under no priority ${at + 1}`,
     });
-    const parked = await createIssue({
+    const inBacklog = await createIssue({
       project: "WEB",
-      title: `Claimed and parked under #1 ${at + 1}`,
+      title: `Claimed and in backlog under #1 ${at + 1}`,
     });
     await patchIssue(unplaced.key, { status: "in_progress" });
-    await patchIssue(parked.key, { advances: [seed.ids[0]], status: "backlog" });
-    for (const key of [unplaced.key, parked.key]) {
+    await patchIssue(inBacklog.key, { advances: [seed.ids[0]], status: "backlog" });
+    for (const key of [unplaced.key, inBacklog.key]) {
       await claimIssue(key, { actor: holder, as: "agent" });
     }
     claimed.push({
       holder: holder.origin?.session_title ?? holder.id,
-      parked: parked.key,
+      backlog: inBacklog.key,
       unplaced: unplaced.key,
     });
   }
+  // A key of 12 characters on each fault tab, as a project's keys grow by digits: INFRAWIDE-11
+  // in backlog under #1 and INFRAWIDE-12 in flight under no priority. Written once the tabs are
+  // read with the seed's own keys.
+  const writeWideKeys = async () => {
+    await createProject({ key: "INFRAWIDE", name: "Infra wide" });
+    // Twelve titles with no word in common, so Dispatch's near-copy check takes each create.
+    const words = [
+      "Alpha",
+      "Bravo",
+      "Charlie",
+      "Delta",
+      "Echo",
+      "Foxtrot",
+      "Golf",
+      "Hotel",
+      "India",
+      "Juliet",
+      "Kilo",
+      "Lima",
+    ];
+    const keys: string[] = [];
+    for (const word of words) {
+      keys.push((await createIssue({ project: "INFRAWIDE", title: word })).key);
+    }
+    const [backlog, active] = [keys[10] ?? "", keys[11] ?? ""];
+    expect([backlog, active]).toEqual(["INFRAWIDE-11", "INFRAWIDE-12"]);
+    await patchIssue(backlog, { advances: [seed.ids[0]], status: "backlog" });
+    await patchIssue(active, { status: "in_progress" });
+    return { active, backlog };
+  };
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -2228,13 +2265,101 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
         return { title, wide };
       });
 
-    // At 1280: each fault tab's claim chip, whole; Title's width and each other column's fit;
-    // and the bar over #1's work.
+    // A header's sort button, by the words of the column it sorts.
+    const sortButton = (table: Locator, words: string) =>
+      table.locator("thead th").filter({ hasText: words }).locator('button[title^="Sort"]');
+    // Title's floor on each fault tab at 1280, unsorted and then sorted by Claimed by.
+    const readFloors = async (least: { backlog: number; none: number }, keys: string) => {
+      await page.goto(PRIORITIES_PATH);
+      for (const [tab, name] of [
+        ["none", NO_PRIORITY_TABLE],
+        ["backlog", BACKLOG_TABLE],
+      ] as const) {
+        await chooseTab(page, tab);
+        const table = page.getByRole("table", { exact: true, name });
+        await expect(table.locator("tr[data-issue-row]").first()).toBeVisible();
+        for (const sorted of [false, true]) {
+          if (sorted) {
+            await sortButton(table, "Claimed by").click();
+            await expect(table.locator('th[aria-sort="ascending"]')).toContainText("Claimed by");
+          } else {
+            await expect(table.locator("th[aria-sort]")).toHaveCount(0);
+          }
+          const fit = await settledValue(`the ${tab} tab's columns`, () => columnFit(table));
+          soft(
+            fit.title,
+            `at 1280 with ${keys}, ${sorted ? "sorted by Claimed by" : "unsorted"}, Title is at least ${least[tab]} px wide on the ${tab} tab`
+          ).toBeGreaterThanOrEqual(least[tab]);
+        }
+      }
+    };
+    // Each header of `table` whose sort arrow, once that column is sorted, is cut by its own
+    // button or overlaps its filter: each column is sorted in turn, and its arrow read.
+    const arrowsOverFilters = async (table: Locator) => {
+      const columns = await table
+        .locator("thead th")
+        .evaluateAll((headers) =>
+          headers
+            .filter(
+              (header) =>
+                header.querySelector('button[title^="Sort"]') !== null &&
+                header.querySelectorAll("button").length > 1
+            )
+            .map((header) => header.getAttribute("data-column") ?? "")
+        );
+      const overlaps: string[] = [];
+      for (const column of columns) {
+        const header = table.locator(`thead th[data-column="${column}"]`);
+        const sort = header.locator('button[title^="Sort"]');
+        const isSorted = async () =>
+          /ascending|descending/.test((await header.getAttribute("aria-sort")) ?? "");
+        await sort.click();
+        // A column the table opens sorted by (the Priorities tab's #) loses its sort on the
+        // first click and takes it again on the second.
+        await expect
+          .poll(isSorted, { timeout: 2000 })
+          .toBe(true)
+          .catch(() => sort.click());
+        await expect(header).toHaveAttribute("aria-sort", /ascending|descending/);
+        const read = await settledValue(`the ${column} header's sort arrow`, () =>
+          header.evaluate((element) => {
+            const button = element.querySelector('button[title^="Sort"]');
+            const filter = [...element.querySelectorAll("button")].find((b) => b !== button);
+            const arrow = [...(button?.querySelectorAll("span") ?? [])].find((span) =>
+              /^[▲▼]$/.test((span.textContent ?? "").trim())
+            );
+            if (button === null || filter === undefined || arrow === undefined) return "no arrow";
+            const a = arrow.getBoundingClientRect();
+            const s = button.getBoundingClientRect();
+            const f = filter.getBoundingClientRect();
+            const words = (button.textContent ?? "").trim();
+            if (a.width === 0 || a.right > s.right + 0.5)
+              return `${words}: arrow cut by its button`;
+            const meet =
+              a.left < f.right - 0.5 &&
+              a.right > f.left + 0.5 &&
+              a.top < f.bottom - 0.5 &&
+              a.bottom > f.top + 0.5;
+            return meet ? `${words}: arrow ${Math.round(a.right - f.left)} px over its filter` : "";
+          })
+        );
+        if (read !== "") overlaps.push(read);
+      }
+      return overlaps;
+    };
+
+    // At 1280 with the seed's own keys: Title's floor on each fault tab.
     await page.setViewportSize(DESKTOP);
+    await readFloors({ backlog: 200, none: 260 }, "the seed's own keys");
+
+    // At 1280 with a 12-character key among the rows: Title's floor; each other column's fit;
+    // each fault tab's claim chip, whole; each header's sort arrow; and the bar over #1's work.
+    const wide = await writeWideKeys();
+    await readFloors({ backlog: 155, none: 240 }, "a 12-character key");
     await page.goto(PRIORITIES_PATH);
     for (const [tab, name] of [
       ["none", NO_PRIORITY_TABLE],
-      ["parked", PARKED_TABLE],
+      ["backlog", BACKLOG_TABLE],
     ] as const) {
       await chooseTab(page, tab);
       const table = page.getByRole("table", { exact: true, name });
@@ -2242,13 +2367,9 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
       const rowOf = (key: string) => table.locator(`tr[data-issue-row][aria-label^="${key} "]`);
       const first = claimed[0];
       if (first === undefined) throw new Error("no claimed issue was written");
-      await expect(rowOf(tab === "none" ? first.unplaced : first.parked)).toBeVisible();
+      await expect(rowOf(tab === "none" ? first.unplaced : first.backlog)).toBeVisible();
+      await expect(rowOf(tab === "none" ? wide.active : wide.backlog)).toBeVisible();
       const fit = await settledValue(`the ${tab} tab's columns`, () => columnFit(table));
-      const least = tab === "none" ? 260 : 200;
-      soft(
-        fit.title,
-        `at 1280 Title is at least ${least} px wide on the ${tab} tab`
-      ).toBeGreaterThanOrEqual(least);
       soft(
         fit.wide,
         `at 1280 no column of the ${tab} tab but Title is wider than its widest header or cell needs`
@@ -2256,7 +2377,7 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
       // The chips that take more than one line on this tab, which the radius clause reads.
       let wrapped = 0;
       for (const one of claimed) {
-        const chip = rowOf(tab === "none" ? one.unplaced : one.parked).getByTestId("issue-claim");
+        const chip = rowOf(tab === "none" ? one.unplaced : one.backlog).getByTestId("issue-claim");
         await expect(chip).toBeVisible();
         const read = await settledValue(`the ${tab} tab's claim chip of ${one.holder}`, () =>
           chip.evaluate((element) => {
@@ -2306,15 +2427,29 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
           ).toBeLessThanOrEqual(8);
         }
       }
-      // On the Parked tab, the narrower of the two, at least one of these holders' chips takes
-      // more than one line, so the radius clause is read on a chip it is about.
-      if (tab === "parked") {
+      // On the backlog-or-icebox tab, the narrower of the two, at least one of these holders'
+      // chips takes more than one line, so the radius clause is read on a chip it is about.
+      if (tab === "backlog") {
         soft(
           wrapped,
-          "at least one claim chip of the Parked tab takes more than one line"
+          "at least one claim chip of the backlog-or-icebox tab takes more than one line"
         ).toBeGreaterThan(0);
       }
+      // Verification v72: each column header's sort arrow, with that column sorted, clear of its
+      // filter and not cut by its own button.
+      soft(
+        await arrowsOverFilters(table),
+        `at 1280 each header's sort arrow on the ${tab} tab stands clear of its filter`
+      ).toEqual([]);
     }
+    // And the Priorities tab's headers, Newest event among them.
+    await page.goto(PRIORITIES_PATH);
+    const order = page.getByRole("table", { exact: true, name: "Priorities table" });
+    await expect(order.getByRole("row").nth(1)).toBeVisible();
+    soft(
+      await arrowsOverFilters(order),
+      "at 1280 each header's sort arrow on the Priorities tab stands clear of its filter"
+    ).toEqual([]);
     await page.goto(`/priorities/${seed.ids[0]}`);
     const work = section(page, "Work advancing this priority");
     await expect(work.getByRole("row", { name: /Under #1 in retro$/ })).toBeVisible();
@@ -2336,7 +2471,7 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
       "at 390 the bar over a priority's work draws every count inside the bar"
     ).toEqual([]);
     await page.goto(PRIORITIES_PATH);
-    for (const tab of ["none", "parked"] as const) {
+    for (const tab of ["none", "backlog"] as const) {
       await chooseTab(page, tab);
       const panel = page.getByRole("tabpanel");
       await expect(panel.locator("tbody tr[data-issue-row]").first()).toBeVisible();
@@ -2347,6 +2482,162 @@ test("the fault tabs draw a holder's claim whole, and no status bar of these pag
       soft(
         await settledValue(`the counts of the ${tab} tab's bar at 390`, () => countsOutside(panel)),
         `at 390 the ${tab} tab's bar draws every count inside the bar`
+      ).toEqual([]);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// INFRA-2947 R15 and check 0abe1d81 (Verification v69): a project's Issues tab, the one page
+// outside the priorities pages this change reaches. At 1280 by 800 the search box, each select,
+// Columns, Needs you and Unread each stand 34 px high; at 900 px wide the search box takes a row
+// of its own above the other controls; and at 390 by 844 each of those controls is at least
+// 44 px high.
+// SLOW(>=2s): a project and one issue written, and the tab read at three sizes.
+test("a project's Issues tab draws its toolbar 34 px high at 1280, its search box on a row of its own at 900, and each control 44 px or more on a phone", async ({
+  browser,
+}) => {
+  await createProject({ key: "TOOLS", name: "Tools" });
+  await createIssue({ project: "TOOLS", title: "An issue the table draws" });
+  // Each control of the toolbar the search box stands in, by its name and its box: the box
+  // itself, the select by the words of the label it stands in (`Group by`), and each button.
+  const toolbar = (page: Page) =>
+    page.getByRole("searchbox", { exact: true, name: "Search issues" }).evaluate((box) =>
+      [...(box.parentElement?.querySelectorAll("input, select, button") ?? [])]
+        .filter((control) => control.getBoundingClientRect().height > 0)
+        .map((control) => {
+          const rect = control.getBoundingClientRect();
+          return {
+            bottom: rect.bottom,
+            height: rect.height,
+            name: (
+              control.getAttribute("aria-label") ??
+              (control.tagName === "SELECT"
+                ? control.closest("label")?.firstChild?.textContent
+                : control.textContent) ??
+              ""
+            ).trim(),
+            top: rect.top,
+          };
+        })
+    );
+  const named = ["Search issues", "Group by", "Columns", "Needs you", "Unread"];
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    const search = page.getByRole("searchbox", { exact: true, name: "Search issues" });
+    const read = async (size: { height: number; width: number }, where: string) => {
+      await page.setViewportSize(size);
+      await page.goto("/projects/TOOLS/issues");
+      await expect(search).toBeVisible();
+      const controls = await settledValue(`${where}: the Issues tab's toolbar`, () =>
+        toolbar(page)
+      );
+      // Each control the check names is drawn, so no clause below passes on a missing one.
+      soft(
+        named.filter((name) => !controls.some((control) => control.name.startsWith(name))),
+        `${where}: the toolbar draws ${named.join(", ")}`
+      ).toEqual([]);
+      return controls;
+    };
+
+    // At 1280 by 800, each control 34 px high, to within half a pixel of rounding.
+    const desktop = await read(DESKTOP, "at 1280");
+    soft(
+      desktop
+        .filter((control) => Math.abs(control.height - 34) > 0.5)
+        .map((control) => `${control.name.slice(0, 20)} ${Math.round(control.height)}`),
+      "at 1280 every control of the Issues tab's toolbar is 34 px high"
+    ).toEqual([]);
+
+    // At 900 px wide, the search box on a row of its own, above every other control.
+    const narrow = await read({ height: 800, width: 900 }, "at 900");
+    const box = narrow.find((control) => control.name === "Search issues");
+    if (box === undefined) throw new Error("at 900 the toolbar draws no search box");
+    soft(
+      narrow
+        .filter((control) => control !== box && control.top < box.bottom - 0.5)
+        .map((control) => control.name.slice(0, 20)),
+      "at 900 the search box takes a row of its own above the other controls"
+    ).toEqual([]);
+
+    // At 390 by 844, each control at least 44 px high.
+    const phone = await read(PHONE, "at 390");
+    soft(
+      phone
+        .filter((control) => control.height < 43.5)
+        .map((control) => `${control.name.slice(0, 20)} ${Math.round(control.height)}`),
+      "at 390 every control of the Issues tab's toolbar is at least 44 px high"
+    ).toEqual([]);
+  } finally {
+    await context.close();
+  }
+});
+
+// INFRA-2947 check 8c968bed (Verification v71): what a person reads holds none of the word the
+// person refused for work in backlog or icebox. Each of the three tabs, a priority's own page and
+// an issue's header, at 1280 by 800 and at 390 by 844: the page's text, every `title` and
+// `aria-label` on it, and its address match that word in no case.
+// SLOW(>=2s): the seed, and five pages read at two sizes.
+test("no tab of the priorities page, no priority's page and no issue header uses the word the person refused", async ({
+  browser,
+}) => {
+  const seed = await seedPriorities();
+  // The word, in any case, but not inside "spark", as check 1a3e1452 reads it. The bracket keeps
+  // the word itself out of this file.
+  const refused = "(?<![sS])p[a]rk";
+  // What of the page holds the word: each line of its text, each `title` and `aria-label`, the
+  // document's title and its address.
+  const holding = (page: Page) =>
+    page.evaluate((source) => {
+      const word = new RegExp(source, "i");
+      const text = document.body.innerText.split("\n").filter((line) => word.test(line));
+      const attributes = [...document.querySelectorAll("[title], [aria-label]")].flatMap(
+        (element) =>
+          ["title", "aria-label"]
+            .map((name) => element.getAttribute(name) ?? "")
+            .filter((value) => word.test(value))
+            .map((value) => `${element.tagName.toLowerCase()} ${value}`)
+      );
+      const where = [document.title, window.location.href].filter((value) => word.test(value));
+      return [...text, ...attributes, ...where].map((value) => value.trim().slice(0, 120));
+    }, refused);
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+    for (const [size, where] of [
+      [DESKTOP, "at 1280"],
+      [PHONE, "at 390"],
+    ] as const) {
+      await page.setViewportSize(size);
+      await page.goto(PRIORITIES_PATH);
+      for (const tab of ["order", "none", "backlog"] as const) {
+        await chooseTab(page, tab);
+        await expect(page.getByRole("table")).toBeVisible();
+        soft(
+          await settledValue(`${where}: the ${tab} tab`, () => holding(page)),
+          `${where}: the ${tab} tab holds no line, title, label or address with the word`
+        ).toEqual([]);
+      }
+      // #3's own page, which lists the archive standing in the backlog under it.
+      await page.goto(`/priorities/${seed.ids[2]}`);
+      await expect(titleHeading(page)).toHaveText(seed.titles[2] ?? "");
+      await expect(
+        section(page, "Work advancing this priority").getByRole("row").nth(1)
+      ).toBeVisible();
+      soft(
+        await settledValue(`${where}: #3's page`, () => holding(page)),
+        `${where}: a priority's page holds no line, title, label or address with the word`
+      ).toEqual([]);
+      // The archive's own page, whose header names #3 while the issue stands in the backlog.
+      await page.goto(`/issues/${seed.archive}`);
+      await expect(page.getByText("Ledger archive").first()).toBeVisible();
+      soft(
+        await settledValue(`${where}: the archive's page`, () => holding(page)),
+        `${where}: an issue's header holds no line, title, label or address with the word`
       ).toEqual([]);
     }
   } finally {
@@ -2637,16 +2928,16 @@ test("an issue's header names the priorities it advances and links to each", asy
     // row the child could add is read first, so the absence is read off a list that has loaded.
     await page.goto(`/issues/${seed.child}`);
     const inherited = chipsLine(page);
-    const parked = inherited.getByRole("link", { name: `#3 ${seed.titles[2]}` });
-    await expect(parked).toBeVisible();
-    await expect(parked).toHaveText("#3");
-    await expect(parked).toHaveAccessibleName(`#3 ${seed.titles[2]}, inherited`);
-    await expect(parked).toHaveAttribute(
+    const inheritedChip = inherited.getByRole("link", { name: `#3 ${seed.titles[2]}` });
+    await expect(inheritedChip).toBeVisible();
+    await expect(inheritedChip).toHaveText("#3");
+    await expect(inheritedChip).toHaveAccessibleName(`#3 ${seed.titles[2]}, inherited`);
+    await expect(inheritedChip).toHaveAttribute(
       "title",
       `${seed.titles[2]}, inherited from an issue above`
     );
     // It draws unlike an own chip: a dashed, muted border, where an own chip's is solid.
-    await expect(parked.locator("span")).toHaveCSS("border-top-style", "dashed");
+    await expect(inheritedChip.locator("span")).toHaveCSS("border-top-style", "dashed");
     await page.getByRole("button", { name: "Edit priorities" }).click();
     const offered = page.getByRole("listbox", { name: "Priorities options" });
     await expect(
