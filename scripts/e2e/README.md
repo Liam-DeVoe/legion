@@ -1719,9 +1719,11 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   The control is the daemon's own log: with `answers` removed it writes no conversation to the agent registry and no `answers:` line.
   It does write the project's answering heartbeat, saying it does not answer, so that an operator who removes `answers` stops the listener's hand-offs at the next boot;
   on a listener without that route the heartbeat is the one 404 the boot shows.
-  Each daemon of this check boots on a project of its own, so each one maps the smoke repository to that project in the Dispatch running then (`map_repo`):
-  a repository names one project at a time, the second pass's own mapping call moved the mapping off the first pass's project, and with the workflow on a daemon whose project maps no repository exits at boot (`project <key>
-  has no repository mapped in Dispatch`).
+  Each daemon of this check boots on a project of its own, so each one makes the smoke repository that project's default in the Dispatch running then (`map_repo`):
+  a repository names one project at a time, so the second pass's own call moved it off the first pass's project.
+  The branch's daemon reads no mapping and boots without one;
+  the default decides the repository Dispatch resolves the pass's rig issues to, which would otherwise be none.
+  A base commit from before the daemon took each issue's repository from Dispatch still reads the mapping, and its daemon exits at boot when its project maps no repository (`project <key> has no repository mapped in Dispatch`).
   The base stack's Dispatch is a database of its own, so the base daemon's project is created and mapped there too.
 
 - A16 (once): the case-insensitive search for the spec's five phrases over the loop's packages, the daemon's prompts, `skills/`, `docs/` less `docs/plans/` and `docs/solutions/`, and every `AGENTS.md`, each hit printed;

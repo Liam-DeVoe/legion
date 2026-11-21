@@ -3231,9 +3231,11 @@ run_a13() {
     project=${project^^}
     daemon_db=legion_${store}_$run_tag
     state=$work/state-$store
-    # The pass's project maps the smoke repository again before its daemon boots: a repository
-    # names one project at a time, so the other pass's own call moved the mapping off this one,
-    # and with the workflow on a daemon whose project maps nothing exits at boot (map_repo).
+    # The pass's project takes the smoke repository as its default again before its daemon boots:
+    # a repository names one project at a time, so the other pass's own call moved it off this
+    # one. A daemon reads no mapping and boots without one (it logs that no live record names a
+    # repository); what the default decides is the repository Dispatch resolves the pass's rig
+    # issues to, which would otherwise be none (map_repo).
     map_repo "$project"
     write_legion_config "$work/plain-$store.yaml" no
     start_daemon "$work/branch/legion" "$work/plain-$store.yaml" "$evidence/logs/daemon-$store.log" "$branch_home" "$branch_profile" \
