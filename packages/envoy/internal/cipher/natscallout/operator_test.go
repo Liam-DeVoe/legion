@@ -284,6 +284,14 @@ func (e *serverErrors) handle(_ *nats.Conn, _ *nats.Subscription, err error) {
 	e.lines = append(e.lines, err.Error())
 }
 
+// String is every error the server sent, one a line, for a failure's message: a refused publish
+// inside a backup or a restore is named only here.
+func (e *serverErrors) String() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return strings.Join(e.lines, "\n")
+}
+
 func (e *serverErrors) seen(want string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -365,10 +373,15 @@ type apiAnswer struct {
 	raw []byte
 }
 
+// answerWait bounds one JetStream request the grant admits. A create of a stream of three copies is
+// answered by its first leader once its members elect one, which on a loaded machine comes after
+// ten seconds (testnats.jetStreamWait says so): one such create here got no answer within ten.
+const answerWait = 30 * time.Second
+
 // answered requires a request on subject to be answered, and returns the answer.
 func answered(t *testing.T, nc *nats.Conn, subject string, body any) apiAnswer {
 	t.Helper()
-	msg, err := nc.Request(subject, encoded(t, body), 10*time.Second)
+	msg, err := nc.Request(subject, encoded(t, body), answerWait)
 	require.NoError(t, err, "%s got no answer", subject)
 	answer := apiAnswer{raw: msg.Data}
 	require.NoError(t, json.Unmarshal(msg.Data, &answer), "%s answered %q", subject, msg.Data)
@@ -615,7 +628,7 @@ func TestTheReleasedOperatorReadsAndBacksUp(t *testing.T) {
 	// The backup first, so a grant without a read it needs fails the test inside the backup, at the
 	// step that needs it.
 	backup, err := backupStream(operator.Conn, kvBucket(bus.SessionBucket))
-	require.NoError(t, err, "the released operator's backup of %s", kvBucket(bus.SessionBucket))
+	require.NoError(t, err, "the released operator's backup of %s; the server sent:\n%s", kvBucket(bus.SessionBucket), operator.errs)
 	require.EqualValues(t, 20, backup.messages)
 	require.Greater(t, len(backup.data), 2*snapshotChunk, "the backup was one chunk, so no acknowledgement was asked for")
 	succeeds(t, operator.Conn, "$JS.API.INFO", nil)
@@ -723,7 +736,9 @@ func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 	r.setPhase(t, natsgrant.OperatorPhaseReleased)
 	adminNC, js := r.admin(t)
 	r.makeStreams(t, 20, 1024, 0)
-	_, err := js.AddConsumer(bus.Stream, &nats.ConsumerConfig{Name: "retired-1", AckPolicy: nats.AckExplicitPolicy})
+	// Durable: a consumer named but not durable is removed after five seconds with no interest,
+	// before the cleanup below reaches it.
+	_, err := js.AddConsumer(bus.Stream, &nats.ConsumerConfig{Durable: "retired-1", AckPolicy: nats.AckExplicitPolicy})
 	require.NoError(t, err)
 	sessions := kvBucket(bus.SessionBucket)
 	created := streamConfig(t, adminNC, sessions)
@@ -757,7 +772,7 @@ func TestTheHeldOperatorGetsTheFullList(t *testing.T) {
 	succeeds(t, operator.Conn, "$JS.API.STREAM.UPDATE."+sessions, updated)
 	succeeds(t, operator.Conn, "$JS.API.STREAM.DELETE."+sessions, nil)
 	restored, err := restoreStream(t.Context(), operator.Conn, backup, nil)
-	require.NoError(t, err, "the held operator's restore of %s", sessions)
+	require.NoError(t, err, "the held operator's restore of %s; the server sent:\n%s", sessions, operator.errs)
 	require.EqualValues(t, 20, restored)
 	info, err := js.StreamInfo(sessions)
 	require.NoError(t, err)
@@ -935,7 +950,7 @@ func TestTheBarrierIsAStream(t *testing.T) {
 	adminNC, js := r.admin(t)
 	r.makeStreams(t, 1, 16, 2)
 	for _, name := range []string{"session-a", "session-b"} {
-		_, err := js.AddConsumer(bus.Stream, &nats.ConsumerConfig{Name: name, AckPolicy: nats.AckExplicitPolicy})
+		_, err := js.AddConsumer(bus.Stream, &nats.ConsumerConfig{Durable: name, AckPolicy: nats.AckExplicitPolicy})
 		require.NoError(t, err)
 	}
 	full := answered(t, adminNC, "$JS.API.CONSUMER.CREATE."+bus.Stream,
