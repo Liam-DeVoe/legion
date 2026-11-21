@@ -1092,10 +1092,7 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 	if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, summary); err != nil {
 		return err
 	}
-	seq := stored.LastDispatchSeq
-	if summary.Seq > seq {
-		seq = summary.Seq
-	}
+	seq := max(stored.LastDispatchSeq, summary.Seq)
 	status := stored.Status
 	if summary.Status != stored.Status && stored.Behind(summary.Seq) {
 		// A snapshot that changes a recorded issue's status, strictly newer than what is stored

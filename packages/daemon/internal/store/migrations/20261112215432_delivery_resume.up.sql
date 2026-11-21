@@ -27,7 +27,7 @@
 -- later approval superseded each decision it names (workflow.SupersedingApproval), and the
 -- question is answered by Dispatch's order on both sides: the sequences when both carry one,
 -- else Dispatch's times. It is null where Dispatch gave no sequence, for an answer on an ask, and
--- for every row kept before this migration; a daemon of an earlier release writes none.
+-- for every row kept before this migration.
 --
 -- parked_decisions.artifact is the Dispatch artifact id of the document a kept spec decision's
 -- review is of (record.ParkedDecision.Artifact, from the notice's Artifact), which the
@@ -36,8 +36,13 @@
 -- other document answers no review of the one the person reviewed, so the kept decision is asked
 -- of its document as its relay is (workflow.SupersedingApproval). It is '' for an answer on an
 -- ask, for a notice that carried no document, and for every row kept before this migration, and
--- such a row is asked at its place in Dispatch's log alone; a daemon of an earlier release writes
--- none.
+-- such a row is asked at its place in Dispatch's log alone.
+--
+-- A daemon of an earlier release names neither seq nor artifact. A row it inserts carries a null
+-- seq and the empty artifact. A decision it keeps over a row this release kept (its upsert on
+-- issue and ref) is written beside that row's seq and artifact, the earlier review's, so a
+-- rollback clears both columns before that release is pinned (docs/kubernetes.md, the update of
+-- parked_decisions under daemon API contract 206).
 --
 -- issues.awaiting_answered_version is the version of the changes request that answered a root's
 -- wait (record.Awaiting.AnsweredVersion), written beside the detail by the same answer, so the

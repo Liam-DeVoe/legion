@@ -655,7 +655,7 @@ func TestAKeptAndARelayedChangesRequestStandAlikeOnceTheGateLeavesTheirDocument(
 			committed()
 			kept = keptDecisions(t, pool, records, "LEGION-1")
 			keptStands := len(kept) == 1 && kept[0].Decision == record.DecisionDesignChangesRequested
-			if relayStands := relays() == 1; keptStands != relayStands || !keptStands {
+			if relayStands := relays() == 1; !keptStands || !relayStands {
 				t.Fatalf("after %s the tree keeps %#v (the request stands: %v) and the outbox holds the "+
 					"request's relay: %v; want both to stand, as one question asked of each: the approval "+
 					"of artifact-2 answers no review of artifact-1", tc.name, kept, keptStands, relayStands)

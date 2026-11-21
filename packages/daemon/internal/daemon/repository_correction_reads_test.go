@@ -439,6 +439,52 @@ func TestAFollowOwedForOneIssueReadsAnotherAskedForWhileItIsOwed(t *testing.T) {
 	}
 }
 
+// An issue a follow is owed for, whose reads GitHub still does not answer, starts no follow pass
+// when it is asked for again (requestFollowOf), as each event or hand-over of it asks: the pass
+// that left it owed armed the follow's own clock (installReadRetry's first wait, 30 s), and the
+// issue waits for that. Each pass reads the records, Dispatch's whole listing and GitHub, so
+// through a GitHub outage a pass at each ask would cost that much per event. The ask is counted
+// all the same, and an issue no pass owes yet is followed at once. A pass is counted by its read
+// of strangerRepo's implement App, which every pass here makes once and nothing else makes.
+// Control: with every ask waking the refresher, the second ask of the owed issue starts a pass at
+// once.
+func TestAnAskOfAnIssueAFollowIsOwedForWaitsTheFollowsClock(t *testing.T) {
+	const owed, added = "LEGION-1096", "LEGION-1097"
+	installs := &installations{}
+	implement := "implement " + strangerRepo
+	installs.setFailing(errors.New("GitHub answered 502"), implement)
+	w, client, _ := changingRig(t, installs)
+	for i, key := range []string{owed, added} {
+		recordCorrectionRoot(t, w.pool, w.records, key, key, i)
+	}
+	client.show(issue(owed, strangerRepo, "in_progress", true, "", 1), issue(added, strangerRepo, "in_progress", true, "", 1))
+	owes := func(key string) bool {
+		w.followMu.Lock()
+		defer w.followMu.Unlock()
+		return w.followOwed[key]
+	}
+
+	w.requestFollowOf(owed)
+	testwait.Eventually(t, "a pass leaving "+owed+" owed, GitHub not having answered", func() bool {
+		return installs.reads(implement) >= 1 && owes(owed)
+	})
+	read, asked := installs.reads(implement), w.followRequested.Load()
+	w.requestFollowOf(owed)
+	if follows := w.followRequested.Load() - asked; follows != 1 {
+		t.Fatalf("the second ask of %s counted %d follows, want one", owed, follows)
+	}
+	if testwait.Holds(2*time.Second, testwait.Poll, func() bool { return installs.reads(implement) > read }) {
+		t.Fatalf("the second ask of %s started a pass at once (%d reads of %s after it), want none before the follow's clock",
+			owed, installs.reads(implement)-read, strangerRepo)
+	}
+
+	// The wait ends well inside the clock's 30 s, so the pass it sees is the ask's own.
+	w.requestFollowOf(added)
+	testwait.WithinPolling(t, 10*time.Second, testwait.Poll, "a pass at once for "+added+", which no pass owed", func() bool {
+		return installs.reads(implement) > read
+	})
+}
+
 // The boot's listing reads GitHub for no repository, a recorded issue's change included: it runs
 // inside the boot's bounded reconcile, so the change applies nothing there, whatever read the
 // daemon keeps of the repository, and the boot asks for the follow instead (requestFollow), which
@@ -694,8 +740,7 @@ func TestAFollowMovingTwoIssuesOntoARepositoryMissingAnAppSharesItsRefusal(t *te
 	}
 
 	w.requestFollow()
-	follows := w.followRequested.Load()
-	testwait.Eventually(t, "the follow applied", func() bool { return w.followApplied.Load() >= follows })
+	followsSettled(t, w)
 	want := record.RepositoryChange{Pending: strangerRepo, Reason: "the review App is not installed on " + strangerRepo}
 	for _, key := range keys {
 		if got := onWidgets(t, w, key); got.RepoChange == nil || *got.RepoChange != want {
@@ -735,8 +780,7 @@ func TestAFollowThatMovesARecordOffARepositoryReadsTheLiveRecordsAgain(t *testin
 	client.show(issue(key, strangerRepo, "in_progress", true, "", 1))
 
 	w.requestFollow()
-	follows := w.followRequested.Load()
-	testwait.Eventually(t, "the follow applied", func() bool { return w.followApplied.Load() >= follows })
+	followsSettled(t, w)
 	if got := recordedIssue(t, w, key); got == nil || got.Repo != strangerNamed {
 		t.Fatalf("%s = %+v, want it moved onto %s by the follow", key, got, strangerNamed)
 	}
@@ -764,8 +808,7 @@ func followAtTheRecordsSequence(t *testing.T) (*workflowRuntime, record.Issue) {
 	}
 	client.show(issue(sequenceKey, strangerRepo, "in_progress", true, "", 2))
 	w.requestFollow()
-	follows := w.followRequested.Load()
-	testwait.Eventually(t, "the follow applied", func() bool { return w.followApplied.Load() >= follows })
+	followsSettled(t, w)
 	return w, *recordedIssue(t, w, sequenceKey)
 }
 

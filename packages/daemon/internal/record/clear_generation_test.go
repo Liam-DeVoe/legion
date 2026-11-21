@@ -241,18 +241,18 @@ func TestTheClearsSelectOfChangesRequestsNamesTheRowsChangesRequestAccepts(t *te
 	st := migratedStore(t)
 	at := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
 	const key = "LEGION-310"
-	spec := "dispatch://" + key + "/spec"
+	ref := "dispatch://" + key + "/spec"
 	var payloads []OutboxPayload
 	for _, kind := range validNoticeKinds {
 		notice := Notice{Kind: kind}
-		if _, decision := SpecDecision(kind); decision {
-			notice.Version, notice.Actor, notice.Ref = 3, "user:alice", spec
+		if _, spec := SpecDecision(kind); spec {
+			notice.Version, notice.Actor, notice.Ref = 3, "user:alice", ref
 		}
 		payloads = append(payloads, notice, ControllerNotice{Kind: kind})
 	}
 	for _, decision := range validDecisionKinds {
 		payloads = append(payloads, ControllerNotice{Kind: ParkedDecisionNotice, Decision: decision,
-			Root: key, Ref: spec, Actor: "user:alice", Version: 3})
+			Root: key, Ref: ref, Actor: "user:alice", Version: 3})
 	}
 	payloads = append(payloads, ControllerNotice{Kind: TickNotice}, MessagePost{Body: "a message"})
 	accepted := map[int64]OutboxKind{}

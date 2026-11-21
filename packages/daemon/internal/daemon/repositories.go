@@ -976,12 +976,7 @@ func isDue(at, now time.Time) bool { return !at.IsZero() && !at.After(now) }
 //     (projectRecords, liveWake), and on installReadRetry while that read fails.
 //  7. The recorded issues' follow of Dispatch's resolution (followRecorded), at once when one is
 //     asked for (requestFollow, requestFollowOf, followWake), and on installReadRetry while one
-//     is owed (followReasons): a pass that failed, whose bound cut it short, or that left an issue
-//     whose correction's reads GitHub did not answer. A boot's listing reads GitHub for no
-//     repository, so it leaves each recorded issue Dispatch moved to this pass, and an event or a
-//     hand-over whose correction's reads GitHub did not answer leaves its issue to it too: the
-//     pass's preparation of each issue reads GitHub for the repository it moves onto, until
-//     GitHub answers.
+//     is owed (followReasons).
 //
 // Each job's clock is its own (retrying), so a wake of one never moves another's wait. The jobs
 // share the goroutine, so one waits while another runs: a recovery woken during the first job's
@@ -2686,11 +2681,11 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 // a read GitHub did not answer carries neither, and the correction writes nothing and says
 // nothing. The issue is owed a follow then, which the refresher makes at once and again on its
 // backoff until GitHub answers (followRecorded), because nothing else in the running process
-// reads the change again: the event is consumed and its sequence recorded, and without the follow
-// the record stayed on the repository the issue left, with nothing waiting and nothing said,
-// until the issue's next event or the next boot. A waiting change is read again at the issue's
-// next event or at the next boot: since dispatch://INFRA-4401 nothing reads a repository no
-// record names again, so nothing else would apply it, whatever the repository.
+// reads the change again: the event is consumed and its sequence recorded, with nothing waiting
+// on the record and nothing said, so only the issue's next event or the next boot would. A
+// waiting change is read again at the issue's next event or at the next boot: since
+// dispatch://INFRA-4401 nothing reads a repository no record names again, so nothing else would
+// apply it, whatever the repository.
 //
 // In the boot's listing (boot) GitHub is read for no repository, for the reason prepareListed
 // gives, and nothing is applied there (the fact carries no read, so its correction answers
@@ -2913,18 +2908,29 @@ func (w *workflowRuntime) requestFollow() {
 // follow reads that issue alone, so it reads no other issue's waiting change sooner than that
 // issue's own next event or the next boot would.
 //
+// A key no pass owes yet wakes the refresher, which follows it at once. A key already owed
+// (followEvery set, or followOwed naming it) is counted and wakes nothing, because a pass that
+// reads it is coming already: the one the ask that first owed it woke, or, once a pass has left it
+// owed, the one the refresher's clock starts on its backoff, armed while any follow is owed
+// (followReasons, installReadRetry). A wake at every ask would start a whole pass — a read of
+// the records, Dispatch's whole listing and GitHub's reads — at each event or hand-over of an
+// issue GitHub does not answer for, past that backoff.
+//
 // Both requests count their follow (followRequested) under followMu, the lock followRecorded
 // takes the owed issues under: a pass that took a request's count without its issue would store
 // that count applied and leave the issue owed to no pass.
 func (w *workflowRuntime) requestFollowOf(key string) {
 	w.followMu.Lock()
+	owed := w.followEvery || w.followOwed[key]
 	if w.followOwed == nil {
 		w.followOwed = map[string]bool{}
 	}
 	w.followOwed[key] = true
 	w.followRequested.Add(1)
 	w.followMu.Unlock()
-	wake(w.followWake)
+	if !owed {
+		wake(w.followWake)
+	}
 }
 
 // followRecorded is the refresher's seventh job: once a follow is owed (followRequested above

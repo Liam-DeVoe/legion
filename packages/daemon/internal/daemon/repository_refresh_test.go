@@ -1341,7 +1341,7 @@ func (h *heldRefresher) hold(w *workflowRuntime) {
 
 // wakesWaiting is how many of w's refresher wakes are waiting to be taken.
 func wakesWaiting(w *workflowRuntime) int {
-	return len(w.recoverWake) + len(w.rereadWake) + len(w.liveWake) + len(w.heardWake) + len(w.heldWake)
+	return len(w.recoverWake) + len(w.rereadWake) + len(w.liveWake) + len(w.heardWake) + len(w.heldWake) + len(w.followWake)
 }
 
 // park waits until the refresher is stopped in the hook with no wake waiting: every job it was

@@ -18,7 +18,7 @@ import {
 } from "./phase-stall";
 import { DEFAULT_STALL_LIMITS } from "./stall-limits";
 
-/** A contract the test's client states on every request, and its claims record. */
+/** A contract the test's client states on every request. */
 const CONTRACT = 60;
 
 const implementer = {

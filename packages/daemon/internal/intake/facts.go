@@ -102,8 +102,8 @@ type DispatchIssue struct {
 	// it (workflow.Engine.ApplyRepositoryChange): two reads of Dispatch at one sequence cannot be
 	// ordered, and a correction moves no sequence, so a fact prepared before another correction
 	// moved the record would put the record back on an older resolution. Empty for every fact no
-	// preparation of a recorded issue made, the decode's own among them, which is applied as it
-	// was before this field.
+	// preparation of a recorded issue made, the decode's own among them, whose correction is
+	// written whatever repository the record holds.
 	PreparedAgainst string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the issue: the chain release_children's own walk

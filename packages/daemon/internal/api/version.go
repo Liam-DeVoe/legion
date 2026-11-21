@@ -3030,8 +3030,10 @@ package api
 // empty for a resume task this release queued and never sent. It also adds `parked_decisions.seq`,
 // Dispatch's sequence of a kept spec decision's review, and `parked_decisions.artifact`, the
 // document that review is of (the empty string on every row already there), which an older
-// daemon neither reads nor writes: a row it keeps carries no sequence, no document and its own
-// clock, as before this release.
+// daemon neither reads nor writes: a row it inserts carries no sequence, no document and its own
+// clock, as before this release, while a decision it keeps over a row this release kept is
+// written beside that row's sequence and document, the earlier review's, which is why the
+// rollback docs/kubernetes.md gives under this contract clears both columns first.
 // `20261118073048_phase_entry_awaiting.up.sql` replaces `phases.entry_verbatim` with
 // `phases.entry_awaiting`, the wait a resume answered, so the sweep's send again of a lost resume
 // start is rendered at that send rather than sent as the text written at the raise. A daemon of

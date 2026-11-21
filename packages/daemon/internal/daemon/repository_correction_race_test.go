@@ -29,14 +29,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// settledFollow asks for a follow of key and waits until every follow asked for is applied.
-func settledFollow(t *testing.T, w *workflowRuntime, key string) {
-	t.Helper()
-	w.requestFollowOf(key)
-	follows := w.followRequested.Load()
-	testwait.Eventually(t, "the follow of "+key+" applied", func() bool { return w.followApplied.Load() >= follows })
-}
-
 // followsSettled waits until every follow asked for of w is applied.
 func followsSettled(t *testing.T, w *workflowRuntime) {
 	t.Helper()
@@ -141,7 +133,8 @@ func TestAHandOverPreparedBeforeAFollowMovedTheRecordWritesNothingAndIsFollowed(
 			}
 
 			client.show(issue(handOverRaceChild, answeredRepo, "todo", true, "", 4))
-			settledFollow(t, w, handOverRaceChild)
+			w.requestFollowOf(handOverRaceChild)
+			followsSettled(t, w)
 			onRepository(t, w, handOverRaceChild, answeredNamed, "acme/widgets")
 			client.show(issue(handOverRaceChild, tc.now, "todo", true, "", 4))
 
@@ -188,9 +181,6 @@ func TestAHandOverPreparedBeforeAFollowMovedTheRecordWritesNothingAndIsFollowed(
 	}
 }
 
-// lateEventKey is the issue the test of a late event moves.
-const lateEventKey = "LEGION-1161"
-
 // The issue is recorded on acme/widgets at Dispatch sequence 1. Its event at sequence 2 resolves it
 // to strangerRepo, the project's default then, and is prepared while the record is on acme/widgets,
 // carrying GitHub's read of strangerRepo; it is late, and applies only after the default moves to
@@ -200,11 +190,12 @@ const lateEventKey = "LEGION-1161"
 // moved since its preparation: it writes no correction, it is applied all the same (the record
 // takes its sequence), and the issue is owed a follow at its commit, whose fresh read finds
 // Dispatch resolving answeredRepo and leaves the record there. An event no preparation stamped
-// with its record's repository (intake.DispatchIssue.PreparedAgainst empty) is applied as before
-// the stamp: its correction is written from its read, and nothing is followed. Control: with the
-// correction written whatever the record held at the preparation, the stamped event moves the
-// record back onto strangerRepo, the older resolution.
+// with its record's repository (intake.DispatchIssue.PreparedAgainst empty) is applied whatever
+// repository the record holds: its correction is written from its read, and nothing is followed.
+// Control: with the correction written whatever the record held at the preparation, the stamped
+// event moves the record back onto strangerRepo, the older resolution.
 func TestALateEventPreparedBeforeAFollowMovedTheRecordWritesNothingAndIsFollowed(t *testing.T) {
+	const key = "LEGION-1161"
 	for _, tc := range []struct {
 		name string
 		// unstamped clears the repository the event's preparation found on the record.
@@ -220,10 +211,10 @@ func TestALateEventPreparedBeforeAFollowMovedTheRecordWritesNothingAndIsFollowed
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			w, client, _ := changingRig(t, &installations{})
-			recordCorrectionRoot(t, w.pool, w.records, lateEventKey, lateEventKey, 0)
-			late := issue(lateEventKey, strangerRepo, "in_progress", true, "", 2)
+			recordCorrectionRoot(t, w.pool, w.records, key, key, 0)
+			late := issue(key, strangerRepo, "in_progress", true, "", 2)
 			client.show(late)
-			prepared, err := prepareAsDelivered(t, w, intake.DispatchIssue{Key: lateEventKey, Seq: late.LastSeq, Type: "issue.updated",
+			prepared, err := prepareAsDelivered(t, w, intake.DispatchIssue{Key: key, Seq: late.LastSeq, Type: "issue.updated",
 				Status: late.Status, Title: late.Title, Rank: late.Rank, HandedOver: true, ResolvedRepo: strangerRepo})
 			if err != nil {
 				t.Fatal(err)
@@ -235,33 +226,34 @@ func TestALateEventPreparedBeforeAFollowMovedTheRecordWritesNothingAndIsFollowed
 				prepared.PreparedAgainst = ""
 			}
 
-			client.show(issue(lateEventKey, answeredRepo, "in_progress", true, "", 2))
-			settledFollow(t, w, lateEventKey)
-			followed := onRepository(t, w, lateEventKey, answeredNamed, "acme/widgets")
+			client.show(issue(key, answeredRepo, "in_progress", true, "", 2))
+			w.requestFollowOf(key)
+			followsSettled(t, w)
+			followed := onRepository(t, w, key, answeredNamed, "acme/widgets")
 			if followed.LastDispatchSeq != 1 {
-				t.Fatalf("after the follow %s is at Dispatch sequence %d, want 1: a correction moves no sequence", lateEventKey, followed.LastDispatchSeq)
+				t.Fatalf("after the follow %s is at Dispatch sequence %d, want 1: a correction moves no sequence", key, followed.LastDispatchSeq)
 			}
 
 			asked := w.followRequested.Load()
-			if _, err := intake.ApplyFact(ctx, w.pool, "dispatch", lateEventKey+"-late", prepared, w.handlers...); err != nil {
+			if _, err := intake.ApplyFact(ctx, w.pool, "dispatch", key+"-late", prepared, w.handlers...); err != nil {
 				t.Fatalf("apply the late event: %v", err)
 			}
-			if got := recordedIssue(t, w, lateEventKey); got.Repo != tc.want {
-				t.Fatalf("the late event left %s on %s, want %s", lateEventKey, got.Repo, tc.want)
+			if got := recordedIssue(t, w, key); got.Repo != tc.want {
+				t.Fatalf("the late event left %s on %s, want %s", key, got.Repo, tc.want)
 			}
 			if follows := w.followRequested.Load() - asked; follows != tc.asks {
 				t.Fatalf("the late event asked for %d follows, want %d", follows, tc.asks)
 			}
 			followsSettled(t, w)
-			got := onRepository(t, w, lateEventKey, tc.want, tc.before)
+			got := onRepository(t, w, key, tc.want, tc.before)
 			if got.LastDispatchSeq != 2 {
-				t.Fatalf("%s is at Dispatch sequence %d, want the late event's 2: it applies though its correction writes nothing", lateEventKey, got.LastDispatchSeq)
+				t.Fatalf("%s is at Dispatch sequence %d, want the late event's 2: it applies though its correction writes nothing", key, got.LastDispatchSeq)
 			}
 			if !tc.unstamped && !got.RepoCorrection.At.Equal(followed.RepoCorrection.At) {
-				t.Fatalf("the correction of %s = %+v, want the follow's %+v: no later correction", lateEventKey, got.RepoCorrection, followed.RepoCorrection)
+				t.Fatalf("the correction of %s = %+v, want the follow's %+v: no later correction", key, got.RepoCorrection, followed.RepoCorrection)
 			}
-			if notes := repositoryNotes(t, w, lateEventKey); len(notes) != 0 {
-				t.Fatalf("notes on %s = %q, want none", lateEventKey, notes)
+			if notes := repositoryNotes(t, w, key); len(notes) != 0 {
+				t.Fatalf("notes on %s = %q, want none", key, notes)
 			}
 		})
 	}

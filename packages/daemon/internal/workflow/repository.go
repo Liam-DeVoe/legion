@@ -186,7 +186,8 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // (Config.FollowIssue): it is asked from this transaction's commit hook, so a skip that commits is
 // never lost and one rolled back asks nothing, and Config.FollowIssue says what covers a process
 // that stops in between. A follow pass's own rows are checked here alike, each prepared against
-// the record the pass read before its write. A fact no preparation stamped is applied as before.
+// the record the pass read before its write. A fact no preparation stamped is applied whatever
+// repository the record holds.
 //
 // The repository is resolved from the fact alone (correctionResolution): the refusal the fact's
 // preparation read from GitHub — a role App not installed on it, a repository GitHub does not

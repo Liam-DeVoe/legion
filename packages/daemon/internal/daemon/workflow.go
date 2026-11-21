@@ -192,11 +192,11 @@ type workflowRuntime struct {
 	// installation on a repository (prepareName). followRequested counts the follows asked for
 	// (requestFollow, requestFollowOf), followApplied is the last of them a pass completed
 	// (followRecorded), and followEvery and followOwed, under followMu, are what the follows no
-	// pass has taken yet are of: every recorded issue, which a boot's listing asks for, and each
-	// recorded issue by key whose correction's reads GitHub did not answer, or which a pass its
-	// bound cut short did not read. recovering is each repository, lowercased, GitHub answered
-	// for again whose issues are still to recover from Dispatch's listing (recoverRepositories):
-	// one a preparation left unread and whose reads a later
+	// pass has taken yet are of: every recorded issue (followEvery), which a boot's listing asks
+	// for, and each recorded issue a follow is owed for alone (followOwed): requestFollowOf says
+	// who asks for one, and oweFollows what a pass gives back. recovering is each repository,
+	// lowercased, GitHub answered for again whose issues are still to recover from Dispatch's
+	// listing (recoverRepositories): one a preparation left unread and whose reads a later
 	// preparation got answered (readAnswered), under recoveringMu. silenced is, by the same
 	// repository, each issue whose apply said nothing because the repository was unread
 	// (noteUnread), which the repository's recovery takes into its scope whatever the issue
