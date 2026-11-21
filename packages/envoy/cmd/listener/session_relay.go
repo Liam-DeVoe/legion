@@ -1100,11 +1100,12 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		}
 		// At the edge a frame reaches the session only for a project of the token it was
 		// admitted on, as its own message, or as a GitHub event whose own repository a fresh
-		// answer of its token's projects names (edgeFrameVerdict). One that does not is
-		// acknowledged undelivered and counted, and while no repository answer can be read the
-		// session's next frame carries the gap mark, since the events withheld then are ones
-		// the session may have been owed, with the reason repository_withheld; a retention gap
-		// the same frame already marks keeps no reason, since it lost more.
+		// answer of its token's projects names (edgeFrameVerdict). One that does not is withheld
+		// and counted (edgeWithholds), and while no repository answer can be read the session's
+		// next frame carries the gap mark, since the GitHub events withheld then are ones the
+		// session may be owed, which reach it later, out of their order, once an answer stands;
+		// the reason is repository_withheld, and a retention gap the same frame already marks
+		// keeps no reason, since it lost more.
 		if withhold, reason := m.edgeWithholds(sessionID, msg); withhold {
 			if reason == withheldAnswerUnknown {
 				if !gap {
@@ -1126,11 +1127,16 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 }
 
 // edgeWithholds reports whether an edge listener withholds msg from sessionID, and why, and when
-// it does, acknowledges the message undelivered, counts it and logs it: the consumer holds it no
-// longer, and nothing else is ever sent for it. The projects it holds the frame to are those of
-// the token this listener admitted the session's registration on (edgeAdmissions), never the
-// session's stored record, so no record a writer of the bus can forge widens them. Every other
-// listener withholds nothing.
+// it does, counts it, logs it and answers the consumer for it. A GitHub event withheld for want of
+// a fresh repository answer (withheldAnswerUnknown) is not withheld for good, since its repository
+// may still be one of the session's projects: it is left unacknowledged, and the consumer delivers
+// it again after edgeRepositoryRefresh, the interval at which the refresh reads every project's
+// answer again, so a redelivery meets the answer of a refresh pass after the one it was withheld
+// on, and a sooner one would mostly meet the same unknown answer. Every other frame withheld is
+// acknowledged undelivered: the consumer holds it no longer, and nothing else is ever sent for it.
+// The projects it holds the frame to are those of the token this listener admitted the session's
+// registration on (edgeAdmissions), never the session's stored record, so no record a writer of
+// the bus can forge widens them. Every other listener withholds nothing.
 func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) (bool, string) {
 	if m.repositories == nil {
 		return false, ""
@@ -1149,9 +1155,15 @@ func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) 
 		return false, ""
 	}
 	m.repositories.withheld.Inc([2]string{"reason", reason})
-	if err := msg.Ack(); err != nil {
-		m.logger.Warn("edge listener could not acknowledge a frame it withholds; the consumer delivers it again",
-			slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("error", err.Error()))
+	var err error
+	if reason == withheldAnswerUnknown {
+		err = msg.NakWithDelay(edgeRepositoryRefresh)
+	} else {
+		err = msg.Ack()
+	}
+	if err != nil {
+		m.logger.Warn("edge listener could not answer the consumer for a frame it withholds; the consumer delivers it again",
+			slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("reason", reason), slog.String("error", err.Error()))
 		return true, reason
 	}
 	m.logger.Info("edge listener withheld a frame from a session",
