@@ -2545,6 +2545,12 @@ function InboxBody({
   // search box out from under the reader's hand and their focus to `document.body` with it, so
   // the rest of the word, and the Backspace that would correct it, would reach the Inbox's own
   // single-key bindings instead of the box (INFRA-963).
+  //
+  // The anchor does not hold the reader's row in place against the rows a press of theirs takes
+  // away (`leaving`): the rows after them move up into their place, as the reader asked. Those
+  // are the rows a Dismiss or a Move to Inbox is taking off the view (`dismissedHere`), and the
+  // rows a snooze write, a row's own or the bar's, moves to another band in the commit that lets
+  // go of them.
   const list = (
     // With the reading column beside it the list scrolls in itself rather than in the window,
     // so the two columns move independently; the anchor is given that same box, so a refetch
@@ -2561,6 +2567,7 @@ function InboxBody({
         className="space-y-4"
         group="data-inbox-section"
         item={ROW_ATTRIBUTE}
+        leaving={(id) => dismissedHere(id) || snoozing.has(id) || bulkSnoozing.has(id)}
         ref={viewport}
         rootRef={listRef}
         scroller={paneShown ? listScroller : scroller}

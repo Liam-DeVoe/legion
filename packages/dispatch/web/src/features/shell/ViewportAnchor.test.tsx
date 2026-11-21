@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: this file sends the pointer's own clientX/clientY and a pointerout's relatedTarget, neither of which user-event's hover and unhover can set.
 import { fireEvent, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createRef, type ReactNode, type RefObject } from "react";
+import { createRef, Fragment, type ReactNode, type RefObject } from "react";
 
 import { type AnchorRow, ViewportAnchor } from "./ViewportAnchor";
 
@@ -22,12 +22,19 @@ function chosen(): AnchorRow | null {
 function List({
   enabled,
   groups,
+  headings,
+  leaving,
   rows,
   scroller,
 }: {
   enabled?: () => boolean;
   /** A row's group; rows default to one shared group. */
   groups?: Readonly<Record<string, string>>;
+  /** The rows a heading is drawn right before, as a group's heading is drawn before its first
+   *  row. */
+  headings?: readonly string[];
+  /** The rows a press of the reader's is taking away, as the host names them. */
+  leaving?: (id: string) => boolean;
   rows: string[];
   /** When given, the rows scroll in this element instead of the document. */
   scroller?: RefObject<HTMLDivElement | null>;
@@ -37,13 +44,17 @@ function List({
       enabled={enabled}
       group="data-group"
       item="data-row"
+      leaving={leaving}
       ref={anchor}
       scroller={scroller}
     >
       {rows.map((id) => (
-        <div data-group={groups?.[id] ?? "one"} data-row={id} key={id} tabIndex={-1}>
-          <button type="button">{id}</button>
-        </div>
+        <Fragment key={id}>
+          {headings?.includes(id) === true ? <div data-heading={id} /> : null}
+          <div data-group={groups?.[id] ?? "one"} data-row={id} tabIndex={-1}>
+            <button type="button">{id}</button>
+          </div>
+        </Fragment>
       ))}
     </ViewportAnchor>
   );
@@ -56,12 +67,13 @@ function List({
   );
 }
 
-// A fixed geometry: rows are ROW_HEIGHT tall, stacked from `listTop` in DOM order, in a
-// VIEWPORT_HEIGHT window that scrolls through `window.scrollY` - or, where the list is rendered
-// in a scroller, through that element's `scrollTop`, the scroller itself filling the window and
-// never moving. `listTop` starts at LIST_TOP; a test lowers it to shrink content above the rows
-// without moving what scrolls them, which is what a card collapsing in a commit of its own does.
-const rows = () => [...document.querySelectorAll<HTMLElement>("[data-row]")];
+// A fixed geometry: rows, and the headings between them, are ROW_HEIGHT tall, stacked from
+// `listTop` in DOM order, in a VIEWPORT_HEIGHT window that scrolls through `window.scrollY` - or,
+// where the list is rendered in a scroller, through that element's `scrollTop`, the scroller
+// itself filling the window and never moving. A row's own button is drawn in the row's box.
+// `listTop` starts at LIST_TOP; a test lowers it to shrink content above the rows without moving
+// what scrolls them, which is what a card collapsing in a commit of its own does.
+const laidOut = () => [...document.querySelectorAll<HTMLElement>("[data-row], [data-heading]")];
 const viewportTop = (id: string) =>
   document.querySelector(`[data-row="${id}"]`)?.getBoundingClientRect().top;
 
@@ -95,17 +107,21 @@ beforeEach(() => {
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
-    const all = rows();
+    const all = laidOut();
     // Whatever scrolls the rows carries them: the window, or the scroller when one is rendered.
     const offset = scrollerRef.current?.scrollTop ?? window.scrollY;
     const isScroller = this.hasAttribute("data-scroller");
-    const isRow = this.hasAttribute("data-row");
+    const item = this.closest("[data-row], [data-heading]");
     const top = isScroller
       ? 0
-      : isRow
-        ? listTop + all.indexOf(this as HTMLElement) * ROW_HEIGHT - offset
+      : item !== null
+        ? listTop + all.indexOf(item as HTMLElement) * ROW_HEIGHT - offset
         : listTop - offset;
-    const height = isScroller ? VIEWPORT_HEIGHT : isRow ? ROW_HEIGHT : all.length * ROW_HEIGHT;
+    const height = isScroller
+      ? VIEWPORT_HEIGHT
+      : item !== null
+        ? ROW_HEIGHT
+        : all.length * ROW_HEIGHT;
     return {
       bottom: top + height,
       height,
@@ -122,7 +138,7 @@ beforeEach(() => {
     if (_x < 0 || _x > 100) return null;
     const offset = scrollerRef.current?.scrollTop ?? window.scrollY;
     const index = Math.floor((offset + y - listTop) / ROW_HEIGHT);
-    return rows()[index] ?? null;
+    return laidOut()[index] ?? null;
   });
   restoreSpies = [() => rect.mockRestore(), () => point.mockRestore()];
 });
@@ -428,6 +444,203 @@ test("the centre anchor stays inside a horizontally scrolled table's visible box
     const before = viewportTop("r7");
     view.rerender(<List rows={["new", ...ids(12)]} scroller={scrollerRef} />);
     expect(viewportTop("r7")).toBe(before);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The button in row `id`, which takes the focus as a row's mark takes it from the selection
+ *  bar's hand-off. */
+function buttonOf(id: string): HTMLElement {
+  const button = document.querySelector<HTMLElement>(`[data-row="${id}"] button`);
+  if (button === null) throw new Error(`${id} button missing`);
+  return button;
+}
+
+/** Every element brought into view from now on, named by its row and its tag, with the options
+ *  it was asked with, until `restore`. The view itself does not move. A name rather than the
+ *  element, so a failed match prints a line rather than the element's whole tree. */
+function watchScrollsIntoView(): {
+  restore: () => void;
+  scrolled: { options: unknown; target: string }[];
+} {
+  const scrolled: { options: unknown; target: string }[] = [];
+  const spy = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element,
+    options?: unknown
+  ) {
+    const row = this.closest("[data-row]")?.getAttribute("data-row") ?? "no row";
+    scrolled.push({ options, target: `${row} ${this.tagName.toLowerCase()}` });
+  });
+  return { restore: () => spy.mockRestore(), scrolled };
+}
+
+// A Dismiss over two marked rows: the selection bar's hand-off has put the focus in the row after
+// them while they are still drawn. They go, and the rows after them move up into their place, as
+// the reader asked. The view stays where the reader put it.
+test("rows the host names as leaving let the focused row below them move up into their place, with no scroll", () => {
+  const going = (id: string) => id === "r3" || id === "r4";
+  const view = render(<List leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    const focused = buttonOf("r6");
+    focused.focus();
+    const place = viewportTop("r3");
+    expect(chosen()).toEqual({ id: "r6", via: "focus" });
+
+    view.rerender(<List leaving={going} rows={ids(12).filter((id) => !going(id))} />);
+    expect(viewportTop("r5")).toBe(place);
+    expect(viewportTop("r6")).toBe((place ?? 0) + ROW_HEIGHT);
+    expect(window.scrollY).toBe(100);
+    expect(focused).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A refetch drops a row the reader did not press on, in the same commit as the row their press
+// takes away. That row's going is compensated as any shift they did not cause is, and the
+// focused row moves up by the row they pressed on alone.
+test("a row the host does not name, going in the same commit as a row it names, is still compensated", () => {
+  const going = (id: string) => id === "r3";
+  const view = render(<List leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    buttonOf("r8").focus();
+    const before = viewportTop("r8") ?? 0;
+
+    // r3 goes by the reader's press, r5 by the refetch.
+    const kept = ids(12).filter((id) => id !== "r3" && id !== "r5");
+    view.rerender(<List leaving={going} rows={kept} />);
+    expect(viewportTop("r8")).toBe(before - ROW_HEIGHT);
+    expect(window.scrollY).toBe(100 - ROW_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The bar's Snooze: the host names its rows while the write is out and holds them in their group,
+// then moves them into Later, after the focused row, in the commit in which it stops naming them.
+test("named rows that move to a group after the focused row, in a commit that no longer names them, let it move up all the same", () => {
+  const going = (id: string) => id === "r3" || id === "r4";
+  const view = render(<List leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    buttonOf("r6").focus();
+    const place = viewportTop("r3");
+
+    const moved = [...ids(12).filter((id) => !going(id)), "r3", "r4"];
+    view.rerender(<List groups={{ r3: "later", r4: "later" }} rows={moved} />);
+    expect(viewportTop("r5")).toBe(place);
+    expect(window.scrollY).toBe(100);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The rows the press takes away are the last of their group, whose heading goes with them: the
+// next group's heading and rows move up into the place the heading and the rows held.
+test("a group's heading that goes with the last named rows under it lets the focused row move up by its place too", () => {
+  const going = (id: string) => id === "r3" || id === "r4";
+  const headingTop = (id: string) =>
+    document.querySelector(`[data-heading="${id}"]`)?.getBoundingClientRect().top;
+  const view = render(<List headings={["r3", "r5"]} leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    buttonOf("r6").focus();
+    const place = headingTop("r3");
+
+    const kept = ids(12).filter((id) => !going(id));
+    view.rerender(<List headings={["r5"]} leaving={going} rows={kept} />);
+    expect(headingTop("r5")).toBe(place);
+    expect(viewportTop("r5")).toBe((place ?? 0) + ROW_HEIGHT);
+    expect(window.scrollY).toBe(100);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A press over two rows far apart: one the reader scrolled above the view, one in sight. The row
+// in sight goes under their eyes, and the rows after it move up into its place. The row above the
+// view goes out of their sight, so its going moves nothing they can see: the window moves by its
+// space alone, and no row the reader can see above the row in sight moves.
+test("named rows that stood above the view move nothing in sight: the focused row moves up into the place the rows held in sight", () => {
+  const going = (id: string) => id === "r2" || id === "r7";
+  const moves = watchScrollsIntoView();
+  const view = render(<List leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(275);
+    buttonOf("r8").focus();
+    // r4 stands across the view's top, and r5 and r6 in sight above r7.
+    const inSight = () => ["r4", "r5", "r6"].map((id) => viewportTop(id));
+    const seen = inSight();
+    const place = viewportTop("r7");
+    expect(viewportTop("r2")).toBeLessThan(-ROW_HEIGHT);
+
+    view.rerender(<List leaving={going} rows={ids(12).filter((id) => !going(id))} />);
+    expect(inSight()).toEqual(seen);
+    expect(viewportTop("r8")).toBe(place);
+    expect(window.scrollY).toBe(275 - ROW_HEIGHT);
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    view.unmount();
+    moves.restore();
+  }
+});
+
+// The row after the one the press takes away moves up into that row's place, which the window's
+// bottom edge cuts across. The focused control is left partly in sight, and the least scroll
+// there is brings it whole into sight at that edge. A row above the view goes with it, which
+// moves nothing in sight.
+test("a focused row the named rows leave partly in sight is brought whole into sight at its nearest edge, and nothing else moves", () => {
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 580, writable: true });
+  const going = (id: string) => id === "r2" || id === "r16";
+  const moves = watchScrollsIntoView();
+  const view = render(<List leaving={going} rows={ids(20)} />);
+  try {
+    setScrollY(275);
+    buttonOf("r17").focus();
+    const place = viewportTop("r16") ?? 0;
+    expect(place).toBeLessThan(580);
+    expect(place + ROW_HEIGHT).toBeGreaterThan(580);
+
+    view.rerender(<List leaving={going} rows={ids(20).filter((id) => !going(id))} />);
+    expect(viewportTop("r17")).toBe(place);
+    expect(window.scrollY).toBe(275 - ROW_HEIGHT);
+    expect(moves.scrolled).toEqual([{ options: { block: "nearest" }, target: "r17 button" }]);
+  } finally {
+    view.unmount();
+    moves.restore();
+  }
+});
+
+// In a named box the anchor keeps the place it last saw the hand's row at. Once the rows the
+// press took away have let that row move up, the kept place is where the row stands now, so the
+// next commit keeps it there rather than putting it back where it stood before.
+test("in a named box the kept place moves up with the focused row, and the next commit keeps the row there", async () => {
+  const user = userEvent.setup();
+  const going = (id: string) => id === "r3" || id === "r4";
+  const kept = ids(12).filter((id) => !going(id));
+  const view = render(<List leaving={going} rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.scrollTop = 100;
+    buttonOf("r6").focus();
+    const row = document.querySelector<HTMLElement>('[data-row="r6"]');
+    if (row === null) throw new Error("r6 missing");
+    // The pointer comes to rest on the row, which keeps its place.
+    await user.hover(row);
+    const place = viewportTop("r4");
+
+    view.rerender(<List leaving={going} rows={kept} scroller={scrollerRef} />);
+    expect(viewportTop("r6")).toBe(place);
+    expect(scroller.scrollTop).toBe(100);
+
+    // A row arrives at the end of the list, below the hand's row.
+    view.rerender(<List leaving={going} rows={[...kept, "r13"]} scroller={scrollerRef} />);
+    expect(viewportTop("r6")).toBe(place);
+    expect(scroller.scrollTop).toBe(100);
   } finally {
     view.unmount();
   }

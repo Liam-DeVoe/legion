@@ -20,7 +20,11 @@ import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import { pickNamed } from "../../__tests__/list-picks";
-import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
+import {
+  answerAskSnoozes,
+  answerInboxDismisses,
+  answerIssuePatches,
+} from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -3477,6 +3481,164 @@ test("a bulk Snooze deep in a long list hands the focus to the row that moves up
   } finally {
     unmount();
     moves.restore();
+    laidOut();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+/** How tall `layRowsDown` draws each row. */
+const LAID_ROW_PX = 100;
+
+/** Lays the Inbox's rows down a page the window scrolls, as happy-dom does not: each row and its
+ *  mark `LAID_ROW_PX` tall, stacked from the page's top in the order the list draws them, less
+ *  `window.scrollY`. That starts at `scrollY`, and `window.scrollBy` moves it, so a row the list's
+ *  own scroll keeping (`ViewportAnchor`) holds in place moves the window. Every other element keeps
+ *  happy-dom's own box. Answers the function that gives happy-dom its own boxes and scroll back. */
+function layRowsDown(scrollY: number): () => void {
+  const real = Element.prototype.getBoundingClientRect;
+  const scrollYWas = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const scrollByWas = window.scrollBy;
+  const scrollTo = (value: number) =>
+    Object.defineProperty(window, "scrollY", { configurable: true, value, writable: true });
+  scrollTo(scrollY);
+  window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
+    const by = typeof x === "number" ? y : x.top;
+    if (by !== undefined) scrollTo(window.scrollY + by);
+  }) as typeof window.scrollBy;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const row = this.matches('[data-inbox-row], input[type="checkbox"]')
+      ? this.closest("[data-inbox-row]")
+      : null;
+    if (row === null) return real.call(this);
+    const index = [...document.querySelectorAll("[data-inbox-row]")].indexOf(row);
+    return new DOMRect(0, index * LAID_ROW_PX - window.scrollY, 200, LAID_ROW_PX);
+  });
+  return () => {
+    rect.mockRestore();
+    window.scrollBy = scrollByWas;
+    if (scrollYWas === undefined) {
+      Reflect.deleteProperty(window, "scrollY");
+    } else {
+      Object.defineProperty(window, "scrollY", scrollYWas);
+    }
+  };
+}
+
+/** The mark of the row `id` names, as the list draws it now. */
+function markOf(id: string): HTMLElement {
+  const mark = document.querySelector<HTMLElement>(
+    `[data-inbox-row="${id}"] input[type="checkbox"]`
+  );
+  if (mark === null) throw new Error(`${id} mark missing`);
+  return mark;
+}
+
+// The bar's Dismiss deep in the list, over a thread the reader can see. The bar's hand-off puts
+// the focus on the mark of the row after it while the thread is still drawn. The thread goes, and
+// that row moves up into its place: the window stays where the reader put it, and is not scrolled
+// to hold the focused row where it stood.
+test("a bulk Dismiss of a marked thread above the focused row leaves the window's scroll and the list's scrollTop as they were", async () => {
+  const user = userEvent.setup();
+  const threads = Array.from({ length: 12 }, (_, index) => replyRow(`c${index + 1}`));
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    as_of: "2026-10-12T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: threads,
+    total: threads.length,
+  });
+  // Each thread's card reads the issue it is on and that issue's comments; no case here asserts
+  // them.
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
+    closed_at: null,
+  } as unknown as IssueDetails);
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  // Held open, so the list read here is the one the press leaves behind rather than the read the
+  // landed press asks for.
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  // Five rows above the window, the eighth row 200 px down it.
+  const laidOut = layRowsDown(5 * LAID_ROW_PX);
+  const moves = watchMoves();
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(threads.length));
+    const [marked, after] = rowIds().slice(7, 9) as [string, string];
+    await user.click(markOf(marked));
+    await screen.findByText("1 selected");
+    const place = markOf(marked).getBoundingClientRect().top;
+    const list = screen.getByTestId("inbox-list");
+
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    await waitFor(() => expect(rowIds()).not.toContain(marked));
+    const landing = markOf(after);
+    await waitFor(() => expect(landing).toHaveFocus());
+    expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
+    expect(landing.getBoundingClientRect().top).toBe(place);
+    expect(window.scrollY).toBe(5 * LAID_ROW_PX);
+    expect(list.scrollTop).toBe(0);
+    expect(moves.scrolled.length).toBe(0);
+  } finally {
+    await act(async () => {
+      settle.resolve({ dismissed: 1 });
+    });
+    unmount();
+    moves.restore();
+    laidOut();
+    listMyReplies.mockRestore();
+    listComments.mockRestore();
+    getIssue.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The bar's Snooze deep in the list, with the pointer come to rest on a row below the marked rows
+// while the write is out. The rows move into Later once it lands, and the rows after them move up
+// into their place, the one under the pointer with them: the window is not scrolled to hold that
+// row where it stood.
+test("a bulk Snooze that lands with the pointer on a row below the marked rows lets the rows after them move up, with no scroll", async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 12 }, (_, index) =>
+    inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`)
+  );
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landed = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landed.promise;
+    served = served.map((each) => (each.id === id ? { ...each, snoozed_until: until } : each));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  const laidOut = layRowsDown(5 * LAID_ROW_PX);
+  const { unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Question 12?");
+    const [marked, last, , resting] = rowIds().slice(6, 10) as [string, string, string, string];
+    await user.click(markOf(marked));
+    await user.click(markOf(last));
+    await screen.findByText("2 selected");
+    await user.selectOptions(screen.getByLabelText("Snooze selected asks"), "tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
+    const row = document.querySelector<HTMLElement>(`[data-inbox-row="${resting}"]`);
+    if (row === null) throw new Error(`${resting} row missing`);
+    await user.hover(row);
+    const before = row.getBoundingClientRect().top;
+
+    await act(async () => {
+      landed.resolve();
+      await landed.promise;
+    });
+    await waitFor(() => expect(rowIds()).not.toContain(last));
+    expect(row.getBoundingClientRect().top).toBe(before - 2 * LAID_ROW_PX);
+    expect(window.scrollY).toBe(5 * LAID_ROW_PX);
+  } finally {
+    unmount();
     laidOut();
     getAsk.mockRestore();
     getInbox.mockRestore();

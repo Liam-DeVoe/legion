@@ -9,10 +9,34 @@ export interface AnchorRow {
   via: "center" | "focus" | "pointer";
 }
 
+/** A row above the current one that a press of the reader's is taking away (`leaving`), as the
+ *  commit's snapshot reads it, immediately before the row goes. */
+interface Leaving {
+  /** How far the current row moves up once this row has gone from above it: the part of the
+   *  space the row takes in the list, from its own top to the top of the element after it, that
+   *  lies below the top of the view and above the current row. */
+  by: number;
+  id: string;
+  /** The element right before the row where that element is no row (a group's heading), and how
+   *  far the current row moves up once that element has gone too, read as `by` is. Null where a
+   *  row, or nothing, stands right before the row. A group's heading goes with the last row of
+   *  its group. */
+  lead: { by: number; element: Element } | null;
+}
+
 interface Snapshot extends AnchorRow {
   /** The row's `group` attribute value immediately before the commit; null without one. */
   group: string | null;
+  /** The rows above this one that a press of the reader's is taking away; empty where the host
+   *  names none. */
+  leaving: readonly Leaving[];
   /** The row's top, in viewport pixels, immediately before the commit. */
+  top: number;
+}
+
+/** What the reader can see of the rows, top and bottom, in viewport pixels. */
+interface View {
+  bottom: number;
   top: number;
 }
 
@@ -29,6 +53,13 @@ export interface ViewportAnchorProps {
   group?: string;
   /** Attribute naming each row and carrying its id, e.g. `data-inbox-row`. */
   item: string;
+  /** Whether a press of the reader's is taking row `id` away from its place: a Dismiss, or a
+   *  write that moves the row into another group once it lands. The anchor does not hold the
+   *  current row in place against the going of such a row above it: the current row and the rows
+   *  after it move up into the place the row leaves. It is asked of the render that last drew the
+   *  rows and of the render being committed alike, because a write can stop naming its rows in
+   *  the same commit that moves them. With no function, no row is named. */
+  leaving?: (id: string) => boolean;
   label?: string;
   /** Receives the rendered root element, for a host that also queries the rows itself. */
   rootRef?: RefObject<HTMLElement | null>;
@@ -87,6 +118,12 @@ function rowWithin(root: HTMLElement, selector: string, node: Element | null): H
   return row !== null && root.contains(row) ? row : null;
 }
 
+/** How much of the stretch from `top` to `bottom` lies below the view's top, `viewTop`, and above
+ *  `limit`, in pixels. */
+function inPlace(top: number, bottom: number, viewTop: number, limit: number): number {
+  return Math.max(0, Math.min(bottom, limit) - Math.max(top, viewTop));
+}
+
 /**
  * Keeps the row the reader is currently on pinned to its viewport position across commits that
  * shift content around it: a row inserted or removed above, a reorder within its section, a
@@ -98,6 +135,16 @@ function rowWithin(root: HTMLElement, selector: string, node: Element | null): H
  * was, not where it went. The pointer moving from a row onto the hover card a reference in that
  * row opened keeps that row the current one while the card is open: the card is the row's own
  * doing and sits outside the list only because it is `fixed`.
+ *
+ * One shift is not compensated: a row that a press of the reader's takes away from above the
+ * current row (`leaving`: a Dismiss, or a snooze that moves its rows into another group). The
+ * reader asked for that row to go, so the current row and the rows after it move up into its
+ * place, and the view is not scrolled to hold the current row where it stood. The part of that
+ * place above the view's top is still compensated, as any shift the reader cannot see is: the view
+ * moves by that part alone, so the rows in sight stay where they were, and the current row moves up
+ * exactly into the place the row held in sight and never past the view's top. A current row that
+ * holds the focus and is left partly in sight is then brought whole into sight at its nearest
+ * edge, and a focus left wholly out of sight is not scrolled to.
  *
  * Rows are the elements matching `[item]`, identified by that attribute's value, and must keep
  * their identity across the commit (a remounted row is a new node and cannot be found again).
@@ -164,6 +211,16 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return this.props.scroller?.current ?? null;
   }
 
+  /** What the reader can see of the rows: the box the host named, cut to the window, else the
+   *  window. */
+  private view(): View {
+    const box = this.scrollerElement()?.getBoundingClientRect();
+    return {
+      bottom: Math.min(window.innerHeight, box?.bottom ?? window.innerHeight),
+      top: Math.max(0, box?.top ?? 0),
+    };
+  }
+
   /** The group `row` is in, null where the host names none. A kept place belongs to one: a row
    *  that is in another group was relocated rather than shifted, and the place no longer says
    *  where the reader was looking. */
@@ -202,14 +259,18 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return holds ? held.top : null;
   }
 
-  /** Called once a compensation has put `id` back at `top`: the row is at the kept place again,
-   *  so that place belongs to the offset the compensation left behind. Without this the first
-   *  compensation would invalidate the kept place for every later one. */
-  private restampHeld(id: string, top: number): void {
+  /** Called once a compensation has put `id` at `to` from the place it was kept at, `from`. `to`
+   *  is `from` save where rows a press of the reader's took away let the row move up
+   *  (`leaving`). The row is at its kept place again, so that place belongs to the offset the
+   *  compensation left behind. Without this the first compensation would invalidate the kept
+   *  place for every later one, and the next commit would put a row the press let move up back
+   *  where it stood before. */
+  private restampHeld(id: string, from: number, to: number): void {
     const held = this.held;
     const scroller = this.scrollerElement();
-    if (held === null || scroller === null || held.id !== id || held.top !== top) return;
+    if (held === null || scroller === null || held.id !== id || held.top !== from) return;
     held.scrollTop = scroller.scrollTop;
+    held.top = to;
   }
 
   /** True when this pointer event is the hand moving rather than the list moving under it. */
@@ -266,7 +327,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const delta = element.getBoundingClientRect().top - top;
     if (delta === 0) return;
     this.scrollBy(delta);
-    this.restampHeld(held.id, top);
+    this.restampHeld(held.id, top, top);
   };
 
   componentDidMount(): void {
@@ -381,7 +442,76 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return id;
   }
 
-  getSnapshotBeforeUpdate(): Snapshot | null {
+  /** The rows above `row` that the host names as leaving (`leaving`), in the render that last
+   *  drew them (`previous`) or in this one, each with how far `row` moves up once it has gone.
+   *  Only the part of a row's space below the view's top counts: the rows in sight are to stay
+   *  where they were, and the part above that top is a shift the reader cannot see, which is
+   *  compensated as any other is. So `row` moves up exactly into the place the rows held in
+   *  sight, never past the view's top. Layout reads for the rows named alone; none where the
+   *  host names none. */
+  private leavingAbove(row: HTMLElement, previous: Readonly<ViewportAnchorProps>): Leaving[] {
+    const root = this.root;
+    const { leaving } = this.props;
+    if (root === null || (previous.leaving === undefined && leaving === undefined)) return [];
+    const selector = `[${this.props.item}]`;
+    const found: Leaving[] = [];
+    let edges: { limit: number; viewTop: number } | null = null;
+    for (const each of root.querySelectorAll<HTMLElement>(selector)) {
+      if (each === row) break;
+      const id = this.idOf(each);
+      if (previous.leaving?.(id) !== true && leaving?.(id) !== true) continue;
+      edges ??= { limit: row.getBoundingClientRect().top, viewTop: this.view().top };
+      const { limit, viewTop } = edges;
+      const box = each.getBoundingClientRect();
+      const after = each.nextElementSibling;
+      const end = after === null ? box.bottom : after.getBoundingClientRect().top;
+      const lead = each.previousElementSibling;
+      found.push({
+        by: inPlace(box.top, end, viewTop, limit),
+        id,
+        lead:
+          lead === null || lead.matches(selector)
+            ? null
+            : {
+                by: inPlace(lead.getBoundingClientRect().top, box.top, viewTop, limit),
+                element: lead,
+              },
+      });
+    }
+    return found;
+  }
+
+  /** How far the rows `leaving` names let `row` move up, now the commit is in: each row no longer
+   *  above `row` - gone from the list, or moved to a place after it - its own `by`, and the
+   *  element before it its `by` too where that element went as well. */
+  private freedAbove(root: HTMLElement, row: HTMLElement, leaving: readonly Leaving[]): number {
+    let freed = 0;
+    for (const { by, id, lead } of leaving) {
+      const now = root.querySelector(`[${this.props.item}="${CSS.escape(id)}"]`);
+      const above =
+        now !== null && (row.compareDocumentPosition(now) & Node.DOCUMENT_POSITION_PRECEDING) !== 0;
+      if (above) continue;
+      freed += by;
+      if (lead !== null && !lead.element.isConnected) freed += lead.by;
+    }
+    return freed;
+  }
+
+  /** Brings the control that holds the focus in `row` whole into sight at its nearest edge where
+   *  the reader can see a part of it, which the page's sight rule allows for a landing partly in
+   *  sight (`components/focus-place.ts`): an edge that only touches the view's edge counts as in
+   *  sight. A control wholly in sight, or wholly out of it, is left where it is. */
+  private showFocused(row: HTMLElement): void {
+    const focused = document.activeElement;
+    if (focused === null || !row.contains(focused)) return;
+    const { bottom, top } = this.view();
+    const box = focused.getBoundingClientRect();
+    const meets = box.bottom >= top && box.top <= bottom;
+    const whole = box.top >= top && box.bottom <= bottom;
+    if (meets && !whole) focused.scrollIntoView({ block: "nearest" });
+  }
+
+  getSnapshotBeforeUpdate(previousProps: Readonly<ViewportAnchorProps>): Snapshot | null {
     const { enabled } = this.props;
     if (enabled !== undefined && !enabled()) return null;
     const current = this.current();
@@ -394,6 +524,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return {
       group: at,
       id: current.id,
+      leaving: this.leavingAbove(current.row, previousProps),
       top: held ?? current.row.getBoundingClientRect().top,
       via: current.via,
     };
@@ -412,10 +543,15 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (element === null) return;
     const { group } = this.props;
     if (group !== undefined && element.getAttribute(group) !== snapshot.group) return;
-    const delta = element.getBoundingClientRect().top - snapshot.top;
-    if (delta === 0) return;
-    this.scrollBy(delta);
-    this.restampHeld(snapshot.id, snapshot.top);
+    const freed = this.freedAbove(root, element, snapshot.leaving);
+    const top = snapshot.top - freed;
+    const delta = element.getBoundingClientRect().top - top;
+    if (delta === 0 && freed === 0) return;
+    if (delta !== 0) this.scrollBy(delta);
+    this.restampHeld(snapshot.id, snapshot.top, top);
+    // The rows a press of the reader's took away moved this row up, and a focus in it must end
+    // in the reader's sight.
+    if (freed > 0 && snapshot.via === "focus") this.showFocused(element);
   }
 
   render(): ReactNode {
