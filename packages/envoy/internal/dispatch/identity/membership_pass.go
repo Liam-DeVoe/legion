@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -41,7 +41,7 @@ type MembershipPass struct {
 	People *store.PgPeopleStore
 	// Outliving answers whether a signed-out person still has access that outlives the browser,
 	// the check the sign-out asks (api.Deps.Outliving). The pass under IAP asks it nothing.
-	Outliving agentsecrets.OutlivingAccess
+	Outliving cipher.OutlivingAccess
 	// Observe, when set, is told of each claim attempt of either step; nil in production.
 	Observe func(MembershipPassEvent)
 }

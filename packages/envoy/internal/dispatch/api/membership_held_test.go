@@ -20,10 +20,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -77,7 +77,7 @@ func (r *refusingRefresher) Refresh(context.Context, string) (oidc.Session, erro
 }
 
 // heldClock is the broker-token check's clock in a test that outlives an answer the check keeps
-// (brokertoken.AffirmativeCacheTTL) without sleeping through it.
+// (ciphertoken.AffirmativeCacheTTL) without sleeping through it.
 type heldClock struct {
 	mu sync.Mutex
 	at time.Time
@@ -162,9 +162,9 @@ func brokerHeldText(person string) string {
 
 // heldPersonToken is the broker's answer for a dev box session's token acting for person, bound
 // to jkt, held as held says.
-func heldPersonToken(jkt, person string, held bool) brokertoken.Introspection {
+func heldPersonToken(jkt, person string, held bool) ciphertoken.Introspection {
 	answer := liveNamedToken(jkt)
-	answer.Person, answer.ProjectScope, answer.Projects, answer.Held = person, brokertoken.ProjectScopePerson, nil, held
+	answer.Person, answer.ProjectScope, answer.Projects, answer.Held = person, ciphertoken.ProjectScopePerson, nil, held
 	return answer
 }
 
@@ -384,7 +384,7 @@ func openHeldSocket(t *testing.T, served *server, request *http.Request) <-chan 
 // TestALiveSocketOfAHeldPersonCloses: a live socket closes at its next heartbeat after its person
 // is held. One opened with a personal token closes once Dispatch records the hold. One opened with
 // a broker token closes once the broker's introspection answers held, with no hold recorded, at the
-// first heartbeat after the check's kept answer lapses (brokertoken.AffirmativeCacheTTL).
+// first heartbeat after the check's kept answer lapses (ciphertoken.AffirmativeCacheTTL).
 //
 // Control: callerStillResolves without its Held check; the broker token's socket stays open and
 // the test fails naming it.
@@ -404,9 +404,9 @@ func TestALiveSocketOfAHeldPersonCloses(t *testing.T) {
 		}
 	})
 	t.Run("a broker token", func(t *testing.T) {
-		broker := brokertokentest.NewStubBroker(t)
+		broker := ciphertokentest.NewStubBroker(t)
 		clock := &heldClock{at: time.Now()}
-		_, database, deps := newTestServer(t, testServerOptions{brokerTokens: stubBrokerTokens(t, broker, func(o *brokertoken.Options) { o.Now = clock.now })})
+		_, database, deps := newTestServer(t, testServerOptions{brokerTokens: stubBrokerTokens(t, broker, func(o *ciphertoken.Options) { o.Now = clock.now })})
 		seedPeople(t, database, accessCarol)
 		caller := newBrokerCaller(t)
 		const token = "carols-broker-token-holding-a-socket"
@@ -414,7 +414,7 @@ func TestALiveSocketOfAHeldPersonCloses(t *testing.T) {
 		deps.Standing, deps.StreamHeartbeat = &standingFake{}, heartbeat
 		ended := openHeldSocket(t, directServer(deps), caller.presenting(t, http.MethodGet, "/ws/live", token, nil))
 		broker.Says(token, heldPersonToken(caller.jkt, accessCarol, true))
-		clock.advance(brokertoken.AffirmativeCacheTTL)
+		clock.advance(ciphertoken.AffirmativeCacheTTL)
 		if !<-ended {
 			t.Fatal("the socket carol's broker token opened was still open 10 s after the broker's introspection answered her held: the heartbeat read no held answer")
 		}
@@ -569,9 +569,9 @@ func serveWithBodyHeld(t *testing.T, handler http.Handler, request *http.Request
 // call.
 func TestAHeldApproverRelaysNoApproval(t *testing.T) {
 	relay := newFakeBrokerRig(t)
-	introspection := brokertokentest.NewStubBroker(t)
+	introspection := ciphertokentest.NewStubBroker(t)
 	_, database, deps := newTestServer(t, testServerOptions{brokerTokens: stubBrokerTokens(t, introspection)})
-	deps.AgentSecrets = agentsecrets.New(relay.server.URL, accountTokenFile(t, credentialTestAccountToken))
+	deps.AgentSecrets = cipher.New(relay.server.URL, accountTokenFile(t, credentialTestAccountToken))
 	deps.Standing = &standingFake{}
 	handler := servedWith(t, deps)
 	seedPeople(t, database, accessCarol)

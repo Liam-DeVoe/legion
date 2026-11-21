@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -51,7 +51,7 @@ func (s *outsideSignIn) approver(t *testing.T, handler http.Handler, broker *fak
 		step()
 	}
 	var token string
-	var machine *brokertokentest.Caller
+	var machine *ciphertokentest.Caller
 	switch credential {
 	case "personal token":
 		token = mintTokenOn(t, handler, cookie)
@@ -60,7 +60,7 @@ func (s *outsideSignIn) approver(t *testing.T, handler http.Handler, broker *fak
 		if err := s.database.Pool.QueryRow(context.Background(), `select coalesce(sub, '') from people where email = $1`, reassignedEmail).Scan(&approvedBy); err != nil {
 			t.Fatal(err)
 		}
-		machine, token = brokertokentest.NewCaller(t), "token-of-the-first-holders-machine"
+		machine, token = ciphertokentest.NewCaller(t), "token-of-the-first-holders-machine"
 		broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, subject: approvedBy, tokens: []string{token}, createdAt: time.Now()}, machine)
 	}
 	return func(path string, body io.Reader) *http.Request {
@@ -329,7 +329,7 @@ func TestOutsideSignInAnApproveNamesTheAccountOfTheCredentialThatMadeIt(t *testi
 	if minted := bearerRequest(handler, http.MethodPost, "/api/v1/me/agent-tokens", `{"name":"minted by a token"}`, token); minted.Code != http.StatusCreated {
 		t.Fatalf("a mint by the first holder's token answered %d %s, want 201", minted.Code, minted.Body.String())
 	}
-	machine := brokertokentest.NewCaller(t)
+	machine := ciphertokentest.NewCaller(t)
 	broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, subject: firstHolder, tokens: []string{"token-of-the-first-holders-machine"}}, machine)
 	if minted := brokerTokenRequest(t, handler, machine, http.MethodPost, "/api/v1/me/agent-tokens", `{"name":"minted by a broker token"}`, "token-of-the-first-holders-machine"); minted.Code != http.StatusCreated {
 		t.Fatalf("a mint by the first holder's broker token answered %d %s, want 201", minted.Code, minted.Body.String())

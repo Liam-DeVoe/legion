@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -137,7 +137,7 @@ type reclaimCaller struct {
 	handler http.Handler
 	cookie  *httptest.ResponseRecorder
 	token   string
-	machine *brokertokentest.Caller
+	machine *ciphertokentest.Caller
 }
 
 // A mint that races the member's reclaim of the address cannot leave the outsider a token: the
@@ -192,7 +192,7 @@ func TestOutsideSignInReclaimRefusesAMintThatWaitedOnIt(t *testing.T) {
 				broker = newFakeBroker(t)
 				caller.handler, _ = s.brokerRouter(t, broker)
 				caller.cookie = s.workspaceSignIn(t, caller.handler, email, firstHolder)
-				caller.machine, caller.token = brokertokentest.NewCaller(t), "token-of-the-first-holders-machine"
+				caller.machine, caller.token = ciphertokentest.NewCaller(t), "token-of-the-first-holders-machine"
 				broker.holds(&fakeCredential{id: "login-first", person: email, subject: firstHolder, tokens: []string{caller.token}}, caller.machine)
 			} else {
 				caller.handler = s.routerWithSessions(t)

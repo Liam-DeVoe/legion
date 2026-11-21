@@ -18,11 +18,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/exchange"
-	brokerhelper "github.com/sjawhar/envoy/internal/broker/helper"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/exchange"
+	brokerhelper "github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/testtmp"
@@ -36,7 +36,7 @@ import (
 // with no restart and no new login. The helper is linux-only, and so is this file.
 
 const (
-	// leaverRigSecret is the agent-tier secret every broker rig holds for ada (brokertest.NewRig's
+	// leaverRigSecret is the agent-tier secret every broker rig holds for ada (ciphertest.NewRig's
 	// TEST_AUTO_SECRET), which her own sessions get at once, and leaverRigSecretValue its value.
 	leaverRigSecret      = "TEST_AUTO_SECRET"
 	leaverRigSecretValue = "test-auto-secret-v1"
@@ -52,7 +52,7 @@ const (
 	leaverCommandTimeout = 2 * time.Minute
 	// leaverDeviceSecret is the secret of the device-flow client a person signs in on the machine
 	// with. The client's id is the audience the broker takes a person's identity token for
-	// (brokertest.PersonSignInAudience), because the fake Google mints each identity token for the
+	// (ciphertest.PersonSignInAudience), because the fake Google mints each identity token for the
 	// client it signs in.
 	leaverDeviceSecret = "leaver-device-secret"
 )
@@ -67,8 +67,8 @@ const leaverHeldCure = adaEmail + " signs in to Dispatch"
 // `agent-secrets login`, and each command acts as her sign-in.
 func TestLeaverHoldThroughTheRealClients(t *testing.T) {
 	clients := leaverClients{
-		agentSecrets: cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets", Dir: filepath.Join("..", "agent-secrets")}),
-		helper:       cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets-helper", Dir: filepath.Join("..", "agent-secrets-helper")}),
+		agentSecrets: cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets", Dir: filepath.Join("..", "cipher")}),
+		helper:       cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets-helper", Dir: filepath.Join("..", "cipher-helper")}),
 	}
 	t.Run("the helper's machine login", clients.throughTheHelper)
 	t.Run("a person's sign-in on the machine", clients.throughASignIn)
@@ -304,7 +304,7 @@ func (c leaverClients) startHelper(t *testing.T, r *leaverRig) *leaverHelper {
 		machineFile:  filepath.Join(home, ".config", "agent-secrets", "machine.json"),
 		agentSecrets: c.agentSecrets,
 	}
-	h.env = append(leaverMachineEnv(t, home), brokerclient.BrokerURLVar+"="+r.broker.URL, "AGENT_SECRETS_HELPER_SOCK="+h.sock)
+	h.env = append(leaverMachineEnv(t, home), cipherclient.BrokerURLVar+"="+r.broker.URL, "AGENT_SECRETS_HELPER_SOCK="+h.sock)
 	cmd := exec.Command(c.helper, "serve")
 	cmd.Env = append(slices.Clone(h.env), "AGENT_SECRETS_OPERATOR_FILE="+r.broker.OperatorFile, "AGENT_SECRETS_MACHINE_FILE="+h.machineFile)
 	h.process = cmdtest.Start(t, "agent-secrets-helper", cmd)
@@ -441,7 +441,7 @@ func (h *leaverHelper) expectKeptLogin(t *testing.T, when string) {
 // `agent-secrets login`: the environment of its commands, and where they keep its sign-ins.
 type leaverSignInMachine struct {
 	env          []string
-	signIns      brokerclient.SignInStore
+	signIns      cipherclient.SignInStore
 	agentSecrets string
 }
 
@@ -450,20 +450,20 @@ type leaverSignInMachine struct {
 // variables withPersonSignIns set in this process.
 func (c leaverClients) signInMachine(t *testing.T, r *leaverRig) *leaverSignInMachine {
 	t.Helper()
-	r.google.EnableDeviceFlow(r.googleKey, brokertest.PersonSignInAudience, leaverDeviceSecret)
+	r.google.EnableDeviceFlow(r.googleKey, ciphertest.PersonSignInAudience, leaverDeviceSecret)
 	home := t.TempDir()
 	secretFile := filepath.Join(t.TempDir(), "device-client-secret")
 	if err := os.WriteFile(secretFile, []byte(leaverDeviceSecret), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	m := &leaverSignInMachine{signIns: brokerclient.SignInStore{Dir: filepath.Join(home, "signins")}, agentSecrets: c.agentSecrets}
+	m := &leaverSignInMachine{signIns: cipherclient.SignInStore{Dir: filepath.Join(home, "signins")}, agentSecrets: c.agentSecrets}
 	m.env = append(leaverMachineEnv(t, home),
-		brokerclient.BrokerURLVar+"="+r.broker.URL,
-		brokerclient.SignInIssuerVar+"="+r.google.URL(),
-		brokerclient.SignInClientIDVar+"="+brokertest.PersonSignInAudience,
-		brokerclient.SignInClientSecretFileVar+"="+secretFile,
-		brokerclient.SignInDirVar+"="+m.signIns.Dir)
-	for _, name := range []string{brokerclient.IdentityVar, brokerclient.MachineAudienceVar, googleidentity.MetadataHostVar} {
+		cipherclient.BrokerURLVar+"="+r.broker.URL,
+		cipherclient.SignInIssuerVar+"="+r.google.URL(),
+		cipherclient.SignInClientIDVar+"="+ciphertest.PersonSignInAudience,
+		cipherclient.SignInClientSecretFileVar+"="+secretFile,
+		cipherclient.SignInDirVar+"="+m.signIns.Dir)
+	for _, name := range []string{cipherclient.IdentityVar, cipherclient.MachineAudienceVar, googleidentity.MetadataHostVar} {
 		value := os.Getenv(name)
 		if value == "" {
 			t.Fatalf("%s is unset: withPersonSignIns names the rig's metadata machine in it", name)
@@ -537,7 +537,7 @@ func (m *leaverSignInMachine) login(t *testing.T, r *leaverRig) {
 }
 
 // signIn is the one sign-in the machine keeps, ada's, with the enrollment it names.
-func (m *leaverSignInMachine) signIn(t *testing.T) brokerclient.SignInRecord {
+func (m *leaverSignInMachine) signIn(t *testing.T) cipherclient.SignInRecord {
 	t.Helper()
 	records, err := m.signIns.List()
 	if err != nil || len(records) != 1 || records[0].Person != adaEmail || records[0].EnrollmentID == "" {
@@ -567,7 +567,7 @@ func (m *leaverSignInMachine) expectSignInSource(t *testing.T, when string) {
 // sign-in minted, as an hour of the hold would, and the lease of the session record names, as its
 // lease runs out with nothing renewing it. The next command finds that session not live and
 // registers it again, which trades the sign-in.
-func lapseSignIn(t *testing.T, r *leaverRig, record brokerclient.SignInRecord) {
+func lapseSignIn(t *testing.T, r *leaverRig, record cipherclient.SignInRecord) {
 	t.Helper()
 	credential, err := r.broker.Store.Pool.Exec(t.Context(),
 		`update launcher_credentials set expires_at = now() - interval '2 hours' where key_thumbprint = $1 and revoked_at is null`, record.Thumbprint)

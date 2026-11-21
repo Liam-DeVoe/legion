@@ -251,7 +251,7 @@ var readClasses = map[string]readEntry{
 //     every gate refuses one.
 //   - deployment besides: what the row reads belongs to the whole deployment and to no project a
 //     viewer could be held to, so a viewer that is not open - a restricted member, or a credential
-//     that lists projects - is 403 DEPLOYMENT_READ_REFUSED, naming the row.
+//     acting for one - is 403 DEPLOYMENT_READ_REFUSED, naming the row.
 //   - none, caller and testHook need neither, and the handler runs as it is.
 //
 // A server with no database, a test's, reads every caller as the closed viewer, which sees no
@@ -315,7 +315,7 @@ func deploymentReadRefusal(method, pattern string, classes []readclass.Class, vi
 		return nil
 	}
 	return &readRefusal{code: codeDeploymentReadRefused, message: fmt.Sprintf(
-		"%s %s reads the whole deployment, which only a caller that sees every public project reads: this caller is a restricted member, or its credential lists the projects it may use",
+		"%s %s reads the whole deployment, which only a caller that sees every public project reads: this caller is a restricted member's credential, or one acting for one",
 		method, pattern)}
 }
 

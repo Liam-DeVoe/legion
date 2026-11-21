@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -32,7 +32,7 @@ type directoryStandingRig struct {
 	database   *store.Store
 	people     *store.PgPeopleStore
 	google     *directorytest.Google
-	outliving  agentsecrets.OutlivingAccess
+	outliving  cipher.OutlivingAccess
 	membership *Membership
 }
 
@@ -44,7 +44,7 @@ func newDirectoryStandingRig(t *testing.T) *directoryStandingRig {
 		database:  database,
 		people:    store.NewPgPeopleStore(database.Pool, testSigningKey, nil),
 		google:    directorytest.ServeGoogle(t),
-		outliving: agentsecrets.OutlivingAccess{Pool: database.Pool},
+		outliving: cipher.OutlivingAccess{Pool: database.Pool},
 	}
 	r.newProcess()
 	return r
@@ -502,7 +502,7 @@ type personAccessStandIn struct {
 
 // serve starts the stand-in, stopped when t ends, and answers the outliving question over database
 // and it, under a token file of the test's own, as Dispatch's broker client asks it.
-func (s *personAccessStandIn) serve(t *testing.T, database *store.Store) agentsecrets.OutlivingAccess {
+func (s *personAccessStandIn) serve(t *testing.T, database *store.Store) cipher.OutlivingAccess {
 	t.Helper()
 	gone := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -533,7 +533,7 @@ func (s *personAccessStandIn) serve(t *testing.T, database *store.Store) agentse
 	if err := os.WriteFile(tokenFile, []byte("account-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return agentsecrets.OutlivingAccess{Pool: database.Pool, Broker: agentsecrets.New(server.URL, tokenFile)}
+	return cipher.OutlivingAccess{Pool: database.Pool, Broker: cipher.New(server.URL, tokenFile)}
 }
 
 // asked is how many asks the stand-in counted.
@@ -567,7 +567,7 @@ func storePersonalToken(t *testing.T, database *store.Store, owner, name string,
 // from ada's row, which stores her Directory user id u-ada, and the Directory answers her address
 // itself (its primaryEmail) with suspended false and another account's id, u-ada-2, as it does for
 // an address deleted and created again. Dispatch asks the question a sign-out asks
-// (agentsecrets.OutlivingAccess.Holds), within the check's 15 seconds:
+// (cipher.OutlivingAccess.Holds), within the check's 15 seconds:
 //
 //   - an unrevoked personal token of the address, nothing at the broker: Held, the stored id kept,
 //     and the broker not asked, since the token answers first;

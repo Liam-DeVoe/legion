@@ -10,8 +10,8 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -85,7 +85,7 @@ type Membership struct {
 	// is built). Under IAP identity a Directory answer for an address deleted and created again
 	// confirms the new account only while it answers no (checkDirectory). Its zero value has no
 	// database and answers an error, so it confirms nobody.
-	Outliving agentsecrets.OutlivingAccess
+	Outliving cipher.OutlivingAccess
 
 	// refreshes holds one refresh per person in flight in this process: a page load's many
 	// requests and Standing's calls share it. Another server process refreshes on its own, so two

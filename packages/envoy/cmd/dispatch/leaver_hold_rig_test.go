@@ -19,9 +19,9 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	brokerstoretest "github.com/sjawhar/envoy/internal/broker/store/storetest"
-	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -33,7 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// The leaver rig: the real Dispatch router and the real secrets broker (brokertest.NewRig), each
+// The leaver rig: the real Dispatch router and the real secrets broker (ciphertest.NewRig), each
 // on Postgres, wired to each other as a deployment wires them, for the tests of a hold. Dispatch
 // signs people in with Google, the fake Google (signInPool) standing in for it, under
 // DISPATCH_SIGNIN_DOMAIN=example.com and DISPATCH_SIGNIN_OUTSIDE=1, keeps its sessions in its
@@ -56,7 +56,7 @@ const (
 	leaverBrokerAccount   = "system:serviceaccount:dispatch:envoy-broker"
 	leaverAccountAudience = "dispatch"
 	// leaverHumanSecret is the broker rig's human-tier secret, which its operator, ada, owns: a
-	// session's ask for it is an approval request to her (brokertest.NewRig).
+	// session's ask for it is an approval request to her (ciphertest.NewRig).
 	leaverHumanSecret = "TEST_SECRET"
 	// leaverMachineAccount is the fake Google service account for a person's broker sign-in.
 	leaverMachineAccount = "leaver-machine@example.iam.gserviceaccount.com"
@@ -84,8 +84,8 @@ type leaverRig struct {
 	accounts   *oidctest.Issuer
 	accountKey *oidctest.Key
 	// broker is the secrets broker, and client a machine's client of it.
-	broker *brokertest.Rig
-	client *brokertest.Client
+	broker *ciphertest.Rig
+	client *ciphertest.Client
 	// brokerStopped, while set, has the server DISPATCH_AGENT_SECRETS_URL names, through which each
 	// of Dispatch's calls reaches the broker, cut each call unanswered, as a stopped broker leaves
 	// it, and count it in cutCalls.
@@ -126,8 +126,8 @@ type leaverOption func(*leaverConfig)
 // leaverConfig is the hooks newLeaverRig runs, each kind in the order the options added them.
 type leaverConfig struct {
 	// broker hooks run once the fake Google and the service-account issuer exist, before the
-	// broker is built, and give brokertest.NewRig its options.
-	broker []func(t *testing.T, r *leaverRig) []brokertest.Option
+	// broker is built, and give ciphertest.NewRig its options.
+	broker []func(t *testing.T, r *leaverRig) []ciphertest.Option
 	// toBroker hooks wrap the handler that carries each of Dispatch's calls to the broker, the
 	// first given innermost.
 	toBroker []func(t *testing.T, r *leaverRig, next http.Handler) http.Handler
@@ -147,13 +147,13 @@ type leaverConfig struct {
 // Workspace account through the Directory reader the boot builds from DISPATCH_DIRECTORY_ACCOUNT
 // and DISPATCH_DIRECTORY_ADMIN, against Google hosts the rig serves (r.directory). The broker is an
 // IAP deployment's broker, whose BROKER_HOLD_REQUIRES_DEADLINE sets the gate's deadline rule
-// (brokertest.WithHoldRequiresDeadline), so it needs withBrokerGate, whose gate that rule rules:
+// (ciphertest.WithHoldRequiresDeadline), so it needs withBrokerGate, whose gate that rule rules:
 // without it the broker rig refuses to build.
 func withIAP() leaverOption {
 	return func(c *leaverConfig) {
 		c.iap = true
-		c.broker = append(c.broker, func(*testing.T, *leaverRig) []brokertest.Option {
-			return []brokertest.Option{brokertest.WithHoldRequiresDeadline()}
+		c.broker = append(c.broker, func(*testing.T, *leaverRig) []ciphertest.Option {
+			return []ciphertest.Option{ciphertest.WithHoldRequiresDeadline()}
 		})
 	}
 }
@@ -271,13 +271,13 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 	r.googleKey = r.google.PublishKey(t, "broker-person-sign-in-key")
 	r.accountKey = r.accounts.PublishKey(t, "account-key")
 
-	var brokerOptions []brokertest.Option
+	var brokerOptions []ciphertest.Option
 	for _, hook := range config.broker {
 		brokerOptions = append(brokerOptions, hook(t, r)...)
 	}
-	r.broker = brokertest.NewRig(t, brokerOptions...)
-	r.client = brokertest.NewClient(t, r.broker.URL, strings.TrimPrefix(r.broker.URL, "http://"))
-	r.client.UIToken, r.client.DPoP = r.broker.UIToken, brokerclient.NewDPoPTransport
+	r.broker = ciphertest.NewRig(t, brokerOptions...)
+	r.client = ciphertest.NewClient(t, r.broker.URL, strings.TrimPrefix(r.broker.URL, "http://"))
+	r.client.UIToken, r.client.DPoP = r.broker.UIToken, cipherclient.NewDPoPTransport
 
 	target, err := url.Parse(r.broker.URL)
 	if err != nil {
@@ -601,7 +601,7 @@ func (r *leaverRig) brokerTokenAtDispatch(t *testing.T, p *leaverPerson) (int, s
 		t.Fatal(err)
 	}
 	signing.Header.Set("Authorization", "DPoP "+p.brokerToken)
-	response, err := (&http.Client{Transport: brokerclient.NewDPoPTransport(p.machineKey, capture)}).Do(signing)
+	response, err := (&http.Client{Transport: cipherclient.NewDPoPTransport(p.machineKey, capture)}).Do(signing)
 	if err != nil {
 		t.Fatalf("sign %s's broker token request: %v", p.email, err)
 	}

@@ -9,7 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 )
 
 // TestLeaverHoldBrokerCredentials is the broker half of c-leaver-end-to-end. Removing the

@@ -8,25 +8,25 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/wire"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// recoveryRig is a Dispatch server and a real broker (brokertest.NewRig) for the runbook's
+// recoveryRig is a Dispatch server and a real broker (ciphertest.NewRig) for the runbook's
 // recovery: the pass the server runs is the one the loop runs, and the broker is the one the
 // recovery's reads read.
 type recoveryRig struct {
-	rig         *brokertest.Rig
+	rig         *ciphertest.Rig
 	dispatch    *store.Store
 	served      *server
 	people      *store.PgPeopleStore
 	revocations *store.BrokerRevocations
-	broker      *agentsecrets.Client
+	broker      *cipher.Client
 }
 
 // recoveryIssuer is the sign-in issuer every account of these tests belongs to.
@@ -35,7 +35,7 @@ const recoveryIssuer = "https://accounts.google.com"
 // newRecoveryRig builds the pair.
 func newRecoveryRig(t *testing.T) *recoveryRig {
 	t.Helper()
-	rig := brokertest.NewRig(t)
+	rig := ciphertest.NewRig(t)
 	dispatch := storetest.Open(t)
 	deps, err := NewDeps(DepsInput{
 		Store: dispatch, Identity: headerIdentity(dispatch), ServerURL: "https://dispatch.example", Events: events.NewBroker(),
@@ -49,7 +49,7 @@ func newRecoveryRig(t *testing.T) *recoveryRig {
 		served:      &server{deps: deps, lifetime: t.Context()},
 		people:      store.NewPgPeopleStore(dispatch.Pool, testSigningKey, nil, store.WithBrokerRevocations(recoveryIssuer)),
 		revocations: store.NewBrokerRevocations(dispatch.Pool),
-		broker:      agentsecrets.New(rig.URL, accountTokenFile(t, rig.UIToken)),
+		broker:      cipher.New(rig.URL, accountTokenFile(t, rig.UIToken)),
 	}
 }
 

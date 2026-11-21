@@ -9,25 +9,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // heldTestTokens is the listener's broker-token credential over broker, its verifier reading clock,
 // as apiAuth reads it once the spent-proof bucket is open.
-func heldTestTokens(t *testing.T, broker *brokertokentest.StubBroker, clock *listenerClock) *brokerTokens {
+func heldTestTokens(t *testing.T, broker *ciphertokentest.StubBroker, clock *listenerClock) *brokerTokens {
 	t.Helper()
 	tokens := newBrokerTokens(listenerBrokerConfig{
 		BrokerURL:        broker.Server.URL,
 		AccountTokenFile: "/var/run/secrets/broker/token",
 		Origin:           listenerBrokerOrigin,
 	})
-	verifier, err := brokertoken.New(brokertoken.Options{
+	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
 		Account:   listenerBrokerAccount("listener-account-token"),
-		Origin:    listenerBrokerOrigin,
+		Origins:   []string{listenerBrokerOrigin},
 		Replay:    &spentProofsInMemory{},
 		Address:   listenerSourceAddress,
 		Now:       clock.Now,
@@ -52,13 +52,13 @@ func listenerHeldText(person string) string {
 // and never reaches the route; only after the listener's own checks, so the same token under a
 // stranger's proof is the 401 every refused credential gets here, with no code. Once the broker
 // answers the person not held, the same token is served at the first request after the answer the
-// check kept lapses (brokertoken.AffirmativeCacheTTL).
+// check kept lapses (ciphertoken.AffirmativeCacheTTL).
 //
 // Control: the Verifier leaving Caller.Held false whatever the answer says; the held token is
 // served 200 and the test fails naming it.
 func TestAPIAuthRefusesAHeldBrokerToken(t *testing.T) {
-	broker := brokertokentest.NewStubBroker(t)
-	caller, stranger := brokertokentest.NewCaller(t), brokertokentest.NewCaller(t)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller, stranger := ciphertokentest.NewCaller(t), ciphertokentest.NewCaller(t)
 	clock := &listenerClock{now: time.Now()}
 	tokens := heldTestTokens(t, broker, clock)
 
@@ -99,7 +99,7 @@ func TestAPIAuthRefusesAHeldBrokerToken(t *testing.T) {
 	released := held
 	released.Held = false
 	broker.Says(token, released)
-	clock.Advance(brokertoken.AffirmativeCacheTTL)
+	clock.Advance(ciphertoken.AffirmativeCacheTTL)
 	response, logged = serve(brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", token, `{}`))
 	if response.Code != http.StatusOK || served != 1 {
 		t.Fatalf("%s's broker token once the broker answers her not held = %d %s, served %d times; want 200", person, response.Code, response.Body.String(), served)
@@ -124,8 +124,8 @@ const brokerUnavailableText = "whether this token's person may still act could n
 // test fails naming it); refuseLapsedBrokerToken with no Retry-After (the 503 carries none, and the
 // test fails naming it).
 func TestAPIAuthRefusesAnExpiredStanding(t *testing.T) {
-	broker := brokertokentest.NewStubBroker(t)
-	caller := brokertokentest.NewCaller(t)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
 	clock := &listenerClock{now: time.Now()}
 	tokens := heldTestTokens(t, broker, clock)
 	deadline := clock.Now().Truncate(time.Second).Add(3 * time.Second)

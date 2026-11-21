@@ -95,8 +95,7 @@ type Issuer struct {
 	omitCodeFlow      bool
 	omitRevocation    bool
 	// tokenAuthMethods is the discovery document's token_endpoint_auth_methods_supported, no such
-	// member when empty (AdvertiseTokenAuthMethods). It is replaced whole and never changed in
-	// place, since every issuer starts from the one googleTokenAuthMethods.
+	// member when empty (AdvertiseTokenAuthMethods). Each issuer holds its own copy.
 	tokenAuthMethods []string
 	codeFlow         *codeFlow
 }
@@ -133,8 +132,7 @@ type codeFlow struct {
 	refreshFailures map[string]tokenFailure
 	// tokenRequests is each token request's client authentication (TokenRequests).
 	tokenRequests []string
-	// tokenDelay is how long the token endpoint waits before it answers each
-	// grant (DelayToken).
+	// tokenDelay is the token endpoint's wait before it answers (DelayToken).
 	tokenDelay time.Duration
 	revocation revocation
 	// omitRefresh makes a code exchange answer with no refresh token
@@ -257,7 +255,7 @@ func New(t TB) *Issuer {
 	issuer.server = httptest.NewServer(mux)
 	t.Cleanup(issuer.server.Close)
 	issuer.issuerClaim = issuer.server.URL
-	issuer.tokenAuthMethods = googleTokenAuthMethods
+	issuer.tokenAuthMethods = slices.Clone(googleTokenAuthMethods)
 	return issuer
 }
 
@@ -449,6 +447,15 @@ func (i *Issuer) DropToken() {
 	i.codeFlow.token = tokenFailure{drop: true}
 }
 
+// DelayToken makes the token endpoint wait d before it answers each grant, or until the client
+// hangs up: an issuer slow to answer. The answer, a grant or a refusal, is the one the issuer's
+// state gives once the wait is over.
+func (i *Issuer) DelayToken(d time.Duration) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.codeFlow.tokenDelay = d
+}
+
 // TokenRequests is how every request the token endpoint has received authenticated its client,
 // in order, whatever it answered, each named as token_endpoint_auth_methods_supported names it:
 // client_secret_basic for HTTP Basic, client_secret_post for the client's secret in the form,
@@ -598,19 +605,6 @@ func (i *Issuer) setRefreshFailure(email string, failure tokenFailure) {
 		return
 	}
 	i.codeFlow.refreshFailures[strings.ToLower(email)] = failure
-}
-
-// DelayToken makes the token endpoint wait d before it answers each grant,
-// whatever it then answers, or until the client hangs up, when it answers
-// nothing and changes nothing; zero answers at once again. The wait holds no
-// lock, so requests that arrive together each answer about d after they
-// arrived rather than one after another, and the test's other calls on the
-// issuer go on meanwhile: an identity provider slow to answer, not one
-// answering a queue.
-func (i *Issuer) DelayToken(d time.Duration) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	i.codeFlow.tokenDelay = d
 }
 
 // ApproveDeviceCode approves the device authorization whose user code a person
@@ -855,6 +849,20 @@ func tokenError(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": code})
+}
+
+// wait holds an answer back for delay, or until the client hangs up, and reports whether the
+// client is still there to answer.
+func wait(r *http.Request, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+	select {
+	case <-time.After(delay):
+		return true
+	case <-r.Context().Done():
+		return false
+	}
 }
 
 func randomValue() string {

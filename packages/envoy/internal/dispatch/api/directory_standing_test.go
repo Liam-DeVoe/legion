@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -64,9 +64,9 @@ func TestAnIAPDirectoryHoldRefusesBrokerCallersInTheDirectorysWords(t *testing.T
 		})
 		t.Run("an approver's broker token, "+mode.name, func(t *testing.T) {
 			relay := newFakeBrokerRig(t)
-			introspection := brokertokentest.NewStubBroker(t)
+			introspection := ciphertokentest.NewStubBroker(t)
 			_, database, deps := newTestServer(t, testServerOptions{brokerTokens: stubBrokerTokens(t, introspection)})
-			deps.AgentSecrets = agentsecrets.New(relay.server.URL, accountTokenFile(t, credentialTestAccountToken))
+			deps.AgentSecrets = cipher.New(relay.server.URL, accountTokenFile(t, credentialTestAccountToken))
 			deps.Standing = &standingFake{directory: mode.directory}
 			handler := servedWith(t, deps)
 			seedPeople(t, database, accessDave)

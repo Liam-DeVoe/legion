@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -337,7 +337,7 @@ func newPassFixture(t *testing.T) *passFixture {
 	f.pass = identity.MembershipPass{
 		Membership: &identity.Membership{People: people, SignIn: f.refresher, Rule: rule},
 		People:     people,
-		Outliving:  agentsecrets.OutlivingAccess{Pool: database.Pool, Broker: agentsecrets.New(server.URL, accountTokenFile(t))},
+		Outliving:  cipher.OutlivingAccess{Pool: database.Pool, Broker: cipher.New(server.URL, accountTokenFile(t))},
 		Observe:    f.log.observe,
 	}
 	return f

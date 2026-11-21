@@ -19,14 +19,14 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/broker/policy"
-	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess"
-	"github.com/sjawhar/envoy/internal/broker/proof"
-	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -37,14 +37,14 @@ import (
 // that use them there, each answering as every credential call of the rig answers.
 
 // withBrokerGate puts the broker's real project-access client in front of a Dispatch server, and
-// with it the broker's real hold gate, which brokertest.WithProjectAccess builds from that client
-// as cmd/broker/main.go does.
+// with it the broker's real hold gate, which ciphertest.WithProjectAccess builds from that client
+// as cmd/cipherd/main.go does.
 func withBrokerGate() leaverOption {
 	return func(c *leaverConfig) {
 		// The router is set once it is built, by the test goroutine, and read by the server's
 		// handler goroutines, so it is held atomically.
 		var dispatchHandler atomic.Pointer[http.Handler]
-		c.broker = append(c.broker, func(t *testing.T, r *leaverRig) []brokertest.Option {
+		c.broker = append(c.broker, func(t *testing.T, r *leaverRig) []ciphertest.Option {
 			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				handler := dispatchHandler.Load()
 				if handler == nil {
@@ -60,7 +60,7 @@ func withBrokerGate() leaverOption {
 			if err := os.WriteFile(accountFile, []byte(r.brokerAccountToken(t)+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			return []brokertest.Option{brokertest.WithProjectAccess(server.URL, brokertoken.NewAccountToken(accountFile), r.brokerNow)}
+			return []ciphertest.Option{ciphertest.WithProjectAccess(server.URL, ciphertoken.NewAccountToken(accountFile), r.brokerNow)}
 		})
 		c.built = append(c.built, func(t *testing.T, r *leaverRig) {
 			if r.brokerDispatch == nil {
@@ -114,11 +114,11 @@ func (r *leaverRig) pastBrokerCache(t *testing.T) {
 // fail at the real token endpoint rather than merely changing a fixture-local value.
 func withPersonSignIns() leaverOption {
 	return func(c *leaverConfig) {
-		c.broker = append(c.broker, func(t *testing.T, r *leaverRig) []brokertest.Option {
+		c.broker = append(c.broker, func(t *testing.T, r *leaverRig) []ciphertest.Option {
 			startLeaverMetadataServer(t, r.google, r.googleKey, leaverMachineAccount)
-			t.Setenv(brokerclient.IdentityVar, brokerclient.IdentityMetadata)
-			t.Setenv(brokerclient.MachineAudienceVar, brokertest.GoogleMachineAudience)
-			return []brokertest.Option{brokertest.WithPersonSignIns(r.google, leaverMachineAccount)}
+			t.Setenv(cipherclient.IdentityVar, cipherclient.IdentityMetadata)
+			t.Setenv(cipherclient.MachineAudienceVar, ciphertest.GoogleMachineAudience)
+			return []ciphertest.Option{ciphertest.WithPersonSignIns(r.google, leaverMachineAccount)}
 		})
 	}
 }
@@ -128,7 +128,7 @@ func withPersonSignIns() leaverOption {
 // for the broker's machine audience receive the fake Google's signed token.
 func startLeaverMetadataServer(t *testing.T, google *oidctest.Issuer, key *oidctest.Key, machineAccount string) {
 	t.Helper()
-	claims := google.Claims(machineAccount, brokertest.GoogleMachineAudience)
+	claims := google.Claims(machineAccount, ciphertest.GoogleMachineAudience)
 	claims["email"] = machineAccount
 	claims["email_verified"] = true
 	token := google.Mint(t, key, claims)
@@ -136,7 +136,7 @@ func startLeaverMetadataServer(t *testing.T, google *oidctest.Issuer, key *oidct
 		if req.Method != http.MethodGet ||
 			req.URL.Path != "/computeMetadata/v1/instance/service-accounts/default/identity" ||
 			req.Header.Get("Metadata-Flavor") != "Google" ||
-			req.URL.Query().Get("audience") != brokertest.GoogleMachineAudience ||
+			req.URL.Query().Get("audience") != ciphertest.GoogleMachineAudience ||
 			req.URL.Query().Get("format") != "full" {
 			http.NotFound(w, req)
 			return
@@ -153,7 +153,7 @@ func startLeaverMetadataServer(t *testing.T, google *oidctest.Issuer, key *oidct
 // the broker, and the machine redeems its device code for its token pair.
 func (r *leaverRig) machineLogin(t *testing.T, p *leaverPerson) {
 	t.Helper()
-	p.machineKey = brokertest.NewSigningKey(t)
+	p.machineKey = ciphertest.NewSigningKey(t)
 	device := r.client.DeviceLogin(t, p.machineKey, p.email, localPart(p.email)+"-box")
 	code := leaverBody(t, map[string]string{"code": device.UserCode})
 	looked := r.browser(t, p, http.MethodPost, "/api/v1/credential-requests/machine-lookup", code)
@@ -183,7 +183,7 @@ func (r *leaverRig) machineLogin(t *testing.T, p *leaverPerson) {
 // approval assertion calls Dispatch's real decision route with p's personal token after the hold.
 func (r *leaverRig) pendingMachineLogin(t *testing.T, p *leaverPerson) (recordID, code string) {
 	t.Helper()
-	device := r.client.DeviceLogin(t, brokertest.NewSigningKey(t), p.email, localPart(p.email)+"-pending-box")
+	device := r.client.DeviceLogin(t, ciphertest.NewSigningKey(t), p.email, localPart(p.email)+"-pending-box")
 	code = device.UserCode
 	looked := r.browser(t, p, http.MethodPost, "/api/v1/credential-requests/machine-lookup",
 		leaverBody(t, map[string]string{"code": code}))
@@ -256,19 +256,19 @@ func (r *leaverRig) personSignIn(t *testing.T, p *leaverPerson) {
 func (r *leaverRig) signInTrade(t *testing.T, p *leaverPerson) (status int, refusal, credential string) {
 	t.Helper()
 	if p.signInKey == nil {
-		p.signInKey = brokertest.NewSigningKey(t)
+		p.signInKey = ciphertest.NewSigningKey(t)
 	}
-	machineToken, err := googleidentity.Token(t.Context(), brokertest.GoogleMachineAudience)
+	machineToken, err := googleidentity.Token(t.Context(), ciphertest.GoogleMachineAudience)
 	if err != nil {
 		t.Fatalf("read %s's metadata identity: %v", leaverMachineAccount, err)
 	}
-	claims := r.google.Claims("google-"+p.email, brokertest.PersonSignInAudience)
+	claims := r.google.Claims("google-"+p.email, ciphertest.PersonSignInAudience)
 	claims["email"] = p.email
 	claims["email_verified"] = true
 	claims["hd"] = leaverDomain
 	personToken := r.google.Mint(t, r.googleKey, claims)
 	form := url.Values{
-		"grant_type":          {brokerclient.GrantTypeTokenExchange},
+		"grant_type":          {cipherclient.GrantTypeTokenExchange},
 		"client_id":           {oauthwire.ExchangeClientID},
 		"subject_token":       {personToken},
 		"subject_token_type":  {oauthwire.SubjectTokenTypePerson},
@@ -278,8 +278,8 @@ func (r *leaverRig) signInTrade(t *testing.T, p *leaverPerson) (status int, refu
 	}
 	transport := &http.Transport{}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: brokerclient.NewDPoPTransport(p.signInKey, transport), Timeout: 30 * time.Second}
-	response, err := client.PostForm(r.broker.URL+brokerclient.TokenPath, form)
+	client := &http.Client{Transport: cipherclient.NewDPoPTransport(p.signInKey, transport), Timeout: 30 * time.Second}
+	response, err := client.PostForm(r.broker.URL+cipherclient.TokenPath, form)
 	if err != nil {
 		t.Fatalf("trade %s's Google sign-in: %v", p.email, err)
 	}
@@ -332,7 +332,7 @@ func (r *leaverRig) enrolUnderSignIn(t *testing.T, p *leaverPerson) (int, string
 // under the launcher credential credential, whose key is key: the status and the body it answers.
 func (r *leaverRig) enrolment(t *testing.T, p *leaverPerson, key *ecdsa.PrivateKey, credential string) (int, []byte) {
 	t.Helper()
-	session := brokertest.NewSigningKey(t)
+	session := ciphertest.NewSigningKey(t)
 	thumbprint, err := proof.Thumbprint(&session.PublicKey)
 	if err != nil {
 		t.Fatal(err)
@@ -387,14 +387,14 @@ func (r *leaverRig) readHumanGrant(t *testing.T, p *leaverPerson) (int, string) 
 func (r *leaverRig) exchange(t *testing.T, p *leaverPerson) (token string, status int, code string) {
 	t.Helper()
 	form := url.Values{
-		"grant_type": {brokerclient.GrantTypeTokenExchange}, "client_id": {oauthwire.ExchangeClientID},
+		"grant_type": {cipherclient.GrantTypeTokenExchange}, "client_id": {oauthwire.ExchangeClientID},
 		"subject_token": {p.machineToken.AccessToken}, "subject_token_type": {oauthwire.SubjectTokenTypeAccessToken},
 		oauthwire.FormSession: {localPart(p.email) + "-leaver-hold"},
 	}
 	transport := &http.Transport{}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: brokerclient.NewDPoPTransport(p.machineKey, transport), Timeout: 30 * time.Second}
-	response, err := client.PostForm(r.broker.URL+brokerclient.TokenPath, form)
+	client := &http.Client{Transport: cipherclient.NewDPoPTransport(p.machineKey, transport), Timeout: 30 * time.Second}
+	response, err := client.PostForm(r.broker.URL+cipherclient.TokenPath, form)
 	if err != nil {
 		t.Fatalf("the exchange of %s's machine login's token got no answer: %v", p.email, err)
 	}

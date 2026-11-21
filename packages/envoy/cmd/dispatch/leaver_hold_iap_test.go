@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
 )
 
@@ -71,7 +71,7 @@ const iapLapseBound = 10 * time.Second
 // outcome that releases no recorded hold (store.PgPeopleStore.RecordDirectoryActive) leaves her
 // refused after the 40 seconds; the gate serving a not-held answer past its deadline
 // (hold.Gate's notHeld) serves her at the broker past it; and withIAP without
-// brokertest.WithHoldRequiresDeadline refuses her held sessions in the words of a broker that
+// ciphertest.WithHoldRequiresDeadline refuses her held sessions in the words of a broker that
 // tells her to sign in.
 func TestIAPLeaverHoldThroughTheRealBroker(t *testing.T) {
 	r := newLeaverRig(t, withBrokerGate(), withPersonSignIns(), withIAP())

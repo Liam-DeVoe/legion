@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -33,7 +33,7 @@ const brokerUnavailableText = "whether this token's person may still act could n
 // open, and the test fails naming it).
 func TestABrokerTokenPastItsDeadlineIsUnavailable(t *testing.T) {
 	clock := &heldClock{at: time.Now()}
-	rig := newBrokerTokenRig(t, func(o *brokertoken.Options) { o.Now = clock.now })
+	rig := newBrokerTokenRig(t, func(o *ciphertoken.Options) { o.Now = clock.now })
 	seedPeople(t, rig.database, accessCarol, accessDave)
 	caller := newBrokerCaller(t)
 	deadline := clock.now().Truncate(time.Second).Add(3 * time.Second)
@@ -92,12 +92,12 @@ func TestABrokerTokenPastItsDeadlineIsUnavailable(t *testing.T) {
 	}
 
 	t.Run("a live socket", func(t *testing.T) {
-		broker := brokertokentest.NewStubBroker(t)
+		broker := ciphertokentest.NewStubBroker(t)
 		socketClock := &heldClock{at: time.Now()}
 		// An answer past its deadline is never kept, so each heartbeat after it asks the broker
 		// again: the source address's bucket is one no heartbeat of this test can empty, so the
 		// socket can close on nothing but the deadline, and the token lives two days past it.
-		_, database, deps := newTestServer(t, testServerOptions{brokerTokens: stubBrokerTokens(t, broker, func(o *brokertoken.Options) {
+		_, database, deps := newTestServer(t, testServerOptions{brokerTokens: stubBrokerTokens(t, broker, func(o *ciphertoken.Options) {
 			o.Now, o.AddressLimit = socketClock.now, ratelimit.Limit{Every: time.Microsecond, Burst: 1 << 20}
 		})})
 		seedPeople(t, database, accessCarol)
