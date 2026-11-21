@@ -1105,7 +1105,14 @@ every variable your route depends on in `pod.env`, which outranks a repository's
 
 To change a role's model later, edit its line under `modelRoles` in your `overlay.yml` and run the
 same `apply.sh` command. Pods started after that use it; a running pod keeps its files until it is
-relaunched.
+relaunched. Those lines are Oh My Pi's model roles, not Legion's: every Legion role's session runs
+on `modelRoles.default`, and `review` is the model of the `@review` subagents, so no line of
+`overlay.yml` moves one Legion role alone. To give one Legion role a model of its own (the reviewer
+on another model family than the implementer, say), name under that role in `role_config_files` an
+overlay that sets its own `modelRoles.default`: that role's `PI_CONFIG_FILES` names it after the
+operator's overlays, so its `default` outranks theirs for that role alone. Under Kubernetes the
+file must be in an operator mount, and adding the mount replaces each issue pod at its next launch
+(the `role_config_files` item above, and `docs/kubernetes.md`, "Rolling it out").
 
 ## Check and start the daemon
 

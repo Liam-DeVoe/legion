@@ -700,6 +700,13 @@ RULES = {
     f"{DAEMON}/internal/textcheck/owner_steps_way_back_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
                                "for owner_steps_way_back_doc_test.go:28 (wayBackBlockOfTheGuide, way_back_doc_test.go:146)")),
+    f"{DAEMON}/internal/textcheck/role_model_doc_test.go": reads(
+        *((guide, "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+                  "for role_model_doc_test.go:34 (shippedText of each of roleModelGuides, :17-22)")
+          for guide in ("deploy/kubernetes/operator-route/README.md",
+                        "deploy/kubernetes/operator-route/overlay.yml",
+                        "docs/kubernetes.md",
+                        "docs/site/src/content/docs/legion/running-legion.md"))),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.

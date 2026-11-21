@@ -8081,7 +8081,10 @@ each issue's pod (every role of it alike) and the image probe's.
   either way, stop it declaring the ConfigMap first.
   To change a role's model, edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
   Pods started after that use it; a running pod keeps the files it started with until it restarts, since both are mounted by `subPath`, which the kubelet never refreshes.
-  Where the deployment's `plan_guidance` file names the models that its recent issues ran on, measure them again once issues have run on the new model, and write that sentence again: Legion reads no model from that file.
+  Those lines are Oh My Pi's model roles, not Legion's: every Legion role's session runs on `modelRoles.default`, and `review` is the model of the `@review` subagents, so no line of `overlay.yml` moves one Legion role alone.
+  To give one Legion role a model of its own (the reviewer on another model family than the implementer, say), name under that role in `role_config_files` an overlay that sets its own `modelRoles.default`: that role's `PI_CONFIG_FILES` names it after the operator's overlays, so its `default` outranks theirs for that role alone.
+  The file must be in an operator mount, and adding the mount replaces each issue pod at its next launch, ending its roles' running turns (`role_config_files` and "Rolling it out", below).
+  Where the deployment's `plan_guidance` file names the models that its recent issues' reviewer and implementer ran on, measure them again once issues have run on a role's new model, and write that sentence again: Legion reads no model from that file.
   The example overlay also turns `retry.modelFallback` on (LEGION-578's decision:
   a failed model call is retried on another model;
   which model is the repository's `retry.fallbackChains` to name):
