@@ -219,9 +219,7 @@
           }
         ],
         "repositories": {
-          "owners": [],
-          "mapped": [],
-          "refused": [],
+          "live": [],
           "withoutWebhookApp": [],
           "caches": []
         },
@@ -562,9 +560,7 @@
           }
         ],
         "repositories": {
-          "owners": [],
-          "mapped": [],
-          "refused": [],
+          "live": [],
           "withoutWebhookApp": [],
           "caches": []
         },
@@ -911,9 +907,7 @@
           }
         ],
         "repositories": {
-          "owners": [],
-          "mapped": [],
-          "refused": [],
+          "live": [],
           "withoutWebhookApp": [],
           "caches": []
         },
@@ -1260,9 +1254,7 @@
           }
         ],
         "repositories": {
-          "owners": [],
-          "mapped": [],
-          "refused": [],
+          "live": [],
           "withoutWebhookApp": [],
           "caches": []
         },
@@ -1609,9 +1601,7 @@
           }
         ],
         "repositories": {
-          "owners": [],
-          "mapped": [],
-          "refused": [],
+          "live": [],
           "withoutWebhookApp": [],
           "caches": []
         },
@@ -1963,9 +1953,7 @@
           }
         ],
         "repositories": {
-          "owners": [],
-          "mapped": [],
-          "refused": [],
+          "live": [],
           "withoutWebhookApp": [],
           "caches": []
         },
@@ -2335,9 +2323,7 @@
           }
         ],
         "repositories": {
-          "owners": [],
-          "mapped": [],
-          "refused": [],
+          "live": [],
           "withoutWebhookApp": [],
           "caches": []
         },
@@ -2707,9 +2693,7 @@
           }
         ],
         "repositories": {
-          "owners": [],
-          "mapped": [],
-          "refused": [],
+          "live": [],
           "withoutWebhookApp": [],
           "caches": []
         },
@@ -3071,9 +3055,7 @@
           }
         ],
         "repositories": {
-          "owners": [],
-          "mapped": [],
-          "refused": [],
+          "live": [],
           "withoutWebhookApp": [],
           "caches": []
         },
@@ -3448,9 +3430,7 @@
           }
         ],
         "repositories": {
-          "owners": [],
-          "mapped": [],
-          "refused": [],
+          "live": [],
           "withoutWebhookApp": [],
           "caches": []
         },
@@ -3826,9 +3806,7 @@
           }
         ],
         "repositories": {
-          "owners": [],
-          "mapped": [],
-          "refused": [],
+          "live": [],
           "withoutWebhookApp": [],
           "caches": []
         },

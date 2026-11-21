@@ -8,9 +8,9 @@ body: |-
   read-only snapshot as the full state, with the same bound, statement timeout and rollback. It
   does not read the pull requests, the design gates or the claims that nothing will wake. The
   route answers a different `view` value with 400 `INVALID_VIEW`, and a request with no `view`
-  gets the full state, which does not change. The view is part of daemon API contract 202. The
+  gets the full state, which does not change. The view is part of daemon API contract 207. The
   daemon serves the view at the caller's contract with the same rule as the full state, so at each
-  contract every member of the view is the member the full state serves there: a caller below 202
+  contract every member of the view is the member the full state serves there: a caller below 207
   gets no `stateSeq`, `stateId` or `stateRun` in either answer. On 2026-11-20 the INFRA daemon's
   full state was 7,307,929 bytes, and the part that the view serves was 665,962 bytes.
 custom:

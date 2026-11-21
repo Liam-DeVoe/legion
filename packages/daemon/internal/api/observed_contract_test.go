@@ -56,7 +56,7 @@ func observedMembers(t *testing.T, body []byte) map[string]any {
 	}
 }
 
-// The observed view follows the whole state's rule (version.go's 202, shaping.go's observedFor):
+// The observed view follows the whole state's rule (version.go's 207, shaping.go's observedFor):
 // at every contract this daemon answers, the view's daemon block, settings, admission block and
 // each issue's observed members are the whole state's at that same contract, whether the caller
 // states its contract or the claims of its pod record it. So an older contract keeps its

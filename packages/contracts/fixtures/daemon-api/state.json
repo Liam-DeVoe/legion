@@ -10,8 +10,8 @@
     "stateRun": "2d8f4b6a-9c1e-4e73-b5a0-7f3c1d9e6b28"
   },
   "contract": {
-    "daemon": 202,
-    "caller": 202
+    "daemon": 207,
+    "caller": 207
   },
   "admission": {
     "cap": 5,
@@ -842,14 +842,16 @@
     }
   ],
   "repositories": {
-    "owners": [
-      "acme",
-      "zeta"
-    ],
-    "mapped": [
+    "live": [
+      {
+        "repo": "acme/gadgets",
+        "apps": {
+          "implement": true,
+          "review": false
+        }
+      },
       {
         "repo": "acme/widgets",
-        "default": true,
         "apps": {
           "implement": true,
           "review": true
@@ -866,8 +868,19 @@
         }
       },
       {
+        "repo": "sjawhar/legion",
+        "servedAs": "cybermonklabs/legion",
+        "apps": {
+          "implement": true,
+          "review": true
+        }
+      },
+      {
+        "repo": "zeta/archive",
+        "readError": "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"
+      },
+      {
         "repo": "zeta/tools",
-        "default": false,
         "apps": {
           "implement": true,
           "review": true
@@ -879,20 +892,6 @@
           "reason": "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
           "ready": false
         }
-      }
-    ],
-    "refused": [
-      {
-        "repo": "acme/gadgets",
-        "reason": "the review App is not installed on acme/gadgets",
-        "apps": {
-          "implement": true,
-          "review": false
-        }
-      },
-      {
-        "repo": "zeta/archive",
-        "reason": "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"
       }
     ],
     "withoutWebhookApp": [
