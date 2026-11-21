@@ -521,11 +521,4 @@ cd packages/envoy
 go test -tags multiprocess -count=1 -timeout 20m -v -run '^Test(TwoPods|TwoBuilds)' ./cmd/listener
 ```
 
-`TestTwoBuildsSkipOrDoubleNoMessage` also runs the first-roll direction against a build from before the lease when `ENVOY_LISTENER_OLD_BINARY` names one:
-
-```bash
-ENVOY_LISTENER_OLD_BINARY=<path to that build> \
-  go test -tags multiprocess -count=1 -timeout 20m -v -run '^TestTwoBuilds' ./cmd/listener
-```
-
 The lease, receive and ledger rows that need no second process (`lease_test.go` and the `lease_*_test.go` files beside it, `receive_test.go` and the `receive_*_test.go` files beside it, `ledger_test.go`) run with the package's other tests.

@@ -1,9 +1,8 @@
 //go:build multiprocess
 
 // Two listener builds for one machine id, as a roll from one release to the next runs them
-// (INFRA-557): one build that compiles in a stream subject the other does not know, and, when
-// ENVOY_LISTENER_OLD_BINARY names one, a build from before the delivery lease. Each row starts the
-// builds' real binaries through multiprocess_harness_test.go's harness.
+// (INFRA-557): one build that compiles in a stream subject the other does not know. Each row
+// starts the builds' real binaries through multiprocess_harness_test.go's harness.
 // TestTwoBuildsSkipOrDoubleNoMessage checks that no message on any subject is skipped, doubled, or
 // dropped by both while the machine's delivery passes from one build to the other.
 // TestTwoBuildsAnOlderPodRelaysATopicOnlyTheNewerBuildsSubjectCaptures checks that while the older
