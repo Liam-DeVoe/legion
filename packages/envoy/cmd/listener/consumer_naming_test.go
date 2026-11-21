@@ -79,3 +79,34 @@ func TestAFixedModeStartThatCannotReadTheMarkerWaits(t *testing.T) {
 		t.Fatalf("a fixed-mode start with no server = %v after %s, want it to wait out %s unread", err, time.Since(started), wait)
 	}
 }
+
+// A host listener reads no selection marker: it connects as the NATS user its host's sessions
+// share (natsgrant.Host), which holds no read of the bucket, so a read would only have the server
+// log a permissions violation at every start and connect, and it runs fixed names for good.
+// Proved over a converted bucket and a user the server lets read it: the host role's guard lets
+// the start go on where a read would have refused it, and so returns before it adds the reconnect
+// check (WatchConversion), which only a start that read the marker reaches. The control is the
+// same guard for a listener of no role, which reads the marker and refuses.
+func TestAHostListenerReadsNoSelectionMarker(t *testing.T) {
+	_, uri := testnats.Start(t)
+	ctx := context.Background()
+	admin := testnats.Connect(t, uri)
+	t.Cleanup(admin.Close)
+	if _, err := consumernames.CreateSessionBucket(ctx, admin, 1, consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}); err != nil {
+		t.Fatal(err)
+	}
+	consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(consumers.Close)
+	logger := logging.NewWithWriter("test", io.Discard)
+	converted := func(err error) { t.Errorf("the reconnect check stopped the listener: %v", err) }
+
+	if err := guardFixedNaming(ctx, false, consumers, logger, time.Second, converted); !errors.Is(err, bus.ErrConvertedStore) {
+		t.Fatalf("control: the guard of a listener of no role over a converted bucket = %v, want bus.ErrConvertedStore", err)
+	}
+	if err := guardFixedNaming(ctx, true, consumers, logger, time.Second, converted); err != nil {
+		t.Fatalf("the guard of a host listener = %v, want the start to go on with no marker read", err)
+	}
+}

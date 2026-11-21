@@ -15,6 +15,29 @@ import (
 // marker again after a read that answered nothing (awaitFixedNaming).
 const fixedNamingRetry = 2 * time.Second
 
+// guardFixedNaming is the fixed mode's guard against running today's names over a selection
+// bucket the cutover converted: it reads the marker before the start (awaitFixedNaming), and once
+// the start goes on has every later connection read it again (WatchConversion), calling converted
+// when a reconnect finds the store converted. A host's listener (ENVOY_LISTENER_ROLE=host) skips
+// both and reads nothing: it runs fixed names for good. Its NATS user, the one its host's sessions
+// share (natsgrant.Host), holds no read of the bucket, so each read would only have the server log
+// a permissions violation at every start and connect; natsgrant.Host is retiring (plan E's t-e-59
+// deletes it), no production connection holds it, and the cutover's window has the precondition
+// that no host listener runs at or after it, so a host listener never meets a converted bucket and
+// its durable is never converted.
+func guardFixedNaming(ctx context.Context, host bool, consumers *bus.SessionConsumers, logger *logging.Logger, interval time.Duration, converted func(error)) error {
+	if host {
+		logger.Info("a host's listener runs fixed consumer names for good and reads no cutover marker",
+			slog.String("role", bus.ListenerRoleHost), slog.String("bucket", consumernames.SessionBucket))
+		return nil
+	}
+	if err := awaitFixedNaming(ctx, consumers, logger, interval); err != nil {
+		return err
+	}
+	consumers.WatchConversion(converted)
+	return nil
+}
+
 // awaitFixedNaming reads, in the fixed mode, the selection bucket's cutover marker before the
 // listener runs today's names (bus.SessionConsumers.RefuseConvertedStore), and answers:
 //   - nil when there is no marker: no bucket, no sentinel, a marker that is not done, or a read the

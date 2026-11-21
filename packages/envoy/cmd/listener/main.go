@@ -1596,16 +1596,16 @@ func main() {
 		os.Exit(1)
 	}
 	if !delivery.consumers.Fresh() {
-		if err := awaitFixedNaming(context.Background(), delivery.consumers, logger, fixedNamingRetry); err != nil {
+		stop := func(err error) {
+			logger.Error("session consumer naming stops the listener: "+err.Error(), slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		if err := guardFixedNaming(context.Background(), cfg.HostListener, delivery.consumers, logger, fixedNamingRetry, stop); err != nil {
 			logger.Error("session consumer naming refuses the start: "+err.Error(), slog.String("error", err.Error()))
 			delivery.close()
 			client.Conn.Close()
 			os.Exit(1)
 		}
-		delivery.consumers.WatchConversion(func(err error) {
-			logger.Error("session consumer naming stops the listener: "+err.Error(), slog.String("error", err.Error()))
-			os.Exit(1)
-		})
 	}
 	if delivery.consumers.Fresh() {
 		names := met.NewCounter("envoy_session_consumer_names_total", "Session consumer selection steps in the fresh naming mode, by op (select, create, replace, delete, recover, missing_current, last_floor, cleanup) and outcome (ok, adopted, retired, refused, conflict, limit, error)")
