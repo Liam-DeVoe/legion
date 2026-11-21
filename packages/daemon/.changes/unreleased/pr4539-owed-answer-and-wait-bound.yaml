@@ -12,13 +12,13 @@ body: |-
   of its pod, a project's pause that stops it, and the cancel of its release while the project is
   paused arm none, since its later work comes as a daemon task or message, which wakes the pod.
   One such claim still gets the backstop: a claim behind its entry that holds a task of the
-  issue's run and phase the daemon has not delivered, of that entry or of an earlier one, such as
-  a task whose send failed before any turn or the task of an earlier entry a relaunch kept, unless
-  its completion is recorded, a merge forward holds its role or its merged pull request is
-  finishing its merge. Admission's owed-entry repair passes over such a claim, and nothing else
-  brings its pod back. While the daemon records that a started issue gave its admission slot back
-  to wait on another issue, the silence sweep writes no start row for its phase workers, tells the
-  architect of a quiet worker once after 24 hours, and the idle backstop wakes its released pod no
-  earlier than 24 hours after the release; the normal bounds apply again once the issue holds a
-  slot. A migration adds `pod_wake_backstops.armed_at`. The role prompt says when a reminder comes
-  and what to do when a completion is refused.
+  issue's run and phase the daemon has not delivered, of that entry, of an earlier one or of no
+  entry, such as a task whose send failed before any turn, the task of an earlier entry a relaunch
+  kept or a ready worker's resume task, unless its completion is recorded, a merge forward holds
+  its role or its merged pull request is finishing its merge. Admission's owed-entry repair passes
+  over such a claim, and nothing else brings its pod back. While the daemon records that a started
+  issue gave its admission slot back to wait on another issue, the silence sweep writes no start
+  row for its phase workers, tells the architect of a quiet worker once after 24 hours, and the
+  idle backstop wakes its released pod no earlier than 24 hours after the release; the normal
+  bounds apply again once the issue holds a slot. A migration adds `pod_wake_backstops.armed_at`.
+  The role prompt says when a reminder comes and what to do when a completion is refused.

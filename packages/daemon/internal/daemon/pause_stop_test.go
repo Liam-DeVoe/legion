@@ -1039,14 +1039,19 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 // third control is a relaunch that kept the task it held (keepsStartTask): the implementer took
 // entry 1 and holds the task of entry 2 unconfirmed, while its row stands on entry 3. The repair
 // passes over it all the same, so both writers arm its backstop: the exception reads a task of
-// the issue's run and phase of the row's entry or an earlier one. The same claim with its
-// completion of the row's entry recorded gets none from either writer, since the exception's
-// other terms are read at the row's entry. The stop transaction's row stops it owing no launch,
-// as every row here does; the machine's own stop of a claim holding such a task owes it a launch
-// as well (supervise's holdsTask), which the row leaves out so that the stop reads the backstop's
-// rule. The control, the same stop of an implementer that serves its row's entry and owes it,
-// arms the backstop as it always has. The stop is recorded in every case, so a case that arms
-// none is a stop that read the rule and not one that never ran.
+// the issue's run and phase of the row's entry, of an earlier one or of no entry. The same claim
+// with its completion of the row's entry recorded gets none from either writer, since the
+// exception's other terms are read at the row's entry. The fourth control is a ready worker's
+// resume task (workflow.ResumePhaseTask), a task of no entry: the implementer took entry 1, its
+// row stands on entry 3, and it holds a task of entry 0 of the issue's run and phase unconfirmed.
+// The repair passes over it as well, so both writers arm its backstop. The third and fourth
+// controls fail if the exception reads only a task of the row's entry (p.Entry == f.RowEntry).
+// The stop transaction's row stops it owing no launch, as every row here does; the machine's own
+// stop of a claim holding such a task owes it a launch as well (supervise's holdsTask), which the
+// row leaves out so that the stop reads the backstop's rule. The control, the same stop of an
+// implementer that serves its row's entry and owes it, arms the backstop as it always has. The
+// stop is recorded in every case, so a case that arms none is a stop that read the rule and not
+// one that never ran.
 func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T) {
 	for _, writer := range []struct {
 		name string
@@ -1071,6 +1076,11 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T
 			// its send failed before any turn (undeliveredTask), and 0 for none.
 			served, rowEntry, task int64
 			completed              bool
+			// noEntryTask is whether the implementer holds, unconfirmed in the same way, a task
+			// of no entry (entry 0) of the issue's run and phase in place of a task of an entry:
+			// a ready worker's resume task (workflow.ResumePhaseTask), which gives the claim no
+			// entry.
+			noEntryTask bool
 			// backstop is whether the stop arms the implementer's backstop, and why says why.
 			backstop bool
 			why      string
@@ -1085,6 +1095,9 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T
 			{name: "the third control: it took entry 1, its row stands on entry 3, and it holds the task of entry 2, which a relaunch kept",
 				served: 1, rowEntry: 3, task: 2, backstop: true,
 				why: "admission's owed-entry repair passes over a claim that holds a task it still works, so the backstop is the one wake that brings its pod back"},
+			{name: "the fourth control: it took entry 1, its row stands on entry 3, and it holds a task of no entry of the issue's run and phase, a ready worker's resume task",
+				served: 1, rowEntry: 3, noEntryTask: true, backstop: true,
+				why: "admission's owed-entry repair passes over a claim that holds a task it still works, of whatever entry, so the backstop is the one wake that brings its pod back"},
 			{name: "it holds the task of an earlier entry and its completion of its row's entry is recorded",
 				served: 1, rowEntry: 3, task: 2, completed: true,
 				why: "its completion of its row's entry stands, so it owes nothing a wake could bring back"},
@@ -1094,8 +1107,11 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T
 				r := newPauseRig(t, claim.RoleImplementer)
 				implementer := r.claim(claim.RoleImplementer, supervise.StateSuspended)
 				implementer.ServedEntry = c.served
-				if c.task != 0 {
+				switch {
+				case c.task != 0:
 					implementer.GivenEntry, implementer.Pending = c.task, undeliveredTask(phase.Implementing, c.task)
+				case c.noEntryTask:
+					implementer.Pending = undeliveredTask(phase.Implementing, 0)
 				}
 				r.putPhaseRow(claim.RoleImplementer, c.rowEntry, c.completed)
 				if writer.released {

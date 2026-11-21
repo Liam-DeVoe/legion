@@ -476,8 +476,8 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // record of the claim's role and which this package cannot import (IdleRecords says why). A
 // worker that owes its phase nothing gets no backstop (dispatch://INFRA-2746 R1), since a
 // backstop would wake it to do nothing, but for the one claim the rule keeps: one behind its
-// entry that holds a task of the issue's run and phase the daemon has not delivered, of that entry
-// or of an earlier one, whose delivery waits for the claim to come back
+// entry that holds a task of the issue's run and phase the daemon has not delivered, of that
+// entry, of an earlier one or of no entry, whose delivery waits for the claim to come back
 // (internal/daemon's holdsUndeliveredEntryTask).
 type ReleaseCancelPause struct {
 	At            time.Time

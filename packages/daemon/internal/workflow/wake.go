@@ -361,11 +361,11 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // (record.PhaseOwed) — is armed no backstop (internal/daemon's armBackstops, dispatch://INFRA-2746
 // R1), since its later work comes as a daemon task or message, which wakes the pod. The one
 // exception is a claim behind its entry that holds a task of the issue's run and phase the daemon
-// has not delivered, of that entry or of an earlier one: that delivery waits for the claim to
-// come back and admission's owed-entry repair passes over such a claim, so it keeps its backstop
-// (internal/daemon's holdsUndeliveredEntryTask). The row is fired under a conditional update, so
-// a backstop two passes read fires once, and the row survives a restart, so one that came due
-// while the daemon was down fires at the first pass after it starts.
+// has not delivered, of that entry, of an earlier one or of no entry: that delivery waits for the
+// claim to come back and admission's owed-entry repair passes over such a claim, so it keeps its
+// backstop (internal/daemon's holdsUndeliveredEntryTask). The row is fired under a conditional
+// update, so a backstop two passes read fires once, and the row survives a restart, so one that
+// came due while the daemon was down fires at the first pass after it starts.
 //
 // The backstop of an issue the daemon records as waiting on another issue
 // (record.Issue.ReleasedForWaitAt) wakes its pod only WaitSilenceBound after the release armed

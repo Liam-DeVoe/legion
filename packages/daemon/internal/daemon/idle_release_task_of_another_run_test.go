@@ -14,11 +14,11 @@ import (
 // c-idle-keeps-nothing-for-a-claim-that-owes-nothing): a released claim behind its entry keeps
 // its backstop only for an undelivered task of the issue's run and phase that it still works
 // (supervise.Delivery.StillWorked, which admission's owed-entry repair reads too). A claim behind
-// its entry that holds an unconfirmed task of another phase or of another run is not passed over
-// by that repair, which sends it its row's entry's task, and that send is what brings its pod
-// back: its release arms no backstop. The control is the same claim holding a task of the
-// issue's run and phase, which the repair passes over and which keeps its backstop. The two rows
-// of another phase or run fail if the exception reads the task's confirmation alone
+// its entry that holds an unconfirmed task of another phase or of no run is not passed over by
+// that repair, which sends it its row's entry's task, and that send is what brings its pod back:
+// its release arms no backstop. The control is the same claim holding a task of the issue's run
+// and phase, which the repair passes over and which keeps its backstop. The two rows of another
+// phase or of no run fail if the exception reads the task's confirmation alone
 // (p.ConfirmedAt.IsZero()) in place of StillWorked, which no row of
 // TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliveredTaskOfItsEntry
 // tells apart.
@@ -32,7 +32,7 @@ func TestIdleOfAClaimThatOwesNothingGetsNoBackstopForATaskOfAnotherRunOrPhase(t 
 	}{
 		{name: "the control: it holds a task of the issue's run and phase", generation: 1, at: phase.Implementing, backstop: true},
 		{name: "it holds a task of another phase", generation: 1, at: phase.Retro},
-		{name: "it holds a task of an earlier run", generation: 0, at: phase.Implementing},
+		{name: "it holds a task of no run (generation 0)", generation: 0, at: phase.Implementing},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newPauseRig(t)

@@ -467,9 +467,9 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 // which admission's owed-entry repair sends a claim behind its entry that holds no such task, the
 // message of a landed merge forward, a new phase's start — and that delivery wakes the pod
 // itself. One worker that owes nothing still gets the backstop: a claim behind its entry that
-// holds a task of the issue's run and phase the daemon has not delivered, of that entry or of an
-// earlier one, which admission's repair passes over (holdsUndeliveredEntryTask says why). The
-// release logs the facts it read in place of the row.
+// holds a task of the issue's run and phase the daemon has not delivered, of that entry, of an
+// earlier one or of no entry, which admission's repair passes over (holdsUndeliveredEntryTask
+// says why). The release logs the facts it read in place of the row.
 //
 // It also cancels the backstops the release before this one armed, owed or not: that pod is gone,
 // and its backstop has nothing left to bring back.
@@ -508,7 +508,7 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 			return fmt.Errorf("read whether %s's %s gets a backstop before arming one: %w", issue.Key, role, err)
 		}
 		if !gets {
-			r.log.Info("wake: the release of an issue's pod arms no backstop for its open phase's role, which owes that phase nothing and holds no task of its run and phase, of its row's entry or an earlier one, that the daemon has yet to deliver",
+			r.log.Info("wake: the release of an issue's pod arms no backstop for its open phase's role, which owes that phase nothing and holds no task of its run and phase, of its row's entry, of an earlier one or of no entry, that the daemon has yet to deliver",
 				"issue", issue.Key, "role", role, "completed", facts.RowCompleted, "merge_forward_held", facts.MergeForwardHeld,
 				"merged", facts.MergedInMerging, "entry", facts.ServingEntry, "row_entry", facts.RowEntry)
 			return nil
@@ -528,14 +528,14 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 // owes that phase its completion, by the rule the owed answer and the idle release's reminder
 // hold read (record.PhaseOwed), or it is the one claim that owes nothing and still gets one, a
 // claim behind its entry that holds a task of the issue's run and phase the daemon has not
-// delivered, of that entry or of an earlier one (holdsUndeliveredEntryTask). It reads the run c
-// serves and the entry it serves (supervise.Claim.ServingEntry), and, through tx as the idle
-// view reads them (record.FillIdleClaims), the entry its role's phases row stands on, whether
-// that row records its completion, whether a merge forward of the issue's pull request holds its
-// role and whether that pull request is merged while the issue stands in merging. It answers
-// those facts beside the verdict, for the line of a caller that arms nothing. c is the whole
-// claim (store.ClaimTx), since the entry it serves is read from its pending delivery, the entry
-// it last served and its update round, and the task it holds is that pending delivery.
+// delivered, of that entry, of an earlier one or of no entry (holdsUndeliveredEntryTask). It
+// reads the run c serves and the entry it serves (supervise.Claim.ServingEntry), and, through tx
+// as the idle view reads them (record.FillIdleClaims), the entry its role's phases row stands on,
+// whether that row records its completion, whether a merge forward of the issue's pull request
+// holds its role and whether that pull request is merged while the issue stands in merging. It
+// answers those facts beside the verdict, for the line of a caller that arms nothing. c is the
+// whole claim (store.ClaimTx), since the entry it serves is read from its pending delivery, the
+// entry it last served and its update round, and the task it holds is that pending delivery.
 //
 // Each writer of an open phase's backstop asks it before it arms one, so all three hold the
 // worker to one rule: a release (armBackstops), a pause's stop (projectPause.stopTx) and a
@@ -555,11 +555,13 @@ func getsBackstop(ctx context.Context, records record.Store, tx pgx.Tx, at phase
 
 // holdsUndeliveredEntryTask is whether c is the one claim that owes its phase nothing and still
 // gets the backstop (dispatch://INFRA-2746 R1): "a claim behind its entry that holds a task of the
-// issue's run and phase that the daemon has not delivered, of that entry or of an earlier one,
-// unless its completion is recorded, a merge forward holds its role or its merged pull request is
-// finishing its merge." A send can fail before any turn and then waits for the claim to come back
-// (supervise's delivery). A relaunch of a failed or retired worker keeps the task of an earlier
-// entry that it still holds, and does not deliver the new entry (keepsStartTask). Admission's
+// issue's run and phase that the daemon has not delivered, of that entry, of an earlier one or of
+// no entry, unless its completion is recorded, a merge forward holds its role or its merged pull
+// request is finishing its merge." A send can fail before any turn and then waits for the claim
+// to come back (supervise's delivery). A relaunch of a failed or retired worker keeps the task of
+// an earlier entry that it still holds, and does not deliver the new entry (keepsStartTask). A
+// task of no entry is the resume task of a ready worker that holds its issue's phase with nothing
+// pending (workflow's readyWorkerTask, which sends workflow.ResumePhaseTask). Admission's
 // owed-entry repair passes over every claim that holds such a task (admit's owedOf, which reads
 // supervise.Delivery.StillWorked), so the backstop is then the one wake that brings the pod back
 // for that delivery. at is the phase the issue stands at, generation its run, and f what
@@ -568,19 +570,21 @@ func getsBackstop(ctx context.Context, records record.Store, tx pgx.Tx, at phase
 //
 // c holds such a task while its pending delivery is one it still works as the task of the
 // issue's run in that phase, read as admission's repair reads it (supervise.Delivery.StillWorked),
-// and that task is of the entry c's role's phases row stands on (f.RowEntry) or of an earlier
-// one, while the entry c serves (f.ServingEntry) is behind that row's. Every other term of the
-// owed answer's rule still holds such a claim to it, read at the row's entry (record.PhaseOwed):
-// it serves the issue's run, the row records no completion, no merge forward holds its role and
-// no merged pull request is finishing its merge. So a claim whose completion of the row's entry
-// is recorded, or that a merge forward holds, gets no backstop for the task it holds either,
-// whatever entry that task is of. A turn that takes a task of the row's entry levels the claim
-// with its row, and from then on it owes its phase by that rule; once a turn has taken a task of
-// an earlier entry, the claim is behind its row and holds no such task, and admission's repair
-// sends it the row's entry's task.
+// while the entry c serves (f.ServingEntry) is behind the one c's role's phases row stands on
+// (f.RowEntry). Any such task counts, whatever entry it is of: the row's entry, an earlier one or
+// none. The rule names no bound on that entry, since no task stands above its row's entry:
+// entries only rise (record.PhaseRow.Entry). Every other term of the owed answer's rule still
+// holds such a claim to it, read at the row's entry (record.PhaseOwed): it serves the issue's
+// run, the row records no completion, no merge forward holds its role and no merged pull request
+// is finishing its merge. So a claim whose completion of the row's entry is recorded, or that a
+// merge forward holds, gets no backstop for the task it holds either, whatever entry that task is
+// of. A turn that takes a task of the row's entry levels the claim with its row, and from then on
+// it owes its phase by that rule; once a turn has taken a task of an earlier entry or of no
+// entry, the claim is behind its row and holds no such task, and admission's repair sends it the
+// row's entry's task.
 func holdsUndeliveredEntryTask(c supervise.Claim, f pods.IdleClaim, at phase.Phase, generation uint64) bool {
 	p := c.Pending
-	return p != nil && p.StillWorked(generation, at, c.State) && p.Entry <= f.RowEntry &&
+	return p != nil && p.StillWorked(generation, at, c.State) &&
 		record.EntriesDiffer(f.ServingEntry, f.RowEntry) && f.ServingEntry < f.RowEntry &&
 		record.PhaseOwed(f.ServingGeneration, generation, f.RowEntry, f.RowEntry, f.RowCompleted, f.MergeForwardHeld,
 			f.MergedInMerging)
