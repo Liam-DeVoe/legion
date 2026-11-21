@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox/copyrule"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -907,7 +908,7 @@ func (s *server) mentionCopyHolder(ctx context.Context, created model.Event, tar
 // mentionCopyHolderFor is mentionCopyHolder for a send to sessionID, the rule a send held before
 // reads again before it tries once more (sendCommentMention): copyrule.Holder, the one read of the
 // rule both roads of a copy make, in one statement, for the record key of sessionID's own
-// destination (model.SessionDestinationKey), the key the outbox's records name it by. Each role
+// destination (recordkey.Session), the key the outbox's records name it by. Each role
 // route an earlier event still owes is asked of the listener (roleHolderMayBe, within
 // mentionLookupTimeout): the route holds the send when the holder is sessionID, as planChains keys
 // the route on whoever holds the role at its next batch, and when the read fails in any way but
@@ -919,7 +920,7 @@ func (s *server) mentionCopyHolderFor(
 	if !s.deps.OutboxPublishes {
 		return nil, nil
 	}
-	return copyrule.Holder(ctx, s.deps.Store.Pool, created.ID, model.SessionDestinationKey(sessionID),
+	return copyrule.Holder(ctx, s.deps.Store.Pool, created.ID, recordkey.Session(sessionID),
 		func(ctx context.Context, role string) bool { return s.roleHolderMayBe(ctx, role, sessionID) })
 }
 

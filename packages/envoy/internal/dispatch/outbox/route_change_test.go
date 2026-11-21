@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -67,7 +68,7 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 				IssueKey: new("T-1"), Type: "message.created", Actor: alice,
 				Payload: model.Message{ID: "6b1b1c5e-0d3a-4c38-9b7e-0a5f8a0c0303", IssueKey: new("T-1"), Body: "earlier"},
 			})
-			s1, s2 := model.SessionDestinationKey("s1"), model.SessionDestinationKey("s2")
+			s1, s2 := recordkey.Session("s1"), recordkey.Session("s2")
 			publisher := &recordingPublisher{failTopic: onBus("TT", s2)[0]}
 			deps := Deps{Store: database, Publisher: publisher, Broker: broker}
 			holder := holding(t, deps)
@@ -140,7 +141,7 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 					t.Fatalf("count T-1's unpublished events: %v", err)
 				}
 				return waiting == 0 && slices.ContainsFunc(publisher.all(), func(item contracts.Envelope) bool {
-					return item.Topic == s1 && item.SourceEventID == fmt.Sprint(comment.ID)
+					return recordOf(item.Topic)[0] == s1 && item.SourceEventID == fmt.Sprint(comment.ID)
 				})
 			}
 			for round := 0; round < 5 && !done(); round++ {
@@ -165,7 +166,7 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 
 			var got []string
 			for _, item := range publisher.all() {
-				if item.Topic == s1 && !slices.Contains(got, item.SourceEventID) &&
+				if recordOf(item.Topic)[0] == s1 && !slices.Contains(got, item.SourceEventID) &&
 					(item.SourceEventID == fmt.Sprint(earlier.ID) || item.SourceEventID == fmt.Sprint(comment.ID)) {
 					got = append(got, item.SourceEventID)
 				}
@@ -287,7 +288,7 @@ func recordAfterARouteMove(t *testing.T, record string) routeMoveRecord {
 		IssueKey: new("T-1"), Type: "message.created", Actor: alice,
 		Payload: model.Message{ID: "6b1b1c5e-0d3a-4c38-9b7e-0a5f8a0c0404", IssueKey: new("T-1"), Body: "earlier"},
 	})
-	s1, s2 := model.SessionDestinationKey("s1"), model.SessionDestinationKey("s2")
+	s1, s2 := recordkey.Session("s1"), recordkey.Session("s2")
 	deps := Deps{Store: database, Publisher: &recordingPublisher{failTopic: onBus("TT", s2)[0]}, Broker: broker}
 	holder := holding(t, deps)
 	holder.scan(ctx, unfenced{})

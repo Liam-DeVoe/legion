@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,7 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 )
@@ -642,33 +641,23 @@ func roleFallbackKey(keys, settled map[string]string, unpinned *unpinnedRoleMent
 	return keys[lowest]
 }
 
-// fallbackRoleForward is how a fallback copy whose destination is a role topic reaches the role's
-// holder: the role is resolved as a batch's role route is and the copy forwarded to the holder's
-// agent subject (resolveRole, forwardOf, roleForward.send), so nothing of the outbox's crosses
-// notifications.role.*, which the stream does not capture - a copy published there would be
-// refused (bus.ErrNotCaptured) and the row backed off for ever. A role no live holder can take is
-// forwarded too: its copy is kept on the role's kept lane for the holder that claims the role
-// next (keptOrSkipped, roleForward.keep), and the stream's acknowledgement of that keep settles
-// the row as its acknowledgement of a forward settles one. It is nil for every other destination,
-// which the pass publishes to its topic as before (publishFallbackCopies). The comment's
+// fallbackRoleForward is how a fallback copy whose destination is a role's record key reaches the
+// role's holder: the role is resolved as a batch's role route is and the copy forwarded to the
+// holder's agent subject under the event's project (resolveRole, forwardOf, roleForward.send), so
+// nothing of the outbox's crosses notifications.role.*, which the stream does not capture - a copy
+// published there would be refused (bus.ErrNotCaptured) and the row backed off for ever. A role no
+// live holder can take is forwarded too: its copy is kept on the role's kept lane for the holder
+// that claims the role next (keptOrSkipped, roleForward.keep), and the stream's acknowledgement of
+// that keep settles the row as its acknowledgement of a forward settles one. The comment's
 // mentions by session are the caller's to put on the forward, which has read them to decide the
 // row (decideFallbackCopy), as the batch puts them on the forward of its own role route.
 //
-// The role is read off the destination in either form (contracts.CanonicalRole), as every other
-// reader of a role's name reads it: the form the record names a role's topic in, the role alone,
-// which is resolved under the project the role works for in the event's (roleKey), and the form
-// with its project, notifications.role.<P>.<role>, which is the role under P and not a role named
-// <P>.<role>. project is the project of the event the copy carries (roleForward.project).
-func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope, destination, project string) *roleForward {
-	named, ok := strings.CutPrefix(destination, contracts.RoleTopicPrefix)
-	if !ok || named == "" {
-		return nil
-	}
-	under, role, legacy := contracts.CanonicalRole(named)
+// role is the role the row's key names, read back by recordkey.Parse and never by
+// contracts.CanonicalRole, whose bare-role branch goes with the old form of a bus subject while a
+// stored key keeps its bytes for ever. It is resolved under the project it works for in the
+// event's, project (roleKey): a Legion role under its own, every other role under the event's.
+func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope, role, project string) *roleForward {
 	key := roleKey(project, role)
-	if !legacy {
-		key = contracts.RoleClaimKey(under, role)
-	}
 	resolution, err := resolveRole(ctx, deps, key)
 	return forwardOf(project, key, item, resolution, err)
 }
@@ -803,7 +792,7 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 // message forwarded by either carry one key and one MsgId.
 //
 // It goes to the holder's agent subject under the project of the event it carries (busSubject of
-// the holder's record key, model.SessionDestinationKey, and roleForward.project), with a Request
+// the holder's record key, recordkey.Session, and roleForward.project), with a Request
 // under the forward's MsgId (bus.ForwardMsgID of that key and the subject), so the stream, which
 // captures agent subjects, stores one copy however often it is sent. The stream's acknowledgement
 // of that copy is the answer, and what counts the forward as having reached the holder, for every
@@ -811,7 +800,7 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 // relay and answers the request with nothing (INFRA-771).
 func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envelope) <-chan error {
 	item.DedupeKey = contracts.RoleForwardDedupeKey(item, f.holder)
-	subject := busSubject(model.SessionDestinationKey(f.holder), f.project)
+	subject := busSubject(recordkey.Session(f.holder), f.project)
 	return sender.Request(subject, item, bus.RequestOptions{
 		MsgID:   bus.ForwardMsgID(item.DedupeKey, subject),
 		Timeout: deps.forwardAckTimeout(),

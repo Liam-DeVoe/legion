@@ -12,6 +12,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
@@ -2864,10 +2865,11 @@ func MentionLiveSQL(row string) string {
 // family, the notifications.dispatch. subjects of its issue, document or project, which reach
 // every session that follows them. OwedAnySession is the session an event whose recipient read
 // failed may still owe a copy, unnamed because the read that would name it did not answer. Every
-// other word is a subject: notifications.agent.<session>, a send to that session, or a role's own
-// topic (contracts.RoleTopicPrefix), a role route not reached yet, whatever session holds the role
-// - the holder is read when a copy asks (MentionCopyRolesSQL), as the outbox reads it again at
-// each batch, so a holder that changed between the record and the copy is the one asked about.
+// other word is a record key (internal/dispatch/recordkey): notifications.agent.<session>, a send
+// to that session, or a role's own (recordkey.RolePrefix), a role route not reached yet, whatever
+// session holds the role - the holder is read when a copy asks (MentionCopyRolesSQL), as the
+// outbox reads it again at each batch, so a holder that changed between the record and the copy
+// is the one asked about.
 const (
 	OwedTopicFamily = "topic-family"
 	OwedAnySession  = "any-session"
@@ -2968,7 +2970,7 @@ const MentionCopyRolesSQL = `select distinct on (owed.owed_key) owed.owed_key, k
 		  and k.id < c.id
 		  and k.published_at is null
 		  and (k.payload ->> 'pending') is distinct from 'true'
-		  and starts_with(owed.owed_key, '` + contracts.RoleTopicPrefix + `')
+		  and starts_with(owed.owed_key, '` + recordkey.RolePrefix + `')
 		order by owed.owed_key, k.id`
 
 // MentionCopyRuleSQL is the copy rule as one statement, so in one snapshot: MentionCopyHolderSQL's

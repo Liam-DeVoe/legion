@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -1200,11 +1201,12 @@ func TestAHeldCopyOfARoleRouteReachesTheRolesHolder(t *testing.T) {
 		if len(kept) != 1 {
 			t.Fatalf("the pass made %d kept publishes, want the one copy kept for %s's next holder: %+v", len(kept), role, kept)
 		}
-		if kept[0].subject != bus.KeptRoleSubject(role) || kept[0].item.Topic != onBus("TT", roleTopic)[0] {
+		lane := roleKey("TT", role)
+		if kept[0].subject != bus.KeptRoleSubject(lane) || kept[0].item.Topic != onBus("TT", roleTopic)[0] {
 			t.Fatalf("the keep went to %q with topic %q, want %q with the role's own topic",
-				kept[0].subject, kept[0].item.Topic, bus.KeptRoleSubject(role))
+				kept[0].subject, kept[0].item.Topic, bus.KeptRoleSubject(lane))
 		}
-		if want := bus.KeptMsgID(kept[0].item.DedupeKey, role); kept[0].msgID != want {
+		if want := bus.KeptMsgID(kept[0].item.DedupeKey, lane); kept[0].msgID != want {
 			t.Fatalf("the keep was made under %q, want %q, the id every writer of the lane keeps it under", kept[0].msgID, want)
 		}
 	})
@@ -1404,9 +1406,9 @@ func TestARoleCopyKeptForARoleNobodyHoldsCarriesTheFailedMentionsKey(t *testing.
 		t.Fatalf("the copy kept for %s's next holder is keyed %q, want the failed mention's own key %q, which the holder it names drops",
 			role, kept[0].item.DedupeKey, want)
 	}
-	if kept[0].msgID != bus.KeptMsgID(want, role) {
+	if lane := roleKey("TT", role); kept[0].msgID != bus.KeptMsgID(want, lane) {
 		t.Fatalf("the keep was made under %q, want %q, the id every writer of the lane keeps that copy under",
-			kept[0].msgID, bus.KeptMsgID(want, role))
+			kept[0].msgID, bus.KeptMsgID(want, lane))
 	}
 }
 
@@ -1946,7 +1948,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	const bystander = "ses_mentioned_by_name"
 	const unanswered = "role:unanswered-when-the-comment-was-written"
 	roleTopic := contracts.RoleTopicPrefix + role
-	holderSubject := model.SessionDestinationKey(holder)
+	holderSubject := recordkey.Session(holder)
 
 	rig := newRoleRig(t)
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
@@ -2107,7 +2109,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 	const elsewhere = "ses_mentioned_on_the_other_issue"
 	target := "role:" + role
 	roleTopic := contracts.RoleTopicPrefix + role
-	holderSubject := model.SessionDestinationKey(holder)
+	holderSubject := recordkey.Session(holder)
 	mentionKey := func(commentID string) string {
 		return contracts.AgentSendDedupeKey(holder,
 			model.CommentMentionIdempotencyKey(commentID, target, "steer"))
@@ -2174,9 +2176,9 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 				attempts, publishFailure(failure), reached)
 		}
 		_, _, reached := eventState(t, rig.database, apart.ID)
-		if !slices.Contains(reached, model.SessionDestinationKey(bystander)) {
+		if !slices.Contains(reached, recordkey.Session(bystander)) {
 			t.Fatalf("the other owner's comment reached %v, want %s among them: a session no attempt of that comment names takes its claimant copy as if it had not been mentioned",
-				reached, model.SessionDestinationKey(bystander))
+				reached, recordkey.Session(bystander))
 		}
 		waitFor(t, 10*time.Second, "the other owner's claimant copy", func() bool {
 			return len(other.received()) > 0

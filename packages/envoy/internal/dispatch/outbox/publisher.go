@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -1186,7 +1187,7 @@ func (d *destinations) addSession(sessionID, label, id string) {
 		return
 	}
 	d.addDestination(destination{
-		subject:   model.SessionDestinationKey(sessionID),
+		subject:   recordkey.Session(sessionID),
 		label:     label,
 		id:        id,
 		dedupeKey: d.mentions.fallbackKeys[sessionID],
@@ -1225,7 +1226,7 @@ func (d *destinations) addWorkingSession(sessionID, label, id string) {
 		return
 	}
 	d.addDestination(destination{
-		subject:   model.SessionDestinationKey(sessionID),
+		subject:   recordkey.Session(sessionID),
 		label:     label,
 		id:        id,
 		dedupeKey: d.mentions.fallbackKeys[sessionID],
@@ -1328,7 +1329,7 @@ func addRoute(d *destinations, route *string) error {
 	}
 	switch parsed.Kind {
 	case "role":
-		d.addDestination(destination{subject: model.RoleDestinationKey(parsed.ID), label: "publish route", id: *route,
+		d.addDestination(destination{subject: recordkey.Role(parsed.ID), label: "publish route", id: *route,
 			role: parsed.ID, mentionKeys: d.mentions.fallbackKeys, settledKeys: d.mentions.settledKeys,
 			mentionStates: d.mentions.holds(), liveMention: d.mentions.anyLive()})
 	case "session":
@@ -1711,7 +1712,7 @@ func envelope(event model.Event, slug string) (contracts.Envelope, error) {
 		}
 		topic = documentTopicPrefix + event.Project + "." + slug + "." + event.Type
 	} else if event.IssueKey != nil {
-		topic = model.IssueDestinationKey(*event.IssueKey, event.Type)
+		topic = recordkey.Issue(*event.IssueKey, event.Type)
 	} else if event.Project != "" {
 		topic = "notifications.dispatch.project." + event.Project + "." + event.Type
 	} else {

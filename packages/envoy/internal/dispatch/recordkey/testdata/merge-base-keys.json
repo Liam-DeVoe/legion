@@ -1,0 +1,13 @@
+{
+  "source": "The keys the outbox at legion main 81cf5a7938 stored, built by that build's own code: a session's destination by contracts.LegacyAgentSubject(session), a role route by contracts.RoleTopicPrefix + role, and an issue's topic family by envelope's notifications.dispatch.issue.<KEY>.<type>. Each row names the column it was stored in, the kind, and what it names.",
+  "rows": [
+    {"column": "published_destinations", "key": "notifications.agent.s1", "kind": "session", "name": "s1"},
+    {"column": "owed_keys", "key": "notifications.agent.ses_01a1faee-5c67-72ed-b72d-5a74b301ad15", "kind": "session", "name": "ses_01a1faee-5c67-72ed-b72d-5a74b301ad15"},
+    {"column": "comment_fallback_copies.destination", "key": "notifications.agent.role-holder", "kind": "session", "name": "role-holder"},
+    {"column": "published_destinations", "key": "notifications.role.reviewer", "kind": "role", "name": "reviewer"},
+    {"column": "comment_fallback_copies.destination", "key": "notifications.role.legion-infra-infra-12-architect", "kind": "role", "name": "legion-infra-infra-12-architect"},
+    {"column": "owed_keys", "key": "notifications.role.legion-controller-x", "kind": "role", "name": "legion-controller-x"},
+    {"column": "published_destinations", "key": "notifications.dispatch.issue.INFRA-12.comment.created", "kind": "issue", "name": "INFRA-12", "type": "comment.created"},
+    {"column": "published_destinations", "key": "notifications.dispatch.issue.T-1.message.answered", "kind": "issue", "name": "T-1", "type": "message.answered"}
+  ]
+}

@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/roles"
@@ -1298,8 +1299,8 @@ func TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
 	askID := f.ask(t, askSessionA, question)
 	f.follow(t, http.MethodPut, askID, askSessionC)
 	owners := []string{askSessionA, askSessionC}
-	topicOf := model.SessionDestinationKey
-	issueTopic := model.IssueDestinationKey(f.issue, "comment.created")
+	topicOf := recordkey.Session
+	issueTopic := recordkey.Issue(f.issue, "comment.created")
 	published := &recordingOutboxPublisher{}
 
 	first := f.comment(t, map[string]any{"body": "Which pool size do you need?", "ask_id": askID}, "alice")

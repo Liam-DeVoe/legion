@@ -42,16 +42,21 @@ func (p failingAgentPublisher) PublishReportingDuplicateWithin(context.Context, 
 }
 
 // assertQueuedEnvelope fails t unless envelope is the one a send of attempt `attempt` of message
-// in mode would have been stored as: on session's own subject, under the send's dedupe key, from
-// Dispatch, carrying that attempt's frame.
+// in mode would have been stored as: on session's own subject under the message's project
+// (messageProject, the form contracts.AgentSendEnvelope writes for it), under the send's dedupe
+// key, from Dispatch, carrying that attempt's frame.
 func assertQueuedEnvelope(
 	t *testing.T, envelope contracts.Envelope, session string, message model.Message, attempt int, mode string,
 ) {
 	t.Helper()
 	wantKey := contracts.AgentSendDedupeKey(session, message.ID+":"+mode)
-	if envelope.Topic != contracts.LegacyAgentSubject(session) || envelope.DedupeKey != wantKey || envelope.Source != "dispatch" {
+	wantTopic := contracts.LegacyAgentSubject(session)
+	if project := messageProject(message); project != contracts.NoProject {
+		wantTopic = contracts.AgentSubject(project, session)
+	}
+	if envelope.Topic != wantTopic || envelope.DedupeKey != wantKey || envelope.Source != "dispatch" {
 		t.Fatalf("queued envelope on %q under %q from %q, want %q under %q from dispatch",
-			envelope.Topic, envelope.DedupeKey, envelope.Source, contracts.LegacyAgentSubject(session), wantKey)
+			envelope.Topic, envelope.DedupeKey, envelope.Source, wantTopic, wantKey)
 	}
 	frame := decodeDeliveryFrame(t, map[string]any{"payload": envelope.Payload})
 	if frame.Event.Type != "message.created" || frame.Event.Payload.ID != message.ID ||
@@ -69,17 +74,19 @@ type listenerSendBody struct {
 	IdempotencyKey string          `json:"idempotency_key"`
 	Urgency        string          `json:"urgency"`
 	ExpectsReply   json.RawMessage `json:"expects_reply"`
+	Project        string          `json:"project"`
 }
 
 // storedBy is the envelope the listener's send route stores for body (cmd/listener sendHandler),
-// with the ids and the time it mints fresh taken from got, so the two compare field by field.
+// under the project the body names, which the route takes for the message's own, with the ids and
+// the time it mints fresh taken from got, so the two compare field by field.
 func (body listenerSendBody) storedBy(t *testing.T, got contracts.Envelope) contracts.Envelope {
 	t.Helper()
 	expectsReply, err := listenerwire.ParseExpectsReply(body.ExpectsReply)
 	if err != nil {
 		t.Fatalf("the send's expects_reply %s: %v", body.ExpectsReply, err)
 	}
-	want := contracts.AgentSendEnvelope(contracts.NoProject, body.TargetSession, body.IdempotencyKey, contracts.Message{
+	want := contracts.AgentSendEnvelope(body.Project, body.TargetSession, body.IdempotencyKey, contracts.Message{
 		Source: body.Source, Text: body.Message, Payload: body.Payload, Urgency: body.Urgency, ExpectsReply: expectsReply,
 	})
 	want.EventID, want.SourceEventID, want.IssuedAt, want.TraceID = got.EventID, got.SourceEventID, got.IssuedAt, got.TraceID

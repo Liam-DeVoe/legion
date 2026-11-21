@@ -12,11 +12,8 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/roles"
-	"github.com/sjawhar/envoy/internal/session"
-	envoystore "github.com/sjawhar/envoy/internal/store"
 )
 
 // subjectRecorder is a test publisher that records the subject of every send the outbox makes, a
@@ -81,9 +78,9 @@ func missingTheirProject(names []string, project string) []string {
 var projectFamilies = []string{contracts.DispatchIssueTopicPrefix, contracts.AgentTopicPrefix, contracts.RoleTopicPrefix}
 
 // onBus is the subject the copy a record names went out on for an event of project: the record
-// (model.IssueDestinationKey, SessionDestinationKey, RoleDestinationKey) with the project put after
-// its family's prefix, as a test writes it out by hand. A Legion role's lane, whose project is its
-// own name's (roleProject), is written out by its test instead.
+// (recordkey.Issue, Session, Role) with the project put after its family's prefix, as a test
+// writes it out by hand. A Legion role's lane, whose project is its own name's (roleProject), is
+// written out by its test instead.
 func onBus(project string, records ...string) []string {
 	subjects := make([]string, len(records))
 	for i, record := range records {
@@ -98,7 +95,7 @@ func onBus(project string, records ...string) []string {
 	return subjects
 }
 
-// recordOf is the record of the copy each subject names (model.*DestinationKey): the subject with
+// recordOf is the record of the copy each subject names (recordkey): the subject with
 // its project token taken out, as published_destinations, owed_keys and comment_fallback_copies
 // hold it.
 func recordOf(subjects ...string) []string {
@@ -211,8 +208,8 @@ func TestEveryOutboxSubjectNamesItsProject(t *testing.T) {
 	}
 }
 
-// TestADestinationKeyIsTheOneTheRecordAlreadyHolds (model.IssueDestinationKey,
-// SessionDestinationKey, RoleDestinationKey): a key this build makes is byte for byte the one a
+// TestADestinationKeyIsTheOneTheRecordAlreadyHolds (recordkey.Issue, Session, Role): a key this
+// build makes is byte for byte the one a
 // release before it stored, and an event whose published_destinations a release before this one
 // wrote is read as that release left it. PUB-1 is routed to session s1, and its message's record
 // holds the issue's topic family, reached, as that release wrote it, in the form with no project.
@@ -223,9 +220,9 @@ func TestEveryOutboxSubjectNamesItsProject(t *testing.T) {
 // holds, so a build that recorded and read its bus subjects would send the topic family again.
 func TestADestinationKeyIsTheOneTheRecordAlreadyHolds(t *testing.T) {
 	stored := map[string]string{
-		model.IssueDestinationKey("PUB-1", "message.created"): "notifications.dispatch.issue.PUB-1.message.created",
-		model.SessionDestinationKey("s1"):                     "notifications.agent.s1",
-		model.RoleDestinationKey("reviewer"):                  "notifications.role.reviewer",
+		recordkey.Issue("PUB-1", "message.created"): "notifications.dispatch.issue.PUB-1.message.created",
+		recordkey.Session("s1"):                     "notifications.agent.s1",
+		recordkey.Role("reviewer"):                  "notifications.role.reviewer",
 	}
 	for built, wrote := range stored {
 		if built != wrote {
@@ -270,84 +267,11 @@ func TestADestinationKeyIsTheOneTheRecordAlreadyHolds(t *testing.T) {
 		t.Fatalf("the batch sent %v, want %v alone: the topic family the stored record names reached is reached", sent, want)
 	}
 	destinations, _ := publishedDestinations(t, database, event.ID)
-	if want := []string{owner, model.SessionDestinationKey("s1")}; !slices.Equal(destinations, want) {
+	if want := []string{owner, recordkey.Session("s1")}; !slices.Equal(destinations, want) {
 		t.Fatalf("published_destinations = %v, want %v: the stored key and s1's beside it, in the form with no project", destinations, want)
 	}
 	if publishedAt(t, database, event.ID) == nil {
 		t.Fatal("the message is unpublished, want it published once s1 is reached")
-	}
-}
-
-// pubReviewer is a role-claim store and session reader in which reviewer is claimed under PUB
-// alone, by pubHolder, a live self-subscribed session: a resolution of reviewer under PUB names
-// pubHolder, and one of any other role, or of reviewer under no project, names nobody. PUB is
-// public, so a role of it with no claim of its own falls back to its claim under no project,
-// which is none here.
-type pubReviewer struct{ roles.Windows }
-
-const pubHolder = "pub-holder"
-
-func (pubReviewer) Private(context.Context, string) (bool, error) { return false, nil }
-
-func (pubReviewer) Mode() roles.Mode { return roles.AllPublic }
-
-func (pubReviewer) RoleClaim(_ context.Context, project, role string) (envoystore.RoleClaim, error) {
-	if project == "PUB" && role == "reviewer" {
-		return envoystore.RoleClaim{HolderSessionID: pubHolder}, nil
-	}
-	return envoystore.RoleClaim{}, nil
-}
-
-func (pubReviewer) Holder(context.Context, string) (session.SessionEntry, error) {
-	return session.SessionEntry{SelfSubscribed: true, UpdatedAt: time.Now().UnixMilli()}, nil
-}
-
-func (pubReviewer) LastSeen(string) int64 { return 0 }
-
-// plainCutRoleForward is fallbackRoleForward as it read a role before t-c-6: the destination's
-// role prefix cut off as plain text, so notifications.role.PUB.reviewer names a role called
-// PUB.reviewer, resolved under the event's project as any role of the record is (roleKey).
-func plainCutRoleForward(ctx context.Context, deps Deps, item contracts.Envelope, destination, project string) *roleForward {
-	role, ok := strings.CutPrefix(destination, contracts.RoleTopicPrefix)
-	if !ok || role == "" {
-		return nil
-	}
-	resolution, err := resolveRole(ctx, deps, roleKey(project, role))
-	return forwardOf(project, role, item, resolution, err)
-}
-
-// TestAFallbackCopyResolvesItsRoleInBothForms (fallbackRoleForward, contracts.CanonicalRole): a
-// fallback copy of an event of PUB held for reviewer, recorded as the record names a role's
-// topic (notifications.role.reviewer) and in the form with its project
-// (notifications.role.PUB.reviewer), resolves one holder, pubHolder, reviewer's holder under
-// PUB, and its forward goes to that holder under PUB.
-//
-// Control, in the test: the same rows through a plain cut of the role prefix (plainCutRoleForward)
-// find no holder for the form with the project, which names a role called PUB.reviewer, and the
-// check fails naming that destination.
-func TestAFallbackCopyResolvesItsRoleInBothForms(t *testing.T) {
-	ctx := context.Background()
-	deps := Deps{RoleClaims: pubReviewer{}, Sessions: pubReviewer{}}
-	item := contracts.Envelope{Topic: contracts.DispatchIssueSubject("PUB", "PUB-1", "comment.created"), DedupeKey: "dispatch-7", EventID: "dispatch-7"}
-	destinations := []string{model.RoleDestinationKey("reviewer"), contracts.RoleSubject("PUB", "reviewer")}
-	type reader func(context.Context, Deps, contracts.Envelope, string, string) *roleForward
-	misread := func(read reader) []string {
-		var wrong []string
-		for _, destination := range destinations {
-			forward := read(ctx, deps, item, destination, "PUB")
-			if forward == nil || forward.holder != pubHolder || forward.project != "PUB" {
-				wrong = append(wrong, fmt.Sprintf("%s resolved %+v", destination, forward))
-			}
-		}
-		return wrong
-	}
-	if wrong := misread(fallbackRoleForward); len(wrong) != 0 {
-		t.Fatalf("the fallback copy's role read %v, want each form to reach %s under PUB", wrong, pubHolder)
-	}
-	wrong := misread(plainCutRoleForward)
-	if len(wrong) != 1 || !strings.HasPrefix(wrong[0], contracts.RoleSubject("PUB", "reviewer")+" ") {
-		t.Fatalf("control: a plain cut of the role prefix misread %v, want it to miss the holder of %s alone",
-			wrong, contracts.RoleSubject("PUB", "reviewer"))
 	}
 }
 

@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -214,21 +215,26 @@ func assertKeptLaneInOrder(t *testing.T, url, role string, seeded []model.Event,
 	}
 	defer reader.Close()
 	issueOf := make(map[int64]string, len(seeded))
+	// The lane of the role under each seeded issue's project, its claim key there (roleKey,
+	// keptOrSkipped): one lane while every issue is of one project.
+	lanes := map[string]string{}
 	for _, event := range seeded {
 		issueOf[event.ID] = *event.IssueKey
+		project, _ := contracts.IssueProject(*event.IssueKey)
+		lanes[bus.KeptRoleSubject(roleKey(project, role))] = roleKey(project, role)
 	}
-	subject := bus.KeptRoleSubject(role)
 	byIssue := map[string][]int64{}
 	kept := 0
 	for _, message := range streamMessages(t, reader) {
-		if message.Subject != subject {
+		lane, ok := lanes[message.Subject]
+		if !ok {
 			continue
 		}
 		var envelope contracts.Envelope
 		if err := json.Unmarshal(message.Data, &envelope); err != nil {
 			t.Fatalf("decode the copy kept at %d: %v", message.Sequence, err)
 		}
-		if got, want := message.Header.Get(natsgo.MsgIdHdr), bus.KeptMsgID(envelope.DedupeKey, role); got != want {
+		if got, want := message.Header.Get(natsgo.MsgIdHdr), bus.KeptMsgID(envelope.DedupeKey, lane); got != want {
 			t.Fatalf("the copy kept at %d is stored under %q, want %q", message.Sequence, got, want)
 		}
 		id := sourceEventID(t, envelope)
@@ -236,11 +242,11 @@ func assertKeptLaneInOrder(t *testing.T, url, role string, seeded []model.Event,
 		byIssue[issueOf[id]] = append(byIssue[issueOf[id]], id)
 	}
 	if kept != want {
-		t.Fatalf("%s holds %d copies, want %d, one per event routed to the role", subject, kept, want)
+		t.Fatalf("%v hold %d copies, want %d, one per event routed to the role", slices.Sorted(maps.Keys(lanes)), kept, want)
 	}
 	for issue, ids := range byIssue {
 		if at := firstDescent(ids); at >= 0 {
-			t.Fatalf("%s holds %s's event %d after its event %d: %v", subject, issue, ids[at], ids[at-1], ids)
+			t.Fatalf("role %s's kept lane holds %s's event %d after its event %d: %v", role, issue, ids[at], ids[at-1], ids)
 		}
 	}
 }

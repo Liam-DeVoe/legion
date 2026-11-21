@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -164,7 +165,7 @@ func TestTheCopyRuleReadsTheNewestEventOfADocumentOrAProject(t *testing.T) {
 				`, earlier.ID, row.behind); err != nil {
 					t.Fatalf("record the earlier event: %v", err)
 				}
-				by, err := copyHolder(ctx, Deps{Store: database}, "TT", comment.ID, model.SessionDestinationKey("s1"), "s1")
+				by, err := copyHolder(ctx, Deps{Store: database}, "TT", comment.ID, recordkey.Session("s1"), "s1")
 				if err != nil {
 					t.Fatalf("read the rule: %v", err)
 				}
@@ -216,7 +217,7 @@ func TestAPendingSubscriptionCommandLeavesAnEarlierEventsRecordCurrent(t *testin
 			appendEvent(t, database, broker, model.Event{
 				IssueKey: new("T-1"), Type: "subscription.remove_requested", Actor: model.Actor{Kind: "session", ID: "s9"}, Payload: payload,
 			})
-			by, err := copyHolder(ctx, Deps{Store: database}, "TT", comment.ID, model.SessionDestinationKey("s1"), "s1")
+			by, err := copyHolder(ctx, Deps{Store: database}, "TT", comment.ID, recordkey.Session("s1"), "s1")
 			if err != nil {
 				t.Fatalf("read the rule: %v", err)
 			}

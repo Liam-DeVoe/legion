@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/recordkey"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -148,7 +149,7 @@ func TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut(t *
 		t.Fatalf("read the rows held for the pass that publishes them: %v", err)
 	}
 	slices.Sort(owed)
-	want := []string{model.SessionDestinationKey(claimant.ID)}
+	want := []string{recordkey.Session(claimant.ID)}
 	if !slices.Equal(slices.Compact(owed), want) {
 		t.Fatalf("the comment is owed to %v, want %v: on an issue a session claims a person's comment obliges the claimant alone, and a role mention nobody holds is no reason to deliver it to the document's credits",
 			owed, want)
