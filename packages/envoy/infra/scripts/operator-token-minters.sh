@@ -255,15 +255,22 @@
 # Admission power outside the admission objects (admission-backends.sh), asked on every cluster of
 # the pool as the other rights are: for each mutating or validating webhook whose namespaceSelector
 # can match a guarded namespace (read against kubernetes.io/metadata.name alone, which no one can
-# change), the writes to its backend Service, its Endpoints and EndpointSlices, its Secrets (the TLS
-# key) and the pods and pod controllers in that Service's namespace; a webhook that calls a URL
-# outside the cluster is UNKNOWN. Create, update and patch of each cluster-scoped resource of a
-# policy engine (a CRD of kyverno.io, gatekeeper.sh or its subgroups, or a group whose name holds
-# "policy"), as a Kyverno ClusterPolicy or a Gatekeeper Assign mutates pods. And the writes to each
-# parameter object an admission policy's binding names (paramRef, of the policy's paramKind,
-# resolved through the API server's discovery): create, and update and patch by name. A refused
-# list of webhook configurations, CRDs or admission policies, and a parameter kind the discovery
-# does not resolve, is UNKNOWN.
+# change), in the namespace of the Service it calls every way to run or enter a pod that a guarded
+# namespace is asked (RIGHTS_TABLE's namespaced rows, jobs, cronjobs and replicationcontrollers,
+# exec, attach and ephemeral containers included, and each custom resource), since a pod there that
+# carries the Service's labels joins it and can mount its TLS Secret, and the writes to the Service,
+# its Endpoints, EndpointSlices and Secrets; a webhook that calls a URL outside the cluster is
+# UNKNOWN. Create, update and patch of each cluster-scoped resource of a policy engine (a CRD of
+# kyverno.io, gatekeeper.sh, kubewarden.io or a subgroup of one, or a group whose name holds
+# "policy" or "policies"), as Kyverno's ClusterPolicy and MutatingPolicy or Gatekeeper's Assign
+# mutate pods. The writes to each parameter object an admission policy's binding names (paramRef,
+# of the policy's paramKind, resolved through the API server's discovery): create, and update and
+# patch by its name, unnamed for a paramRef.selector, in each guarded namespace for a namespaced
+# kind whose paramRef names no namespace (the admitted object's is read then). And on the operator's
+# cluster, GKE Autopilot's workload allowlists: an installed WorkloadAllowlist admits the privileged
+# workloads it names, so it is UNKNOWN, and create, update and patch of AllowlistSynchronizers,
+# which install them, are asked. A refused list of webhook configurations, CRDs, admission policies
+# or allowlists, and a parameter kind the discovery does not resolve, is UNKNOWN.
 #
 # Cluster settings outside RBAC. Legacy ABAC authorizes requests by its own policies beside RBAC, and
 # the identity service for GKE takes users and groups from an outside identity provider, so no
