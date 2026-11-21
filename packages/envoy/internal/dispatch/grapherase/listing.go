@@ -126,13 +126,20 @@ func (e *Erasure) readEmbeddings(ctx context.Context, tx pgx.Tx, read *erasedRea
 // that document's own search row, the issue's search vector where that document is its spec
 // (restateSearch), and the vector of each keyword row of that issue that names a version the run
 // deletes, which is written again without it (restateKeywordVersions). The keyword rows are listed
-// by their key, each set in event_seq order.
+// by their key, each set in event_seq order. document_search is read only where it stands
+// (documentSearchStands), since the boot step that retires it may have dropped it.
 func (e *Erasure) readSearch(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	if len(read.artifacts) > 0 {
+		stands, err := documentSearchStands(ctx, tx)
+		if err != nil {
+			return err
+		}
 		var searched bool
-		if err := tx.QueryRow(ctx, `select exists (select 1 from document_search where artifact_id = $1::uuid)`,
-			read.versioned.artifact).Scan(&searched); err != nil {
-			return fmt.Errorf("read the search row of %s: %w", read.versioned.refKey, err)
+		if stands {
+			if err := tx.QueryRow(ctx, `select exists (select 1 from document_search where artifact_id = $1::uuid)`,
+				read.versioned.artifact).Scan(&searched); err != nil {
+				return fmt.Errorf("read the search row of %s: %w", read.versioned.refKey, err)
+			}
 		}
 		if searched {
 			read.listing.search = append(read.listing.search, "rewrite document_search of "+read.versioned.refKey)

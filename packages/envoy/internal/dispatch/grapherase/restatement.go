@@ -24,7 +24,8 @@ import (
 // so the row the run's delete left standing on a gone version goes, and the latest version left
 // is touched where its search is, which has that trigger write the row as it writes every other
 // row of the table. A document with no version left keeps no row, as one that never had a version
-// with markdown has none.
+// with markdown has none. Where the boot step that retires document_search has dropped it, with
+// that trigger, there is no such row to restate (documentSearchStands).
 //
 // Each row that goes is queued for the term statistics with the vector it held
 // (search_term_queue), the row 20261101182522's trigger writes for a row of the table it
@@ -41,23 +42,29 @@ func (e *Erasure) restateSearch(ctx context.Context, tx pgx.Tx, artifacts []stri
 	if len(artifacts) == 0 {
 		return nil
 	}
-	rows, err := tx.Query(ctx, `
-		with gone as (
-			delete from document_search d
-			where d.artifact_id = any($1::uuid[])
-			  and not exists (select 1 from artifact_versions v where v.artifact_id = d.artifact_id and v.number = d.number)
-			returning d.artifact_id, d.search
-		), queued as (
-			insert into search_term_queue (kind, artifact_id, old_search)
-			select 'document', gone.artifact_id, coalesce(gone.search, ''::tsvector) from gone
-		)
-		select artifact_id::text from gone`, artifacts)
+	stands, err := documentSearchStands(ctx, tx)
 	if err != nil {
-		return fmt.Errorf("delete the search rows of the versions that went: %w", err)
+		return err
 	}
-	stale, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return fmt.Errorf("delete the search rows of the versions that went: %w", err)
+	var stale []string
+	if stands {
+		rows, err := tx.Query(ctx, `
+			with gone as (
+				delete from document_search d
+				where d.artifact_id = any($1::uuid[])
+				  and not exists (select 1 from artifact_versions v where v.artifact_id = d.artifact_id and v.number = d.number)
+				returning d.artifact_id, d.search
+			), queued as (
+				insert into search_term_queue (kind, artifact_id, old_search)
+				select 'document', gone.artifact_id, coalesce(gone.search, ''::tsvector) from gone
+			)
+			select artifact_id::text from gone`, artifacts)
+		if err != nil {
+			return fmt.Errorf("delete the search rows of the versions that went: %w", err)
+		}
+		if stale, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+			return fmt.Errorf("delete the search rows of the versions that went: %w", err)
+		}
 	}
 	var restated int64
 	if len(stale) > 0 {
@@ -73,8 +80,10 @@ func (e *Erasure) restateSearch(ctx context.Context, tx pgx.Tx, artifacts []stri
 		}
 		restated = tag.RowsAffected()
 	}
-	e.removed("document_search", int64(len(stale))-restated)
-	e.redacted("document_search", restated)
+	if stands {
+		e.removed("document_search", int64(len(stale))-restated)
+		e.redacted("document_search", restated)
+	}
 	tag, err := tx.Exec(ctx, `
 		update issues i set search = issue_search_vector(i.key, i.title, issue_embedding_spec(i.key))
 		from artifacts a
@@ -111,6 +120,18 @@ func (e *Erasure) restateKeywordVersions(ctx context.Context, tx pgx.Tx, read er
 	}
 	e.redacted("search_text_versions", restated)
 	return nil
+}
+
+// documentSearchStands reads whether document_search stands, the table the boot step that retires
+// document search drops (startup.SearchIndexRetirement). An erase reads it after it has read or
+// deleted the versions of the document, which is the hold that step's first drop waits out, so the
+// table it reads standing stands until the erase ends.
+func documentSearchStands(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var stands bool
+	if err := tx.QueryRow(ctx, `select to_regclass('document_search') is not null`).Scan(&stands); err != nil {
+		return false, fmt.Errorf("read whether document_search stands: %w", err)
+	}
+	return stands, nil
 }
 
 // forgottenEmbeddings is what forgetEmbeddings deleted that a later step of the same run writes
