@@ -448,10 +448,10 @@ func requireNoHandBackAfterCreation(t *testing.T, recorded *durableEvents, from 
 // No step waits on a time but the stop's own deadline (intakeStopBudget) and the hold's own expiry;
 // each 30 s wait only guards against a stop that never gets to the step the wait is for. The
 // negative controls, each with the subtests that it fails:
-//   - a release that does not wait for the hand-backs fails the first three. The first sees the
-//     hold released before the link moves. The second sees the hold released when the stop returns
-//     with the hand-back pending. The third sees no finalizer settle the hand-back after the client
-//     closes;
+//   - a release that does not wait for the hand-backs fails all four. The first sees the hold
+//     released before the link moves. The second sees the hold released when the stop returns with
+//     the hand-back pending. The third sees no finalizer settle the hand-back after the client
+//     closes. The fourth sees the hold released while the callback's publish is held;
 //   - a stop that never releases its hold when a publish was left running fails the first: the
 //     hold is still live after the stop returns;
 //   - a release made at the deadline with a hand-back pending fails the second: the hold is gone
