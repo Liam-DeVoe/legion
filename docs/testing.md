@@ -287,17 +287,29 @@ The clock of a unit test:
 
 - A unit test never waits on the real clock, unless a comment above the wait says why it stays
   there in the words "stays on the real clock", as the kept ones do
-  (`web/src/features/margin/Margin.landing.test.tsx`'s `quiet` and its 500 ms long task, and
-  `web/src/features/refs/MarkdownBody.test.tsx`'s `nextTask`), and
-  `web/src/__tests__/real-clock-waits.test.ts` fails an awaited timer or a `Bun.sleep` of more than
-  0 ms without one. Apart from those, a row uses no `Bun.sleep`, no awaited `setTimeout` and
-  no wait timed by `performance.now()`, and it asserts no `Date.now()` difference. A row that waits
-  for a product timer installs the fake clock (`onFakeClock` from `web/src/__tests__/fake-clock.ts`,
-  or `jest.useFakeTimers()`) and moves it with `tick` or `jump` from that file. It restores the real
-  clock with `realClock` in its `finally` or in its file's `afterEach`, because a fake clock left
-  behind stops the timers of every row after it. The row moves the clock by the delay that the
-  product's module exports, not by a literal copy of it, so a change of that delay changes the test
-  too. Under the fake clock, user-event comes from `userOnFakeClock` in `web/src/__tests__/user.ts`.
+  (`web/src/features/margin/Margin.landing.test.tsx`'s `quiet` and its 500 ms long task,
+  `web/src/features/refs/MarkdownBody.test.tsx`'s `nextTask`, and the parse worker stand-in's
+  `tick` in `web/src/features/refs/parse-worker-fixture.ts`), and
+  `web/src/__tests__/real-clock-waits.test.ts` fails an awaited timer or a `Bun.sleep` without one,
+  whatever its delay.
+  A zero-delay timer is such a wait too: what has run by its turn depends on how loaded the machine
+  is, so a row waits for the condition its step stands for, with `waitFor` or an `expect` of what it
+  reads next, or runs the product's own zero-delay timer on the fake clock with `tick(0)`.
+  Apart from those, a row uses no `Bun.sleep`, no awaited `setTimeout` and no wait timed by
+  `performance.now()`, and it asserts no `Date.now()` difference.
+  A row that waits for a product timer installs the fake clock (`onFakeClock` from
+  `web/src/__tests__/fake-clock.ts`, or `jest.useFakeTimers()`) and moves it with `tick` or `jump`
+  from that file.
+  happy-dom runs a zero-delay timer set while another one waits in that one's task, and the fake
+  clock holds a timer of the real clock still, so a row installs the fake clock before the product
+  sets the zero-delay timer the row runs, at a moment no zero-delay timer of the real clock waits:
+  `zeroDelaysOnFakeClock` in `web/src/features/issue-page/outline-fixtures.ts` refuses to start
+  otherwise.
+  It restores the real clock with `realClock` in its `finally` or in its file's `afterEach`, because
+  a fake clock left behind stops the timers of every row after it.
+  The row moves the clock by the delay that the product's module exports, not by a literal copy of
+  it, so a change of that delay changes the test too.
+  Under the fake clock, user-event comes from `userOnFakeClock` in `web/src/__tests__/user.ts`.
 
 - The deadline of each `web/src` test is the `--timeout 60000` of `package.json`'s `test:web`
   script, and `web/src/__tests__/setup.ts` says how it was sized.

@@ -11,11 +11,13 @@ import { fileURLToPath } from "node:url";
  *
  * This reads every unit test file and test helper under `web/src` - a `*.test.ts(x)`, a file of a
  * `__tests__` folder, a `*-fixture.ts(x)` or `*-fixtures.ts(x)` helper - for a wait of real time:
- * an awaited timer whose callback is a promise's `resolve` and whose delay is not `0`, or a
- * `Bun.sleep` of more than `0`. A zero-delay timer orders tasks and waits no time, so it is not
- * one. The act-rule inputs (`*.fixture.tsx`) are written to break rules and are left out. A file
- * that imports `bun:test` or Testing Library is a test file or a helper whatever its name, and the
- * scan holds itself to reading every such file.
+ * an awaited timer whose callback is a promise's `resolve`, or a `Bun.sleep`, whatever its delay.
+ * A zero-delay one is a wait of real time too: what has run by its turn - a timer of the
+ * product's, a render, a promise of the library's - depends on how loaded the machine is, so a
+ * row waits for the condition its step stands for, or moves the fake clock over the product's own
+ * zero-delay timer with `tick(0)`. The act-rule inputs (`*.fixture.tsx`) are written to break
+ * rules and are left out. A file that imports `bun:test` or Testing Library is a test file or a
+ * helper whatever its name, and the scan holds itself to reading every such file.
  */
 
 const webSource = fileURLToPath(new URL("..", import.meta.url));
@@ -58,7 +60,6 @@ export function realWaits(file: string, text: string): RealWait[] {
   const found: RealWait[] = [];
   for (const pattern of [awaitedTimer, sleep]) {
     for (const match of text.matchAll(pattern)) {
-      if ((match[1] ?? "").trim() === "0") continue;
       const index = text.slice(0, match.index).split("\n").length - 1;
       if (comment.test(lines[index] ?? "")) continue;
       const above = lines.slice(Math.max(0, index - REASON_WINDOW), index);
@@ -93,13 +94,18 @@ test("the scan reads every file that imports bun:test or Testing Library", () =>
   expect(unread, "a test helper the scan does not read by its name").toEqual([]);
 });
 
-test("a wait of real time is found, and its reason is read from the comment above it", () => {
+test("a wait of real time is found, a zero-delay one too, and its reason is read from the comment above it", () => {
   const bare = ["await act(async () => {", "  setTimeout(waited.resolve, 50);", "});"].join("\n");
   const kept = ["// This one stays on the real clock (INFRA-1505): why.", bare].join("\n");
   const zero = "setTimeout(resolve, 0);";
+  const zeroKept = ["// This one stays on the real clock (INFRA-1505): why.", zero].join("\n");
   expect(realWaits("bare.test.ts", bare).map((wait) => wait.reasoned)).toEqual([false]);
   expect(realWaits("kept.test.ts", kept).map((wait) => wait.reasoned)).toEqual([true]);
-  expect(realWaits("zero.test.ts", zero)).toEqual([]);
+  expect(realWaits("zero.test.ts", zero).map((wait) => wait.reasoned)).toEqual([false]);
+  expect(realWaits("zero-kept.test.ts", zeroKept).map((wait) => wait.reasoned)).toEqual([true]);
+  expect(realWaits("sleep.test.ts", "await Bun.sleep(0);").map((wait) => wait.reasoned)).toEqual([
+    false,
+  ]);
 });
 
 test("no unit test waits on the real clock without saying why", () => {

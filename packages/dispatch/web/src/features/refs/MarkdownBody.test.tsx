@@ -1383,9 +1383,8 @@ function looseText(container: HTMLElement): string {
  *  out, and that budget is read from `performance.now()` (`useRenderedMarkdown`,
  *  `paintAcrossTasks`), which `jest.useFakeTimers()` freezes: under a fake clock one task
  *  paints the whole body, so the rows below - which read what a single slice left in the
- *  element - would have nothing to read. The rows also drive the parse worker through
- *  `parse-worker-fixture.ts`, whose own `tick` is a zero-delay `setTimeout` that a fake clock
- *  leaves waiting for an advance nothing makes. */
+ *  element - would have nothing to read. The parse worker's stand-in steps these rows on the
+ *  real clock with its own `tick` for the same reason (`parse-worker-fixture.ts`). */
 function nextTask(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, 0);
@@ -1938,7 +1937,7 @@ describe("A long body parsed in the worker", () => {
   // nobody is looking at (sjawhar/legion#2519). A parse on the page would have cached its
   // answer, so the mount below would need no worker at all; it asks for one, which is what says
   // the page parsed nothing. Only the deadline runs on the fake clock: the mount below is
-  // answered through `parse-worker-fixture.ts`, whose zero-delay `tick` a fake clock holds.
+  // answered and painted on the real clock, as this file's other worker rows are (`nextTask`).
   test("parses nothing on the page when the deadline passes for a body its reader left", async () => {
     const worker = installFakeParseWorker();
     const markdown = longBody("A body left with the worker");
