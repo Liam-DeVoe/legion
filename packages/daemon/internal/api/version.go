@@ -2926,7 +2926,60 @@ package api
 // request declares. Read the base's own number and every open pull request again at every forward
 // merge rather than from this line.)
 //
-// 202: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
+// 202: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
+// block of `GET /legion/v1/state` becomes the repositories the project's live records name, read
+// in the state's own snapshot. The block is `{live, caches, withoutWebhookApp}`. `live` holds one
+// entry for each repository a live record names, under the name the records keep, sorted by its
+// lowercased `<owner>/<name>`: `repo`; `servedAs`, the other name of its configured pair where the
+// rename rule serves it under that one; `apps`, each role App's installation on the name it is
+// served under, once GitHub answered both reads; `readError`, why GitHub's last read did not name
+// it; and `cache`, its repository cache under the Kubernetes runtime; each but `repo` absent until
+// it holds something. `caches` is unchanged: the caches of repositories no live record names.
+// `withoutWebhookApp` is kept in 152's shape for every caller, `{repo, reason}` for each live
+// repository Dispatch's webhook App is not known to be installed on, under the name the records
+// keep, in `live`'s order and never null, and it is the block's one report of the webhook App: no
+// `live` entry carries a copy of it. The operator's `legion state` states no contract and asks from
+// no pod, so it is served the new block, and a `legion state` of 152 reads its webhook App lines
+// from this list, so without it that binary would print that no repository lacks the webhook App
+// whatever the live records hold. `owners`, `mapped` and `refused` are gone, and with them each
+// entry's `default`, which the daemon no longer knows. A plugin of 152 reads the block with a
+// schema that requires those three keys and would refuse the whole state without them, so a
+// caller below 202 is served the block in 152's shape, written from the same entries (shaping.go's
+// repositoriesLiveContract and withoutRepositoriesLive, its row of stateNarrowings): `owners` and
+// `mapped` are the entries both role Apps are installed on, under the name each is served under,
+// every `default` false; `refused` is each other entry with its `readError`, the App not installed
+// on it, or "GitHub has not answered for it yet"; and `withoutWebhookApp` is the same list as on
+// the new block. A caller below 152 is also below 202, and is served that block with no `apps` on
+// either list, as 193 serves it (withoutRepositoryApps, whose flag the older block reads). The
+// caller is placed as 193 places every caller of the state: by the contract its
+// `Legion-Plugin-Contract` header states, else by the claims of its pod, else at this contract. So
+// a plugin from 193 to 198, which states its contract, is served 193's keys and the block in 152's
+// shape; one from 199 to 201 is served 199's keys, since neither 200 nor 201 has an entry, and the
+// same block, 199's keys being 193's on this route since 199 moved no shape of an answer; a pod
+// whose claims record 178 to 192 and that states nothing is served the pause and that block; and a
+// caller that states nothing from no pod — the operator's `legion state`, `legion controller
+// start` — is served the new block. A tmux pane's plugin states its own contract, which the boot
+// gate and `legion probe-image` keep at this one.
+// The records of `contract-shapes.json` take the step as they take every band: 202's records hold
+// the new block's key paths, and every record below 202 keeps the older block's. One enumerated
+// field arrives with the block, the cache's `state` at `repositories.live.*.cache.state`, whose
+// five words answers.go records at this contract (liveCacheStates), so every record of the state
+// below 202 holds that key path's domain empty, as domainsOf writes it, and no other domain moves.
+// `packages/contracts/src/legion-api.ts` mirrors the new block, and the fixture
+// `state-narrowed-repositories.json` is the body served a caller that states 201, the contract
+// before this one, which is served at 199, the recorded contract below it: 199's keys, which are
+// 193's, the pause and the block in 152's shape.
+// (This change takes 202, the lowest number above main's 199 that no open pull request declared
+// at the census of `const DaemonAPIVersion` at refs/pull/<n>/head over the 301 open pull requests
+// of cybermonklabs/legion, taken from 2026-11-20T23:09:18Z to 23:19:17Z, which named above
+// main's 199: 200 (#4065 and #4580) and 201 (#4553 and #4611). This entry stood at 167, 169, 173,
+// 182, 189, 190, 191, 195, 196 and 200 before, each the number it took at an earlier census and no
+// head's for good. Read main's own number and every open pull request's again at the next forward
+// merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 207: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
 // identity at the secrets broker for a Dispatch token of its own session, and the daemon names
 // that session, which moves three surfaces this number names. The agent's argv: in a pod that
 // carries the exchange identity (sandbox's launch.trades) the daemon chooses each Oh My Pi role's
@@ -2946,13 +2999,13 @@ package api
 // token, which a deployment waits to see at zero before it removes
 // `dispatch_token_transition_file`. The settings block's `dispatch_token_broker` is a key of the
 // block the plugin parses loosely (35 above), and moves no number.
-// A caller below 202 is served the state without the key, by its row of shaping.go's
+// A caller below 207 is served the state without the key, by its row of shaping.go's
 // stateNarrowings (withoutDispatchCredential, the band of dispatchCredentialContract): a plugin
 // built before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole
 // body for a key it does not name, and one built after strips the key, so the band keeps the body
 // each contract's record describes. A caller from 193 up states its contract and is placed by it,
-// and a caller placed by its pod is below 193 (podContracts), so the band reaches both. 202's
-// records are 199's under its own number with the key paths of `dispatchCredential` on the
+// and a caller placed by its pod is below 193 (podContracts), so the band reaches both. 207's
+// records are 202's under its own number with the key paths of `dispatchCredential` on the
 // state's. No other answer a plugin parses moves: the release-names route, which gains a 502 and a
 // 503 for the broker's answer to the release of a claim's session names, answers the `legion`
 // command, which states no contract.
@@ -2963,16 +3016,18 @@ package api
 // `legion probe-image` hold the daemon to an image built from this contract. A role in a kept pod
 // of an older image carries no exchange identity, so it keeps the argv and the credential it had,
 // and its pod's update round replaces the pod.
-// (This change takes 202, the lowest number above main's 199 that no open pull request declared
-// when the forward merge of 2026-11-20 brought main in at f1d27d3a82, which declares 199 (#4495,
+// (This change takes 207, the lowest number above main's 202 that no open pull request declared
+// when the forward merge of 2026-11-21 brought main in at 1cdf5b9ceb, which declares 202 (#4493,
 // the entry above); it had declared 165, then 175 from the merge that brought main in at
 // a16c218ee3, then 179 from the merge that brought main in at 506395beea, then 182 from the merge
 // that brought main in at c7e1cbd532, then 192 from the merge that brought main in at 1c7c825367,
 // then 196 from the merge that brought main in at a4cd4949fc, then 199 from the merge that brought
-// main in at fcc746a383. `.github/scripts/check-daemon-api-contract.sh`, which reads
-// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request, read 200 (#4065,
-// #4493, #4580) and 201 (#4553, #4611) above 199 at 2026-11-20T23:23Z. Read the base's own number
-// and every open pull request again at the next merge rather than from this line, as
+// main in at fcc746a383, then 202 from the merge that brought main in at f1d27d3a82.
+// `.github/scripts/check-daemon-api-contract.sh`, which reads `const DaemonAPIVersion` at
+// refs/pull/<n>/head for every open pull request, read 203 (#2230, #3993, #4065, #4175, #4553,
+// #4592, #4596, #4661), 204 (#3831, #4030), 205 (#4573) and 206 (#4540) above 202 at
+// 2026-11-21T03:50Z. Read the base's own number and every open pull request again at the next
+// merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 202
+const DaemonAPIVersion = 207

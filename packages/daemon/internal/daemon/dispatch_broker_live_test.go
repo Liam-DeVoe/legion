@@ -1576,7 +1576,6 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 	call("Whoami", true, func() error { _, err := client.Whoami(ctx); return err })
 	call("ListIssues", true, func() error { _, err := client.ListIssues(ctx, rigP, nil); return err })
 	call("GetIssue", true, readIssue)
-	call("ListRepoProjects", true, func() error { _, err := client.ListRepoProjects(ctx); return err })
 	call("WebhookAppInstalled", true, func() error {
 		_, err := client.WebhookAppInstalled(ctx, "example-org/example-repo")
 		return err
