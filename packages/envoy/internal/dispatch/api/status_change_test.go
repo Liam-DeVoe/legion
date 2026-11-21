@@ -938,13 +938,7 @@ func TestARefusalBeforeTheKeyedLayerAnswersChanged(t *testing.T) {
 		t.Run(refused.name, func(t *testing.T) {
 			change := refused.send(t, http.MethodPost, changePath, map[string]any{"status": "done"})
 			patch := refused.send(t, http.MethodPatch, patchPath, map[string]any{"status": "done"})
-			var changeBody, patchBody map[string]any
-			if err := json.Unmarshal(change.Body.Bytes(), &changeBody); err != nil {
-				t.Fatalf("POST %s from %s: decode the answer %s: %v", changePath, refused.name, change.Body.String(), err)
-			}
-			if err := json.Unmarshal(patch.Body.Bytes(), &patchBody); err != nil {
-				t.Fatalf("PATCH %s from %s: decode the answer %s: %v", patchPath, refused.name, patch.Body.String(), err)
-			}
+			changeBody, patchBody := decodeBody[map[string]any](t, change), decodeBody[map[string]any](t, patch)
 			if _, carries := patchBody["changed"]; patch.Code != refused.status || patchBody["code"] != refused.code || carries {
 				t.Fatalf("PATCH %s from %s answered %d %s, want %d %s with no changed",
 					patchPath, refused.name, patch.Code, patch.Body.String(), refused.status, refused.code)

@@ -25,7 +25,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -91,11 +90,8 @@ type statusChangeEntry struct {
 
 // statusChangeRefusal is every refusal of the route but 409 PARENT_STATUS_CONFLICT, the handler's
 // and its request key's (refuseStatusChangeKey): its code and its message, and the entries of the
-// writes that committed before it ([] when none did; for a 409 KEY_IN_FLIGHT, those the run that
-// holds the key had committed when the key was read, and for an ANSWER_NOT_KEPT, those the first
-// run committed). A layer register puts outside the keyed layer refuses before any step runs with
-// the {code, error} it answers every route, and addChangedToRefusals, outside every layer of the
-// route's chain, adds changed [] to it, so it reads as this shape too.
+// writes that committed before it, [] when none did. Every other layer's refusal reads as this
+// shape too (addChangedToRefusals).
 type statusChangeRefusal struct {
 	Code    string              `json:"code"`
 	Error   string              `json:"error"`
@@ -605,8 +601,8 @@ func statusChangeCallerName(actor model.Actor) string {
 // writeStatusChangeRefusal answers err as every other route answers it (writeAuthenticationError,
 // which answers every error that is not an identity's as writeHandlerError does), with changed
 // beside the refusal: the entries of the steps that committed before it, [] when changed is nil.
-// It shapes the refusals of the handler and of the keyed layer (refuseStatusChangeKey); those of
-// the layers outside the keyed layer get their changed from addChangedToRefusals.
+// It shapes the handler's refusals and the keyed layer's (refuseStatusChangeKey); every other
+// layer's gets changed [] (addChangedToRefusals).
 func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, changed []statusChangeEntry) {
 	if changed == nil {
 		changed = []statusChangeEntry{}
@@ -621,11 +617,8 @@ func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, chan
 	s.writeAuthenticationError(refused, err)
 	var body errorBody
 	if decodeErr := json.Unmarshal(refused.body.Bytes(), &body); decodeErr != nil {
-		// Every refusal writeAuthenticationError writes is {code, error}, so this is a fault of
-		// the server's own: logged as writeHandlerError logs one, and answered 500 in the route's
-		// refusal shape, with changed, as every refusal of the route is.
-		slog.Error("dispatch: API handler failed", "error", fmt.Errorf("read the refusal of a status change: %w", decodeErr))
-		WriteJSON(w, http.StatusInternalServerError, statusChangeRefusal{Code: codeInternal, Error: "internal server error", Changed: changed})
+		// A server fault: writeHandlerError answers it 500 {code, error}, so it recurses once.
+		s.writeStatusChangeRefusal(w, fmt.Errorf("read the refusal of a status change: %w", decodeErr), changed)
 		return
 	}
 	maps.Copy(w.Header(), refused.header)
@@ -634,20 +627,20 @@ func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, chan
 
 // refuseStatusChangeKey is the route's keyedRoute.refuse: a refusal the request-key layer decides
 // itself, err, answered as writeStatusChangeRefusal answers one, with changed the entries recovery
-// holds - the recovery point of this request's run, which a 409 KEY_IN_FLIGHT names while that run
-// holds the key and an ANSWER_NOT_KEPT names after it - and [] where recovery is nil: a point not
-// yet written, and every other refusal of the key, under which nothing ran.
+// holds, and [] where recovery is nil. A KEY_IN_FLIGHT answered before the repeat's body is judged
+// (answerDrainedRepeat's Expect: 100-continue and drain-error answers) names the running request's
+// point whatever the repeat's body; elsewhere a point is passed only once the digest matched.
+// recovery is nil where the layer read none, where the row is another request's (KEY_REUSED), and
+// where it is past its window.
 func (s *server) refuseStatusChangeKey(w http.ResponseWriter, err error, recovery json.RawMessage) {
-	changed := []statusChangeEntry{}
+	var point statusChangeRecovery
 	if recovery != nil {
-		var point statusChangeRecovery
 		if decodeErr := json.Unmarshal(recovery, &point); decodeErr != nil {
-			s.writeStatusChangeRefusal(w, fmt.Errorf("read the recovery point of a status change: %w", decodeErr), changed)
+			s.writeStatusChangeRefusal(w, fmt.Errorf("read the recovery point of a status change: %w", decodeErr), nil)
 			return
 		}
-		changed = append(changed, point.Changed...)
 	}
-	s.writeStatusChangeRefusal(w, err, changed)
+	s.writeStatusChangeRefusal(w, err, point.Changed)
 }
 
 // statusChangeRecovery is the recovery point of a keyed status change (request_keys.go): what

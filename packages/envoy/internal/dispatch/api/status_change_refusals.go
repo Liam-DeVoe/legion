@@ -117,8 +117,8 @@ func withEmptyChanged(body []byte) ([]byte, bool) {
 	if len(members) == 0 {
 		member = `"changed":[]`
 	}
-	// The object's closing brace is its last byte but JSON's whitespace after it, such as the
-	// newline json.Encoder ends each value with.
-	closing := len(bytes.TrimRight(body, " \t\r\n")) - 1
+	// The object's closing brace is body's last '}': body was accepted as one JSON object, so only
+	// JSON's whitespace follows it, such as the newline json.Encoder ends each value with.
+	closing := bytes.LastIndexByte(body, '}')
 	return slices.Concat(body[:closing], []byte(member), body[closing:]), true
 }

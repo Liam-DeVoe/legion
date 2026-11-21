@@ -462,11 +462,13 @@ function issueUpdateProblem(value: unknown): string | undefined {
     readonly before?: unknown;
     readonly after?: unknown;
   };
-  const broken = [
-    issueReasonProblem(input),
-    issueStatusOptionsProblem(value as Readonly<Record<string, unknown>>),
-  ].filter((problem) => problem !== undefined);
-  if (broken.length > 0) return broken.join(" ");
+  const reasonProblem = issueReasonProblem(input);
+  const optionsProblem = issueStatusOptionsProblem(value as Readonly<Record<string, unknown>>);
+  const broken = brokenParts([
+    [reasonProblem === undefined, reasonProblem ?? ""],
+    [optionsProblem === undefined, optionsProblem ?? ""],
+  ]);
+  if (broken !== undefined) return broken;
   const changesAField =
     typeof input.status === "string" ||
     typeof input.title === "string" ||

@@ -47,8 +47,10 @@ import (
 //     (requestKeyInFlight): its body is read off the connection and discarded, and the repeat is
 //     judged by its digest once that body has arrived, by what the key holds then
 //     (answerDrainedRepeat). A refusal the layer answers itself takes its route's shape
-//     (keyedRoute.refuse): the status change's carries changed, the entries the run that holds the
-//     key has committed for a KEY_IN_FLIGHT and [] for every other (refuseStatusChangeKey).
+//     (keyedRoute.refuse): the status change's carries changed, the entries of the request's
+//     recovery point for a KEY_IN_FLIGHT - the holder's, answered while it runs, and an abandoned
+//     run's for a freed key - and for an ANSWER_NOT_KEPT, and [] for every other
+//     (refuseStatusChangeKey).
 //   - The handler finishes whatever its client does: it runs on the request's context with the
 //     client's cancellation taken off, bounded by keyedHandlerLimit and counted in the server's
 //     background wait, so a client that gives up and asks again waits on the first run rather than
@@ -157,9 +159,12 @@ type keyedRoute struct {
 	replay  keyedReplay
 	resumes bool
 	// refuse answers err, a refusal the keyed layer decides itself, in the route's own shape, with
-	// recovery the point the key held when the layer decided it: nil where the layer read none,
-	// and where the row it read holds no point of this request's (another request's, or one past
-	// its window). Nil answers as every route does (refuseKeyed).
+	// recovery the point the key held when the layer decided it. A KEY_IN_FLIGHT answered before
+	// the repeat's body is judged (answerDrainedRepeat's Expect: 100-continue and drain-error
+	// answers) names the running request's point whatever the repeat's body; elsewhere a point is
+	// passed only once the digest matched. recovery is nil where the layer read none, where the
+	// row is another request's (KEY_REUSED), and where it is past its window. A nil refuse answers
+	// as every route does (refuseKeyed).
 	refuse func(w http.ResponseWriter, err error, recovery json.RawMessage)
 }
 
@@ -310,7 +315,7 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		// A repeat whose first request still runs is not spooled: a slow upload's repeats would
 		// each be written to disk again only to be told to wait. Its body is read off the
 		// connection and discarded, and the repeat is judged once it has arrived.
-		inFlight, recovery, err := s.requestKeyInFlight(r.Context(), login, key)
+		inFlight, recovery, err := s.requestKeyInFlight(r.Context(), login, key, route.refuse != nil)
 		if err != nil {
 			w.Header().Set(contracts.IdempotencyKeyHeader, key)
 			s.refuseKeyed(w, route, err, nil)
@@ -820,16 +825,22 @@ func (held heldRequestKey) storedSuccess() []byte {
 
 // requestKeyInFlight reports whether login's key is held by a first request still running: a row
 // inside the key's window, unanswered, its lease live - the KEY_IN_FLIGHT claimRequestKey would
-// answer, looked up before the request's body is spooled. recovery is the recovery point the row
-// holds, nil for none: what a KEY_IN_FLIGHT answered before the key is read again names. It names
-// no digest: the repeat it finds is judged by its digest once its body has arrived
-// (answerDrainedRepeat).
-func (s *server) requestKeyInFlight(ctx context.Context, login, key string) (inFlight bool, recovery json.RawMessage, err error) {
+// answer, looked up before the request's body is spooled. recovery is the recovery point that
+// row holds, read only when wantsPoint (a route that shapes its refusals, keyedRoute.refuse) and
+// the row is in flight, and nil otherwise: what a KEY_IN_FLIGHT answered before the key is read
+// again names. It names no digest: the repeat it finds is judged by its digest once its body has
+// arrived (answerDrainedRepeat).
+func (s *server) requestKeyInFlight(
+	ctx context.Context, login, key string, wantsPoint bool,
+) (inFlight bool, recovery json.RawMessage, err error) {
+	// now() is fixed for the statement, so the two in-flight expressions agree.
 	err = s.deps.Store.Pool.QueryRow(ctx, `
-		select status is null and coalesce(leased_at >= now() - make_interval(secs => $3), false), recovery
+		select status is null and coalesce(leased_at >= now() - make_interval(secs => $3), false),
+		       case when $5 and status is null and coalesce(leased_at >= now() - make_interval(secs => $3), false)
+		            then recovery end
 		from request_keys
 		where login = $1 and idempotency_key = $2 and created_at >= now() - make_interval(secs => $4)
-	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(&inFlight, &recovery)
+	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds(), wantsPoint).Scan(&inFlight, &recovery)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil, nil
 	}
