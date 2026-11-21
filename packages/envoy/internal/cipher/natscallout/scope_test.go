@@ -246,8 +246,8 @@ func TestAnAdmissionNeverWaitsOnDispatch(t *testing.T) {
 	t.Cleanup(stop)
 	go deps.held.refresh(asks)
 	testwait.Eventually(t, "the first answer about PUB held", func() bool {
-		_, known := deps.held.answer(heldKey{project: "PUB", person: entryPerson})
-		return known
+		_, _, known := deps.held.read(entryPerson, []string{"PUB"})
+		return known[0]
 	})
 	go deps.held.refresh(asks) // its ask about PUB waits on release
 	asked := func() int {
@@ -484,41 +484,33 @@ func TestAGrantThatCannotBeHeldToItsProjectsIsRefusedByName(t *testing.T) {
 }
 
 // No kind's callout grant carries the private-projects bucket: listeners read a project's privacy
-// from Dispatch through the broker, and no such bucket exists on a hub. Dispatch's, a listener's,
-// a whole daemon's and the measurement job's callout grants are their natsgrant sets (a daemon's
-// with its reply prefix), and none holds a natsgrant.KVRead or natsgrant.KVWrite subject of
-// bus.PrivateProjectsBucket. The static sets a hub renders hold none of it either, so a hub with no
-// auth service renders what it rendered before (c-hub-config-unchanged). The control puts the
-// bucket decoration back in scopeGrant: the test fails naming the kind.
+// from Dispatch through the broker, and no such bucket exists on a hub. None of Dispatch's, a
+// listener's, a whole daemon's or the measurement job's callout grants holds a natsgrant.KVRead or
+// natsgrant.KVWrite subject of bus.PrivateProjectsBucket (that each equals its natsgrant set is
+// TestAServiceTokenGetsItsKindsGrant's). The static sets a hub renders hold none of it either, so a
+// hub with no auth service renders what it rendered before (c-hub-config-unchanged). The control
+// puts the bucket decoration back in scopeGrant: the test fails naming the kind.
 func TestNoKindsGrantCarriesThePrivateProjectsBucket(t *testing.T) {
 	now := time.Now()
 	tokens := map[string]platformToken{
-		"dispatch-token": {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
-		"listener-token": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
-		"daemon-token":   {account: daemonAccount, issued: now, expiry: now.Add(time.Hour)},
-		"measure-token":  {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
+		"dispatch": {account: "system:serviceaccount:dispatch:dispatch", issued: now, expiry: now.Add(time.Hour)},
+		"listener": {account: listenerAccount, issued: now, expiry: now.Add(time.Hour)},
+		"daemon":   {account: daemonAccount, issued: now, expiry: now.Add(time.Hour)},
+		"measure":  {account: measureAccount, google: true, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{ServiceToken: serviceTokens(tokens)}
 	bucket := slices.Concat(natsgrant.KVRead(bus.PrivateProjectsBucket), natsgrant.KVWrite(bus.PrivateProjectsBucket))
-	for kind, row := range map[string]struct {
-		raw  string
-		want natsgrant.Permissions
-	}{
-		"dispatch": {"dispatch-token", natsgrant.Dispatch("example-dispatch")},
-		"listener": {"listener-token", natsgrant.Listener("example-hub")},
-		"daemon":   {"daemon-token", daemonCalloutGrant(daemonAccount)},
-		"measure":  {"measure-token", natsgrant.Measure()},
-	} {
-		decision, err := Decide(t.Context(), deps, exampleServices, serviceRequest(row.raw))
+	for kind := range tokens {
+		decision, err := Decide(t.Context(), deps, exampleServices, serviceRequest(kind))
 		require.NoError(t, err, kind)
 		for _, entry := range slices.Concat(decision.Grant.Publish, decision.Grant.Subscribe) {
 			require.NotContains(t, bucket, entry, "the %s callout grant carries the private-projects bucket's %s", kind, entry)
 		}
-		require.Equal(t, row.want, decision.Grant, "the %s callout grant is not its natsgrant set", kind)
 	}
 	for name, static := range map[string]natsgrant.Permissions{
 		"dispatch": natsgrant.Dispatch("example-dispatch"), "listener": natsgrant.Listener("example-hub"),
 		"listener host": natsgrant.ListenerHost("example-hub"), "host": natsgrant.Host("example-host"),
+		"daemon": natsgrant.Daemon(), "measure": natsgrant.Measure(),
 	} {
 		for _, entry := range slices.Concat(static.Publish, static.Subscribe) {
 			require.NotContains(t, entry, bus.PrivateProjectsBucket, "the static %s set a hub renders names the private-projects bucket", name)

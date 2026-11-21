@@ -70,22 +70,22 @@ func scopeGrant(deps Deps, entry ServiceEntry, grant natsgrant.Permissions) (nat
 	case len(projects) == 0:
 		return natsgrant.Permissions{}, refuse(labelNoProjects, "account's exchange entry names no project to hold it to: "+entry.Account)
 	}
-	if deps.held.refused() {
+	refused, held, known := deps.held.read(person, projects)
+	if refused {
 		// The token exchange refuses every trade that asks Dispatch while it refuses the broker's
 		// token (oauth's refusedByDispatch), so every held connection is refused too, whichever
 		// question of the refresh Dispatch refused.
 		return natsgrant.Permissions{}, refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so what the account's person may see is not known: service "+entry.name())
 	}
-	for _, project := range projects {
-		held, known := deps.held.answer(heldKey{project: project, person: person})
+	for i, project := range projects {
 		switch {
-		case !known:
+		case !known[i]:
 			// No refresh has answered about this project yet (the first is still running, or
 			// Dispatch was down from the start); the client retries.
 			return natsgrant.Permissions{}, refuse(labelProjectAccessUnknown, "project access not yet known: "+project)
-		case held.notFound:
+		case held[i].notFound:
 			return natsgrant.Permissions{}, refuse(labelProjectNotFound, "project not found: "+project)
-		case !held.visible:
+		case !held[i].visible:
 			// The token exchange refuses this entry's token the same way (projectaccess.Visible):
 			// its person cannot see the project, so neither may the connection.
 			return natsgrant.Permissions{}, refuse(labelProjectNotVisible, "project not visible to the account's person: "+project)
@@ -126,27 +126,22 @@ const accessFetchTimeout = 10 * time.Second
 type heldAccess struct {
 	access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	asks   []heldKey
-	now    func() time.Time
 	log    *slog.Logger
 
 	mu      sync.RWMutex
 	answers map[heldKey]heldAnswer
-	// brokerRefused is whether the newest refresh that decided it found Dispatch refusing the
-	// broker's own account token, and decided when that refresh began. A refresh decides it when
-	// Dispatch refused the token on one of its questions or answered one of them.
+	// brokerRefused is whether the last refresh that decided it found Dispatch refusing the
+	// broker's own account token. A refresh decides it when Dispatch refused the token on one of
+	// its questions or answered one of them.
 	brokerRefused bool
-	decided       time.Time
 }
 
 // heldKey is one question the service asks Dispatch: whether person may see project.
 type heldKey struct{ project, person string }
 
 // heldAnswer is one question's answer: that Dispatch holds no such project, or whether the
-// person may see it; and when the refresh that read it began.
-type heldAnswer struct {
-	notFound, visible bool
-	began             time.Time
-}
+// person may see it.
+type heldAnswer struct{ notFound, visible bool }
 
 // newHeldAccess holds the answers about every project deps.Exchange gives an entry of services
 // that is not an all-projects one, each asked for the person its exchange entry acts for; nil when
@@ -177,11 +172,12 @@ func newHeldAccess(deps Deps, services []ServiceEntry) *heldAccess {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &heldAccess{access: deps.Access, asks: asks, now: deps.now, log: log, answers: make(map[heldKey]heldAnswer, len(asks))}
+	return &heldAccess{access: deps.Access, asks: asks, log: log, answers: make(map[heldKey]heldAnswer, len(asks))}
 }
 
-// run makes a refresh now and every accessRefresh after, until ctx ends. On a nil heldAccess (no
-// entry held to projects) it returns at once.
+// run makes a refresh now and every accessRefresh after, until ctx ends, one at a time: each
+// refresh returns before the next begins, so no two overlap. On a nil heldAccess (no entry held to
+// projects) it returns at once.
 func (h *heldAccess) run(ctx context.Context) {
 	if h == nil {
 		return
@@ -199,15 +195,14 @@ func (h *heldAccess) run(ctx context.Context) {
 }
 
 // refresh asks Dispatch every held question, all at once, each bounded by accessFetchTimeout, and
-// holds each answer it gets in place of the one held about its question, unless that one was read
-// by a refresh that began later. It decides whether Dispatch refuses the broker's own account
-// token when it got a refusal or an answer, unless a later refresh has decided that already. It
-// holds all of that before it writes any log line, since a write can block (report.go). It logs a
-// refusal at error, naming the project whose question Dispatch refused, since every held
-// connection is then refused; else each failed question at warn, since the answer held about it
-// is kept.
+// holds each answer it gets in place of the one held about its question, whatever its other
+// questions did, a refusal of the broker's token among them. It decides whether Dispatch refuses
+// the broker's own account token when it got a refusal or an answer. It holds all of that before
+// it writes any log line, since a write can block (report.go). It logs a refusal at error, naming
+// the project whose question Dispatch refused, since every held connection is then refused; else
+// each failed question at warn, since the answer held about it is kept. refresh is not safe to run
+// beside itself; run calls it one at a time.
 func (h *heldAccess) refresh(ctx context.Context) {
-	began := h.now()
 	answers := make([]heldAnswer, len(h.asks))
 	// errs is each question's failure, nil for one answered.
 	errs := make([]error, len(h.asks))
@@ -219,11 +214,11 @@ func (h *heldAccess) refresh(ctx context.Context) {
 			answer, err := h.access(fetch, ask.project, ask.person)
 			switch {
 			case errors.Is(err, projectaccess.ErrProjectNotFound):
-				answers[i] = heldAnswer{notFound: true, began: began}
+				answers[i] = heldAnswer{notFound: true}
 			case err != nil:
 				errs[i] = err
 			default:
-				answers[i] = heldAnswer{visible: answer.Visible, began: began}
+				answers[i] = heldAnswer{visible: answer.Visible}
 			}
 		})
 	}
@@ -232,15 +227,12 @@ func (h *heldAccess) refresh(ctx context.Context) {
 	answered := slices.Contains(errs, nil)
 	h.mu.Lock()
 	for i, ask := range h.asks {
-		if errs[i] != nil {
-			continue
-		}
-		if held, ok := h.answers[ask]; !ok || !began.Before(held.began) {
+		if errs[i] == nil {
 			h.answers[ask] = answers[i]
 		}
 	}
-	if (refused >= 0 || answered) && !began.Before(h.decided) {
-		h.brokerRefused, h.decided = refused >= 0, began
+	if refused >= 0 || answered {
+		h.brokerRefused = refused >= 0
 	}
 	h.mu.Unlock()
 	if refused >= 0 {
@@ -257,25 +249,18 @@ func (h *heldAccess) refresh(ctx context.Context) {
 	}
 }
 
-// refused reports whether the newest refresh that decided it found Dispatch refusing the broker's
-// own account token: false on a nil heldAccess.
-func (h *heldAccess) refused() bool {
+// read is, under one lock, whether the last refresh that decided it found Dispatch refusing the
+// broker's own account token, and the answer held about each of projects for person, each with
+// whether a refresh has answered it yet: no refusal and no answers on a nil heldAccess.
+func (h *heldAccess) read(person string, projects []string) (refused bool, held []heldAnswer, known []bool) {
+	held, known = make([]heldAnswer, len(projects)), make([]bool, len(projects))
 	if h == nil {
-		return false
+		return false, held, known
 	}
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return h.brokerRefused
-}
-
-// answer is the answer held about key, and false when no refresh has answered it yet: on a nil
-// heldAccess too.
-func (h *heldAccess) answer(key heldKey) (heldAnswer, bool) {
-	if h == nil {
-		return heldAnswer{}, false
+	for i, project := range projects {
+		held[i], known[i] = h.answers[heldKey{project: project, person: person}]
 	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	held, ok := h.answers[key]
-	return held, ok
+	return h.brokerRefused, held, known
 }
