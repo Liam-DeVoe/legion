@@ -724,7 +724,8 @@ test("a settle while the take holds a task value returns no continuation, and a 
   expect(reminded.entries.at(-1)).toMatchObject({ state: "open", count: 1 });
 
   // S10a: the take asked while the host was idle was overtaken by this run and refused `in-turn`
-  // during it: the daemon writes the value again at this run's end, so it is pending until then.
+  // during it: the daemon writes the value again once it hears this run's end, so the take is
+  // pending past that end, until the daemon's write or the bound (`IN_TURN_REWRITE_BOUND_MS`).
   const inTurn = claimTake();
   const waiting = rig({ taskPending: () => inTurn.take.pending() });
   await inTurn.relay(4, 12);

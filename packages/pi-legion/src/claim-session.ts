@@ -66,8 +66,9 @@ export interface ClaimSession {
   readonly taskPending: () => boolean;
   /** Holds `callback`, the stall abort's restart message, for the claim's pending take
    * (`TaskTake.deferUntilSettled`): true where the take is pending, which calls it once if that
-   * take is refused or dropped and not if a run starts first; false, keeping nothing, where the
-   * take is not pending or the session holds no take. */
+   * take is refused or dropped, or once a take refused `in-turn` has waited its bound past the
+   * run's end, and not if a run starts first; false, keeping nothing, where the take is not
+   * pending or the session holds no take. */
   readonly deferUntilTakeSettles: (callback: () => void) => boolean;
   /**
    * The host's call at each tool result of the session's own agent (R2): the takes of the

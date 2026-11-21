@@ -14,7 +14,7 @@ import {
   DAEMON_RESTART_MAX_DELAY_MS,
   LegionDaemonApiError,
 } from "./daemon-client";
-import { createTaskTake } from "./task-take";
+import { createTaskTake, IN_TURN_REWRITE_BOUND_MS } from "./task-take";
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
 function daemonFixture(name: string): unknown {
@@ -1078,14 +1078,15 @@ test("a value that arrives after the run's last tool result gets no note, and is
   expect(take.noteFor()).toBe(4);
 });
 
-test("a take refused in-turn during a run stays pending until that run ends or a newer revision arrives", async () => {
-  // Until the run ends: the daemon writes the value again at that turn's end, and the take asks
-  // at the new revision.
+test("a take refused in-turn during a run stays pending past that run's end, until the daemon writes the value again or deletes it", async () => {
+  // Past the run's end: the daemon writes the value again once it hears that turn's end, which
+  // comes after it, so the take is still pending there; that write ends it, and the take asks at
+  // the new revision.
   const ended = await refusedInTurnDuringRun();
   expect(ended.take.pending()).toBe(true);
   ended.take.runEnded(false);
   await ended.advance(0);
-  expect(ended.take.pending()).toBe(false);
+  expect(ended.take.pending()).toBe(true);
   expect(ended.routed("take")).toEqual([body(4, 12)]);
   ended.takes.push({ answer: ACCEPTED });
   ended.take.relayed(put(4, 13));
@@ -1093,13 +1094,20 @@ test("a take refused in-turn during a run stays pending until that run ends or a
   expect(ended.routed("take")).toEqual([body(4, 12), body(4, 13)]);
   expect(ended.ran).toEqual([TEXT]);
 
-  // Until a newer revision, whichever comes first: here the daemon deletes the value during the
-  // run, and nothing is pending while the run still goes.
+  // A delete ends it, during the run or after its end, and nothing is pending.
+  const deletedInRun = await refusedInTurnDuringRun();
+  expect(deletedInRun.take.pending()).toBe(true);
+  deletedInRun.take.relayed({ claim: caller.claimToken, epoch: EPOCH, revision: 13, op: "delete" });
+  await deletedInRun.advance(0);
+  expect(deletedInRun.take.pending()).toBe(false);
   const deleted = await refusedInTurnDuringRun();
+  deleted.take.runEnded(false);
+  await deleted.advance(0);
   expect(deleted.take.pending()).toBe(true);
   deleted.take.relayed({ claim: caller.claimToken, epoch: EPOCH, revision: 13, op: "delete" });
   await deleted.advance(0);
   expect(deleted.take.pending()).toBe(false);
+  expect(deleted.routed("take")).toEqual([body(4, 12)]);
 
   // An in-turn answer that arrives while the host is idle sets nothing: the run that overtook the
   // take has ended, and the daemon's write at its end follows. The next run finds nothing pending.
@@ -1116,6 +1124,60 @@ test("a take refused in-turn during a run stays pending until that run ends or a
   expect(idle.take.pending()).toBe(false);
   idle.take.runStarted();
   expect(idle.take.pending()).toBe(false);
+});
+
+// A stall abort that ends a run whose take was refused `in-turn` holds its restart message for
+// that take. The daemon writes the value again only once it hears the turn's end, from the report
+// `agent_end` sends after `runEnded`, so at the run's end the take is still to come: the restart
+// must wait for that write, and a run the take's text starts drops it.
+test("a stall restart held during a run whose take was refused in-turn waits for the daemon's write at that run's end", async () => {
+  const { take, takes, routed, ran, advance } = await refusedInTurnDuringRun();
+  let calls = 0;
+  expect(
+    take.deferUntilSettled(() => {
+      calls += 1;
+    })
+  ).toBe(true);
+  take.runEnded(false);
+  await advance(0);
+  expect(calls).toBe(0);
+  expect(take.pending()).toBe(true);
+
+  // The daemon writes task 4 again at revision 13: the take asks it, and the host runs its text.
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 13));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12), body(4, 13)]);
+  expect(ran).toEqual([TEXT]);
+  take.runStarted();
+  expect(calls).toBe(0);
+});
+
+// The daemon writes nothing at the turn's end while another hold stands then, so a take refused
+// `in-turn` waits for its write for at most the bound, and past it the reminding and a held
+// restart go on. A run that starts is the worker working again, and a value written during it is
+// asked at its end, so it ends the refusal too.
+test("a take refused in-turn stays pending at most IN_TURN_REWRITE_BOUND_MS after its run's end, and a run that starts ends it", async () => {
+  const bounded = await refusedInTurnDuringRun();
+  let calls = 0;
+  expect(
+    bounded.take.deferUntilSettled(() => {
+      calls += 1;
+    })
+  ).toBe(true);
+  bounded.take.runEnded(false);
+  await bounded.advance(IN_TURN_REWRITE_BOUND_MS - 1);
+  expect(bounded.take.pending()).toBe(true);
+  expect(calls).toBe(0);
+  await bounded.advance(1);
+  expect(bounded.take.pending()).toBe(false);
+  expect(calls).toBe(1);
+
+  // A run that starts after that end ends the refusal.
+  const started = await refusedInTurnDuringRun();
+  started.take.runEnded(false);
+  started.take.runStarted();
+  expect(started.take.pending()).toBe(false);
 });
 
 test("pending() holds a value the take has not asked about, idle before the ready or busy, and lets it go once refused", async () => {

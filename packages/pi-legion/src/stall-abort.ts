@@ -63,7 +63,8 @@ export interface StallAborterDeps {
   readonly sendMessage: PiApi["sendMessage"];
   /** Holds the message's send for the claim's pending take (`ClaimSession.deferUntilTakeSettles`,
    * `TaskTake.deferUntilSettled`): true where the take is pending, which keeps the callback and
-   * calls it once if that take is refused or dropped; false, keeping nothing, where it is not. */
+   * calls it once if that take is refused or dropped, or once a take refused `in-turn` has waited
+   * its bound past the run's end; false, keeping nothing, where it is not. */
   readonly deferUntilTakeSettles: (callback: () => void) => boolean;
   readonly log: {
     readonly info: (message: string, context?: Record<string, unknown>) => void;
@@ -95,7 +96,7 @@ export function createStallAborter(deps: StallAborterDeps): StallWatchdogAborter
       };
       if (deps.deferUntilTakeSettles(send)) {
         deps.log.info(
-          "legion: a stall abort's restart message waits for the take, because a take of the claim's task is pending: the task's text, if the daemon accepts the take, starts the next run, and the message is sent if the take is refused or dropped"
+          "legion: a stall abort's restart message waits for the take, because a take of the claim's task is pending: the task's text, if the daemon accepts the take, starts the next run, and the message is sent if the take is refused or dropped, or once a take refused in-turn has waited its bound past the run's end"
         );
         return "held";
       }
