@@ -2977,7 +2977,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 208: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 206: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
@@ -2992,9 +2992,9 @@ package api
 // caller: by the contract its `Legion-Plugin-Contract` header states, else by its pod's claims,
 // which count no claim at 193 or above, so a plugin of 193 meets the band by its header alone.
 // `packages/contracts/src/legion-api.ts` mirrors the four on `legionIssue`, each optional. A
-// caller at 208 is served what one at 202 is with the four keys beside it, so 208's records are
+// caller at 206 is served what one at 202 is with the four keys beside it, so 206's records are
 // 202's under its own number with the four key paths added to the state's and the record's,
-// and with a record of the owed answer below, which no contract before 208 has.
+// and with a record of the owed answer below, which no contract before 206 has.
 //
 // The same contract adds the claim route `POST /legion/v1/claims/owed` (`api.OwedRequest`, the
 // claim token, session and secret `claims/activity` carries), which answers `{"owes": bool,
@@ -3009,13 +3009,13 @@ package api
 // whose issue the workflow records, owed or not, and absent for an architect, the controller, a
 // failed claim and an unrecorded issue. The end-of-turn reminder renders that answer in both
 // harnesses and keeps no model of the phase of its own (dispatch://INFRA-2746), and its architect
-// notice and the stall watch's notice go to the architect it names. A plugin below 208 calls no
+// notice and the stall watch's notice go to the architect it names. A plugin below 206 calls no
 // such route, and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts`
 // mirrors the two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden. The answer is the
-// row `AnswerOwed` of answers.go's Answers, which arrives with its route at 208 and is the
+// row `AnswerOwed` of answers.go's Answers, which arrives with its route at 206 and is the
 // identity at every contract that records it, and the request is a row of the request gate's
-// table (request_shapes_test.go's pluginRequests), so 208's request records hold its three
+// table (request_shapes_test.go's pluginRequests), so 206's request records hold its three
 // fields and a later type that stops reading one of them is red.
 //
 // The daemon ships four store migrations with it.
@@ -3056,21 +3056,20 @@ package api
 // ask, as a notice's turn can when the refusal came during its pre-turn work. Its refusal is then
 // charged as unrecognised, and its prompt's result as a prompt that ran no turn. Nothing of the
 // daemon API changes with the pin.
-// (This entry takes 208, the lowest number above main's 202 that no other open pull request
-// declares: at the forward merge of 2026-11-21 that brought main in at 202 (#4493, the entry
+// (This entry takes 206, the lowest number above main's 202 that no other open pull request
+// declares: just before the push of 2026-11-21 that carried main in at 202 (#4493, the entry
 // above), .github/scripts/check-daemon-api-contract.sh read const DaemonAPIVersion at
 // refs/pull/<n>/head for each open pull request whose file list names this file or was cut
-// short, a reading made between 2026-11-21T04:31:30Z and 04:33:54Z, and found 203 declared by
-// eight (#2230, #3993, #4065, #4175, #4553, #4592, #4596 and #4661), 204 by #3831 and #4030,
-// 205 by this change's own pushed head and #4573, 206 by #4540, 207 by #4432, and no open pull
-// request declaring 208. It held 205 from the forward merge of 2026-11-21 that brought main in at
-// 199 until main reached 202, 202 from the forward merge of 2026-11-20 that brought main in at
-// 193 until main reached 199, 190 from the forward merge of 2026-11-20 that brought main in at
-// 189 until main reached 193, 193 from the forward merge of 2026-11-20 that brought main in at
-// 188 until main reached 189, 183 from the forward merge of 2026-11-20 that brought main in at
-// 178 until main reached 188, 175 from the forward merge of 2026-11-19 until main reached 178,
-// and 162 from the forward merge of 2026-11-18 until main reached 168. The readings behind this
-// change's earlier numbers are in its implement handoffs on dispatch://INFRA-3136. That is a
-// reading and never the rule: read main's own number and every open head again at the next
-// forward merge rather than from this line.)
-const DaemonAPIVersion = 208
+// short, a reading that ended at 2026-11-21T08:11:53Z, and found 203 declared by #4175, 204 by
+// #4173 and #4611, and 205 by this change's own pushed head and #4573. It held 208 from that
+// merge's first reading, at 04:33:54Z, until that reading, 205 from the forward merge of
+// 2026-11-21 that brought main in at 199 until main reached 202, 202 from the forward merge of
+// 2026-11-20 that brought main in at 193 until main reached 199, 190 from the forward merge of
+// 2026-11-20 that brought main in at 189 until main reached 193, 193 from the forward merge of
+// 2026-11-20 that brought main in at 188 until main reached 189, 183 from the forward merge of
+// 2026-11-20 that brought main in at 178 until main reached 188, 175 from the forward merge of
+// 2026-11-19 until main reached 178, and 162 from the forward merge of 2026-11-18 until main
+// reached 168. The readings behind this change's earlier numbers are in its implement handoffs
+// on dispatch://INFRA-3136. That is a reading and never the rule: read main's own number and
+// every open head again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 206

@@ -1520,7 +1520,7 @@ export const LegionActivityRequest = z.strictObject({
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
 
-/** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract 208): a live role's
+/** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract 206): a live role's
  * session asking, at the end of its turn, what its claim owes now. It carries what
  * `claims/activity` carries — the claim, the session the claim records, and the registration's
  * secret — and no generation, since the question changes nothing. A token the daemon does not
@@ -2363,6 +2363,6 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   LegionTurnOutcomeResponse: ["refusedRun", "failed"],
   // `pi-shared/src/phase-reminder.ts` decides whether a due reminder goes out by `owes`, names
   // the work it gives by `work`, and sends the architect notice to `architect`, as the stall
-  // watch's notice does (`pi-legion/src/stall-evidence.ts`, contract 208).
+  // watch's notice does (`pi-legion/src/stall-evidence.ts`, contract 206).
   LegionOwedResponse: ["owes", "work", "architect"],
 };

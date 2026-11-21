@@ -200,7 +200,7 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
-	// version.go's 208: what a live role's claim owes now (`api.OwedResponse`), which the
+	// version.go's 206: what a live role's claim owes now (`api.OwedResponse`), which the
 	// end-of-turn reminder renders. The route arrives with the answer at the contract of the
 	// repository correction, so no contract below it records either.
 	{ID: AnswerOwed, Routes: []string{"POST /legion/v1/claims/owed"}, Since: repositoryCorrectionContract},
