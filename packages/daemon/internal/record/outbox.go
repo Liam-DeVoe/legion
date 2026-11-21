@@ -1818,15 +1818,20 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // (MergeForwardReview).
 //
 // Role is the recipient, and Step the message (mergeForwardRoles says which role each step goes
-// to). Head is the head that conflicted, Landed the head the merge left ("" before it lands), Base
-// the base branch, Phase the phase the issue stays in, PullRequest the pull request's number, and
-// Why the first of R0's reasons that held (MergeForward.Why), which the ask and the hold state.
+// to). Claim is the claim the message reaches: the claim of the worker on Role's step when the
+// workflow wrote the row (the workflow's addressRoles), so a keyed agent working that step is the
+// one told; "" for a row the release before wrote, which reaches the claim the record gives Role's
+// step when it runs. Head is the head that conflicted, Landed the head the merge left ("" before it
+// lands), Base the base branch, Phase the phase the issue stays in, PullRequest the pull request's
+// number, and Why the first of R0's reasons that held (MergeForward.Why), which the ask and the
+// hold state.
 //
 // It is a row of its own kind rather than a RoleMessage, because a RoleMessage ends undelivered on
 // a released claim, and a released implementer must still be woken for the merge; its executor
 // follows the merge-queue removal's (MergeQueueRemoval).
 type MergeForwardMessage struct {
 	Role        claim.Role       `json:"role"`
+	Claim       claim.Token      `json:"claim,omitempty"`
 	Step        MergeForwardStep `json:"step"`
 	Head        string           `json:"head"`
 	Landed      string           `json:"landed,omitempty"`

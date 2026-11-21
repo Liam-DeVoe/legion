@@ -69,7 +69,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 		if role == claim.RoleImplementer {
 			step = record.MergeForwardAsk
 		}
-		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Step: step, Head: pr.HeadSHA, Base: pr.Base,
+		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Claim: to.token, Step: step, Head: pr.HeadSHA, Base: pr.Base,
 			Phase: at, PullRequest: pr.Number, Why: why}); err != nil {
 			return err
 		}
@@ -204,7 +204,7 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 		if review && role == claim.RoleReviewer {
 			step = record.MergeForwardReview
 		}
-		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Step: step, Head: asked.Head, Landed: pr.HeadSHA,
+		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Claim: to.token, Step: step, Head: asked.Head, Landed: pr.HeadSHA,
 			Base: asked.Base, Phase: at, PullRequest: pr.Number, Why: asked.Why}); err != nil {
 			return err
 		}
