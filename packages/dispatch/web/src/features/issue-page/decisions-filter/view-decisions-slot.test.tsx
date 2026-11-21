@@ -1,13 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  act,
-  cleanup,
-  type RenderResult,
-  render,
-  renderHook,
-  waitFor,
-} from "@testing-library/react";
+import { act, cleanup, type RenderResult, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 
@@ -351,6 +344,9 @@ test("a write-up's address under words its question does not hold draws the outl
   }
 });
 
+/** The reader's unread set on the issue as its read answers it: nothing unread. */
+const NOTHING_UNREAD = { as_of: "2026-11-05T02:00:00Z", limit: 200, offset: 0, rows: [], total: 0 };
+
 // The page's reads are refreshed by events, never by their age, and the stage draws the outline
 // anew as the reader comes back to Conversation from a view. Under the app's `staleTime` a read is
 // stale 30 s after it answered (`main.tsx`), each observer judging it by its own options: the
@@ -388,11 +384,7 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
   client.setQueryData(["comments", KEY], [...TWO_THREADS], answered);
   client.setQueryData(["issue-messages", KEY], [], answered);
   // What the reader holds unread on the issue, which a thread's read mark reads.
-  client.setQueryData(
-    myRepliesOwnerQuery({ issue: KEY }).queryKey,
-    { as_of: "2026-11-05T02:00:00Z", limit: 200, offset: 0, rows: [], total: 0 },
-    answered
-  );
+  client.setQueryData(myRepliesOwnerQuery({ issue: KEY }).queryKey, NOTHING_UNREAD, answered);
   // The blocks of each of the issue's documents, the spec and the decisions document.
   for (const { id } of issue.artifacts ?? []) {
     client.setQueryData(artifactBlocksQuery(id).queryKey, [], answered);
@@ -416,42 +408,56 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
       `the stage drew ${drawnSlot(view)}, with no read mark of the second thread`
     ).not.toBeNull()
   );
-  // Long enough for a read the outline's mount started to have been sent.
-  await waitInAct(50);
+  // Each read the outline's mount asks for is sent from its observer's effect: a flush of effects
+  // and microtasks once the mark is drawn sends any not yet sent.
+  await act(async () => {});
   expect(who, "the outline drawn again asked who is reading").not.toHaveBeenCalled();
 });
 
-// Every other surface that reads who is reading gives it no options, and reads it as it did
-// before the outline's thread marks gave it the tree's freshness: under the app's `staleTime`, a
-// reading mounted more than 30 s after the answer asks for it again. Only a surface that gives
-// the tree's freshness (`EVENT_FRESH`) asks it no second time.
+/** How many times `read`, the stub of one read, is asked for as `node` is drawn, under the app's
+ *  `staleTime` with who is reading and the reader's unread set on the issue each answered 31 s
+ *  ago. */
+async function requestsOf(
+  read: { readonly mock: { readonly calls: readonly unknown[] }; mockClear(): unknown },
+  node: ReactNode
+): Promise<number> {
+  read.mockClear();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  const answered = { updatedAt: Date.now() - 31_000 };
+  client.setQueryData(
+    whoAmIQuery().queryKey,
+    { event_head: "0", kind: "user", login: READER },
+    answered
+  );
+  client.setQueryData(myRepliesOwnerQuery({ issue: KEY }).queryKey, NOTHING_UNREAD, answered);
+  const view = render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
+  // A read the mount asks for is sent from its observer's effect, which `render` runs: a flush of
+  // effects and microtasks after it sends any not yet sent.
+  await act(async () => {});
+  view.unmount();
+  return read.mock.calls.length;
+}
+
+/** Who is reading as a surface that calls `useIsHuman` with `options` reads it: the hook alone. */
+function ReadsWhoIsReading({ options }: { options?: WhoAmIReadOptions }): ReactNode {
+  useIsHuman(options);
+  return null;
+}
+
+// A surface that calls `useIsHuman` with no options reads who is reading under the app's
+// defaults, and asks for it again once it mounts past the app's `staleTime`, more than 30 s after
+// the answer. A surface that gives the tree's freshness (`EVENT_FRESH`) asks it no second time.
 test("who is reading, read with no options, is asked again after the app's staleTime, and read with the tree's freshness is not", async () => {
   // The stub `stubReads` set, which `spyOn` hands back: an answer that never comes, so no read
-  // updates the hook after the row has counted the requests.
+  // updates the hook after `requestsOf` has counted the requests.
   const who = spyOn(api, "whoAmI").mockReturnValue(Promise.withResolvers<never>().promise);
-  /** How many times `useIsHuman` given `options` asks who is reading as it mounts, under the
-   *  app's `staleTime` with the answer 31 s old. */
-  const requestsOf = async (options?: WhoAmIReadOptions): Promise<number> => {
-    who.mockClear();
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
-    });
-    client.setQueryData(
-      whoAmIQuery().queryKey,
-      { event_head: "0", kind: "user", login: READER },
-      { updatedAt: Date.now() - 31_000 }
-    );
-    const hook = renderHook(() => useIsHuman(options), {
-      wrapper: ({ children }: { children: ReactNode }) => (
-        <QueryClientProvider client={client}>{children}</QueryClientProvider>
-      ),
-    });
-    await waitInAct(0);
-    hook.unmount();
-    return who.mock.calls.length;
-  };
-  expect(await requestsOf(), "a surface that gives no options").toBe(1);
-  expect(await requestsOf(EVENT_FRESH), "a surface that gives the tree's freshness").toBe(0);
+  expect(await requestsOf(who, <ReadsWhoIsReading />), "a surface that gives no options").toBe(1);
+  expect(
+    await requestsOf(who, <ReadsWhoIsReading options={EVENT_FRESH} />),
+    "a surface that gives the tree's freshness"
+  ).toBe(0);
 });
 
 /** A thread's read mark as a surface that gives the hook no freshness draws it: the hook alone,
@@ -470,42 +476,22 @@ function MarkGivingNoFreshness({ mark }: { mark: ThreadMark }): ReactNode {
 // (`useMarkThreadRead`), and the stage draws it again at each press of a view. The feed's rules
 // refresh that set whenever an event changes it (`api/event-refresh.ts`), so the mark reads it as
 // the tree's own reads are kept fresh, and asks it no second time past the app's `staleTime`. A
-// surface that gives the hook no freshness reads it as before, and asks it again.
+// surface that gives the hook no freshness reads it under the app's defaults, and asks it again.
 test("a thread's read mark drawn after the app's staleTime asks the unread set no second time, where a surface that gives no freshness asks it again", async () => {
-  // Answers that never come, so no read updates what is drawn after the row has counted the
+  // Answers that never come, so no read updates what is drawn after `requestsOf` has counted the
   // requests. Who is reading is the stub `stubReads` set, which `spyOn` hands back.
   spyOn(api, "whoAmI").mockReturnValue(Promise.withResolvers<never>().promise);
   const replies = spyOn(api, "listMyReplies").mockReturnValue(
     Promise.withResolvers<never>().promise
   );
   const mark: ThreadMark = { at: "2026-11-05T01:04:00Z", issueKey: KEY, threadId: "head-b" };
-  /** How many times the unread set is asked for as `node` is drawn, under the app's
-   *  `staleTime` with that set and who is reading each answered 31 s ago. */
-  const requestsOf = async (node: ReactNode): Promise<number> => {
-    replies.mockClear();
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
-    });
-    const answered = { updatedAt: Date.now() - 31_000 };
-    client.setQueryData(
-      whoAmIQuery().queryKey,
-      { event_head: "0", kind: "user", login: READER },
-      answered
-    );
-    client.setQueryData(
-      myRepliesOwnerQuery({ issue: KEY }).queryKey,
-      { as_of: "2026-11-05T02:00:00Z", limit: 200, offset: 0, rows: [], total: 0 },
-      answered
-    );
-    const view = render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
-    await waitInAct(0);
-    view.unmount();
-    return replies.mock.calls.length;
-  };
   try {
-    expect(await requestsOf(<ThreadReadMark mark={mark} />), "the thread's read mark").toBe(0);
     expect(
-      await requestsOf(<MarkGivingNoFreshness mark={mark} />),
+      await requestsOf(replies, <ThreadReadMark mark={mark} />),
+      "the thread's read mark"
+    ).toBe(0);
+    expect(
+      await requestsOf(replies, <MarkGivingNoFreshness mark={mark} />),
       "a surface that gives no freshness"
     ).toBe(1);
   } finally {
