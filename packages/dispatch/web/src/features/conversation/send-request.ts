@@ -115,12 +115,14 @@ export interface SentRequest {
    *  live view sends a session its commands verbatim. */
   readonly pickedDelivery?: DeliveryCapability;
   readonly replyTo: ReplyTarget | null;
-  /** The mentions the issue page's box wrote in front of the draft for the reply it answers,
-   *  each the party and the link written for it (`partyMention`); absent where it wrote none, and
-   *  from every other send. A box that mounts again over the held send - after a reload, or after
-   *  the reader left the issue - takes these back out when the reply ends or moves, as the box
-   *  that wrote them would, and never a link the reader wrote. They are the page's own: no
-   *  request carries them (`attempt`). */
+  /** The mentions the issue page's box wrote in front of the draft for the reply it answers and
+   *  that still open it as the reader left it (`openingSeeds`), each the party and the link
+   *  written for it (`partyMention`); absent where none do, and from every other send. What the
+   *  reader writes over a refusal keeps them as the box then holds them (`HeldSends.keep`). A box
+   *  that mounts again over the held send - after a reload, or after the reader left the issue -
+   *  takes these back out when the reply ends or moves, as the box that wrote them would, and
+   *  never a link the reader wrote. They are the page's own: no request carries them
+   *  (`attempt`). */
   readonly seeds?: readonly SeededMention[];
   /** The key that names this send to Dispatch (`Idempotency-Key`), so that every attempt of it,
    *  and a reload's, is that one write there. Minted when Send builds the request, and kept by a

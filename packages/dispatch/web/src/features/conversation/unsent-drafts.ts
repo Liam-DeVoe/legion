@@ -63,9 +63,10 @@ export interface AwayDraft {
   readonly kind?: ComposerKind;
   readonly owner: ComposerOwner;
   readonly replyTo: ReplyTarget | null;
-  /** For the issue page's box, the mentions it wrote in front of the reply's draft
-   *  (`SentRequest.seeds`), so the reader's own move off that reply, once the draft is back in the
-   *  field, takes out those and no link the reader wrote; absent where it wrote none. */
+  /** For the issue page's box, the mentions it wrote in front of the reply's draft and that still
+   *  open it as the reader left it (`SentRequest.seeds`), so the reader's own move off that reply,
+   *  once the draft is back in the field, takes out those and no link the reader wrote; absent
+   *  where none do. */
   readonly seeds?: SentRequest["seeds"];
   /** For the issue page's box, the statement a comment with no reply is on
    *  (`SentRequest.statement`): the draft comes back in the field only at that statement. */

@@ -44,6 +44,11 @@ import {
 export interface HeldDraft {
   readonly ask: SentRequest["ask"];
   readonly draft: SentDraft;
+  /** For a keep by the issue page's box (`HeldSends.keep`), the mentions it wrote in front of the
+   *  reply's draft that still open it as the reader left it (`openingSeeds`), which the keep
+   *  writes into the send's request (`SentRequest.seeds`) rather than into its draft; absent from
+   *  every other composer's keep, and from the draft a send holds. */
+  readonly seeds?: SentRequest["seeds"];
 }
 
 /** A composer's send as the write store holds it (`composerSend`): its name, which names its
@@ -637,12 +642,19 @@ export class HeldSends {
     return held !== undefined && this.#writes.discard(held.id);
   }
 
-  /** Keeps what the reader wrote over a refusal, as its composer unmounts. */
-  keep(mutationKey: MutationKey, draft: HeldDraft): void {
+  /** Keeps what the reader wrote over a refusal, as its composer unmounts. The issue page's box
+   *  keeps its mentions as it holds them with it (`HeldDraft.seeds`): they replace the request's
+   *  (`SentRequest.seeds`), none where it holds none, so a box that mounts again over the send
+   *  takes out those and no link the reader wrote. A keep that carries no mentions - every other
+   *  composer's - leaves the request as it was. */
+  keep(mutationKey: MutationKey, { seeds, ...draft }: HeldDraft): void {
     const held = this.get(mutationKey);
-    if (held?.status === "refused") {
-      this.#writes.amend(held.id, composerSend, (detail) => ({ ...detail, draft }));
-    }
+    if (held?.status !== "refused") return;
+    this.#writes.amend(held.id, composerSend, (detail) => {
+      if (seeds === undefined) return { ...detail, draft };
+      const { seeds: _held, ...request } = detail.request;
+      return { ...detail, draft, request: seeds.length === 0 ? request : { ...request, seeds } };
+    });
   }
 
   /** Re-addresses the refused send under `mutationKey`: a margin compose's kind switch after a
