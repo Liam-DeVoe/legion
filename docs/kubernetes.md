@@ -2599,7 +2599,7 @@ This release lets a variant of an experiment name `plan` (`projects.<KEY>.experi
 
 **`plan` must come out of `legion.yaml` before the earlier image is pinned.**
 The loader refuses a key it does not know, naming it (`unknown key projects.<KEY>.experiments.<name>.variants.<arm>.plan`), and the earlier release's loader knows no `plan` of a variant, so that daemon refuses to start while one arm names it.
-Take the key out of every arm that names it, or the experiment out of the file, and `legion start --check-config` on the earlier image reads the file clean.
+Take the key out of every arm that names it, or the experiment out of the file, and `legion config check` on the earlier image reads the file clean.
 
 The column needs no statement.
 An earlier image names the columns of `experiment_assignments` in each statement it runs (`assignmentColumns`, `PutAssignments` and `CarryAssignments` in `internal/record/store.go`), so it boots with the column in place, reads no word of it, and every row it inserts takes the default, the empty word.

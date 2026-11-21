@@ -748,7 +748,7 @@ provider_keys:
   The loader refuses a `plan` that is neither `owner` nor `default` (`owner-alone`, which this
   release does not carry out, among them), an arm that names no `plan` beside one that does, an
   experiment that sets `plan` at `unit: tree`, and a second experiment of one project that sets
-  `plan`; `legion start --check-config` makes each of these refusals.
+  `plan`; `legion config check` makes each of these refusals.
 - **`projects.<KEY>.commit_issue_trailer_repos`**, the project's own list, names the repositories
   whose commits carry their issue key
   (`commit_issue_trailer_repos: [acme/widgets]`).
