@@ -789,7 +789,9 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   Beside them, `envoy_dispatch_broker_revocations_superseded_total` counts each `superseded` answer this process's loop heard, for a revocation it leaves owed (`api.NewBrokerRevocationsSuperseded`): any count means a replaced account's broker credentials were not ended.
   A revocation the broker confirms is owed for the pass its commit wakes, a second or so, and 30 seconds more for each earlier revocation of its address it waits behind, so an age past a few minutes is one the broker does not confirm, whose replaced account's credentials the broker still holds for the secret reads it serves without asking Dispatch, until it settles or an operator revokes them at the broker and clears it (Clearing a broker revocation, below); Dispatch itself refuses them from the replacing commit either way.
   The machine-login revocations a removal from an access list owes are on `/metrics` the same way (`api.RegisterMachineLoginRevocationMetrics`): `envoy_dispatch_machine_login_revocations_owed`, how many the broker has not confirmed, and `envoy_dispatch_machine_login_revocation_oldest_owed_seconds`, how long the oldest has been owed since its removal, written only while one is owed.
-  A pass pays one a few seconds after its removal commits, so an age past a few minutes is one the broker does not confirm, whose member's machine logins still refresh until it settles; their trades are refused once the broker's 30-second cache of Dispatch's answer runs out either way.
+  A pass settles one about a minute after its removal commits (`api.machineLoginSettleAfter`), so an age past a few minutes is one the broker does not confirm.
+  Until it settles, the member's machine logins still refresh and every approve of a machine login by the member is `409 MACHINE_LOGIN_REVOCATION_OWED`; an operator revokes the logins at the broker and settles it by hand (Clearing a machine-login revocation, below).
+  Their trades are refused once the broker's 30-second cache of Dispatch's answer runs out either way.
 
 - A broker token names the Google account its credential records at the broker, the introspection's `account_issuer` and `account_subject`: the person token that made the sign-in on a machine it was minted under, or the account whose approve Dispatch relayed for the machine login it was exchanged from.
   When that issuer is Dispatch's sign-in issuer, Dispatch holds the token to that account in the read that also reads the person's member kind (`api.brokerPersonAdmitted`, `api.brokerTokenSubject`), on every route and at a live socket's next heartbeat.
@@ -911,6 +913,38 @@ a credential of the replaced account that the broker still holds goes on reading
 It also leaves the broker refusing the account the address came back to, when the broker had recorded that account replaced, since only a revocation naming that account as the holder lifts the refusal.
 Recording the revocation again, as the runbook and the store README give it, has the loop pay it and recovers both.
 It exits 0 once it listed what is owed or settled every revocation named, 1 when nothing of the address is owed, when a revocation named is not owed at that generation, or when the database cannot be opened, read or written, and 2 for anything but one address followed by well-formed `<subject>:<generation>` names.
+
+### Clearing a machine-login revocation
+
+A machine-login revocation the broker never confirms, which `envoy_dispatch_machine_login_revocation_oldest_owed_seconds` past a few minutes shows and the loop logs at ERROR (`the machine logins of a restricted member taken off an access list were not revoked`), leaves the member's machine logins refreshing, and refuses every approve of a machine login by the member `409 MACHINE_LOGIN_REVOCATION_OWED`, until it settles.
+No command settles it; settling it by hand revokes nothing at the broker, so first revoke the member's machine logins there, with the calls the loop makes as Dispatch's own ServiceAccount.
+Mint a token of that account for the broker's audience as the After a restore page's machine-login block does (`kubectl create token`, an hour at most), then list the member's logins and revoke each one the list names with `service` null:
+
+```sh
+(
+umask 077
+header=$(mktemp) || exit 1
+trap 'rm -f "$header"' EXIT
+broker_url='<the URL in DISPATCH_AGENT_SECRETS_URL>'
+email='<the address, as people.email holds it>'
+token=$(kubectl -n '<the namespace Dispatch runs in>' create token '<the ServiceAccount Dispatch runs as>' --audience '<the audience in BROKER_K8S_OIDC_AUDIENCE>' --duration 1h) || { echo 'no token was minted'; exit 1; }
+printf 'Authorization: Bearer %s\n' "$token" >"$header"
+curl -sS --fail-with-body -H @"$header" --get --data-urlencode "approver=$email" "$broker_url/v1/launcher-credentials"
+# For each credential_id the list names with "service":null:
+curl -sS --fail-with-body -X POST -H @"$header" -d "{\"approver\":\"$email\"}" "$broker_url/v1/launcher-credentials/<credential_id>/revoke-by-approver"
+)
+```
+
+Once the list names no login of the member's with `service` null, settle the revocation, which tells the broker nothing:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email='<the address>' <<'SQL'
+update machine_login_revocations set done_at = now() where email = lower(btrim(:'email')) and done_at is null;
+SQL
+```
+
+It prints `UPDATE 1` for the revocation it settled and `UPDATE 0` when none of the address is owed; the member approves a new machine login from then on.
+A removal recorded after the statement owes it again, and the loop pays that one as any other.
 
 ## Local Postgres
 

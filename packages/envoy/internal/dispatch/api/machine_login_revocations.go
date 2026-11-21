@@ -181,16 +181,19 @@ func revokeMachineLoginsOf(ctx context.Context, client *cipher.Client, revocatio
 // whichever recorded them, as RegisterBrokerRevocationMetrics does for replaced accounts:
 // envoy_dispatch_machine_login_revocations_owed, how many the broker has not confirmed, and
 // envoy_dispatch_machine_login_revocation_oldest_owed_seconds, how long the oldest has been owed
-// since its removal, written only while one is owed. A pass pays one a few seconds after its
-// removal commits, so an age past a few minutes is one the broker does not confirm, whose member's
-// machine logins still refresh until it settles; every trade of theirs names a project the broker
-// checks against Dispatch, so the member gets no token of a project that dropped them either way.
-// A read that fails writes no sample, so a database outage never reads as nothing owed
-// (registerOwedGauges).
+// since its removal, written only while one is owed. A pass settles one about a minute after its
+// removal commits (machineLoginSettleAfter), so an age past a few minutes is one the broker does
+// not confirm. Until it settles, the member's machine logins still refresh, and every approve of a
+// machine login by the member is 409 MACHINE_LOGIN_REVOCATION_OWED (relayMachineLoginApproval); an
+// operator who finds the broker never confirming it revokes the member's logins at the broker and
+// settles the row by hand (the Dispatch README's "Clearing a machine-login revocation"). Every trade
+// of the member's names a project the broker checks against Dispatch, so they get no token of a
+// project that dropped them either way. A read that fails writes no sample, so a database outage
+// never reads as nothing owed (registerOwedGauges).
 func RegisterMachineLoginRevocationMetrics(registry *metrics.Registry, pool *store.Pool) {
 	registerOwedGauges(registry, store.NewMachineLoginRevocations(pool).Owed, "machine-login revocations",
 		"envoy_dispatch_machine_login_revocations_owed",
-		"Revocations of a restricted member's machine logins that Dispatch owes the secrets broker after a removal from an access list, and the broker has not confirmed; until each settles, those logins still refresh",
+		"Revocations of a restricted member's machine logins that Dispatch owes the secrets broker after a removal from an access list, and the broker has not confirmed; until each settles, those logins still refresh and every approve of a machine login by that member is 409 MACHINE_LOGIN_REVOCATION_OWED",
 		"envoy_dispatch_machine_login_revocation_oldest_owed_seconds",
-		"Seconds since the removal of the oldest machine-login revocation not yet confirmed, written only while one is owed; past a few minutes the broker is not confirming it")
+		"Seconds since the removal of the oldest machine-login revocation not yet confirmed, written only while one is owed; a pass settles one about a minute after its removal, so past a few minutes the broker is not confirming it: revoke the member's machine logins at the broker and settle it by hand (the Dispatch README, Clearing a machine-login revocation)")
 }

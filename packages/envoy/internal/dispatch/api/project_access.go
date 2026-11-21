@@ -310,14 +310,14 @@ func (s *server) removePerson(ctx context.Context, tx pgx.Tx, ev *events.Broker,
 
 // recordMachineLoginRevocation records, in tx, that Dispatch owes the secrets broker the
 // revocation of every machine login person approved for their own machines, when people records
-// person as a restricted member (store.RecordMachineLoginRevocation). A login approved after the
-// pass survives it: while the revocation is owed, the person's approve is 409
-// (store.HoldMachineLoginApprovals). A full member, a person with
-// no row and a deployment with no broker (Deps.AgentSecrets nil, where no machine login exists) owe
-// nothing. The broker revocation loop pays it after the write commits (revokeOwedMachineLogins), so
-// the write never waits on the broker: an owner removes a person while the broker is down. Every
-// removal that takes the person off a list records it (removePerson); it is written to be the one
-// record any other write that takes a restricted member off a project makes in its own transaction.
+// person as a restricted member (store.RecordMachineLoginRevocation). While it is owed, the
+// person's approve is 409 (store.HoldMachineLoginApprovals), so only a login they approve once a
+// pass has settled it survives. A full member, a person with no row and a deployment with no broker
+// (Deps.AgentSecrets nil, where no machine login exists) owe nothing. The broker revocation loop
+// pays it after the write commits (revokeOwedMachineLogins), so the write never waits on the
+// broker: an owner removes a person while the broker is down. Every removal that takes the person
+// off a list records it (removePerson); it is written to be the one record any other write that
+// takes a restricted member off a project makes in its own transaction.
 func (s *server) recordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, person string) error {
 	person = model.CanonicalLogin(person)
 	if s.deps.AgentSecrets == nil || person == "" {
