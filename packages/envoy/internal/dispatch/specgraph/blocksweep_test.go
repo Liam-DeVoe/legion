@@ -30,8 +30,9 @@ import (
 // place in the block of approved.json and at each place of the same opening line in the spec files
 // (attributeLeftOut); each with each other file unchanged (filesRead). Each writer is a function of
 // the package (valueAt, textWritten, attributeOutOfFiles), handed a tree or files and copies of its
-// own, and each of the two sweeps derives at least its floors of inputs of each base, of those that
-// the reader reads and of those that it refuses (sweepFloors).
+// own, and built inside the guard of the package's variables (writerCalled); and each of the two
+// sweeps derives at least its floors of inputs of each base, of those that the reader reads and of
+// those that it refuses (sweepFloors).
 func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -62,7 +63,7 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 					for _, at := range blockTexts(block) {
 						for _, form := range names {
 							if block[at[0]:at[1]] != form {
-								fsys := changedFile(t, base, "approved.json", blockTextChange(t, base, place, at, form), valueAt)
+								fsys := changedFile(t, base, "approved.json", blockTextChange(t, base, place, at, form), func() treeWriter { return valueAt })
 								inputs = append(inputs, sweepInput{what: fmt.Sprintf("approved.json %s: %q as %q", treePointer(place), block[at[0]:at[1]], form), fsys: fsys})
 							}
 						}
@@ -77,7 +78,7 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 				for _, at := range blockTexts(text) {
 					for _, form := range names {
 						if text[at[0]:at[1]] != form {
-							fsys := filesWritten(t, base, textMeant(base, file, at, form), textWritten(file, at, form))
+							fsys := filesWritten(t, base, textMeant(base, file, at, form), func() fileWriter { return textWritten(file, at, form) })
 							inputs = append(inputs, sweepInput{what: fmt.Sprintf("%s at byte %d: %q as %q", file, at[0], text[at[0]:at[1]], form), fsys: fsys})
 						}
 					}
@@ -124,14 +125,14 @@ func leftOutAttributes(t *testing.T, base fstest.MapFS, tree any) []sweepInput {
 				}
 				what := fmt.Sprintf("approved.json %s: %q left out", treePointer(place), opening[at[0]+1:at[1]])
 				change, specFiles := attributeLeftOut(t, base, place, at)
-				fsys := changedFile(t, base, "approved.json", change, valueAt)
+				fsys := changedFile(t, base, "approved.json", change, func() treeWriter { return valueAt })
 				inputs = append(inputs, sweepInput{what: what, fsys: fsys, right: right})
 				// B is read back on A, which changedFile read back, whether or not the sweep means a
 				// spec file: each spec file by the bytes that attributeLeftOut built, and each other file
 				// as A holds it. So a writer that writes a spec file where the sweep means none fails by
 				// name, and so does a fault of the meaning that names none where the writer writes one;
 				// and B is an input where the sweep means one.
-				inFiles := filesWritten(t, fsys, specFiles, attributeOutOfFiles(opening, opening[:at[0]]+opening[at[1]:]))
+				inFiles := filesWritten(t, fsys, specFiles, func() fileWriter { return attributeOutOfFiles(opening, opening[:at[0]]+opening[at[1]:]) })
 				if len(specFiles) > 0 {
 					inputs = append(inputs, sweepInput{what: what + " and from the spec files", fsys: inFiles, right: right})
 				}
@@ -204,7 +205,7 @@ func textMeant(base fstest.MapFS, file string, at [2]int, form string) map[strin
 
 // textWritten is the writer of the block sweep that writes form in the place at of the text of the
 // spec file file of the files that it is handed (filesWritten).
-func textWritten(file string, at [2]int, form string) func(fstest.MapFS) {
+func textWritten(file string, at [2]int, form string) fileWriter {
 	return func(fsys fstest.MapFS) {
 		text := string(fsys[file].Data)
 		fsys[file] = &fstest.MapFile{Data: []byte(text[:at[0]] + form + text[at[1]:])}
@@ -235,7 +236,7 @@ func attributeLeftOut(t *testing.T, base fstest.MapFS, place []string, at []int)
 // attributeOutOfFiles is the writer of the block sweep that writes the opening line without in
 // place of each opening line opening of each spec file of the files that it is handed that holds one
 // (filesWritten).
-func attributeOutOfFiles(opening, without string) func(fstest.MapFS) {
+func attributeOutOfFiles(opening, without string) fileWriter {
 	return func(fsys fstest.MapFS) {
 		for _, file := range slices.Sorted(maps.Keys(fsys)) {
 			if text := string(fsys[file].Data); strings.HasPrefix(file, "files/") && strings.Contains(text, opening+"\n") {

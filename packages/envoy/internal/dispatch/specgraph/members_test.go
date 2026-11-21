@@ -460,7 +460,7 @@ func TestAMemberLeftOutOfAFileIsReadByItsMark(t *testing.T) {
 					if at != "" {
 						place = strings.Split(at[1:], "/")
 					}
-					return changedFile(t, base, name, treeChange{place: place, value: x}, elementAt)
+					return changedFile(t, base, name, treeChange{place: place, value: x}, func() treeWriter { return elementAt })
 				}
 				for _, alone := range []bool{false, true} {
 					where := fmt.Sprintf("%s %s of %s %s, %s", name, m.name, typ.Name(), e.pointer, map[bool]string{false: "beside " + objectsPointer(objects, beside), true: "alone"}[alone])

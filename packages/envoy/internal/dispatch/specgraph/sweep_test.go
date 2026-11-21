@@ -24,7 +24,7 @@ import (
 // place of and TestTakingOutAWholeRecordMovesAStateOnlyByItsRight takes out, and whose key the
 // sweep writes as a name that names nothing. Like each table that a sweep reads, it is a function
 // that gives a new value at each call, not a variable of the package, so that no writer can change
-// what a sweep reads after it (packageValues).
+// what a sweep reads after it (packageValuesNow).
 func sweepMaps() map[string][][]string {
 	return map[string][][]string{
 		"history.json": {{"commits", "*", "files"}},
@@ -85,11 +85,12 @@ func notRepoPaths(path string) []string {
 // compared whole (changedFile); a text file by its bytes (filesWritten); and a refusal of CI as the
 // reader reads it (refusalRead). The sweep builds what it means before its writer runs, from a
 // decode of the base of its own, and each object that the writer is handed is the writer's own: a
-// writer is a function of the package, which can name no variable of the sweep, and it gets a tree
-// or files of its own and copies of the place and the value, which the sweep compares after the
-// call with copies taken before it (changeKept); and the input that the sweep derives is no object
-// that a writer was handed, but bytes encoded from the writer's tree or a copy of the writer's files
-// taken after the read back (changedFile, filesWritten). So a writer that writes another value,
+// writer is a function of the package, which can name no variable of the sweep, built inside the
+// one guard of the package's variables (writerCalled), and it gets a tree or files of its own and
+// copies of the place and the value, which the sweep compares after the call with copies taken
+// before it (changeKept); and the input that the sweep derives is no object that a writer was
+// handed, but bytes encoded from the writer's tree or a copy of the writer's files taken after the
+// read back (changedFile, filesWritten). So a writer that writes another value,
 // writes it at another place, under another key or under another file name, changes another place
 // of the file too, or changes the value or the place that it is handed, before or after a right
 // write, fails by name, and one that keeps what it was handed and changes it in a later call
@@ -323,7 +324,7 @@ func withoutResultsOf(t *testing.T, base fstest.MapFS, c Check, commit string) m
 	want := slices.DeleteFunc(slices.Clone(s.Results), func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit })
 	handed, before := decodedScenario(t, base), decodedScenario(t, base)
 	fsys := cloneFiles(base)
-	editTree(t, fsys, "results.json", resultsWithout(t, handed, c.ID, commit))
+	editTree(t, fsys, "results.json", func() treeEdit { return resultsWithout(t, handed, c.ID, commit) })
 	if !reflect.DeepEqual(handed, before) {
 		t.Fatalf("the sweep took the results of %s at %s out of results.json, and its writer changed the scenario that it was handed", c.ID, commit)
 	}
@@ -345,7 +346,7 @@ func withoutResultsOf(t *testing.T, base fstest.MapFS, c Check, commit string) m
 // resultsWithout is the writer of withoutResultsOf: the tree of results.json that it is handed
 // without each result of the check id whose commit (countedCommit) is commit, where s, the scenario
 // of the same files that it is handed, reads each record.
-func resultsWithout(t *testing.T, s Scenario, id, commit string) func(any) any {
+func resultsWithout(t *testing.T, s Scenario, id, commit string) treeEdit {
 	return func(v any) any {
 		c := checkOf(t, s, id)
 		kept := []any{}
@@ -387,7 +388,7 @@ const plantedOnElsewhere = `a planted_on that names a commit of the history coun
 // withoutResult is the states of base with result i of results.json taken out.
 func withoutResult(t *testing.T, base fstest.MapFS, i int) map[string]string {
 	t.Helper()
-	fsys := changedFile(t, base, "results.json", treeChange{place: []string{strconv.Itoa(i)}, out: true}, leftOutAt)
+	fsys := changedFile(t, base, "results.json", treeChange{place: []string{strconv.Itoa(i)}, out: true}, func() treeWriter { return leftOutAt })
 	states, err := sweepStates(fsys)
 	if err != nil {
 		t.Fatalf("the base with result %d taken out: %v", i+1, err)
@@ -495,7 +496,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 							// The read back takes the member and its value from the input's words, and
 							// changedFile builds the file that it means before the writer runs and hands the
 							// writer copies of its own.
-							fsys := changedFile(t, base, file, treeChange{place: append(slices.Clone(place), m[0]), value: v}, valueAt)
+							fsys := changedFile(t, base, file, treeChange{place: append(slices.Clone(place), m[0]), value: v}, func() treeWriter { return valueAt })
 							in := sweepInput{what: fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys: fsys}
 							if commit, named := v.(string); file == "results.json" && m[0] == "planted_on" && named {
 								if _, held, err := s.History.Changed(commit, commit); err == nil && held {
@@ -600,11 +601,11 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 	entryMaps, pathPlaces := sweepMaps(), sweepPaths()
 	roundTrip := maps.Clone(base)
 	with := func(what, name string, want treeChange, write treeWriter) *sweepInput {
-		inputs = append(inputs, sweepInput{what: what, fsys: changedFile(t, base, name, want, write)})
+		inputs = append(inputs, sweepInput{what: what, fsys: changedFile(t, base, name, want, func() treeWriter { return write })})
 		return &inputs[len(inputs)-1]
 	}
 	for _, name := range slices.Sorted(maps.Keys(base)) {
-		out := filesWritten(t, base, map[string][]byte{name: nil}, takenOut(name))
+		out := filesWritten(t, base, map[string][]byte{name: nil}, func() fileWriter { return takenOut(name) })
 		inputs = append(inputs, sweepInput{what: name + " taken out", fsys: out})
 		if path.Ext(name) != ".json" {
 			continue
@@ -752,16 +753,18 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 	// carriedFailure is carry with a failure of c at c1 after its pass, which carries to c2, and a
 	// pass at c2 after it and a caught failing example planted on c2: c2 reads unknown (disagree).
 	carriedFailure := func(t *testing.T, fsys fstest.MapFS) {
-		editTree(t, fsys, "results.json", func(v any) any {
-			results := v.([]any)
-			run := func(commit, outcome, at string, seq int) map[string]any {
-				r := maps.Clone(results[0].(map[string]any))
-				r["commit"], r["outcome"], r["at"], r["seq"] = commit, outcome, at, seq
-				return r
+		editTree(t, fsys, "results.json", func() treeEdit {
+			return func(v any) any {
+				results := v.([]any)
+				run := func(commit, outcome, at string, seq int) map[string]any {
+					r := maps.Clone(results[0].(map[string]any))
+					r["commit"], r["outcome"], r["at"], r["seq"] = commit, outcome, at, seq
+					return r
+				}
+				fault := maps.Clone(results[1].(map[string]any))
+				fault["commit"], fault["planted_on"], fault["at"], fault["seq"] = "f-c2", "c2", "2026-11-13T09:05:00Z", 7
+				return append(results, run("c1", "fail", "2026-11-12T10:10:00Z", 5), run("c2", "pass", "2026-11-13T09:00:00Z", 6), fault)
 			}
-			fault := maps.Clone(results[1].(map[string]any))
-			fault["commit"], fault["planted_on"], fault["at"], fault["seq"] = "f-c2", "c2", "2026-11-13T09:05:00Z", 7
-			return append(results, run("c1", "fail", "2026-11-12T10:10:00Z", 5), run("c2", "pass", "2026-11-13T09:00:00Z", 6), fault)
 		})
 	}
 	rows := []row{
@@ -806,7 +809,7 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 		if r.setup != nil {
 			r.setup(t, base)
 		}
-		without := changedFile(t, base, r.file, treeChange{place: r.place, out: true}, leftOutAt)
+		without := changedFile(t, base, r.file, treeChange{place: r.place, out: true}, func() treeWriter { return leftOutAt })
 		for _, read := range []struct {
 			fsys fstest.MapFS
 			want string
@@ -842,14 +845,14 @@ func refusalAdded(t *testing.T, base fstest.MapFS, commit, id string) fstest.Map
 	}
 	want[commit][id] = "test-did-not-run"
 	fsys := cloneFiles(base)
-	editTree(t, fsys, "uncited.json", refusalAt(commit, id))
+	editTree(t, fsys, "uncited.json", func() treeEdit { return refusalAt(commit, id) })
 	refusalRead(t, fsys, commit, id, want)
 	return fsys
 }
 
 // refusalAt is the writer of the refusal sweep: the tree of uncited.json that it is handed with CI's
 // refusal of the check id at commit, by the rule test-did-not-run.
-func refusalAt(commit, id string) func(any) any {
+func refusalAt(commit, id string) treeEdit {
 	return func(v any) any {
 		uncited := v.(map[string]any)
 		checks := map[string]any{}

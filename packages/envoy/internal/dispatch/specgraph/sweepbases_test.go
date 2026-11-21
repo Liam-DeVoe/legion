@@ -101,21 +101,25 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	}
 	carry := func(jobsAt []string, adds ...add) fstest.MapFS {
 		fsys := maps.Clone(bases["carry"])
-		editTree(t, fsys, "results.json", func(v any) any {
-			results := v.([]any)
-			for _, a := range adds {
-				r := maps.Clone(results[a.from].(map[string]any))
-				maps.Copy(r, a.set)
-				results = append(results, r)
+		editTree(t, fsys, "results.json", func() treeEdit {
+			return func(v any) any {
+				results := v.([]any)
+				for _, a := range adds {
+					r := maps.Clone(results[a.from].(map[string]any))
+					maps.Copy(r, a.set)
+					results = append(results, r)
+				}
+				return results
 			}
-			return results
 		})
-		editTree(t, fsys, "jobs.json", func(v any) any {
-			jobs := v.([]any)
-			for _, commit := range jobsAt {
-				jobs = append(jobs, map[string]any{"job": "go-checks", "leg": "", "commit": commit, "ended": true})
+		editTree(t, fsys, "jobs.json", func() treeEdit {
+			return func(v any) any {
+				jobs := v.([]any)
+				for _, commit := range jobsAt {
+					jobs = append(jobs, map[string]any{"job": "go-checks", "leg": "", "commit": commit, "ended": true})
+				}
+				return jobs
 			}
-			return jobs
 		})
 		return fsys
 	}
@@ -134,22 +138,26 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	}
 	// withParent makes c0 the parent of c1, with c1's tree and ties.
 	withParent := func(fsys fstest.MapFS) {
-		editTree(t, fsys, "history.json", func(v any) any {
-			history := v.(map[string]any)
-			commits := history["commits"].([]any)
-			i := slices.IndexFunc(commits, func(c any) bool { return c.(map[string]any)["id"] == "c1" })
-			c1 := maps.Clone(commits[i].(map[string]any))
-			c0 := map[string]any{"id": "c0", "parent": c1["parent"], "files": c1["files"]}
-			c1["parent"] = "c0"
-			commits = slices.Clone(commits)
-			commits[i] = c1
-			history["commits"] = slices.Insert(commits, i, any(c0))
-			return history
+		editTree(t, fsys, "history.json", func() treeEdit {
+			return func(v any) any {
+				history := v.(map[string]any)
+				commits := history["commits"].([]any)
+				i := slices.IndexFunc(commits, func(c any) bool { return c.(map[string]any)["id"] == "c1" })
+				c1 := maps.Clone(commits[i].(map[string]any))
+				c0 := map[string]any{"id": "c0", "parent": c1["parent"], "files": c1["files"]}
+				c1["parent"] = "c0"
+				commits = slices.Clone(commits)
+				commits[i] = c1
+				history["commits"] = slices.Insert(commits, i, any(c0))
+				return history
+			}
 		})
-		editTree(t, fsys, "ties.json", func(v any) any {
-			ties := v.(map[string]any)
-			ties["c0"] = ties["c1"]
-			return ties
+		editTree(t, fsys, "ties.json", func() treeEdit {
+			return func(v any) any {
+				ties := v.(map[string]any)
+				ties["c0"] = ties["c1"]
+				return ties
+			}
 		})
 	}
 	// Each base built from carry is one row: its name, the facts that its builder adds, the builder's
@@ -205,10 +213,12 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 		{"carry with a later failing example planted by no step",
 			"a failing example after carry's caught one, at the commit f2, with no planted_on and with carry's fault path and a second source file of the tie, on which the test missed its fault",
 			nil, []add{{1, map[string]any{"commit": "f2", "outcome": "pass", "seq": 5, "fault_paths": []any{faultPath, secondPath}}}}, func(fsys fstest.MapFS) {
-				editTree(t, fsys, "results.json", func(v any) any {
-					results := v.([]any)
-					delete(results[len(results)-1].(map[string]any), "planted_on")
-					return results
+				editTree(t, fsys, "results.json", func() treeEdit {
+					return func(v any) any {
+						results := v.([]any)
+						delete(results[len(results)-1].(map[string]any), "planted_on")
+						return results
+					}
 				})
 			},
 			func(s Scenario) bool {
@@ -230,12 +240,14 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 		{"carry with its failing example planted by no step",
 			"a caught failing example at the commit c1 with no planted_on and no fault path",
 			nil, nil, func(fsys fstest.MapFS) {
-				editTree(t, fsys, "results.json", func(v any) any {
-					fault := v.([]any)[1].(map[string]any)
-					fault["commit"] = fault["planted_on"]
-					delete(fault, "planted_on")
-					delete(fault, "fault_paths")
-					return v
+				editTree(t, fsys, "results.json", func() treeEdit {
+					return func(v any) any {
+						fault := v.([]any)[1].(map[string]any)
+						fault["commit"] = fault["planted_on"]
+						delete(fault, "planted_on")
+						delete(fault, "fault_paths")
+						return v
+					}
 				})
 			},
 			func(s Scenario) bool {
@@ -252,16 +264,18 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 		bases[row.name], from[row.name] = fsys, bases["carry"]
 	}
 	swapped := maps.Clone(bases["wait-cycle"])
-	editTree(t, swapped, "results.json", func(v any) any {
-		for _, r := range v.([]any) {
-			switch r := r.(map[string]any); r["seq"] {
-			case 1.0:
-				r["outcome"] = "fail"
-			case 5.0:
-				r["outcome"] = "pass"
+	editTree(t, swapped, "results.json", func() treeEdit {
+		return func(v any) any {
+			for _, r := range v.([]any) {
+				switch r := r.(map[string]any); r["seq"] {
+				case 1.0:
+					r["outcome"] = "fail"
+				case 5.0:
+					r["outcome"] = "pass"
+				}
 			}
+			return v
 		}
-		return v
 	})
 	bases["wait-cycle with the outcomes of its two first runs swapped"] = swapped
 	bases["wait-cycle with a second, passing check of a-message-survives-a-restart"] = withSecondCheck(t, bases["wait-cycle"])
@@ -334,13 +348,15 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	}{
 		{"with test_commit c1 on the failing run of ", func(base fstest.MapFS) fstest.MapFS {
 			fsys := maps.Clone(base)
-			editTree(t, fsys, "results.json", func(v any) any {
-				for _, r := range v.([]any) {
-					if r := r.(map[string]any); r["check"] == graph && r["kind"] == "run" && r["outcome"] == "fail" {
-						r["test_commit"] = "c1"
+			editTree(t, fsys, "results.json", func() treeEdit {
+				return func(v any) any {
+					for _, r := range v.([]any) {
+						if r := r.(map[string]any); r["check"] == graph && r["kind"] == "run" && r["outcome"] == "fail" {
+							r["test_commit"] = "c1"
+						}
 					}
+					return v
 				}
-				return v
 			})
 			return fsys
 		}, func(s Scenario) bool {
@@ -408,40 +424,46 @@ func withSecondCheck(t *testing.T, base fstest.MapFS) fstest.MapFS {
 	fsys := maps.Clone(base)
 	rename := strings.NewReplacer("#"+old, "#"+added, `serves="a-message-reaches-a-late-session"`, `serves="a-message-survives-a-restart"`)
 	var block string
-	editTree(t, fsys, "approved.json", func(v any) any {
-		nodes := v.(map[string]any)["nodes"].([]any)
-		for _, n := range nodes {
-			if n := n.(map[string]any); n["id"] == old {
-				version := maps.Clone(n["versions"].([]any)[0].(map[string]any))
-				block = rename.Replace(version["block"].(string))
-				version["block"] = block
-				c := maps.Clone(n)
-				c["id"], c["versions"] = added, []any{version}
-				nodes = append(nodes, c)
-				break
+	editTree(t, fsys, "approved.json", func() treeEdit {
+		return func(v any) any {
+			nodes := v.(map[string]any)["nodes"].([]any)
+			for _, n := range nodes {
+				if n := n.(map[string]any); n["id"] == old {
+					version := maps.Clone(n["versions"].([]any)[0].(map[string]any))
+					block = rename.Replace(version["block"].(string))
+					version["block"] = block
+					c := maps.Clone(n)
+					c["id"], c["versions"] = added, []any{version}
+					nodes = append(nodes, c)
+					break
+				}
 			}
+			v.(map[string]any)["nodes"] = nodes
+			return v
 		}
-		v.(map[string]any)["nodes"] = nodes
-		return v
 	})
 	fsys["files/m1/spec.md"] = &fstest.MapFile{Data: append(slices.Clone(fsys["files/m1/spec.md"].Data), "\n"+block...)}
-	editTree(t, fsys, "results.json", func(v any) any {
-		results := v.([]any)
-		for _, r := range slices.Clone(results) {
-			if r := r.(map[string]any); r["check"] == old {
-				c := maps.Clone(r)
-				c["check"], c["seq"] = added, float64(len(results)+1)
-				results = append(results, c)
+	editTree(t, fsys, "results.json", func() treeEdit {
+		return func(v any) any {
+			results := v.([]any)
+			for _, r := range slices.Clone(results) {
+				if r := r.(map[string]any); r["check"] == old {
+					c := maps.Clone(r)
+					c["check"], c["seq"] = added, float64(len(results)+1)
+					results = append(results, c)
+				}
 			}
+			return results
 		}
-		return results
 	})
-	editTree(t, fsys, "ties.json", func(v any) any {
-		for _, ties := range v.(map[string]any) {
-			ties := ties.(map[string]any)
-			ties[added] = ties[old]
+	editTree(t, fsys, "ties.json", func() treeEdit {
+		return func(v any) any {
+			for _, ties := range v.(map[string]any) {
+				ties := ties.(map[string]any)
+				ties[added] = ties[old]
+			}
+			return v
 		}
-		return v
 	})
 	return fsys
 }
