@@ -99,10 +99,12 @@ func requireTheObjectBatchLockOrder(t *testing.T) {
 		ToKind: graphstore.KindValue, ToID: graphstore.StateLive,
 		At: now, Who: alice, SourceEvent: acmeCreated, Asserted: true,
 	}})
+	project := lockstep.HoldRow(t, database, &lockstep.Hold{Name: "project CORE's row", Step: lockstep.StepEvent},
+		`select 1 from projects where key = $1 for update`, "CORE")
 
 	report := followTheBackfill(t, database, "writeObjectBatch", []*lockstep.Hold{
 		issueOwner("ACME-1"), zedOwner, issueOwner("CORE-1"),
-		nodeHold(acme, "ACME"), state, nodeHold(core, "CORE"), nodeHold(zed, "ZED"),
+		nodeHold(acme, "ACME"), state, nodeHold(core, "CORE"), nodeHold(zed, "ZED"), project,
 	})
 
 	for _, want := range []struct {

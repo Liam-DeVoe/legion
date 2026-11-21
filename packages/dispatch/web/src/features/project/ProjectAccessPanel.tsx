@@ -34,7 +34,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { dropSettledWrites } from "../writes/settled-writes";
 import { type KeyedPress, useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -415,11 +415,13 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
                 ? // The refusal is read from the mutation cache, not from a `KeyedWriteResult`,
                   // so the method is the change's own (`accessOperation`). A panel opened after
                   // the save holds no press to make again, so its Retry is a new save under a new
-                  // key.
+                  // key. A save whose key ran out leaves no press to make again in any panel, the
+                  // one that made it included, and its note says what that Retry is
+                  // (`expiredRetryNote`).
                   stoppedWriteNote(
                     operation.unconfirmed,
                     operation.made,
-                    refused.madeHere
+                    refused.madeHere || !retriesUnderItsKey(refused.error)
                       ? { method: operation.method, stopped: refused.error }
                       : {
                           anew: "This panel was opened after that save, so Retry sends it as a new save.",

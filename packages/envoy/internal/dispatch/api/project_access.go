@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -92,7 +93,15 @@ func privateProjectIncomplete(ctx context.Context, q graphstore.Queryer, key str
 		return err
 	}
 	if len(unnamed) > 0 {
-		return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, incompleteRowsError(unnamed, "direct messages"))
+		// The messages are the whole deployment's, and while a project is private none passes any
+		// viewer but the server's, so the refusal says how many there are and names none to the
+		// owner who pressed the switch; the ids, each with its cure, are logged for the operator,
+		// and envoy-dispatch census --store names them too.
+		slog.Warn("dispatch: a switch to private waits for direct messages whose conversation names no party",
+			"project", key, "messages", unnamed)
+		return fmt.Errorf("%w: %d direct messages name no party their conversation is with, so while a project is private no reader may see them; "+
+			"the operator's log and envoy-dispatch census --store name each and its cure",
+			errPrivateProjectsIncomplete, len(unnamed))
 	}
 	if err := backfillMarkersMissing(ctx, q); err != nil {
 		if errors.Is(err, errBackfillNotRun) {
