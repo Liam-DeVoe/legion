@@ -296,7 +296,10 @@ func startPool(t *testing.T, docker, direct string, settings pool) string {
 			running, _ := exec.Command(docker, "container", "inspect", "-f", "{{.State.Running}}", name).Output()
 			if strings.TrimSpace(string(running)) != "true" {
 				log := logs()
-				if strings.Contains(log, "Address already in use") && start < poolStarts {
+				// The image's C library is musl, whose words for EADDRINUSE are "Address in use"
+				// (PgBouncer logs "bind(): Address in use"); glibc's are "Address already in use".
+				taken := strings.Contains(log, "Address in use") || strings.Contains(log, "Address already in use")
+				if taken && start < poolStarts {
 					t.Logf("the pool's port %s was taken before PgBouncer bound it: starting it again on another", port)
 					if err := remove(); err != nil {
 						t.Fatal(err)
