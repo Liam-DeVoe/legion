@@ -277,8 +277,8 @@ func blockMarkdown(node *pmdoc.Node) (string, error) {
 // pointerLineLead is the words a spec's pointer line to its issue's decisions document holds
 // before the citation, case folded and its whitespace collapsed: none, `see`, or one clause naming
 // the decisions and saying they are in the cited document, as the release before's spec skill had
-// an agent write the line ("The decisions are in dispatch://KEY/artifact/decisions-md."), with no
-// sentence break among its words.
+// an agent write the line ("The decisions are in" and the decisions document's dispatch://
+// address), with no sentence break among its words.
 //
 // kept for one release: decisions-step
 var pointerLineLead = regexp.MustCompile(`^(see|(the )?decisions( [^.;:!?]*)? (are|live) (in|at))?$`)

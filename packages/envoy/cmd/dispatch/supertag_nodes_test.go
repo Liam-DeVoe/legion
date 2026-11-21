@@ -25,22 +25,20 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// typeMigrations are the files that write the type nodes, in the order the runner applies them:
-// the seed, then each migration that has changed a type since. The test runs them a second time,
-// in that order and through the same path the migration runner runs each, to prove a second run
-// leaves the same nodes, all but each one written as literal rows, which runs once
-// (requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes). The seed alone would not do: run
-// again, it puts back the version and the attributes it was written at, which every later type
-// migration has moved on from.
+// typeMigrations are the type migrations written before the store's backfill, in the order the
+// runner applies them: the seed, then each migration that changed a type before it. The test runs
+// them a second time, in that order and through the same path the migration runner runs each, to
+// prove a second run leaves the same nodes. The seed alone would not do: run again, it puts back
+// the version and the attributes it was written at, which every later type migration has moved on
+// from. A type migration written after the backfill is not listed here and runs once, as the
+// runner applies every file: it writes graph_tuples above the census limit, so it may write only
+// literal `insert … values` rows under the migration census's bounded-write rule, and the seed
+// tuples it writes at source_event 0 fall under no unique key, so a second run would append them
+// again. Such a migration is listed in literalTypeMigrations instead.
 var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
 	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
 	"../../internal/dispatch/store/migrations/20261115130000_graph_supertags_element_versions.up.sql",
-	"../../internal/dispatch/store/migrations/20261116082319_graph_supertags_decision_reading.up.sql",
-	// The lens_kind supertag and the attribute nodes of the types that declare no block type, as
-	// literal rows, each held to this file by requireStoreOnlyAttributesMatchTheirMigrations. It
-	// runs once, so the second run leaves it out.
-	"../../internal/dispatch/store/migrations/20261116123354_lens_catalogue.up.sql",
 }
 
 // blockSchemaFile is the seed of the typed block types. It is read from disk rather than from
@@ -321,7 +319,7 @@ var storeOnlyAttribute = regexp.MustCompile(`\('attribute', '([a-z_ ]+)/([a-z_]+
 // directions: each node's one tie is to the supertag its migration names it under, and it carries
 // the name, the store name (its own name, since none is a base attribute), the kind and the
 // position the migration gives it, and each attribute a migration declares is a node of the store.
-// A node no migration of typeMigrations declares fails, naming the node.
+// A node no migration of typeMigrations or literalTypeMigrations declares fails, naming the node.
 func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeOnlyNode) {
 	t.Helper()
 	type declaration struct {
@@ -329,7 +327,11 @@ func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeO
 		position                        int
 	}
 	declared := map[string]declaration{}
-	for _, migration := range typeMigrations {
+	migrations := slices.Clone(typeMigrations)
+	for _, literal := range literalTypeMigrations {
+		migrations = append(migrations, literal.file)
+	}
+	for _, migration := range migrations {
 		text, err := os.ReadFile(filepath.Clean(migration))
 		if err != nil {
 			t.Fatalf("read the type migration %s: %v", filepath.Base(migration), err)
@@ -362,7 +364,7 @@ func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeO
 		held[node.ID] = true
 		want, ok := declared[node.ID]
 		if !ok {
-			t.Errorf("the store holds attribute node %q of a type with no block type, which no type migration of typeMigrations declares", node.ID)
+			t.Errorf("the store holds attribute node %q of a type with no block type, which no type migration of typeMigrations or literalTypeMigrations declares", node.ID)
 			continue
 		}
 		if tie := attribute.tie; tie.ToKind != schemanodes.KindSupertag || tie.ToID != want.supertag {
@@ -523,26 +525,54 @@ func (d *schemaDrift) report(t *testing.T) {
 	t.Errorf("pmdoc/schema/blocks.json and the store's type nodes disagree on %s%s. "+
 		"A change to pmdoc/schema/blocks.json needs a store migration of its own, like %s: "+
 		"it writes the node of each type or attribute the change adds or alters, with its tuples, and moves every block type's supertag node to the new version. "+
-		"Write one for this change and add it to typeMigrations in this file.",
+		"Write one for this change. It runs once, as the runner applies every file, and joins no second run of typeMigrations in this file: "+
+		"written after the store's backfill, it writes under the migration census's bounded-write rule. "+
+		"Add it to literalTypeMigrations, whose rows the second run takes out and writes again after typeMigrations.",
 		what, versions, typeMigrationExample)
 }
 
-// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration again but those
-// that run once, in order, and holds every node row and every tuple to being the one the first run
-// left.
+// literalTypeMigrations are the type migrations written after the store's backfill, in the order
+// the runner applies them, each with the writer its rows carry. Each runs where graph_nodes and
+// graph_tuples can be past pgmigrate.CensusTableLimit, on which the pre-deploy census admits only
+// an insert of literal rows and an update of literals by primary key, so it has no `not exists`
+// and no `on conflict` to skip what an earlier run wrote: run again over its own rows, its insert
+// into graph_nodes fails on the primary key, and its seed tuples at source_event 0 would be
+// appended again. The runner applies a version once, so no store runs one twice.
+// 20261116123354_lens_catalogue writes the lens_kind supertag and the attribute nodes of the types
+// that declare no block type, each held to its file by requireStoreOnlyAttributesMatchTheirMigrations.
+var literalTypeMigrations = []struct{ file, writer string }{
+	{"../../internal/dispatch/store/migrations/20261116082319_graph_supertags_decision_reading.up.sql", `{"kind": "system", "id": "block-schema-decision-reading"}`},
+	{"../../internal/dispatch/store/migrations/20261116123354_lens_catalogue.up.sql", `{"kind": "system", "id": "lens-catalogue"}`},
+}
+
+// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs the type migrations written before
+// the store's backfill again, in order (typeMigrations), and holds every node row and every tuple
+// to being the one the first run left.
+//
+// The type migrations written after the backfill (literalTypeMigrations) run in it too, after
+// typeMigrations, but never over their own rows. The second run of typeMigrations puts back what
+// those wrote, which each later migration has moved on from: 20261116082319's settings of the
+// `decision` and `reading` supertag nodes, of `ask/invalid` and of the element versions. Left
+// there, the nodes after the run would not be the nodes before it. So the nodes each literal
+// migration made and the tuples it appended, each carrying its writer, are taken out first, and it
+// runs again after typeMigrations, as the runner orders it: its stamps are literals, so each row it
+// writes is the one it wrote the first time, and its updates move again what the second run of
+// typeMigrations put back.
 func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
-	// A type migration written after the store's backfill (cybermonklabs/legion#3178) writes only
-	// literal rows and runs once: graph_nodes and graph_tuples are above the census's size limit in
-	// production, where the census admits only literal `values` rows, so such a file holds no `on
-	// conflict` or `not exists` that would let a second run write nothing, and a second run is
-	// refused on graph_nodes' primary key, so this second run leaves these out.
-	runsOnce := []string{"20261116123354_lens_catalogue.up.sql"}
 	before, beforeTuples := schemaRows(t, ctx, pool)
-	for _, migration := range typeMigrations {
-		if slices.Contains(runsOnce, filepath.Base(migration)) {
-			continue
+	runs := slices.Clone(typeMigrations)
+	for _, migration := range literalTypeMigrations {
+		name := filepath.Base(migration.file)
+		if _, err := pool.Exec(ctx, `delete from graph_tuples where who = $1::jsonb`, migration.writer); err != nil {
+			t.Fatalf("take out the tuples %s appended: %v", name, err)
 		}
+		if _, err := pool.Exec(ctx, `delete from graph_nodes where made_by = $1::jsonb`, migration.writer); err != nil {
+			t.Fatalf("take out the nodes %s made: %v", name, err)
+		}
+		runs = append(runs, migration.file)
+	}
+	for _, migration := range runs {
 		text, err := os.ReadFile(filepath.Clean(migration))
 		if err != nil {
 			t.Fatalf("read the type migration %s: %v", filepath.Base(migration), err)

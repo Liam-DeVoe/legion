@@ -23,17 +23,36 @@ import (
 // has read the commit, short enough for a run.
 const eraseTestWindow = 4 * time.Second
 
+// confirmTries is how many listings confirmErase confirms, in all, before it gives up on a
+// listing that keeps moving.
+const confirmTries = 3
+
 // confirmErase is what an operator runs: the erase of kind:id without --confirm, which reads its
-// listing and removes nothing, then with the digest that run printed.
+// listing and removes nothing, then with the digest that run printed. These tests run it against a
+// live server whose ticks write rows that derive from the node - a comment's windows among them -
+// so a tick between the two runs moves the listing, and the confirmed run refuses it (Mismatch),
+// as it refuses an operator's. The operator then reads the listing again and confirms that digest,
+// and so does confirmErase, confirmTries times in all; when the last confirmed run still reads
+// another listing it answers an error naming both digests. Any other refusal it answers as the
+// erase does, the refused Erasure with no error.
 func confirmErase(ctx context.Context, databaseURL, kind, id string, window time.Duration) (*grapherase.Erasure, error) {
-	listing, err := grapherase.Erase(ctx, databaseURL, kind, id, "", 0)
-	if err != nil {
-		return nil, fmt.Errorf("erase --node %s:%s without --confirm: %w", kind, id, err)
+	for try := 1; ; try++ {
+		listing, err := grapherase.Erase(ctx, databaseURL, kind, id, "", 0)
+		if err != nil {
+			return nil, fmt.Errorf("erase --node %s:%s without --confirm: %w", kind, id, err)
+		}
+		if listing.Applied {
+			return nil, fmt.Errorf("erase --node %s:%s without --confirm removed something", kind, id)
+		}
+		erasure, err := grapherase.Erase(ctx, databaseURL, kind, id, listing.Digest, window)
+		if err != nil || !erasure.Mismatch() {
+			return erasure, err
+		}
+		if try == confirmTries {
+			return erasure, fmt.Errorf("erase --node %s:%s refused each of %d listings it was given: the last confirmed run was given %s and read a listing of digest %s",
+				kind, id, confirmTries, erasure.Confirmed, erasure.Digest)
+		}
 	}
-	if listing.Applied {
-		return nil, fmt.Errorf("erase --node %s:%s without --confirm removed something", kind, id)
-	}
-	return grapherase.Erase(ctx, databaseURL, kind, id, listing.Digest, window)
 }
 
 // blockHolding is the node address of the block of document whose text, at the latest version
