@@ -146,6 +146,11 @@ type StoreState struct {
 	// Boundary is the cutover boundary B: a session key with no record starts no later than it.
 	// 0 where the family has none.
 	Boundary uint64 `json:"boundary,omitempty"`
+	// StreamID is the identity of ENVOY_NOTIFICATIONS as the operator recorded it when it wrote
+	// the sentinel (the stream's StreamIdentityMetadataKey): the cutover's convert and enroll and a
+	// hub restore's finish write it. A family that does not read the stream's info tags each last
+	// floor with it instead. "" where none was recorded.
+	StreamID string `json:"stream_id,omitempty"`
 	// ReplayFrom, while set, is where a key with no record starts, never at its first-create rule
 	// (a recovery after a lost store).
 	ReplayFrom uint64 `json:"replay_from,omitempty"`
