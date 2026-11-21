@@ -111,19 +111,37 @@ var urlCredentialsCases = []struct {
 		want: "https://h.example/\u00a0more",
 	},
 	{
+		// The inner URL's "@" is past the outer one's host too, so the outer is written whole.
 		name: "a URL in the path of another",
 		text: "https://archive.example/web/https://u:" + planted + "@h.example/x?t=" + planted,
-		want: "https://archive.example/web/https://" + URLWithCredentials + "/x",
+		want: "https://" + URLWithCredentials,
 	},
 	{
 		name: "a URL in the fragment of another",
 		text: "https://h.example/#next=https://" + planted + "@g.example/?t=" + planted + "#top",
-		want: "https://h.example/#next=https://" + URLWithCredentials + "/#top",
+		want: "https://" + URLWithCredentials,
 	},
 	{
 		name: "a URL in the query of another",
 		text: "https://h.example/login?next=https://" + planted + "@g.example/ done",
-		want: "https://h.example/login done",
+		want: "https://" + URLWithCredentials + " done",
+	},
+	{
+		// A credential holding a "?" written as the user: url.Parse reads its head as the host,
+		// and nothing of the head is printed.
+		name: "an @ in the query, past a head read as the host",
+		text: "dial https://madeUpHead0123?" + planted + "@host.example/x refused",
+		want: "dial https://" + URLWithCredentials + " refused",
+	},
+	{
+		name: "an @ in the path, past a head read as the host",
+		text: "dial https://madeUpHead0123/" + planted + "@host.example/x refused",
+		want: "dial https://" + URLWithCredentials + " refused",
+	},
+	{
+		name: "a URL with no @ past its host keeps its path",
+		text: "https://h.example/a/b?x=1#f",
+		want: "https://h.example/a/b#f",
 	},
 	{
 		name: "a fragment kept",
@@ -136,9 +154,37 @@ var urlCredentialsCases = []struct {
 		want: "https://h.example/p#which?that",
 	},
 	{
-		name: "an @ in the path kept",
+		// An "@" past the host is where a credential holding a "/" written as the user lands, so a
+		// path's own "@" (a scoped npm package, a user page) is written as the mark too: the
+		// decided cost of reading no "@" past a host as safe.
+		name: "an @ in the path takes the mark",
 		text: "https://h.example/@user/p",
-		want: "https://h.example/@user/p",
+		want: "https://" + URLWithCredentials,
+	},
+	{
+		// A file URL names a path on this machine and has no userinfo to hold a credential: a
+		// scoped package's "@" stays, as the plugin module URL `legion controller start` names.
+		name: "a file URL keeps its path's @",
+		text: "loaded pi-envoy from file:///home/u/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js?mtime=1 which",
+		want: "loaded pi-envoy from file:///home/u/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js which",
+	},
+	{
+		name: "a FILE URL in upper case keeps its path's @",
+		text: "FILE:///srv/@scope/x",
+		want: "FILE:///srv/@scope/x",
+	},
+	{
+		// A scheme that ends in "file" is another scheme: the rule holds for it.
+		name: "a scheme that ends in file takes the mark",
+		text: "notfile://h.example/@user/p",
+		want: "notfile://" + URLWithCredentials,
+	},
+	{
+		// The file URL's query is pending when the URL in its path, with an "@" past its host, is
+		// written whole as the mark: the mark covers that query, which is not removed again.
+		name: "a URL with an @ past its host in a file URL's path",
+		text: "see file:///plugins/https://h.example/p?u=" + planted + "@g.example end",
+		want: "see file:///plugins/https://" + URLWithCredentials + " end",
 	},
 	{
 		name: "a ? in prose with no URL",
@@ -168,6 +214,9 @@ func TestURLCredentialsRemovesTheQueryAndTheUserinfoOfEveryURL(t *testing.T) {
 		})
 	}
 }
+
+// schemeRunes are the characters a scheme holds, for urlCredentialsQuadratic's own reading of it.
+const schemeRunes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-."
 
 // urlCredentialsQuadratic is URLCredentials as it was before it kept its searches: the same rule,
 // which for each "://" searches again to the URL's end, three times, so a run of "://" that
@@ -212,6 +261,17 @@ func urlCredentialsQuadratic(text string) string {
 		}
 		end := at + orLen(strings.IndexFunc(text[at:], endsURL), len(text)-at)
 		host := at + orLen(strings.IndexAny(text[at:end], "/?#"), end-at)
+		start := sep
+		for start > 0 && strings.IndexByte(schemeRunes, text[start-1]) >= 0 {
+			start--
+		}
+		scheme := text[start:sep]
+		if strings.IndexByte(text[host:end], '@') >= 0 && !strings.EqualFold(scheme, "file") {
+			replace(at, end, URLWithCredentials)
+			at = end
+			query = -1
+			continue
+		}
 		if strings.IndexByte(text[at:host], '@') >= 0 {
 			replace(at, host, URLWithCredentials)
 		}
@@ -238,7 +298,7 @@ func TestURLCredentialsGivesWhatTheRuleAsFirstWrittenGives(t *testing.T) {
 	for _, tc := range urlCredentialsCases {
 		texts = append(texts, tc.text)
 	}
-	pieces := []string{"https", "9", "@", ":", "/", "?", "#", "=", " ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff"}
+	pieces := []string{"https", "file", "9", "@", ":", "/", "?", "#", "=", " ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff"}
 	random := rand.New(rand.NewPCG(4193, 4463))
 	for range 5000 {
 		some := []string{"a", "://"}

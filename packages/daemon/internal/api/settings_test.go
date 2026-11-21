@@ -570,6 +570,9 @@ func TestEndpointOfMasksUserinfoAndKeepsThePath(t *testing.T) {
 		{"nats://legion:fixture-nats-password" + "@nats.internal.example:4222", "nats" + marked},
 		{"http://user:p" + "@ssword@envoy-listener.internal.example:9020", "http" + marked},
 		{"http://user:p" + "@ssword", "http" + marked},
+		{"https://madeUpHead0123?madeUpTail0123@dispatch.internal.example/legion", "https" + marked},
+		{"https://madeUpHead0123#madeUpTail0123@dispatch.internal.example/legion", "https" + marked},
+		{"https://madeUpHead0123/madeUpTail0123@dispatch.internal.example/legion", "https" + marked},
 		{"", ""},
 		{"not a url", "xxxxx"},
 		{"//host-only", "xxxxx"},
@@ -589,6 +592,11 @@ func TestPluginSourceOfMasksOnlyTheURLForm(t *testing.T) {
 		{"https://plugins.internal.example/pi-legion-10.4.0.tgz", "https://plugins.internal.example/pi-legion-10.4.0.tgz"},
 		{"https://legion:secret@plugins.internal.example/pi-legion-10.4.0.tgz?X-Amz-Signature=abc#frag", "https://" + redact.URLWithCredentials + "/pi-legion-10.4.0.tgz"},
 		{"http://plugins.internal.example/x.tgz?token=t", "http://plugins.internal.example/x.tgz"},
+		// A plugin's scoped registry tarball URL keeps its path; any other "@" past the host, here a
+		// made-up credential ending in "/" written as the user, is the mark alone.
+		{"https://registry.example/@sjawhar/pi-legion/-/pi-legion-10.4.0.tgz", "https://registry.example/@sjawhar/pi-legion/-/pi-legion-10.4.0.tgz"},
+		{"https://madeUpPluginHead0123/@registry.example/pi-legion-10.4.0.tgz", "https://" + redact.URLWithCredentials},
+		{"https://madeUpPluginHead0123?madeUpTail0123@registry.example/@sjawhar/pi-legion/-/x.tgz", "https://" + redact.URLWithCredentials},
 	} {
 		if got := PluginSourceOf(tc.source); got != tc.want {
 			t.Errorf("PluginSourceOf(%q) = %q, want %q", tc.source, got, tc.want)

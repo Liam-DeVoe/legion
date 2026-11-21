@@ -964,12 +964,14 @@ func sessionStoreName(kind ompsessions.StoreKind, dsnSecret string, proxy []stri
 // namedURL is the log boundary for one endpoint value: an existing pod or record can hold a value a
 // previous daemon accepted, or a direct Options caller supplied, even when this daemon's current
 // loader no longer accepts it. It names "(unset)" for none; otherwise it constructs the name from
-// exactly the scheme, host and port it accepts to show, or, when the URL carries userinfo, the
-// scheme and redact.URLWithCredentials, nothing after the last "@" (a password holding an unencoded
-// "@" leaves its tail there, read as a host). Path, query and fragment never enter it. An endpoint
-// that cannot yield a scheme and host is xxxxx whole, so unexpected input cannot make the name a
-// credential reader. api.endpointOf is the same mask as the state renders it, which keeps the
-// path: there the value is a setting its reader acts on, where this one is only a name.
+// exactly the scheme, host and port it accepts to show, or, when the URL carries userinfo or an
+// "@" past its host (redact.UserinfoPastHost: a credential holding a "/", "?" or "#" written as the
+// user, its head read as the host), the scheme and redact.URLWithCredentials, nothing after the last
+// "@" (a password holding an unencoded "@" leaves its tail there, read as a host). Path, query and
+// fragment never enter it. An endpoint that cannot yield a scheme and host is xxxxx whole, so
+// unexpected input cannot make the name a credential reader. api.endpointOf is the same mask as the
+// state renders it, which keeps the path: there the value is a setting its reader acts on, where
+// this one is only a name.
 func namedURL(address string) string {
 	if address == "" {
 		return "(unset)"
@@ -978,7 +980,7 @@ func namedURL(address string) string {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "xxxxx"
 	}
-	if u.User != nil {
+	if u.User != nil || redact.UserinfoPastHost(u) {
 		return u.Scheme + "://" + redact.URLWithCredentials
 	}
 	return u.Scheme + "://" + u.Host

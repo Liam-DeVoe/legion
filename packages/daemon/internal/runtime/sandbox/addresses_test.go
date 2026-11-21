@@ -136,10 +136,11 @@ func TestEachAddressARoleIsHandedIsComparedAlone(t *testing.T) {
 }
 
 // A name is all an observation's detail and the address record ever carry of an address: its
-// scheme, host and port, its scheme and `[a URL with credentials]` when it carries userinfo,
-// `(unset)` for none, and `xxxxx` whole when it yields no scheme and host. Userinfo, path, query and
-// fragment never enter it, a raw comma in the userinfo, a password holding an "@" (with a host after
-// it or none) and an at sign in the path included, and a NATS list is named entry by entry.
+// scheme, host and port, its scheme and `[a URL with credentials]` when it carries userinfo or an
+// "@" past its host (where a credential holding a "/", "?" or "#" written as the user lands, its
+// head read as the host), `(unset)` for none, and `xxxxx` whole when it yields no scheme and host.
+// Userinfo, path, query and fragment never enter it, a raw comma in the userinfo and a password
+// holding an "@" (with a host after it or none) included, and a NATS list is named entry by entry.
 func TestANamedAddressShowsOnlyItsSchemeHostAndPort(t *testing.T) {
 	const withCredentials = "://" + redact.URLWithCredentials
 	for address, want := range map[string]string{
@@ -152,7 +153,9 @@ func TestANamedAddressShowsOnlyItsSchemeHostAndPort(t *testing.T) {
 		"http://user:p" + "@ssword":                                       "http" + withCredentials,
 		"nats://192.0.2.9:4222?token=nats-old-token":                      "nats://192.0.2.9:4222",
 		"nats://192.0.2.9:4222/tenant%2Fnats-old-credential":              "nats://192.0.2.9:4222",
-		"nats://192.0.2.9:4222/route@blue":                                "nats://192.0.2.9:4222",
+		"nats://192.0.2.9:4222/route@blue":                                "nats" + withCredentials,
+		"nats://madeUpHead0123?madeUpTail0123@192.0.2.9:4222":             "nats" + withCredentials,
+		"nats://madeUpHead0123#madeUpTail0123@192.0.2.9:4222":             "nats" + withCredentials,
 		"http://192.0.2.9:9020?access_token=envoy-old-token":              "http://192.0.2.9:9020",
 		"http://192.0.2.9:9020#access_token=envoy-old-token":              "http://192.0.2.9:9020",
 		"http://192.0.2.9:9020/tenant/old":                                "http://192.0.2.9:9020",

@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // Settings is the daemon's resolved legion.yaml as `GET /legion/v1/state` carries it (contract
@@ -783,13 +785,16 @@ func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 // or, when the address carries userinfo, where the loader has NATS and Envoy credentials live (`use
 // URL userinfo or a secret for credentials`), the scheme, redact.URLWithCredentials in place of the
 // authority, and the path: nothing after the last "@" is shown, since a password holding an
-// unencoded "@" leaves its tail there, read as a host. "" stays "" (`dispatch_url` may be unset);
-// an address that yields no scheme and host is `xxxxx` whole, never the raw string. The result is
-// composed from the parsed scheme, the host or the mark, and EscapedPath, so a query or a fragment
-// never reaches the wire either: the loader refuses one on each of the four address keys, and a
-// plugin URL's pre-signed query (PluginSourceOf) is dropped here. runtime/sandbox's namedURL is the
-// same mask for a log line and keeps no path; this one keeps the path because a setting is a value
-// its reader acts on, where namedURL's result is only a name.
+// unencoded "@" leaves its tail there, read as a host. An address with an "@" past its host
+// (redact.UserinfoPastHost), where a credential holding a "/", "?" or "#" written as the user
+// lands with its head read as the host, is its scheme and the mark alone, no path. "" stays ""
+// (`dispatch_url` may be unset); an address that yields no scheme and host is `xxxxx` whole,
+// never the raw string. The result is composed from the parsed scheme, the host or the mark, and
+// EscapedPath, so a query or a fragment never reaches the wire either: the loader refuses one on
+// each of the four address keys, and a plugin URL's pre-signed query (PluginSourceOf) is dropped
+// here. runtime/sandbox's namedURL is the same mask for a log line and keeps no path; this one
+// keeps the path because a setting is a value its reader acts on, where namedURL's result is only
+// a name.
 func endpointOf(address string) string {
 	if address == "" {
 		return ""
@@ -797,6 +802,9 @@ func endpointOf(address string) string {
 	u, err := url.Parse(address)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "xxxxx"
+	}
+	if redact.UserinfoPastHost(u) {
+		return u.Scheme + "://" + redact.URLWithCredentials
 	}
 	if u.User != nil {
 		return u.Scheme + "://" + redact.URLWithCredentials + u.EscapedPath()
@@ -810,10 +818,38 @@ func endpointOf(address string) string {
 // path, or an http(s) URL stored whole, so a private or pre-signed tarball URL carries its
 // credential in userinfo or in a query (`X-Amz-Signature`): the URL form, told by the loader's own
 // shape test, rides endpointOf, which masks the userinfo and drops the query and fragment; a
-// version and a path carry no credential and pass through unchanged, never `xxxxx`.
+// version and a path carry no credential and pass through unchanged, never `xxxxx`. The one "@"
+// the loader admits past a plugin URL's host is a path segment that is the plugins' scope
+// (runtime.PluginScope, a registry tarball URL's `/@sjawhar/pi-legion/-/…`): such a URL keeps its
+// path, where endpointOf, for which any "@" past the host is a credential's, would show the mark.
 func PluginSourceOf(source string) string {
-	if u, err := url.Parse(source); err == nil && u.IsAbs() && (u.Scheme == "http" || u.Scheme == "https") {
+	u, err := url.Parse(source)
+	if err != nil || !u.IsAbs() || (u.Scheme != "http" && u.Scheme != "https") {
+		return source
+	}
+	if !scopedOnly(u) {
 		return endpointOf(source)
 	}
-	return source
+	if u.User != nil {
+		return u.Scheme + "://" + redact.URLWithCredentials + u.EscapedPath()
+	}
+	return u.Scheme + "://" + u.Host + u.EscapedPath()
+}
+
+// scopedOnly reports whether u's every "@" past its host is a path segment that is the plugins'
+// scope, and at least one is: none in the query or the fragment, none elsewhere in the path.
+func scopedOnly(u *url.URL) bool {
+	if strings.Contains(u.RawQuery, "@") || strings.Contains(u.Fragment, "@") {
+		return false
+	}
+	scoped := false
+	for _, segment := range strings.Split(u.Path, "/") {
+		switch {
+		case segment == runtime.PluginScope:
+			scoped = true
+		case strings.Contains(segment, "@"):
+			return false
+		}
+	}
+	return scoped
 }

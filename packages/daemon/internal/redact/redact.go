@@ -42,27 +42,33 @@ import (
 )
 
 // URLNotPrinted stands for a URL value URL will not print.
-const URLNotPrinted = "(a URL that is not printed: it does not parse as one with a host)"
+const URLNotPrinted = "(a URL that is not printed)"
 
 // URLWithCredentials stands in place of the authority of a URL whose authority holds an "@", in
 // what URL, URLCredentials and the state's endpointOf print: its userinfo is a credential, and a
 // password holding an unencoded "@" leaves its tail after the last "@", which reads as a host
 // (`http://user:p@ssword` names the host `ssword`), so nothing of such an authority is printed.
+// URLCredentials writes it for the whole of a URL with an "@" past its host (UserinfoPastHost).
 const URLWithCredentials = "[a URL with credentials]"
+
+// UserinfoPastHost reports whether u holds an "@" after its host, in its path, its query or its
+// fragment: where a credential holding a "/", "?" or "#" written in the userinfo lands, its head
+// read as the host (`https://<head>?<tail>@host` parses with <head> as the host), so nothing of
+// such a URL is printed. It is natsurl.UserinfoPastHost's rule, kept here so this package, which
+// every binary's log lines pass, takes no NATS client with it.
+func UserinfoPastHost(u *url.URL) bool {
+	return strings.Contains(u.Path, "@") || strings.Contains(u.RawQuery, "@") || strings.Contains(u.Fragment, "@")
+}
 
 // URL is raw, one value known to be a URL (a setting's, an environment variable's), as a line
 // prints it: read by url.Parse, with its query and fragment removed, and its authority, when it
 // holds an "@", as URLWithCredentials. The rule on text, URLCredentials, finds a URL's end at a
 // character such as "'", which a password may hold; a value known to be a URL is read whole here
-// instead. A raw that does not parse as a URL with a host, or whose path holds an "@" (a
-// credential holding a "/" written as the user, whose head url.Parse reads as the host), prints
-// as URLNotPrinted.
+// instead. A raw that does not parse as a URL with a host, or that holds an "@" past its host
+// (UserinfoPastHost), prints as URLNotPrinted.
 func URL(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return URLNotPrinted
-	}
-	if strings.Contains(u.EscapedPath(), "@") || strings.Contains(u.Path, "@") {
+	if err != nil || u.Scheme == "" || u.Host == "" || UserinfoPastHost(u) || strings.Contains(u.EscapedPath(), "@") {
 		return URLNotPrinted
 	}
 	if u.User != nil {
@@ -72,8 +78,9 @@ func URL(raw string) string {
 	return u.String()
 }
 
-// URLCredentials is text with the query of every URL written in it removed, and the authority of
-// every URL whose authority holds an "@" written as URLWithCredentials.
+// URLCredentials is text with the query of every URL written in it removed, the authority of
+// every URL whose authority holds an "@" written as URLWithCredentials, and every URL with an "@"
+// past its host written whole, after its "://", as URLWithCredentials.
 //
 // A URL starts at <scheme>://, where the scheme is a letter followed by letters, digits, "+", "-"
 // or ".". It ends at the first white-space character, `"`, `'`, "`", "<" or ">" after the "://",
@@ -84,17 +91,25 @@ func URL(raw string) string {
 //     "@" holds userinfo, a password and a token written as the user name alike, and a password
 //     holding an unencoded "@" leaves its tail after the last "@", which reads as a host; such an
 //     authority is written URLWithCredentials, nothing of it kept;
+//   - an "@" after the authority, in the path, the query or the fragment, is where a credential
+//     holding a "/", "?" or "#" written in the userinfo lands, its head then read as the authority
+//     (`https://<head>?<tail>@host`): such a URL is written URLWithCredentials from its "://" to
+//     its end, nothing of it kept (UserinfoPastHost's rule, read on the text). A file URL is the
+//     one exception: it names a path on this machine, RFC 8089 gives it no userinfo to write a
+//     credential in, and a path's own "@" is common there (`node_modules/@scope/…`), so its path
+//     stays;
 //   - the fragment starts at the first "#" after the authority, and it stays. A "?" after that "#"
 //     is the fragment's;
 //   - the query runs from the first "?" after the authority up to the fragment, or up to the end
 //     of the URL, and it is removed with its "?".
 //
 // A URL written in the path or the fragment of another (a redirect's target, an archived page)
-// is a URL of its own, under the same rule. One written in a query goes with that query. Nothing
-// else changes: the scheme, an authority with no "@", the path, the fragment and every word around
-// the URLs stay as written. Neither a part nor the length of a credential is left, and
-// URLCredentials(URLCredentials(s)) == URLCredentials(s): URLWithCredentials holds a space, which
-// ends the URL it stands in.
+// is a URL of its own, under the same rule; one holding an "@" puts that "@" past the other's
+// host too, so the other is written whole as the mark. One written in a query goes with that
+// query. Nothing else changes: the scheme, an authority with no "@", the path, the fragment and
+// every word around the URLs stay as written. Neither a part nor the length of a credential is
+// left, and URLCredentials(URLCredentials(s)) == URLCredentials(s): URLWithCredentials holds a
+// space, which ends the URL it stands in.
 //
 // A text the rule does not change, a text with no "://" above all, is returned as it is, with no
 // allocation. The rule takes time linear in the text's length, a run of "://" that nothing ends
@@ -155,6 +170,17 @@ func URLCredentials(text string) string {
 			end = at + orLen(strings.IndexFunc(text[at:], endsURL), len(text)-at)
 		}
 		host := min(slash.from(text, at), question.from(text, at), hash.from(text, at), end)
+		// An "@" past the host writes the whole URL as the mark, and the search goes on from the
+		// URL's end: [host, end) is read here once, and every "://" in it is this URL's own. A
+		// query pending from a URL before this one lies in it only when that URL is a file URL,
+		// which an "@" past its host leaves whole, and which ends where this one does: the mark
+		// covers that query, so it is no longer pending.
+		if strings.IndexByte(text[host:end], '@') >= 0 && !fileSchemeEndsAt(text, sep) {
+			replace(at, end, URLWithCredentials)
+			at = end
+			query = -1
+			continue
+		}
 		// [at, host) ends at or before the "/" of the next "://", so the userinfo's searches read
 		// spans apart from one another, the whole text once at most.
 		if strings.IndexByte(text[at:host], '@') >= 0 {
@@ -202,6 +228,19 @@ func schemeEndsAt(text string, sep int) bool {
 		}
 	}
 	return letter
+}
+
+// fileSchemeEndsAt reports whether the scheme that ends at sep, the index of a "://" in text, is
+// "file", in any case.
+func fileSchemeEndsAt(text string, sep int) bool {
+	const file = "file"
+	start := sep - len(file)
+	return start >= 0 && strings.EqualFold(text[start:sep], file) && (start == 0 || !schemeByte(text[start-1]))
+}
+
+// schemeByte reports whether c can stand in a scheme: a letter, a digit, "+", "-" or ".".
+func schemeByte(c byte) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '+' || c == '-' || c == '.'
 }
 
 // endsURL reports whether r ends a URL: a white-space character, `"`, `'`, "`", "<" or ">". A rune
