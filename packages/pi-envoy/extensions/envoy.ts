@@ -3481,10 +3481,13 @@ export default function envoyExtension(hostApi: PiApi): void {
   // but one the listener would not store for it. They are read afresh at every registration.
   // `relayMissing` is why the pass could not open the relay, which the refusal of a registration
   // with none, and so the outage notice, names. A registration sent outside a pass while the
-  // session's relay subject is missing names why it went (`Relay.missing`) instead.
+  // session's relay subject is missing names why it went (`Relay.missing`) instead. `dropped`, where
+  // given, takes every topic an edge listener refused in this registration, for a caller that names
+  // them by what its own registration was answered rather than by what the session follows after.
   const sendRegistration = (
     send: (input: RegistrationInput) => Promise<SubscribeResult>,
-    relayMissing?: string
+    relayMissing?: string,
+    dropped?: string[]
   ): Promise<SubscribeResult> => {
     // Taken in the turn this call starts, with no await ahead of it, so the whole body is built
     // and posted without a tmux call in between: the session the deregistration at shutdown
@@ -3539,11 +3542,14 @@ export default function envoyExtension(hostApi: PiApi): void {
       // An edge listener refused these topics for the projects of the session's token: they stop
       // being followed, here and in the ledger, so no later registration carries them and a
       // restore does not follow them again, and the session is told which, once, in the places
-      // it is told an outage, whichever path registered. A session the host has since left keeps
-      // its own.
+      // it is told an outage, whichever path registered. Registrations are not serialized, so one
+      // that carried a topic another already dropped tells nothing of it again. A session the
+      // host has since left keeps its own.
       drop: (topics, reason) => {
+        dropped?.push(...topics);
         if (sessionID !== registeringFor) return;
-        for (const topic of topics) followed.delete(topic);
+        const stillFollowed = topics.filter((topic) => followed.delete(topic));
+        if (stillFollowed.length === 0) return;
         ledgerFollowedChanged().catch((error: unknown) => {
           logger.warn(
             "envoy: the topics the listener refused stay in the ledger until it is written next",
@@ -3553,10 +3559,10 @@ export default function envoyExtension(hostApi: PiApi): void {
           );
         });
         activeSessionContext?.ui.notify(
-          `envoy: the listener refused ${topics.join(", ")} for this session's projects (${reason}); the session no longer follows them`,
+          `envoy: the listener refused ${stillFollowed.join(", ")} for this session's projects (${reason}); the session no longer follows them`,
           "warning"
         );
-        unwritten.sendNotice(refusedTopicsNoticeText(topics, reason));
+        unwritten.sendNotice(refusedTopicsNoticeText(stillFollowed, reason));
       },
       log: (line) => logger.warn(`envoy: ${line}`),
     });
@@ -3567,8 +3573,13 @@ export default function envoyExtension(hostApi: PiApi): void {
   // the module first takes back every hold this process abandoned under that session, and times
   // the answer on the one clock the heartbeat's stall test reads. It is recorded as on the wire
   // for its session, so a deregistration of that session waits it out.
-  const registerSession = () =>
-    trackRegistration(sessionID, sendRegistration(registrationState.refreshRegistration));
+  // `dropped` as `sendRegistration`'s.
+  const registerSessionCollecting = (dropped: string[] | undefined) =>
+    trackRegistration(
+      sessionID,
+      sendRegistration(registrationState.refreshRegistration, undefined, dropped)
+    );
+  const registerSession = () => registerSessionCollecting(undefined);
 
   // The session title the `dispatch` command reads from the session's `title` file. A shell
   // command takes the environment Oh My Pi captured at the last session event, and a session is
@@ -5279,9 +5290,12 @@ export default function envoyExtension(hostApi: PiApi): void {
           }
           let warnings: readonly string[] | undefined;
           let registrationError: string | undefined;
+          // The topics this call's own registration was refused, whatever another registration
+          // or an unsubscribe did to what the session follows meanwhile.
+          const dropped: string[] = [];
           if (added.length > 0) {
             try {
-              warnings = (await registerSession()).warnings;
+              warnings = (await registerSessionCollecting(dropped)).warnings;
             } catch (error) {
               registrationError = messageFor(error);
             }
@@ -5293,7 +5307,7 @@ export default function envoyExtension(hostApi: PiApi): void {
           // registration drops it from what the session follows (`registerWithRelay`): the caller
           // asked for it by name, so it is told by name, not reported subscribed.
           const refused = added.filter((topic) =>
-            expandSubscriptionTopics([topic]).some((subject) => !followed.has(subject))
+            expandSubscriptionTopics([topic]).some((subject) => dropped.includes(subject))
           );
           const kept = added.filter((topic) => !refused.includes(topic));
           const lines = [`Subscribed: ${kept.join(", ") || "(none new)"}`];

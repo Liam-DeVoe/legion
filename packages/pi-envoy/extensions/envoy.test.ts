@@ -12447,6 +12447,72 @@ console.log(JSON.stringify(args));
     }
   });
 
+  // Registrations are not serialized: the tool's and a heartbeat's can both carry a topic the edge
+  // refuses, and both be refused. The topic stops being followed once, so the session is told of
+  // it once, and the tool still names it, from its own registration's answer.
+  test("two registrations refused the same topic at once tell the session once, and the tool still names it", async () => {
+    const refusedRoot = "notifications.github.acme.priv";
+    const held: (() => void)[] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === "/v1/interests/subscribe") {
+        const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
+        const refused = topics.filter((topic) => topic.startsWith(refusedRoot));
+        if (refused.length > 0) {
+          // Answered only once both registrations are in flight.
+          const { promise, resolve } = Promise.withResolvers<void>();
+          held.push(resolve);
+          await promise;
+          return Response.json(projectRefusal(refused), { status: 403 });
+        }
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?edge-refused-twice-at-once");
+    const fixture = createPi();
+    const intervals: (() => void)[] = [];
+    const context: SessionContext = {
+      ...sessionContext("ses_edge_refused_twice"),
+      setInterval: (callback) => intervals.push(callback),
+    };
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    const told = () =>
+      fixture.entries
+        .map((entry) => ("data" in entry ? entry.data : undefined))
+        .map((data) =>
+          typeof data === "object" &&
+          data !== null &&
+          "content" in data &&
+          typeof data.content === "string"
+            ? data.content
+            : ""
+        )
+        .filter((content) => content.includes(refusedRoot));
+    const subscribeTool = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
+    if (subscribeTool === undefined) throw new Error("envoy_subscribe was not registered");
+    try {
+      const subscribing = subscribeTool.execute("", {
+        topics: [`${refusedRoot}.>`, "notifications.dispatch.issue.PRIV-1.>"],
+      });
+      await until(() => held.length === 1, "the tool's registration in flight", 10_000);
+      intervals[0]?.();
+      await until(() => held.length === 2, "the heartbeat's registration in flight", 10_000);
+      for (const release of held.splice(0)) release();
+      const subscribed = await subscribing;
+      await settle();
+
+      expect(told()).toHaveLength(1);
+      expect(subscribed.details).toMatchObject({
+        added: ["notifications.dispatch.issue.PRIV-1", "notifications.dispatch.issue.PRIV-1.>"],
+        refused: [refusedRoot, `${refusedRoot}.>`],
+      });
+    } finally {
+      await fixture.handlers.get("session_shutdown")?.({}, context);
+    }
+  });
+
   test("unsubscribes role-shaped subscriptions locally without releasing the held role", async () => {
     const role = "librarian";
     const roleTopic = `notifications.role.${role}`;
