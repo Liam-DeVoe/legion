@@ -169,7 +169,7 @@ func StreamInfo(ctx context.Context, nc *nats.Conn, name string) (*jetstream.Str
 	defer cancel()
 	for {
 		info, found, err := streamInfoOnce(within, nc, name)
-		if err == nil || !unanswered(err) || within.Err() != nil {
+		if err == nil || !streamUnanswered(err) || within.Err() != nil {
 			return info, found, err
 		}
 		select {
@@ -180,9 +180,10 @@ func StreamInfo(ctx context.Context, nc *nats.Conn, name string) (*jetstream.Str
 	}
 }
 
-// unanswered reports whether err is a JetStream request no server answered: its bound ran out, or
-// no responder took it.
-func unanswered(err error) bool {
+// streamUnanswered reports whether err is a JetStream request no server answered: its bound ran
+// out, or no responder took it. Not `unanswered`: forcedorder_test.go, built under odatrace, has
+// its own.
+func streamUnanswered(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, nats.ErrTimeout) || errors.Is(err, nats.ErrNoResponders)
 }
 
