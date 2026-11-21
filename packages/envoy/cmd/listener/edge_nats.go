@@ -109,12 +109,13 @@ func newEdgeGrant(machineID string, projects []string, met *metrics.Registry) (*
 
 // connectOptions are the options every NATS connection of the listener takes, the main client's
 // and the session consumers' alike: an edge listener's inbox prefix, the one inbox family its
-// grant subscribes, and none for every other listener.
+// grant subscribes, and stream message reads of its buckets, since its grant holds no direct get
+// (bus.WithStreamMessageReads); none for every other listener.
 func (g *edgeGrant) connectOptions() []bus.ConnectOption {
 	if g == nil {
 		return nil
 	}
-	return []bus.ConnectOption{bus.WithInboxPrefix(g.inboxPrefix)}
+	return []bus.ConnectOption{bus.WithInboxPrefix(g.inboxPrefix), bus.WithStreamMessageReads()}
 }
 
 // publishesException reports whether the listener publishes item's delivery exception: whether

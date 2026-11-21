@@ -1237,11 +1237,13 @@ func main() {
 	// start is. Making stopping here instead would change that for the whole start, the NATS
 	// connect and the cache warm-ups included, into an ordered shutdown of a start not yet serving.
 	starting := context.Background()
-	// The spent-proof bucket, before anything of /v1 can be served: a listener configured to take
-	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
-	// rather than recording spent proofs where its own replicas cannot see them.
+	// The spent-proof bucket, before anything of /v1 can be served. Every listener opens it,
+	// whether or not it takes broker tokens, so an edge listener, whose grant creates no bucket,
+	// finds the one a full listener of this build made; a listener configured to take broker
+	// access tokens on a bus that cannot open it refuses to start, naming the setting, rather than
+	// recording spent proofs where its own replicas cannot see them (brokerTokens.open).
 	if err := brokerTokenAuth.open(starting, client.Conn, cfg.NATSReplicas); err != nil {
-		log.Fatalf("open the spent-proof bucket for broker access tokens: %v", err)
+		log.Fatalf("open the spent-proof bucket: %v", err)
 	}
 	consumer := bus.ListenerDurable(cfg.MachineID)
 	// The durable is checked here, before the cache warm-ups below (up to 30 s each), so a refused
