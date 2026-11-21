@@ -158,3 +158,100 @@ func TestAnArchitectureSourceHoldsItsRepositoryToTheProxysRule(t *testing.T) {
 			got, len(rule))
 	}
 }
+
+// TestAnArchitectureSourceFollowsNoRenameIntoAHiddenRepository: GitHub answers every read of
+// acme/privold with a redirect to acme/privnew, as it answers the old name of a renamed
+// repository, and PRIV's issue names acme/privnew. No issue names acme/privold, so the repository
+// rule shows it to alice, an open viewer PRIV's list does not name. While PRIV is private every
+// GitHub read of a source is held to its repository (the PUT's check, and the importer's reads
+// that the syncs, the ticker and the push imports make):
+//
+//   - alice's PUT of PUB's source of acme/privold answers what her PUT of acme/notinstalled
+//     answers, and no source is stored;
+//   - a source of acme/privold stored in PUB before the rule is synced by alice as a source of a
+//     repository the App is not installed on: the sync answers what acme/notinstalled's does, and
+//     imports no commit and no component.
+//
+// With PRIV public, alice's PUT of acme/privold follows the redirect, as before (R9).
+//
+// Controls: the PUT's check not held (checkArchitectureSource), under which the PUT answers 200;
+// the importer's reads not held (heldToItsRepository), under which the sync imports PRIV's commit.
+// Each fails the row.
+func TestAnArchitectureSourceFollowsNoRenameIntoAHiddenRepository(t *testing.T) {
+	fake := &fakeGitHubApp{
+		installations: map[string]string{"acme/privnew": "read"},
+		repos:         map[string]*fakeArchitectureRepo{"acme/privnew": {commit: shaArch, files: archFiles()}},
+	}
+	served := fake.handler(t)
+	seed := seedPrivateProjectWith(t, testServerOptions{
+		app: fakeGitHubAppConfig(t),
+		githubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+			if rest, moved := strings.CutPrefix(r.URL.Path, "/repos/acme/privold"); moved {
+				http.Redirect(w, r, "/repos/acme/privnew"+rest, http.StatusMovedPermanently)
+				return
+			}
+			served.ServeHTTP(w, r)
+		}}),
+	})
+	ctx := context.Background()
+	if _, err := seed.database.Pool.Exec(ctx, `update issues set repo = 'acme/privnew' where key = $1`, seed.issue[seedPrivate]); err != nil {
+		t.Fatalf("name acme/privnew on PRIV's issue: %v", err)
+	}
+	answer := func(method, repository, suffix string, body any) string {
+		response := seed.request(t, callerAlice, method, "/api/v1/projects/"+seedPublic+"/architecture-sources/"+repository+suffix, body)
+		return strings.ReplaceAll(fmt.Sprintf("%d %s", response.Code, strings.TrimSpace(response.Body.String())), repository, "<repo>")
+	}
+	stored := func(repository string) (count int, commit *string, components int) {
+		t.Helper()
+		if err := seed.database.Pool.QueryRow(ctx, `
+			select count(*), max(last_commit), coalesce(sum((select count(*) from components c
+				where c.project_key = s.project_key and c.source_id = s.id)), 0)
+			from architecture_sources s where project_key = $1 and repo = $2`, seedPublic, repository).Scan(&count, &commit, &components); err != nil {
+			t.Fatalf("read PUB's source of %s: %v", repository, err)
+		}
+		return count, commit, components
+	}
+	put := map[string]string{"branch": "main"}
+	uninstalled := answer(http.MethodPut, "acme/notinstalled", "", put)
+	if !strings.HasPrefix(uninstalled, `409 {"code":"SOURCE_ACCESS","error":"the GitHub App is not installed on <repo>`) {
+		t.Fatalf("alice's source of acme/notinstalled answers %s, want 409 SOURCE_ACCESS: the comparison proves nothing", uninstalled)
+	}
+	if got := answer(http.MethodPut, "acme/privold", "", put); got != uninstalled {
+		t.Errorf("alice's source of acme/privold, which GitHub redirects to PRIV's acme/privnew, answers\n\t%s\nwant what acme/notinstalled answers:\n\t%s", got, uninstalled)
+	}
+	if count, _, _ := stored("acme/privold"); count != 0 {
+		t.Errorf("alice's refused PUT stored %d sources of acme/privold, want none", count)
+	}
+
+	// Sources of acme/privold and of acme/notinstalled stored in PUB before the rule.
+	for _, repository := range []string{"acme/privold", "acme/notinstalled"} {
+		if _, err := seed.database.Pool.Exec(ctx, `
+			insert into architecture_sources (project_key, repo, branch, enabled, installation_id, created_by)
+			values ($1, $2, 'main', true, 77, '{"kind":"user","id":"carol"}'::jsonb)`, seedPublic, repository); err != nil {
+			t.Fatalf("store PUB's source of %s: %v", repository, err)
+		}
+	}
+	uninstalledSync := answer(http.MethodPost, "acme/notinstalled", "/sync", nil)
+	if !strings.HasPrefix(uninstalledSync, `409 {"code":"SOURCE_ACCESS","error":"the GitHub App is not installed on <repo>`) {
+		t.Fatalf("alice's sync of acme/notinstalled answers %s, want 409 SOURCE_ACCESS: the comparison proves nothing", uninstalledSync)
+	}
+	if got := answer(http.MethodPost, "acme/privold", "/sync", nil); got != uninstalledSync {
+		t.Errorf("alice's sync of PUB's source of acme/privold answers\n\t%s\nwant what acme/notinstalled's answers:\n\t%s", got, uninstalledSync)
+	}
+	if _, commit, components := stored("acme/privold"); commit != nil || components != 0 {
+		imported := "none"
+		if commit != nil {
+			imported = *commit
+		}
+		t.Errorf("alice's sync of acme/privold imported commit %s and %d components, want none", imported, components)
+	}
+
+	// With no project private, the PUT follows GitHub's redirect, as before.
+	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
+	if _, err := seed.database.Pool.Exec(ctx, `delete from architecture_sources where project_key = $1`, seedPublic); err != nil {
+		t.Fatalf("clear PUB's sources: %v", err)
+	}
+	if got := answer(http.MethodPut, "acme/privold", "", put); !strings.HasPrefix(got, "200 ") {
+		t.Errorf("alice's source of acme/privold with no project private answers %s, want 200 from the redirect", got)
+	}
+}

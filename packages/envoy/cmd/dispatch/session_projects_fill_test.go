@@ -238,3 +238,79 @@ func TestTheSessionProjectsFillRecordsOnlyProvenSessions(t *testing.T) {
 		t.Fatalf("backfill-session-projects --reset extra: exit %d, want 2:\n%s", code, out)
 	}
 }
+
+// sessionOwnerPairs is every row of session_owners as "<session> <login>", sorted.
+func sessionOwnerPairs(t *testing.T, database *store.Store) []string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `select session_id || ' ' || login from session_owners order by 1`)
+	if err != nil {
+		t.Fatalf("read session_owners: %v", err)
+	}
+	defer rows.Close()
+	var read []string
+	for rows.Next() {
+		var pair string
+		if err := rows.Scan(&pair); err != nil {
+			t.Fatalf("read session_owners: %v", err)
+		}
+		read = append(read, pair)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read session_owners: %v", err)
+	}
+	return read
+}
+
+// TestTheSessionProjectsFillTiesEachProvedSessionToItsPerson: the fill records in session_owners
+// the (session, person) pair the live insert records (events.queueSessionProject), the person
+// canonical by model.CanonicalLogin's rule: white space trimmed, ASCII letters lowered and no other
+// letter folded, so " Carol@Example.COM " is carol@example.com and Ève@Example.com keeps its È.
+// A session two people's credentials proved holds both pairs. A session named in a body (no act),
+// one a personal token's act names, and a proved session whose actor names no person record
+// nothing. The events are appended through the broker and its pairs deleted, so the fill must put
+// back exactly what the live insert wrote, and a second fill writes nothing more.
+//
+// Control: the fill's owner read with lower() in place of CanonicalLoginSQL; it records
+// ève@example.com, and the test fails naming it.
+func TestTheSessionProjectsFillTiesEachProvedSessionToItsPerson(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into people (email) values ('olga@example.com');
+		insert into projects (key, name, default_assignee) values ('PUB', 'Public', 'olga@example.com');
+		insert into issues (key, project_key, number, title, status, created_by, rank)
+		values ('PUB-1', 'PUB', 1, 'Issue', 'todo', '{"kind":"user","id":"olga@example.com"}', 'U');
+	`); err != nil {
+		t.Fatalf("seed a project and its issue: %v", err)
+	}
+	onIssue := func(actor model.Actor) model.Event {
+		return model.Event{IssueKey: new("PUB-1"), Type: "issue.updated", Actor: actor, Payload: map[string]any{}}
+	}
+	proved := func(session, owner string) model.Actor {
+		return model.Actor{Kind: "session", ID: session, Owner: new(owner), Act: &model.ActorAct{Session: session}}
+	}
+	appendEach(t, database,
+		onIssue(proved("ses_a", " Carol@Example.COM ")),
+		onIssue(proved("ses_a", "carol@example.com")),
+		onIssue(proved("ses_a", "bob@outside.example")),
+		onIssue(proved("ses_e", "Ève@Example.com")),
+		onIssue(model.Actor{Kind: "session", ID: "ses_t", Owner: new("carol@example.com")}),
+		onIssue(model.Actor{Kind: "session", ID: "ses_u", Owner: new("carol@example.com"), Act: &model.ActorAct{Session: "ses_u", TokenID: "t1"}}),
+		onIssue(model.Actor{Kind: "session", ID: "ses_n", Act: &model.ActorAct{Session: "ses_n"}}),
+	)
+	live := sessionOwnerPairs(t, database)
+	if want := []string{"ses_a bob@outside.example", "ses_a carol@example.com", "ses_e Ève@example.com"}; !slices.Equal(live, want) {
+		t.Fatalf("the live insert recorded %q, want %q", live, want)
+	}
+	if _, err := database.Pool.Exec(ctx, `delete from session_owners`); err != nil {
+		t.Fatalf("forget the live insert's pairs: %v", err)
+	}
+	for _, run := range []string{"the fill", "a second fill"} {
+		if code, out := runFill(t, database); code != 0 {
+			t.Fatalf("backfill-session-projects (%s): exit %d, want 0:\n%s", run, code, out)
+		}
+		if got := sessionOwnerPairs(t, database); !slices.Equal(got, live) {
+			t.Fatalf("after %s session_owners holds %q, want what the live insert recorded, %q", run, got, live)
+		}
+	}
+}
