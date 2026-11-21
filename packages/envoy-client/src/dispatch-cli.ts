@@ -253,6 +253,13 @@ interface CallRefused {
   readonly refused: string;
 }
 
+/** The session a call acts as under Claude Code: the one claude-envoy registers and claims under,
+ *  its QA override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in
+ *  claude-envoy). */
+function claudeSessionOf(env: Readonly<Record<string, string>>): string | undefined {
+  return env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID;
+}
+
 /**
  * The host `hostName` names (`commandHost`), the session that host's variable names, the
  * session's state directory, and the file the session's plugin handed its shell (each plugin sets
@@ -274,10 +281,7 @@ function callSession(
   }
   const [sessionId, sessionVariable] =
     host === "claude"
-      ? [
-          env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID,
-          "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID",
-        ]
+      ? [claudeSessionOf(env), "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID"]
       : host === "codex"
         ? [env.CODEX_THREAD_ID, "CODEX_THREAD_ID"]
         : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
@@ -428,9 +432,8 @@ export async function runDispatchCli(
   // The host need not be known for the session to be: a Python `subprocess.run(["dispatch", …])`
   // inherits the session id without `DISPATCH_HOST`. A ledger that cannot be written changes
   // nothing here: the refusal is already printed, and the caller is exiting.
-  // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
-  // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
-  const claudeSession = env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID;
+  // Under Claude Code the session is the one claude-envoy registers and claims under.
+  const claudeSession = claudeSessionOf(env);
   // The host, worked out once and only when asked: the walk of the parent processes it may take
   // runs at most once per call, for the refusal ledger and the call alike.
   let resolvedHost: { readonly name: string | undefined } | undefined;

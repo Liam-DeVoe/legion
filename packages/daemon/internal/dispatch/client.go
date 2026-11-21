@@ -647,9 +647,9 @@ func transportFailure(err error) error {
 // DaemonSession is the session of the Legion daemon of the project it is given,
 // legion-daemon:<PROJECT>, PROJECT being key up to its first "-": a project key is its own project.
 // Every write of a client made with no option names the session of the key it is on, which is how
-// the daemon writes with dispatch_token_broker off. Under that setting the daemon makes its client
-// WritesAs the session of its own project, the one its broker token proves, and every write names
-// that session instead.
+// the daemon writes with dispatch_token_broker off. Under dispatch_token_broker the daemon makes its
+// client WritesAs the session of its own project, the one its broker token proves, and every write
+// names that session instead.
 func DaemonSession(key string) string {
 	project, _, _ := strings.Cut(key, "-")
 	return "legion-daemon:" + project

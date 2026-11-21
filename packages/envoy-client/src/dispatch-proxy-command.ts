@@ -49,7 +49,7 @@ export function proxyHelp(): string {
     "  GET /api/...                         any GET whose path starts with /api/",
     "  POST /api/v1/issues/<key>/comments   a comment that carries an Idempotency-Key header",
     "It sends no other write. A tool reads much and writes little, and each other write goes",
-    "through the dispatch command named for it, which AskGate reviews. The comment needs a key so",
+    "through the dispatch command named for it, where AskGate gates it. The comment needs a key so",
     "that a resend posts it once. The comment POST passes no AskGate review. The proxy is not one",
     "of the writes that AskGate gates, and the Dispatch server checks no marker. A session that",
     "holds a Dispatch token can post the same comment with that token already.",

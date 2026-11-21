@@ -390,7 +390,7 @@ function methodRefusal(method: string, path: string, key: string | undefined): s
       named === undefined
         ? "dispatch --help lists one for each write, such as dispatch comment for a comment and dispatch issue-update for an issue's fields"
         : `dispatch ${named}`;
-    return `${SENDS} ${method} ${quoted} is another write, and each other write goes through the dispatch command named for it, which AskGate reviews: ${use}.`;
+    return `${SENDS} ${method} ${quoted} is another write, and each other write goes through the dispatch command named for it, where AskGate gates it: ${use}.`;
   }
   return `${SENDS} ${method} is no method it sends. Read the route with a GET, or with dispatch api.`;
 }
