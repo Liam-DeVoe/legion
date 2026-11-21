@@ -45,7 +45,8 @@ var errNoticeWaits = wait.New("the notice waits for its architect")
 var errNoticeUnroutable = errors.New("the notice has no architect to go to")
 
 // errNoticeRowGone is a notice row deleted while the runner held its lease: a catch-up a newer
-// ready dropped (record.Store.DropCatchUps).
+// ready dropped (record.Store.DropCatchUps), or a changes request the person's approval followed
+// that a clear of its generation dropped (record.Store.DropQueuedChanges).
 var errNoticeRowGone = errors.New("the notice row was deleted under its lease")
 
 // changesSuperseded is a changes request the person's approval followed: the gates readNoticeTree
@@ -89,16 +90,16 @@ type recomposedCatchUp struct {
 // the tree's route (readNoticeRoute), then the fence. A row deleted under its lease is
 // errNoticeRowGone, a changes request the person's approval followed is changesSuperseded, and a
 // notice it cannot route is errNoticeUnroutable. The changes request is asked of the gates of
-// row's issue as this read holds them (decisionSuperseded, at the version and the review's mark
-// the notice carries). For a catch-up (payload.CatchUp) the same transaction composes again what
-// the architect of row's issue owns (workflow.TreeCatchUp, a pure read, for the issue the row is
-// queued on, as workflow.QueueCatchUp composed it: a root's whole tree, a child's own issue and
-// every issue under it, so a child's architect is never told the whole tree), and what the
-// architect is told is the record at this read, the one the owner walk and the fence see, rather
-// than at the moment the row was queued: a gate registered between the two reached the architect at
-// its old version (dispatch://INFRA-2819). A child's catch-up claims no kept decision, so it
-// carries no Kept and Decided stays empty. The reason it composes keeps the sentence of what the
-// architect's last process ended that the row was queued with (record.CatchUp.Relaunch,
+// row's issue as this read holds them (decisionSuperseded, of the decision the notice carries).
+// For a catch-up (payload.CatchUp) the same transaction composes again what the architect of
+// row's issue owns (workflow.TreeCatchUp, a pure read, for the issue the row is queued on, as
+// workflow.QueueCatchUp composed it: a root's whole tree, a child's own issue and every issue
+// under it, so a child's architect is never told the whole tree), and what the architect is told
+// is the record at this read, the one the owner walk and the fence see, rather than at the moment
+// the row was queued: a gate registered between the two reached the architect at its old version
+// (dispatch://INFRA-2819). A child's catch-up claims no kept decision, so it carries no Kept and
+// Decided stays empty. The reason it composes keeps the sentence of what the architect's last
+// process ended that the row was queued with (record.CatchUp.Relaunch,
 // workflow.CatchUpReason): that sentence is of what ended before the launch, which this read does
 // not restate. It writes Decided again from the decisions the row claimed (Kept), each asked of the
 // gates this read holds (workflow.ReadKeptGates, workflow.KeptDecisionsTask), so an approval that

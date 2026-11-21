@@ -530,7 +530,9 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 			return raw.PutGate(ctx, tx, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "spec-1", LatestVersion: 1})
 		})
 	}
-	forgetNothing := func(context.Context, pgx.Tx, string, record.KeptDecisions) error { return nil }
+	forgetNothing := func(context.Context, pgx.Tx, string, record.KeptDecisions, []record.QueuedChanges) error {
+		return nil
+	}
 	gateStands := func(t *testing.T, key string) bool {
 		t.Helper()
 		var stands bool

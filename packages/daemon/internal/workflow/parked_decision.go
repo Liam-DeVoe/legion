@@ -29,7 +29,8 @@ func (e *Engine) relayParkedDecision(ctx context.Context, tx pgx.Tx, key, ask st
 	if err != nil || root == nil {
 		return err
 	}
-	outcome, err := record.RelayParkedDecision(ctx, tx, e.store, key, *root, root.Lingers(), decision, 0, "", e.cfg.Steps)
+	outcome, err := record.RelayParkedDecision(ctx, tx, e.store, key, *root, root.Lingers(),
+		decision, record.Notice{}, e.cfg.Steps)
 	if err != nil {
 		return err
 	}

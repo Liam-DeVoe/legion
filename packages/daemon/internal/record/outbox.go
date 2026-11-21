@@ -471,9 +471,16 @@ type Notice struct {
 	// notice reports: its event's sequence and Dispatch's time of it, each zero when the event or
 	// the read gave none. The outbox keeps it with the decision when nobody in the tree hears the
 	// notice (the daemon's parkDecision, ParkedDecision.At and Seq), so the kept decision is later
-	// judged against the gate's approval by Dispatch's order, never by the daemon's clock. Every
-	// other kind carries none.
+	// judged against the gate's approval by Dispatch's order, never by the daemon's clock. The
+	// parked-decision controller notice that relays one of those two carries it as the notice did,
+	// and the publish of a relayed changes request asks again of it whether the review stands (the
+	// daemon's controllerNotice). Every other kind carries none.
 	Review EventMark `json:"review,omitzero"`
+	// Artifact is the Dispatch artifact id of the document that review is of, carried by the same
+	// three: a step's gate can move to another document while its reference (Ref) stays the
+	// step's, and the person's approval of the new document answers no review of the old one
+	// (workflow.SupersedingApproval). A notice an earlier release queued carries none.
+	Artifact string `json:"artifact,omitempty"`
 	// Decision is what a parked-decision notice relays, and Root the root of the tree it was made
 	// on. Every other kind carries neither.
 	Decision DecisionKind `json:"decision,omitempty"`
@@ -2273,11 +2280,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if (value.Kind == "catch-up") != (value.CatchUp != nil) {
 			return fmt.Errorf("a %s notice carries a catch-up only when it is one", value.Kind)
 		}
-		if _, spec := SpecDecision(value.Kind); !spec && (value.Actor != "" || value.Ref != "") {
+		decision, spec := SpecDecision(value.Kind)
+		if !spec && (value.Actor != "" || value.Ref != "") {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does", value.Kind)
 		}
-		if (value.Review.Seq != 0 || !value.Review.At.IsZero()) && value.Kind != "design-approved" && value.Kind != "design-changes-requested" {
-			return fmt.Errorf("a %s notice carries a review's mark; only a design-approved or design-changes-requested notice does", value.Kind)
+		if carriesReview(value) && !designReview(decision) {
+			return fmt.Errorf("a %s notice carries a review's mark or document; "+
+				"only a design-approved or design-changes-requested notice does", value.Kind)
 		}
 		if value.Decision != "" || value.Root != "" {
 			return fmt.Errorf("a %s notice carries a decision or a root; only a parked-decision controller notice does", value.Kind)
@@ -2315,6 +2324,11 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			}
 		} else if value.Decision != "" || value.Actor != "" || value.Ref != "" || value.Root != "" {
 			return fmt.Errorf("a %s controller notice carries a decision, an actor, a ref or a root; only a parked-decision does", value.Kind)
+		}
+		if carriesReview(Notice(value)) && (value.Kind != ParkedDecisionNotice || !designReview(value.Decision)) {
+			return fmt.Errorf("a %s controller notice carries a review's mark or document; only a "+
+				"parked-decision notice relaying a design approval or changes request does",
+				value.Kind)
 		}
 		if (value.Kind == UpdateStalledNotice) != (value.Update != nil) {
 			return fmt.Errorf("a %s notice carries an update round only when it is one", value.Kind)
@@ -2558,6 +2572,20 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	return nil
 }
 
+// carriesReview says whether n carries anything of a person's review of a design document:
+// Dispatch's mark of it (Review) or the document it is of (Artifact). The two travel together,
+// so one rule of the kinds that may carry them holds both.
+func carriesReview(n Notice) bool {
+	return n.Review.Seq != 0 || !n.Review.At.IsZero() || n.Artifact != ""
+}
+
+// designReview says whether decision is a person's review of a design document, an approval or a
+// changes request: the two decisions whose notice, and whose relay to the controller, may carry
+// the review's mark and document (carriesReview).
+func designReview(decision DecisionKind) bool {
+	return decision == DecisionDesignApproved || decision == DecisionDesignChangesRequested
+}
+
 // validNoticeKinds is every notice kind the daemon publishes, which is also every kind a row may
 // decode as (DecodeOutboxPayload) and every kind the validation accepts: a kind reaches the
 // outbox only by being on this list, since validNoticeKind decides from it alone and NewOutboxRow
@@ -2592,13 +2620,20 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // workerBackgroundStalled). It is that worker's issue's architect's to read, and it is a telling
 // and not a repair: it names the kinds the session reported and how long the report has stood,
 // and says that nothing was sent and nothing will be sent for it.
+//
+// `session-forgotten` is the worker whose claim forgot its recorded session because the pod's
+// launcher, older than the release that added the kind, could not look the session up by its id,
+// and Oh My Pi did not resume it by that id (workflow's sessionLost). It is a kind of its own and
+// not `session-lost` because the kind is published as the notice's one-line message, and that
+// session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
+// of migration 20261120042902 deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
-	"session-lost", "session-store-fault",
+	"session-lost", "session-forgotten", "session-store-fault",
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left

@@ -2464,7 +2464,49 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 193: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 189: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
+// up to, and not including, `legion-v20.5.0` cleared the file and kept the id
+// (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
+// same-agent fence refused at every try until the claim failed. The start frame
+// (`shimwire.LauncherStart`, `launcher_start`) gains the optional member `resumeSession`, the id
+// of the session the child resumes where the daemon holds no file of it, and the launcher's hello
+// (`shimwire.LauncherHello`, `launcher_hello`) gains `resumesBySession`, the launcher's word that
+// it looks such an id up in the session table: it takes the newest row whose path ends in
+// `_<id>.jsonl` (`ompsessions.FindByID`), puts that path in the argv's one `--resume=<id>`, and
+// answers `session: gone` where the table holds no such row. `LauncherStart.Validate` refuses a
+// frame naming both `resumeFile` and `resumeSession`, an id that is not a single path element, and
+// an argv that does not hold `--resume=<resumeSession>` exactly once.
+//
+// The skew is safe in both directions. A launcher older than this entry ignores `resumeSession`
+// and sends no `resumesBySession`, so the daemon never names a session to it
+// (`launchers.resumesBySession`, sandbox's `relaunch`, which answers
+// `runtime.ErrSessionLookupUnavailable` before it sends anything): the daemon starts the agent
+// with `--resume=<session id>` in its own command instead, which Oh My Pi resolves in the table
+// itself, and names no session and no file to that launcher. An older daemon sends no
+// `resumeSession`, and a launcher of this entry answers its frames as before. The number moves
+// because the image probe pairs a daemon with a worker image by this number (entry 144), so a
+// daemon of this entry boots only on an image whose launcher says `resumesBySession`, and a
+// launcher older than it is left only in a pod kept from before the boot.
+//
+// The same change adds the notice kind `session-forgotten`, to the issue's architect and to the
+// controller, for a claim that forgot its session after a start through such an older launcher
+// did not register (`workflow.Engine.sessionLost`, `record.validNoticeKinds`). An outbox payload
+// is decoded strictly, so no daemon of an earlier release decodes such a row, and one row fails
+// `GET /legion/v1/state` for the whole project, as the `volume-near-full` entry above says of its
+// own kind. The way back of this change's migration
+// (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
+// before a rollback. No shape of `GET /legion/v1/state` moves.
+// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at b1b4e281ec0a: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T12:23:12Z and 12:28:35Z, for
+// each of the 109 open pull requests, of 267, whose file list names this file or is longer than
+// one read lists, found 188 declared by 12 of them, 190 by #4578, 191 by six, 192 by seven, 193 by
+// #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
+// #4030, and nothing at 189. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+//
+// 190: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
@@ -2490,7 +2532,7 @@ package api
 // whose issue the workflow records, owed or not, and absent for an architect, the controller, a
 // failed claim and an unrecorded issue. The end-of-turn reminder renders that answer in both
 // harnesses and keeps no model of the phase of its own (dispatch://INFRA-2746), and its architect
-// notice and the stall watch's notice go to the architect it names. A plugin below 193 calls no
+// notice and the stall watch's notice go to the architect it names. A plugin below 190 calls no
 // such route, and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts`
 // mirrors the two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
@@ -2523,7 +2565,7 @@ package api
 // v18.18.6-sami.20261118-035823, the first fork release whose `prompt` refusal and `prompt_result`
 // carry `code: "session_busy"` when the agent is busy (dispatch://INFRA-3538;
 // shimwire.CodeSessionBusy names the refusals that code covers). The daemon reads that code and
-// no words. A pod of the release before this one (contract 188) runs the same Oh My Pi and sends
+// no words. A pod of the release before this one (contract 189) runs the same Oh My Pi and sends
 // the code already. A pod still on an image before v18.18.6-sami.20261118-035823, until its update
 // round, sends its busy refusal with no code, and the daemon reads it as busy from its own record
 // of the claim working or from the agent's get_state (supervise's agentRefusalOutcome). While the
@@ -2532,15 +2574,16 @@ package api
 // ask, as a notice's turn can when the refusal came during its pre-turn work. Its refusal is then
 // charged as unrecognised, and its prompt's result as a prompt that ran no turn. Nothing of the
 // daemon API changes with the pin.
-// (This entry takes 193, the lowest number above main's 188 that no other open pull request
-// declares: at the forward merge of 2026-11-20 that brought main in at 188 (#4543, the entry
+// (This entry takes 190, the lowest number above main's 189 that no other open pull request
+// declares: at the forward merge of 2026-11-20 that brought main in at 189 (#4581, the entry
 // above), .github/scripts/check-daemon-api-contract.sh read const DaemonAPIVersion at
 // refs/pull/<n>/head for each open pull request whose file list names this file or was cut
-// short, a reading that ended by 2026-11-20T10:44:26Z, and found above main's 188: 189 (#3831
-// and #4596), 190 (#4493 and #4578), 191 (#4495, #4573 and #4592) and 192 (#4611). It held 183
-// from the forward merge of 2026-11-20 that brought main in at 178 until main reached 188, 175
-// from the forward merge of 2026-11-19 until main reached 178, and 162 from the forward merge of
-// 2026-11-18 until main reached 168. The readings behind this change's earlier numbers are in its
-// implement handoffs on dispatch://INFRA-3136. That is a reading and never the rule: read main's
-// own number and every open head again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 193
+// short, a reading made between 2026-11-20T18:07:17Z and 18:09:40Z, and found no open pull
+// request declaring 190. It held 193 from the forward merge of 2026-11-20 that brought main in at
+// 188 until main reached 189, 183 from the forward merge of 2026-11-20 that brought main in at 178
+// until main reached 188, 175 from the forward merge of 2026-11-19 until main reached 178, and 162
+// from the forward merge of 2026-11-18 until main reached 168. The readings behind this change's
+// earlier numbers are in its implement handoffs on dispatch://INFRA-3136. That is a reading and
+// never the rule: read main's own number and every open head again at the next forward merge
+// rather than from this line.)
+const DaemonAPIVersion = 190

@@ -6,5 +6,8 @@ body: |-
   which is now written when it is sent. A queued changes request is asked again when it is delivered
   to the architect, and again when its relay is published to the controller. A kept decision carries
   Dispatch's own mark of the review, so it is ordered against the approval by Dispatch and not by
-  two clocks, and the only way to clear a generation forgets a superseded decision first. The
-  sweep's re-send of a lost resume start is also rendered when it is sent.
+  two clocks, and the only way to clear a generation first forgets a superseded decision and ends a
+  queued changes request the person's approval answered. The sweep's re-send of a lost resume start
+  is also rendered when it is sent. A queued changes request, to its architect or relayed to the
+  controller, is asked at its version, Dispatch's mark of the review and the document reviewed, so
+  an approval of a document the gate has moved to does not answer it.

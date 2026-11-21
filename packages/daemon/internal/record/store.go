@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -1080,29 +1081,6 @@ func (s *Postgres) ParkedDecisions(ctx context.Context, tx pgx.Tx, tree string) 
 	return parkedDecisions(ctx, tx, tree, false)
 }
 
-func (s *Postgres) KeptDecision(ctx context.Context, tx pgx.Tx, issue, ref string) (*ParkedDecision, error) {
-	var decision ParkedDecision
-	err := scanKept(tx.QueryRow(ctx, `select `+keptColumns+` from parked_decisions kept where kept.issue = $1 and kept.ref = $2`,
-		issue, ref), &decision)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read the decision %s keeps on %s: %w", issue, ref, err)
-	}
-	return &decision, nil
-}
-
-// keptColumns is a parked_decisions row, under the alias kept, as scanKept reads it into a
-// ParkedDecision.
-const keptColumns = `kept.issue, kept.ref, kept.decision, kept.actor, kept.at, coalesce(kept.seq, 0), coalesce(kept.claimed_by, 0),
-	coalesce(kept.held_by_claim, ''), coalesce(kept.held_by_delivery, '')`
-
-func scanKept(row pgx.Row, decision *ParkedDecision) error {
-	return row.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor, &decision.At, &decision.Seq,
-		&decision.ClaimedBy, &decision.HeldBy.Claim, &decision.HeldBy.Delivery)
-}
-
 // UnclaimedKept locks every kept row of tree, and tree's readmitted approval, before it reads which
 // of them nothing claims: the composer that reads them claims what it names in the same
 // transaction (ClaimKeptDecisions), so a second composer of the tree waits here until the first
@@ -1135,7 +1113,9 @@ func (s *Postgres) UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([
 // parkedDecisions is every decision owed to tree — every row whose issue stands in tree now — or
 // only those a start or catch-up of tree may name (keptCounts), newest first, ties by ref.
 func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool) ([]ParkedDecision, error) {
-	rows, err := tx.Query(ctx, `select `+keptColumns+`
+	rows, err := tx.Query(ctx, `select kept.issue, kept.ref, kept.decision, kept.actor, kept.at,
+		coalesce(kept.seq, 0), coalesce(kept.claimed_by, 0), coalesce(kept.held_by_claim, ''),
+		coalesce(kept.held_by_delivery, '')
 		from parked_decisions kept join issues owner on owner.key = kept.issue
 		where owner.tree = $1 and (not $2 or (`+keptNameable+`)) order by kept.at desc, kept.ref`, tree, nameable)
 	if err != nil {
@@ -1145,7 +1125,9 @@ func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool)
 	var decisions []ParkedDecision
 	for rows.Next() {
 		var decision ParkedDecision
-		if err := scanKept(rows, &decision); err != nil {
+		if err := rows.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor,
+			&decision.At, &decision.Seq, &decision.ClaimedBy, &decision.HeldBy.Claim,
+			&decision.HeldBy.Delivery); err != nil {
 			return nil, fmt.Errorf("scan a decision owed to %s: %w", tree, err)
 		}
 		decisions = append(decisions, decision)
@@ -1520,14 +1502,15 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 
 // ClearGeneration empties one issue's generation-scoped facts: a merged or closed pull request,
 // the counters of one still open, its design gates and its recorded handoffs, once forget has
-// been run over the decisions kept on it (forgetKept), and answers the issues whose gates it
-// emptied (clearGates): issue itself where it held a gate, else none.
+// been run over the decisions kept on it and the changes requests queued on it (forgetKept), and
+// answers the issues whose gates it emptied (clearGates): issue itself where it held a gate, else
+// none.
 func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, forget KeptForget) ([]string, error) {
 	describe := fmt.Sprintf("clear the generation of %s", issue.Key)
 	if err := s.forgetKept(ctx, tx, issue.Tree, issue.Key, forget, describe); err != nil {
 		return nil, err
 	}
-	return s.clearGeneration(ctx, tx, "issue = $1", issue.Key, describe)
+	return s.clearGeneration(ctx, tx, clearedIssue, issue.Key, describe)
 }
 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
@@ -1538,16 +1521,23 @@ func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree stri
 	if err := s.forgetKept(ctx, tx, tree, "", forget, describe); err != nil {
 		return nil, err
 	}
-	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", tree, describe)
+	return s.clearGeneration(ctx, tx, clearedTree, tree, describe)
 }
+
+// The issues a clear covers, as the where clause of a statement over a table keyed by issue, with
+// the key as $1: one issue's (ClearGeneration) or every issue of a tree's (ClearTreeGeneration).
+const (
+	clearedIssue = "issue = $1"
+	clearedTree  = "issue in (select key from issues where tree = $1)"
+)
 
 // forgetKept runs forget in tx over what the clear owes it, before the clear deletes the gates
 // forget's rule reads: the decisions tree keeps on issue, or on any of its issues when issue is
-// "", whoever claims or holds them, as one KeptDecisions. Only the cleared issues' decisions are
-// handed over: a decision is asked of the gates of the issue it was made on, and every other issue
-// keeps its gates. The set carries no kept approval: the forget deletes none
-// (workflow.ForgetSuperseded). A nil forget is refused before anything is read or written, so a
-// clear handed no forget clears nothing.
+// "", whoever claims or holds them, as one KeptDecisions, and the changes requests the outbox
+// holds on the same issues (queuedChanges). Only the cleared issues' are handed over: a decision
+// is asked of the gates of the issue it was made on, and every other issue keeps its gates. The
+// set carries no kept approval: the forget deletes none (workflow.ForgetSuperseded). A nil forget
+// is refused before anything is read or written, so a clear handed no forget clears nothing.
 func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, tree, issue string, forget KeptForget, describe string) error {
 	if forget == nil {
 		return fmt.Errorf("%s: no forget to run over the decisions kept on it, which the clear must run before it deletes the gates the forget's rule reads", describe)
@@ -1562,15 +1552,64 @@ func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, tree, issue string
 			owed.Decisions = append(owed.Decisions, d.Mark())
 		}
 	}
-	if err := forget(ctx, tx, tree, owed); err != nil {
+	where, key := clearedTree, tree
+	if issue != "" {
+		where, key = clearedIssue, issue
+	}
+	queued, err := queuedChanges(ctx, tx, where, key)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if err := forget(ctx, tx, tree, owed, queued); err != nil {
 		return fmt.Errorf("%s: forget what a later approval superseded: %w", describe, err)
 	}
 	return nil
 }
 
+// queuedChanges is every person's changes request the outbox holds on the issues where selects
+// with key as $1, a row a runner has leased included, oldest first: each design-changes-requested
+// notice, and each parked-decision controller notice that relays one (QueuedChanges).
+func queuedChanges(ctx context.Context, tx pgx.Tx, where, key string) ([]QueuedChanges, error) {
+	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox where `+where+`
+		and ((kind = $2 and payload->>'kind' = $3)
+			or (kind = $4 and payload->>'kind' = $5 and payload->>'decision' = $6))
+		order by id`, key, string(OutboxKindNotice), "design-changes-requested",
+		string(OutboxKindControllerNotice), string(ParkedDecisionNotice),
+		string(DecisionDesignChangesRequested))
+	if err != nil {
+		return nil, fmt.Errorf("read the changes requests the outbox holds: %w", err)
+	}
+	defer rows.Close()
+	var queued []QueuedChanges
+	for rows.Next() {
+		row, err := scanOutbox(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan a changes request the outbox holds: %w", err)
+		}
+		payload, err := DecodeOutboxPayload(row)
+		if err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		request := QueuedChanges{Row: row.ID, Kind: row.Kind, Issue: row.Issue}
+		switch payload := payload.(type) {
+		case Notice:
+			request.Notice = payload
+		case ControllerNotice:
+			request.Notice = Notice(payload)
+		default:
+			return nil, fmt.Errorf("outbox row %d of kind %s carries %T, no notice", row.ID, row.Kind, payload)
+		}
+		queued = append(queued, request)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the changes requests the outbox holds: %w", err)
+	}
+	return queued, nil
+}
+
 // clearGeneration runs each statement with key as $1, where selecting the cleared issues' rows by
-// their issue column. The design gates go with them, in a statement of their own (clearGates),
-// whose emptied issues it answers.
+// their issue column (clearedIssue, clearedTree). The design gates go with them, in a statement
+// of their own (clearGates), whose emptied issues it answers.
 func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, describe string) ([]string, error) {
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
@@ -3317,6 +3356,13 @@ func (s *Postgres) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string
 	return nil
 }
 
+func (s *Postgres) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error {
+	if _, err := tx.Exec(ctx, "delete from outbox where id = any($1)", rows); err != nil {
+		return fmt.Errorf("drop the queued changes requests %v: %w", rows, err)
+	}
+	return nil
+}
+
 func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
 	// The claims of the issue's catch-ups are serialized with this drop by an advisory lock keyed
 	// by the issue, which a catch-up's claim takes too (ClaimRow). The lease check below is a
@@ -3433,9 +3479,13 @@ func (s *Postgres) FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, 
 	return nil
 }
 
+// RetryOutbox returns row id to the outbox, due again at nextAt, while leaseToken holds it: one
+// more attempt, its lease cleared, and lastErr as its last error. lastErr is a far side's error
+// text, so the row holds storetext.FarSideError of it, and the caller logs the whole text
+// (storetext.LogWhole).
 func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error {
 	if _, err := tx.Exec(ctx, `update outbox set attempts = attempts + 1, next_at = $3, last_error = $4,
-		lease_token = '', lease_until = null where id = $1 and lease_token = $2`, id, leaseToken, nextAt, lastErr); err != nil {
+		lease_token = '', lease_until = null where id = $1 and lease_token = $2`, id, leaseToken, nextAt, storetext.FarSideError(lastErr)); err != nil {
 		return fmt.Errorf("retry outbox row %d: %w", id, err)
 	}
 	return nil

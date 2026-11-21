@@ -1257,11 +1257,13 @@ func recordWaitingOn(ctx context.Context, t *testing.T, pool *store.Pool, projec
 			issue).Scan(&seq); err != nil {
 			return err
 		}
-		for _, row := range []record.DispatchIssueRow{
-			{Key: issue, Project: project, Status: "in_progress", Blockers: []string{blocker}, Seq: seq + 1},
-			{Key: blocker, Project: project, Status: "in_progress", Seq: 1},
+		for _, reading := range []record.DispatchReading{
+			{Key: issue, Project: project, Seq: seq + 1, Status: record.Carry("in_progress"), Parent: record.Carry(""),
+				Blockers: record.Carry([]string{blocker})},
+			{Key: blocker, Project: project, Seq: 1, Status: record.Carry("in_progress"), Parent: record.Carry(""),
+				Blockers: record.Carry[[]string](nil)},
 		} {
-			if err := records.PutDispatchIssue(ctx, tx, row); err != nil {
+			if err := records.PutDispatchIssue(ctx, tx, reading); err != nil {
 				return err
 			}
 		}
@@ -1277,8 +1279,8 @@ func recordWaitingOn(ctx context.Context, t *testing.T, pool *store.Pool, projec
 func (r *podUpdateRig) waitEnds(blocker string) {
 	r.t.Helper()
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		if err := r.records.PutDispatchIssue(r.ctx, tx, record.DispatchIssueRow{Key: blocker, Project: "LEGION",
-			Status: "done", Seq: 2}); err != nil {
+		if err := r.records.PutDispatchIssue(r.ctx, tx, record.DispatchReading{Key: blocker, Project: "LEGION", Seq: 2,
+			Status: record.Carry("done")}); err != nil {
 			return err
 		}
 		if err := r.records.PutSlot(r.ctx, tx, record.Slot{Issue: podUpdateIssue, Index: 0, AdmittedAt: r.clock.Now()}); err != nil {

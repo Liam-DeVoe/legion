@@ -1077,7 +1077,7 @@ func (l *keptLog) mark() int {
 }
 
 // mirror writes what Dispatch says of key — its status and the keys it waits on — as the
-// blockers.Mirror handler writes one from an event (record.DispatchIssueRow), under the project
+// blockers.Mirror handler writes one from an event (record.DispatchReading), under the project
 // key admission judges the line by ("LEGION", the one the records carry). It is the only thing
 // that holds a root out of the line here (blockers.WaitsOn) and a child at phase.Admitted
 // (blockers.Holds). The engine of this run reads the mirror under its own project key
@@ -1086,8 +1086,8 @@ func (l *keptLog) mark() int {
 // blocker holds is handed over by the step that writes that hand-over (handOverChildWithoutItsRun).
 func (r *keptRun) mirror(key, status string, seq int64, waits ...string) {
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		return r.records.PutDispatchIssue(r.ctx, tx, record.DispatchIssueRow{Key: key, Project: "LEGION",
-			Status: status, Blockers: waits, Seq: seq})
+		return r.records.PutDispatchIssue(r.ctx, tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry(waits)})
 	}); err != nil {
 		r.fatalf("mirror what Dispatch says of %s: %v", key, err)
 	}
@@ -1411,7 +1411,8 @@ func (r *keptRun) decideOn(issue string) {
 		}
 		tree = root.Key
 		outcome, err = record.RelayParkedDecision(r.ctx, tx, r.records, issue, *root, true,
-			record.ParkedDecision{Ref: ref, Decision: kind, Actor: actor, At: r.at}, 0, "", nil)
+			record.ParkedDecision{Ref: ref, Decision: kind, Actor: actor, At: r.at},
+			record.Notice{}, nil)
 		return err
 	}); err != nil {
 		r.fatalf("keep the decision %s: %v", ref, err)

@@ -373,6 +373,24 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a ref on a child-status notice", payload: Notice{Kind: "child-status", Ref: "dispatch://LEGION-1/spec"}, reason: "only a spec decision's does"},
 		{name: "a decision on an architect's notice", payload: Notice{Kind: "design-approved", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
 		{name: "a root on an architect's notice", payload: Notice{Kind: "design-approved", Root: "LEGION-1"}, reason: "only a parked-decision controller notice does"},
+		{name: "a review's document on a phase-finished notice",
+			payload: Notice{Kind: "phase-finished", Artifact: "artifact-1"},
+			reason:  "only a design-approved or design-changes-requested notice does"},
+		{name: "a review's document on a carried gate's opening",
+			payload: Notice{Kind: "carried-gate-opened", Version: 3, Actor: "user:a",
+				Ref: "dispatch://LEGION-1/spec", Artifact: "artifact-1"},
+			reason: "only a design-approved or design-changes-requested notice does"},
+		{name: "a review's mark on a tick",
+			payload: ControllerNotice{Kind: TickNotice, Review: EventMark{Seq: 7}},
+			reason:  "relaying a design approval or changes request does"},
+		{name: "a review's document on a held notice to the controller",
+			payload: ControllerNotice{Kind: "held", Artifact: "artifact-1"},
+			reason:  "relaying a design approval or changes request does"},
+		{name: "a review's document on a relayed answer",
+			payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered,
+				Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a",
+				Artifact: "artifact-1"},
+			reason: "relaying a design approval or changes request does"},
 		{name: "a parked decision with no root", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Ref: "dispatch://LEGION-1/ask/a", Actor: "user:a"}, reason: "a parked-decision notice needs"},
 		{name: "a parked decision with no ref", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Root: "LEGION-1", Actor: "user:a"}, reason: "a parked-decision notice needs"},
 		{name: "a parked decision by no person", payload: ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskAnswered, Root: "LEGION-1", Ref: "dispatch://LEGION-1/ask/a", Actor: "session:s"}, reason: "a parked-decision notice needs"},
@@ -830,6 +848,44 @@ func TestAParkedDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
 	}
 }
 
+// A person's review of a design document travels as Dispatch recorded it, its mark and the
+// document reviewed, on the three notices that carry one: the design-approved and
+// design-changes-requested notices that report it, and the parked-decision controller notice that
+// relays either as the notice did, whose publish asks again whether the review stands when it
+// relays a changes request. Every other kind is refused them
+// (TestNewOutboxRowRefusesInvalidPayloads).
+func TestAReviewsMarkAndDocumentTravelOnTheNoticesOfAReview(t *testing.T) {
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	review := EventMark{Seq: 8, At: now.Add(-time.Hour)}
+	spec, reason, document := "dispatch://LEGION-1/spec", "name the rollback path", "artifact-1"
+	for _, payload := range []OutboxPayload{
+		Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: spec, Review: review,
+			Artifact: document},
+		Notice{Kind: "design-changes-requested", Version: 3, Reason: reason, Actor: "user:alice",
+			Ref: spec, Review: review, Artifact: document},
+		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionDesignChangesRequested,
+			Root: "LEGION-1", Ref: spec, Actor: "user:alice", Version: 3, Reason: reason,
+			Review: review, Artifact: document},
+		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionDesignApproved,
+			Root: "LEGION-1", Ref: spec, Actor: "user:alice", Version: 3, Review: review,
+			Artifact: document},
+	} {
+		row, err := NewOutboxRow("LEGION-1", payload, now)
+		if err != nil {
+			t.Fatalf("NewOutboxRow(%#v): %v", payload, err)
+		}
+		encoded := string(row.Payload)
+		if !strings.Contains(encoded, `"artifact":"artifact-1"`) ||
+			!strings.Contains(encoded, `"review":`) {
+			t.Fatalf("payload %s, want the review's mark and document in it", row.Payload)
+		}
+		got, err := DecodeOutboxPayload(row)
+		if err != nil || !reflect.DeepEqual(got, payload) {
+			t.Fatalf("decoded %#v, %v; want %#v", got, err, payload)
+		}
+	}
+}
+
 // SpecDecision names the three notice kinds a person's spec decision writes, and no other.
 func TestSpecDecisionNamesTheThreeKindsAPersonsSpecDecisionWrites(t *testing.T) {
 	for kind, want := range map[NoticeKind]DecisionKind{
@@ -1050,6 +1106,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "message-refused", Role: claim.RoleArchitect, Reason: "Dispatch refused the message Legion was posting on LEGION-208"},
 		{Kind: "session-lost", Role: claim.RoleImplementer, Phase: phase.Implementing,
 			Reason: "the session store holds no session for this claim, so its agent starts afresh"},
+		{Kind: "session-forgotten", Role: claim.RoleImplementer, Phase: phase.Implementing,
+			Reason: "the pod's launcher could not look this claim's session up by its id, and Oh My Pi did not resume it by that id, so its agent starts afresh"},
 		{Kind: "session-store-fault", Role: claim.RoleImplementer, Phase: phase.Implementing,
 			Reason: "the session store did not answer, so this claim's agent is not started again yet"},
 		{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec"},

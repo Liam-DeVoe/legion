@@ -20,7 +20,7 @@ import {
   runLegionPane,
   sendRelayFrame,
 } from "@legion/pi-shared/test/omp-harness";
-import { connect, headers, type MsgHdrs, StringCodec } from "nats";
+import { connect, headers, StringCodec } from "nats";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
 // shows when the host fires `session_stop`, how it turns the returned follow-up into the next turn,
@@ -414,17 +414,7 @@ async function stallPane(
     if (connection === undefined) {
       const opened = await connect({ servers: run.nats });
       cleanup.push(() => opened.close());
-      // `nats` types a request's headers as its full `MsgHdrs`, which the harness's
-      // `RelayFrameHeaders` is not, so the connection is not a `RelayConnection` as it stands.
-      // The header set the relay hands back is the one `newHeaders` made, `nats`'s own
-      // `headers()`, so the cast holds.
-      connection = {
-        request: (subject, payload, options) =>
-          opened.request(subject, payload, {
-            timeout: options.timeout,
-            headers: options.headers as MsgHdrs,
-          }),
-      };
+      connection = opened;
     }
     relayed += 1;
     const sessionID = sessionOf(requests);

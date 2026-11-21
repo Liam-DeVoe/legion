@@ -119,16 +119,15 @@ export function deliveryFor(
   };
 }
 
-/**
- * What a relay frame needs of a NATS connection. `nats`'s `NatsConnection` does this at run time,
- * but its `request` types its headers as the whole `MsgHdrs`, which `RelayFrameHeaders` is not, so a
- * type-checked caller wraps it (`legion-phase-stall-omp.test.ts` in pi-legion).
- */
+/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. Its options,
+ * and their `headers`, are optional as `nats`'s own `request` declares them, which is what lets
+ * that connection, whose options take a fuller header set, be one; `sendRelayFrame` always
+ * sends both. */
 export interface RelayConnection {
   request(
     subject: string,
     payload: Uint8Array,
-    options: { readonly timeout: number; readonly headers: RelayFrameHeaders }
+    options?: { readonly timeout: number; readonly headers?: RelayFrameHeaders }
   ): Promise<{ readonly data: Uint8Array }>;
 }
 
@@ -936,6 +935,15 @@ export interface LegionPaneOptions {
   readonly quietMs?: number;
   /** The one word the gateway answers the run-end self-check with; `PROCEEDING` by default. */
   readonly selfCheck?: string;
+  /** Gets each RPC frame omp prints, in order, in every life of the pane, for a case that waits on
+   * a frame of its own (a model change, a run's end that the host marks as not terminal). */
+  readonly onFrame?: (frame: object) => void;
+  /**
+   * Runs in the first life once every prompt's run has settled, before that life ends, with its
+   * RPC: a case that starts a run some other way than a prompt (an Envoy card, a background job's
+   * result) or that sends a prompt whose run the host does not settle as terminal does it here.
+   */
+  readonly whileUp?: (rpc: Rpc) => Promise<void>;
 }
 
 /** What a settled Legion pane left behind. */
@@ -1097,7 +1105,8 @@ export async function runLegionPane(
    */
   const live = async (
     prompts: readonly (string | PaneStep)[],
-    args: readonly string[]
+    args: readonly string[],
+    whileUp?: (rpc: Rpc) => Promise<void>
   ): Promise<void> => {
     let settled = Promise.withResolvers<void>();
     const rpc = spawnRpc(
@@ -1133,6 +1142,7 @@ export async function runLegionPane(
           ...options.env,
         },
         onFrame: (frame) => {
+          options.onFrame?.(frame);
           if (
             "type" in frame &&
             frame.type === "agent_end" &&
@@ -1170,10 +1180,11 @@ export async function runLegionPane(
         ]);
       }
     }
+    if (whileUp !== undefined) await Promise.race([whileUp(rpc), rpc.closed]);
     await rpc.end();
   };
   const prompts = typeof options.prompt === "string" ? [options.prompt] : options.prompt;
-  await live(prompts, []);
+  await live(prompts, [], options.whileUp);
 
   const turns = (): Request[] =>
     requests.filter(

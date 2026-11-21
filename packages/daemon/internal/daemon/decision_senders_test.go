@@ -99,11 +99,9 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 	{"and is now at version", "workflow.KeptDecisionsTask"},
 }
 
-// Every sender of a person's design decision asks the one predicate whether that decision is still
-// the person's word (workflow.SupersedingApproval), so no sender decides it for itself and no sender
-// asks the rule itself (dispatch://INFRA-3136/spec R2). Which reviews a sender asks about is the
-// sender's: the daemon's readNoticeTree and controllerNotice ask again of a queued notice they
-// deliver only when it is a changes request.
+// Every sender of a person's design decision asks the one predicate whether that decision is
+// still the person's word (workflow.SupersedingApproval), so no sender decides it for itself and
+// no sender asks the rule itself (dispatch://INFRA-3136/spec R2).
 // A sender is a function of internal/workflow, internal/daemon or internal/admit, outside its
 // tests, whose body
 //
@@ -144,9 +142,9 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // the first out and the walk still passes. What holds that ask is its behavior, which
 // TestAQueuedChangesNoticeAnApprovalFollowedIsNotPublished drives. The publish of a relay to the
 // controller (controllerNotice) reaches it one way alone, through its ask of a relayed changes
-// request (relayedChangesAnswered), so the walk fails it if that ask goes; that the ask reads the
-// review's mark from the decision the relay kept is its behavior too, which
-// TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved drives.
+// request (decisionSuperseded), so the walk fails it if that ask goes; that the ask is of the
+// review's mark and document the relay carries, and of nothing kept beside the row, is its
+// behavior too, which TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved drives.
 //
 // A list of kept decisions is held to more: every loop that ranges over one (keptDecisionTypes)
 // and writes a decision's kind into text (a fmt print, a WriteString, a string conversion) is a
@@ -162,14 +160,13 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // again names the review whether or not the person's word has moved since, which is how the
 // sweep's send of a lost resume's start named a changes request the person's approval had
 // superseded. The resume still writes that text, which this release never sends, for the release
-// a rollback past contract 193 returns to (record.PhaseRow.EntryTask says so), so the text is
+// a rollback past contract 190 returns to (record.PhaseRow.EntryTask says so), so the text is
 // there for a new sender to read. Such a function passes only where storedTaskReaders names it,
 // with why its read sends no person's review.
 //
 // And the rule itself (classify.ReviewSuperseded) is asked by the predicate alone, and by the one
-// reading of an approval request (ruleAskers), so the guards the predicate holds — the decision's
-// kind, the gate of its step, the document that gate holds, and whether the deployment gates that
-// step — live in one place.
+// reading of an approval request (ruleAskers), so the guards the predicate holds, which its doc
+// lists, live in one place.
 //
 // This test reads its sites from the source because no chokepoint can make a sender ask: the
 // predicate is the one place the answer is decided, but a notice is a plain struct literal any

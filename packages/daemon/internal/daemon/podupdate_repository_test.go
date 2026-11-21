@@ -293,6 +293,38 @@ func TestThePodsRepositoryIsReadThroughTheSameClaimInAnyOrder(t *testing.T) {
 	}
 }
 
+// A gone pod's message names the old repository's workspace only on a round whose reasons end in
+// the reason repositoryDrift writes (podWentMessage). Every other text reads as no repository
+// round: no reason at all, the runtime's reasons alone, the reason's words inside another reason
+// or before one, and a reason whose names are not two repositories.
+func TestTheRepositoryReasonReadsBackOnlyAsItIsWritten(t *testing.T) {
+	written := repositoryReason(podUpdateRepo, podUpdateCorrectedRepo)
+	for _, tc := range []struct {
+		reasons string
+		want    bool
+	}{
+		{written, true},
+		{podUpdateDrift + ", " + written, true},
+		{"", false},
+		{podUpdateDrift, false},
+		{podUpdateDrift + " " + written, false},
+		{written + ", " + podUpdateDrift, false},
+		{"repository " + podUpdateRepo, false},
+		{"repository acme widgets, now " + podUpdateCorrectedRepo, false},
+	} {
+		pod, recorded, ok := roundRepositories(tc.reasons)
+		if ok != tc.want {
+			t.Errorf("roundRepositories(%q) reads a repository round: %t, want %t",
+				tc.reasons, ok, tc.want)
+			continue
+		}
+		if ok && (pod.String() != podUpdateRepo || recorded.String() != podUpdateCorrectedRepo) {
+			t.Errorf("roundRepositories(%q) = %s, %s, want %s, %s",
+				tc.reasons, pod, recorded, podUpdateRepo, podUpdateCorrectedRepo)
+		}
+	}
+}
+
 // tokensOf is each claim's token, in the claims' order.
 func tokensOf(claims []supervise.Claim) []claim.Token {
 	tokens := make([]claim.Token, 0, len(claims))

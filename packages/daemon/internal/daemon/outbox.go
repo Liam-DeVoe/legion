@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -359,14 +360,27 @@ func (r *outbox) RunOnce(ctx context.Context) error {
 	return nil
 }
 
+// outboxErrorInFull is the message of the lines that carry a failed run's whole error, in parts
+// (settle, storetext.LogWhole), where the row and every other line about it keep only its start.
+const outboxErrorInFull = "outbox row's error in full; the row and the lines about it keep its start"
+
 // settle records what a row's run came to, under the lease the run held: a wait or a failure is
 // retried on the row's backoff (or after the wait GitHub asks for), a failure no retry repairs is
 // finished refused with its follow-up (permanentRefusal, finishRefused), and anything else is
 // finished. A row whose finish or retry fails is logged and left leased: its lease expires and the
 // row is due again, so one row's failed transaction never stops the rows after it.
+//
+// A run's error is a far side's text, which can carry a relayed command's whole stderr. Every
+// line about it carries it as the row keeps it (storetext.FarSideError, record.Store.RetryOutbox),
+// this function's own and finishRefused's alike, so no line holds more than a log entry takes.
+// This is the one place the whole text is logged (storetext.LogWhole), once for each failed
+// attempt and only when storetext.FarSideError cuts it: every failed attempt passes here once,
+// retried or finished refused, and the whole text is in the log even where the retry's or the
+// finish's own write then fails.
 func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 	if err != nil {
 		r.noteLimit(row, err)
+		kept := storetext.FarSideError(err.Error())
 		// A failure no retry repairs is not logged as the row failing: once its finish commits,
 		// finishRefused's own line says what became of the row, and a finish that does not commit
 		// is logged below with it as the cause.
@@ -386,13 +400,14 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 				level = slog.LevelWarn
 			}
 			r.log.Log(ctx, level, "outbox row waits", "row", row.ID, "kind", row.Kind, "issue", row.Issue,
-				"attempts", row.Attempts, "error", err)
+				"attempts", row.Attempts, "error", kept)
 		} else if !permanent {
-			r.log.Error("outbox row failed", "row", row.ID, "kind", row.Kind, "error", err)
+			r.log.Error("outbox row failed", "row", row.ID, "kind", row.Kind, "error", kept)
 		}
+		storetext.LogWhole(r.log, outboxErrorInFull, err.Error(), "row", row.ID, "kind", row.Kind, "issue", row.Issue)
 		if permanent {
 			if finishErr := r.finishRefused(ctx, row, err); finishErr != nil {
-				r.log.Error("outbox row finish not recorded; it runs again when its lease expires", "row", row.ID, "error", finishErr, "cause", err)
+				r.log.Error("outbox row finish not recorded; it runs again when its lease expires", "row", row.ID, "error", finishErr, "cause", kept)
 			}
 			return
 		}
@@ -467,12 +482,15 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // finish commits and the notice is published without a sweep. Only the hand-over's finish takes
 // the lock every fact applies under and settles as a fact's does (settling), since the fence it
 // drops is an input of the end of a merge's run. Every other refused row's finish writes nothing
-// a fact reads, so it runs in a plain transaction (committing) and waits behind no fact.
+// a fact reads, so it runs in a plain transaction (committing) and waits behind no fact. Each line
+// says the refusal as the row and the notice keep it (storetext.FarSideError); settle logged it
+// whole.
 func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause error) error {
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
 		return fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 	}
+	kept := storetext.FarSideError(cause.Error())
 	// follow is what the transaction does beside the finish, handed the transaction's ctx, and told
 	// the line logged once it commits. dropsFence is whether follow deletes a hand-over's fence.
 	var follow func(context.Context, pgx.Tx) error
@@ -482,7 +500,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 	case record.StatusWrite:
 		refusal, _ := dispatch.PermanentRefusal(cause)
 		r.log.Error("outbox status write refused by Dispatch and dropped; the issue's later writes go on",
-			"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+			"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", kept)
 		rule, err := ruleFor(value.Kind)
 		if err != nil {
 			return fmt.Errorf("outbox row %d: %w", row.ID, err)
@@ -495,7 +513,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		}
 		follow = func(ctx context.Context, tx pgx.Tx) error { return r.records.Enqueue(ctx, tx, notice) }
 		told = func() {
-			r.log.Error("outbox Dispatch message refused and dropped; its architect is told", "row", row.ID, "issue", row.Issue, "error", cause)
+			r.log.Error("outbox Dispatch message refused and dropped; its architect is told", "row", row.ID, "issue", row.Issue, "error", kept)
 		}
 	case record.ClaimRelease:
 		// Nobody is told: the claim stands where it was, which is the state the daemon would
@@ -505,7 +523,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		refusal, _ := dispatch.PermanentRefusal(cause)
 		told = func() {
 			r.log.Warn("outbox claim release refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
-				"status", refusal.Status, "code", refusal.Code, "error", cause)
+				"status", refusal.Status, "code", refusal.Code, "error", kept)
 		}
 	case record.DesignGatesPublish:
 		// Nobody is told: the one refusal that ends this row is an issue Dispatch does not know
@@ -516,7 +534,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		refusal, _ := dispatch.PermanentRefusal(cause)
 		told = func() {
 			r.log.Warn("outbox design-gates publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took",
-				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", kept)
 		}
 	case record.RoleHoldersPublish:
 		// Nobody is told, and the line is what says the row ended. Two refusals end it
@@ -534,7 +552,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		}
 		told = func() {
 			log("outbox role-holders publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took, and the next ready or end of a claim on the issue publishes again",
-				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", kept)
 		}
 	case record.StepRecord:
 		// Nobody is told: no architect can change an issue Dispatch does not have, a body it will
@@ -594,11 +612,12 @@ const messageRefusedPreview = 200
 // block over its own bound among them, so the row is finished and the message is on no issue.
 // Nothing else would tell anyone, since the message is the daemon's only word on the issue for
 // what it carries. The reason names the issue, how long the message is, its first line (a READY
-// packet opens with its own `READY #<n> at <sha>` line) and Dispatch's own refusal.
+// packet opens with its own `READY #<n> at <sha>` line) and Dispatch's own refusal, bounded as a
+// far side's error text is (storetext.FarSideError).
 func messagePostRefused(issue string, payload record.MessagePost, cause error) record.Notice {
 	return record.Notice{Kind: "message-refused", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("Dispatch refused the message Legion was posting on %s, so it is on no issue and the daemon will not post it again. The message is %d characters and begins %q. Dispatch answered: %s",
-			issue, utf8.RuneCountInString(payload.Body), refusedPreview(payload.Body), cause)}
+			issue, utf8.RuneCountInString(payload.Body), refusedPreview(payload.Body), storetext.FarSideError(cause.Error()))}
 }
 
 // refusedPreview is the first line of a body a notice quotes, cut to messageRefusedPreview.
@@ -651,7 +670,7 @@ func (e *statusWriteFailure) Unwrap() error { return e.err }
 // record reads the one the row wrote, which only a person's move on the issue settles, and the
 // reason beside it may be posted already, which nobody should post a second time.
 func statusWriteRefused(issue string, payload record.StatusWrite, cause error, wrote statusWrites) record.Notice {
-	told := fmt.Sprintf("Dispatch refused a write Legion was making on %s and the daemon will not make it again. Dispatch answered: %s.", issue, cause)
+	told := fmt.Sprintf("Dispatch refused a write Legion was making on %s and the daemon will not make it again. Dispatch answered: %s.", issue, storetext.FarSideError(cause.Error()))
 	if wrote.status {
 		told += fmt.Sprintf(" The status %s was set on the issue all the same.", payload.Status)
 	} else {
@@ -691,7 +710,7 @@ func statusRefusalTold(r *outbox, row record.OutboxRow, payload record.StatusWri
 	told := func() {
 		r.log.Error("outbox status write refused by Dispatch; its architect is told what the issue holds now",
 			"row", row.ID, "issue", row.Issue, "status", payload.Status,
-			"status_set", wrote.status, "reason_posted", wrote.reason, "error", cause)
+			"status_set", wrote.status, "reason_posted", wrote.reason, "error", storetext.FarSideError(cause.Error()))
 	}
 	return follow, told, false
 }
@@ -715,7 +734,11 @@ func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) e
 	return r.retryAt(ctx, row, nextAt, cause)
 }
 
-// retryAt returns row to the outbox, due again at nextAt, with cause as its last error.
+// retryAt returns row to the outbox, due again at nextAt, with cause as its last error. The row
+// keeps cause's text as record.Store.RetryOutbox stores it (storetext.FarSideError). The whole
+// text is logged where the failed attempt is settled (settle), not here: a deferral behind
+// another row's GitHub rate limit, the one other caller (outbox_lanes.go), made no attempt, and
+// the error its cause wraps is the limited row's own, which that row's settle logged.
 func (r *outbox) retryAt(ctx context.Context, row record.OutboxRow, nextAt time.Time, cause error) error {
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		return r.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, cause.Error())
@@ -1734,8 +1757,9 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // answer reaches the policy only from a listener of the deployed, older build, until that
 // rollout finishes.
 // The runner executes a row it leased from memory, so a row deleted under its lease since (a
-// catch-up a newer ready dropped) is found gone in the tree's snapshot and finishes without a
-// publish, and so does a catch-up a newer one superseded (catchUpSuperseded, read against the
+// catch-up a newer ready dropped, or a changes request a clear of its generation dropped,
+// errNoticeRowGone) is found gone in the tree's snapshot and finishes without a publish, and so
+// does a catch-up a newer one superseded (catchUpSuperseded, read against the
 // row's own issue as the snapshot holds it and its architect's claim as it runs now): the re-hold
 // reads the claim from memory and writes its copy outside ApplyFact's lock, so it can lose the
 // race to a ready and commit an older copy after the fresh catch-up. A catch-up that publishes
@@ -2331,18 +2355,49 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 // row's own key.
 //
 // A parked-decision notice that relays a person's changes request is asked first whether the
-// request is still the person's word (relayedChangesAnswered), and finishes with nothing published
-// once it is not: the relay asked when it wrote the row (parkDecision), but the row waits here for
-// as long as no session holds the controller's claim, and an approval that lands meanwhile would
-// reach the controller as a request to act on. Every other notice, a parked decision of any other
-// kind among them, is published as it is.
+// request is still the person's word, and finishes with nothing published and one line naming the
+// approved version once the person's approval followed it: the relay asked when it wrote the row
+// (parkDecision), but the row waits here for as long as no session holds the controller's claim,
+// and an approval that lands meanwhile would reach the controller as a request to act on. It asks
+// decisionSuperseded, of the decision the row carries (record.RelayParkedDecision). It reads first
+// that the row is still in the outbox under its lease, in the same repeatable-read snapshot as the
+// gates: a clear of the row's generation deletes the gates that record the approval, and deletes
+// a row the approval followed before them (workflow.Engine.ClearGeneration), so a row found gone
+// finishes unpublished with one line, and a row found still there is asked of gates no clear has
+// deleted since. One window is left, as in deliverNotice: an approval that commits between that
+// read and the publish, which reaches the controller after the request it answered. Every other
+// notice, a parked decision of any other kind among them, is published as it is.
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
 	if payload.Kind == record.ParkedDecisionNotice && payload.Decision == record.DecisionDesignChangesRequested {
-		if answered, err := r.relayedChangesAnswered(ctx, row, payload); err != nil || answered {
+		var leased bool
+		var approval *workflow.Approval
+		read := pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
+		if err := pgx.BeginTxFunc(ctx, r.pool, read, func(tx pgx.Tx) error {
+			var err error
+			if leased, err = r.records.OutboxLeased(ctx, tx, row.ID, row.LeaseToken); err != nil || !leased {
+				return err
+			}
+			approval, err = r.decisionSuperseded(ctx, tx, row.Issue, record.Notice(payload),
+				payload.Decision)
 			return err
+		}); err != nil {
+			return fmt.Errorf("read whether the changes request relayed for %s is still the "+
+				"person's word: %w", row.Issue, err)
+		}
+		args := []any{"row", row.ID, "issue", row.Issue, "root", payload.Root, "ref", payload.Ref,
+			"version", payload.Version}
+		switch {
+		case !leased:
+			r.log.Info("outbox parked changes request finished without publishing: "+
+				"its row was deleted under its lease", args...)
+			return nil
+		case approval != nil:
+			r.log.Info("outbox parked changes request finished without publishing: "+
+				"the person's approval followed it", append(args, "approved", approval.Version)...)
+			return nil
 		}
 	}
 	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))

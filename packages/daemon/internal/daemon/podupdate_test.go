@@ -1191,31 +1191,85 @@ func TestPodUpdateWritesOnTheIssueWhenThePodWentWithoutItsRound(t *testing.T) {
 // (runtime.IssueVolumeReader): a Sandbox made after the round opened, by a reset or a change of
 // the disk's shape, holds a new volume, and the work is lost as it is for an ephemeral volume. In
 // both of those cases the message is the one every other pod's issue is told, word for word.
+//
+// A round that a corrected repository opened says more of a kept volume: the work is in the
+// workspace of the repository the issue has left, and the next pod makes a workspace of the new
+// repository beside it, where every role works. So the message names the old workspace's path
+// and tells a role how to keep the work, with other reasons in the round or without them. On
+// such a round, whatever the disk, the pushed work is on the old repository's issue branch and
+// the new pod's origin is the new repository, so the last sentence names both. The message of
+// every other round, and the disk's part of it for an ephemeral volume, is the one above, word
+// for word.
 func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
-	const opened = "The pod that ran this issue's roles is gone. The daemon opened an update round over that pod (" + podUpdateRound + "). " +
-		"The reasons were: " + podUpdateDrift + ". The pod went before the round was over.\n\n"
-	const restarted = "\n\nThe daemon starts each role again, in the same session, on a new pod. Each role must read its issue branch at origin to see the work that it pushed."
-	const lost = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
-		"The pod's disk went with the pod. Work that these roles did not push is lost." + restarted
-	const stays = opened + "These roles did not answer the update ask before the pod went: implementer (ready). " +
-		"The pod's disk is a kept volume, and the volume is still there. Work that these roles did not push is on that volume. " +
-		"The next pod of this issue mounts the volume." + restarted
+	const restarted = "\n\nThe daemon starts each role again, in the same session, on a new pod. "
+	const atOrigin = "Each role must read its issue branch at origin " +
+		"to see the work that it pushed."
+	const atOldRepository = "Work that each role pushed before the pod went " +
+		"is on the issue branch of the repository `" + podUpdateRepo + "`. " +
+		"In the new pod, origin is the repository `" + podUpdateCorrectedRepo + "`. " +
+		"To see that work, each role must read the issue branch of the repository `" +
+		podUpdateRepo + "`."
+	const lost = "The pod's disk went with the pod. Work that these roles did not push is lost."
+	const stays = "The pod's disk is a kept volume, and the volume is still there. " +
+		"Work that these roles did not push is on that volume. " +
+		"The next pod of this issue mounts the volume."
+	// oldWorkspace is where the pod of podUpdateRepo kept the issue's workspace: the directory
+	// names the repository and the issue's key, lowercased.
+	const oldWorkspace = "/legion/workspaces/acme/widgets/legion-484"
+	const moved = "The pod's disk is a kept volume, and the volume is still there. " +
+		"This issue moved from the repository `" + podUpdateRepo + "` " +
+		"to the repository `" + podUpdateCorrectedRepo + "`. " +
+		"Work that these roles did not push is on that volume, " +
+		"in the workspace of `" + podUpdateRepo + "` at `" + oldWorkspace + "`. " +
+		"The next pod of this issue mounts the volume. " +
+		"That pod makes a new workspace of `" + podUpdateCorrectedRepo + "`. " +
+		"Every role works in that new workspace. " +
+		"No role works in the workspace of `" + podUpdateRepo + "` again. " +
+		"To keep that work, read it at `" + oldWorkspace + "` in the next pod. " +
+		"Put that work on the issue branch in the new workspace. Then push the issue branch."
+	before, after := podUpdateStart.Add(-time.Hour), podUpdateStart.Add(time.Minute)
 	for _, tc := range []struct {
 		name string
 		// created is when the issue's kept Sandbox was made, zero for none.
 		created time.Time
-		want    string
+		// drifted is whether the runtime reads podUpdateDrift on the pod, and corrected whether
+		// Dispatch moved the issue to podUpdateCorrectedRepo, which adds
+		// podUpdateRepositoryReason after the runtime's reasons.
+		drifted, corrected bool
+		disk               string
 	}{
-		{"a kept volume made before the round opened", podUpdateStart.Add(-time.Hour), stays},
-		{"a kept volume made after the round opened", podUpdateStart.Add(time.Minute), lost},
-		{"an ephemeral volume", time.Time{}, lost},
+		{"a kept volume made before the round opened", before, true, false, stays},
+		{"a kept volume made after the round opened", after, true, false, lost},
+		{"an ephemeral volume", time.Time{}, true, false, lost},
+		{"a kept volume of a repository the issue has left", before, false, true, moved},
+		{"a kept volume of a repository the issue has left, with another drift",
+			before, true, true, moved},
+		{"an ephemeral volume of a repository the issue has left", time.Time{}, false, true, lost},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
-			rig.drifts(podUpdateDrift)
+			var reasons []string
+			if tc.drifted {
+				rig.drifts(podUpdateDrift)
+				reasons = append(reasons, podUpdateDrift)
+			}
+			if tc.corrected {
+				rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
+				reasons = append(reasons, podUpdateRepositoryReason)
+			}
 			if !tc.created.IsZero() {
 				rig.rt.ScriptKeptVolume(podUpdateIssue, tc.created)
 			}
+			pushed := atOrigin
+			if tc.corrected {
+				pushed = atOldRepository
+			}
+			want := "The pod that ran this issue's roles is gone. " +
+				"The daemon opened an update round over that pod (" + podUpdateRound + "). " +
+				"The reasons were: " + strings.Join(reasons, ", ") + ". " +
+				"The pod went before the round was over.\n\n" +
+				"These roles did not answer the update ask before the pod went: " +
+				"implementer (ready). " + tc.disk + restarted + pushed
 
 			rig.tick()
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
@@ -1227,8 +1281,8 @@ func TestAPodGoneFromAKeptVolumeSaysTheWorkStays(t *testing.T) {
 			if len(messages) != 1 {
 				t.Fatalf("the issue was written on %d times, want once for the pod that went", len(messages))
 			}
-			if messages[0] != tc.want {
-				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], tc.want)
+			if messages[0] != want {
+				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)
 			}
 			for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 				rig.awaitClaim(role, "its round to end with the pod", func(c supervise.Claim) bool { return c.UpdateRound == "" })
