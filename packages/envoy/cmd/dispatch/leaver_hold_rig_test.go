@@ -118,6 +118,10 @@ type leaverRig struct {
 	iapKeys   *oidctest.Issuer
 	iapKey    *oidctest.Key
 	directory *directorytest.Google
+	// metadataHost is the host of the rig's metadata machine on a rig built withPersonSignIns
+	// (startLeaverMetadataServer), and "" on any other: what googleidentity.MetadataHostVar names
+	// to a client of that machine, passed to each explicitly.
+	metadataHost string
 }
 
 // leaverOption changes how newLeaverRig builds its rig, by the hooks it adds to the config.

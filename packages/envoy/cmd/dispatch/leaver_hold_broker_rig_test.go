@@ -27,7 +27,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
-	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -111,22 +110,23 @@ func (r *leaverRig) pastBrokerCache(t *testing.T) {
 
 // withPersonSignIns configures the broker to accept a person's Google trade with the machine's
 // metadata identity as its actor. Removing that production exchange wiring makes personSignIn
-// fail at the real token endpoint rather than merely changing a fixture-local value.
+// fail at the real token endpoint rather than merely changing a fixture-local value. The rig's
+// metadata machine is its own (metadataHost), named to each client explicitly rather than through
+// the process's environment, so rigs of tests that run in parallel do not share it.
 func withPersonSignIns() leaverOption {
 	return func(c *leaverConfig) {
 		c.broker = append(c.broker, func(t *testing.T, r *leaverRig) []ciphertest.Option {
-			startLeaverMetadataServer(t, r.google, r.googleKey, leaverMachineAccount)
-			t.Setenv(cipherclient.IdentityVar, cipherclient.IdentityMetadata)
-			t.Setenv(cipherclient.MachineAudienceVar, ciphertest.GoogleMachineAudience)
+			r.metadataHost = startLeaverMetadataServer(t, r.google, r.googleKey, leaverMachineAccount)
 			return []ciphertest.Option{ciphertest.WithPersonSignIns(r.google, leaverMachineAccount)}
 		})
 	}
 }
 
-// startLeaverMetadataServer is the small boundary fake for a Compute Engine metadata server. Its
-// request and response shape are startMetadataServer's: only Google-flavoured identity requests
-// for the broker's machine audience receive the fake Google's signed token.
-func startLeaverMetadataServer(t *testing.T, google *oidctest.Issuer, key *oidctest.Key, machineAccount string) {
+// startLeaverMetadataServer is the small boundary fake for a Compute Engine metadata server, and
+// answers its host, as googleidentity.MetadataHostVar names one. Its request and response shape are
+// startMetadataServer's: only Google-flavoured identity requests for the broker's machine audience
+// receive the fake Google's signed token.
+func startLeaverMetadataServer(t *testing.T, google *oidctest.Issuer, key *oidctest.Key, machineAccount string) string {
 	t.Helper()
 	claims := google.Claims(machineAccount, ciphertest.GoogleMachineAudience)
 	claims["email"] = machineAccount
@@ -145,7 +145,33 @@ func startLeaverMetadataServer(t *testing.T, google *oidctest.Issuer, key *oidct
 		_, _ = io.WriteString(w, token)
 	}))
 	t.Cleanup(server.Close)
-	t.Setenv(googleidentity.MetadataHostVar, strings.TrimPrefix(server.URL, "http://"))
+	return strings.TrimPrefix(server.URL, "http://")
+}
+
+// machineIdentityToken asks the rig's metadata machine (metadataHost) for its identity token for
+// the broker's machine audience, the request googleidentity.Token makes of the host
+// googleidentity.MetadataHostVar names. It fails t on a rig built without withPersonSignIns.
+func (r *leaverRig) machineIdentityToken(t *testing.T) string {
+	t.Helper()
+	if r.metadataHost == "" {
+		t.Fatal("the rig has no metadata machine: build it withPersonSignIns")
+	}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+r.metadataHost+
+		"/computeMetadata/v1/instance/service-accounts/default/identity?audience="+url.QueryEscape(ciphertest.GoogleMachineAudience)+"&format=full", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Metadata-Flavor", "Google")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("ask the rig's metadata machine for its identity token: %v", err)
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusOK || len(raw) == 0 {
+		t.Fatalf("the rig's metadata machine answered %d %q (%v), want 200 with a token", response.StatusCode, raw, err)
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 // machineLogin logs a machine of p's in at the broker as the helper's `machine login` does: p
@@ -258,10 +284,7 @@ func (r *leaverRig) signInTrade(t *testing.T, p *leaverPerson) (status int, refu
 	if p.signInKey == nil {
 		p.signInKey = ciphertest.NewSigningKey(t)
 	}
-	machineToken, err := googleidentity.Token(t.Context(), ciphertest.GoogleMachineAudience)
-	if err != nil {
-		t.Fatalf("read %s's metadata identity: %v", leaverMachineAccount, err)
-	}
+	machineToken := r.machineIdentityToken(t)
 	claims := r.google.Claims("google-"+p.email, ciphertest.PersonSignInAudience)
 	claims["email"] = p.email
 	claims["email_verified"] = true

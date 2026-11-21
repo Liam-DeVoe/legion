@@ -463,13 +463,13 @@ func (c leaverClients) signInMachine(t *testing.T, r *leaverRig) *leaverSignInMa
 		cipherclient.SignInClientIDVar+"="+ciphertest.PersonSignInAudience,
 		cipherclient.SignInClientSecretFileVar+"="+secretFile,
 		cipherclient.SignInDirVar+"="+m.signIns.Dir)
-	for _, name := range []string{cipherclient.IdentityVar, cipherclient.MachineAudienceVar, googleidentity.MetadataHostVar} {
-		value := os.Getenv(name)
-		if value == "" {
-			t.Fatalf("%s is unset: withPersonSignIns names the rig's metadata machine in it", name)
-		}
-		m.env = append(m.env, name+"="+value)
+	if r.metadataHost == "" {
+		t.Fatal("the rig has no metadata machine: build it withPersonSignIns")
 	}
+	m.env = append(m.env,
+		cipherclient.IdentityVar+"="+cipherclient.IdentityMetadata,
+		cipherclient.MachineAudienceVar+"="+ciphertest.GoogleMachineAudience,
+		googleidentity.MetadataHostVar+"="+r.metadataHost)
 	return m
 }
 
