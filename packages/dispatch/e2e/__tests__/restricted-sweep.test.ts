@@ -8,10 +8,11 @@
  *  (`restricted-sweep-stack.ts`, whose server `e2e/run-server.sh` starts), each the instrument's
  *  check of itself:
  *  - on this checkout's server, which holds a restricted member to their own projects, it passes,
- *    with rows that could have failed, every kind of object found and both sockets' controls held;
+ *    with rows that could have failed, every kind of object found and every socket control held,
+ *    in one run and split into fills, a writer and a runner;
  *  - for a project the full member finds nothing of, it says UNKNOWN, never PASS;
- *  - on a build of the newest commit with no read check, it fails, and names the first route that
- *    answered a row, and both sockets;
+ *  - on a build with no read check (the commit `noReadCheckBase` picks), it fails, and names the
+ *    first route that answered a row, and both sockets;
  *  - the kind it fills each wildcard with is the kind the server's own route probes name.
  *
  *  The control's commit is read from git: the merge base of HEAD and DISPATCH_E2E_SWEEP_BASE_BRANCH
@@ -30,30 +31,19 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import { rowLimit, runBounded } from "./bounded-subprocess";
+import {
+  dispatchPackage,
+  getRows,
+  proxyReads,
+  proxySource,
+  readCheckFile,
+  sweepScript,
+} from "./restricted-sweep-index";
 import { noReadCheckBase, printedRuns, type StackRuns } from "./restricted-sweep-stack";
-
-const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
-const sweepScript = fileURLToPath(new URL("../acceptance/restricted-sweep.sh", import.meta.url));
-const routeIndex = fileURLToPath(
-  new URL("../../../envoy/internal/dispatch/api/testdata/routes.txt", import.meta.url)
-);
-/** The path of each GET row of the route index, in its order. */
-const getRows = readFileSync(routeIndex, "utf8")
-  .split("\n")
-  .map((line) => line.split(" "))
-  .filter(([method]) => method === "GET")
-  .map(([, path]) => path || noPath());
-
-/** Refuses a GET row of the route index with no path: read as "", it would match a listing's
- *  empty line and a call's ` GET ` alike, so no row below could fail on it. */
-function noPath(): never {
-  throw new Error(`${routeIndex} has a GET row with no path`);
-}
 
 /** The script run alone, with these variables and PATH and TMPDIR, as a child that starts nothing. */
 function script(env: Readonly<Record<string, string | undefined>>) {
@@ -76,6 +66,7 @@ const inputs = {
   SWEEP_PROJECT: "TGT",
   SWEEP_FULL_TOKEN: "a-full-members-token",
   SWEEP_RESTRICTED_COOKIE: "dsession=a-restricted-members-cookie",
+  SWEEP_MEMBER_SESSION: "ses-own-worker",
   SWEEP_WRITE_ISSUE: "TGT-1",
 };
 
@@ -137,6 +128,21 @@ describe("the inputs", () => {
       { SWEEP_LIVE_SECONDS: "0" },
       "UNKNOWN: SWEEP_LIVE_SECONDS must be a whole number of seconds",
     ],
+    [
+      "no session of the member's own for the live check's control",
+      { SWEEP_MEMBER_SESSION: undefined },
+      "UNKNOWN: SWEEP_MEMBER_SESSION is required",
+    ],
+    [
+      "a session of the member's that is no session id",
+      { SWEEP_MEMBER_SESSION: "ses own" },
+      "UNKNOWN: SWEEP_MEMBER_SESSION is no session id: ses own",
+    ],
+    [
+      "a writer with no fills to send its direct messages by",
+      { SWEEP_MODE: "writer" },
+      "UNKNOWN: SWEEP_FILLS_FILE is required in writer mode",
+    ],
   ] as const)(
     "%s is UNKNOWN, exit 2, named",
     async (_what, change, message) => {
@@ -158,20 +164,32 @@ describe("the inputs", () => {
   );
 });
 
+/** The fills whole fills hold, as the script lists them (restricted-sweep-fills.sh's
+ *  fill_names), each of which a runner refuses fills without. */
+const fillNames = (() => {
+  const source = readFileSync(join(dirname(sweepScript), "restricted-sweep-fills.sh"), "utf8");
+  const listed = /^readonly fill_names='([^']*)'$/m.exec(source);
+  if (listed === null) throw new Error("restricted-sweep-fills.sh lists no fill_names");
+  return (listed[1] ?? "").split(/\s+/).filter((name) => name !== "");
+})();
+
 /** A runner's fills, every one read before the first request: those it cannot read are refused by
  *  name before it reaches the deployment, at a closed port here, and the last row, fills it reads,
  *  is their control: it reaches the port. */
 describe("a runner's fills", () => {
   const directories = temporaryDirectories("restricted-sweep-runner-fills");
   const now = () => Math.floor(Date.now() / 1000);
-  /** Fills of TGT for bob made at MADE (Unix seconds), each line of `more` after them. */
-  const made = (madeAt: number, more: readonly string[] = []) =>
+  /** Whole fills of TGT for bob made at MADE (Unix seconds), but the fills `without` names, each
+   *  line of `more` after them. */
+  const made = (madeAt: number, more: readonly string[] = [], without: readonly string[] = []) =>
     [
-      "restricted-sweep-fills\t1",
+      "restricted-sweep-fills\t2",
       "project\tTGT",
+      "origin\thttp://127.0.0.1:9",
       `made_at\t${madeAt}`,
       "member\tbob@outside.example",
       "own\tOWN",
+      ...fillNames.filter((name) => !without.includes(name)).map((name) => `${name}\tthe-${name}`),
       ...more,
     ]
       .map((line) => `${line}\n`)
@@ -184,66 +202,74 @@ describe("a runner's fills", () => {
       SWEEP_ORIGIN: "http://127.0.0.1:9",
       SWEEP_PROJECT: "TGT",
       SWEEP_RESTRICTED_COOKIE: "dsession=a-restricted-members-cookie",
+      SWEEP_MEMBER_SESSION: "ses-own-worker",
       SWEEP_FILLS_FILE: file,
     };
   };
 
-  test.each([
+  /** Each row: what it plants, the fills file's text (none: no file), the inputs it changes, and
+   *  the verdict's start. */
+  const refusals: readonly (readonly [
+    string,
+    () => string | undefined,
+    Readonly<Record<string, string>>,
+    string,
+  ])[] = [
     [
       "no file at the path",
-      undefined,
+      () => undefined,
       {},
       "UNKNOWN: SWEEP_FILLS_FILE names no file this run can read",
     ],
-    ["an empty file", "", {}, "UNKNOWN: SWEEP_FILLS_FILE is empty"],
+    ["an empty file", () => "", {}, "UNKNOWN: SWEEP_FILLS_FILE is empty"],
     [
       "fills of another version",
-      "restricted-sweep-fills\t2\nproject\tTGT\n",
+      () => "restricted-sweep-fills\t1\nproject\tTGT\n",
       {},
-      "UNKNOWN: SWEEP_FILLS_FILE holds no fills of this sweep's version 1",
+      "UNKNOWN: SWEEP_FILLS_FILE holds no fills of this sweep's version 2",
     ],
     [
       "fills of another project",
-      "restricted-sweep-fills\t1\nproject\tOWN\n",
+      () => "restricted-sweep-fills\t2\nproject\tOWN\n",
       {},
       "UNKNOWN: SWEEP_FILLS_FILE holds the fills of project OWN, not of TGT",
     ],
     [
       "fills older than 55 minutes",
-      "stale",
+      () => made(now() - 56 * 60 - 30),
       {},
       "UNKNOWN: SWEEP_FILLS_FILE was made 56 minutes ago, past 55",
     ],
     [
       "a fill the sweep does not read",
-      "unread",
+      () => made(now(), ["bogus\tvalue"]),
       {},
       "UNKNOWN: SWEEP_FILLS_FILE holds a fill this sweep does not read: bogus",
     ],
     [
+      "fills that lack fills whole fills hold",
+      () => made(now(), [], ["proxy_repo", "dm_session"]),
+      {},
+      "UNKNOWN: SWEEP_FILLS_FILE lacks fills that whole fills hold: proxy_repo dm_session",
+    ],
+    [
       "a full member's token beside the fills",
-      "fresh",
+      () => made(now()),
       { SWEEP_FULL_TOKEN: "a-full-members-token" },
       "UNKNOWN: a runner holds no full member's credential",
     ],
     [
       "a full member's cookie beside the fills",
-      "fresh",
+      () => made(now()),
       { SWEEP_FULL_COOKIE: "dsession=a-full-members-cookie" },
       "UNKNOWN: a runner holds no full member's credential",
     ],
-  ] as const)(
+  ];
+
+  test.each(refusals)(
     "%s is UNKNOWN, exit 2, named",
-    async (_what, text, change, message) => {
-      const contents =
-        text === "stale"
-          ? made(now() - 56 * 60 - 30)
-          : text === "unread"
-            ? made(now(), ["bogus\tvalue"])
-            : text === "fresh"
-              ? made(now())
-              : text;
-      const { code, stdout } = await script({ ...runnerWith(contents), ...change });
+    async (_what, contents, change, message) => {
+      const { code, stdout } = await script({ ...runnerWith(contents()), ...change });
       expect(stdout).toStartWith(message);
       expect(code).toBe(2);
     },
@@ -287,7 +313,7 @@ test(
   "fills every wildcard of every GET row of the route index with a kind of object",
   async () => {
     const kinds = await listedKinds();
-    expect([...kinds.keys()]).toEqual(getRows);
+    expect([...kinds.keys()]).toEqual([...getRows]);
     // Each wildcard is read from the path itself, so a row the script lists with fewer pairs than
     // its path has wildcards fails here too.
     const unknown = [...kinds].flatMap(([path, pairs]) =>
@@ -301,14 +327,9 @@ test(
   rowLimit("short")
 );
 
-/** The GitHub proxy's `readable` expression (githubapi/proxy.go), the only reads it forwards. */
-const proxySource = fileURLToPath(
-  new URL("../../../envoy/internal/dispatch/githubapi/proxy.go", import.meta.url)
-);
-
 test(
   "reads every path the GitHub proxy forwards, each as its expression names it",
-  async () => {
+  () => {
     const expression =
       /var readable = regexp\.MustCompile\(`\^repos\/[^`]*?\/\(\?:([^`]*)\)\$`\)/.exec(
         readFileSync(proxySource, "utf8")
@@ -321,12 +342,29 @@ test(
         .replace("[0-9]+", "{number}")
         .replace(/\[0-9A-Fa-f\]\{\d+,\d+\}/, "{sha}")
     );
-    const { code, stdout } = await script({ SWEEP_LIST_PROXY: "1" });
-    expect(code).toBe(4);
     // The workflow-runs read carries the one commit its query must name.
-    expect(stdout.trim().split("\n")).toEqual(
+    expect(proxyReads).toEqual(
       forwarded.map((path) => (path === "actions/runs" ? "actions/runs?head_sha={sha}" : path))
     );
+  },
+  rowLimit("short")
+);
+
+// The one 5xx a proxy read's rule reads is the proxy's own answer for a repository the App is not
+// installed on, which a hidden repository is answered too: the code the script holds it to must be
+// the one `unavailable` (githubapi/proxy.go) writes.
+test(
+  "holds the GitHub proxy's answer for a repository the App is not installed on to the code the proxy writes",
+  () => {
+    const unavailable = /^func unavailable\([^)]*\) \{\n[^\n]*"code": "([A-Z_]+)"/m.exec(
+      readFileSync(proxySource, "utf8")
+    );
+    expect(
+      unavailable,
+      `${proxySource} holds no unavailable function this row reads`
+    ).not.toBeNull();
+    const script = readFileSync(join(dirname(sweepScript), "restricted-sweep-judge.sh"), "utf8");
+    expect(script).toContain(`\nreadonly not_installed_code=${unavailable?.[1]}\n`);
   },
   rowLimit("short")
 );
@@ -334,12 +372,11 @@ test(
 const repositories = temporaryDirectories("restricted-sweep-base");
 /** The files `noReadCheckBase` reads a tree by: the read check's own table, and a migration that
  *  gives people a member kind. */
-const readCheck = "packages/envoy/internal/dispatch/api/read_classes.go";
 const accessMigration = "packages/envoy/internal/dispatch/store/migrations/0001_people.up.sql";
 const restrictedMembers = {
   [accessMigration]: "alter table people add column member_kind text;\n",
 };
-const theReadCheck = { [readCheck]: "package api\n" };
+const theReadCheck = { [readCheckFile]: "package api\n" };
 
 /** A repository of the row's own. Its git reads no configuration of this machine, and each commit
  *  is made with `commit-tree` and moved onto HEAD with `update-ref`, as
@@ -588,7 +625,7 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
         expect(stdout).toMatch(new RegExp(`^found   ${kind} \\S+$`, "m"));
       }
       expect(stdout).toMatch(
-        /^found {3}person \S+, session \S+, repository \S+, priority \S+, broadcast \S+, delivery run \d+$/m
+        /^found {3}person \S+, session \S+, priority \S+, broadcast \S+, delivery run \d+$/m
       );
       expect(stdout).not.toMatch(/^found .* none(,|$)/m);
       // The worker session wrote only in TGT, so it marks a row of TGT; carol also works in OWN,
@@ -613,17 +650,26 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       expect(stdout).toMatch(
         /^ok {6}GET \/api\/v1\/github\/app-installation\/\{owner\}\/\{repo\}: 200, as a missing one is answered \(can fail\)$/m
       );
-      for (const shape of [
-        "pulls/{number}",
-        "issues/{number}",
-        "commits/{sha}/check-runs",
-        "actions/runs?head_sha={sha}",
-      ]) {
+      for (const shape of proxyReads) {
         expect(stdout).toMatch(
           new RegExp(
             `^ok {6}GET /api/github/rest/repos/\\{owner\\}/\\{repo\\}/${shape.replace(/[{}?]/g, "\\$&")}: .*\\(can fail\\)$`,
             "m"
           )
+        );
+      }
+      // The routes of the project's content the seed writes so that each can fail: the issue's
+      // decision record and its subscribed agent, the project's architecture and Legion board,
+      // and the open P0 issue nobody owns, which every delivery measure lists.
+      for (const route of [
+        "GET /api/v1/issues/{key}/decisions",
+        "GET /api/v1/issues/{key}/subscribers",
+        "GET /api/v1/projects/{key}/architecture",
+        "GET /api/v1/projects/{key}/legion/board",
+        "GET /api/v1/delivery/measures?repo=",
+      ]) {
+        expect(stdout).toMatch(
+          new RegExp(`^ok {6}${route.replace(/[{}?]/g, "\\$&")}: .*\\(can fail\\)$`, "m")
         );
       }
       const swept =
@@ -642,8 +688,21 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       expect(stdout).toMatch(
         /^ok {6}\/ws\/doc\/\{room\}: http 404 .*\(control: admitted to their own document\)$/m
       );
+      // The live window's writes and both controls: the full member's feed is sent the comment
+      // and the direct message to the worker, and bob's feed bob's own message to his session,
+      // which he reads; the worker's message is answered to him as a missing one, and its agent
+      // view as a session no one answers for.
       expect(stdout).toMatch(
-        /^ok {6}\/ws\/live: the member is sent \d+ events in 5 s, none of TGT; the full member is sent the comment \(control\)$/m
+        /^ok {6}\/ws\/live: the member is sent \d+ events in 5 s, none of TGT; the full member is sent the comment and the direct message, and the member their own direct message \(controls\)$/m
+      );
+      expect(stdout).toContain(
+        "\nok      GET /api/v1/messages/{id} (the member's own direct message): 200 (control)\n"
+      );
+      expect(stdout).toMatch(
+        /^ok {6}GET \/api\/v1\/messages\/\{id\} \(the live window's direct message\): .*\(can fail\)$/m
+      );
+      expect(stdout).toContain(
+        "\nok      /ws/live agent view of {session_id}: no one answers for it (can fail)\n"
       );
     },
     rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })
@@ -702,13 +761,16 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       const window = /^live window (\S+) (\S+)$/m.exec(runnerOut);
       expect(window, runnerOut).not.toBeNull();
       const [w0 = "", w1 = ""] = [window?.[1], window?.[2]];
+      // Each write is a comment and a direct message, delivered once the full member's own feed was
+      // sent both; a write that was not delivered is no control, so every one must be, and the
+      // window is held to delivered writes alone.
       const writes = (writer?.stdout ?? "").split("\n").filter((line) => line.startsWith("write "));
       expect(writes.length, writer?.stdout).toBeGreaterThan(0);
-      expect(
-        writes.filter((line) => !line.endsWith(" delivered")),
-        writer?.stdout
-      ).toEqual([]);
-      const inside = writes
+      const delivered = writes.filter((line) =>
+        /^write \S+ [0-9a-f-]{36} [0-9a-f-]{36} delivered$/.test(line)
+      );
+      expect(delivered, writer?.stdout).toEqual(writes);
+      const inside = delivered
         .map((line) => line.split(" ")[1] ?? "")
         .filter((stamp) => stamp > w0 && stamp < w1);
       expect(inside.length, `${writer?.stdout}\nwindow ${w0} ${w1}`).toBeGreaterThan(0);
@@ -771,6 +833,18 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       expect(stdout).toContain(
         '\nFAIL    GET /api/v1/github/app-installation/{owner}/{repo}: the member is answered 200 {"installed":true} for TGT\'s object, where a missing one is answered 200 {"installed":false}\n'
       );
+      // The routes of the project's content the seed writes so that each can fail, each of which
+      // the build with no read check answers bob.
+      for (const route of [
+        "GET /api/v1/issues/{key}/decisions",
+        "GET /api/v1/issues/{key}/subscribers",
+        "GET /api/v1/projects/{key}/architecture",
+        "GET /api/v1/projects/{key}/legion/board",
+        "GET /api/v1/delivery/measures?repo=",
+        "/ws/live agent view of {session_id}",
+      ]) {
+        expect(stdout).toMatch(new RegExp(`^FAIL {4}${route.replace(/[{}?]/g, "\\$&")}: `, "m"));
+      }
     },
     rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })
   );

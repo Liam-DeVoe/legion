@@ -1,15 +1,20 @@
-/** `bun e2e/__tests__/restricted-sweep-stack.ts <head | base>`, from packages/dispatch: one stack of
- *  the e2e harness (`e2e/harness-pool.ts`, whose Dispatch server `e2e/run-server.sh` starts),
- *  seeded through its own routes, and `e2e/acceptance/restricted-sweep.sh` run against it as bob, a
- *  restricted member whom OWN's access list names and TGT's does not. It prints one JSON line,
- *  what each run answered, and stops the stack however it ends. `restricted-sweep.test.ts` runs it.
+/** `bun e2e/__tests__/restricted-sweep-stack.ts <head | base | keyed>`, from packages/dispatch: one
+ *  stack of the e2e harness (`e2e/harness-pool.ts`, whose Dispatch server `e2e/run-server.sh`
+ *  starts), seeded through its own routes, and `e2e/acceptance/restricted-sweep.sh` run against
+ *  it as bob, a restricted member whom OWN's access list names and TGT's does not. It prints one
+ *  JSON line, what each run answered, and stops the stack however it ends.
+ *  `restricted-sweep.test.ts` runs it.
  *
  *  - `head` serves this checkout's build. It sweeps TGT, whose objects the seed below holds, and
- *    EMPTY, a project with no issue, which the full member finds nothing of; and it reads the
- *    server's own route probes (`go run ./internal/dispatch/api/cmd/routeprobes`), which the test
- *    holds the sweep's kinds to.
- *  - `base` serves a build of the newest commit with no read check (`noReadCheckBase`), and sweeps
- *    TGT once. That build has no read check, so bob reads every project.
+ *    EMPTY, a project with no issue, which the full member finds nothing of; it splits the sweep
+ *    of TGT into fills, a writer and a runner; and it reads the server's own route probes (`go run
+ *    ./internal/dispatch/api/cmd/routeprobes`), which the test holds the sweep's kinds to.
+ *  - `base` serves a build with no read check (`noReadCheckBase`: the merge base of this checkout
+ *    and the branch the read check's pull request targets, or the commit before the one that
+ *    added the check), and sweeps TGT once and split. That build has no read check, so bob reads
+ *    every project.
+ *  - `keyed` serves this checkout's build too, and sweeps a target project keyed as the route
+ *    index's example issue key.
  *
  *  Every write goes through the server's routes as a person or an agent makes it, but two the
  *  stack has no route for: bob's member kind, which the outside sign-in writes and this stack does
@@ -24,10 +29,8 @@ import { fileURLToPath } from "node:url";
 
 import { startStacks, stopStacks } from "../harness-pool";
 import { sqlAt } from "../psql";
+import { dispatchPackage, readCheckFile, sweepScript } from "./restricted-sweep-index";
 
-/** The read check's own table (`readclass` of every route, `read_classes.go`): a tree without it
- *  has no read check. */
-const readCheckFile = "packages/envoy/internal/dispatch/api/read_classes.go";
 /** The migrations that give a build restricted members, which write `member_kind`. */
 const migrations = "packages/envoy/internal/dispatch/store/migrations/*.up.sql";
 
@@ -37,13 +40,13 @@ const carol = "carol@example.com";
 const sharedToken = "e2e-token";
 /** The session the seed's agent writes name, and the one the fake Envoy lists. */
 const worker = "ses-tgt-worker";
+/** bob's own session, in OWN, which the live check's control message goes to. */
+const ownSession = "ses-own-worker";
 /** How long one sweep may run before it is stopped: a run against the local stack takes about 40 s
  *  with no pacing and a 5 s window. */
 const sweepMs = 600_000;
 
-const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const repositoryRoot = fileURLToPath(new URL("../../../..", import.meta.url));
-const sweepScript = join(dispatchPackage, "e2e/acceptance/restricted-sweep.sh");
 
 /** What one sweep answered. */
 export interface SweepRun {
@@ -303,8 +306,11 @@ function stackVariable(env: Readonly<Record<string, string | undefined>>, name: 
  *  a handoff, a document of the issue and one of the project, a repository the App is installed
  *  on with a pull request the GitHub proxy reads, a priority the issue advances, a broadcast to its
  *  agent, a direct message from carol to that agent, a merged pull request and a deploy run, and
- *  a file of its agent's conversation. OWN holds bob's own issue and document. EMPTY holds
- *  nothing. */
+ *  a file of its agent's conversation; and, so that the routes that read them can fail, a
+ *  decision record of the issue, its agent subscribed to it, an architecture source of the
+ *  repository, a Legion daemon the project names, an open P0 issue nobody owns, and the agent's
+ *  conversation as its live view replays it. OWN holds bob's own issue and document, and bob's own
+ *  session, which has commented on OWN's issue. EMPTY holds nothing. */
 async function seed(
   origin: string,
   env: Readonly<Record<string, string | undefined>>,
@@ -335,6 +341,8 @@ async function seed(
     [repository]: {
       contents: "read",
       installation_id: 71,
+      // The component model the project's architecture source reads.
+      files: { "reef.md": "---\ntitle: Reef\n---\nThe target reef.\n" },
       pulls: {
         "1": {
           head_sha: "1111111111111111111111111111111111111111",
@@ -351,6 +359,16 @@ async function seed(
       projects: [target],
       capabilities: ["aside", "btw", "steer"],
     },
+    {
+      session_id: ownSession,
+      title: "Works on OWN",
+      projects: ["OWN"],
+      capabilities: ["aside", "btw", "steer"],
+    },
+  ]);
+  // The worker follows the issue, as `dispatch subscribe` writes a session's interest.
+  await fixture(stackVariable(env, "FAKE_ENVOY_PORT"), "/__fixture/interests", [
+    { session_id: worker, topics: [`notifications.dispatch.issue.${first}.>`] },
   ]);
 
   const spec = "# Spec\n\nThe first paragraph.\n";
@@ -412,6 +430,12 @@ async function seed(
     body: "An agent remark.",
     actor,
   });
+  // bob's own session works in OWN: an agent comment places it there, as one places the worker in
+  // the target, so bob sees it and the live check's control message to it reaches bob's feed.
+  await send(origin, agent, "POST", "/api/v1/issues/OWN-1/comments", 201, {
+    body: "An agent remark of bob's own session.",
+    actor: { kind: "session", id: ownSession },
+  });
   await send(origin, asCarol, "POST", `/api/v1/issues/${first}/asks`, 201, {
     question: "Is this the right plan?",
   });
@@ -435,12 +459,79 @@ async function seed(
     name: "Guide.md",
     content: "# Guide\n\nHow bob works.\n",
   });
+  // A decision record of the issue, which GET /api/v1/issues/{key}/decisions reads.
+  await send(origin, asCarol, "POST", `/api/v1/issues/${first}/artifacts`, 201, {
+    name: "decisions.md",
+    content:
+      "# Decisions\n\n## Chart the reef first\n\nThe reef is charted before anyone sails it.\n",
+  });
   await send(origin, asCarol, "PATCH", `/api/v1/issues/${first}`, 200, { repo: repository });
   await send(origin, asCarol, "POST", "/api/v1/priorities", 201, {
     id: priority,
     title: "The target work",
   });
   await send(origin, asCarol, "PATCH", `/api/v1/issues/${first}`, 200, { advances: [priority] });
+  // An open P0 issue of the target that nobody claimed or routed, which every delivery measure's
+  // answer lists, whatever its facets (delivery.ListUnownedP0).
+  await send(origin, asCarol, "POST", "/api/v1/issues", 201, {
+    project: target,
+    title: "An unowned P0 of the target reef",
+    priority: 0,
+  });
+  // The repository as the project's architecture source, imported once, which
+  // GET /api/v1/projects/{key}/architecture reads.
+  await send(
+    origin,
+    asCarol,
+    "PUT",
+    `/api/v1/projects/${target}/architecture-sources/${repository}`,
+    200,
+    { branch: "main" }
+  );
+  const imported = await send(
+    origin,
+    asCarol,
+    "POST",
+    `/api/v1/projects/${target}/architecture-sources/${repository}/sync`,
+    200
+  );
+  if (
+    typeof imported !== "object" ||
+    imported === null ||
+    !("last_error" in imported) ||
+    imported.last_error !== null
+  ) {
+    throw new Error(`the architecture source's import answered ${JSON.stringify(imported)}`);
+  }
+  // A Legion daemon the project names, which GET /api/v1/projects/{key}/legion/board answers with
+  // empty columns until it is read; port 9 is closed, so it never is.
+  await send(origin, asCarol, "PUT", `/api/v1/projects/${target}/legion/daemon`, 200, {
+    state_url: "http://127.0.0.1:9",
+  });
+  // The worker's conversation, as its live view replays it to a viewer the server lets watch it
+  // (the in-memory relay the test hooks serve).
+  await send(
+    origin,
+    asCarol,
+    "POST",
+    `/api/v1/agents/${worker}/stream/_test/publish?as=responder`,
+    200,
+    {
+      responding: true,
+    }
+  );
+  await send(
+    origin,
+    asCarol,
+    "POST",
+    `/api/v1/agents/${worker}/stream/_test/publish?as=replay`,
+    200,
+    {
+      v: 1,
+      kind: "replay",
+      turns: [{ role: "assistant", text: "The reef is charted." }],
+    }
+  );
   await send(origin, asCarol, "POST", "/api/v1/broadcasts", 201, {
     body: "A broadcast to the worker.",
     delivery: "btw",
@@ -559,6 +650,7 @@ function sweep(origin: string, project: string, credentials: Credentials): Promi
     SWEEP_WRITE_ISSUE: `${project}-1`,
     SWEEP_FULL_TOKEN: credentials.token,
     SWEEP_RESTRICTED_COOKIE: credentials.cookie,
+    SWEEP_MEMBER_SESSION: ownSession,
     SWEEP_FULL_COOKIE: credentials.fullCookie,
     SWEEP_LIVE_SECONDS: "5",
     SWEEP_CONVERSATION_FILE: credentials.conversationFile,
@@ -566,8 +658,10 @@ function sweep(origin: string, project: string, credentials: Credentials): Promi
 }
 
 /** The split of `project` against `origin`, as `SplitRuns` says: the fills, written under
- *  `scratch`, then the writer, commenting every second, and the runner, which holds no full
- *  member's credential; the writer is stopped once the runner ends. */
+ *  `scratch`, then the writer, writing every second from the fills, and the runner, which holds no
+ *  full member's credential; the writer is stopped once the runner ends. The runner's window is
+ *  20 s, so a write the writer makes each second falls inside it whatever a busy machine holds one
+ *  write up by. */
 async function split(
   origin: string,
   project: string,
@@ -594,6 +688,8 @@ async function split(
       SWEEP_PROJECT: project,
       SWEEP_WRITE_ISSUE: `${project}-1`,
       SWEEP_FULL_TOKEN: credentials.token,
+      SWEEP_FULL_COOKIE: credentials.fullCookie,
+      SWEEP_FILLS_FILE: file,
       SWEEP_WRITE_SECONDS: "600",
       SWEEP_WRITE_EVERY: "1",
     },
@@ -604,8 +700,9 @@ async function split(
       SWEEP_ORIGIN: origin,
       SWEEP_PROJECT: project,
       SWEEP_RESTRICTED_COOKIE: credentials.cookie,
+      SWEEP_MEMBER_SESSION: ownSession,
       SWEEP_FILLS_FILE: file,
-      SWEEP_LIVE_SECONDS: "5",
+      SWEEP_LIVE_SECONDS: "20",
     });
     runnerDone.resolve();
     return { fills, runner, writer: await writer };

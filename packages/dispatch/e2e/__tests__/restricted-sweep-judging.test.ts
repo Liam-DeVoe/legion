@@ -1,433 +1,35 @@
-/** The judging rules of `e2e/acceptance/restricted-sweep.sh`, each held alone: the script runs
- *  against a fake Dispatch of this file's own that keeps every route from the restricted member
- *  but the one a row plants a leak in, so the leak that row plants is the only reason the run can
- *  fail. A run against a real stack (`restricted-sweep.test.ts`) fails on many routes at once, and
- *  a rule that stopped working there would hide behind the others.
- *
- *  The fake answers the full member's lookup with one object of each kind the sweep fills a
- *  wildcard with, all of the project TGT. To the full member, any other path or query that names
- *  one of those objects answers a row of TGT, a bare list answers one too, and a path naming an
- *  object that does not exist answers 404. To the restricted member, every path that names an
- *  object of TGT or a missing one answers 404 and a bare list answers `[]`, as a server holding
- *  them to their own projects does. Its sockets refuse every upgrade, so the socket section never
- *  proves anything here and a run with no leak is UNKNOWN, never PASS.
- *
- *  It also records every path the restricted member is sent, so a row can hold the sweep to
- *  calling every GET row of the route index, read from that record rather than from the script's
- *  own lines. */
+/** The judging rules of `e2e/acceptance/restricted-sweep.sh` for its HTTP rows, each held alone
+ *  against the fake Dispatch of `restricted-sweep-fake.ts`, which keeps every route from the
+ *  restricted member but the one a row plants a leak in. The sockets' rules are
+ *  `restricted-sweep-sockets.test.ts`'s, and the split into fills, a runner and a writer is
+ *  `restricted-sweep-split.test.ts`'s. */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import type { ServerWebSocket } from "bun";
-import { createEncoder, toUint8Array, writeVarString, writeVarUint } from "lib0/encoding";
 
-import { type BoundName, rowLimit, runBounded } from "./bounded-subprocess";
+import { rowLimit } from "./bounded-subprocess";
+import {
+  appInstallation,
+  at,
+  failures,
+  fullCookie,
+  type Leak,
+  type SweptRun,
+  stopFakes,
+  sweep,
+  tgt,
+  verdictOf,
+  withoutTools,
+} from "./restricted-sweep-fake";
+import { getRows, proxyReads } from "./restricted-sweep-index";
 
-const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
-const sweepScript = fileURLToPath(new URL("../acceptance/restricted-sweep.sh", import.meta.url));
-const routeIndex = fileURLToPath(
-  new URL("../../../envoy/internal/dispatch/api/testdata/routes.txt", import.meta.url)
-);
-/** The pattern of each GET row of the route index, in its order. */
-const getRows = readFileSync(routeIndex, "utf8")
-  .split("\n")
-  .map((line) => line.split(" "))
-  .filter(([method]) => method === "GET")
-  .map(([, path]) => path ?? "");
+afterAll(stopFakes);
 
-const fullToken = "the-full-members-token";
-const memberCookie = "dsession=the-restricted-members-cookie";
-const fullCookie = "dsession=the-full-members-cookie";
+/** Both sockets served, and the full member's browser for the GitHub proxy: what a run needs to
+ *  pass where its rows do. */
+const served = { env: { SWEEP_FULL_COOKIE: fullCookie }, feed: { doc: true, live: true } };
 
-/** TGT's objects, as the fake's lookup answers them, and the reference scheme it writes: the sweep
- *  reads the scheme from the server's own answer rather than spelling one. */
-const tgt = {
-  issue: "TGT-1",
-  title: "Chart the target reef",
-  document: "11111111-1111-4111-8111-111111111111",
-  block: "b-1111111111",
-  comment: "22222222-2222-4222-8222-222222222222",
-  ask: "33333333-3333-4333-8333-333333333333",
-  message: "44444444-4444-4444-8444-444444444444",
-  handoff: "55555555-5555-4555-8555-555555555555",
-  projectDocument: "66666666-6666-4666-8666-666666666666",
-  nearCopy: "77777777-7777-4777-8777-777777777777",
-  goingRun: "88888888-8888-4888-8888-888888888888",
-  session: "ses-tgt-worker",
-  conversationFile: "shot-png",
-  directMessage: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-  repository: "acme/tgt-repo",
-};
-const scheme = "fake-ref://";
-const tgtValues = Object.values(tgt);
-/** The values the sweep fills a path with on its missing side, which name nothing. */
-const missingValues = [
-  "ZZNONE",
-  "00000000-0000-4000-8000-",
-  "no-such-",
-  "nobody@example.com",
-  "ses-nosuchsession",
-  "b-nosuchblock",
-  "999999999999",
-  "zz no such words zz",
-];
-/** The reads the GitHub proxy forwards, after `/api/github/rest/repos/{owner}/{repo}/`. */
-const proxyShapes = [
-  "pulls/{number}",
-  "issues/{number}",
-  "commits/{sha}/check-runs",
-  "actions/runs?head_sha={sha}",
-];
-/** The route that answers a repository its caller may not see as one the App is not installed
- *  on, which the sweep fills with the project's repository. */
-const appInstallation = "/api/v1/github/app-installation/{owner}/{repo}";
-
-/** What a planted leak answers the restricted member, for the requests it matches. */
-interface Leak {
-  readonly matches: (target: string) => boolean;
-  readonly status: number;
-  readonly body: unknown;
-}
-
-/** What a fake changes of its answers. `omit` leaves a kind out of the lookup; `issues` is how many
- *  issues TGT lists (1 by default), and `handoffOn` the one whose handoff the lookup finds;
- *  `conversationGone` answers the conversation file as missing to the full member too;
- *  `proxyReadsCookies` makes the GitHub proxy read as the real one does, as the browser's person
- *  alone, so the full member's token is answered there as a missing repository is;
- *  `notInstalled` answers that the App is installed on no repository, TGT's included. */
-interface FakeShape {
-  readonly omit?: ReadonlySet<string>;
-  readonly issues?: number;
-  readonly handoffOn?: string;
-  readonly conversationGone?: boolean;
-  readonly proxyReadsCookies?: boolean;
-  readonly notInstalled?: boolean;
-  readonly feed?: FeedShape;
-}
-
-/** The lookup the full member is answered, by exact path and query: TGT's objects, and OWN's, the
- *  member's own project, whose issue names carol and no session. */
-function lookup(target: string, fake: FakeShape): unknown {
-  const author = { kind: "user", id: "carol@example.com" };
-  const agent = { kind: "session", id: tgt.session };
-  const handoffOn = fake.handoffOn ?? tgt.issue;
-  const issues = Array.from({ length: fake.issues ?? 1 }, (_, index) => ({
-    key: `TGT-${index + 1}`,
-    title: index === 0 ? tgt.title : `Issue ${index + 1} of the target reef`,
-    repo: "acme/tgt-repo",
-  }));
-  const answers: Record<string, unknown> = {
-    "/api/v1/whoami": { kind: "agent", owner: "carol@example.com" },
-    "/api/v1/projects": [{ key: "OWN" }, { key: "TGT" }],
-    "/api/v1/projects/TGT/access": { project: "TGT", people: [] },
-    "/api/v1/projects/OWN/access": { project: "OWN", people: ["bob@outside.example"] },
-    "/api/v1/issues?project=TGT&limit=50": { issues },
-    "/api/v1/issues?project=OWN&limit=50": {
-      issues: [{ key: "OWN-1", created_by: author, assignee: "carol@example.com" }],
-    },
-    "/api/v1/issues/OWN-1/comments": [],
-    "/api/v1/issues/OWN-1/asks": [],
-    "/api/v1/issues/OWN-1/messages": [],
-    "/api/v1/issues/OWN-1/handoffs": [],
-    [`/api/v1/issues/${tgt.issue}/summary`]: {
-      documents: [{ id: tgt.document, slug: "spec", primary: true }],
-    },
-    [`/api/v1/artifacts/${tgt.document}/blocks`]: [{ id: tgt.block }],
-    [`/api/v1/issues/${tgt.issue}/comments`]: [{ id: tgt.comment, author }],
-    [`/api/v1/comments/${tgt.comment}/blocks`]: {
-      item: { issue_key: tgt.issue, ref: `${scheme}${tgt.issue}/comment/${tgt.comment}` },
-    },
-    [`/api/v1/issues/${tgt.issue}/asks`]: [{ id: tgt.ask, author: agent }],
-    [`/api/v1/issues/${tgt.issue}/messages`]: [{ message: { id: tgt.message, author } }],
-    [`/api/v1/agents/${tgt.session}/messages`]: [
-      { message: { id: tgt.directMessage, author, body: "A direct message to the worker." } },
-    ],
-    [`/api/v1/issues/${tgt.issue}/handoffs`]: [],
-    [`/api/v1/issues/${handoffOn}/handoffs`]: fake.omit?.has("handoff")
-      ? []
-      : [{ id: tgt.handoff, phase: "plan", author: agent }],
-    "/api/v1/projects/TGT/artifacts": [
-      { id: tgt.projectDocument, issue_key: null, slug: "playbook-md" },
-    ],
-    "/api/v1/near-copy-checks?project=TGT": { checks: [{ id: tgt.nearCopy }] },
-    "/api/v1/priorities": { priorities: [{ id: "tgt-work" }] },
-    "/api/v1/broadcasts": [{ id: "99999999-9999-4999-8999-999999999999" }],
-    "/api/v1/delivery/timeline": { runs: [{ id: 900 }] },
-  };
-  if (fake.conversationGone === true) {
-    answers[`/api/v1/agents/${tgt.session}/artifacts/${tgt.conversationFile}`] = null;
-  }
-  return answers[target];
-}
-
-/** Whether `target`, decoded, names an object of TGT: one of its ids or keys, or the project key
- *  standing as a path segment, a query value or a reference's project. */
-function namesTgt(target: string): boolean {
-  return (
-    tgtValues.some((value) => target.includes(value)) ||
-    /(^|[/=])TGT([-/&?]|$)/.test(target) ||
-    target.includes(`${scheme}TGT`)
-  );
-}
-
-/** How a fake serves its sockets. The live feed: not at all (every upgrade refused 404), or, with
- *  `live`, a feed that starts for both callers and sends the full member each comment it is
- *  written. `closes` closes the member's feed when the comment is written, which the sweep writes
- *  only once both feeds have started, so it closes long before any window could end.
- *  `memberRefusal` refuses the member's live upgrade 404 with that body. `noise` sends the full
- *  member, in place of the comment, an event of TGT whose first field holds that text. The
- *  document socket: not at all, or, with `doc`, a room for the member's own document that admits
- *  them, as Hocuspocus answers a token frame, and a 404 for TGT's, whose body is `docRefusal`
- *  when a row sets it. */
-interface FeedShape {
-  readonly live?: boolean;
-  readonly closes?: boolean;
-  readonly memberRefusal?: unknown;
-  readonly noise?: string;
-  readonly doc?: boolean;
-  readonly docRefusal?: unknown;
-}
-
-/** The member's own document, in OWN, which the document socket's control opens. */
-const ownDocument = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-
-/** Hocuspocus's answer to a token frame that admits the caller: the room, the authentication
- *  message (2), its authenticated subtype (2) and the scope (socket-access.ts reads it). */
-function admitted(room: string): Uint8Array {
-  const frame = createEncoder();
-  writeVarString(frame, room);
-  writeVarUint(frame, 2);
-  writeVarUint(frame, 2);
-  writeVarString(frame, "read-write");
-  return toUint8Array(frame);
-}
-
-/** What a socket of the fake is: the member's or the full member's, and, for the document
- *  socket, the room. */
-interface SocketData {
-  readonly member: boolean;
-  readonly room?: string;
-}
-
-/** A fake Dispatch on a port of its own, with `leaks` planted for the restricted member. */
-function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
-  const feed = fake.feed ?? {};
-  const memberPaths: string[] = [];
-  // Every request the full member's credential made: a runner must make none.
-  let fullRequests = 0;
-  const fullFeeds: ServerWebSocket<SocketData>[] = [];
-  const memberFeeds: ServerWebSocket<SocketData>[] = [];
-  let events = 0;
-  const server = Bun.serve<SocketData>({
-    hostname: "127.0.0.1",
-    port: 0,
-    async fetch(request, served) {
-      const url = new URL(request.url);
-      const target = decodeURIComponent(url.pathname + url.search);
-      const member = request.headers.get("cookie") === memberCookie;
-      const fullBrowser = request.headers.get("cookie") === fullCookie;
-      const full = fullBrowser || request.headers.get("authorization") === `Bearer ${fullToken}`;
-      if (full) fullRequests += 1;
-      if (request.headers.get("upgrade") !== null) {
-        if (member && feed.memberRefusal !== undefined && url.pathname === "/ws/live") {
-          return Response.json(feed.memberRefusal, { status: 404 });
-        }
-        if (feed.live === true && url.pathname === "/ws/live" && (member || full)) {
-          if (served.upgrade(request, { data: { member } })) return undefined;
-        }
-        if (feed.doc === true && member && url.pathname === `/ws/doc/${ownDocument}`) {
-          if (served.upgrade(request, { data: { member, room: ownDocument } })) return undefined;
-        }
-        if (feed.doc === true && member && url.pathname === `/ws/doc/${tgt.document}`) {
-          return feed.docRefusal === undefined
-            ? new Response("document not found", { status: 404 })
-            : Response.json(feed.docRefusal, { status: 404 });
-        }
-        return new Response("no socket here", { status: 404 });
-      }
-      if (!member && !full) return Response.json({ code: "NO_IDENTITY" }, { status: 401 });
-      // Whether the App is installed on a repository, which the server answers a caller that may
-      // not see the repository as for one the App is not installed on (the GitHub proxy's rule):
-      // to the full member, installed on TGT's repository alone, unless `notInstalled`; to the
-      // member, who sees no repository of TGT's, installed on none. A leak planted at it answers
-      // the member otherwise.
-      const installation = /^\/api\/v1\/github\/app-installation\/([^/]+\/[^/]+)$/.exec(target);
-      const installed =
-        installation !== null &&
-        installation[1] === tgt.repository &&
-        fake.notInstalled !== true &&
-        !member;
-      if (member) {
-        memberPaths.push(url.pathname);
-        if (target === "/api/v1/whoami") {
-          return Response.json({
-            kind: "user",
-            login: "bob@outside.example",
-            member_kind: "restricted",
-          });
-        }
-        if (target === "/api/v1/projects") return Response.json([{ key: "OWN" }]);
-        if (feed.doc === true && target === "/api/v1/schema/blocks") {
-          return Response.json({ version: 1 });
-        }
-        if (feed.doc === true && target === "/api/v1/projects/OWN/artifacts") {
-          return Response.json([{ id: ownDocument, issue_key: null, slug: "guide-md" }]);
-        }
-        const leak = leaks.find((planted) => planted.matches(target));
-        if (leak !== undefined) return Response.json(leak.body, { status: leak.status });
-        if (installation !== null) return Response.json({ installed });
-        if (namesTgt(target) || missingValues.some((value) => target.includes(value))) {
-          return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
-        }
-        return Response.json([]);
-      }
-      if (installation !== null) return Response.json({ installed });
-      if (request.method === "POST" && target === "/api/v1/going/requests") {
-        return Response.json({ id: tgt.goingRun, project: "TGT" }, { status: 201 });
-      }
-      if (request.method === "POST" && target === `/api/v1/issues/${tgt.issue}/comments`) {
-        events += 1;
-        const id = crypto.randomUUID();
-        // The noise leads its event, so a line that quotes the feed's first bytes quotes it.
-        const event =
-          feed.noise === undefined
-            ? { id: events, issue_key: tgt.issue, project: "TGT", payload: { id } }
-            : { body: feed.noise, id: events, issue_key: tgt.issue, project: "TGT" };
-        for (const socket of fullFeeds) {
-          socket.send(JSON.stringify({ type: "event", sub: "e", id: String(events), event }));
-        }
-        if (feed.closes === true) {
-          for (const socket of memberFeeds) socket.close(1011, "the feed went away");
-        }
-        return Response.json({ id }, { status: 201 });
-      }
-      if (
-        fake.proxyReadsCookies === true &&
-        !fullBrowser &&
-        target.startsWith("/api/github/rest/")
-      ) {
-        return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
-      }
-      const answer = lookup(target, fake);
-      if (answer === null) return Response.json({ code: "NOT_FOUND" }, { status: 404 });
-      if (answer !== undefined) return Response.json(answer);
-      if (missingValues.some((value) => target.includes(value))) {
-        return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
-      }
-      return Response.json([{ project: "TGT", issue_key: tgt.issue, path: target }]);
-    },
-    websocket: {
-      message(socket, raw) {
-        if (socket.data.room !== undefined) {
-          // The one frame the probe sends is its token frame; a fake admits the member to it.
-          socket.send(admitted(socket.data.room));
-          return;
-        }
-        const frame = JSON.parse(String(raw)) as { type?: string; sub?: string };
-        if (frame.type !== "subscribe") return;
-        socket.send(
-          JSON.stringify({ type: "events_start", sub: frame.sub, since: String(events) })
-        );
-        (socket.data.member ? memberFeeds : fullFeeds).push(socket);
-      },
-    },
-  });
-  return {
-    memberPaths,
-    fullRequests: () => fullRequests,
-    origin: `http://127.0.0.1:${server.port}`,
-    server,
-  };
-}
-
-const servers: { stop: (closeActiveConnections?: boolean) => unknown }[] = [];
-afterAll(() => {
-  for (const server of servers) server.stop(true);
-});
-
-const indexes = temporaryDirectories("restricted-sweep-index");
-
-/** What a row changes of a run: the fake's answers (FakeShape), inputs (a variable set undefined
- *  is left out), and `rows`, the GET patterns of the route index the run reads in place of the
- *  whole of it. A sweep of the whole index makes about 400 calls; a row that holds one rule reads
- *  only the rows that rule needs. */
-interface RunShape extends FakeShape {
-  readonly env?: Readonly<Record<string, string | undefined>>;
-  readonly rows?: readonly string[];
-  /** The bound the run is stopped at: `short` for a run over the rows a rule needs, and
-   *  `wholeIndexSweep` for the one run over the whole route index. */
-  readonly bound?: BoundName;
-}
-
-/** What one run of the sweep answered, the paths of every request the member sent, and how many
- *  requests the full member's credential made. */
-interface SweptRun {
-  readonly code: number;
-  readonly stdout: string;
-  readonly memberPaths: readonly string[];
-  readonly fullRequests: number;
-}
-
-/** One run of the sweep against a fake with `leaks` planted. */
-async function sweep(leaks: readonly Leak[], shape: RunShape = {}): Promise<SweptRun> {
-  const fake = fakeDispatch(leaks, shape);
-  servers.push(fake.server);
-  let routes: string | undefined;
-  if (shape.rows !== undefined) {
-    routes = join(indexes(), "routes.txt");
-    writeFileSync(routes, shape.rows.map((pattern) => `GET ${pattern} any\n`).join(""));
-  }
-  const inputs: Record<string, string | undefined> = {
-    PATH: process.env.PATH ?? "",
-    TMPDIR: tmpdir(),
-    SWEEP_ORIGIN: fake.origin,
-    SWEEP_PROJECT: "TGT",
-    SWEEP_WRITE_ISSUE: tgt.issue,
-    SWEEP_FULL_TOKEN: fullToken,
-    SWEEP_RESTRICTED_COOKIE: memberCookie,
-    SWEEP_LIVE_SECONDS: "1",
-    SWEEP_CONVERSATION_FILE: `${tgt.session}/${tgt.conversationFile}`,
-    SWEEP_PACE_SECONDS: "0",
-    SWEEP_ROUTES: routes,
-    ...shape.env,
-  };
-  const run = await runBounded({
-    argv: ["bash", sweepScript],
-    bound: shape.bound ?? "short",
-    cwd: dispatchPackage,
-    env: Object.fromEntries(
-      Object.entries(inputs).filter((entry): entry is [string, string] => entry[1] !== undefined)
-    ),
-    from: import.meta.url,
-  });
-  fake.server.stop(true);
-  return {
-    code: run.code,
-    fullRequests: fake.fullRequests(),
-    memberPaths: fake.memberPaths,
-    stdout: run.stdout,
-  };
-}
-
-/** The `FAIL    ` lines of a run, without that prefix. */
-function failures(stdout: string): string[] {
-  return stdout
-    .split("\n")
-    .filter((line) => line.startsWith("FAIL    "))
-    .map((line) => line.slice("FAIL    ".length));
-}
-
-/** A leak at the one request whose decoded path and query is `target`. */
-function at(target: string, status: number, body: unknown): Leak {
-  return { matches: (seen) => seen === target, status, body };
-}
-
-const withoutTools = skipWithout("bash", "curl", "jq", "bun");
+/** `text` as a RegExp that matches it literally. */
+const literally = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 describe.skipIf(withoutTools)("each judging rule, alone", () => {
   test(
@@ -533,7 +135,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
   // names its key. The rows of the two kinds are each other's controls.
   const forms: { form: string; text: string; marker: string; member: string }[] = [
     { form: "a plain issue key", text: tgt.issue, marker: tgt.issue, member: "ref" },
-    { form: "a reference", text: `${scheme}${tgt.issue}`, marker: tgt.issue, member: "ref" },
+    { form: "a reference", text: `fake-ref://${tgt.issue}`, marker: tgt.issue, member: "ref" },
     { form: "an issue path", text: `/issues/${tgt.issue}`, marker: tgt.issue, member: "href" },
     { form: "a project path", text: "/projects/TGT", marker: "TGT", member: "href" },
     {
@@ -680,66 +282,6 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
   );
 
   test(
-    "a row of the project in the body of the member's refused live upgrade is a FAIL",
-    async () => {
-      const { code, stdout } = await sweep([], {
-        feed: { memberRefusal: { error: "refused", project: "TGT" } },
-        rows: ["/api/v1/whoami"],
-      });
-      expect(failures(stdout)).toEqual([
-        `/ws/live: the member's refused upgrade holds TGT, a row of TGT: http 404 {"error":"refused","project":"TGT"}`,
-      ]);
-      expect(code).toBe(1);
-    },
-    rowLimit("short")
-  );
-
-  // The control of the row above: the same refusal, its body naming nothing of TGT, is a refusal.
-  test(
-    "the member's refused live upgrade whose body names nothing of the project is a refusal",
-    async () => {
-      const { stdout } = await sweep([], {
-        feed: { live: true, memberRefusal: { error: "refused" } },
-        rows: ["/api/v1/whoami"],
-      });
-      expect(failures(stdout)).toEqual([]);
-      expect(stdout).toContain(
-        `\nok      /ws/live: the member's upgrade is refused: http 404 {"error":"refused"}\n`
-      );
-    },
-    rowLimit("short")
-  );
-
-  test(
-    "a row of the project in the body of the member's refused document upgrade is a FAIL",
-    async () => {
-      const { code, stdout } = await sweep([], {
-        feed: { doc: true, docRefusal: { error: "refused", project: "TGT" } },
-        rows: ["/api/v1/whoami"],
-      });
-      expect(failures(stdout)).toEqual([
-        `/ws/doc/{room}: the refusal holds TGT, a row of TGT: http 404 {"error":"refused","project":"TGT"}`,
-      ]);
-      expect(code).toBe(1);
-    },
-    rowLimit("short")
-  );
-
-  // The control of the row above: the member is admitted to their own document, and refused
-  // TGT's with a body that names nothing of it.
-  test(
-    "the member's refused document upgrade whose body names nothing of the project is a refusal",
-    async () => {
-      const { stdout } = await sweep([], { feed: { doc: true }, rows: ["/api/v1/whoami"] });
-      expect(failures(stdout)).toEqual([]);
-      expect(stdout).toContain(
-        "\nok      /ws/doc/{room}: http 404 document not found (control: admitted to their own document)\n"
-      );
-    },
-    rowLimit("short")
-  );
-
-  test(
     "a direct message to the project's session, in the member's list of that session's messages, is a FAIL",
     async () => {
       const listed = [
@@ -786,7 +328,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         { rows: ["/api/v1/whoami"] }
       );
       expect(failures(stdout)).toEqual([
-        `GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: the member is answered 200 for TGT's repository, where one the App is not installed on is answered 404: ${JSON.stringify(pull)}`,
+        `GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: the member is answered 200 for TGT's repository, where one the App is not installed on is answered 503: ${JSON.stringify(pull)}`,
       ]);
       expect(code).toBe(1);
     },
@@ -794,15 +336,16 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
   );
 
   // The control of the row above: each proxy read of the project's repository answered as one
-  // the App is not installed on.
+  // the App is not installed on, as the proxy answers it (503 GITHUB_TOKEN_UNAVAILABLE).
   test(
     "each GitHub proxy read answered as a repository the App is not installed on is no FAIL",
     async () => {
       const { stdout } = await sweep([], { rows: ["/api/v1/whoami"] });
       expect(failures(stdout)).toEqual([]);
-      for (const shape of proxyShapes) {
+      expect(proxyReads.length).toBeGreaterThan(0);
+      for (const shape of proxyReads) {
         expect(stdout).toContain(
-          `\nok      GET /api/github/rest/repos/{owner}/{repo}/${shape}: 404, as a repository the App is not installed on (can fail)\n`
+          `\nok      GET /api/github/rest/repos/{owner}/{repo}/${shape}: 503, as a repository the App is not installed on (can fail)\n`
         );
       }
     },
@@ -817,18 +360,17 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     "with the full member's cookie, a proxy that reads no token is read as the full member, and the run passes",
     async () => {
       const { code, stdout } = await sweep([], {
-        env: { SWEEP_FULL_COOKIE: fullCookie },
-        feed: { doc: true, live: true },
+        ...served,
         proxyReadsCookies: true,
         rows: ["/api/v1/whoami"],
       });
-      for (const shape of proxyShapes) {
+      for (const shape of proxyReads) {
         expect(stdout).toContain(
-          `\nok      GET /api/github/rest/repos/{owner}/{repo}/${shape}: 404, as a repository the App is not installed on (can fail)\n`
+          `\nok      GET /api/github/rest/repos/{owner}/{repo}/${shape}: 503, as a repository the App is not installed on (can fail)\n`
         );
       }
       expect(stdout).not.toContain("the-full-members-cookie");
-      expect(stdout.trimEnd().split("\n").at(-1)).toBe(
+      expect(verdictOf(stdout)).toBe(
         "PASS: no route and neither socket gave the member a row of TGT"
       );
       expect(code, stdout).toBe(0);
@@ -840,20 +382,105 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     "without the full member's cookie, a proxy that reads no token leaves the run UNKNOWN, naming each read",
     async () => {
       const { code, stdout } = await sweep([], {
-        feed: { doc: true, live: true },
+        ...served,
+        env: {},
         proxyReadsCookies: true,
         rows: ["/api/v1/whoami"],
       });
       expect(failures(stdout)).toEqual([]);
-      for (const shape of proxyShapes) {
+      for (const shape of proxyReads) {
         expect(stdout).toContain(
-          `\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/${shape}: the member is answered 404, but the full member is answered 404 for TGT's repository as for one the App is not installed on (404), so the read could not fail: the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names\n`
+          `\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/${shape}: the member is answered 503, but the full member is answered 503 for TGT's repository as for one the App is not installed on (503), so the read could not fail: the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names\n`
         );
       }
       expect(stdout).not.toContain("PASS");
-      expect(stdout.trimEnd().split("\n").at(-1)).toBe(
-        "UNKNOWN: nothing reached the member, but this run did not prove it, for the 4 reasons above"
+      expect(verdictOf(stdout)).toBe(
+        `UNKNOWN: nothing reached the member, but this run did not prove it, for the ${proxyReads.length} reasons above`
       );
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
+  // A proxy read counts as one that can fail only where the full member's read of the project's
+  // repository was answered and one nobody holds was answered as the proxy answers a repository
+  // the App is not installed on. An outage of either read, or a rate limit, which the proxy
+  // answers every repository alike, is no answer: the run is UNKNOWN, and the member's answers,
+  // alike as they are, prove nothing.
+  const pulls = "/api/github/rest/repos/{owner}/{repo}/pulls/{number}";
+  const outages: readonly (readonly [string, number, unknown])[] = [
+    ["an outage", 503, { code: "UPSTREAM_UNAVAILABLE" }],
+    [
+      "a rate limit",
+      503,
+      { code: "GITHUB_RATE_LIMITED", error: "GitHub rate-limited the App; retry after 1m0s" },
+    ],
+    ["an edge's server error", 502, "Bad Gateway"],
+  ];
+
+  test.each(outages)(
+    "%s of the full member's proxy read of the project's repository leaves the read UNKNOWN, though the member is answered alike",
+    async (_what, status, body) => {
+      const target = `/api/github/rest/repos/${tgt.repository}/pulls/1`;
+      const missing = "/api/github/rest/repos/acme/no-such-repo/pulls/1";
+      const { code, stdout } = await sweep([at(target, status, body), at(missing, status, body)], {
+        ...served,
+        full: [at(target, status, body)],
+        rows: ["/api/v1/whoami"],
+      });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain(
+        `\nUNKNOWN GET ${pulls}: the full member is answered ${status} for TGT's repository, which no rule judges, so its control was not read\n`
+      );
+      expect(stdout).not.toMatch(new RegExp(`^ok {6}GET ${literally(pulls)}:`, "m"));
+      expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
+  test.each(outages)(
+    "%s answered to the member for both repositories leaves the proxy read UNKNOWN",
+    async (_what, status, body) => {
+      const target = `/api/github/rest/repos/${tgt.repository}/pulls/1`;
+      const missing = "/api/github/rest/repos/acme/no-such-repo/pulls/1";
+      const { code, stdout } = await sweep([at(target, status, body), at(missing, status, body)], {
+        ...served,
+        rows: ["/api/v1/whoami"],
+      });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain(
+        `\nUNKNOWN GET ${pulls}: the member is answered ${status}, and ${status} for a repository the App is not installed on, which no rule judges: `
+      );
+      expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
+  // A failed read of the full member's half is no observation: the row it controls is UNKNOWN,
+  // never the `blind` of a route the full member is answered no row of, and a row that can fail
+  // elsewhere does not make up for it.
+  test.each([
+    ["a list", "/api/v1/inbox", "/api/v1/inbox"],
+    [
+      "a filled row",
+      "/api/v1/artifacts/{id}/asks",
+      `/api/v1/artifacts/${tgt.projectDocument}/asks`,
+    ],
+  ])(
+    "where the full member's read of %s fails, the row is UNKNOWN, never blind",
+    async (_what, row, target) => {
+      const { code, stdout } = await sweep([], {
+        ...served,
+        full: [at(target, 503, { code: "UPSTREAM_UNAVAILABLE" })],
+        rows: [row],
+      });
+      expect(stdout).toContain(
+        `\nUNKNOWN GET ${row}: the full member is answered 503, so its control was not read: {"code":"UPSTREAM_UNAVAILABLE"}\n`
+      );
+      expect(stdout).not.toMatch(new RegExp(`^ok {6}GET ${literally(row)}:`, "m"));
+      expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
       expect(code).toBe(2);
     },
     rowLimit("short")
@@ -869,7 +496,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     async () => {
       const { code, stdout } = await sweep(
         [at(`/api/v1/github/app-installation/${tgt.repository}`, 200, { installed: true })],
-        { feed: { doc: true, live: true }, rows: [appInstallation] }
+        { ...served, rows: [appInstallation] }
       );
       expect(failures(stdout)).toEqual([
         `GET ${appInstallation}: the member is answered 200 {"installed":true} for TGT's object, where a missing one is answered 200 {"installed":false}`,
@@ -883,15 +510,37 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
   test(
     "a route that answers a hidden repository as a missing one, so answering the member, can fail, and the run passes",
     async () => {
-      const { code, stdout } = await sweep([], {
-        feed: { doc: true, live: true },
-        rows: [appInstallation],
-      });
+      const { code, stdout } = await sweep([], { ...served, rows: [appInstallation] });
       expect(failures(stdout)).toEqual([]);
       expect(stdout).toContain(
         `\nok      GET ${appInstallation}: 200, as a missing one is answered (can fail)\n`
       );
-      expect(stdout.trimEnd().split("\n").at(-1)).toBe(
+      expect(verdictOf(stdout)).toBe(
+        "PASS: no route and neither socket gave the member a row of TGT"
+      );
+      expect(code, stdout).toBe(0);
+    },
+    rowLimit("short")
+  );
+
+  // The member's own project resolves to a repository of the project's issues too: the App is
+  // installed on it, and the member may see it, so a correct server answers them installed there.
+  // The row is filled with a repository only the project's issues resolve to, as the GitHub proxy
+  // reads are, so that answer fails nothing.
+  test(
+    "a repository the member's own project shares with the project fills no row held to a missing one's answer",
+    async () => {
+      const { code, stdout } = await sweep([], {
+        ...served,
+        rows: [appInstallation],
+        sharedRepo: true,
+      });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toMatch(/^found {3}proxy-repository acme\/tgt-repo$/m);
+      expect(stdout).toContain(
+        `\nok      GET ${appInstallation}: 200, as a missing one is answered (can fail)\n`
+      );
+      expect(verdictOf(stdout)).toBe(
         "PASS: no route and neither socket gave the member a row of TGT"
       );
       expect(code, stdout).toBe(0);
@@ -903,7 +552,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     "where the App is installed on none of the repositories, a route that answers a hidden repository as a missing one is UNKNOWN, never a pass",
     async () => {
       const { code, stdout } = await sweep([], {
-        feed: { doc: true, live: true },
+        ...served,
         notInstalled: true,
         rows: [appInstallation],
       });
@@ -912,7 +561,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
       expect(stdout).toContain(
         `\nUNKNOWN GET ${appInstallation}: the member is answered 200, as a missing one is, but the full member is answered TGT's object as a missing one is (200), so the row could not fail\n`
       );
-      expect(stdout.trimEnd().split("\n").at(-1)).toBe(
+      expect(verdictOf(stdout)).toBe(
         "UNKNOWN: nothing reached the member, but this run did not prove it, for the 1 reasons above"
       );
       expect(code).toBe(2);
@@ -984,50 +633,6 @@ describe.skipIf(withoutTools)("a run that proves nothing", () => {
   );
 
   test(
-    "where the member's live feed closes before its window ends, is UNKNOWN",
-    async () => {
-      const { code, stdout } = await sweep([], {
-        feed: { live: true, closes: true },
-        rows: ["/api/v1/whoami"],
-      });
-      expect(stdout).toContain(
-        "\nUNKNOWN /ws/live: a subscribed feed ended before the observation window finished\n"
-      );
-      expect(stdout).not.toContain("PASS");
-      expect(code).toBe(2);
-    },
-    rowLimit("short")
-  );
-
-  // The control of the row above: the same feed, held open for its window, passes the live check,
-  // so what that row reads is the close and not a feed the sweep cannot read at all.
-  test(
-    "where the member's live feed is held for its window, the live check holds",
-    async () => {
-      const { stdout } = await sweep([], { feed: { live: true }, rows: ["/api/v1/whoami"] });
-      expect(stdout).toMatch(
-        /^ok {6}\/ws\/live: the member is sent 0 events in 1 s, none of TGT; the full member is sent the comment \(control\)$/m
-      );
-    },
-    rowLimit("short")
-  );
-
-  test(
-    "where the full member's live feed misses the comment, is UNKNOWN and quotes no event's text",
-    async () => {
-      const words = "words only a member of TGT may read";
-      const { code, stdout } = await sweep([], {
-        feed: { live: true, noise: words },
-        rows: ["/api/v1/whoami"],
-      });
-      expect(stdout).toMatch(/^UNKNOWN \/ws\/live: the control did not hold: /m);
-      expect(stdout).not.toContain(words);
-      expect(code).toBe(2);
-    },
-    rowLimit("short")
-  );
-
-  test(
     "where the named conversation file is missing to the full member too, is UNKNOWN and says so",
     async () => {
       const { code, stdout } = await sweep([], {
@@ -1074,239 +679,5 @@ describe.skipIf(withoutTools)("the routes it calls", () => {
       expect(unsent).toEqual([]);
     },
     rowLimit("wholeIndexSweep")
-  );
-});
-
-// The split: fills mode holds the full member's half where a full member's credential may be, a
-// runner the member's half where none may be, and a writer the live check's write. Each fake is
-// alike, so fills one fake answered serve a runner of another.
-describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () => {
-  const fillsDirectories = temporaryDirectories("restricted-sweep-fills");
-  const someRows = ["/api/v1/inbox", "/api/v1/issues/{key}/comments", appInstallation];
-
-  /** A run of fills mode, and the file it was to write. Its proxy reads as the real one does, a
-   *  browser's person alone, so its reads can fail only with the full member's cookie, which the
-   *  run is given unless `withoutCookie`. */
-  async function fills(leaks: readonly Leak[] = [], withoutCookie = false) {
-    const file = join(fillsDirectories(), "fills.tsv");
-    const run = await sweep(leaks, {
-      env: {
-        SWEEP_MODE: "fills",
-        SWEEP_MEMBER: "bob@outside.example",
-        SWEEP_FILLS_FILE: file,
-        SWEEP_FULL_COOKIE: withoutCookie ? undefined : fullCookie,
-        SWEEP_RESTRICTED_COOKIE: undefined,
-        SWEEP_WRITE_ISSUE: undefined,
-      },
-      proxyReadsCookies: true,
-      rows: someRows,
-    });
-    return { ...run, file };
-  }
-
-  /** A runner's run with FILE, its sockets served, and no full member's credential. */
-  function runner(file: string, leaks: readonly Leak[] = []) {
-    return sweep(leaks, {
-      env: {
-        SWEEP_FILLS_FILE: file,
-        SWEEP_FULL_TOKEN: undefined,
-        SWEEP_CONVERSATION_FILE: undefined,
-        SWEEP_WRITE_ISSUE: undefined,
-      },
-      feed: { doc: true, live: true },
-      rows: someRows,
-    });
-  }
-
-  test(
-    "fills mode writes the full member's half, makes no request as the member, and writes no credential",
-    async () => {
-      const { code, file, fullRequests, memberPaths, stdout } = await fills();
-      expect(stdout.trimEnd().split("\n").at(-1)).toStartWith("FILLS: ");
-      expect(code, stdout).toBe(0);
-      expect(memberPaths).toEqual([]);
-      expect(fullRequests).toBeGreaterThan(0);
-      const text = readFileSync(file, "utf8");
-      const lines = text.trimEnd().split("\n");
-      expect(lines[0]).toBe("restricted-sweep-fills\t1");
-      expect(lines).toContain("project\tTGT");
-      expect(lines).toContain("member\tbob@outside.example");
-      expect(lines).toContain("own\tOWN");
-      expect(lines).toContain(`going_run\t${tgt.goingRun}`);
-      expect(lines).toContain("can_fail\tGET /api/v1/issues/{key}/comments");
-      for (const shape of proxyShapes)
-        expect(lines).toContain(`can_fail\tGET /api/github/rest/repos/{owner}/{repo}/${shape}`);
-      expect(lines).toContain(`can_fail\tGET ${appInstallation}`);
-      for (const secret of [fullToken, fullCookie, memberCookie])
-        expect(text).not.toContain(secret);
-      expect(/^[\t\n\x20-\x7e]*$/.test(text)).toBe(true);
-    },
-    rowLimit("short")
-  );
-
-  test(
-    "a runner with those fills and no full member's credential passes, and prints its live window",
-    async () => {
-      const { file } = await fills();
-      const { code, fullRequests, stdout } = await runner(file);
-      expect(fullRequests).toBe(0);
-      expect(stdout).toMatch(
-        /^live window \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/m
-      );
-      expect(stdout).toMatch(/^ok {6}GET \/api\/v1\/issues\/\{key\}\/comments: 404 \(can fail\)$/m);
-      expect(stdout).toContain(
-        `\nok      GET ${appInstallation}: 200, as a missing one is answered (can fail)\n`
-      );
-      expect(stdout.trimEnd().split("\n").at(-1)).toMatch(
-        /^PASS: no route and neither socket gave the member a row of TGT; the live check holds once a writer's delivered write falls inside the live window \S+ \S+, which the tailnet leg joins$/
-      );
-      expect(code, stdout).toBe(0);
-    },
-    rowLimit("short")
-  );
-
-  // The control of the row above: the same runner, with a leak planted, fails.
-  test(
-    "the same runner fails where the member is answered a row of the project",
-    async () => {
-      const { file } = await fills();
-      const { code, stdout } = await runner(file, [
-        at(`/api/v1/issues/${tgt.issue}/comments`, 200, [{ id: tgt.comment }]),
-      ]);
-      expect(failures(stdout)).toEqual([
-        `GET /api/v1/issues/{key}/comments: the member is answered 200 holding ${tgt.comment}, a row of TGT: [{"id":"${tgt.comment}"}]`,
-      ]);
-      expect(code).toBe(1);
-    },
-    rowLimit("short")
-  );
-
-  // The same runner, where the route that answers a hidden repository as a missing one answers the
-  // member that the App is installed on the project's.
-  test(
-    "the same runner fails where a route that answers a hidden repository as a missing one answers the member otherwise",
-    async () => {
-      const { file } = await fills();
-      const { code, stdout } = await runner(file, [
-        at(`/api/v1/github/app-installation/${tgt.repository}`, 200, { installed: true }),
-      ]);
-      expect(failures(stdout)).toEqual([
-        `GET ${appInstallation}: the member is answered 200 {"installed":true} for TGT's object, where a missing one is answered 200 {"installed":false}`,
-      ]);
-      expect(code).toBe(1);
-    },
-    rowLimit("short")
-  );
-
-  // A proxy read the full member's half could not make fail leaves no fills, and a runner whose
-  // fills say a proxy read cannot fail is UNKNOWN: neither is a pass of a read that could not fail.
-  test(
-    "fills mode whose proxy reads cannot fail, with no full member's cookie, writes no file, and names them",
-    async () => {
-      const { code, file, stdout } = await fills([], true);
-      expect(stdout.trimEnd().split("\n").at(-1)).toStartWith("UNKNOWN: no fills were written");
-      for (const shape of proxyShapes) {
-        expect(stdout).toContain(
-          `\n  GET /api/github/rest/repos/{owner}/{repo}/${shape}: the full member is answered 404 for TGT's repository as for one the App is not installed on (404), so the read could not fail: the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names\n`
-        );
-      }
-      expect(code).toBe(2);
-      expect(await Bun.file(file).exists()).toBe(false);
-    },
-    rowLimit("short")
-  );
-
-  test(
-    "a runner whose fills hold no proxy read that could fail is UNKNOWN, naming it",
-    async () => {
-      const { file } = await fills();
-      const pulls = "can_fail\tGET /api/github/rest/repos/{owner}/{repo}/pulls/{number}\n";
-      const text = readFileSync(file, "utf8");
-      expect(text).toContain(pulls);
-      writeFileSync(file, text.replace(pulls, ""));
-      const { code, stdout } = await runner(file);
-      expect(failures(stdout)).toEqual([]);
-      expect(stdout).toContain(
-        "\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/pulls/{number}: the member is answered 404, but SWEEP_FILLS_FILE holds no full member's read of it that could fail: fills mode writes one only where the full member's read can fail, with SWEEP_FULL_COOKIE, whose person the proxy reads\n"
-      );
-      expect(stdout.trimEnd().split("\n").at(-1)).toBe(
-        "UNKNOWN: nothing reached the member, but this run did not prove it, for the 1 reasons above"
-      );
-      expect(code).toBe(2);
-    },
-    rowLimit("short")
-  );
-
-  test(
-    "fills mode that cannot prove a row writes no file, and is UNKNOWN",
-    async () => {
-      const { code, file, stdout } = await fills([]).then(async (first) => {
-        // A second run at the same path, where the lookup finds no handoff, must remove the first.
-        const run = await sweep([], {
-          env: {
-            SWEEP_MODE: "fills",
-            SWEEP_MEMBER: "bob@outside.example",
-            SWEEP_FILLS_FILE: first.file,
-            SWEEP_RESTRICTED_COOKIE: undefined,
-            SWEEP_WRITE_ISSUE: undefined,
-          },
-          omit: new Set(["handoff"]),
-          rows: someRows,
-        });
-        return { ...run, file: first.file };
-      });
-      expect(stdout.trimEnd().split("\n").at(-1)).toStartWith("UNKNOWN: no fills were written");
-      expect(stdout).toContain("\n  handoff: no issue of the first 1 holds a handoff\n");
-      expect(code).toBe(2);
-      expect(await Bun.file(file).exists()).toBe(false);
-    },
-    rowLimit("short")
-  );
-
-  test(
-    "a writer prints each write delivered to the full member's own feed, and exits 0",
-    async () => {
-      const { code, stdout } = await sweep([], {
-        env: {
-          SWEEP_MODE: "writer",
-          SWEEP_WRITE_SECONDS: "3",
-          SWEEP_WRITE_EVERY: "1",
-          SWEEP_RESTRICTED_COOKIE: undefined,
-          SWEEP_CONVERSATION_FILE: undefined,
-        },
-        feed: { live: true },
-      });
-      const writes = stdout.split("\n").filter((line) => line.startsWith("write "));
-      expect(writes.length, stdout).toBeGreaterThan(0);
-      for (const line of writes) {
-        expect(line).toMatch(/^write \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ [0-9a-f-]{36} delivered$/);
-      }
-      expect(stdout.trimEnd().split("\n").at(-1)).toBe(
-        `WRITER: ${writes.length} writes, each delivered to the full member's own feed`
-      );
-      expect(code).toBe(0);
-    },
-    rowLimit("short")
-  );
-
-  // The control of the row above: a feed that is sent the project's events but not the comment.
-  test(
-    "a writer whose comment the full member's feed is not sent prints it not delivered, and exits 1",
-    async () => {
-      const { code, stdout } = await sweep([], {
-        env: {
-          SWEEP_MODE: "writer",
-          SWEEP_WRITE_SECONDS: "1",
-          SWEEP_WRITE_EVERY: "1",
-          SWEEP_RESTRICTED_COOKIE: undefined,
-          SWEEP_CONVERSATION_FILE: undefined,
-        },
-        feed: { live: true, noise: "another event of the project" },
-      });
-      expect(stdout).toMatch(/^write \S+ [0-9a-f-]{36} not delivered$/m);
-      expect(stdout.trimEnd().split("\n").at(-1)).toMatch(/^WRITER: \d+ writes, \d+ not delivered/);
-      expect(code).toBe(1);
-    },
-    rowLimit("short")
   );
 });

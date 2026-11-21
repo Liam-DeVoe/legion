@@ -1,6 +1,7 @@
 /** `bun socket-access.ts doc <server> <header file> <document id> <schema version>`,
- *  `bun socket-access.ts live <server> <header file> <ready file> <written file>` and
- *  `bun socket-access.ts watch <server> <header file> <ready file> <written file> <seconds>`: opens
+ *  `bun socket-access.ts live <server> <header file> <ready file> <written file>`,
+ *  `bun socket-access.ts watch <server> <header file> <ready file> <written file> <seconds>` and
+ *  `bun socket-access.ts agent <server> <header file> <session id> <seconds>`: opens
  *  one of Dispatch's two sockets as the caller whose credential the header file holds - one
  *  `Name: value` line, a `Cookie` or an `Authorization` - and prints what that caller is answered,
  *  in one form for every outcome, so a driver compares two callers' answers, or the answers to two
@@ -28,13 +29,20 @@
  *    every frame the server sent but heartbeats, each as the server wrote it and the moment it
  *    comes, from the `events_start` frame until `<seconds>` after the written file appeared,
  *    however busy or quiet the feed was: what this caller was sent in that window, which a driver
- *    may read while it runs. The driver has `writtenWithinMs` to make the written file.
+ *    may read while it runs. The driver has `writtenWithinMs` to make the written file. A
+ *    subscription the server ends (`ended`, as it ends one whose read failed, the socket left
+ *    open) or refuses (`error`) sends nothing more, so the probe then prints
+ *    `closed ended <reason>` or `closed refused <code>` and stops, as it does at a close: its
+ *    window was not covered. e2e/acceptance/restricted-sweep.sh runs it.
+ *  - `agent` subscribes to the live socket's agent view of one session's conversation, and prints
+ *    every frame the server sent but heartbeats, each as the server wrote it, until `<seconds>`
+ *    after the first; an `ended` or `error` frame ends it as it ends `watch`.
  *    e2e/acceptance/restricted-sweep.sh runs it.
  *
  *  Exit 0 for any answer, a refusal included; 1 when the server could not be reached, gave no
  *  answer within ten seconds (for `watch`, within ten seconds beyond the written file's wait and
- *  the window), or (live) did not send what its log owes within three minutes of the
- *  `events_start`; 2 for a wrong call. e2e/acceptance/project-access.sh and
+ *  the window; for `agent`, beyond the window), or (live) did not send what its log owes within
+ *  three minutes of the `events_start`; 2 for a wrong call. e2e/acceptance/project-access.sh and
  *  project-access-blob.sh run `doc` and `live`. */
 import { createDecoder, readVarString, readVarUint } from "lib0/decoding";
 import { createEncoder, toUint8Array, writeVarString, writeVarUint } from "lib0/encoding";
@@ -69,27 +77,70 @@ function usage(): never {
   console.error(
     "usage: bun socket-access.ts doc <server> <header file> <document id> <schema version>\n" +
       "       bun socket-access.ts live <server> <header file> <ready file> <written file>\n" +
-      "       bun socket-access.ts watch <server> <header file> <ready file> <written file> <seconds>"
+      "       bun socket-access.ts watch <server> <header file> <ready file> <written file> <seconds>\n" +
+      "       bun socket-access.ts agent <server> <header file> <session id> <seconds>"
   );
   process.exit(2);
 }
 
+/** What the probe was asked: its mode, each with the arguments it reads, and how long the answer
+ *  may take (`answerMs`), which a window adds to. */
+type Call = { readonly answerMs: number } & (
+  | { readonly mode: "doc"; readonly documentId: string; readonly schemaVersion: string }
+  | { readonly mode: "live"; readonly readyFile: string; readonly writtenFile: string }
+  | {
+      readonly mode: "watch";
+      readonly readyFile: string;
+      readonly writtenFile: string;
+      readonly windowMs: number;
+    }
+  | { readonly mode: "agent"; readonly sessionId: string; readonly windowMs: number }
+);
+
+/** A window in milliseconds from `seconds`: a whole number of seconds, at least one, and short
+ *  enough that the answer's bound, `answerWithinMs`, `beyond` and the window, still fits a timer. */
+function windowOf(seconds: string | undefined, beyond: number): number {
+  const windowMs = Number(seconds) * 1000;
+  if (!/^[1-9][0-9]*$/.test(seconds ?? "") || answerWithinMs + beyond + windowMs > longestTimerMs) {
+    usage();
+  }
+  return windowMs;
+}
+
 const [mode, server, headerFile, third, fourth, fifth] = Bun.argv.slice(2);
-if (server === undefined || headerFile === undefined) usage();
-if (mode !== "doc" && mode !== "live" && mode !== "watch") usage();
-if (third === undefined || fourth === undefined) usage();
-/** `watch`'s window, in milliseconds: a whole number of seconds, at least one, and short enough
- *  that its answer's bound, which adds it, still fits a timer. */
-const watchMs = mode === "watch" ? Number(fifth) * 1000 : 0;
 if (
-  mode === "watch" &&
-  !(
-    /^[1-9][0-9]*$/.test(fifth ?? "") &&
-    answerWithinMs + writtenWithinMs + watchMs <= longestTimerMs
-  )
+  server === undefined ||
+  headerFile === undefined ||
+  third === undefined ||
+  fourth === undefined
 ) {
   usage();
 }
+const call: Call = (() => {
+  switch (mode) {
+    case "doc":
+      return { answerMs: answerWithinMs, documentId: third, mode, schemaVersion: fourth };
+    case "live":
+      return { answerMs: answerWithinMs, mode, readyFile: third, writtenFile: fourth };
+    case "watch": {
+      // `watch` answers only after its driver's write and its window, so its bound adds both.
+      const windowMs = windowOf(fifth, writtenWithinMs);
+      return {
+        answerMs: answerWithinMs + writtenWithinMs + windowMs,
+        mode,
+        readyFile: third,
+        windowMs,
+        writtenFile: fourth,
+      };
+    }
+    case "agent": {
+      const windowMs = windowOf(fourth, 0);
+      return { answerMs: answerWithinMs + windowMs, mode, sessionId: third, windowMs };
+    }
+    default:
+      return usage();
+  }
+})();
 const url = new URL(server);
 if (url.protocol !== "http:" && url.protocol !== "https:") usage();
 
@@ -105,8 +156,8 @@ const headers: Record<string, string> = {
   Origin: origin,
 };
 const path =
-  mode === "doc"
-    ? `/ws/doc/${encodeURIComponent(third)}?schema_version=${encodeURIComponent(fourth)}`
+  call.mode === "doc"
+    ? `/ws/doc/${encodeURIComponent(call.documentId)}?schema_version=${encodeURIComponent(call.schemaVersion)}`
     : "/ws/live";
 
 /** A chunked body's text, once its last chunk has come, and otherwise undefined. A chunk's size
@@ -355,16 +406,32 @@ function liveAnswer(
   return answer.promise;
 }
 
-/** The `type` of a feed frame the server wrote as `data`, or undefined for a frame that is no JSON
- *  object, which `watch` keeps as the server wrote it, as it keeps every frame but a heartbeat. */
-function frameType(data: string): unknown {
+/** A feed frame's fields as the probe reads them; any may be absent. */
+interface Frame {
+  readonly type?: unknown;
+  readonly reason?: unknown;
+  readonly code?: unknown;
+}
+
+/** A feed frame the server wrote as `data`, or undefined for a frame that is no JSON object, which
+ *  `watch` and `agent` keep as the server wrote it, as they keep every frame but a heartbeat. */
+function frameOf(data: string): Frame | undefined {
   let frame: unknown;
   try {
     frame = JSON.parse(data);
   } catch {
     return undefined;
   }
-  return typeof frame === "object" && frame !== null && "type" in frame ? frame.type : undefined;
+  return typeof frame === "object" && frame !== null ? (frame as Frame) : undefined;
+}
+
+/** The line a probe prints for a subscription the server ended (`ended`, its reason) or refused
+ *  (`error`, its code), the socket left open, or undefined for any other frame: either sends
+ *  nothing more, so a window it falls in is not covered, as one a close falls in is not. */
+function endedBy(frame: Frame | undefined): string | undefined {
+  if (frame?.type === "ended") return `closed ended ${String(frame.reason)}`;
+  if (frame?.type === "error") return `closed refused ${String(frame.code)}`;
+  return undefined;
 }
 
 /** What the event feed sends this caller in a window, each frame printed the moment it comes, so
@@ -372,14 +439,15 @@ function frameType(data: string): unknown {
  *  the feed starts with no resume, the ready file says it has, and every frame but a heartbeat is
  *  printed as the server wrote it until `windowMs` after the written file appeared. A driver that
  *  makes no written file within `writtenWithinMs`, or a ready file that cannot be written, rejects
- *  the answer, which exits 1. A feed that closes first is answered at its close. */
+ *  the answer, which exits 1. A feed that closes first, or whose subscription the server ends or
+ *  refuses, is answered then. */
 function watchAnswer(
   socket: WebSocket,
   readyFile: string,
   writtenFile: string,
   windowMs: number
-): Promise<string> {
-  const answer = Promise.withResolvers<string>();
+): Promise<undefined> {
+  const answer = Promise.withResolvers<undefined>();
   const emit = (line: string) => console.log(line);
   // Once the answer is in, the wait for the written file and the window stop, so neither keeps
   // this process running past it.
@@ -388,7 +456,7 @@ function watchAnswer(
   const settled = () => {
     done = true;
     clearTimeout(windowTimer);
-    answer.resolve("");
+    answer.resolve(undefined);
   };
   const failed = (error: unknown) => {
     done = true;
@@ -411,11 +479,17 @@ function watchAnswer(
   );
   socket.addEventListener("message", (event) => {
     if (done || typeof event.data !== "string") return;
-    const type = frameType(event.data);
-    if (type === "heartbeat") return;
+    const frame = frameOf(event.data);
+    if (frame?.type === "heartbeat") return;
     emit(event.data);
+    const ended = endedBy(frame);
+    if (ended !== undefined) {
+      emit(ended);
+      settled();
+      return;
+    }
     // The window follows the first `events_start` alone: a second one starts no second wait.
-    if (type !== "events_start" || started) return;
+    if (frame?.type !== "events_start" || started) return;
     started = true;
     void awaitWritten().then(() => {
       if (!done) windowTimer = setTimeout(settled, windowMs);
@@ -429,6 +503,48 @@ function watchAnswer(
   return answer.promise;
 }
 
+/** What the agent view of `sessionId` sends this caller: every frame but a heartbeat, printed as
+ *  the server wrote it the moment it comes, until `windowMs` after the first. A view the server
+ *  ends or refuses, or a socket that closes, is answered then. */
+function agentAnswer(socket: WebSocket, sessionId: string, windowMs: number): Promise<undefined> {
+  const answer = Promise.withResolvers<undefined>();
+  let done = false;
+  let windowTimer: Timer | undefined;
+  const settled = () => {
+    done = true;
+    clearTimeout(windowTimer);
+    answer.resolve(undefined);
+  };
+  socket.addEventListener("open", () =>
+    socket.send(
+      JSON.stringify({
+        type: "subscribe",
+        sub: "a",
+        view: { kind: "agent", session_id: sessionId },
+      })
+    )
+  );
+  socket.addEventListener("message", (event) => {
+    if (done || typeof event.data !== "string") return;
+    const frame = frameOf(event.data);
+    if (frame?.type === "heartbeat") return;
+    console.log(event.data);
+    const ended = endedBy(frame);
+    if (ended !== undefined) {
+      console.log(ended);
+      settled();
+      return;
+    }
+    windowTimer ??= setTimeout(settled, windowMs);
+  });
+  socket.addEventListener("close", (event) => {
+    if (done) return;
+    console.log(`closed ${event.code} ${event.reason}`);
+    settled();
+  });
+  return answer.promise;
+}
+
 try {
   const upgrade = await upgradeAnswer();
   if (upgrade.status !== 101) {
@@ -436,12 +552,10 @@ try {
   } else {
     const socket = new BunWebSocket(`${origin.replace(/^http/, "ws")}${path}`, { headers });
     socket.binaryType = "arraybuffer";
-    // `watch` answers only after its driver's write and its window, so its bound adds both.
-    const answerMs = mode === "watch" ? answerWithinMs + writtenWithinMs + watchMs : answerWithinMs;
     let timer = setTimeout(() => {
-      console.error(`no answer on ${path} within ${answerMs / 1000} s`);
+      console.error(`no answer on ${path} within ${call.answerMs / 1000} s`);
       process.exit(1);
-    }, answerMs);
+    }, call.answerMs);
     const settling = () => {
       clearTimeout(timer);
       timer = setTimeout(() => {
@@ -454,13 +568,15 @@ try {
     // However the wait ends, `watch`'s rejection included, the bound and the socket stop with it:
     // either would keep this process running, and the bound would print a second failure.
     try {
-      const answer = await (mode === "doc"
-        ? documentAnswer(socket, third, fourth)
-        : mode === "live"
-          ? liveAnswer(socket, third, fourth, settling)
-          : watchAnswer(socket, third, fourth, watchMs));
-      // `watch` has printed its frames already, and answers nothing more.
-      if (mode !== "watch") console.log(answer);
+      // `watch` and `agent` print their frames as they come, and answer nothing more.
+      const answer = await (call.mode === "doc"
+        ? documentAnswer(socket, call.documentId, call.schemaVersion)
+        : call.mode === "live"
+          ? liveAnswer(socket, call.readyFile, call.writtenFile, settling)
+          : call.mode === "watch"
+            ? watchAnswer(socket, call.readyFile, call.writtenFile, call.windowMs)
+            : agentAnswer(socket, call.sessionId, call.windowMs));
+      if (answer !== undefined) console.log(answer);
     } finally {
       clearTimeout(timer);
       socket.close();
