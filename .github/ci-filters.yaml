@@ -2433,6 +2433,7 @@ worker_image:
   - 'packages/envoy/ciphertest/**'
   - 'packages/envoy/clitest/**'
   - 'packages/envoy/cmd/**'
+  - 'packages/envoy/consumernames/**'
   - 'packages/envoy/deploy/**'
   - 'packages/envoy/dispatchbody/**'
   - 'packages/envoy/docker/**'
