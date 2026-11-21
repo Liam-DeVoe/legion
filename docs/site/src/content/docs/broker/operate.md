@@ -1165,7 +1165,7 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | Postgres | A database the broker owns (`BROKER_DATABASE_URL`). The broker applies its own migrations at startup, and no release undoes one. An image rolled back starts on a database a newer image migrated: it leaves each version it has no file for as it is, applies nothing, and its code then runs on the newer schema. So roll back only to an image the database ran, and only past migrations that leave in place what the older code reads and writes ([A migration recorded under another file](#a-migration-recorded-under-another-file)). Each process also holds one connection outside its pool, for as long as it runs, to hear what the other processes reread ([Running more than one pod](#running-more-than-one-pod)). On Amazon RDS it can sign in by IAM token instead of a password ([Signing in to RDS by IAM token](#signing-in-to-rds-by-iam-token)). |
 | Rolling back | Once any secret carries `type`, never roll the broker back past the first release that reads it, the first whose `GET /v1/settings` answers `secret_type_tag: true`: that release is the rollback floor. Every broker from legion-envoy-v16.0.0 to the release before the floor reads only the old `kind` tag, and serves a secret that carries `type` alone as a stored secret, releasing its stored GitHub App key or refresh token to every grant as its value. The `mint-service-account: type-secret` tag `agent-secrets secret` writes beside every type does not stop such a broker: only the brokers from legion-envoy-v13.19.0 to the release before v16.0.0 read it, and refuse the secret as `mint-target-malformed`, while every broker from v16.0.0 to the release before the floor ignores it and one older than legion-envoy-v13.19.0 reads no such tag. A rolling deploy to the floor leaves the same hole while a pod of an earlier release still serves, so write no type until every pod runs the floor or later. To go back past the floor anyway, first disable every type secret's versions. |
 | Rolling back past the project tags | Never roll back past the release that reads `dispatch-project` and `project-channels` while any secret carries either tag without its rollback guard ([Rolling back past the project tags](#rolling-back-past-the-project-tags)). |
-| Rolling back under a Legion daemon | While a Legion daemon runs on Kubernetes, never roll the broker back past legion-envoy-v32.20.0 before every daemon is off the token exchange. That starts with the Envoy listener: roll it back to a release that still takes `ENVOY_API_TOKEN`, and give it the variable in the same change ([Rolling the broker back under a Legion daemon](#rolling-the-broker-back-under-a-legion-daemon)). |
+| Rolling back under a Legion daemon | While a Legion daemon runs on Kubernetes, never roll the broker back past legion-envoy-v32.20.0 before every daemon is off the token exchange. That starts with the Envoy listener: roll it back to the newest release that carries neither cybermonklabs/legion#4723 nor #4757, and give it `ENVOY_API_TOKEN` in the same change ([Rolling the broker back under a Legion daemon](#rolling-the-broker-back-under-a-legion-daemon)). |
 | The secret store | The agent secrets: every secret whose name starts with `BROKER_SECRETS_PREFIX`, carrying `owner` and `tier` (AWS tags, or Secret Manager annotations), encrypted with the agent-secrets key, and holding a current value. A `type` tag makes the broker mint a release from that value. [Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret) describes the tags, the name each secret is asked for by, and how often the broker rereads them. `BROKER_SECRETS_STORE` names which store, and the two rows below say what each needs. |
 | AWS Secrets Manager (`aws-secrets-manager`) | The broker calls AWS with the SDK's default credential chain (environment, shared config, or the workload's role), in a region (`AWS_REGION`, `AWS_DEFAULT_REGION` or the shared config). It needs `secretsmanager:ListSecrets` (which takes no resource, so on `*`), `secretsmanager:DescribeSecret` (to reread one secret) and `secretsmanager:GetSecretValue` on the namespace's secrets, `kms:Decrypt` on the agent-secrets key (`BROKER_SECRETS_KMS_KEY_ARN`), `kms:ListAliases` (on `*`, called only when a secret names its key by an alias), and, when it signs in to RDS by IAM token, `rds-db:connect` on its database user; nothing else. |
 | Google Cloud Secret Manager (`gcp-secret-manager`) | The broker calls Secret Manager under [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials): on GKE, Workload Identity Federation for the pod's Kubernetes ServiceAccount, with no key file and no Google service account; the boot log's `secret store … credentials=application-default` line says so. Its principal needs `secretmanager.secrets.list` on the project (the listing takes the project as its parent) and `secretmanager.secrets.get`, `secretmanager.versions.get` and `secretmanager.versions.access` on the namespace's secrets: `roles/secretmanager.viewer` on the project and `roles/secretmanager.secretAccessor` with an IAM condition `resource.name.startsWith("projects/<number>/secrets/<id prefix>")` cover them. The condition narrows only the accessor binding, so the broker reads values from the namespace alone; the viewer role reaches every secret's metadata in the project (its annotations, its versions' state and its IAM policy), never a value. A secret is served while its `versions/latest` is `ENABLED`, encrypted with the key `BROKER_SECRETS_KMS_KEY_NAME` names (`replication.automatic.customerManagedEncryption`; a secret on Google's default encryption is refused `not-on-agent-secrets-key`); one with an `expire_time` is scheduled for deletion and left out, as a Secrets Manager secret in its recovery window is, and a grant made before it no longer reads its value, though Secret Manager still would until that time. Every Secret Manager call but reading a value counts against the project's read quota, [600 a minute, shared by everything in the project](https://docs.cloud.google.com/secret-manager/quotas) (reading a value has its own 90,000). The broker's worst case against it is the sum of: a reload every five minutes, one listing plus one call per secret (a 200-secret namespace, about 40 a minute); the public reread route, two each, bounded across all callers of **each process** at one reread every `N² × 1 second`, where `N` is the pods that process counted at its last beat and never fewer than two — one every 4 seconds at two pods, one every 9 at three, one every 16 at four — which holds the whole fleet at the same 120 metadata reads a minute whatever `N` is (see [Running more than one pod](#running-more-than-one-pod)); each session's rereads for names it was not served, two each, at most one per session every ten seconds; and value releases, a type secret's among them, one per distinct secret per 30 seconds (two for a secret whose latest version is disabled), since the broker trusts its last check of a secret, readable or not, for that long (so a delete made outside `agent-secrets secret` stops releases at most 30 seconds after Secret Manager's own metadata shows it, which Google documents as eventually consistent; `agent-secrets secret delete` rereads the name, and the broker then releases nothing more). A busy fleet of sessions requesting unknown names can still spend the quota, and other workloads in the same project draw on it too, so give the agent secrets a project of their own. On the metadata calls the broker retries an `UNAVAILABLE` answer and never a `RESOURCE_EXHAUSTED` one, which would only spend more of that quota; reading a value keeps the client library's own retry of both, against its separate quota. On Secret Manager the agent-secrets key gates no caller: Secret Manager's service agent makes the KMS calls, so writing a secret onto the key and reading it need no KMS permission, and being on the key is the namespace's convention, not a second permission check as it is on AWS. Secret Manager makes the KMS calls itself, so the broker needs no KMS permission; the Secret Manager service agent needs `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key. |
@@ -1241,21 +1241,35 @@ token of such a session for a Legion daemon's own, which may remove the current 
 session. An older broker lets a caller name such a session for itself. So while a listener of that
 release or a later one runs, roll the broker back no further than that release.
 
-That release, and the release that refuses `ENVOY_API_TOKEN` below, are each the first
-`legion-envoy` tag that contains its pull request's merge commit. Find one in a clone of this
-repository, with the pull request's number:
+Find that release, and the release that refuses `ENVOY_API_TOKEN` below, by their code: each is the
+first `legion-envoy` tag that holds a function its pull request adds to the listener,
+`packages/envoy/cmd/listener`. #4723 adds `func daemonCaller`, and cybermonklabs/legion#4757 adds
+`func refuseRemovedAPISettings`. In a clone of this repository:
 
 ```sh
 git fetch --tags origin
-merge=$(gh pr view <number> --repo cybermonklabs/legion --json mergeCommit --jq .mergeCommit.oid)
-git tag --contains "$merge" --list 'legion-envoy-v*' | sort -V | head -1
+first_release_with() {
+  n=0
+  for tag in $(git tag --list 'legion-envoy-v*' | sort -V); do
+    n=$((n + 1))
+    if git grep -q "$1" "$tag" -- packages/envoy/cmd/listener; then echo "$tag"; return; fi
+  done
+  echo "UNKNOWN: none of $n legion-envoy tags holds $1"
+}
+first_release_with 'func daemonCaller'
+first_release_with 'func refuseRemovedAPISettings'
 ```
 
-It prints the release. It prints nothing while no release carries the merge, and `git tag` stops
-with `malformed object name` while the pull request has not merged. Each release's notes say it as
-well: the first that carries #4723 says the broker refuses a pod-session registration of a
-`legion-daemon:` session `400 SESSION_INVALID`, and the first that carries #4757 says a non-empty
-`ENVOY_API_TOKEN` refuses the listener's start.
+Each call prints a release, or `UNKNOWN` once it has read every tag, which takes a minute or more.
+`UNKNOWN` does not say that no release carries the pull request: the clone may lack tags (the count
+says how many it read), or the pull request may have shipped the function under another name or in
+another directory. When a call prints `UNKNOWN`, read the release notes. The first release that
+carries #4723 says the broker refuses a pod-session registration of a `legion-daemon:` session
+`400 SESSION_INVALID`, and the first that carries #4757 says a non-empty `ENVOY_API_TOKEN` refuses
+the listener's start. Only when neither the code nor the notes show such a release does no release
+carry the pull request. A pull request merged into another pull request's branch reaches a release
+only with that stack, so find it by the stack's merge into main or by its code, as here, and never
+by its own merge commit.
 
 **To the floor or later**, change nothing in the daemons:
 
@@ -1280,24 +1294,27 @@ well: the first that carries #4723 says the broker refuses a pod-session registr
 **Past the floor**, a daemon of a release that requires `exchange_audience` cannot run. Take every
 daemon off the exchange first, in this order:
 
-1. Roll the Envoy listener back to the last release that takes its shared bearer, `ENVOY_API_TOKEN`,
-   and give it that variable in the same change
-   ([Running the listener](/legion/dispatch/envoy/#running-the-listener)). The release that refuses
-   `ENVOY_API_TOKEN` is the first that carries cybermonklabs/legion#4757, found as above: its
-   listener refuses to start while the variable is set, naming it. Roll back to the release just
-   before it, or, while no release carries that pull request, to the newest release. Every release
-   from the floor, legion-envoy-v32.20.0, to legion-envoy-v32.38.0 takes the variable.
-   - Make it one change. The newer listener refuses to start with the variable set. The older
-     listener, bound off loopback, refuses to start without it unless the
+1. Roll the Envoy listener back to the newest release that carries neither
+   cybermonklabs/legion#4723 nor #4757, and give it its shared bearer, `ENVOY_API_TOKEN`, in the
+   same change ([Running the listener](/legion/dispatch/envoy/#running-the-listener)). That is the
+   release just before the earlier of the two releases found as above. When the code and the notes
+   show neither release, it is the newest release.
+   - Go below the release that carries #4723, because that listener trusts a `legion-daemon:`
+     broker token as the daemon's own, and step 5 rolls the broker below the release that reserves
+     those sessions, which the rule above forbids beside such a listener.
+   - Go below the release that carries #4757, because its listener refuses to start while
+     `ENVOY_API_TOKEN` is set, naming it. Every release from the floor, legion-envoy-v32.20.0,
+     until the one carrying #4757 takes the variable.
+   - Make it one change. A listener that carries #4757 refuses to start with the variable set. The
+     older listener, bound off loopback, refuses to start without it unless the
      `ENVOY_OIDC_ISSUER`/`ENVOY_OIDC_AUDIENCE` pair or the Google pair is set: it does not count the
      broker settings as a credential.
    - Set it on the listener alone. A Dispatch of the release that refuses it refuses `ENVOY_TOKEN`
      at start too.
-   - Until step 2, the newer daemon calls this listener with its broker token. A listener of a
-     release before the first that carries cybermonklabs/legion#4723, found as above, holds that
-     token to its own session, as it holds every broker token. Such a listener refuses the daemon's
-     clean stop of another session's registration, so a role whose process ended is not read
-     `gone` at once. Go on to step 2 without a pause.
+   - Until step 2, the newer daemon calls this listener with its broker token. This listener holds
+     that token to its own session, as it holds every broker token, so it refuses the daemon's clean
+     stop of another session's registration, and a role whose process ended is not read `gone` at
+     once. Go on to step 2 without a pause.
    - **Reversible:** yes, as the last step of the roll forward below.
    - **Takes:** one rollout of the listener, which reads the variable when it starts. On the
      `gcp:Dispatch` component the listener runs one pod by default, and its Deployment is
@@ -1351,7 +1368,9 @@ daemon off the exchange first, in this order:
 **To roll forward again**, undo those steps in the reverse order. "Rollback step" below names a
 step of the list above.
 
-1. Roll the broker forward to the floor or later.
+1. Roll the broker forward to the floor or later. Where the listener that step 5 brings carries
+   #4723, roll the broker to the release that carries #4723, found as above, or a later one: the
+   rule above forbids an older broker beside such a listener.
    - **Reversible:** yes, as rollback step 5.
    - **Takes:** one rolling deploy of the broker, as above.
 2. Roll every Legion daemon forward, and undo the changes rollback step 2 made to its
