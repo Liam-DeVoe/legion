@@ -366,40 +366,66 @@ func (s *Store) embeddingsPartitioned(ctx context.Context) (bool, error) {
 const embeddingsPartitionedQuery = `select relkind = 'p' from pg_class where oid = 'embeddings'::regclass`
 
 // ErrEmbeddingsSwapWaits is the partition swap waiting for the fleet to serve one build: the copy
-// is done, and PartitionEmbeddings answers it, wrapped around the commits of the live processes
-// that serve another build than the one running the swap, instead of swapping. The runner logs it
-// and tries again at its interval (api.RunEmbeddingProjectKeyFill).
+// is done, and PartitionEmbeddings answers it, wrapped around the commits of the other builds it
+// waits for, instead of swapping. The runner logs it and tries again at its interval
+// (api.RunEmbeddingProjectKeyFill).
 //
 // Why it waits. The swap replaces embeddings' key (kind, id) with (kind, id, project_key), since a
-// partitioned table's unique key must hold its partition key, and a build before this one inserts
-// its coverage rows with `on conflict (kind, id) do nothing` (embedqueue/coverage.go in
-// legion-envoy-v32.33.0 and earlier), which Postgres refuses when it plans the statement once no
-// unique key on (kind, id) alone is left (SQLSTATE 42P10). A partitioned table cannot carry that
-// key, so no form of the swap keeps that statement working. The registry records each process's
-// commit, not which release came first, so the swap cannot tell an earlier build from a later
-// one: it runs only while every live process serves the commit of the process running it, and a
-// fleet serving two commits, a roll or a rollback in progress, holds it. What a rollback past the
-// swap costs is the same statement failing, and cmd/dispatch/README.md ("Database migrations")
-// says what that build then does. An unstamped process (the empty commit) serves a build no commit
-// names: beside a stamped one it is another commit and holds the swap, and an unstamped process
-// swaps beside unstamped ones alone, which is a test's or a local server's fleet, since an image
-// build always stamps its commit (packages/envoy/docker/Dockerfile refuses anything but a full
-// sha).
-var ErrEmbeddingsSwapWaits = errors.New("the embeddings partition swap waits while a live process serves another commit")
+// partitioned table's unique key must hold its partition key, and every release before this one
+// inserts its coverage rows with `on conflict (kind, id) do nothing` (embedqueue/coverage.go),
+// which Postgres refuses when it plans the statement once no unique key on (kind, id) alone is
+// left (SQLSTATE 42P10). A partitioned table cannot carry that key, so no form of the swap keeps
+// that statement working. The registry records each process's commit, not which release came
+// first, so the swap cannot tell an earlier build from a later one, and it waits for every build
+// of another commit the fleet shows (embeddingsSwapOtherCommitsQuery): one registered within the
+// registry's prune age, and one that published its dashboard within the hour, which an earlier
+// build does before its coverage pass runs and before it registers. It reads that before the
+// copy's count and again under the swap's own locks, so a build whose publish or registration
+// commits before the swap's locks are held holds it. What is left is a build of another commit
+// whose publish commits after the swap has taken them: a rollback begun as the swap commits,
+// which costs what a rollback past the swap costs, the same statement failing
+// (cmd/dispatch/README.md, "Database migrations", says what that build then does). An unstamped
+// process (the empty commit) serves a build no commit names: beside a stamped one it is another
+// commit and holds the swap, and an unstamped process swaps beside unstamped ones alone, which is
+// a test's or a local server's fleet, since an image build always stamps its commit
+// (packages/envoy/docker/Dockerfile refuses anything but a full sha).
+var ErrEmbeddingsSwapWaits = errors.New("the embeddings partition swap waits while the fleet holds a build of another commit")
 
-// EmbeddingsSwapLiveWindow is how recent a server_processes heartbeat must be for the swap to
-// count its process as live: the registry's live window (processes.LiveWindow, which this package
-// cannot import, since processes imports it; api's TestTheSwapReadsTheFleetOnTheRegistrysLiveWindow
-// holds the two equal), so the swap reads the fleet as every other decision over it does.
-const EmbeddingsSwapLiveWindow = 15 * time.Second
-
-// embeddingsSwapOtherCommitsQuery is the commits of the live processes of server_processes that
-// serve another commit than $1, the swapping process's own, each once, an unstamped process's empty one
-// among them. $2 is EmbeddingsSwapLiveWindow in seconds.
+// embeddingsSwapOtherCommitsQuery is the commits of the builds the swap waits for, each once, an
+// unstamped build's empty one among them: every server_processes row of another commit than $1,
+// the swapping process's own, whose heartbeat is within $2 seconds, OwnerLockLegacyWindow (the
+// registry's prune age, so a process frozen or cut from the database counts until its row is
+// pruned), and every dashboard_builds row of another commit last started within $3 seconds,
+// OwnerLockMarkWindow (an earlier build's boot from its publish to its registration). These are
+// the owner lock's two windows of an earlier build (OwnerLockLegacyWindow says why each), read
+// by commit rather than by protocol.
 const embeddingsSwapOtherCommitsQuery = `
-	select coalesce(array_agg(distinct commit order by commit), '{}') from server_processes
-	 where commit <> $1
-	   and heartbeat_at > now() - make_interval(secs => $2)`
+	select coalesce(array_agg(distinct commit order by commit), '{}') from (
+		select commit from server_processes
+		 where commit <> $1 and heartbeat_at > now() - make_interval(secs => $2)
+		union all
+		select commit from dashboard_builds
+		 where commit <> $1 and last_started_at > now() - make_interval(secs => $3)
+	) others`
+
+// embeddingsSwapOtherCommits reads embeddingsSwapOtherCommitsQuery on q, a pool or the swap's
+// own transaction, for buildCommit.
+func embeddingsSwapOtherCommits(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, buildCommit string) ([]string, error) {
+	var others []string
+	if err := q.QueryRow(ctx, embeddingsSwapOtherCommitsQuery, buildCommit,
+		OwnerLockLegacyWindow.Seconds(), OwnerLockMarkWindow.Seconds()).Scan(&others); err != nil {
+		return nil, fmt.Errorf("read the builds of other commits in the fleet: %w", err)
+	}
+	return others, nil
+}
+
+// errEmbeddingsSwapWaitsFor is ErrEmbeddingsSwapWaits naming the swapping build and the others.
+func errEmbeddingsSwapWaitsFor(buildCommit string, others []string) error {
+	return fmt.Errorf("%w: this process serves %q, and the fleet holds builds of %q (server_processes within %s, dashboard_builds within %s)",
+		ErrEmbeddingsSwapWaits, buildCommit, others, OwnerLockLegacyWindow, OwnerLockMarkWindow)
+}
 
 // embeddingsCopyCountsQuery counts both tables in one statement, so in one snapshot: the mirror
 // writes both in the writer's own transaction, so a snapshot sees equal counts whenever every
@@ -414,17 +440,21 @@ const embeddingsCopyCountsQuery = `select (select count(*) from embeddings), (se
 // their counts and rename, bounded by pgmigrate.LockTimeout while it waits for them. A swap that
 // waits longer is given up and answered as an error, which the runner tries again.
 //
-// Before it takes those locks it makes two reads that take none. One is the fleet: while a live
-// process serves another commit than buildCommit, this process's own (cmd/dispatch's
-// main.buildCommit, empty in an unstamped build), it answers ErrEmbeddingsSwapWaits naming those
-// commits and swaps nothing (that error says why). The other is both tables' counts in one
-// snapshot (embeddingsCopyCountsQuery). Counts that differ mean a write reached one table and not
-// the other - one made as a replica, or with the mirror's trigger disabled, or by hand, none of
-// which fires the mirror - and no later pass would make them agree, so it says so and empties
-// the copy and copies again (resetEmbeddingsCopy), once in the same call; a second disagreement
-// empties it and answers an error, and the next try copies again. So a disagreement costs a copy
-// and holds no reader, where taking the locks to find it held every read of embeddings for up to
-// the lock wait on each try.
+// Before it takes those locks it makes two reads that take none. One is the fleet: while it holds
+// a build of another commit than buildCommit, this process's own (cmd/dispatch's
+// main.buildCommit, empty in an unstamped build; embeddingsSwapOtherCommitsQuery says which
+// builds it counts), it answers ErrEmbeddingsSwapWaits naming those commits and swaps nothing
+// (that error says why); the swap reads the fleet again under its locks
+// (swapInEmbeddingPartitions). The other is both tables' counts in one snapshot
+// (embeddingsCopyCountsQuery). Counts that differ mean a write reached one table and not the
+// other - one made as a replica, or with the mirror's trigger disabled, or by hand, none of which
+// fires the mirror - and no later pass would make them agree, so it says so and empties the copy
+// and copies again (resetEmbeddingsCopy), once in the same call; a second disagreement empties it
+// and answers an error, and the next try copies again. So a disagreement costs a copy and holds
+// no reader, where taking the locks to find it held every read of embeddings for up to the lock
+// wait on each try. The counts catch a write that changed how many rows one table holds and
+// nothing else: a write that bypassed the mirror and left the counts equal - an update made as a
+// replica, or a delete and an insert - is swapped in as the copy holds it.
 //
 // A database whose embeddings is partitioned already costs one catalog read. Before it copies, it
 // gives every project that has none its partition (embeddings_ensure_project_partition): a
@@ -458,13 +488,12 @@ func (s *Store) PartitionEmbeddings(ctx context.Context, buildCommit string) err
 				return err
 			}
 		}
-		var others []string
-		if err := s.Pool.QueryRow(ctx, embeddingsSwapOtherCommitsQuery, buildCommit, EmbeddingsSwapLiveWindow.Seconds()).Scan(&others); err != nil {
-			return fmt.Errorf("read the commits the live server processes serve: %w", err)
+		others, err := embeddingsSwapOtherCommits(ctx, s.Pool, buildCommit)
+		if err != nil {
+			return err
 		}
 		if len(others) > 0 {
-			return fmt.Errorf("%w: this process serves %q, and live processes of server_processes serve %q",
-				ErrEmbeddingsSwapWaits, buildCommit, others)
+			return errEmbeddingsSwapWaitsFor(buildCommit, others)
 		}
 		var stored, copied int64
 		if err := s.Pool.QueryRow(ctx, embeddingsCopyCountsQuery).Scan(&stored, &copied); err != nil {
@@ -483,7 +512,7 @@ func (s *Store) PartitionEmbeddings(ctx context.Context, buildCommit string) err
 		}
 		fromKind, fromID, done = "", "", false
 	}
-	return s.swapInEmbeddingPartitions(ctx)
+	return s.swapInEmbeddingPartitions(ctx, buildCommit)
 }
 
 // copyEmbeddings copies every row of embeddings above the cursor (fromKind, fromID) into
@@ -619,15 +648,23 @@ const copyEmbeddingsBatchQuery = `
 // swapInEmbeddingPartitions runs embeddings_swap_in_partitioned in a transaction of its own,
 // waiting for the two tables' locks at most pgmigrate.LockTimeout, as a migration waits for its
 // own: while the swap waits for embeddings' ACCESS EXCLUSIVE lock, every read and write of the
-// table queues behind it, and a bound that long is the one a migration already makes them pay.
+// table queues behind it, and a bound that long is the one a migration already makes them pay. It
+// takes the two locks first, in the swap function's own order, and reads the fleet again under
+// them (embeddingsSwapOtherCommitsQuery): a build of another commit whose dashboard publish or
+// registration committed since the read before the copy's count holds the swap, which then
+// changes nothing and answers ErrEmbeddingsSwapWaits. A build whose publish commits after this
+// read is the rollback past the swap ErrEmbeddingsSwapWaits describes.
 //
-// Once it has committed, it analyzes embeddings. Autovacuum analyzes each partition as its rows
-// change, but never a partitioned table itself, so without this the planner would cost every
-// statement over the parent from no statistics of it for good, where the old table had its own.
-// ANALYZE takes SHARE UPDATE EXCLUSIVE, which no read or write waits for, so it holds nothing up;
-// one that fails is logged and the swap stands, since a plan without the parent's statistics is
-// slower, not wrong.
-func (s *Store) swapInEmbeddingPartitions(ctx context.Context) error {
+// Once it has committed, it analyzes embeddings itself (ANALYZE ONLY). Autovacuum analyzes each
+// partition as its rows change, but never a partitioned table itself, so without this the planner
+// would cost every statement over the parent from no statistics of it for good, where the old
+// table had its own. ONLY leaves each partition's own statistics to autovacuum, so the ANALYZE
+// reads one sample of the parent's rows and no partition's on top. It takes SHARE UPDATE
+// EXCLUSIVE on embeddings, which no read or write of it waits for but which a project's
+// partition attach takes too (embeddings_add_project_partition), so a project created while it
+// runs waits for it. One that fails is logged and the swap stands, since a plan without the
+// parent's statistics is slower, not wrong.
+func (s *Store) swapInEmbeddingPartitions(ctx context.Context, buildCommit string) error {
 	ctx = WithTransactionTracking(ctx)
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -638,6 +675,16 @@ func (s *Store) swapInEmbeddingPartitions(ctx context.Context) error {
 		return fmt.Errorf("bound the embeddings partition swap's lock wait: %w", err)
 	}
 	started := time.Now()
+	if _, err := tx.Exec(ctx, "lock table embeddings, embeddings_partitioned in access exclusive mode"); err != nil {
+		return fmt.Errorf("take the embeddings partition swap's locks: %w", err)
+	}
+	others, err := embeddingsSwapOtherCommits(ctx, tx, buildCommit)
+	if err != nil {
+		return err
+	}
+	if len(others) > 0 {
+		return errEmbeddingsSwapWaitsFor(buildCommit, others)
+	}
 	if _, err := tx.Exec(ctx, "select embeddings_swap_in_partitioned()"); err != nil {
 		return fmt.Errorf("swap the partitioned embeddings table in: %w", err)
 	}
@@ -646,7 +693,7 @@ func (s *Store) swapInEmbeddingPartitions(ctx context.Context) error {
 	}
 	slog.Info("dispatch: embeddings is partitioned by project: the copy is swapped in", "held", time.Since(started))
 	analyzed := time.Now()
-	if _, err := s.Pool.Exec(ctx, "analyze embeddings"); err != nil {
+	if _, err := s.Pool.Exec(ctx, "analyze only embeddings"); err != nil {
 		slog.Warn("dispatch: analyzing the swapped-in embeddings failed; the planner reads its partitions' statistics alone until an ANALYZE of embeddings runs", "error", err)
 		return nil
 	}

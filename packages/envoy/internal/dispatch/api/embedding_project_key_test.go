@@ -10,22 +10,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/processes"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
-
-// The embeddings partition swap counts a server process as live by the registry's own window
-// (store.EmbeddingsSwapLiveWindow, a copy of processes.LiveWindow, since store cannot import the
-// registry), so it reads the fleet as every other decision over it does: a copy that drifted from
-// the registry's would hold the swap for a process the registry counts gone, or let it run beside
-// one it counts live.
-func TestTheSwapReadsTheFleetOnTheRegistrysLiveWindow(t *testing.T) {
-	if store.EmbeddingsSwapLiveWindow != processes.LiveWindow {
-		t.Fatalf("store.EmbeddingsSwapLiveWindow = %s, want processes.LiveWindow, %s", store.EmbeddingsSwapLiveWindow, processes.LiveWindow)
-	}
-}
 
 // embeddingProjectKinds is every kind of embeddings row this release writes: the four window
 // kinds the block-index tick's window arm writes (refs.WriteItemWindows,

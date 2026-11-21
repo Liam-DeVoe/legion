@@ -38,10 +38,11 @@
 -- it creates: its census answers 0 whatever embeddings holds.
 -- 20261120105818 mirrors every later write of embeddings into it; store.FillEmbeddingProjectKeys,
 -- the leased pass the boot already starts (api.RunEmbeddingProjectKeyFill), copies the stored
--- rows in committed batches and then, once no process of an earlier build is in the fleet
--- (server_processes.partitioned_embeddings, 20261121074019), calls
--- embeddings_swap_in_partitioned, which drops the old table and renames this one in one short
--- transaction. Until the swap every reader reads the old table, by the same name, as before.
+-- rows in committed batches and then, once the fleet holds no build of another commit
+-- (store.ErrEmbeddingsSwapWaits: server_processes within the registry's prune age, and
+-- dashboard_builds published within the hour), calls embeddings_swap_in_partitioned, which drops
+-- the old table and renames this one in one short transaction. Until the swap every reader reads
+-- the old table, by the same name, as before.
 create table embeddings_partitioned (
   kind text not null,
   id text not null,

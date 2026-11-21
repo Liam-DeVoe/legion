@@ -532,60 +532,122 @@ func TestACopyThatDisagreesTwiceIsCopiedAgainByTheNextPass(t *testing.T) {
 	}
 }
 
-// releasedCoverageInsert is the coverage pass's insert of the release before this one
-// (legion-envoy-v32.33.0, embedqueue/coverage.go:214), reduced to one row: its conflict target
-// is embeddings' key before the swap, (kind, id), which the swap replaces.
+// releasedCoverageInsert is the coverage pass's insert of every release before this one
+// (embedqueue/coverage.go's insertMissingIssues), reduced to one row: its conflict target is
+// embeddings' key before the swap, (kind, id), which the swap replaces.
 const releasedCoverageInsert = `insert into embeddings (kind, id, text_snapshot, content_hash)
 	select 'issue', 'PARTA-1', 'x', 'x' on conflict (kind, id) do nothing`
 
-// The swap waits while any live server process serves another commit than the one running it:
-// the registry records commits and not their order, and a process of the release before, whose
-// coverage insert targets (kind, id), cannot run once the swap has replaced that key. So with a
-// live process of another commit registered the fill copies and does not swap, answering
-// ErrEmbeddingsSwapWaits naming that commit, and the released insert still plans; a process of
-// the same commit, or one whose heartbeat lapsed past the registry's live window, holds nothing,
-// and the swap that follows leaves the released insert failing as the gate says it would.
-func TestTheSwapWaitsWhileALiveProcessServesAnotherCommit(t *testing.T) {
+// The swap's two fleet commits: the swapping process's own, and an earlier build's.
+const swapOwnCommit, swapEarlierCommit = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+
+// registerSwapProcess writes a server_processes row of commit whose heartbeat is age old, and
+// answers its instance.
+func registerSwapProcess(t *testing.T, database *Store, commit string, age time.Duration) string {
+	t.Helper()
+	var instance string
+	if err := database.Pool.QueryRow(context.Background(), `
+		insert into server_processes (instance, commit, signing_keys, heartbeat_at)
+		values (gen_random_uuid(), $1, '{fingerprint}', now() - make_interval(secs => $2))
+		returning instance::text`, commit, age.Seconds()).Scan(&instance); err != nil {
+		t.Fatalf("register a process of %q: %v", commit, err)
+	}
+	return instance
+}
+
+// publishSwapDashboard writes a dashboard_builds row named build of commit last started age ago,
+// as a build's boot publishes its dashboard before it runs its coverage pass or registers.
+func publishSwapDashboard(t *testing.T, database *Store, build, commit string, age time.Duration) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into dashboard_builds (build, entry, commit, first_started_at, last_started_at)
+		values ($1, 'index.html', $2, now() - make_interval(secs => $3), now() - make_interval(secs => $3))`,
+		build, commit, age.Seconds()); err != nil {
+		t.Fatalf("publish a dashboard of %q: %v", commit, err)
+	}
+}
+
+// The swap waits for every build of another commit the fleet shows, as the owner lock counts an
+// earlier build (OwnerLockLegacyWindow): a registered process of another commit until its row is
+// pruned, so one silent for minutes - frozen, or cut from the database - still holds it, and a
+// build that has published its dashboard within the hour and not registered yet, which is how an
+// earlier build boots before its coverage pass runs. A row past the prune age and a publish past
+// the hour hold nothing. The release before's coverage insert plans while the swap waits, and
+// fails with 42P10 once the holders are gone and the swap is made, which is why the swap waits.
+func TestTheSwapWaitsForEveryBuildOfAnotherCommitTheFleetShows(t *testing.T) {
 	ctx := context.Background()
 	database, _ := openPartitionTestStore(t, 2)
-	register := func(commit string, age time.Duration) string {
+	registerSwapProcess(t, database, swapOwnCommit, 0)
+	registerSwapProcess(t, database, "3333333333333333333333333333333333333333", OwnerLockLegacyWindow+time.Minute)
+	publishSwapDashboard(t, database, "old-publish", "4444444444444444444444444444444444444444", OwnerLockMarkWindow+time.Minute)
+	waitsFor := func(what, commit string) {
 		t.Helper()
-		var instance string
-		if err := database.Pool.QueryRow(ctx, `
-			insert into server_processes (instance, commit, signing_keys, heartbeat_at)
-			values (gen_random_uuid(), $1, '{fingerprint}', now() - make_interval(secs => $2))
-			returning instance::text`, commit, age.Seconds()).Scan(&instance); err != nil {
-			t.Fatalf("register a process of %q: %v", commit, err)
+		_, err := database.FillEmbeddingProjectKeys(ctx, swapOwnCommit)
+		if !errors.Is(err, ErrEmbeddingsSwapWaits) || !strings.Contains(err.Error(), commit) {
+			t.Fatalf("fill beside %s = %v, want ErrEmbeddingsSwapWaits naming %s", what, err, commit)
 		}
-		return instance
+		if strings.Contains(err.Error(), "3333") || strings.Contains(err.Error(), "4444") {
+			t.Errorf("the wait names a row past the prune age or a publish past the hour: %v", err)
+		}
+		requirePartitioned(t, database, false)
+		execAll(t, database, releasedCoverageInsert)
 	}
-	const own, earlier = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
-	register(own, 0)
-	other := register(earlier, 0)
-	register("3333333333333333333333333333333333333333", EmbeddingsSwapLiveWindow+time.Second)
-	_, err := database.FillEmbeddingProjectKeys(ctx, own)
-	if !errors.Is(err, ErrEmbeddingsSwapWaits) || !strings.Contains(err.Error(), earlier) {
-		t.Fatalf("fill beside a live process of %s = %v, want ErrEmbeddingsSwapWaits naming it", earlier, err)
-	}
-	if strings.Contains(err.Error(), "3333") {
-		t.Errorf("the wait names a process whose heartbeat lapsed past the live window: %v", err)
-	}
-	requirePartitioned(t, database, false)
+
+	silent := registerSwapProcess(t, database, swapEarlierCommit, 5*time.Minute)
+	waitsFor("a process of an earlier build silent for five minutes", swapEarlierCommit)
 	var done bool
 	if err := database.Pool.QueryRow(ctx, `select done from embeddings_partitioned_copy`).Scan(&done); err != nil || !done {
 		t.Errorf("the copy reads done %t (%v) while the swap waits, want the copy made", done, err)
 	}
-	execAll(t, database, releasedCoverageInsert)
-	execAll(t, database, fmt.Sprintf(`delete from server_processes where instance = '%s'`, other))
-	if err := database.PartitionEmbeddings(ctx, own); err != nil {
-		t.Fatalf("partition with every live process serving %s = %v, want the swap", own, err)
+	execAll(t, database, fmt.Sprintf(`delete from server_processes where instance = '%s'`, silent))
+
+	publishSwapDashboard(t, database, "booting", swapEarlierCommit, 30*time.Second)
+	waitsFor("an earlier build that published its dashboard and has not registered", swapEarlierCommit)
+	execAll(t, database, `delete from dashboard_builds where build = 'booting'`)
+
+	if err := database.PartitionEmbeddings(ctx, swapOwnCommit); err != nil {
+		t.Fatalf("partition with no other build in the fleet = %v, want the swap", err)
 	}
 	requirePartitioned(t, database, true)
-	_, err = database.Pool.Exec(ctx, releasedCoverageInsert)
+	_, err := database.Pool.Exec(ctx, releasedCoverageInsert)
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "42P10" {
 		t.Errorf("the released coverage insert after the swap = %v, want SQLSTATE 42P10, which is why the swap waits", err)
 	}
+}
+
+// The swap reads the fleet again once it holds its locks: an earlier build whose dashboard publish
+// commits after the read before the copy's count, while the swap waits for its locks, holds it.
+// A reader of embeddings_partitioned holds the swap's lock wait open, the publish commits in it,
+// and the reader lets go: the fill answers ErrEmbeddingsSwapWaits naming the publish's commit,
+// and embeddings stays as it was.
+func TestTheSwapReadsTheFleetAgainUnderItsLocks(t *testing.T) {
+	ctx := context.Background()
+	database, _ := openPartitionTestStore(t, 2)
+	execAll(t, database, `update embeddings_partitioned_copy set done = true`)
+	reader, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Rollback(ctx)
+	if _, err := reader.Exec(ctx, `select count(*) from embeddings_partitioned`); err != nil {
+		t.Fatalf("read the copy as a reader that stays open: %v", err)
+	}
+	filled := make(chan error, 1)
+	go func() {
+		filled <- database.PartitionEmbeddings(ctx, swapOwnCommit)
+	}()
+	if !waitForALockWaiter(t, database, 4*time.Second) {
+		t.Fatal("the swap did not wait for the reader's lock: the two did not meet, so this row proves nothing")
+	}
+	publishSwapDashboard(t, database, "late", swapEarlierCommit, 0)
+	if err := reader.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-filled; !errors.Is(err, ErrEmbeddingsSwapWaits) || !strings.Contains(err.Error(), swapEarlierCommit) {
+		t.Fatalf("the swap beside a publish that committed while it waited for its locks = %v, want ErrEmbeddingsSwapWaits naming %s", err, swapEarlierCommit)
+	}
+	requirePartitioned(t, database, false)
 }
 
 // Every project has its partition from the transaction that inserts it, and a row of a project

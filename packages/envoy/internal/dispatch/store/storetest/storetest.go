@@ -62,9 +62,9 @@ var shared struct {
 	dropFails []string
 }
 
-// openKey is the key of the template Open clones, which this tree's runner migrates and whose
-// embeddings it partitions (migrateAndPartition); unpartitionedKey is OpenUnpartitioned's, which
-// the runner migrates alone (migrateWithThisTree).
+// openKey is the key of the template Open clones, which this tree's runner migrates around the
+// swap of embeddings (migrateAndPartition); unpartitionedKey is OpenUnpartitioned's, which the
+// runner migrates alone (migrateWithThisTree).
 const (
 	openKey          = "this tree's runner, embeddings partitioned (storetest.Open)"
 	unpartitionedKey = "this tree's runner, embeddings not yet partitioned (storetest.OpenUnpartitioned)"
@@ -106,9 +106,12 @@ func migrateWithThisTree(databaseURL string) error {
 	return database.Migrate(ctx)
 }
 
-// migrateAndPartition is migrateWithThisTree followed by the fill a boot starts: Open's template.
-// On a database that holds no row the fill copies nothing and swaps the partitioned embeddings in
-// at once, as it does on a new deployment's first boot.
+// migrateAndPartition migrates the database databaseURL names as a deployment that ran the
+// release partitioning embeddings before a later one does (store.MigrateAroundTheSwap): every
+// migration through that release, the fill a boot starts, which on a database holding no row
+// copies nothing and swaps the partitioned embeddings in at once, and then every later
+// migration, on the partitioned table. Open's template, so a later migration that works on the
+// unpartitioned table alone fails here as it would fail a deployment's boot.
 func migrateAndPartition(databaseURL string) error {
 	ctx := context.Background()
 	database, err := store.Open(ctx, databaseURL)
@@ -116,13 +119,7 @@ func migrateAndPartition(databaseURL string) error {
 		return fmt.Errorf("open the database: %w", err)
 	}
 	defer database.Pool.Close()
-	if err := database.Migrate(ctx); err != nil {
-		return err
-	}
-	if _, err := database.FillEmbeddingProjectKeys(ctx, ""); err != nil {
-		return fmt.Errorf("partition embeddings as a boot's fill does: %w", err)
-	}
-	return nil
+	return database.MigrateAroundTheSwap(ctx)
 }
 
 // ready makes sure the package's TestMain runs Run, skips t when DISPATCH_TEST_DATABASE_URL is

@@ -108,7 +108,7 @@ func RunEmbeddingProjectKeyFill(ctx context.Context, database *store.Store, leas
 				}
 				if errors.Is(err, store.ErrEmbeddingsSwapWaits) {
 					partitionOnly = true
-					slog.Info("dispatch: embeddings stays unpartitioned for now: the copy is done, and the swap waits until every live server process serves this process's commit, since a build whose coverage pass inserts on (kind, id) cannot run over the partitioned table; meaning search reads the one graph at its old width meanwhile",
+					slog.Info("dispatch: embeddings stays unpartitioned for now: the copy is done, and the swap waits while the fleet holds a build of another commit (a registered process within the prune age, or a dashboard published within the hour), since a build whose coverage pass inserts on (kind, id) cannot run over the partitioned table; meaning search reads the one graph at its old width meanwhile",
 						"waiting", err.Error(), "retry", embeddingProjectKeyFillRetry)
 					return
 				}

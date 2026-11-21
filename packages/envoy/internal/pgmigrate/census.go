@@ -299,10 +299,21 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 			entry.exemptionVoided = fmt.Sprintf("its statements are only %s, which would exempt it from the limit, but %s them", kinds, runsCode)
 		}
 		if migration.NonTransactional {
-			if _, err := concurrentIndex(migration.SQL); err == nil {
-				if runsCode == "" {
+			if index, err := concurrentIndex(migration.SQL); err == nil {
+				// Postgres builds no index concurrently on a partitioned table (SQLSTATE 0A000), so
+				// such a migration would fail the boot after the census admitted it: refused here, with
+				// the path that does build one.
+				partitioned, err := partitionedTable(ctx, tx, index.Relation.Schemaname, index.Relation.Relname)
+				if err != nil {
+					return nil, fmt.Errorf("census: %s: %w", migration.Name, err)
+				}
+				switch {
+				case partitioned:
+					entry.refuse("%s builds %s concurrently on %s, which is partitioned: Postgres builds no index concurrently on a partitioned table (SQLSTATE 0A000), so the boot would fail; build it ON ONLY the parent, then concurrently on each partition, then attach each (internal/dispatch/store/README.md)",
+						migration.Name, index.Idxname, index.Relation.Relname)
+				case runsCode == "":
 					entry.ConcurrentIndex = true
-				} else {
+				default:
 					entry.exemptionVoided = runsCode + " the concurrent index build"
 				}
 			}
@@ -369,6 +380,22 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 type lockBound struct {
 	setting           string
 	cancelsAutovacuum bool
+}
+
+// partitionedTable reads whether the table a concurrent index build names, in schema (empty for
+// the search path's) and table as the statement spells them, is a partitioned table. A table the
+// database does not hold is no partitioned table: the build itself names what is missing.
+func partitionedTable(ctx context.Context, tx pgx.Tx, schema, table string) (bool, error) {
+	name := pgx.Identifier{table}.Sanitize()
+	if schema != "" {
+		name = pgx.Identifier{schema, table}.Sanitize()
+	}
+	var partitioned bool
+	if err := tx.QueryRow(ctx, `select coalesce((select relkind = 'p' from pg_catalog.pg_class where oid = pg_catalog.to_regclass($1)), false)`,
+		name).Scan(&partitioned); err != nil {
+		return false, fmt.Errorf("read whether %s is partitioned: %w", name, err)
+	}
+	return partitioned, nil
 }
 
 // lockBoundOf reads entry's migration's lockBound. Postgres cancels an autovacuum holding a lock a
