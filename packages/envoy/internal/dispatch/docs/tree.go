@@ -77,6 +77,10 @@ type NewerContentError struct {
 	// whatever the chain that answered the request wrapped it in, the caller's own identity
 	// among it. newerContent fills it wherever this error is made.
 	Elements []string
+	// Version is the number of the stored version that holds the elements where the refusal is of
+	// a version a write read beside the document (skipUnreadableVersion), and 0 where it is of the
+	// document's own tree.
+	Version int
 }
 
 // newerContent is cause, a refusal of an element this build does not know, as the error every
@@ -94,6 +98,23 @@ func (e *NewerContentError) Error() string {
 func (e *NewerContentError) Is(target error) bool { return target == ErrDocNewerContent }
 
 func (e *NewerContentError) Unwrap() error { return e.Cause }
+
+// newerContentLine is args, a log line's own attributes, followed by what the line names of err, a
+// refusal of an element this build does not know: its class (LoggedError), as every line of a
+// refusal names it; the elements, as pmdoc.UnknownElements names them and as the API's line names
+// them (handler_errors.go) - a node's, a mark's or an attribute's own name, and an enum value by
+// its block and attribute, so none quotes the document's text; and, where they stand in a stored
+// version rather than in the document's own tree, that version (NewerContentError.Version). So a
+// reader of the line learns which element a newer build wrote, and where, without the refusal's
+// message, which LoggedError keeps out of the line.
+func newerContentLine(err error, args ...any) []any {
+	args = append(args, "error", LoggedError(err), "elements", pmdoc.UnknownElements(err))
+	var newer *NewerContentError
+	if errors.As(err, &newer) && newer.Version > 0 {
+		args = append(args, "held_in", fmt.Sprintf("version %d", newer.Version))
+	}
+	return args
+}
 
 // documentSchemaError classifies err from reading, rendering or walking the tree a document holds -
 // a walk inside a write's transaction included, since a peer can have deepened that tree past the

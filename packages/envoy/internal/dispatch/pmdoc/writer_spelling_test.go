@@ -77,6 +77,11 @@ func TestTheWriterSpellsEveryTreeItReadsAsTheEngine(t *testing.T) {
 		{"a reference that makes the run before its text want one", "&#120;*&#120;***(**\n", "&#120;*&#120;***(**\n"},
 		{"a code span's backtick inside a run before a letter", "*`x`*&#120;\n", "*`x`*&#120;\n"},
 		{"a code span of a space beside one under another mark", "` `*`` ` ``*\n", "` `*`` ` ``*\n"},
+		// Two texts whose bold marks differ only in a marker, which the renderer does not write and
+		// the parser does not read (unwrittenMarkAttrs), are written as one run: no row here can
+		// name such a tree in markdown, since Parse reads every marker as `*`, so this row is the
+		// one spelling their rendering takes (TestAMarksMarkerIsLeftOutOfTheReadBack).
+		{"a bold run over two texts whose marks differ only in a marker", "**ab**\n", "**ab**\n"},
 	}
 	markdowns := make([]string, len(rows))
 	docs := make([]*Node, len(rows))

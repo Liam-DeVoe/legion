@@ -1827,23 +1827,25 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 }
 
 // finishBatch is the tail both edit routes run once their batch has applied (ApplyOps,
-// applyOpsUnconditional): the block ids the result still lacks, the spreads its changed lists read
-// back with, the two ask rules it is held to, and the outcome the route answers with, read back
-// where the batch changed the document. tree is the document the batch started from, the one this
-// edit stamped the missing ask block ids on, and the document returned is the one the route stores,
-// with its rendering where the batch changed the document: the one render of the document the edit
-// pays for, which the read-back is cut from and the write stores (applyLiveWritten's written), with
-// the layout a warm write hands the room's update observer beside it.
+// applyOpsUnconditional): the block ids the result still lacks, the spreads its changed lists and
+// the alignments its changed tables' cells read back with, the two ask rules it is held to, and the
+// outcome the route answers with, read back where the batch changed the document. tree is the
+// document the batch started from, the one this edit stamped the missing ask block ids on, and the
+// document returned is the one the route stores, with its rendering where the batch changed the
+// document: the one render of the document the edit pays for, which the read-back is cut from and
+// the write stores (applyLiveWritten's written), with the layout a warm write hands the room's
+// update observer beside it.
 func (s *Service) finishBatch(ctx context.Context, artifactID string, tree *pmdoc.Node, batch editBatch, ops int) (EditOutcome, pmdoc.ValidDocument, renderedTree, error) {
 	next := batch.tree
 	pmdoc.EnsureBlockIDs(next)
-	// The lists and list items in the blocks the batch changed take the spread their markdown reads
-	// back with, before anything below reads the tree: the renderer writes a list loose or tight
-	// from what its items hold, so a spread the batch left would be stored in a text that reads back
-	// with another, which the check of that text refuses (pmdoc.RefuseMisreadStored), and the room
-	// would hold another tree than the text it stores. The ids come first, since a list keeps a
-	// spread that is not the batch's by the id before holds it under (pmdoc.SettleSpreads).
-	next = pmdoc.SettleSpreads(batch.beforeTree, next)
+	// The lists, list items and table cells in the blocks the batch changed take the spread or the
+	// alignment their markdown reads back with, before anything below reads the tree: the renderer
+	// writes a list loose or tight from what its items hold, and a table's delimiter row from its
+	// header cells, so an attribute the batch left would be stored in a text that reads back with
+	// another, which the check of that text refuses (pmdoc.RefuseMisreadStored), and the room would
+	// hold another tree than the text it stores. The ids come first, since a block keeps an
+	// attribute that is not the batch's by the id before holds it under (pmdoc.SettleDerived).
+	next = pmdoc.SettleDerived(batch.beforeTree, next)
 	batch.tree = next
 	if err := validateEditedAskBlocks(tree, next); err != nil {
 		return EditOutcome{}, pmdoc.ValidDocument{}, renderedTree{}, &ErrInvalidAskBlock{Reason: err}

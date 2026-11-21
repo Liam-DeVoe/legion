@@ -115,7 +115,7 @@ type settlement struct {
 func skipUnreadableSettlement(room string, err error) bool {
 	switch {
 	case errors.Is(err, ErrDocNewerContent):
-		slog.Warn("dispatch: settle document holding an element this build cannot read; no version written; a build that reads the element writes it", "room", room, "error", LoggedError(err))
+		slog.Warn("dispatch: settle document holding an element this build cannot read; no version written; a build that reads the element writes it", newerContentLine(err, "room", room)...)
 	case errors.Is(err, ErrDocSchema):
 		slog.Error("dispatch: settle document outside Proof schema", "room", room, "error", LoggedError(err))
 	default:

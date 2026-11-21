@@ -175,7 +175,7 @@ func TestAnEditBesideABlockThatAlreadyReadsBackOtherwiseIsStoredAndLogsTheBlock(
 	}
 }
 
-// An edit settles the spread of only the lists and list items it changed (pmdoc.SettleSpreads): an
+// An edit settles the spread of only the lists and list items it changed (pmdoc.SettleDerived): an
 // item beside the text it writes keeps the spread a browser edit gave it, which its markdown does
 // not carry, since that spread is not the edit's, and the edit is stored all the same.
 func TestAnEditLeavesTheSpreadOfAnItemBesideTheTextItWrites(t *testing.T) {

@@ -100,7 +100,7 @@ func refuseOutsideSchema(w http.ResponseWriter, r *http.Request, room string, ca
 // refuseNewerContent completes the upgrade only to close it with documentNewerContentCloseCode
 // before anything of the document is sent.
 func refuseNewerContent(w http.ResponseWriter, r *http.Request, room string, cause error) {
-	slog.Warn("dispatch: refuse a document socket holding an element this build cannot read; the provider reconnects", "room", room, "error", LoggedError(cause))
+	slog.Warn("dispatch: refuse a document socket holding an element this build cannot read; the provider reconnects", newerContentLine(cause, "room", room)...)
 	closeRefusedSocket(w, r, documentNewerContentCloseCode, contracts.DocumentNewerContentCloseReason)
 }
 

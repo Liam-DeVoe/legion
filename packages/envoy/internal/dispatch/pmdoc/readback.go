@@ -250,9 +250,9 @@ type StoredVerdict struct {
 // and with the same difference (sameMisread) in previous, the text the document was stored as
 // before the write, read against before, the tree previous was stored from. So a write beside a
 // block that a browser edit or an earlier writer left reading back otherwise is stored, while a new
-// misread in that block is still refused. The other is the spread an edit keeps (SettleSpreads): a
+// misread in that block is still refused. The other is the spread an edit keeps (SettleDerived): a
 // list or list item that reads back otherwise in its spread alone, which before holds unchanged
-// under its id, and whose spread previous already read back otherwise, paired as SettleSpreads
+// under its id, and whose spread previous already read back otherwise, paired as SettleDerived
 // pairs a spread (spreadDifferences), which leaves the spread aside. previous can name that misread
 // a level higher, as a block that pairs with nothing: a typed block's parse fills an empty
 // paragraph in ahead of a list it opens with, so its children do not pair one to one, and a write
@@ -396,7 +396,7 @@ func storedMisreadsOf(before *Node, previous string) (*storedMisreads, error) {
 }
 
 // keptSpread reports whether found, a block after's text reads back otherwise in, is a spread an
-// edit kept from before (SettleSpreads): a list or list item that reads back otherwise in its
+// edit kept from before (SettleDerived): a list or list item that reads back otherwise in its
 // spread alone, whose spread previous already read back otherwise, and that before holds unchanged
 // under its id, so the spread is the one previous was stored with and not the write's.
 func (m *storedMisreads) keptSpread(found misread, before, after *Node) bool {
@@ -404,22 +404,23 @@ func (m *storedMisreads) keptSpread(found misread, before, after *Node) bool {
 		return false
 	}
 	if m.before == nil {
-		m.before, m.after = listsByID(before), listsByID(after)
+		m.before, m.after = derivedByID(before), derivedByID(after)
 	}
 	previous, held := m.before[found.id]
 	return held && previous.Equal(m.after[found.id])
 }
 
-// listsByID is tree's lists and list items by block id.
-func listsByID(tree *Node) map[string]*Node {
-	lists := map[string]*Node{}
+// derivedByID is tree's blocks that carry an attribute the renderer derives from more than them
+// (derivedAttribute) by block id: its lists, list items and table cells.
+func derivedByID(tree *Node) map[string]*Node {
+	derived := map[string]*Node{}
 	Walk(tree, func(node *Node) bool {
-		if id := blockIDOf(node); id != "" && (isList(node) || node.Type == "list_item") {
-			lists[id] = node
+		if id := blockIDOf(node); id != "" && derivedAttribute(node.Type) != "" {
+			derived[id] = node
 		}
 		return true
 	})
-	return lists
+	return derived
 }
 
 // RefuseMisreadWrite refuses a write into a document; see RefuseMisreadDocument. It reads both
@@ -647,32 +648,37 @@ func staleSpreads(before *Node) (map[string]bool, bool) {
 	return stale, true
 }
 
-// SettleSpreads is doc, which an edit batch made from before, with each list and list item in the
-// document-level blocks the batch changed taking the spread its markdown reads back with, by
-// AgreeWithReadBack's rule. The renderer writes a list loose or tight from what its items hold, not
-// from the spread they carry: an item whose first paragraph an edit emptied writes its next block
-// on the marker's line, and reads back tight whatever it carried. Left as the batch made it, such a
-// spread would be stored in a text that reads back with another, which RefuseMisreadStored refuses,
-// and the room's tree and its stored text would disagree. A changed block is one before does not
-// hold unchanged under its block id. Each one holding a list is read back on its own, as the checks
-// of the blocks a write changed read them (ReadBackBlock): a batch pays for no render or parse of
-// the whole document, and one that changes no list pays for none. The exception is a list or list
-// item before holds unchanged under its id whose spread already read back otherwise in before's
-// block holding it, or where that block does not read back: that spread is not the batch's, so it
-// is kept, and RefuseMisreadStored excuses it. A changed block whose markdown is refused, or reads
-// back as other blocks, is left as it is for RefuseMisreadStored to judge. Neither tree is changed:
-// a block that takes a spread is a copy, and so is doc's root where one does.
-func SettleSpreads(before, doc *Node) *Node {
+// SettleDerived is doc, which an edit batch made from before, with each block in the
+// document-level blocks the batch changed taking the attribute the renderer derives from more than
+// that block (derivedAttribute) as its markdown reads it back: each list and list item its spread,
+// by AgreeWithReadBack's rule, and each table cell its alignment. The renderer writes a list loose
+// or tight from what its items hold, not from the spread they carry: an item whose first paragraph
+// an edit emptied writes its next block on the marker's line, and reads back tight whatever it
+// carried. It writes a table's delimiter row from the alignments its header cells carry, and every
+// cell of a column reads back with that column's: a row an insert adds holds cells with none, which
+// read back aligned as their column is. Left as the batch made it, such an attribute would be
+// stored in a text that reads back with another, which RefuseMisreadStored refuses, and the room's
+// tree and its stored text would disagree. A changed block is one before does not hold unchanged
+// under its block id. Each one holding a list or a table is read back on its own, as the checks of
+// the blocks a write changed read them (ReadBackBlock): a batch pays for no render or parse of the
+// whole document, and one that changes no list or table pays for none. The exception is a block
+// before holds unchanged under its id whose attribute already read back otherwise in before's
+// document-level block holding it, or where that block does not read back: that attribute is not
+// the batch's, so it is kept, and RefuseMisreadStored excuses it. A changed block whose markdown is
+// refused, or reads back as other blocks, is left as it is for RefuseMisreadStored to judge.
+// Neither tree is changed: a block that takes an attribute is a copy, and so is doc's root where
+// one does.
+func SettleDerived(before, doc *Node) *Node {
 	tops := make(map[string]*Node, len(before.Children))
 	for _, block := range before.Children {
 		if id := blockIDOf(block); id != "" {
 			tops[id] = block
 		}
 	}
-	var held *heldSpreads
+	var held *heldDerived
 	out := doc
 	for index, block := range doc.Children {
-		if !holdsList(block) {
+		if !holdsDerived(block) {
 			continue
 		}
 		if previous := tops[blockIDOf(block)]; previous == block || previous.Equal(block) {
@@ -683,9 +689,9 @@ func SettleSpreads(before, doc *Node) *Node {
 			continue
 		}
 		var settled map[*Node]any
-		blockSpreadDifferences(block, back, func(node, read *Node) {
+		blockDerivedDifferences(block, back, func(node, read *Node, name string) {
 			if held == nil {
-				held = newHeldSpreads(before)
+				held = newHeldDerived(before)
 			}
 			if held.kept(node) {
 				return
@@ -693,7 +699,7 @@ func SettleSpreads(before, doc *Node) *Node {
 			if settled == nil {
 				settled = map[*Node]any{}
 			}
-			settled[node] = read.Attrs["spread"]
+			settled[node] = read.Attrs[name]
 		})
 		if len(settled) == 0 {
 			continue
@@ -701,16 +707,41 @@ func SettleSpreads(before, doc *Node) *Node {
 		if out == doc {
 			out = &Node{Type: doc.Type, Attrs: doc.Attrs, Children: slices.Clone(doc.Children)}
 		}
-		out.Children[index] = withSpreads(block, settled)
+		out.Children[index] = withDerived(block, settled)
 	}
 	return out
 }
 
-// holdsList reports whether block holds a list, itself included.
-func holdsList(block *Node) bool {
+// derivedAttribute is the attribute of a block of kind nodeType that the renderer writes from more
+// than that block, "" for a kind it writes no such attribute of: a list's or a list item's spread,
+// which the blocks the items hold decide, and a table cell's alignment, which its column's header
+// cell decides.
+func derivedAttribute(nodeType string) string {
+	switch nodeType {
+	case "bullet_list", "ordered_list", "list_item":
+		return "spread"
+	case "table_header", "table_cell":
+		return "alignment"
+	}
+	return ""
+}
+
+// derivedValue is node's value of its derivedAttribute name as its markdown writes it: a spread as
+// it is, and an alignment as writtenAttrs gives it, so that none - null, or the "none" this parser
+// once stored - is one value, as the delimiter row writes it.
+func derivedValue(node *Node, name string) any {
+	if name == "alignment" {
+		return writtenAttrs(node)[name]
+	}
+	return node.Attrs[name]
+}
+
+// holdsDerived reports whether block holds a list or a table, itself included, whose blocks carry
+// an attribute the renderer derives from more than them (derivedAttribute).
+func holdsDerived(block *Node) bool {
 	found := false
 	Walk(block, func(node *Node) bool {
-		found = isList(node)
+		found = isList(node) || node.Type == "table"
 		return !found
 	})
 	return found
@@ -735,71 +766,72 @@ func readBackAlone(block *Node) *Node {
 	return nil
 }
 
-// withSpreads is a copy of node in which each node spreads names takes the spread it maps to.
-func withSpreads(node *Node, spreads map[*Node]any) *Node {
+// withDerived is a copy of node in which each node settled names takes the value it maps to of its
+// derivedAttribute.
+func withDerived(node *Node, settled map[*Node]any) *Node {
 	out := &Node{Type: node.Type, Attrs: cloneAttrs(node.Attrs), Text: node.Text, Marks: cloneMarks(node.Marks)}
-	if spread, settled := spreads[node]; settled {
+	if value, ok := settled[node]; ok {
 		if out.Attrs == nil {
 			out.Attrs = Attrs{}
 		}
-		out.Attrs["spread"] = spread
+		out.Attrs[derivedAttribute(node.Type)] = value
 	}
 	if len(node.Children) > 0 {
 		out.Children = make([]*Node, len(node.Children))
 		for index, child := range node.Children {
-			out.Children[index] = withSpreads(child, spreads)
+			out.Children[index] = withDerived(child, settled)
 		}
 	}
 	return out
 }
 
-// heldSpreads is what SettleSpreads reads of before, the tree a batch started from: each list and
-// list item by block id with the document-level block holding it, and, for each such block it has
-// had to read, the ids whose spread that block's markdown already read back otherwise, nil where
-// the block does not read back.
-type heldSpreads struct {
-	lists, blocks map[string]*Node
-	stale         map[*Node]map[string]bool
+// heldDerived is what SettleDerived reads of before, the tree a batch started from: each block
+// carrying a derivedAttribute by block id with the document-level block holding it, and, for each
+// such block it has had to read, the ids whose attribute that block's markdown already read back
+// otherwise, nil where the block does not read back.
+type heldDerived struct {
+	derived, blocks map[string]*Node
+	stale           map[*Node]map[string]bool
 }
 
-func newHeldSpreads(before *Node) *heldSpreads {
-	held := &heldSpreads{lists: map[string]*Node{}, blocks: map[string]*Node{}, stale: map[*Node]map[string]bool{}}
+func newHeldDerived(before *Node) *heldDerived {
+	held := &heldDerived{derived: map[string]*Node{}, blocks: map[string]*Node{}, stale: map[*Node]map[string]bool{}}
 	for _, block := range before.Children {
-		for id, list := range listsByID(block) {
-			held.lists[id], held.blocks[id] = list, block
+		for id, node := range derivedByID(block) {
+			held.derived[id], held.blocks[id] = node, block
 		}
 	}
 	return held
 }
 
-// kept reports whether node, a list or list item of a block the batch changed, keeps its spread:
-// before holds it unchanged under its id, and its spread already read back otherwise in before's
-// block holding it, or that block does not read back.
-func (held *heldSpreads) kept(node *Node) bool {
+// kept reports whether node, a block of a block the batch changed, keeps its derivedAttribute:
+// before holds it unchanged under its id, and that attribute already read back otherwise in
+// before's block holding it, or that block does not read back.
+func (held *heldDerived) kept(node *Node) bool {
 	id := blockIDOf(node)
-	previous, ok := held.lists[id]
+	previous, ok := held.derived[id]
 	if !ok || !previous.Equal(node) {
 		return false
 	}
 	block := held.blocks[id]
 	stale, read := held.stale[block]
 	if !read {
-		stale = staleBlockSpreads(block)
+		stale = staleBlockDerived(block)
 		held.stale[block] = stale
 	}
 	return stale == nil || stale[id]
 }
 
-// staleBlockSpreads is the block ids of the lists and list items in block, a document-level block,
-// whose spread its markdown read back on its own (readBackAlone) already reads back otherwise, and
-// nil where it does not read back.
-func staleBlockSpreads(block *Node) map[string]bool {
+// staleBlockDerived is the block ids of the blocks in block, a document-level block, whose
+// derivedAttribute its markdown read back on its own (readBackAlone) already reads back otherwise,
+// and nil where it does not read back.
+func staleBlockDerived(block *Node) map[string]bool {
 	back := readBackAlone(block)
 	if back == nil {
 		return nil
 	}
 	stale := map[string]bool{}
-	blockSpreadDifferences(block, back, func(node, _ *Node) {
+	blockDerivedDifferences(block, back, func(node, _ *Node, _ string) {
 		stale[blockIDOf(node)] = true
 	})
 	return stale
@@ -840,18 +872,34 @@ func dropUnwrittenHalves(node *Node) {
 // blockSpreadDifferences is spreadDifferences for node, which pairs with back, and the blocks it
 // holds, visiting node before them.
 func blockSpreadDifferences(node, back *Node, visit func(node, read *Node)) {
+	blockDerivedDifferences(node, back, func(node, read *Node, name string) {
+		if name == "spread" {
+			visit(node, read)
+		}
+	})
+}
+
+// blockDerivedDifferences calls visit with node, which pairs with back, and with each block it
+// holds, paired as misreads pairs them with the derived attributes left aside (derivedAside), where
+// the two hold different values of the block's derivedAttribute, name, as its markdown writes them
+// (derivedValue), visiting node before the blocks it holds.
+func blockDerivedDifferences(node, back *Node, visit func(node, read *Node, name string)) {
 	if node.Type != back.Type || isTextblock(node.Type) {
 		return
 	}
-	if (node.Type == "bullet_list" || node.Type == "ordered_list" || node.Type == "list_item") && node.Attrs["spread"] != back.Attrs["spread"] {
-		visit(node, back)
+	if name := derivedAttribute(node.Type); name != "" && derivedValue(node, name) != derivedValue(back, name) {
+		visit(node, back, name)
 	}
 	written := writtenChildren(node)
-	pairs, _ := pairChildren(node.Type, written, back.Children, spreadAside)
+	pairs, _ := pairChildren(node.Type, written, back.Children, derivedAside)
 	for _, pair := range pairs {
-		blockSpreadDifferences(written[pair[0]], back.Children[pair[1]], visit)
+		blockDerivedDifferences(written[pair[0]], back.Children[pair[1]], visit)
 	}
 }
+
+// derivedAside compares blocks leaving aside each attribute the renderer derives from more than
+// the block carrying it (derivedAttribute).
+var derivedAside = skip{names: map[string]bool{"spread": true, "alignment": true}}
 
 func blockIDOf(node *Node) string {
 	id, _ := node.Attrs[BlockIDAttr].(string)
@@ -1111,14 +1159,15 @@ func writtenAttrs(node *Node) Attrs {
 }
 
 // inlineEqual compares a textblock's inline content: each node's kind, text, attributes and marks,
-// the marks in any order.
+// the marks in any order and without the attributes the rendering does not write
+// (sameWrittenMarks), which a read-back holds whatever the written tree did.
 func inlineEqual(want, got []*Node) bool {
 	if len(want) != len(got) {
 		return false
 	}
 	for index := range want {
 		w, g := want[index], got[index]
-		if w.Type != g.Type || w.Text != g.Text || !reflect.DeepEqual(tokenAttrs(w.Type, w.Attrs), tokenAttrs(g.Type, g.Attrs)) || !marksEqual(sortedMarks(w.Marks), sortedMarks(g.Marks)) || !inlineEqual(w.Children, g.Children) {
+		if w.Type != g.Type || w.Text != g.Text || !reflect.DeepEqual(tokenAttrs(w.Type, w.Attrs), tokenAttrs(g.Type, g.Attrs)) || !sameWrittenMarks(sortedMarks(w.Marks), sortedMarks(g.Marks)) || !inlineEqual(w.Children, g.Children) {
 			return false
 		}
 	}

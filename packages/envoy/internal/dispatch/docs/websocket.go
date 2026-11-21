@@ -656,7 +656,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		slog.Warn("dispatch: loaded document outside Proof schema; a replacement from markdown repairs it", "room", room, "error", LoggedError(renderErr))
 	case errors.Is(renderErr, ErrDocNewerContent):
 		// The room loads, so a write meets the document's own refusal rather than a failed room.
-		slog.Warn("dispatch: loaded document holding an element this build cannot read; another build may serve it", "room", room, "error", LoggedError(renderErr))
+		slog.Warn("dispatch: loaded document holding an element this build cannot read; another build may serve it", newerContentLine(renderErr, "room", room)...)
 	case renderErr != nil:
 		return renderErr
 	default:

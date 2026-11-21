@@ -550,7 +550,7 @@ func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time
 			return documents, false, ctx.Err()
 		case errors.Is(err, ErrDocNewerContent):
 			slog.Warn("dispatch: reference excerpt reconciliation deferred a document holding an element this build cannot read; its mentions stay owed for a build that reads it",
-				"artifact", document.FromID, "version", document.Version, "error", LoggedError(err))
+				newerContentLine(err, "artifact", document.FromID, "version", document.Version)...)
 			deferDocument(document)
 			continue
 		case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):

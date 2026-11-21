@@ -240,7 +240,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 			// Another build wrote an element this build does not know, during a release; a build
 			// that reads it indexes the document, which stays owed until then.
 			slog.Warn("dispatch: block index skipped a document holding an element this build cannot read",
-				"artifact", document.id, "error", LoggedError(err))
+				newerContentLine(err, "artifact", document.id)...)
 		case err != nil:
 			slog.Error("dispatch: block index skipped a document it could not index",
 				"artifact", document.id, "error", LoggedError(err))
