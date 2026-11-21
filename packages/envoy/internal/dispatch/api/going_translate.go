@@ -873,9 +873,9 @@ func goingTranslateClaim(_ context.Context, _ goingReader, call goingCallInput) 
 // takes only beside a close, is posted on the issue as a message
 // before the close, as `dispatch issue-update --reason` posts it (updateIssueInput has no reason
 // field). An issue already closed is refused before its reason is posted, so no reason lands as
-// a stray message; a write that resumes after its own reason, landed by an earlier write of the
-// invocation (goingCallInput.resumes), is refused for the close alone, and the refusal names the
-// reason that stands (goingRefusal.after).
+// a stray message; a write that resumes after its own reason, landed by an earlier try of the
+// change (goingCallInput.resumes), is refused for the close alone, and the refusal says the reason
+// was written.
 func goingTranslateIssueUpdate(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
 	arguments, key := call.arguments, call.path["key"]
 	body := goingPick(arguments, "status", "title", "labels", "priority", "assignee", "route",
@@ -914,11 +914,10 @@ func goingTranslateIssueUpdate(ctx context.Context, read goingReader, call going
 		if err != nil {
 			return goingCall{}, err
 		}
+		message.what = goingReasonWhat(key)
 		if landed := call.resumes(message); len(landed) > 0 {
-			// The call resumes after its own reason: what stands is named, and only the close
-			// was not sent.
-			refusal.Message = fmt.Sprintf("%s closed at %s, so the close was not sent", key, *issue.ClosedAt)
-			refusal = refusal.after(landed, "write")
+			// The call resumes after its own reason, which stands: only the close was not sent.
+			refusal.Message = fmt.Sprintf("%s was written; the close was not sent: %s closed at %s", message.what, key, *issue.ClosedAt)
 		}
 		return goingCall{}, refusal
 	}
@@ -937,10 +936,16 @@ func goingTranslateIssueUpdate(ctx context.Context, read goingReader, call going
 		if err != nil {
 			return goingCall{}, err
 		}
-		message.what = "the reason posted on " + key
+		message.what = goingReasonWhat(key)
 		translated.first = []goingSend{message}
 	}
 	return translated, nil
+}
+
+// goingReasonWhat is the words of the message a reasoned close posts on issue key before the close
+// (goingSend.what).
+func goingReasonWhat(key string) string {
+	return "the reason posted on " + key
 }
 
 // goingAskBody is what both ask rows take of a call: the question, with a `ref` the question
@@ -1209,9 +1214,11 @@ func goingTranslateResultRecord(_ context.Context, _ goingReader, call goingCall
 // from, or no content, before the translation). `force` is no field of the route's: every upload
 // is sent as a create alone (goingUploadCondition), so a document of its name the owner holds by
 // the time the upload takes the owner's lock - one another writer made after the write's read
-// before - is the route's to refuse, 409 DOCUMENT_EXISTS. A row of a run's plan whose upload's
-// read before found the document of its name is sent as that document's next version, with no
-// condition and naming the token of the version it replaces (AgentListener.rowUpload).
+// before - is the route's to refuse, 409 DOCUMENT_EXISTS. A row of a run's plan whose approval
+// showed the document of its name, and whose read before finds that document with the text the
+// approval showed, is sent as its next version, with no condition and naming the token that read
+// answered; a row whose read before finds anything else under the name waits for its person again
+// (AgentListener.rowUpload, uploadChanged).
 func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput) (goingCall, error) {
 	body := goingPick(call.arguments, "name", "summary")
 	body["content"] = goingText(call.arguments, "content")
@@ -1220,8 +1227,9 @@ func goingTranslateUpload(_ context.Context, _ goingReader, call goingCallInput)
 
 // goingUploadCondition is the condition an upload carries to its route on its context
 // (going_conditions.go): a create alone (ExpectNew), since whether an upload writes over a
-// document is known only once its read before is in. A row of a plan whose read before found the
-// document of its name sheds it there (AgentListener.rowUpload).
+// document is known only once its read before is in. A row of a plan sheds it at the write only
+// where its approval showed the document of its name and its read before finds that document as
+// the approval showed it (AgentListener.rowUpload).
 func goingUploadCondition() *goingCondition {
 	return &goingCondition{ExpectNew: true}
 }

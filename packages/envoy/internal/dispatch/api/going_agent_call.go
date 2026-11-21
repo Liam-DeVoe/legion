@@ -409,7 +409,12 @@ func (s *server) goingCallLandings(ctx context.Context, key goingCallKey) ([]*go
 // where it is a send to an agent session (going_messages.go), and what it came to is kept on that
 // row (recordRow), a panic of its route as a failure of the server's (recordRowPanicked), which
 // then goes on to runCall. A second try of the call key sends only what its earlier tries did not
-// land.
+// land, and reads the row's item again before it sends the rest of a call that landed partly
+// (rowItemChanged); a row's try under a key that has landed nothing takes over what an earlier try
+// of the row landed before the row waited again (adoptLandings), before a translation that reads
+// what of its first requests landed refuses, so the refusal says what landed. A refusal of the
+// tool's after the call's own request landed is answered as that request landed; one after only
+// requests it sends before its own (a close's reason) is the call's refusal, which says they stand.
 func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallRequest, login string, doer goingInProcess) (answer agentwire.CallAnswer, refusal *agentwire.Error) {
 	key := goingCallKey{run: request.Run, step: request.Step, call: request.Call}
 	release, held := a.keys.lock(ctx, key, a.callKeyWait)
@@ -447,14 +452,42 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 			a.recordRow(ctx, request, answer, refusal)
 		}()
 	}
-	specs, write, refusal := a.routeSends(ctx, request, arguments, doer, landed, row)
+	// resumed is this key's landings, with what an earlier try of the row landed of first, the
+	// requests the call sends before its own, taken over (adoptLandings).
+	var resumeRefusal *agentwire.Error
+	resumed := func(first []goingSend) []*goingLandedRequest {
+		taken, refused := a.adoptLandings(ctx, request, key, row, first, landed)
+		if refused != nil {
+			resumeRefusal = refused
+			return landed
+		}
+		landed = taken
+		return landed
+	}
+	specs, write, refusal := a.routeSends(ctx, request, arguments, doer, resumed, row)
+	if resumeRefusal != nil {
+		return agentwire.CallAnswer{}, resumeRefusal
+	}
 	if refusal != nil {
-		if last := goingLastLanded(landed); last != nil && refusal.Code == agentwire.CodeCallRefused {
-			// What the call's earlier try left is what the tool now refuses on: the call landed,
-			// and is answered as it landed.
+		if last := goingLastLanded(landed); last != nil && refusal.Code == agentwire.CodeCallRefused && a.ownLanded(request.Tool, last) {
+			// The call's own request landed, and what it left is what the tool now refuses on:
+			// the call is answered as it landed.
 			return last.answer(), nil
 		}
 		return agentwire.CallAnswer{}, refusal
+	}
+	if write && len(specs) > 0 {
+		if resumed(specs[:len(specs)-1]); resumeRefusal != nil {
+			return agentwire.CallAnswer{}, resumeRefusal
+		}
+		if row.state != "approved" && goingPartlyLanded(specs, landed) {
+			// A second try of the key that finds part of the call landed writes the rest: the
+			// row's item is read again first, and a row whose item changed waits again, saying
+			// what stands.
+			if refusal := a.rowItemChanged(ctx, request, row, login, doer, goingLandedWords(specs, landed)); refusal != nil {
+				return agentwire.CallAnswer{}, refusal
+			}
+		}
 	}
 	for index, spec := range specs {
 		if index < len(landed) && landed[index] != nil {
@@ -515,6 +548,14 @@ func goingLastLanded(landed []*goingLandedRequest) *goingLandedRequest {
 	return nil
 }
 
+// ownLanded reports whether landed, a request a call of tool landed, is the call's own: one a row
+// of the tool sends (goingRecordedCall), and not one the call sends before its own, such as a
+// close's reason.
+func (a *AgentListener) ownLanded(tool string, landed *goingLandedRequest) bool {
+	_, own := goingRecordedCall(a.s.going, tool, goingWriteRequest{Method: landed.method, Path: landed.path})
+	return own
+}
+
 // goingCallAnswerOf is a call's answer from what its route answered in-process.
 func goingCallAnswerOf(recorded *recordedAnswer) agentwire.CallAnswer {
 	status := recorded.status
@@ -528,19 +569,20 @@ func goingCallAnswerOf(recorded *recordedAnswer) agentwire.CallAnswer {
 // routeSends is the requests a route call sends, and whether the tool writes. A write tool is one
 // of the catalogue (GoingCaller), whose row of the run's plan rowGate held the call to; it is
 // prepared as the plan prepared it, a send to an agent session on the issue its row names
-// (sendIssue), its translation's reads made through doer, and told what of its requests landed
-// before (landed). An upload whose row's approval showed the document of its name, and whose read
-// before finds that document as shown (rowUpload), sheds the create alone its translation carries
-// and names the token of the version it replaces, so it lands as that document's next version. The
-// create of a new-issue run carries the route its row's approval names (newIssueRoute), which no
-// argument of the tool holds. A read tool sends one request (goingReadSends). Any other name is
-// refused UNKNOWN_TOOL.
+// (sendIssue), its translation's reads made through doer, and told what of the requests it sends
+// first landed before (resumed, which answers the call key's landings for those requests). An
+// upload whose row's approval showed the document of its name, and whose read before finds that
+// document as shown (rowUpload), sheds the create alone its translation carries and names the
+// token of the version it replaces, so it lands as that document's next version. The create of a
+// new-issue run carries the route its row's approval names (newIssueRoute), which no argument of
+// the tool holds. A read tool sends one request (goingReadSends). Any other name is refused
+// UNKNOWN_TOOL.
 func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRequest, arguments map[string]any, doer goingInProcess,
-	landed []*goingLandedRequest, row goingPlanRowStored,
+	resumed func(first []goingSend) []*goingLandedRequest, row goingPlanRowStored,
 ) ([]goingSend, bool, *agentwire.Error) {
 	if _, writes := a.s.going.Lookup(request.Tool); writes {
 		caller := GoingCaller{Catalogue: a.s.going, Doer: doer, knownSession: a.s.goingKnownSession, sendIssue: row.sendIssue(),
-			resumeAfter: func(specs []goingSend) []goingWriteRequest { return goingLandedBefore(landed, specs) }}
+			resumeAfter: func(specs []goingSend) []goingWriteRequest { return goingLandedBefore(resumed(specs), specs) }}
 		prepared, err := caller.prepare(ctx, request.Tool, arguments)
 		if err != nil {
 			return nil, true, goingCallRefusal(request.Tool, err)

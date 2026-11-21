@@ -116,7 +116,10 @@ const (
 // goingRowRecord is what became of a row's write (going_plan_rows.result): the step and call
 // whose key ran it, which a second try of that key is held to, how its upload is sent where it is
 // one (goingRowUpload), the status its route answered, or the code and words of its refusal, and,
-// for a row that sends a message, what became of it (goingRowDelivery).
+// for a row that sends a message, what became of it (goingRowDelivery). Resumes is the key of an
+// earlier try of the row whose call landed partly before the row waited for its person again: the
+// row's next try takes over what that key landed, matched by each request's digest, and sends
+// only the rest (AgentListener.adoptLandings). An approval of the row keeps it.
 type goingRowRecord struct {
 	Step     int             `json:"step"`
 	Call     int             `json:"call"`
@@ -125,6 +128,13 @@ type goingRowRecord struct {
 	Code     string          `json:"code,omitempty"`
 	Message  string          `json:"message,omitempty"`
 	Delivery string          `json:"delivery,omitempty"`
+	Resumes  *goingRowKey    `json:"resumes,omitempty"`
+}
+
+// goingRowKey is the call key of a try of a row, within its run: the step and the call.
+type goingRowKey struct {
+	Step int `json:"step"`
+	Call int `json:"call"`
 }
 
 // goingRowUpload is how a row's upload is sent, decided once under its call's key before any of
@@ -893,10 +903,10 @@ func (s *server) approveGoingPlan(w http.ResponseWriter, r *http.Request) {
 		var refused GoingArgumentError
 		switch {
 		case errors.As(err, &refused):
-			writeError(w, codeGoingPlanValues, http.StatusBadRequest, fmt.Sprintf("row %d: %s", row.row, refused.Reason))
+			writeError(w, codeGoingPlanValues, http.StatusBadRequest, fmt.Sprintf("%s: %s", goingRowLabel(row), refused.Reason))
 			return
 		case err != nil:
-			s.writeGoingPlanReadError(w, row.row, err)
+			s.writeGoingPlanReadError(w, goingRowLabel(row), err)
 			return
 		}
 		encoded, err := json.Marshal(arguments)
@@ -965,7 +975,8 @@ func (a goingRowAnswer) store(ctx context.Context, tx pgx.Tx, run string, plan i
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
-		update going_plan_rows set state = $4, change = $5::jsonb, shown = $6::jsonb, approval = $7::jsonb, result = null
+		update going_plan_rows set state = $4, change = $5::jsonb, shown = $6::jsonb, approval = $7::jsonb,
+		  result = nullif(jsonb_strip_nulls(jsonb_build_object('resumes', result->'resumes')), '{}'::jsonb)
 		where run_id = $1::uuid and plan = $2 and row = $3 and state = 'waiting'
 	`, run, plan, a.row, a.state, string(change), string(shown), approval); err != nil {
 		return fmt.Errorf("answer row %d: %w", a.row, err)
@@ -973,13 +984,13 @@ func (a goingRowAnswer) store(ctx context.Context, tx pgx.Tx, run string, plan i
 	return nil
 }
 
-// writeGoingPlanReadError answers a read of row's item that the person may not make, or that
-// failed: a route's refusal as that route answered it, naming the row, and anything else as the
-// server's own failure.
-func (s *server) writeGoingPlanReadError(w http.ResponseWriter, row int, err error) {
+// writeGoingPlanReadError answers a read of a row's item that the person may not make, or that
+// failed: a route's refusal as that route answered it, naming the row as the page names it
+// (label, goingRowLabel), and anything else as the server's own failure.
+func (s *server) writeGoingPlanReadError(w http.ResponseWriter, label string, err error) {
 	var refused goingRefusal
 	if errors.As(err, &refused) {
-		writeError(w, refused.Code, refused.Status, fmt.Sprintf("row %d: %s", row, refused.Message))
+		writeError(w, refused.Code, refused.Status, fmt.Sprintf("%s: %s", label, refused.Message))
 		return
 	}
 	s.writeHandlerError(w, err)

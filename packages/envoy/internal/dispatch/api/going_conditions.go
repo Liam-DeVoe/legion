@@ -5,9 +5,11 @@ package api
 // claim taken back or released, a thread reopened or resolved again, a created issue closed -
 // puts its value back only where the item still holds what the undone write left, and every other
 // upload the bar sends makes a document only where its owner holds none of the name, a row of a
-// plan shedding that condition at the write where its read before found the document it names
-// (AgentListener.rowUpload). Each is a compare-and-set its route decides under the lock it takes
-// for the write, never a read and then a write.
+// plan shedding that condition at the write only where its approval showed the document of its
+// name and its read before finds that document with the text the approval showed; a row whose read
+// finds anything else under the name waits for its person again (AgentListener.rowUpload). Each is
+// a compare-and-set its route decides under the lock it takes for the write, never a read and then
+// a write.
 //
 // The condition rides on the request's context (goingSend.condition, withGoingCondition), never
 // in its body. No client off the network can set a context, so none can make a route conditional

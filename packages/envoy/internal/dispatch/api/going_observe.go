@@ -28,14 +28,12 @@ import (
 // goingRefusal is a refusal of a request the going writes made in-process, or one of their own
 // in the same shape: its status, its code and its words, and the answer exactly as the route
 // wrote it where a route wrote one, which a route of the bar's own then answers whole (write).
-// named is a refusal whose words already name what of its write landed (after).
 type goingRefusal struct {
 	Status  int
 	Code    string
 	Message string
 	header  http.Header
 	body    []byte
-	named   bool
 }
 
 func (e goingRefusal) Error() string {
@@ -77,29 +75,6 @@ func (e goingRefusal) write(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(e.Status)
 	_, _ = w.Write(e.body)
-}
-
-// after is the refusal of a request a write or an undo (sender, as its line names it: "write" or
-// "undo") sent once the requests before it had landed: the route's status, code and headers, in
-// the shared error shape, its words followed by each request that landed and the item it made,
-// since those stand. A line that shows the refusal so says what of the write or of its undo is
-// done. A refusal that already names what landed is left as it is, so the landings are named once.
-func (e goingRefusal) after(landed []goingWriteRequest, sender string) goingRefusal {
-	if len(landed) == 0 || e.named {
-		return e
-	}
-	stands := make([]string, 0, len(landed))
-	for _, request := range landed {
-		sent := request.Method + " " + request.Path
-		if request.Made != "" {
-			sent += ", which made " + request.Made
-		}
-		stands = append(stands, sent)
-	}
-	e.Message = fmt.Sprintf("%s (refused after this %s's earlier request landed, which stands and is not sent again: %s)",
-		e.Message, sender, strings.Join(stands, "; "))
-	e.body, e.named = nil, true
-	return e
 }
 
 // goingReader makes the reads a translation, a before or an after, or an undo needs, through the
@@ -685,19 +660,28 @@ func (o goingObserver) rankPlace(ctx context.Context, key string) (issueRankPlac
 }
 
 // goingUploadBefore is an upload's value before it where its name finds a document its owner
-// already holds: that document, and the version the upload writes its next version over.
+// already holds: that document, the version the upload writes its next version over, and the
+// document's text now (Content), which a plan row shows beside the text the upload writes and an
+// approval is held to (goingRowShown.same): text another writer changed that no version holds yet
+// is a change too. Content is the document's whole markdown, as a doc edit row's value carries it,
+// so it is bounded by what a document holds (pmdoc.MaxDocumentBytes, 1 MiB); it is absent for a
+// file, and for a document whose text renders as no markdown (DOC_SCHEMA).
 type goingUploadBefore struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Version int    `json:"version"`
+	ID      string  `json:"id"`
+	Name    string  `json:"name"`
+	Version int     `json:"version"`
+	Content *string `json:"content,omitempty"`
 }
 
 // uploadedOver is what an upload finds under its name before it: the document of the owner its
 // route writes to (goingRouteUploadOwner) whose name or slug the name is, as the upload's own
-// lookup finds it (findArtifactByNameOrSlug), at its latest version, and no value where the owner
-// holds none, so the upload makes one. It is read from the store, as rankPlace is, since no route
-// answers a document by the name an upload gives it. A route whose owner it cannot name reads
-// nothing.
+// lookup finds it (findArtifactByNameOrSlug), at its latest version, with its text and the token
+// of that text (goingObservation.token), and no value where the owner holds none, so the upload
+// makes one. The document is found from the store, as rankPlace is, since no route answers a
+// document by the name an upload gives it, and its text is read as the caller. A route whose owner
+// it cannot name reads nothing. A file has no text and no token, and neither has a document whose
+// tree is outside the Proof schema (409 DOC_SCHEMA), which only an upload naming no token repairs:
+// an upload over one names none (AgentListener.rowUpload).
 func (o goingObserver) uploadedOver(ctx context.Context, prepared goingPrepared, fields []string, issue string) (goingObservation, error) {
 	observed := goingObservation{target: goingTargetOfPath(prepared.call.path), fields: fields, issue: issue}
 	owner, known := goingRouteUploadOwner(prepared.route, prepared.call.path)
@@ -716,27 +700,19 @@ func (o goingObserver) uploadedOver(ctx context.Context, prepared goingPrepared,
 	for _, version := range artifact.Versions {
 		before.Version = max(before.Version, version.Number)
 	}
+	if artifact.Kind == "doc" {
+		text, token, err := o.documentValue(ctx, artifact.ID)
+		var refused goingRefusal
+		switch {
+		case errors.As(err, &refused) && refused.Code == codeDocSchema:
+		case err != nil:
+			return observed, err
+		default:
+			before.Content, observed.token = &text.Content, token
+		}
+	}
 	observed.target, observed.value, observed.held = artifact.ID, before, &artifact
 	return observed, nil
-}
-
-// uploadBase is the token of the document an upload with force writes over (held, the document
-// its read before found), read now, which the upload names as the version it replaces in its
-// body's `precondition`: the upload route refuses a replacement of a document naming none (400
-// PRECONDITION_REQUIRED), and refuses this one 409 PRECONDITION_FAILED where another writer
-// changes the document between this read and the write. A file has no token, and neither has a
-// document whose tree is outside the Proof schema (409 DOC_SCHEMA), which renders no markdown and
-// which only an upload naming no token repairs: for each it is "", and the upload names none.
-func (o goingObserver) uploadBase(ctx context.Context, held *model.Artifact) (string, error) {
-	if held.Kind != "doc" {
-		return "", nil
-	}
-	_, token, err := o.documentValue(ctx, held.ID)
-	var refused goingRefusal
-	if errors.As(err, &refused) && refused.Code == codeDocSchema {
-		return "", nil
-	}
-	return token, err
 }
 
 // goingIssueFieldValue is one field of an issue's read as an update writes it. The advances

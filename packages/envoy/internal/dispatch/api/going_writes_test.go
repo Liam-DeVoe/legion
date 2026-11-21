@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -58,19 +59,19 @@ const (
 
 func newGoingWritesRig(t *testing.T) goingWritesRig {
 	t.Helper()
-	return newGoingWritesRigServing(t, func(database *store.Store) *store.Store { return database })
+	return newGoingWritesRigServing(t, func(database *store.Store) *store.Store { return database }, 0)
 }
 
 // newGoingWritesRigServing is the rig whose server runs on the store serving makes of the test's
 // database - a pool of a smaller size, say - while the fixtures and the sign-ins use the database's
-// own.
-func newGoingWritesRigServing(t *testing.T, serving func(*store.Store) *store.Store) goingWritesRig {
+// own, its documents settling settle after their last write (0 for the test servers' own).
+func newGoingWritesRigServing(t *testing.T, serving func(*store.Store) *store.Store, settle time.Duration) goingWritesRig {
 	t.Helper()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
 	t.Cleanup(listener.Close)
-	rig := newGoingWritesRigOn(t, listener.URL, serving)
+	rig := newGoingWritesRigSettling(t, listener.URL, serving, settle)
 	rig.sent = &sent
 	return rig
 }
@@ -79,6 +80,14 @@ func newGoingWritesRigServing(t *testing.T, serving func(*store.Store) *store.St
 // the stand-in holding planner, and keeps no record of the sends (sent is nil).
 func newGoingWritesRigOn(t *testing.T, envoyURL string, serving func(*store.Store) *store.Store) goingWritesRig {
 	t.Helper()
+	return newGoingWritesRigSettling(t, envoyURL, serving, 0)
+}
+
+// newGoingWritesRigSettling is newGoingWritesRigOn whose documents settle settle after their last
+// write (0 for the test servers' own): an hour holds back the version a settlement writes of a
+// live edit, so the edit's text stands in no version for the test's length.
+func newGoingWritesRigSettling(t *testing.T, envoyURL string, serving func(*store.Store) *store.Store, settle time.Duration) goingWritesRig {
+	t.Helper()
 	database := storetest.Open(t)
 	sessions := store.NewPgSessionStore(database.Pool)
 	people := goingCookieOrHeader{
@@ -86,7 +95,8 @@ func newGoingWritesRigOn(t *testing.T, envoyURL string, serving func(*store.Stor
 		header: headerIdentity(database),
 	}
 	app, githubAPIBase := goingFixtureArchitectureGitHub(t)
-	mux, _, _, served := newRegisteredTestServer(t, testServerOptions{store: serving(database), identity: people, envoyURL: envoyURL, app: app, githubAPIBase: githubAPIBase})
+	mux, _, _, served := newRegisteredTestServer(t, testServerOptions{store: serving(database), identity: people, envoyURL: envoyURL, app: app,
+		githubAPIBase: githubAPIBase, settle: settle})
 	return goingWritesRig{
 		mux: mux, network: EnforceCookieOrigin(testServerURL, mux), served: served,
 		database: database, sessions: sessions,

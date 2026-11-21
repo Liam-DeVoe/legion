@@ -6,7 +6,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +18,8 @@ import (
 
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // goingPlanRig is the agent rig with the agent's loop on a fake chat model, whose people are named
@@ -27,10 +31,19 @@ type goingPlanRig struct {
 
 func newGoingPlanRig(t *testing.T) goingPlanRig {
 	t.Helper()
-	rig := newGoingAgentRig(t, nil)
+	return newGoingPlanRigOver(t, newGoingWritesRig(t))
+}
+
+// newGoingPlanRigOver is the plan rig over writes, a writes rig the test chose.
+func newGoingPlanRigOver(t *testing.T, writes goingWritesRig) goingPlanRig {
+	t.Helper()
+	rig := newGoingAgentRigOver(t, writes, nil)
 	rig.served.deps.Identity = headerIdentity(rig.database)
 	return goingPlanRig{goingAgentRig: rig, loop: newGoingLoop(t, rig)}
 }
+
+// goingRowNumbered matches a row named by its number, which no page shows.
+var goingRowNumbered = regexp.MustCompile(`\brows? \d`)
 
 // goingChange is one change of a proposed plan: tool with arguments, needing the changes needs. A
 // change that needs none leaves needs out, as propose_plan's schema takes no null for it.
@@ -439,6 +452,199 @@ func TestAnUploadApprovedAsACreateWaitsAgainOverADocumentMadeSince(t *testing.T)
 	}
 }
 
+// liveEdit replaces find with with in document id's text as bob, as an edit in the browser does:
+// through the document service, in a transaction it joins, writing no version - the document's
+// settlement versions it later.
+func (rig goingPlanRig) liveEdit(t *testing.T, id, find, with string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	joined, ledger := rig.served.deps.Docs.Join(ctx, tx)
+	defer ledger.Discard()
+	if _, err := rig.served.deps.Docs.ApplyOps(joined, id, []model.EditOp{{Op: "replace", Find: find, With: with}},
+		model.Actor{Kind: "user", ID: "bob"}, nil); err != nil {
+		t.Fatalf("edit %s's text: %v", id, err)
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		t.Fatalf("commit the edit of %s's text: %v", id, err)
+	}
+}
+
+// goingNowText is the text an upload row shows its document holding now, "" for none.
+func goingNowText(row goingPlanRow) string {
+	var now struct {
+		Content *string `json:"content"`
+	}
+	if json.Unmarshal(row.Now, &now) != nil || now.Content == nil {
+		return ""
+	}
+	return *now.Content
+}
+
+// TestAnUploadRowShowsTheDocumentsTextAndWaitsAgainOverAnEditSinceItsApproval: a row that uploads
+// over a document shows the document's text now, which the page shows beside the text the upload
+// writes. Text another person changed after the approval makes the row wait again though no
+// version holds that text yet - an edit in the browser, which the document's settlement versions
+// later, and which this server holds back - showing that text, and the document keeps it; the
+// approval of the row again lands the upload over it.
+func TestAnUploadRowShowsTheDocumentsTextAndWaitsAgainOverAnEditSinceItsApproval(t *testing.T) {
+	rig := newGoingPlanRigOver(t, newGoingWritesRigServing(t, func(database *store.Store) *store.Store { return database }, time.Hour))
+	issue := rig.issue(t, "Holds edited notes")
+	notes := uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "notes.md", "# Notes\n\nOne.\n")
+	const words = "replace notes.md on Holds edited notes"
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(goingChange("dispatch_artifact", map[string]any{
+				"issue": issue, "name": "notes.md", "content": "# Notes\n\nThe plan's.\n", "force": true,
+			}))
+		}
+		return answered("Replaced, or waiting.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	if row := rig.waiting(t, run).Rows[0]; !strings.Contains(goingNowText(row), "One.") {
+		t.Errorf("the row shows %s, want the document's text now, which holds One.", row.Now)
+	}
+	rig.loop.stop()
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	const versions = `select count(*) from artifact_versions where artifact_id = $1::uuid`
+	rig.liveEdit(t, notes.Artifact.ID, "One.", "Bob's.")
+	if count := rig.count(t, versions, notes.Artifact.ID); count != 1 {
+		t.Fatalf("Bob's edit left %d versions, want the one the upload made: no version may hold the edit's text", count)
+	}
+	rig.loop.start(rig.goingAgentRig)
+	row := rig.waiting(t, run).Rows[0]
+	if row.State != "waiting" || !row.Changed || !strings.Contains(goingNowText(row), "Bob's.") {
+		t.Fatalf("the row is %s (changed %v) showing %s, want it waiting again with Bob's text", row.State, row.Changed, row.Now)
+	}
+	if text := rig.documentText(t, notes.Artifact.ID); !strings.Contains(text, "Bob's.") {
+		t.Fatalf("notes.md reads %q, want Bob's text kept: the upload wrote over it", text)
+	}
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	if record := rig.ended(t, run, time.Minute); record.state != "done" {
+		t.Fatalf("after its approval again the run ended %s with %q, want done; its calls were told %q", record.state, record.reason, rig.toolResults(t, run))
+	}
+	if text := rig.documentText(t, notes.Artifact.ID); !strings.Contains(text, "The plan's.") {
+		t.Errorf("after its approval again notes.md reads %q, want the upload's text", text)
+	}
+}
+
+// partlyLandedWaiting is a run of alice's whose one row, a reasoned close of a new issue titled
+// title, landed its reason and then failed in the server on its close, and whose retry of the key
+// found the issue's status changed by bob - so the row waits for alice again, its words saying the
+// reason was already written - with the turn ended waiting and the agent's loop stopped. It
+// answers the run, the issue and the reason.
+func (rig goingPlanRig) partlyLandedWaiting(t *testing.T, title string) (run, issue, reason string) {
+	t.Helper()
+	issue = rig.issue(t, title)
+	words := "close " + title + ", saying why"
+	reason = "Shipped in the last release."
+	closing := map[string]any{"issue": issue, "status": "done", "reason": reason}
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(goingChange("dispatch_issue_update", closing))
+		}
+		return answered("Closed, or waiting.")
+	})
+	run = rig.begin(t, goingLoopRun{login: "alice", words: words})
+	rig.waiting(t, run)
+	rig.loop.stop()
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	// The test is the run's agent until the row waits again: it claims the run and makes the row's
+	// call itself.
+	claimed := rig.claim(t, "i-retries-"+issue)
+	if claimed == nil || claimed.ID != run {
+		t.Fatalf("the claim took %+v, want run %s", claimed, run)
+	}
+	var patches atomic.Int32
+	rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+		if patches.Add(1) == 1 {
+			panic("the close crashed")
+		}
+		inner.ServeHTTP(w, r)
+	})
+	call := goingRouteCall(run, claimed.LeaseToken, 7, 1, "dispatch_issue_update", closing)
+	call.Row = &agentwire.PlanRow{Plan: 1, Row: 0}
+	_, err := rig.call(call)
+	requireAgentCode(t, err, agentwire.CodeCallPanicked, "the call whose close panicked")
+	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "in_progress"})
+	_, err = rig.call(call)
+	requireAgentCode(t, err, agentwire.CodeRowWaits, "the retry of the key after Bob's change")
+	if row := rig.plan(t, run).Rows[0]; row.State != "waiting" || !row.Changed || row.Result == nil ||
+		!strings.Contains(row.Result.Message, "the reason posted on "+issue+" was already written") || goingRowNumbered.MatchString(row.Result.Message) {
+		t.Fatalf("after the retry the row is %s (changed %v) with %+v, want it waiting again, saying the reason on %s was already written",
+			row.State, row.Changed, row.Result, issue)
+	}
+	if reasons, status, sent := rig.goingReasonsOn(t, issue, reason), rig.issueRead(t, issue).Status, patches.Load(); reasons != 1 || status != "in_progress" || sent != 1 {
+		t.Fatalf("after the retry %s holds %d reasons and status %s, and the close was sent %d times; want one reason, Bob's status and the one send that panicked",
+			issue, reasons, status, sent)
+	}
+	if err := rig.client.End(context.Background(), agentwire.EndRequest{Run: run, LeaseToken: claimed.LeaseToken, State: agentwire.StateWaiting}); err != nil {
+		t.Fatalf("end the turn waiting: %v", err)
+	}
+	return run, issue, reason
+}
+
+// TestARetryOfAPartlyLandedRowReadsItsItemAgainAndPostsItsReasonOnce: a reasoned close whose reason
+// landed before its close failed in the server reads its issue again before a retry of its key
+// sends the close: another person's change of the issue's status since the approval makes the row
+// wait again, saying the reason was already written and is not sent again, and nothing more is
+// sent (partlyLandedWaiting). The person's approval of it again runs it under a new key, which takes
+// the reason over: the issue holds the reason once and is closed, and the run's record holds the
+// close and its reason under one call.
+func TestARetryOfAPartlyLandedRowReadsItsItemAgainAndPostsItsReasonOnce(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	run, issue, reason := rig.partlyLandedWaiting(t, "Closed after a crash")
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	rig.loop.start(rig.goingAgentRig)
+	if record := rig.ended(t, run, time.Minute); record.state != "done" {
+		t.Fatalf("after its approval again the run ended %s with %q, want done; its calls were told %q", record.state, record.reason, rig.toolResults(t, run))
+	}
+	if reasons, status := rig.goingReasonsOn(t, issue, reason), rig.issueRead(t, issue).Status; reasons != 1 || status != "done" {
+		t.Fatalf("after its approval again %s holds %d reasons and status %s, want the one reason and the issue done", issue, reasons, status)
+	}
+	if calls := rig.count(t, `select count(distinct (step, call)) from going_landings where run_id = $1::uuid and phase = 'do'`, run); calls != 1 {
+		t.Errorf("the run's record holds its landings under %d calls, want the close and its reason under one", calls)
+	}
+	if state := rig.plan(t, run).Rows[0].State; state != "done" {
+		t.Errorf("after its approval again the row is %s, want done", state)
+	}
+}
+
+// TestARowApprovedAgainAfterItsReasonLandedSaysSoWhenItsIssueClosedMeanwhile: a reasoned close whose
+// reason landed and that waits for its person again (partlyLandedWaiting) is approved again, and
+// another person closes its issue before it runs. Its run takes the reason over before the close
+// is refused, so the row fails saying the reason was written and the close was not sent, in words,
+// the issue holds the reason once, and the reason's landing is the row's own: Undo of the run
+// answers one line, the row's.
+func TestARowApprovedAgainAfterItsReasonLandedSaysSoWhenItsIssueClosedMeanwhile(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	run, issue, reason := rig.partlyLandedWaiting(t, "Closed by another meanwhile")
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "done"})
+	rig.loop.start(rig.goingAgentRig)
+	if record := rig.ended(t, run, time.Minute); record.state != "done" {
+		t.Fatalf("after its approval again the run ended %s with %q, want done; its calls were told %q", record.state, record.reason, rig.toolResults(t, run))
+	}
+	row := rig.plan(t, run).Rows[0]
+	if row.State != "failed" || row.Result == nil || row.Result.Code != agentwire.CodeCallRefused ||
+		!strings.HasPrefix(row.Result.Message, "the reason posted on "+issue+" was written; the close was not sent: "+issue+" closed at ") {
+		t.Fatalf("the row is %s with %+v, want it failed, refused, saying the reason on %s was written and the close was not sent", row.State, row.Result, issue)
+	}
+	for _, internal := range []string{"POST", "/api/v1/", "ISSUE_CLOSED", "409"} {
+		if strings.Contains(row.Result.Message, internal) {
+			t.Errorf("the row says %q, which names %q", row.Result.Message, internal)
+		}
+	}
+	if reasons := rig.goingReasonsOn(t, issue, reason); reasons != 1 {
+		t.Errorf("%s holds %d reasons, want the one", issue, reasons)
+	}
+	rig.undone(t, run, "dispatch_issue_update")
+}
+
 // TestAFailedChangeSkipsWhatNeedsIt: a row whose write its route refuses fails, the row that needs
 // it is skipped and says so, and a row that needs neither runs.
 func TestAFailedChangeSkipsWhatNeedsIt(t *testing.T) {
@@ -463,8 +669,9 @@ func TestAFailedChangeSkipsWhatNeedsIt(t *testing.T) {
 	if states := rowStates(plan); !slices.Equal(states, []string{"failed", "skipped", "done"}) {
 		t.Fatalf("the rows are %v, want failed, skipped, done", states)
 	}
-	if skipped := plan.Rows[1].Result; skipped == nil || skipped.Code != "ROW_SKIPPED" || !strings.Contains(skipped.Message, "row 0") {
-		t.Errorf("the skipped row's result is %+v, want ROW_SKIPPED naming the row it needs", skipped)
+	if skipped := plan.Rows[1].Result; skipped == nil || skipped.Code != "ROW_SKIPPED" || !strings.Contains(skipped.Message, "claim "+held) ||
+		goingRowNumbered.MatchString(skipped.Message) {
+		t.Errorf("the skipped row's result is %+v, want ROW_SKIPPED naming the row it needs as the page does, claim %s, and no row by number", skipped, held)
 	}
 	if rig.title(t, held) != "Held by bob" || rig.title(t, free) != "Renamed free" {
 		t.Errorf("the titles are %q and %q, want the skipped row's left and the free row's written", rig.title(t, held), rig.title(t, free))
