@@ -2998,8 +2998,13 @@ package api
 // starts the wait before its value is written again, and `held`, the number of the accepted take
 // whose text the producer still held unrun when the turn ended, which puts that take back to await
 // its own turn also where the daemon has lost its count of the process's turns (a daemon restarted
-// under it); each is optional, and a report without `held` is read as before. The three task
-// routes refuse in the coded shape (`{code, error}`), so a worker that sends a take or a seen
+// under it); each is optional, and a report without `held` is read as before. The worker shim's
+// `hello2` carries `backlogWhole`, true where the backlog the shim holds for a daemon that is not
+// connected dropped no frame since its last connection took it (shimwire.Hello2.BacklogWhole),
+// and left out when false; a hello without it, from a shim that dropped frames or one built before
+// the member, is read as a backlog that may have dropped them, on which no report gives a take a
+// daemon start restored its turn back, and a daemon built before the member ignores it. The three
+// task routes refuse in the coded shape (`{code, error}`), so a worker that sends a take or a seen
 // report again on a 502, 503 or 504 naming no code never reads a refusal of the daemon's own as an
 // outage; and none of them refuses a stale plugin with the stale-contract 409: a stale claim's take
 // is refused with the hold `stale-plugin`, and its read and its seen report are answered as any
@@ -3125,7 +3130,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 209: INFRA-4130 -- holds on POST /legion/v1/claims/task, the takes of other claims of the issue
+// 216: INFRA-4130 -- holds on POST /legion/v1/claims/task, the takes of other claims of the issue
 // held behind the caller's turn. The answer of `claims/task` takes an optional `holds`
 // (`claim.TaskResponse.Holds`, contracts' `LegionTaskResponse`), `[{role, task}]`: each a take
 // of another claim of the caller's issue that was refused `issue-in-turn` while the caller is
@@ -3134,7 +3139,7 @@ package api
 // the turn ends and the held take is accepted. The key is absent where none is held, and the
 // registration's answer never carries it, since a registering process is in no turn. This daemon
 // serves it down through the shaping 193 brought: a caller whose header states a contract below
-// 209 is answered without it (shapeAnswer's AnswerTask row, taskHoldsContract). The record of a
+// 216 is answered without it (shapeAnswer's AnswerTask row, taskHoldsContract). The record of a
 // held take is the daemon's memory alone (supervise's ClaimView.HeldTask), so it adds no store
 // migration, and no shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
 // `supervise.TaskTakeContract` stays 207.
@@ -3149,8 +3154,14 @@ package api
 // the entry right above: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every
 // one of the 357 open pull requests from 2026-11-21T05:46:01Z to 05:57:04Z found 207 (#3993,
 // #4030, #4392, #4432, #4590 and #4592) and 208 (#4611) declared by open pull requests, so 209
-// was the lowest number above 207 that none declared. Read the base's own number and every open
-// pull request again at the next merge rather than from this line, as
+// was the lowest number above 207 that none declared. It takes 216 at the forward merge of
+// 2026-11-21 that brought #3993's branch in at a7d7d94ec9a48826e2c5248f5bb23fdd6f535fc3, which
+// declares 207: a reading of `const DaemonAPIVersion` at the head of every one of the 411 open
+// pull requests from 2026-11-21T19:52:35Z to 20:13:23Z found 208 (#2230), 209 (#4049 and #4580),
+// 210 (#4661), 211 (#4611), 212 (#4771), 213 (#4030 and #4553), 214 (#4592 and #4596) and 215
+// (#4065) declared by open pull requests, so 216 was the lowest number above 207 that none
+// declared. Read the base's own number and every open pull request again at the next merge rather
+// than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 209
+const DaemonAPIVersion = 216

@@ -51,9 +51,9 @@ type EndedWork struct {
 	// cut off: a let-go finishes it by its end frame rather than take it back (finishTask), as
 	// settle finishes the task of the held stop at a turn's end and the task an idle claim's
 	// let-go leaves it (suspendNow). For a plugin that names its number only the report finishes
-	// it, and every let-go that can wait for the report waits instead (reportSettles); one that
-	// does not — a held suspension's deadline, a stale-plugin relaunch's bound — takes it back
-	// first, as a cut turn, and its mark says so (Machine.cutTurnOf), while a death or a
+	// it, and every let-go that can wait for the report waits instead (reportwait.go); one that
+	// does not — a held suspension's deadline, the bound of that wait — takes it back first, as a
+	// cut turn (reportMissed), and its mark says so (Machine.cutTurnOf), while a death or a
 	// displacement records its end before it takes the task back, and names no task's turn.
 	Turn     bool `json:"turn,omitempty"`
 	TaskTurn bool `json:"taskTurn,omitempty"`
@@ -292,21 +292,27 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 // claim no longer working — the turn of a dead connection that ended after its compaction was
 // dropped (compactionLostProcess) — reads as it stands.
 func (m *Machine) endState() ClaimState {
-	if m.claim.State != StateWorking {
+	switch {
+	case !m.busy():
 		return m.claim.State
-	}
-	if m.heldStopBack != "" {
+	case m.heldStopBack != "":
 		return m.heldStopBack
-	}
-	run := m.compacting
-	if run == nil {
-		run = m.lostCompaction
-	}
-	if run != nil && !run.inTurn {
-		return run.back
+	case !m.inTurn():
+		return m.compacting.back
+	case m.compacting == nil && m.lostCompaction != nil && !m.lostCompaction.inTurn:
+		return m.lostCompaction.back
 	}
 	return StateWorking
 }
+
+// cutsTurn is whether a let-go now cuts off a turn that runs: the claim in a turn (inTurn) as a
+// let-go reads it (endState), which knows two moments a claim is stored working for nothing that
+// runs where inTurn reads a turn — the held suspension's stop at the end of the turn or the
+// compaction it was held for (Machine.heldStopBack), and a compaction a gone verdict dropped with
+// its process (Machine.lostCompaction). During a compaction with no turn started under it, the two
+// agree: no turn runs. The take-back of a let-go reads it (interrupted), and so does the stall
+// backstop's record; recordEnd reads the state it is read from.
+func (m *Machine) cutsTurn() bool { return m.endState() == StateWorking }
 
 // launchActivity is the activity report the store holds for the launch the claim records now
 // (Deps.ClaimActivity), and whether it holds one. Only a report of this launch counts: the store

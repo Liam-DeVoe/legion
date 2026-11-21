@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -115,28 +117,55 @@ func TestTaskNumberAndProviderErrorOfAClaimsTurnOutcomesAreKept(t *testing.T) {
 	}
 }
 
-// The window's watermark, the newest key the window dropped to keep to its bound, carried on its
-// oldest entry, is kept with the window and survives a restart, so a restarted daemon still
-// answers a report sent again after newer reports pushed it out of the window as the repeat it
-// is (supervise's recordTurnOutcome). It needs no column of its own: it is a field of an entry
-// in the window's own array, which a window an older daemon stored reads back without (above).
+// The window's watermark, the newest key the window dropped to keep to its bound, is the claim's
+// own field (supervise.Claim.TurnOutcomeMark), and it is kept with the window and survives a
+// restart, so a restarted daemon still answers a report sent again after newer reports pushed it
+// out of the window as the repeat it is (supervise's recordTurnOutcome). It needs no column of its
+// own: the store writes it on the oldest entry of the window's own array and on no other, the
+// shape the column had when the mark was a field of every entry, and reads it back from there;
+// a mark the column holds on any later entry is none, and a window an older daemon stored reads
+// back without one (above).
 func TestTheTurnOutcomeWindowsWatermarkIsKept(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
 	mark := supervise.TurnOutcomeKey{Generation: 2, Sequence: 4}
 	c.TurnOutcomes = []supervise.TurnOutcome{
-		{Generation: 2, Sequence: 5, Watermark: mark},
+		{Generation: 2, Sequence: 5},
 		{Generation: 2, Sequence: 6},
 		{Generation: 2, Sequence: 7, Task: 3},
 	}
+	c.TurnOutcomeMark = mark
 	if err := store.PutClaim(ctx, c); err != nil {
 		t.Fatalf("put the claim with its window and its watermark: %v", err)
 	}
 
-	got := onlyClaim(t, reopenStore(t, store))
+	var column string
+	if err := store.Pool().QueryRow(ctx, `select turn_outcomes::text from claims where token = $1`, string(c.Token)).Scan(&column); err != nil {
+		t.Fatalf("read the window's column: %v", err)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal([]byte(column), &entries); err != nil {
+		t.Fatalf("decode the window's column %s: %v", column, err)
+	}
+	wantMark := map[string]any{"generation": float64(2), "sequence": float64(4)}
+	if len(entries) != 3 || !reflect.DeepEqual(entries[0]["watermark"], wantMark) ||
+		slices.ContainsFunc(entries[1:], func(entry map[string]any) bool { _, marked := entry["watermark"]; return marked }) {
+		t.Fatalf("the window's column holds %s, want the watermark %+v on its oldest entry alone", column, mark)
+	}
+
+	reopened := reopenStore(t, store)
+	got := onlyClaim(t, reopened)
 	sameClaim(t, got, c)
-	if kept := got.TurnOutcomes; len(kept) != 3 || kept[0].Watermark != mark {
-		t.Fatalf("the window read back after a restart = %+v, want its oldest entry carrying the watermark %+v", kept, mark)
+	if got.TurnOutcomeMark != mark {
+		t.Fatalf("the watermark read back after a restart = %+v, want %+v", got.TurnOutcomeMark, mark)
+	}
+
+	if _, err := reopened.Pool().Exec(ctx, `update claims set turn_outcomes = $2::jsonb where token = $1`, string(c.Token),
+		`[{"generation": 2, "sequence": 5, "refused": false}, {"generation": 2, "sequence": 6, "refused": false, "watermark": {"generation": 2, "sequence": 4}}]`); err != nil {
+		t.Fatalf("store a window whose mark rides on a later entry: %v", err)
+	}
+	if got := onlyClaim(t, reopened); got.TurnOutcomeMark != (supervise.TurnOutcomeKey{}) || len(got.TurnOutcomes) != 2 {
+		t.Fatalf("a window whose mark rides on its second entry reads back %+v under the mark %+v, want its two reports and no mark", got.TurnOutcomes, got.TurnOutcomeMark)
 	}
 }

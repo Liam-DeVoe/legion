@@ -177,7 +177,7 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 	// replacement took out of it (StallBackstopStop.LaunchFailures).
 	charged := m.claim.Budgets.LaunchFailures
 	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd,
-		endStalled(ev.Bound, m.endState() == StateWorking))
+		endStalled(ev.Bound, m.cutsTurn()))
 	charged = m.claim.Budgets.LaunchFailures - charged
 	if end.TellsOwner() && m.deps.StallBackstopped != nil {
 		stop := StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, End: end,

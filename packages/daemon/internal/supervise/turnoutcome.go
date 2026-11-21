@@ -43,24 +43,18 @@ import (
 // they were kept reads back with none of them, a report naming no task, which did nothing to
 // any task.
 //
-// Watermark is set on the window's oldest entry alone, and zero on every other: the key of the
-// newest report the window dropped to keep to its bound (recordTurnOutcome), below which every
-// report of its generation was applied, and every report of an earlier generation is of a process
-// the claim has left. Every report at or below it that the window does not hold is a repeat,
-// since the window applied it before it dropped it, or it is of a turn no take of the claim's
-// process holds and older than every report a run is derived over. It rides on an entry so that
-// it is written with the window, in the same column, and read back with it.
+// The window's watermark is no field of a report: it is the claim's own (Claim.TurnOutcomeMark),
+// which the store writes on the window's oldest entry and reads back from there.
 type TurnOutcome struct {
-	Generation           uint64         `json:"generation"`
-	Sequence             uint64         `json:"sequence"`
-	Refused              bool           `json:"refused"`
-	Message              string         `json:"message,omitempty"`
-	Unapplied            bool           `json:"unapplied,omitempty"`
-	Task                 uint64         `json:"task,omitempty"`
-	ProviderError        bool           `json:"providerError,omitempty"`
-	ProviderErrorStatus  int            `json:"providerErrorStatus,omitempty"`
-	ProviderErrorRetries int            `json:"providerErrorRetries,omitempty"`
-	Watermark            TurnOutcomeKey `json:"watermark,omitzero"`
+	Generation           uint64 `json:"generation"`
+	Sequence             uint64 `json:"sequence"`
+	Refused              bool   `json:"refused"`
+	Message              string `json:"message,omitempty"`
+	Unapplied            bool   `json:"unapplied,omitempty"`
+	Task                 uint64 `json:"task,omitempty"`
+	ProviderError        bool   `json:"providerError,omitempty"`
+	ProviderErrorStatus  int    `json:"providerErrorStatus,omitempty"`
+	ProviderErrorRetries int    `json:"providerErrorRetries,omitempty"`
 }
 
 // TurnOutcomeKey is the key a report is kept under in the window: the launch generation its turn
@@ -109,7 +103,7 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 // from the window as it stands (RefusedRun), which is what makes a late report and an in-order
 // one leave the same answer.
 //
-// A report the window no longer holds, at or below its watermark (TurnOutcome.Watermark), is a
+// A report the window no longer holds, at or below its watermark (Claim.TurnOutcomeMark), is a
 // repeat too, and is recorded nowhere: the window applied it and then dropped it to keep to its
 // bound, so its key alone no longer says so. Its first attempt's answer can have been lost — a
 // daemon restart in the middle of the request — and its sending again backs off, so newer reports
@@ -123,13 +117,19 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 // reports of its generation landed meanwhile. Raised over it, the watermark would answer that
 // report as a repeat, and one naming the take's number would finish nothing: the task would run
 // again after the next relaunch. The window holds the reports above such a gap past its bound
-// until the gap is filled, the claim's process moves to a later generation, whose first report
-// follows every key of the earlier one (follows), or the window reaches turnOutcomeGapBound. One
-// whose write failed (Unapplied) stays until it is sent again and applied, however old: dropped,
-// it would fall under the watermark, and the report sent again, which is its first application,
-// would be answered as a repeat.
+// until the gap is filled or the window reaches turnOutcomeGapBound, and a later generation ends
+// no such hold: the bound drops from the oldest entry, and the oldest is the earlier generation's
+// report above its gap, which does not follow the watermark (follows) whatever reports land after
+// it, so every report of the later generation is held behind it up to that bound too. With a limit
+// of 3, a generation that reports 1, 2, 3 and 5 and then one that reports 1 to 10 leave 11
+// entries, the oldest (1, 5) and the watermark (1, 3). Nothing reads them wrongly: a report of an
+// earlier generation reaches no take of the process the claim runs now (reachesLadder), and the
+// run of refused turns ends with the newest entry (RefusedRun). One whose write failed (Unapplied)
+// stays until it is sent again and applied, however old: dropped, it would fall under the
+// watermark, and the report sent again, which is its first application, would be answered as a
+// repeat.
 func (m *Machine) recordTurnOutcome(o TurnOutcome) (repeat bool) {
-	window, mark := m.claim.TurnOutcomes, m.turnOutcomeMark()
+	window, mark := m.claim.TurnOutcomes, m.claim.TurnOutcomeMark
 	at, found := slices.BinarySearchFunc(window, o, compareTurnOutcomes)
 	if !found && mark != (TurnOutcomeKey{}) && compareKeys(o.key(), mark) <= 0 {
 		return true
@@ -153,7 +153,7 @@ func (m *Machine) recordTurnOutcome(o TurnOutcome) (repeat bool) {
 		}
 		window = slices.Delete(window, oldest, oldest+1)
 	}
-	m.setTurnOutcomes(window, mark)
+	m.claim.TurnOutcomes, m.claim.TurnOutcomeMark = window, mark
 	return repeat
 }
 
@@ -196,26 +196,6 @@ func follows(last, key TurnOutcomeKey) bool {
 	return key.Generation > last.Generation && key.Sequence == 1
 }
 
-// turnOutcomeMark is the window's watermark, the zero key for none (TurnOutcome.Watermark).
-func (m *Machine) turnOutcomeMark() TurnOutcomeKey {
-	if len(m.claim.TurnOutcomes) == 0 {
-		return TurnOutcomeKey{}
-	}
-	return m.claim.TurnOutcomes[0].Watermark
-}
-
-// setTurnOutcomes makes window the claim's, its watermark mark on its oldest entry and on no other
-// (TurnOutcome.Watermark).
-func (m *Machine) setTurnOutcomes(window []TurnOutcome, mark TurnOutcomeKey) {
-	for i := range window {
-		window[i].Watermark = TurnOutcomeKey{}
-	}
-	if len(window) > 0 {
-		window[0].Watermark = mark
-	}
-	m.claim.TurnOutcomes = window
-}
-
 // appliedTurnOutcome is the window's entry under the key of r, where the window holds one from an
 // attempt that was applied (TurnOutcome.Unapplied false).
 func (m *Machine) appliedTurnOutcome(r RequestTurnOutcome) (TurnOutcome, bool) {
@@ -233,21 +213,21 @@ func (m *Machine) appliedTurnOutcome(r RequestTurnOutcome) (TurnOutcome, bool) {
 // raised would otherwise answer its sending again as a repeat of a report never applied
 // (recordTurnOutcome).
 func (m *Machine) unappliedTurnOutcome(o TurnOutcome) {
-	window, mark := m.claim.TurnOutcomes, m.turnOutcomeMark()
+	window := m.claim.TurnOutcomes
 	at, found := slices.BinarySearchFunc(window, o, compareTurnOutcomes)
 	if found {
 		window[at].Unapplied = true
 		return
 	}
 	o.Unapplied = true
-	m.setTurnOutcomes(slices.Insert(window, at, o), mark)
+	m.claim.TurnOutcomes = slices.Insert(window, at, o)
 }
 
 // owedReport is the report whose effect on the claim's pending task the store does not hold, read
 // from the claim as the store keeps it, for the machine a daemon start builds over it
 // (NewMachine): the newest applied report of the claim's current generation that names the
 // pending task's number, while that task's take stands accepted, its turn started or not. Such a
-// report is of the take's turn (reachesLadder), and the daemon that applied it decided there what
+// report is of the take's turn (reportOfTake), and the daemon that applied it decided there what
 // became of the task, which a store that took the report and refused the writes after it does not
 // hold: the turn's start (startedUnseen) and then the task's finish, for a report that carried no
 // provider error — a finish that landed would have retired the task — or the take-back and the
@@ -260,20 +240,16 @@ func (m *Machine) unappliedTurnOutcome(o TurnOutcome) {
 // ladder step (TurnOutcome.ProviderErrorRetries above Delivery.ProviderErrorRetries): once that
 // step is written, the task was taken back, and a take of it standing now is the next take, given
 // after the ladder's wait, whose turn the report is not of. A report of another generation is of
-// a turn of another process than the one whose take this is (reachesLadder), and a task of no
-// number (Delivery.Number) is named by no report, so an entry stored before the window kept a
-// report's number (TurnOutcome.Task) owes nothing.
+// a turn of another process than the one whose take this is, and a task of no number
+// (Delivery.Number) is named by no report (reportOfTake), so an entry stored before the window
+// kept a report's number (TurnOutcome.Task) owes nothing.
 func (c Claim) owedReport() (TurnOutcome, bool) {
-	p := c.Pending
-	if p == nil || p.Number == 0 || !p.taken() {
-		return TurnOutcome{}, false
-	}
 	for i := len(c.TurnOutcomes) - 1; i >= 0; i-- {
 		o := c.TurnOutcomes[i]
-		if o.Unapplied || o.Generation != c.Generation || o.Task != p.Number {
+		if o.Unapplied || !c.reportOfTake(o.Generation, o.Task) {
 			continue
 		}
-		if o.ProviderError && o.ProviderErrorRetries <= p.ProviderErrorRetries {
+		if o.ProviderError && o.ProviderErrorRetries <= c.Pending.ProviderErrorRetries {
 			return TurnOutcome{}, false
 		}
 		return o, true
@@ -307,11 +283,11 @@ func (c Claim) LastRefusal() string {
 }
 
 // freshRun drops every turn the claim has reports for, and the window's watermark with them
-// (TurnOutcome.Watermark), so its refused run starts again. The run belongs to the session whose
+// (Claim.TurnOutcomeMark), so its refused run starts again. The run belongs to the session whose
 // turns were refused, and a claim leaves a session only by forgetting it (forgetSession): every
 // relaunch resumes the session the claim recorded, and a registration naming another is refused,
 // so the forgetting is the one moment a fresh run begins.
-func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
+func (m *Machine) freshRun() { m.claim.TurnOutcomes, m.claim.TurnOutcomeMark = nil, TurnOutcomeKey{} }
 
 // turnOutcome records the turn its producer reported and derives the claim's trailing run of
 // refused turns from the window that leaves. At the launch failure limit the claim fails: the
@@ -426,6 +402,7 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 		}
 		return m.notTheTakesTurn(ctx, r)
 	}
+	heldWaited := m.heldWaits()
 	var started error
 	if p.awaitsTurn() {
 		started = m.startedUnseen(ctx, r)
@@ -449,21 +426,28 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 	if (m.claim.State != StateReady && m.claim.State != StateIdle) || m.compacting != nil {
 		return nil
 	}
-	return m.afterTurn(ctx)
+	return m.afterTurn(ctx, heldWaited)
 }
 
 // reachesLadder is whether a turn-outcome report is of the turn of the task a take of this claim
-// holds: it names that task's number, the take stands accepted, its turn started or not, and the
-// report is of the claim's current generation. A report of that turn is what finishes the task
-// or, carrying a provider error, takes it to the ladder (reportedTask); any other report finishes
-// nothing and reaches no ladder, so its refusal is the launch budget's (turnOutcome). A report of
-// an earlier generation is of a turn of a process the claim has left, which held no take of this
-// process: a take stands only within the generation that accepted it, since the process's end
-// settles it (settle, interrupted). A daemon that reads the window back holds to the same rule
-// (Claim.owedReport).
+// holds (Claim.reportOfTake). A report of that turn is what finishes the task or, carrying a
+// provider error, takes it to the ladder (reportedTask); any other report finishes nothing and
+// reaches no ladder, so its refusal is the launch budget's (turnOutcome). A daemon that reads the
+// window back asks the same rule of each report it holds (Claim.owedReport).
 func (m *Machine) reachesLadder(r RequestTurnOutcome) bool {
-	p := m.claim.Pending
-	return r.Task != 0 && r.Generation == m.claim.Generation && p != nil && p.Number == r.Task && p.taken()
+	return m.claim.reportOfTake(r.Generation, r.Task)
+}
+
+// reportOfTake is whether a report of the given generation naming task is of the turn of the take
+// the claim's pending task holds, the one rule of it (reachesLadder, owedReport): it names that
+// task's number, the take stands accepted, its turn started or not, and the report is of the
+// claim's current generation. A report of an earlier generation is of a turn of a process the
+// claim has left, which held no take of this process: a take stands only within the generation
+// that accepted it, since the process's end settles it (settle, interrupted). A report naming no
+// number is of no take's turn, and a task of no number (Delivery.Number) is named by no report.
+func (c Claim) reportOfTake(generation, task uint64) bool {
+	p := c.Pending
+	return task != 0 && generation == c.Generation && p != nil && p.Number == task && p.taken()
 }
 
 // notTheTakesTurnLine is the line of a take given its turn back (notTheTakesTurn), at Info, with
@@ -490,13 +474,15 @@ const takesTurnMovedLine = "supervise: a turn's report names no task of the take
 // turn. No end-frame bound stands over such a claim's task to finish it meanwhile
 // (endFrameFinishes): its report is what finishes it. R5's second wait is on the take again
 // from this decision (secondWaitNow, armWaits), and the claim counts as in a turn for another
-// role's adoption until that turn ends (Claim.InTurn).
+// role's adoption until that turn ends (Claim.InTurn). Work held for the report of the turn given
+// the take goes on waiting, now for the take's own turn or for that second wait's bound
+// (reportwait.go, putBack).
 //
 // Where the turn after the one the take was given has started by the time the report comes — it
 // runs, or it has ended too, which the turns counted say (turnCount.ended) — that turn is the
 // take's, and nothing is undone: the take's turn stays started, and is that later turn
 // (turnCount.take), so its own report, naming the take's number, is what settles the task, and a
-// let-go at or after its end waits for that report (reportSettles) rather than give the task back
+// let-go at or after its end waits for that report (reportwait.go) rather than give the task back
 // as never run. Put back instead, the take would await a turn it already had: a suspension held
 // over that turn would stop the claim at its end and give the task back unstarted, a death would
 // give it back with no note, and the turn that starts next — the take's turn already reported or
@@ -542,7 +528,7 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 	if !p.turnStarted() || count.take == 0 || r.Sequence != count.take {
 		return nil
 	}
-	if count.ended > count.take || (count.ended == count.take && m.inTurn()) {
+	if m.startedSince(count.take) {
 		count.take++
 		m.log.Info(takesTurnMovedLine, "task", p.Number, "sequence", count.take)
 		return nil
@@ -550,192 +536,25 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 	return m.putBack(ctx, "count")
 }
 
-// putBack puts the pending take back to awaiting its turn (notTheTakesTurn, heldUnrun): the
-// delivery's turn start is undone, the text it was answered kept, and the next turn that starts
-// is the take's. by names what said the turn given was not the take's, for the line: "count",
-// the count of the process's turns, or "held", the producer's word.
+// putBack puts the pending take back to awaiting its turn (notTheTakesTurn, heldUnrun,
+// bindRestoredAnchor): the delivery's turn start is undone, the text it was answered kept, and the
+// next turn that starts is the take's. by names what said the turn given was not the take's, for
+// the line: "count", the count of the process's turns, or "held", the producer's word.
+//
+// It decides the wait for the take's report again rather than end it (reportwait.go): no report
+// of the run given the take is owed any more, but the take's own turn's is, and that turn may
+// already have started, its start frame on its way behind the report. So work held for the
+// report — a held suspension, a stale-plugin relaunch — goes on waiting, for that turn's start
+// or for R5's second bound, which this decision arms from here (secondWaitNow), and the wait's
+// own bound goes (armReportWait).
 func (m *Machine) putBack(ctx context.Context, by string) error {
 	p := m.claim.Pending
 	m.log.Info(notTheTakesTurnLine, "task", p.Number, "by", by)
 	p.TurnStarted, m.turns.take = false, 0
+	if m.workHeld() {
+		m.log.Info(putBackWaitsLine, "task", p.Number, "suspension", m.held != nil, "relaunch", m.staleRelaunch != nil)
+	}
 	return m.putPending(ctx)
-}
-
-// inTurn is whether a turn of the claim's process is running: the claim is working, and not for
-// a compaction alone (Machine.compacting, whose inTurn is a turn started under it).
-func (m *Machine) inTurn() bool {
-	return m.claim.State == StateWorking && (m.compacting == nil || m.compacting.inTurn)
-}
-
-// heldPassedOverLine is the line of a turn's start the daemon gives no take, at Info, with the
-// task's number, because the producer said that take's text was held unrun through that turn
-// (heldUnrun, turnStarted).
-const heldPassedOverLine = "supervise: a turn started that the producer said ran with the accepted take's text held; the turn is no task's, and the take awaits its turn"
-
-// heldUnrun is a report read while the claim's count of its process's turns is not known
-// (notTheTakesTurn), for what the producer said of the pending take: the take's text was still
-// held unrun at the end of the report's turn (RequestTurnOutcome.Held). The producer holds the
-// text from the take's answer until the text starts a turn of its own — pi-shared's take holds it
-// through the run going when the answer came (task-take.ts, Accepted "held"), the Claude bridge
-// through the turn running then (take.go, bridge.held) — and a report sent before the answer
-// reached it names nothing held. So every report naming the take held is of a turn that ended
-// before the take's own turn began, and none is of a turn that ran the text, whatever the count
-// says or whenever the report comes: that is what makes the word exact, where a count lost to a
-// restart is a guess.
-//
-// What the word does not say is whether the take's own turn has started by the time the report
-// comes: a start the machine saw after the reported turn's end may be it, and that turn's own
-// report then settles the task, while the take, put back, would await a turn it already had
-// (notTheTakesTurn says what that costs). So the word is applied only where no start has followed
-// the reported turn's end, and is otherwise moot. The frames carry no sequence, so the machine
-// reads that from what it kept at the take's accept (takeAnchor), where the take is the first of
-// its number this process made while the count was not known (anchorTake) and its connection is
-// still the claim's (onAnchoredConn):
-//
-//   - the turns the producer said held the text are the ones that ended from the take's answer
-//     to the take's own turn, consecutive in the producer's count, and each started after the
-//     accept (one that started before it would have had the claim working, and the take refused
-//     in-turn), so the turn of the first start after the accept is at most the smallest sequence
-//     such a report named (takeAnchor.ceiling);
-//   - on one connection no frame is dropped, so the starts the machine sees from that first one
-//     on are of consecutive turns, and the turn of the last start seen is at most the ceiling plus
-//     the starts seen after the one the daemon gave the take;
-//   - where that is at most the highest sequence a report named held (takeAnchor.held), the last
-//     start seen is of a turn that held the text, so the take's own turn, which follows every such
-//     turn, has not started: the take is put back, and the next start is given to it. Anything
-//     else is moot.
-//
-// A report that comes before the start of the turn given the take is kept (takeAnchor.heldReport)
-// and read at that start, which is given no take where it is of a turn that held the text
-// (turnStarted). A take of a number taken before — one a provider error's ladder, a compaction or
-// the second wait gave back, taken again — has no anchor, so a report its earlier take's hold
-// made, sent late, reaches no later take; nor does a report naming another number than the
-// pending take's, a report at or below the sequences the anchor already accounts for
-// (takeAnchor.reported), or one of a take whose connection the claim no longer has, where a frame
-// may have been dropped. Each of them is read as a report without the word.
-//
-// A take the daemon before this one accepted, which a daemon start restored, is anchored where
-// the store shows that daemon can have handled no turn start after the one it gave the take
-// (anchorRestored), and its connection is the one the first hello after the start opened
-// (bindRestoredAnchor); a report that comes before that hello is kept, and read at it.
-func (m *Machine) heldUnrun(ctx context.Context, r RequestTurnOutcome) error {
-	p := m.claim.Pending
-	a := &m.turns.anchor
-	unbound := a.restored && a.conn == 0
-	if r.Held == 0 || r.Held != p.Number || a.number != p.Number || r.Sequence <= a.reported ||
-		(!unbound && !m.onAnchoredConn()) {
-		return nil
-	}
-	a.heldReport(r.Sequence)
-	since, given := m.sinceGiven()
-	if !given || unbound {
-		return nil
-	}
-	if !a.unrun(since) {
-		m.log.Info("supervise: a turn's report says the accepted take's text was held through it, but a turn may have started after it; the take keeps its turn",
-			"task", p.Number, "sequence", r.Sequence)
-		return nil
-	}
-	a.pass(since)
-	return m.putBack(ctx, "held")
-}
-
-// sinceGiven is how many turn starts the machine has seen after the one it gave the pending take
-// (takeAnchor.given), and whether that take has a given turn standing: its turn started, and a
-// start of it the anchor placed. A turn running counts as started, a compaction alone does not
-// (inTurn).
-func (m *Machine) sinceGiven() (uint64, bool) {
-	p, a := m.claim.Pending, m.turns.anchor
-	if p == nil || !p.turnStarted() || a.given == 0 {
-		return 0, false
-	}
-	seen := m.turns.ended
-	if m.inTurn() {
-		seen++
-	}
-	if seen < a.given {
-		return 0, false
-	}
-	return seen - a.given, true
-}
-
-// onAnchoredConn is whether the claim's connection is the one the anchored take was accepted on
-// (takeAnchor.conn), or, for a take a daemon start restored, the one its first hello opened.
-func (m *Machine) onAnchoredConn() bool {
-	conn, connected := m.deps.Conns.Conn(m.claim.Token)
-	return connected && conn.Sequence() == m.turns.anchor.conn
-}
-
-// anchorRestored anchors the take of the pending task a daemon start restored (NewMachine), for
-// a report saying that take's text was held to give it its turn back (heldUnrun) as one this
-// daemon accepted would be, where that can never put back a take whose own turn ran. The
-// producer's word is as exact as ever; what this daemon cannot see is the starts the daemon
-// before it handled, whose frames reached that daemon and no other, so it anchors the take only
-// where the store shows that daemon handled none after the turn it gave the take:
-//
-//   - a take awaiting its turn: that daemon handled no start after the accept, or after the report
-//     that put the take back (a start it handled then would have been given the take), so every
-//     start after that point reaches this daemon, behind the first hello, from the shim's backlog
-//     or as the agent sends it, and the first one it sees is the one it gives the take
-//     (turnStarted), as for a take it accepted itself; a run of the host's own whose setup spans
-//     the restart is such a start;
-//   - a take whose turn that daemon gave, where the claim is stored working and records no turn's
-//     end after the take's accept (Claim.LastTurnEnd, Delivery.ConfirmedAt): that daemon handled
-//     the given turn's start and nothing after it, since it writes every turn's end and start it
-//     handles, and frames reach a machine in the order the shim sent them. The given turn counts
-//     as the start running at this machine's build (takeAnchor.given 1).
-//
-// Every other restored take is refused the word: one whose given turn's end that daemon handled
-// may have had its own turn start, run and end under that daemon as well, its report still on its
-// way, and the store tells that from a take whose own turn is still to come by nothing. Put back
-// there, the take's own report would then read it as a turn whose start is still to come
-// (startedUnseen), whose mark names it in the next task's start, and a second wait that ran out
-// before that report landed would take back a task whose turn ran. So its run of the host's own
-// is given back by no report, as before this word, and that is the one take a restart leaves
-// unbounded: the store would need the time of the given turn's start to tell the two apart.
-//
-// A take whose report the store owes (owedReport) is one whose own turn ran, and is not anchored.
-// Reports at or below the newest the restored window holds were applied by that daemon or are of
-// an earlier take of the number (takeAnchor.reported), and none of them is read. What this leaves
-// is a daemon that received frames it never recorded — a write the store refused before it
-// stopped, or frames it read and never handled — which no restart can see.
-func (m *Machine) anchorRestored() {
-	p := m.claim.Pending
-	if p == nil || !p.taken() || p.TakenText == "" || m.finishOwed || m.ladderOwed != nil {
-		return
-	}
-	count := m.counted()
-	a := takeAnchor{number: p.Number, reported: m.claim.newestReported(), restored: true}
-	switch {
-	case !p.TurnStarted:
-	case m.claim.State == StateWorking && !m.claim.LastTurnEnd.After(p.ConfirmedAt):
-		a.given = count.ended + 1
-	default:
-		return
-	}
-	count.anchor = a
-}
-
-// bindRestoredAnchor gives a restored take's anchor (anchorRestored) the connection of the claim's
-// first hello after the daemon start, and reads the reports kept before it (heldUnrun). A first
-// hello whose connection is already gone leaves the anchor nothing to read starts on: frames may
-// have been lost with it, so the anchor goes.
-func (m *Machine) bindRestoredAnchor(ctx context.Context) error {
-	a := &m.turns.anchor
-	if !a.restored || a.conn != 0 || m.turns.generation != m.claim.Generation {
-		return nil
-	}
-	conn, connected := m.deps.Conns.Conn(m.claim.Token)
-	if !connected {
-		m.turns.anchor = takeAnchor{}
-		return nil
-	}
-	a.conn = conn.Sequence()
-	if since, given := m.sinceGiven(); given && a.unrun(since) {
-		a.pass(since)
-		return m.putBack(ctx, "held")
-	}
-	return nil
 }
 
 // startedUnseen is the start of the accepted take's turn, done at that turn's report because the
@@ -754,290 +573,31 @@ func (m *Machine) bindRestoredAnchor(ctx context.Context) error {
 // (notTheTakesTurn), so no start is still to come for it, and a mark for it would name this task
 // in the start of the claim's next task's turn. A claim whose count of its process's turns is not
 // known (turnCount.known) marks the next start, as it always did, and its report places no count
-// (learnTurns), since the machine gave the take no turn it saw. A working claim's start frame has
-// come already: the turn running is the report's.
+// (learnTurns), since the machine gave the take no turn it saw; except where a hello of the
+// process said its shim's backlog is not whole (turnCount.cut, readBacklog): the start may be
+// among the frames the backlog dropped, the take's whole turn run while no daemon was connected,
+// and the mark would take the next start, the next task's own among them. There no start is
+// marked, and one of the reported turn that does come is read as any other (turnStarted): given
+// to a take that awaits its turn, which its own report then settles, or no task's, its line naming
+// no task. A busy claim marks nothing (busy): in a turn, its start frame has come already, and the
+// turn running is the report's; under a compaction with no turn started under it, a start is given
+// no take and reads no mark (turnStartedWhileBusy), so a mark left for a start that comes under
+// the compaction would outlive it and name this task in a later start.
 func (m *Machine) startedUnseen(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	m.log.Info("supervise: a turn's report names the accepted take's task before its turn start was seen; the turn is the take's",
 		"task", p.Number)
 	m.resetPromptBudgets()
 	count := m.counted()
-	if m.claim.State != StateWorking && (!count.known || r.Sequence > count.ended) {
+	toCome := r.Sequence > count.ended
+	if !count.known {
+		toCome = !count.cut
+	}
+	if !m.busy() && toCome {
 		m.reportedAhead = aheadReport{task: p.Number, sequence: r.Sequence}
 	}
 	count.take = r.Sequence
 	return m.startTakesTurn(ctx)
-}
-
-// aheadReport is the turn whose report ran ahead of its start frame (Machine.reportedAhead): the
-// task the report named, 0 for none, and the report's sequence.
-type aheadReport struct {
-	task, sequence uint64
-}
-
-// turnCount is a process's turns as this machine counts them from the worker stream, which is
-// what tells which turn a turn-outcome report is of (RequestTurnOutcome.Sequence): the producer
-// numbers the turns of a launch generation from 1 in the order they end, and the end of every turn
-// that ends once its agent is ready reaches the machine as an end frame — of a turn it saw start
-// (turnEnded), of one it did not (blindTurnEnded), or of one under a compaction — before the next
-// one starts. So the turn starting now is the one after the ends counted, and a report whose
-// sequence is at or below that count is of a turn whose start was seen.
-//
-// generation is the launch generation counted, ended the ends of its turns seen, and take the
-// sequence of the turn the daemon gave the pending task's accepted take (turnStarted), or the one
-// a report of that take's number named first (startedUnseen); 0 for none. known is whether ended
-// is every end of the generation's turns: a machine a daemon start builds over a live process
-// missed the turns that ended under the daemon before it (NewMachine), a start that arrives with a
-// turn still running says an end was missed (turnStartedWhileBusy), and a turn that ends before
-// the agent said ready is one the producer may or may not have numbered (turnEndedBeforeReady).
-// A count not known goes on counting every end it sees, so it is the producer's count less the
-// ends it missed, and take is read only while the count is known. It reads a report's turn start
-// as unseen wherever the claim is not working (startedUnseen), as the machine read every report
-// before it counted, and gives a take its turn back only on the producer's word that the take's
-// text was held unrun through the report's turn (notTheTakesTurn, heldUnrun); anchor is what a
-// take accepted meanwhile saw (takeAnchor), which that word is read against, and the report of
-// that take's own turn makes the count known again where it places that turn among the ones the
-// machine saw (learnTurns), placed until the agent's answer to the ask that placement makes has
-// checked it (placedCount, checkPlacedCount). The next launch counts its generation afresh, known
-// (counted).
-type turnCount struct {
-	generation, ended, take uint64
-	known                   bool
-	anchor                  takeAnchor
-	placed                  placedCount
-}
-
-// lose is the count no longer known: what a placement still unchecked added to the ends counted
-// goes back, so they are the ends seen again, and a take's anchor goes with it.
-func (c *turnCount) lose() {
-	c.ended -= c.placed.offset
-	c.known, c.anchor, c.placed = false, takeAnchor{}, placedCount{}
-}
-
-// counted is the claim's count of its process's turns, begun afresh, known, for a launch
-// generation it has not counted yet (turnCount). A count of an earlier generation goes whole,
-// known or not, its take's anchor with it: the turns it counted were another process's.
-func (m *Machine) counted() *turnCount {
-	if m.turns.generation != m.claim.Generation {
-		m.turns = turnCount{generation: m.claim.Generation, known: true}
-	}
-	return &m.turns
-}
-
-// takeAnchor is what the machine saw when it accepted the pending task's take while its count of
-// the process's turns was not known (anchorTake), for that take's report to place the count
-// (learnTurns) and for a report saying its text was held to give it its turn back (heldUnrun):
-// number, the number taken, 0 for no anchor; reported, the newest sequence of the claim's
-// generation its window of reports held then (Claim.newestReported), or the highest a report
-// said held when a report or a start passed the given turn over (pass); conn, the sequence of the
-// claim's connection then (runtime.Conn.Sequence); and given, the turn the daemon gave the take as
-// the count numbers it (turnStarted: the ends it had counted, plus one), 0 while it has given
-// none.
-//
-// ceiling and held are what the reports of the take's turns said (heldReport): ceiling, an upper
-// bound on the producer's sequence of the turn the daemon gave the take, or of the next start
-// while it gave none, 0 while none is known; held, the highest sequence of a report that said the
-// take's text was held unrun at its turn's end, 0 for none. passed is whether a turn given the
-// take, or a start, was passed over since the accept (pass): ceiling then counts on from that
-// turn, and a report's sequence no longer lowers it.
-//
-// restored is a take the daemon before this one accepted, which a daemon start restored
-// (anchorRestored): its accept is the point the store shows that daemon handled no start after,
-// conn is 0 until the first hello after the start opens one (bindRestoredAnchor), and it places
-// no count (learnTurns), since what that daemon counted is not this machine's.
-type takeAnchor struct {
-	number, reported, conn, given uint64
-	ceiling, held                 uint64
-	passed, restored              bool
-}
-
-// heldReport takes the sequence of a report that said the take's text was held unrun at its
-// turn's end. Every such turn started after the accept, so until a turn is passed over the
-// smallest such sequence bounds the turn of the first start after the accept (heldUnrun); after
-// it, a report that comes late is of a turn that may have started before the one passed over, and
-// lowers nothing.
-func (a *takeAnchor) heldReport(sequence uint64) {
-	if !a.passed && (a.ceiling == 0 || sequence < a.ceiling) {
-		a.ceiling = sequence
-	}
-	a.held = max(a.held, sequence)
-}
-
-// unrun is whether the last start the machine has seen, since starts after the one it gave the
-// take (or the start being decided, for since 0 with none given), is of a turn the producer said
-// held the text: its turn is at most the ceiling plus since, and that is at most the highest
-// sequence a report named held.
-func (a takeAnchor) unrun(since uint64) bool {
-	return a.held != 0 && a.ceiling != 0 && a.ceiling+since <= a.held
-}
-
-// pass is the turn the daemon gave the take, and since starts after it, passed over as turns that
-// held the text: the next start is of a turn at most one past the last of them, and is the one
-// given the take (turnStarted). Every turn up to the highest a report named held has ended, since
-// its report came, so the take's own turn's report is right after that one where it follows them
-// (learnTurns).
-func (a *takeAnchor) pass(since uint64) {
-	a.ceiling += since + 1
-	a.given, a.passed = 0, true
-	a.reported = max(a.reported, a.held)
-}
-
-// placedCount is a count of the process's turns a take's report placed (learnTurns) that the
-// agent's answer to the ask the placement made has still to check (checkPlacedCount): ask, that
-// ask's id (runtime.ConnState.Ask), "" for none; sequence, the turn the daemon gave the take, as
-// the placed count numbers it; offset, what the placement added to the ends counted; and conn,
-// the sequence of the connection the take was accepted on.
-type placedCount struct {
-	ask                    string
-	sequence, offset, conn uint64
-}
-
-// turnsKnownAgainLine is the line of a count of the process's turns a take's report made known
-// again (learnTurns), at Info, with the report's sequence and the ends the count now holds.
-const turnsKnownAgainLine = "supervise: the report of a take's own turn places the turn the daemon gave it; the count of its process's turns is known again"
-
-// turnsPlacementTakenBackLine is the line of a placed count the agent's answer took back, or that
-// the agent did not answer the ask for (learnTurns, checkPlacedCount), at Info, with the sequence
-// the count gave the turn given the take and why.
-const turnsPlacementTakenBackLine = "supervise: the agent's answer does not bear out the count of its process's turns a take's report placed; the count is not known again"
-
-// anchorTake keeps, for a take just accepted while the claim's count of its process's turns is
-// not known, what learnTurns needs to place that take's turn (takeAnchor), and drops what an
-// earlier take kept. first is whether the claim had never taken the take's number before
-// (Claim.TaskTaken, the number of its last accepted take: numbers rise, and a pending number a
-// take holds is the last one taken). A number taken before — a take a provider error, a
-// compaction or the second wait gave back, then taken again — keeps nothing, and so does a take
-// accepted while the claim has no connection: see learnTurns.
-func (m *Machine) anchorTake(first bool) {
-	count := m.counted()
-	if count.known {
-		return
-	}
-	count.anchor = takeAnchor{}
-	conn, connected := m.deps.Conns.Conn(m.claim.Token)
-	if !first || !connected {
-		return
-	}
-	count.anchor = takeAnchor{number: m.claim.Pending.Number, reported: m.claim.newestReported(), conn: conn.Sequence()}
-}
-
-// learnTurns makes the claim's count of its process's turns known again from the report r of the
-// turn the daemon gave the pending task's take (reportedTask), where the report places that turn
-// among the turns the machine saw for certain. The frames carry no sequence, so a count lost —
-// to a daemon restarted under the process (NewMachine), a turn ended before ready
-// (turnEndedBeforeReady), a start over a running turn (turnStartedWhileBusy) — is learned from a
-// report or not at all; and a report placed one turn off would leave the count one too high or
-// one too low, and either lets the report of another turn give back a take whose own turn is
-// running or has run (notTheTakesTurn). A sequence taken as the count whenever the claim is not
-// working undercounts wherever a report comes late: a report sent again after a restart, or the
-// report of one turn landing after the next one's end.
-//
-// The report places the turn where all of these hold, and each is why no other turn can be it:
-//
-//   - it names the number of the take the machine accepted while the count was not known, a number
-//     the claim had not taken before (anchorTake): the report is then of the one turn that ran
-//     that take's text, which the worker started on the take's answer, after the take — no
-//     earlier take of the number left a turn whose late report names it, and no turn that ended
-//     before the restart did;
-//   - its sequence is the one right after the newest the window held at the take
-//     (takeAnchor.reported): every turn up to that one had ended by then, its report having reached
-//     the daemon, so the report's turn is the first of the process to start after them. A run of
-//     the host's own that started first — the run given a take that notTheTakesTurn is for —
-//     leaves the take's own turn a later sequence than this one, whether or not its report has come,
-//     but where a report said such a run held the take's text and the turn it was given was passed
-//     over (heldUnrun, takeAnchor.pass), reported is the highest such report's sequence, and the
-//     take's own turn, which follows every turn that held its text, is the one right after it;
-//   - the connection the take was accepted on is still the claim's (takeAnchor.conn): every frame
-//     from the take on reached the machine in the order the shim wrote it, none dropped from the
-//     backlog of a shim with no daemon to send to, so of the turns that started after the take,
-//     or after the last turn passed over, that first turn's start is the first the machine sees;
-//   - no start has come since the one the daemon gave the take (takeAnchor.given), at the report
-//     and again at the agent's answer to the ask the placement makes (checkPlacedCount): the claim
-//     works the given turn, its end still to come, or that end has come and nothing after it.
-//
-// The last is what tells the given turn from a start that reached the machine late, of a turn
-// that ended before the take: one a shim replays behind its hello, of a turn that ran while no
-// daemon heard it, or one queued behind the claim's earlier decisions while the report and the
-// take came over HTTP, which nothing orders with the frames. The machine cannot tell such a start
-// from any other — no frame says it is replayed, and its events come in the order of a live
-// turn's — and behind it the take's own turn is the one after it, whose report can come before
-// its start does. But the shim sends a turn's start before that turn's report can be sent, so
-// before the agent answers an ask made at the report, and the worker stream hands the machine
-// that answer behind every frame the shim sent before it, naming the ask it answers
-// (StreamTurnAnswered.Ask), so no answer to an earlier ask stands in for it: by then the take's
-// own turn's start has come, after the one given, and the placement goes back (lose). An agent
-// that does not answer leaves nothing to check by, and the placement goes back at once.
-//
-// The producer then numbered the given turn r.Sequence where the count numbered it given, so
-// every count moves by the difference: the ends seen, and the take's turn. The count stands from
-// the report on, since the report of the run given the next take may come before the answer does.
-// Until the answer, every start the machine handles is one the shim sent before it, so a take a
-// wrong count would give back is one accepted after the report and given such a start, and the
-// report that gives it back is of a later turn than that start, which has to run and be reported
-// before the answer reaches the machine: the stream behind the reports by a whole run more, under
-// which the first start after a take is not that take's turn however the turns are counted
-// (turnStarted). Anything that fails a check leaves the count not known, the take's anchor spent
-// either way, and the report of a later take's turn may place it.
-func (m *Machine) learnTurns(ctx context.Context, r RequestTurnOutcome) {
-	count := m.counted()
-	anchor := count.anchor
-	count.anchor = takeAnchor{}
-	if count.known || anchor.number == 0 || anchor.number != r.Task || anchor.given == 0 || anchor.restored {
-		return
-	}
-	conn, connected := m.deps.Conns.Conn(m.claim.Token)
-	alone := count.ended < anchor.given || (count.ended == anchor.given && m.claim.State != StateWorking)
-	if !connected || conn.Sequence() != anchor.conn || !alone || r.Sequence != anchor.reported+1 || r.Sequence < anchor.given {
-		return
-	}
-	offset := r.Sequence - anchor.given
-	count.ended += offset
-	count.take, count.known = r.Sequence, true
-	count.placed = placedCount{sequence: r.Sequence, offset: offset, conn: anchor.conn}
-	m.log.Info(turnsKnownAgainLine, "sequence", r.Sequence, "ended", count.ended)
-	state, answered := m.streaming(ctx, conn)
-	if !answered || state.Ask == "" {
-		m.log.Info(turnsPlacementTakenBackLine, "sequence", r.Sequence, "why", "the agent did not answer whether it is in a turn")
-		count.lose()
-		return
-	}
-	count.placed.ask = state.Ask
-}
-
-// checkPlacedCount checks a count a take's report placed (placedCount) at the worker stream's
-// delivery of the agent's answer to the ask the placement made, which comes behind every frame the
-// shim sent before that answer (StreamTurnAnswered); an answer to any other ask checks nothing.
-// The count stands where no start has come since the turn the daemon gave the take and the
-// take's connection is still the claim's; anything else takes it back (lose). A count of a
-// generation the claim has left is the next count's to drop (counted).
-func (m *Machine) checkPlacedCount(answer StreamTurnAnswered) {
-	count := &m.turns
-	placed := count.placed
-	if placed.ask == "" || answer.Ask != placed.ask || count.generation != m.claim.Generation {
-		return
-	}
-	conn, connected := m.deps.Conns.Conn(m.claim.Token)
-	if !connected || conn.Sequence() != placed.conn {
-		m.log.Info(turnsPlacementTakenBackLine, "sequence", placed.sequence, "why", "the take's connection is no longer the claim's")
-		count.lose()
-		return
-	}
-	if count.ended > placed.sequence || (count.ended == placed.sequence && m.claim.State == StateWorking) {
-		m.log.Info(turnsPlacementTakenBackLine, "sequence", placed.sequence, "why", "a turn started after the one given the take")
-		count.lose()
-		return
-	}
-	count.placed = placedCount{}
-}
-
-// newestReported is the newest sequence of the claim's generation its window of reports holds,
-// and 0 for none: every turn of its process up to that one has ended, since its report came. The
-// window keeps the newest reports whatever its bound drops (recordTurnOutcome), in key order.
-func (c Claim) newestReported() uint64 {
-	if n := len(c.TurnOutcomes); n > 0 && c.TurnOutcomes[n-1].Generation == c.Generation {
-		return c.TurnOutcomes[n-1].Sequence
-	}
-	return 0
 }
 
 // pendingNumber is the number of the task pending, 0 for none.

@@ -516,9 +516,10 @@ func pendingID(p *Delivery) string {
 // wait with the claim's timers (letGo), which is what makes the ladder's task replaceable, so the
 // claim reaching here then holds no delivery at all. So does a task over a delivery whose take's
 // turn has run on a claim in no turn: runParkedLaunchNow retires that delivery as the last case
-// below does, before the launch, which would otherwise take it back as a cut turn. Over a claim
-// that is working, such a delivery is retired below and the launch keeps its turn
-// (runParkedLaunchNow says why).
+// below does, before the launch, which would otherwise take it back as a cut turn. Each of these
+// is made only once that launch's lifecycle recheck has passed: a refused recheck changes nothing,
+// and the operator's task is refused before it reaches here. Over a claim that is working, such a
+// delivery is retired below and the launch keeps its turn (runParkedLaunchNow says why).
 //
 // The task is as the store keeps it: a deliver's request comes through Handle, which gives every
 // event's text through the store's rule, and the daemon's own delivery of a relaunch's record
@@ -1159,11 +1160,13 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // (message); outOfMemory says that end was the pod running out of memory, which adds
 // outOfMemoryTask, and it is written on every such call, true or false, so a second interruption
 // of the same task for another reason clears a note that no longer describes it. A take whose
-// turn had not started goes back with no note, since the worker ran nothing of it. The task is
-// neither retired nor its run marked served, since the turn never finished; the claim's TaskTaken
-// stays, since the worker read it. A task no take holds is left as it is. An older daemon's ask
-// of an update round is the one task no take is accepted for again: it keeps its delivery id,
-// which names its round, and the next take of it drops it (takeable).
+// turn had not started goes back with no note, since the worker ran nothing of it, except a
+// restored take whose turn may have run with no frame of it reaching the machine
+// (Machine.restoredTurnUnseen): it goes back as a turn cut off, since the worker may have run it
+// whole. The task is neither retired nor its run marked served, since the turn never finished;
+// the claim's TaskTaken stays, since the worker read it. A task no take holds is left as it is. An
+// older daemon's ask of an update round is the one task no take is accepted for again: it keeps
+// its delivery id, which names its round, and the next take of it drops it (takeable).
 //
 // A take whose turn has already ended is settled by its claim's contract. Where the end frame
 // finishes a task — a plugin below TaskTakeContract, whose reports name no number
@@ -1175,7 +1178,7 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // taken back with the note a cut turn gets, as though its turn were still running: the next
 // accepted take carries the sentence of its interruption, and the let-go that follows records
 // the task's turn as cut off (Machine.cutTurnOf). Whether a turn runs is the one answer every
-// let-go reads (endState, as recordEnd and the stall backstop read it): a claim stored working
+// let-go reads (cutsTurn, as recordEnd and the stall backstop read it): a claim stored working
 // for nothing that runs is in no turn, so a compaction Oh My Pi started after the take's turn
 // ended and before its report leaves that take to be settled here too, whichever let-go comes.
 //
@@ -1208,13 +1211,14 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	if p == nil || !p.taken() {
 		return nil
 	}
-	inTurn := m.endState() == StateWorking
+	inTurn := m.cutsTurn()
 	if p.turnStarted() && !inTurn {
 		if by, finishes := m.overTurnFinish(); finishes {
 			return m.finishTask(ctx, by)
 		}
 		inTurn = true
 	}
+	inTurn = inTurn || (m.restoredTurnUnseen && m.restoredTake && p.awaitsTurn())
 	m.log.Warn("supervise: "+why+"; the task waits for the relaunch", "task", p.Number, "delivery", p.ID)
 	next := *p
 	handshake := m.claim.Handshake

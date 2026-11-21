@@ -1271,11 +1271,12 @@ func (h *harness) launch() {
 	h.wantState(StateLaunching)
 }
 
-// connect is the shim's hello, with its connection in the directory.
+// connect is the shim's hello, with its connection in the directory: a shim of this release
+// whose backlog dropped nothing since its last connection (StreamHello.BacklogWhole).
 func (h *harness) connect() {
 	h.t.Helper()
 	h.conns.Register(h.token, h.conn)
-	h.must(StreamHello{Claim: h.token, Generation: h.generation()})
+	h.must(StreamHello{Claim: h.token, Generation: h.generation(), BacklogWhole: true})
 }
 
 // register posts a registration naming the harness's own plugin contract, so every claim it brings

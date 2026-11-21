@@ -74,8 +74,11 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // No refresh wake can be waiting on the machine when this runs, and the refusal parks none, so
 // the credit of a refused launch of this lane is one nothing is left waiting for: a credit is
 // taken over a claim that holds no wake at all (refreshPlugin's own guard), the turn of a parked
-// wake takes it off the machine before anything is rechecked (wakeNow, runParkedLaunchNow), and
-// no decision of this package raises a launch over one still waiting (parkWake lists them).
+// wake takes it off the machine before anything is rechecked (wakeNow), and no decision of this
+// package raises a launch over one still waiting (parkWake lists them). The one recheck made with
+// a wake still waiting, an operator's task's over the launch it would run, answers its refusal
+// itself and never reaches here: that launch keeps waiting, and so does its credit
+// (runParkedLaunchNow).
 //
 // Why the retry such a refusal may arm carries the intent, and what it costs the gate, is where
 // retryHolding and the gate state it (retryHolding, RefreshGate, Correct): the launch that retry

@@ -118,6 +118,22 @@ const (
 	SuspendedByReleased SuspendSource = "released"
 )
 
+// allSuspendSources is every SuspendSource, in the order the constants above declare them.
+// TestSuspendSourcesIsEveryDeclaredSourceOnce holds it to the constants the compiler sees in this
+// package, so a source added above and left out here fails that test.
+var allSuspendSources = []SuspendSource{
+	SuspendedByUnknown, SuspendedByOperator, SuspendedByDaemon, SuspendedByExit, SuspendedByReleased,
+}
+
+// SuspendSources is every source a suspended claim can record, in the order they are declared:
+// the one list a test outside this package walks to cover each source. They are the values the
+// store's check constraint allows beside the empty source of a claim that is not suspended
+// (internal/store/migrations/20261101201850_claim_suspended_by_released.up.sql). It is a copy, so
+// no caller changes the package's own list.
+func SuspendSources() []SuspendSource {
+	return slices.Clone(allSuspendSources)
+}
+
 // ByRule is whether the source is one the daemon itself recorded as a stop of its own — its own
 // suspend, or a root's exit: the sources a daemon rule resumes with no operator, and the only
 // suspended phase workers the stranded report leaves out. A release is not one of them. It is a
@@ -362,6 +378,16 @@ type Claim struct {
 	// and they are persisted, so a daemon restart reads the run the reports before it left rather
 	// than starting the count again. They go with the session whose turns they are (freshRun).
 	TurnOutcomes []TurnOutcome
+	// TurnOutcomeMark is the window's watermark, the zero key for none: the key of the newest
+	// report the window dropped to keep to its bound (recordTurnOutcome), below which every report
+	// of its generation was applied, and every report of an earlier generation is of a process the
+	// claim has left. Every report at or below it that the window does not hold is a repeat, since
+	// the window applied it before it dropped it, or it is of a turn no take of the claim's process
+	// holds and older than every report a run is derived over. The store writes it on the
+	// window's oldest entry, in the window's own column, and reads it back from there, so it is
+	// written and read with the window; a window always holds an entry where it has a mark, since
+	// the bound never empties it and freshRun drops the two together.
+	TurnOutcomeMark TurnOutcomeKey
 	// LastDeathCause is why the claim's process was last found gone — the runtime's own account of
 	// the death (runtime.Observation.Detail: an OOM kill, a node that went away, a pod the cluster
 	// evicted) — and LastStartFailure why its last start did not produce a running agent — a
@@ -752,6 +778,32 @@ func (c Claim) HoldsSession(session string) bool { return c.Session == storetext
 // operator's, which holds until an operator resumes the claim.
 func (c Claim) RuleMayResume() bool {
 	return c.State == StateSuspended && c.SuspendedBy != SuspendedByOperator
+}
+
+// PassedOverByRound is whether a pod update round passes over this claim by R1's rule, read of
+// the claim alone. The round does not ask such a claim, does not wait for it, and does not wake or
+// resume it (dispatch://INFRA-4109 R1). It is every suspension the rule may resume
+// (RuleMayResume): a suspension by the daemon, by a root's exit, by an idle release, or by an
+// unknown source. Such a claim runs no process and no turn in the pod, so an ask reaches no
+// session. A wake or a resume for the ask would override the reason the daemon stopped the claim.
+// For a released claim that reason is the approved decision of dispatch://INFRA-2981: an
+// idle-released pod is not woken to be asked, because it holds no turn to interrupt.
+//
+// The round makes one exception that the claim does not carry: a claim a project's pause stopped
+// is suspended released too, and the round asks it once its agent is ready and waits for it while
+// the daemon's podHolds.owes in internal/daemon holds (internal/daemon's roundClock.passesOver,
+// which reads this method and that rule). PublishUpdateAsk still refuses an ask to every claim this
+// method names, a claim the pause stopped included: a publish to a role with no holder raises a
+// role wake, and the sweep asks a claim only once its agent is ready, when the claim is no longer
+// suspended.
+//
+// An operator's suspension is not passed over. A person's suspend route, the boot's
+// session-conflict suspension and fresh_session record it, and it holds the round until the
+// operator acts (dispatch://INFRA-2981 R5, RuleHolds). internal/daemon's roundAsks (through
+// roundClock.passesOver) and PublishUpdateAsk both read this method, so the ask, the wait and the
+// publish state R1's rule once.
+func (c Claim) PassedOverByRound() bool {
+	return c.RuleMayResume()
 }
 
 // Released is whether the claim is the one suspension a wake brings back: the daemon released its
@@ -1516,15 +1568,10 @@ type Machine struct {
 	// stayed armed (askTurnOver, askRestoredTurn); from unansweredAsksWarn on, each one is logged
 	// at Warn.
 	unansweredAsks int
-	// held is the suspension held for the agent's turn (holdSuspension), or for a launch's ready
-	// (holdSuspendUntilReady), nil for none.
+	// held is the suspension held for the agent's turn (holdSuspension), behind the wait for the
+	// report of its take's turn (reportwait.go), or for a launch's ready (holdSuspendUntilReady),
+	// nil for none.
 	held *RequestSuspend
-	// heldForReport is whether the held suspension waits past the end of its take's turn for the
-	// report that settles the task (turnEnded, reportSettles): that report's finish runs it
-	// (afterTurn), and its deadline bounds the wait (suspendAtTimeout). A hold whose stop the
-	// runtime refused waits for no report: it is tried again at the probe interval (suspendHeld).
-	// It goes with the hold (dropHeld, letGo), and is memory only, as the hold is.
-	heldForReport bool
 	// heldLaunch is whether the held suspension waits over a launch — one holdSuspendUntilReady
 	// keeps until the agent says ready — and false whenever held is nil: it is set with held and
 	// cleared with it (dropHeld, letGo). A project pause's stop owes the role that launch at the
@@ -1533,12 +1580,12 @@ type Machine struct {
 	// rather than a field of the request, because the request is the event the daemon posts and
 	// carries nothing a caller may not set.
 	heldLaunch bool
-	// staleRelaunch is the stale-plugin relaunch held for the agent's turn to end, or for the
-	// report of the take's turn that ended (relaunchWaitsForReport), naming the pass that found
-	// the claim ("boot", "sweep", "wake"); nil for none. Relaunching a stale claim where it stands
-	// would end a turn whose worker the stale-plugin lane asked nothing of, or take back as a cut
-	// turn a task whose turn ran whole, so the relaunch waits for the turn and for that report
-	// (refreshPlugin, turnEnded, afterTurn). It is memory only, as the held suspension's
+	// staleRelaunch is the stale-plugin relaunch held for the agent's turn to end, or behind the
+	// wait for the report of the take's turn (relaunchWaitsForReport, reportwait.go), naming the
+	// pass that found the claim ("boot", "sweep", "wake"); nil for none. Relaunching a stale claim
+	// where it stands would end a turn whose worker the stale-plugin lane asked nothing of, or take
+	// back as a cut turn a task whose turn ran whole, so the relaunch waits for the turn and for that
+	// report (refreshPlugin, turnEnded, afterTurn). It is memory only, as the held suspension's
 	// deadline timer is: the daemon's boot pass and every orphan sweep post StalePlugin again for
 	// a claim still stale (refreshStalePlugins in internal/daemon), so a restart that forgets this
 	// mark finds the same claim again, and letGo drops it with the process it was made for.
@@ -1558,19 +1605,37 @@ type Machine struct {
 	// task, and nothing of the take is done a second time — and clears the mark; one of a later
 	// turn clears it as well, since the reported turn's start was lost. Where the machine does not
 	// know which turn a start is of (turnCount.known), the next start is the reported turn's, as
-	// it always was. A turn's end with no start seen clears it too (blindTurnEnded): that start
-	// was lost and will not come. letGo clears it with the process, and it is memory only.
+	// it always was, except after a hello that said its shim's backlog dropped frames, which clears
+	// the mark and leaves none while the count is not known (readBacklog, turnCount.cut): the start
+	// may be among the frames dropped. A turn's end with no start seen clears it too
+	// (blindTurnEnded): that start was lost and will not come. letGo clears it with the process,
+	// and it is memory only.
 	reportedAhead aheadReport
 	// turns is the count of the current process's turns this machine keeps, which tells the turn
 	// a report is of from the turn the daemon gave the pending task's take (turnCount). It is
 	// memory only: a daemon restarted under the process starts it not known (NewMachine), and the
 	// report of the own turn of a take it accepts since can make it known again (learnTurns).
 	turns turnCount
+	// restoredTake is whether the pending take is one the store held accepted when a daemon start
+	// built this machine (NewMachine), rather than one this machine accepted (accept clears it).
+	// The wait for a take's report bounds such a take with nothing held only where its restored
+	// anchor is bound (reportReaches). It is memory only: what it says is of this daemon's start.
+	restoredTake bool
+	// restoredTurnUnseen is whether the restored take (restoredTake), awaiting its turn, may have
+	// had that turn run with no frame of it reaching the machine: the stale-plugin relaunch of its
+	// claim was decided, at its agent's answer of no turn or at the reconnect deadline with no
+	// answer, behind a replay whose hello did not say the shim's backlog is whole
+	// (markRestoredTurnUnseen, turnCount.cut), and a trim of that backlog can drop a whole turn.
+	// The let-go takes such a take back with the note of a cut turn rather than unstarted
+	// (interrupted), so the next process is told its turn on the task may have run. letGo clears
+	// it with the process, and it is memory only.
+	restoredTurnUnseen bool
 	// rewrite is the pending task whose value the next write at a hold's end (offerPending) logs
 	// under a cause of its own, and that cause: TaskValueRetake for a task taken back in this
 	// process for a reason that keeps the process — a provider error's turn, a compaction, the
-	// second wait (takeBack) — and TaskValueTakeFailed for one a take of which this process failed
-	// to decide or record (undecided). The latest of the two decides, and any write of the value
+	// second wait (takeBack), the bound of the wait for the take's report (reportMissed) — and
+	// TaskValueTakeFailed for one a take of which this process failed to decide or record
+	// (undecided). The latest of the two decides, and any write of the value
 	// clears it (putValue). letGo clears it with the process, and it is memory only: a restart's
 	// own writes are its boot's (valueRead), and its write after a failed take is a hold's end.
 	rewrite valueRewrite
@@ -1887,7 +1952,9 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	}
 	// The take the store holds accepted is anchored where the store shows the daemon before this
 	// one handled no turn start after the one it gave it, for the producer's word that its text
-	// was held to give it its turn back (anchorRestored, heldUnrun).
+	// was held to give it its turn back (anchorRestored, heldUnrun), and for the bound of the wait
+	// for its report (reportReaches).
+	m.restoredTake = m.claim.Pending != nil && m.claim.Pending.taken()
 	m.anchorRestored()
 	m.publish()
 	return m, nil
@@ -1901,7 +1968,8 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // claim a paced wake parked with no process, drops that wake before the lookup and is then
 // decided against the state the gate found (dropWakeFor); an operator's task the claim can take,
 // over a launch parked above a process the claim still records, runs that launch first, so the
-// row that queues the task is the row of the claim that launch leaves (runParkedLaunchNow).
+// row that queues the task is the row of the claim that launch leaves, and a launch its lifecycle
+// recheck refuses runs nothing and changes nothing, and the task is refused (runParkedLaunchNow).
 //
 // Handle returns when the decision is made, which includes the runtime call it makes: a stop
 // waits out its grace, a resume waits out the previous incarnation. A caller feeding many claims
@@ -2059,6 +2127,11 @@ const (
 	UpdateAskAlreadyDelivered
 	// UpdateAskOutOfRound is an ask of a round the claim is not in: nothing is published.
 	UpdateAskOutOfRound
+	// UpdateAskSuspended is an ask of a claim R1 passes over, one the daemon suspended
+	// (Claim.PassedOverByRound): nothing is published and nothing is marked. The sweep asks no
+	// suspended claim (internal/daemon's askRound asks a claim only once its agent is ready), so
+	// the row was enqueued before the suspension.
+	UpdateAskSuspended
 )
 
 // PublishUpdateAsk publishes one ask of the claim's update round through publish, and marks the
@@ -2083,7 +2156,13 @@ const (
 //  2. The claim is read under the lock: a claim no longer in round is published nothing, and so
 //     is one an earlier ask of round already reached. Two rows of one round — a row left by an
 //     older daemon beside the sweep's own — therefore deliver one ask between them, whichever
-//     order they run in and whichever of them finds a holder.
+//     order they run in and whichever of them finds a holder. A claim the daemon suspended
+//     (PassedOverByRound) is published nothing either, and the call answers UpdateAskSuspended:
+//     the round does not ask such a claim (dispatch://INFRA-4109 R1). The sweep can enqueue a
+//     row before the suspension and the row can run after it, an idle release's included. Its
+//     publish would then go to a role with no holder, and the Envoy listener raises a role wake
+//     for every publish to a role with no holder (packages/envoy/cmd/listener/confirmed.go,
+//     roleSend.noHolder). That wake would bring back the pod the release took.
 //  3. The publish runs under the lock, so nothing else of this claim reads or writes the mark
 //     between the publish and the mark. The section holds the lock for at most the owed write's
 //     repair, the publish and the mark's write: the claim-write deadline twice and notify's
@@ -2124,6 +2203,8 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 		return UpdateAskAlreadyDelivered, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
 	case m.claim.UpdateTaskedAt != nil:
 		return UpdateAskAlreadyDelivered, nil
+	case m.claim.PassedOverByRound():
+		return UpdateAskSuspended, nil
 	}
 	delivered, err := publish(ctx)
 	if err != nil {
@@ -2768,13 +2849,13 @@ func (m *Machine) fence(ev Event) (bool, error) {
 
 // timesADelivery is whether a timer of kind waits on one delivery rather than on the claim or
 // its process: the end-frame bound a task's turn's end arms (finishTask), the ladder's wait a
-// provider error arms (providererror.go), R5's two bounds (waits.go), and the bound of a
-// stale-plugin relaunch's wait for a take's report (relaunchWaitsForReport). Each is fenced on the
-// claim's pending delivery as well as on the id the arming recorded, so one that fires after the
-// task it was armed for was replaced decides nothing about the task that replaced it.
+// provider error arms (providererror.go), R5's two bounds (waits.go), and the bound of the wait
+// for a take's report (reportwait.go). Each is fenced on the claim's pending delivery as well as
+// on the id the arming recorded, so one that fires after the task it was armed for was replaced
+// decides nothing about the task that replaced it.
 func timesADelivery(kind TimerKind) bool {
 	switch kind {
-	case TimerFinish, TimerPromptRetry, TimerTake, TimerTurnStart, TimerReportWait:
+	case TimerFinish, TimerPromptRetry, TimerTake, TimerTurnStart, TimerReport:
 		return true
 	default:
 		return false
@@ -3590,9 +3671,12 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // (recordEnd): the process is gone whatever this decision goes on to do, every fact the record
 // reads is still as the death left it, and the relaunch that lets the process go can be a wake's
 // turn away. A task whose take's turn was running is still taken there, so the record says its
-// turn was cut off; one whose turn ended with its report still to come is finished rather than
-// taken back (interrupted). The let-go that follows — the launch, the held suspension's or the
-// failure's — finds this launch's record standing and adds none.
+// turn was cut off. One whose turn ended with its report still to come is settled by its claim's
+// contract (interrupted): below TaskTakeContract, or where a report's finish the store refused is
+// owed, it is finished rather than taken back; for a plugin that names its number, whose report
+// alone finishes it, it is taken back with the note of a cut turn. The let-go that follows — the
+// launch, the held suspension's or the failure's — finds this launch's record standing and adds
+// none.
 //
 // This is the judgement that the agent behind the claim's Envoy session has ended, so it is where
 // the session's clean stop is sent (sessionGone): a connection closing is not — a daemon restart
@@ -4043,7 +4127,8 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // task's, and the background work its own activity report named. It is read here, first,
 // because everything it reads goes with the process below, and the launch that follows clears
 // the report. noEnd records nothing. The mark of a task taken back from that process's turn goes
-// with the process too (cutTurnOf).
+// with the process too (cutTurnOf), as does the mark of a restored take whose turn may have run
+// unseen (restoredTurnUnseen).
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
@@ -4054,7 +4139,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.dropHeld()
 	m.staleRelaunch = nil
 	m.turnsTask, m.reportedAhead, m.rewrite = 0, aheadReport{}, valueRewrite{}
-	m.cutTurnOf = ""
+	m.cutTurnOf, m.restoredTurnUnseen = "", false
 	m.compacting, m.lostCompaction = nil, nil
 	m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {

@@ -301,7 +301,10 @@ func (s *shim) run() (int, error) {
 }
 
 // connect is one connection: the hello, the wait for its ack, the child spawned on the first
-// ack, and the daemon's frames until the stream drops. It reports whether the daemon acked.
+// ack, and the daemon's frames until the stream drops. It reports whether the daemon acked. The
+// hello says whether the backlog dropped a frame since the last connection took it
+// (outbox.whole), and a connection the backlog cannot be handed to as its hello said is closed
+// right behind its ack (outbox.attach).
 func (s *shim) connect() (acked bool, err error) {
 	identity, err := s.identity()
 	if err != nil {
@@ -319,8 +322,9 @@ func (s *shim) connect() (acked bool, err error) {
 	defer conn.Close()
 	defer context.AfterFunc(s.loop, func() { _ = conn.Close() })()
 
+	whole := s.out.whole()
 	w := shimwire.NewWriter(conn)
-	if err := w.WriteFrame(shimwire.Hello2{BootToken: s.cfg.BootToken, AgentSecrets: identity}); err != nil {
+	if err := w.WriteFrame(shimwire.Hello2{BootToken: s.cfg.BootToken, AgentSecrets: identity, BacklogWhole: whole}); err != nil {
 		return false, fmt.Errorf("send hello: %w", err)
 	}
 	r := shimwire.NewReader(conn)
@@ -345,7 +349,9 @@ func (s *shim) connect() (acked bool, err error) {
 		<-s.loop.Done()
 		return true, nil
 	}
-	s.out.attach(conn, w)
+	if !s.out.attach(conn, w, whole) {
+		return true, errors.New("the connection took no whole backlog")
+	}
 	defer s.out.detach(conn)
 	for {
 		line, err := r.ReadLine()
@@ -362,7 +368,7 @@ func (s *shim) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
 		switch typ := frameType(line); typ {
-		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
+		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeWorkspaceWork, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
 			// The daemon is its only sender, and it is never OMP's to read.
 			s.log.Printf("[worker-shim] refusing a malformed %s frame: %v", typ, err)
 			return
@@ -379,6 +385,9 @@ func (s *shim) fromDaemon(line []byte) {
 		return
 	case shimwire.BundleWorkspace:
 		s.answer(func() { s.bundleWorkspace(f) })
+		return
+	case shimwire.WorkspaceWork:
+		s.answer(func() { s.workspaceWork(f) })
 		return
 	case shimwire.AgentSecretsEnrollment:
 		s.enroll(f)
@@ -845,6 +854,10 @@ func summarize(line []byte, typ string) string {
 // daemon's reader reassembles a sequence only from its chunk 0 on one stream, so a sequence is
 // written, held, replayed and dropped whole. One a connection breaks under waits from its chunk 0
 // for the next, and the part the broken connection carried is its reader's to drop.
+//
+// What the backlog dropped since a connection last took it whole is what the next hello says
+// (whole, shimwire.Hello2.BacklogWhole), and a connection whose hello said it dropped nothing is
+// handed the backlog only if that still holds when its ack comes (attach).
 type outbox struct {
 	mu   sync.Mutex
 	conn net.Conn
@@ -853,7 +866,11 @@ type outbox struct {
 	// those lines each frame is, in the same order.
 	backlog [][]byte
 	frames  []int
+	// dropped is whether the backlog has ever dropped a frame, which is logged once for the
+	// shim's life; gap is whether it dropped one since a connection last took it whole, or a
+	// replay broke partway (attach).
 	dropped bool
+	gap     bool
 	log     *log.Logger
 }
 
@@ -875,6 +892,7 @@ func (o *outbox) send(lines ...[]byte) {
 	o.frames = append(o.frames, len(lines))
 	for len(o.backlog) > backlogLimit {
 		o.dropOldest()
+		o.gap = true
 		if !o.dropped {
 			o.dropped = true
 			o.log.Printf("[worker-shim] no daemon client connected; dropping oldest frames beyond the last %d lines", backlogLimit)
@@ -882,20 +900,44 @@ func (o *outbox) send(lines ...[]byte) {
 	}
 }
 
-// attach replays the backlog on a newly acked connection and makes it the one frames go to. A
-// connection that breaks mid-replay is closed, and what it did not take whole waits for the next.
-func (o *outbox) attach(conn net.Conn, w *shimwire.Writer) {
+// whole is whether the backlog has dropped no frame since a connection last took it whole: what
+// the next hello says (shimwire.Hello2.BacklogWhole). A replay that broke partway counts as such a
+// drop (attach): the frames it wrote before it broke left the backlog, and the dead connection may
+// never have carried them to a daemon.
+func (o *outbox) whole() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	for len(o.frames) > 0 {
+	return !o.gap
+}
+
+// attach replays the backlog on a newly acked connection and makes it the one frames go to, and
+// reports whether it did. whole is what that connection's hello said of the backlog (whole). A
+// connection whose hello said the backlog had dropped no frame, where it has dropped one since —
+// while the hello waited for its ack — is handed nothing and closed: its daemon reads the replay
+// as every frame since the last connection, and has acted on that word by the time the ack
+// comes, so the replay goes to the next connection instead, whose hello says what was dropped.
+// A connection that breaks mid-replay is closed, and what it did not take whole waits for the
+// next. What it did take whole is gone from the backlog though its daemon may never have read it,
+// so the backlog is marked as one that dropped frames (gap), and the next hello says so (whole).
+func (o *outbox) attach(conn net.Conn, w *shimwire.Writer, whole bool) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if whole && o.gap {
+		o.log.Printf("[worker-shim] the backlog dropped frames while the hello that said it had dropped none waited for its ack; closing that connection, and the next hello says so")
+		_ = conn.Close()
+		return false
+	}
+	for replayed := false; len(o.frames) > 0; replayed = true {
 		if !writeFrame(w, o.backlog[:o.frames[0]]) {
+			o.gap = o.gap || replayed
 			_ = conn.Close()
-			return
+			return false
 		}
 		o.dropOldest()
 	}
-	o.backlog, o.frames = nil, nil
+	o.backlog, o.frames, o.gap = nil, nil, false
 	o.conn, o.w = conn, w
+	return true
 }
 
 // dropOldest drops the backlog's oldest frame, every line of it.

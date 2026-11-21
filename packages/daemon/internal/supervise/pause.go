@@ -21,7 +21,7 @@ package supervise
 //     decision reads it (dropEndedPauseHold); the resume's event (ResumePause) is such a decision.
 //
 // A project pause's held suspension waits past the end of its take's turn for the report that
-// settles the task, as every held suspension does (Machine.heldForReport, reportSettles): only
+// settles the task, as every held suspension does (reportwait.go, reportOwed): only
 // that report says whether the turn finished its task or a provider refused it, and a stop made
 // first would leave a refused task taken and the role owed nothing at the resume (check k1 of
 // dispatch://INFRA-3759: a role whose turn a provider refuses keeps its task). The report's
@@ -201,7 +201,7 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 		Reason: fmt.Sprintf("the project is paused (pause %d) and its gate held this claim's launch", pause)}
 	var err error
 	switch {
-	case m.claim.State == StateWorking:
+	case m.busy():
 		err = holdSuspension(m, ctx, request)
 	case m.claim.Locator == nil:
 		err = holdSuspendUntilReady(m, ctx, request)
@@ -236,14 +236,14 @@ func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 	if reserve == nil {
 		m.wake = nil
 		waiting.at, waiting.reserved = now, now
-		return m.runWake(ctx, waiting, false)
+		return m.runWake(ctx, waiting, false, false)
 	}
 	at := reserve(now)
 	m.wakeLetOut(at)
 	waiting.at, waiting.reserved = at, now
 	if !at.After(now) {
 		m.wake = nil
-		return m.runWake(ctx, waiting, true)
+		return m.runWake(ctx, waiting, true, false)
 	}
 	return m.parkWake(ctx, waiting, at.Sub(now))
 }

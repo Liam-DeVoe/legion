@@ -1478,11 +1478,11 @@ const legionProviderError = z.strictObject({
  * whose turn this was, absent for a turn of no task: the report that names the claim's taken task
  * finishes it, unless it carries `providerError`, which keeps the task under its number and starts
  * the wait before its value is written again (contract 207). `held` is the number of the accepted
- * take whose text the producer still held unrun when this turn ended — it was answered that take
- * during the turn — absent for none: this turn was not that take's, which puts the take back to
- * await its own turn even where the daemon has lost its count of the process's turns (a daemon
- * restarted under the process). It is optional: a report without it is read as before, and none is
- * refused for lacking it. */
+ * take whose text had not run when this turn ended — the producer was answered that take during
+ * the turn, or began the turn with its text and the agent never took it — absent for none: this
+ * turn was not that take's, which puts the take back to await its own turn even where the daemon
+ * has lost its count of the process's turns (a daemon restarted under the process). It is
+ * optional: a report without it is read as before, and none is refused for lacking it. */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
@@ -1567,9 +1567,9 @@ export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
 
 /** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
  * bucket holds it now, null where it holds none, and the number of the last task the claim
- * finished, 0 for none (contract 207). `holds` (contract 209, `claim.HeldTake`) is the takes of
+ * finished, 0 for none (contract 207). `holds` (contract 216, `claim.HeldTake`) is the takes of
  * the issue's other claims held behind the caller's turn, each the held claim's `role` and its
- * task's number; absent where none is held, and served only to a caller at contract 209 or a
+ * task's number; absent where none is held, and served only to a caller at contract 216 or a
  * later one. */
 export const LegionTaskResponse = z.object({
   ...taskReadingFields,
@@ -2420,7 +2420,7 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   // `task-take.ts` holds the value a read answers and the number of the task the claim last
   // finished, and runs the text of an accepted take or logs the hold a refused one met
   // (contract 207). `holds-read.ts` keeps the takes held behind the caller's turn, and each host
-  // notes each one by its role and its task's number (contract 209).
+  // notes each one by its role and its task's number (contract 216).
   LegionTaskResponse: [
     "task",
     "task.number",

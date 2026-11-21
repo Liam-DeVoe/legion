@@ -846,9 +846,10 @@ func answerAll(deliveries []delivery, err error) {
 // (refusal), whether or not the echo came: the report then takes the task to the daemon's
 // provider-error ladder, which gives it again after its wait, rather than counting the refusal
 // toward the launch-failure run. A turn of the task with no echo that the provider did not fail
-// names no task: Claude Code dropped the text, which the bridge takes again at its value's next
-// revision (take.go). A task's turn so named that the provider did not fail holds that task
-// finished from its end (take.go's runEnded).
+// names no task, and names the task held: Claude Code dropped the text, so the turn was not the
+// take's, which gives the take its turn back on the daemon, and the bridge takes the task again
+// at the next revision of its value the daemon writes (take.go). A task's turn so named that the
+// provider did not fail holds that task finished from its end (take.go's runEnded).
 //
 // Once Claude Code is in no turn, what waits for that runs (idle): a task whose take was accepted
 // during the turn, then a take of the claim's task value, then the next Envoy delivery.
@@ -910,41 +911,22 @@ func (b *bridge) result(res resultLine) {
 		b.sendQueued()
 		return
 	}
-	refusal, task := b.refusal, b.run.task
+	// The report names held the take whose text did not run in this turn, which is the daemon's
+	// one certain sign that this turn was not that take's (claim.TurnOutcomeRequest.Held): a take
+	// accepted during the turn, whose text is held here to start a turn of its own once this one
+	// is over (idle, below), or the task whose text this turn began with and Claude Code never
+	// took. A task's turn starts with no take being sent, and none is asked for while it runs
+	// (ask), so no take is accepted during a task's turn and the two never meet.
+	refusal, task, held := b.refusal, b.run.task, b.heldNumber()
 	if task != 0 && !b.run.taken && refusal == nil {
-		b.log.Printf("Claude Code ended task %d's turn without re-emitting its text, so it never took it: the turn is reported as no task's, and the task is taken again at its value's next revision", task)
-		task = 0
+		b.log.Printf("Claude Code ended task %d's turn without re-emitting its text, so it never took it: the turn is reported as no task's, with the task held unrun, which gives its take its turn back on the daemon; the bridge takes the task again at the next revision of its value the daemon writes", task)
+		task, held = 0, task
 	}
 	b.inRun, b.refusal, b.run = false, nil, taskRun{}
 	b.runEnded(task, refusal != nil)
 	b.emit(shimwire.AgentEnd{})
-	// A take accepted during this turn still has its text held here, to start a turn of its own
-	// once this one is over (idle, below): the report says so, which is the daemon's one certain
-	// sign that this turn was not that take's.
-	var held uint64
-	if b.held != nil {
-		held = b.held.number
-	}
 	b.reports.turnEnded(task, held, refusal)
 	b.idle()
-}
-
-// taskRun is the task whose turn is running (startTask): its number, 0 for a turn of no task; the
-// text that turn began with; and whether Claude Code has re-emitted that text in the turn
-// (echoed). The text has reached Claude Code only then, and a task's turn that ends without it,
-// and that the provider did not fail, is reported as no task's (result). A turn begins and ends
-// with the zero value.
-type taskRun struct {
-	task  uint64
-	text  string
-	taken bool
-}
-
-// heldTake is a take the daemon accepted while a turn ran (bridge.held): the task's number and
-// the text its take was answered with, which starts a turn of its own once the turn ends.
-type heldTake struct {
-	number uint64
-	text   string
 }
 
 // writeUser sends text to Claude Code as one user message: blocks as its content where a delivery

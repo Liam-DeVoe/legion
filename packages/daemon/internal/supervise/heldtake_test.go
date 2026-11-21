@@ -10,6 +10,7 @@ package supervise
 import (
 	"strconv"
 	"testing"
+	"time"
 )
 
 // reportHeldOf is reportOf for a report that also says the accepted take of task held had its
@@ -61,9 +62,12 @@ func (h *harness) ownTurnFinishes(number, sequence uint64) {
 // The first take after a daemon restarted under a live process, whose given run is the host's
 // own, is put back by that run's report where the report says the take's text was held through
 // it, and R5's second wait then charges a worker that does not start the take's turn within its
-// bound. Without the word the count, not known, puts nothing back, and nothing bounds the take
-// (d7383c99's re-learn rule, which only the report of a take's own turn moves). The word is read
-// wherever the report lands among the frames of the turns that held the text:
+// bound. Without the word the count, not known, puts nothing back (d7383c99's re-learn rule, which
+// only the report of a take's own turn moves), and the take keeps the run given it until its own
+// turn's report finishes it, inside the bound of the wait for that report, which with nothing held
+// takes it back a whole bound after the run's end (plan v90's decision 8; reportwait.go, whose
+// take-back the tests named TakeBoundedWithNothingHeld hold). The word is read wherever the report
+// lands among the frames of the turns that held the text:
 //
 //   - behind the given turn's end frame, and ahead of it, the claim still working that turn;
 //   - ahead of the given turn's start frame: that start is given no take, and the next one is;
@@ -95,7 +99,7 @@ func TestAReportThatHeldTheTakesTextGivesTheFirstTakeAfterARestartItsTurnBack(t 
 			t.Fatalf("pending %+v after the second bound, want the take taken back", p)
 		}
 	})
-	t.Run("without the word, the count not known puts nothing back and nothing bounds the take", func(t *testing.T) {
+	t.Run("without the word, the count not known puts nothing back, and the take's own turn inside the bound finishes it", func(t *testing.T) {
 		h := restartedUnderALiveProcess(t, nothingMore, withWaits)
 		number := h.takeOf("the first take after the restart")
 		h.hostsRun()
@@ -103,10 +107,10 @@ func TestAReportThatHeldTheTakesTextGivesTheFirstTakeAfterARestartItsTurnBack(t 
 		h.reportOf(2, 0)
 		h.wantStillItsTurn(number, putBacks, "after the report of the run given the take, naming nothing held,")
 
-		h.advance(turnStartBound)
+		h.advance(turnStartBound - time.Second)
 
 		h.wantCharges()
-		h.wantStillItsTurn(number, putBacks, "a second bound after that report")
+		h.wantStillItsTurn(number, putBacks, "a second bound less a second after the run's end")
 		h.must(StreamTurnStart{Claim: h.token})
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
 		h.reportOf(3, number)
