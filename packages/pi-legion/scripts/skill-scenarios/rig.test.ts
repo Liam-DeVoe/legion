@@ -11049,6 +11049,31 @@ sleep() { command sleep 0.05; }`;
     ).toBe(undefined);
   });
 
+  // Catches: a guard that reads the label's install as the rig's text. rig.sh's launch copies the
+  // label's HOME into the run (`cp -a "$I/home" "$R/home"`), and that HOME holds the label's packed
+  // plugins under .omp/profiles/<profile>/plugins/node_modules, the checkout's own code, which a
+  // production pane's HOME holds too. INFRA-764's round 31 at c42409bc: the guard read every file
+  // of <run>/home at a run's first launch and refused run 4f4d19499cf8 for
+  // `var SPEC_WRITING_POINTER` in @sjawhar/pi-envoy/dist/dispatch.js, which folds to the scenario
+  // spec-writing; read whole, that HOME took the guard to 1170 MiB, and the pod's memory guard
+  // killed it twice before it could refuse.
+  test("a word in the label's installed plugins, which the run's HOME holds, refuses no launch", () => {
+    const work = freshDir("launch-installed-plugin");
+    const name = "threads-closed-correct-head-1";
+    const ran = path.join(runDirOf(work, name), "agent-ran");
+    const { result } = launched(work, name, `: >${ran}`, [], {
+      files: {
+        "home/.omp/profiles/legion/plugins/node_modules/@sjawhar/pi-envoy/dist/dispatch.js":
+          'var SPEC_WRITING_POINTER = "Write a spec as skill://dispatch-writing-specs says.";\n',
+      },
+    });
+    expect({ code: result.code, stderr: result.stderr, ran: existsSync(ran) }).toEqual({
+      code: 0,
+      stderr: "",
+      ran: true,
+    });
+  });
+
   /** The batch's services and what a run reaches of them, over rig.sh sourced whole: the
    * namespace and tmux probes and the listener, which write nothing into a run; the given
    * Postgres and NATS, which nothing here reaches; the Envoy listener's and the Dispatch server's
