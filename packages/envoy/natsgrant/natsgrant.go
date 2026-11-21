@@ -384,33 +384,67 @@ var streamConfigurationCalls = []string{
 	jsAPI + "STREAM.RESTORE.>",
 }
 
-// ForCallout is p as the auth service answers it: p without every publish entry that reaches a
-// stream create, update, delete or restore (streamConfigurationCalls), and every other entry as p
-// holds it, in lists of its own. internal/cipher/natscallout answers every connection but the
-// operator's through it, so no client the auth service admits can make, change or remove a
-// stream: a create or an update carries a configuration of the caller's choosing, and a source or
-// a republish in it reads every stream of the account, since nats-server checks a republish
-// destination only against the stream's own subjects. Every stream is made at deploy time by the
-// operator instead (envoy-infra streams), and a start beside the auth service reads its streams and
-// makes none (bus.StreamsOperatorMadeEnvVar).
+// ForCallout is p as the auth service answers it: no publish entry can reach a stream create,
+// update, delete or restore (streamConfigurationCalls), and every other subject p allows it still
+// allows, in lists of its own. An entry those calls contain (a create of one stream, or of every
+// stream) is dropped; an entry that reaches one of them and other subjects too (a wildcard such as
+// $JS.API.> or >) stays, and each call it reaches is added to the publish deny list, which
+// nats-server applies after the allow list. internal/cipher/natscallout answers every connection
+// but the operator's through it, and infra/core renders every static user beside a callout through
+// it, so no client but the operator can make, change or remove a stream: a create or an update
+// carries a configuration of the caller's choosing, and a source or a republish in it reads every
+// stream of the account, since nats-server checks a republish destination only against the
+// stream's own subjects. Every stream is made at deploy time by the operator instead (envoy-infra
+// streams), and a start beside the auth service reads its streams and makes none
+// (bus.StreamsOperatorMadeEnvVar).
 //
 // A bucket's writer (KVWrite) keeps its stream info, its direct and stream gets, its key writes,
 // its watchers' consumer calls and their flow-control replies; the listener's grant keeps the
 // notification stream's info and stored-message get; Measure keeps its stream infos and its
-// publishes to envoy-measure.>. An entry that is a wildcard reaching one of those calls goes
-// whole, whatever else it reaches, so the answer is narrower than p and never wider; no grant of
-// this package holds one. The static sets stay as they are: a hub that runs no auth service
-// renders them, and its programs make their own streams.
+// publishes to envoy-measure.>. No grant of this package holds a wildcard that reaches one of the
+// calls, so none of them is answered with a deny. The static sets stay as they are: a hub that
+// runs no auth service renders them, and its programs make their own streams.
 func ForCallout(p Permissions) Permissions {
-	publish := slices.DeleteFunc(slices.Clone(p.Publish), func(entry string) bool {
-		return slices.ContainsFunc(streamConfigurationCalls, func(call string) bool { return subjectsCollide(entry, call) })
-	})
+	var publish []string
+	if p.Publish != nil {
+		publish = make([]string, 0, len(p.Publish))
+	}
+	deny := slices.Clone(p.PublishDeny)
+	for _, entry := range p.Publish {
+		if slices.ContainsFunc(streamConfigurationCalls, func(call string) bool { return subjectWithin(entry, call) }) {
+			continue
+		}
+		publish = append(publish, entry)
+		for _, call := range streamConfigurationCalls {
+			if subjectsCollide(entry, call) && !slices.Contains(deny, call) {
+				deny = append(deny, call)
+			}
+		}
+	}
 	return Permissions{
 		Publish:       publish,
 		Subscribe:     slices.Clone(p.Subscribe),
-		PublishDeny:   slices.Clone(p.PublishDeny),
+		PublishDeny:   deny,
 		SubscribeDeny: slices.Clone(p.SubscribeDeny),
 	}
+}
+
+// subjectWithin reports whether every subject a matches, b matches too: a is b or narrower, both
+// subjects or wildcards ("*" one token, ">" the rest).
+func subjectWithin(a, b string) bool {
+	aTokens, bTokens := strings.Split(a, "."), strings.Split(b, ".")
+	for index, bToken := range bTokens {
+		if bToken == ">" {
+			return index < len(aTokens)
+		}
+		if index >= len(aTokens) || aTokens[index] == ">" {
+			return false
+		}
+		if bToken != "*" && (aTokens[index] == "*" || aTokens[index] != bToken) {
+			return false
+		}
+	}
+	return len(aTokens) == len(bTokens)
 }
 
 // subjectsCollide reports whether one subject can match both a and b, two subjects or wildcards

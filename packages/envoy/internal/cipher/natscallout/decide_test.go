@@ -185,7 +185,9 @@ func TestNoAnswerCreatesOrChangesAStream(t *testing.T) {
 		require.NoError(t, err, name)
 		require.NotEmpty(t, decision.Grant.Publish, "%s's answer publishes nothing, so the check below reads nothing", name)
 		for _, entry := range decision.Grant.Publish {
-			if slices.ContainsFunc(calls, func(call string) bool { return server.SubjectsCollide(entry, call) }) {
+			if slices.ContainsFunc(calls, func(call string) bool {
+				return server.SubjectsCollide(entry, call) && !slices.ContainsFunc(decision.Grant.PublishDeny, func(deny string) bool { return server.SubjectMatchesFilter(call, deny) })
+			}) {
 				offenders = append(offenders, decision.Name+": "+entry)
 			}
 		}

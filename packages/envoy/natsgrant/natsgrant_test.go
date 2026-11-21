@@ -363,9 +363,19 @@ var streamConfigurationCalls = []string{
 // streamConfigurationEntries are the entries of publish that can reach a stream configuration
 // call, by nats-server's own reading of two subjects (server.SubjectsCollide).
 func streamConfigurationEntries(publish []string) []string {
+	return streamWriters(natsgrant.Permissions{Publish: publish})
+}
+
+// streamWriters are the publish allow entries of p through which a stream configuration call is
+// still allowed: an entry that reaches the call (server.SubjectsCollide) where no deny entry
+// covers the whole call (server.SubjectMatchesFilter), as nats-server applies a deny after the
+// allow list.
+func streamWriters(p natsgrant.Permissions) []string {
 	var entries []string
-	for _, entry := range publish {
-		if slices.ContainsFunc(streamConfigurationCalls, func(call string) bool { return server.SubjectsCollide(entry, call) }) {
+	for _, entry := range p.Publish {
+		if slices.ContainsFunc(streamConfigurationCalls, func(call string) bool {
+			return server.SubjectsCollide(entry, call) && !slices.ContainsFunc(p.PublishDeny, func(deny string) bool { return server.SubjectMatchesFilter(call, deny) })
+		}) {
 			entries = append(entries, entry)
 		}
 	}
@@ -386,7 +396,7 @@ func TestOnlyTheOperatorCreatesOrChangesAStream(t *testing.T) {
 			operator++
 			continue
 		}
-		for _, entry := range streamConfigurationEntries(natsgrant.ForCallout(grant).Publish) {
+		for _, entry := range streamWriters(natsgrant.ForCallout(grant)) {
 			offenders = append(offenders, name+": "+entry)
 		}
 	}
@@ -398,7 +408,8 @@ func TestOnlyTheOperatorCreatesOrChangesAStream(t *testing.T) {
 // ForCallout removes the stream configuration calls and nothing else, and returns lists of its
 // own: a bucket's writer keeps its reads, its key writes and its watchers' calls, and the
 // measurement job keeps its stream infos and its publishes, losing its stream create, update and
-// delete. A wildcard that reaches a stream configuration call goes whole, whatever else it reaches.
+// delete. An entry the calls contain goes; a wildcard that reaches them and other subjects too
+// stays, beside a deny of each call it reaches, so it still allows every other subject.
 func TestForCalloutKeepsEveryOtherCall(t *testing.T) {
 	for name, grant := range grantTable(t) {
 		answered := natsgrant.ForCallout(grant)
@@ -441,7 +452,10 @@ func TestForCalloutKeepsEveryOtherCall(t *testing.T) {
 		PublishDeny: []string{"$JS.API.STREAM.PURGE.X"},
 	}
 	answered := natsgrant.ForCallout(wide)
-	require.Equal(t, []string{"$JS.API.STREAM.INFO.X"}, answered.Publish)
+	require.Equal(t, []string{"$JS.API.>", "$JS.API.STREAM.*.X", "$JS.API.STREAM.INFO.X", ">"}, answered.Publish)
+	require.Equal(t, []string{"$JS.API.STREAM.PURGE.X", "$JS.API.STREAM.CREATE.>", "$JS.API.STREAM.UPDATE.>", "$JS.API.STREAM.DELETE.>", "$JS.API.STREAM.RESTORE.>"}, answered.PublishDeny)
+	require.Empty(t, streamWriters(answered), "a wide entry still reaches a stream configuration call")
+	require.Equal(t, []string{"$JS.API.>", "$JS.API.STREAM.*.X", ">"}, streamWriters(natsgrant.Permissions{Publish: answered.Publish}), "the control: without its deny list the wide entries reach the calls")
 	require.Equal(t, []string{"$JS.API.>", "$JS.API.STREAM.*.X", "$JS.API.STREAM.INFO.X", ">", "$JS.API.STREAM.RESTORE.X"}, wide.Publish, "ForCallout changed the grant it was given")
 	answered.Subscribe[0], answered.PublishDeny[0] = "changed", "changed"
 	require.Equal(t, "_INBOX.>", wide.Subscribe[0], "ForCallout's subscribe list is the grant's own")
