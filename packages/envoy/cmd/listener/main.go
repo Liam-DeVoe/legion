@@ -1969,10 +1969,11 @@ const (
 	// before the drain hooks.
 	stopDeliveriesDrain = 10 * time.Second
 	// stopClientDrain bounds the listener's NATS drains together: the deliveries' share, and the
-	// main client's drain hooks' 3 s on top (bus's drainHookReserve). In the fixed consumer naming
-	// mode the main client carries the deliveries and drains in all of it; in the fresh mode each
-	// generation's own connection carries them and drains first, in the deliveries' share, and
-	// the main client drains in what remains (shutdownListener), so stopBudget counts both.
+	// drain hooks' 3 s on top (bus's drainHookReserve, which each Drain keeps from the deliveries).
+	// In the fixed consumer naming mode the main client carries the deliveries and drains in all of
+	// it; in the fresh mode each generation's own connection carries them and drains first, by the
+	// same end, and the main client drains in what remains (drainListenerClients), so stopBudget
+	// counts both.
 	stopClientDrain = stopDeliveriesDrain + 3*time.Second
 	// stopBudget is the whole stop, the three deadlines added, and is inside every runtime's
 	// 30 s after the pre-stop wait.
@@ -2055,19 +2056,31 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 		c.cache.StopWatch()
 	}
 	parts.known.StopWatch()
-	// In the fresh naming mode the durable's deliveries arrive on its generation's own connection:
-	// it drains first, in the deliveries' share, while the main client still carries the publishes
-	// its handlers make; the main client then drains in what remains of the one stopClientDrain both
-	// share, which stopBudget counts. In the fixed mode there is no such connection, and the main
-	// client drains in all of it.
-	drainsEnd := time.Now().Add(stopClientDrain)
-	for _, err := range drainAll(parts.client, time.Now().Add(stopDeliveriesDrain)) {
-		logger.Warn("nats drain error", slog.String("connection", "durable generation"), slog.String("error", err.Error()))
-	}
-	if err := parts.client.Drain(time.Until(drainsEnd)); err != nil {
-		logger.Warn("nats drain error", slog.String("error", err.Error()))
-	}
-
+	drainListenerClients(logger, parts.client, time.Now())
 	logger.Info("envoy-listener shutdown complete")
 	os.Exit(1)
 }
+
+// drainListenerClients drains the listener's NATS clients in the one stopClientDrain from started,
+// which stopBudget counts. In the fresh naming mode the durable's deliveries arrive on its
+// generation's own connection: it drains first, while the main client still carries the publishes
+// its handlers make, by the end of the whole stopClientDrain, since bus.Client.Drain keeps
+// drainHookReserve of its time from the deliveries, which leaves them stopDeliveriesDrain; the main
+// client then drains in what remains, its hooks' share when the deliveries took all of theirs, and
+// is closed if nothing remains. In the fixed mode there is no such connection, and the main client
+// drains in all of it.
+func drainListenerClients(logger *logging.Logger, client *bus.Client, started time.Time) {
+	drainsEnd := started.Add(stopClientDrain)
+	for _, err := range drainAll(client, drainsEnd) {
+		logger.Warn("nats drain error", slog.String("connection", "durable generation"), slog.String("error", err.Error()))
+	}
+	remaining := time.Until(drainsEnd)
+	if remaining <= 0 {
+		client.Close()
+		return
+	}
+	if err := client.Drain(remaining); err != nil {
+		logger.Warn("nats drain error", slog.String("error", err.Error()))
+	}
+}
+
