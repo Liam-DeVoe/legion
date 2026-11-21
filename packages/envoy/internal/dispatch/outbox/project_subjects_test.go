@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -204,5 +205,72 @@ func TestEveryOutboxSubjectNamesItsProject(t *testing.T) {
 	if missing := missingTheirProject(recordForm, "PUB"); len(recordForm) == 0 || len(missing) != len(recordForm) {
 		t.Fatalf("control: the check passed %d of the %d subjects in the form with no project (%v), want it to fail every one of them",
 			len(recordForm)-len(missing), len(recordForm), strings.Join(recordForm, ", "))
+	}
+}
+
+// TestADestinationKeyIsTheOneTheRecordAlreadyHolds (model.IssueDestinationKey,
+// SessionDestinationKey, RoleDestinationKey): a key this build makes is byte for byte the one a
+// release before it stored, and an event whose published_destinations a release before this one
+// wrote is read as that release left it. PUB-1 is routed to session s1, and its message's record
+// holds the issue's topic family, reached, as that release wrote it, in the form with no project.
+// The batch sends the message to s1 alone, on s1's subject under PUB, and records s1's key beside
+// the stored one: the topic family is not sent again.
+//
+// Control, in the test: the bus subject of each key, used as the key, is not what the record
+// holds, so a build that recorded and read its bus subjects would send the topic family again.
+func TestADestinationKeyIsTheOneTheRecordAlreadyHolds(t *testing.T) {
+	stored := map[string]string{
+		model.IssueDestinationKey("PUB-1", "message.created"): "notifications.dispatch.issue.PUB-1.message.created",
+		model.SessionDestinationKey("s1"):                      "notifications.agent.s1",
+		model.RoleDestinationKey("reviewer"):                   "notifications.role.reviewer",
+	}
+	for built, wrote := range stored {
+		if built != wrote {
+			t.Errorf("this build keys a destination %q, want %q, the bytes every release before it stored", built, wrote)
+		}
+		if bus := busSubject(built, "PUB"); bus == wrote {
+			t.Errorf("control: the bus subject of %q is %q, the stored key itself, want one that names PUB", built, bus)
+		}
+	}
+
+	ctx := context.Background()
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee, owner) values ('PUB', 'PUB', 'alice', 'alice');
+		insert into issues (key, project_key, number, title, route, created_by, rank)
+		values ('PUB-1', 'PUB', 1, 'PUB-1', 'session:s1', '{"kind":"user","id":"alice"}', 'U');
+	`); err != nil {
+		t.Fatalf("create PUB-1: %v", err)
+	}
+	event := appendHoldMessage(t, database, broker, "PUB-1")
+	owner := "notifications.dispatch.issue.PUB-1.message.created"
+	if _, err := database.Pool.Exec(ctx, `
+		update events set published_destinations = array[$2], attempt_count = 1 where id = $1
+	`, event.ID, owner); err != nil {
+		t.Fatalf("record the topic family reached, as the release before this one does: %v", err)
+	}
+	if slices.Contains(onBus("PUB", owner), owner) {
+		t.Fatalf("control: the bus subject of %s is the stored key itself", owner)
+	}
+
+	publisher := &subjectRecorder{}
+	deps := Deps{Store: database, Publisher: publisher, Broker: broker}
+	if _, err := scanBatch(ctx, deps, unfenced{}, holding(t, deps).instance); err != nil {
+		t.Fatalf("scan the batch: %v", err)
+	}
+	var sent []string
+	for _, send := range publisher.all() {
+		sent = append(sent, send.subject)
+	}
+	if want := []string{contracts.AgentSubject("PUB", "s1")}; !slices.Equal(sent, want) {
+		t.Fatalf("the batch sent %v, want %v alone: the topic family the stored record names reached is reached", sent, want)
+	}
+	destinations, _ := publishedDestinations(t, database, event.ID)
+	if want := []string{owner, model.SessionDestinationKey("s1")}; !slices.Equal(destinations, want) {
+		t.Fatalf("published_destinations = %v, want %v: the stored key and s1's beside it, in the form with no project", destinations, want)
+	}
+	if publishedAt(t, database, event.ID) == nil {
+		t.Fatal("the message is unpublished, want it published once s1 is reached")
 	}
 }
