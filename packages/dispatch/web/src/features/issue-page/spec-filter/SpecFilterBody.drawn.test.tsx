@@ -11,6 +11,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { type HeldNotifications, holdNotifications } from "../../../__tests__/commits";
 import { displayTree } from "../../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
@@ -20,6 +21,7 @@ import type {
   CheckBlock,
   Decision,
   IssueCheckResults,
+  IssueCoverage,
   IssueDecisions,
   IssueDetails,
 } from "../../../api/types";
@@ -1931,6 +1933,62 @@ test("a refused read's alert is said again for a new refusal, and not when its r
     await waitFor(() => expect(within(line).getByRole("alert")).not.toBe(first));
   } finally {
     onlineManager.setOnline(true);
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// A line's alert is drawn afresh, so a screen reader says it again, for each new refusal of a
+// read the line stands failed on, even where another of its reads answers in the same render.
+// The statements line stands on the coverage and the spec's blocks, each refused once, and its
+// Retry asks both again: the coverage answers and the blocks are refused a second time, both
+// before the query client tells their observers, which a browser does on a timer after each
+// (`holdNotifications`), so the body draws both in one render. The refusals of the reads that
+// stand failed come to two before that render (one of each read) and two after it (the blocks'
+// two), so a count that summed them would not change, where the line's count rises with the new
+// refusal.
+test("a line's alert is said again for a new refusal of one read where another of its reads answers in the same render", async () => {
+  const user = userEvent.setup();
+  const { client, read, view } = drawBody(issueTree([statement("r1")]), [], {
+    blocks: "failed",
+    coverage: "failed",
+  });
+  const coverage = issueCoverageQuery(KEY).queryKey;
+  const blocks = artifactBlocksQuery("artifact-spec").queryKey;
+  let notifications: HeldNotifications | undefined;
+  try {
+    // Both reads are refused once before the alert is taken, so it is the alert drawn for both
+    // refusals.
+    await waitFor(() => {
+      expect(client.getQueryState(coverage)?.errorUpdateCount).toBe(1);
+      expect(client.getQueryState(blocks)?.errorUpdateCount).toBe(1);
+    });
+    const line = alertSaying(view, STATE_LINES.statements_unreadable);
+    const first = within(line).getByRole("alert");
+    const answer = Promise.withResolvers<IssueCoverage>();
+    const refusal = Promise.withResolvers<never>();
+    read.coverage.mockReturnValue(answer.promise);
+    read.blocks.mockReturnValue(refusal.promise);
+    await user.click(within(line).getByRole("button", { name: "Retry" }));
+    expect(within(line).getByRole("alert"), "a Retry with no new refusal said it again").toBe(
+      first
+    );
+    notifications = holdNotifications();
+    await act(async () => {
+      answer.resolve(coverageRead([]));
+      refusal.reject(new Error("offline"));
+    });
+    expect(client.getQueryState(coverage)?.data, "the coverage did not answer").toBeDefined();
+    expect(client.getQueryState(blocks)?.errorUpdateCount, "the blocks were not refused").toBe(2);
+    expect(within(line).getByRole("alert"), "the body drew a read it was not told of").toBe(first);
+    notifications.tell();
+    expect(alertSaying(view, STATE_LINES.statements_unreadable)).toBe(line);
+    expect(
+      within(line).getByRole("alert"),
+      "a new refusal of the spec's blocks, as the coverage answered, was not said again"
+    ).not.toBe(first);
+  } finally {
+    notifications?.tell();
     view.unmount();
     read.mockRestore();
   }
