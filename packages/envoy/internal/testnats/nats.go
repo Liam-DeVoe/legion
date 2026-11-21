@@ -435,12 +435,15 @@ func (s *Server) Freeze(t testing.TB) func() {
 // client's lock (processPing, client.go:2805). So after the barrier Reload takes every client's
 // lock in turn (ordered), which orders each of those reads before the reload for the race detector
 // too: without that order, TestAReloadUnderDirectGetsAnswersEveryOne drew the race in every run.
-// That covers only what the relay holds and the clients' own goroutines run: a server with routes
-// or leafnode connections, whose direct gets for them run on the stream's goroutine (mset.gets,
-// stream.go:6143 and 6206 in v2.15.1), or one that a client reached around the relay and sent a
-// message, refuses the reload and fails t; a client that first reaches it around the relay during
-// the reload is not seen. A server that hands JetStream accounts to many tests (accountServer)
-// refuses every reload: it would hold every test's clients.
+// That covers only what the relay holds and the clients' own goroutines run. A server whose
+// configuration, the one it runs or the one it is given, names routes, leafnodes or a gateway
+// answers the direct gets that come over those links on the stream's goroutine (mset.gets,
+// stream.go:6143 and 6206 in v2.15.1), so it refuses the reload and fails t, whether or not such a
+// link is up yet; so does one that a client reached around the relay and sent a message (a
+// message Connz counts). Not seen: a client that first reaches the server around the relay during
+// the reload, and one around the relay whose first message the server is still reading, which
+// Connz counts only once the server has read it. A server that hands JetStream accounts to many
+// tests (accountServer) refuses every reload: it would hold every test's clients.
 func (s *Server) Reload(t testing.TB, config string) error {
 	t.Helper()
 	if s.shared {
@@ -468,6 +471,13 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	// server's as well: a reload can neither move the one nor turn the other on or off.
 	opts.ConfigFile = s.configPath
 	opts.JetStream = jetStream
+	running, err := serverOptions(s.configPath, s.args, s.store, s.host)
+	if err != nil {
+		t.Fatalf("read the configuration the NATS server runs: %v", err)
+	}
+	if links := linksNamed(running, opts); links != "" {
+		t.Fatalf("testnats: a reload of the NATS server at %s, whose configuration names %s: it answers the direct gets that come over them on goroutines no hold reaches (Server.Reload)", s.url, links)
+	}
 	release, err := s.relay.hold()
 	if err == nil {
 		err = s.relay.barrier()
@@ -498,12 +508,9 @@ func (s *Server) Reload(t testing.TB, config string) error {
 // ordered takes the lock of each client connection of srv in turn, through Connz, which reads each
 // one under its lock, once the barrier has had each held client's PONG: the race detector then
 // orders everything the server did on those clients' goroutines before the barrier's PING ahead of
-// whatever the caller does next (Reload). It returns why the reload is not ordered so: srv has
-// routes or leafnode connections, or a client the relay does not hold has sent srv a message.
+// whatever the caller does next (Reload). It returns why the reload is not ordered so: a client the
+// relay does not hold has sent srv a message.
 func (s *Server) ordered(srv *natsserver.Server) error {
-	if routes, leafs := srv.NumRoutes(), srv.NumLeafNodes(); routes+leafs > 0 {
-		return fmt.Errorf("it has %d routes and %d leafnode connections, and answers their direct gets on goroutines no hold reaches", routes, leafs)
-	}
 	connz, err := srv.Connz(&natsserver.ConnzOptions{Limit: math.MaxInt32})
 	if err != nil {
 		return fmt.Errorf("list its connections: %w", err)
@@ -515,6 +522,27 @@ func (s *Server) ordered(srv *natsserver.Server) error {
 		}
 	}
 	return nil
+}
+
+// linksNamed names the links to other servers that any of configurations names, routes,
+// leafnodes or a gateway, "" when none does: a configuration names a link whether or not it is up.
+func linksNamed(configurations ...*natsserver.Options) string {
+	var routes, leafnodes, gateway bool
+	for _, c := range configurations {
+		routes = routes || c.Cluster.Name != "" || c.Cluster.Port != 0 || len(c.Routes) > 0
+		leafnodes = leafnodes || c.LeafNode.Port != 0 || len(c.LeafNode.Remotes) > 0
+		gateway = gateway || c.Gateway.Name != "" || c.Gateway.Port != 0 || len(c.Gateway.Gateways) > 0
+	}
+	var links []string
+	for _, link := range []struct {
+		named bool
+		name  string
+	}{{routes, "routes"}, {leafnodes, "leafnodes"}, {gateway, "a gateway"}} {
+		if link.named {
+			links = append(links, link.name)
+		}
+	}
+	return strings.Join(links, " and ")
 }
 
 // barrierPoll is how often hold and barrier look again at the connections they wait for.

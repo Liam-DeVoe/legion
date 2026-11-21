@@ -22,6 +22,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
@@ -260,13 +262,9 @@ func TestAServerOutOfAccountsHandsTheNextOutFromAServerOfItsOwn(t *testing.T) {
 	if _, err := kv.Put("after-the-next-server", []byte("1")); err != nil {
 		t.Fatalf("put after the next server started: %v", err)
 	}
-	select {
-	case entry := <-watcher.Updates():
-		if entry == nil || entry.Key() != "after-the-next-server" {
-			t.Fatalf("the watcher delivered %v after the next server started, want the put", entry)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the watcher of an account in use delivered nothing after the next server started")
+	entry := testwait.Receive(t, "the watcher of an account in use to deliver the put after the next server started", watcher.Updates())
+	if entry == nil || entry.Key() != "after-the-next-server" {
+		t.Fatalf("the watcher delivered %v after the next server started, want the put", entry)
 	}
 	if status := live.Status(); status != natsgo.CONNECTED {
 		t.Fatalf("the connection of an account in use is %v after the next server started, want CONNECTED", status)
@@ -469,24 +467,35 @@ func TestAReloadOfAServerAClientReachedAroundTheRelayFailsNamingIt(t *testing.T)
 	}
 }
 
-// A Reload of a cluster member fails the test naming its routes, and the member does not reload:
-// the member answers a direct get that comes over a route on the stream's own goroutine, which
-// no hold of its clients reaches.
-func TestAReloadOfAClusterMemberFailsNamingItsRoutes(t *testing.T) {
-	cluster := StartCluster(t, 3)
-	member := cluster.Servers[0]
-	refused := &fatalRecorder{TB: t}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = member.Reload(refused, hostOnlyConfig)
-	}()
-	<-done
-	if want := "routes and 0 leafnode connections, and answers their direct gets on goroutines no hold reaches"; !strings.Contains(refused.message, want) {
-		t.Fatalf("the reload ended with %q, want it to say %q", refused.message, want)
-	}
-	if strings.Contains(member.Log(), "Reloaded server configuration") {
-		t.Fatalf("the member reloaded:\n%s", member.Log())
+// A Reload of a server whose configuration names routes, leafnodes or a gateway fails the test
+// naming them, whether or not such a link is up, and the server does not reload: it answers a
+// direct get that comes over such a link on the stream's own goroutine, which no hold of its
+// clients reaches. So does one whose new configuration names a link the running one does not.
+func TestAReloadOfAServerLinkedToOthersFailsNamingTheLinks(t *testing.T) {
+	for _, row := range []struct {
+		name, running, given, links string
+	}{
+		{"routes", "cluster { name: \"one\", listen: \"127.0.0.1:-1\" }\n", hostOnlyConfig, "routes"},
+		{"leafnodes", "leafnodes { listen: \"127.0.0.1:-1\" }\n", hostOnlyConfig, "leafnodes"},
+		{"gateway", "gateway { name: \"one\", listen: \"127.0.0.1:-1\" }\n", hostOnlyConfig, "a gateway"},
+		{"a link the new configuration adds", hostOnlyConfig, "leafnodes { listen: \"127.0.0.1:-1\" }\n", "leafnodes"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			server, uri := StartConfig(t, row.running, nil, true)
+			refused := &fatalRecorder{TB: t}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_ = server.Reload(refused, row.given)
+			}()
+			<-done
+			if want := fmt.Sprintf("a reload of the NATS server at %s, whose configuration names %s: it answers the direct gets that come over them", uri, row.links); !strings.Contains(refused.message, want) {
+				t.Fatalf("the reload ended with %q, want it to say %q", refused.message, want)
+			}
+			if strings.Contains(server.Log(), "Reloaded server configuration") {
+				t.Fatalf("the server reloaded:\n%s", server.Log())
+			}
+		})
 	}
 }
 
