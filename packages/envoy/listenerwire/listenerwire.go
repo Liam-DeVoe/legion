@@ -111,6 +111,11 @@ type SendRequest struct {
 	// switch at all, and on every send of a message whose agents-route request set it. Absent,
 	// which is every other sender and every older client, nothing changes.
 	ConnectedOnly bool `json:"connected_only,omitempty"`
+	// Project is the project the message is of, a project key or "_" (contracts.NoProject). The
+	// listener takes it when given, and otherwise chooses it as KC1 says: the sender's one listed
+	// project, else the target's one, else "_". In the required privacy mode both the sender and
+	// the target must see it. Absent, which is every older client, chooses.
+	Project string `json:"project,omitempty"`
 }
 
 // PublishRequest is the body of POST /v1/messages/publish: a message for a topic, a role's among
@@ -250,6 +255,10 @@ type SessionInfo struct {
 	Roles          []string `json:"roles"`
 	UpdatedAt      int64    `json:"updated_at"`
 	LastSeen       int64    `json:"last_seen"`
+	// Projects is the projects the token that made the session's registration lists
+	// (session.SessionEntry.Projects, K6), sorted, the empty list and never null for a
+	// registration whose token listed none or presented no broker token.
+	Projects []string `json:"projects"`
 	// The plugin the session registered through and its build; absent for a session whose plugin
 	// predates the fields.
 	Plugin        string `json:"plugin,omitempty"`
@@ -420,6 +429,9 @@ type SubscribeResponse struct {
 	// Delivery is the session's delivery, present whenever the registration carried a delivery
 	// object.
 	Delivery *DeliveryAnswer `json:"delivery,omitempty"`
+	// Projects is the projects this registration recorded for the session (K6,
+	// SessionInfo.Projects): the registering broker token's list, the empty list for none.
+	Projects []string `json:"projects"`
 }
 
 // DeliveryAnswer is the delivery field of a registration's answer. Every registration the
@@ -499,8 +511,11 @@ type RoleHolder struct {
 	// always sets, so a reader tells an answer that names it from one that does not.
 	LastSeen  *int64 `json:"last_seen"`
 	MachineID string `json:"machine_id"`
-	Role      string `json:"role"`
-	Title     string `json:"title"`
+	// Projects is the holder's registering token's projects (K6, SessionInfo.Projects), the empty
+	// list for none.
+	Projects []string `json:"projects"`
+	Role     string   `json:"role"`
+	Title    string   `json:"title"`
 }
 
 // RoleRefusal is the 404 of a role with no live holder, which GET /v1/roles/<role> answers and a

@@ -67,6 +67,12 @@ const (
 	// edgePublishRefusal). A send to a session of another project is outcomeNoLiveSession, since
 	// it is answered as one.
 	outcomeNotInProject requestOutcome = "not_in_project"
+	// outcomeProjectNotListed is a send or publish of a project the caller's token, or the
+	// target's, does not list, in the required privacy mode: 403 project_not_listed.
+	outcomeProjectNotListed requestOutcome = "project_not_listed"
+	// outcomePrivacyUnknown is a send or publish whose decision could not read the privacy answer,
+	// in the required privacy mode: the 503 refilling that asks the caller to try again.
+	outcomePrivacyUnknown requestOutcome = "privacy_unknown"
 )
 
 // requestRecord is this listener's record of one inbound send or publish, and the only way either
@@ -106,6 +112,10 @@ type requestRecord struct {
 	// refused for the rate, and no other line of the listener carries it.
 	charge  *senderCharge
 	refused *senderRefusal
+	// privacy is the listener's privacy mode, and decision the request's privacy decision when it
+	// made one: the line carries the message's payload_summary only where logPayload allows it.
+	privacy  *listenerPrivacy
+	decision *scopeDecision
 }
 
 // accept writes the handler's 200 and records the request as accepted.
@@ -189,6 +199,19 @@ func (rec *requestRecord) refuseSenderRateLimited(w http.ResponseWriter, refusal
 	rec.refuseWith(w, http.StatusTooManyRequests, outcomeSenderRateLimited, refusal.answer())
 }
 
+// refuseProjectNotListed answers 403 project_not_listed for project, which the caller's token does
+// not list, or, when session is named, that session's token does not list.
+func (rec *requestRecord) refuseProjectNotListed(w http.ResponseWriter, project, session string) {
+	rec.refuseWith(w, http.StatusForbidden, outcomeProjectNotListed, projectNotListedAnswer(project, session))
+}
+
+// refusePrivacyUnknown answers a request whose decision could not read the privacy answer with the
+// 503 refilling writePrivacyUnknown writes.
+func (rec *requestRecord) refusePrivacyUnknown(w http.ResponseWriter) {
+	writePrivacyUnknown(w)
+	rec.write(http.StatusServiceUnavailable, outcomePrivacyUnknown)
+}
+
 // write emits the one line, INFO for a request this listener took and WARN for one it refused.
 func (rec *requestRecord) write(status int, outcome requestOutcome) {
 	var eventID, source, sourceSession, payloadSummary string
@@ -201,8 +224,15 @@ func (rec *requestRecord) write(status int, outcome requestOutcome) {
 		slog.String(rec.laneKey, rec.lane),
 		slog.String("event_id", eventID),
 		slog.String("source", source),
-		slog.String("source_session", sourceSession),
-		slog.String("payload_summary", payloadSummary),
+		slog.String("source_session", sourceSession))
+	// In the required mode the line carries the body only when the request's own read of the
+	// privacy answer lists no private project, so a request whose decisions needed no read makes
+	// the one read here.
+	if rec.privacy.isRequired() && rec.decision != nil {
+		_, _ = rec.decision.answer()
+	}
+	attrs = append(attrs, logPayload(rec.privacy, rec.decision, payloadSummary)...)
+	attrs = append(attrs,
 		slog.String("outcome", string(outcome)),
 		slog.Int("status", status))
 	if rec.holder != "" {

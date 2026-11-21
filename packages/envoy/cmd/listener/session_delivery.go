@@ -264,9 +264,11 @@ type sessionDelivery struct {
 // consumer filter are judged on (sessionDelivery.stream).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
-// the whole start's: main ends the process with it, as it does for the live topics lane.
-func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger) (*sessionDelivery, error) {
-	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog())
+// the whole start's: main ends the process with it, as it does for the live topics lane. options
+// are the listener's privacy mode's (listenerPrivacy.busOptions): in the required mode the
+// connection's name ends in the suffix a hub rendered private admits it by.
+func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger, options ...bus.ConnectOption) (*sessionDelivery, error) {
+	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(), options...)
 	if err != nil {
 		return nil, err
 	}

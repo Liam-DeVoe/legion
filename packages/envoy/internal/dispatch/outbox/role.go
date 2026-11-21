@@ -94,11 +94,16 @@ type roleResolution struct {
 // last registration puts it in, with a holder that is not answering logged and its claim left
 // exactly as it is. It is the one resolution a batch's open (resolveRoleHolders) and the handover
 // behind a keep (handOverKept) share, so the liveness rule and that line are written once.
+//
+// role is a route's role, which names the claim it is keyed by (contracts.ParseRoleClaimKey): a
+// bare role resolves under its own project, contracts.RoleProject(role), as every claim was keyed
+// before claims named their project, so no read of the role bucket here moves.
 func resolveRole(ctx context.Context, deps Deps, role string) (roles.Resolution, error) {
 	if deps.RoleClaims == nil || deps.Sessions == nil {
 		return roles.Resolution{}, errNoRoleReaders
 	}
-	resolution, err := roles.ResolveHolder(ctx, deps.RoleClaims, deps.Sessions, role)
+	project, name := contracts.ParseRoleClaimKey(role)
+	resolution, err := roles.ResolveHolder(ctx, deps.RoleClaims, deps.Sessions, project, name)
 	if err == nil && resolution.State == roles.Lapsed {
 		slog.Info("dispatch outbox: a role's holder is not answering", "role", role,
 			"holder", resolution.Holder, "holder_state", resolution.HolderState,

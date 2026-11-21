@@ -948,7 +948,8 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			return ended()
 		}
 		holderCtx, cancelHolder := context.WithTimeout(ctx, roleKeepHolderWindow)
-		resolved, holderErr := roles.ResolveHolder(holderCtx, cfg.registry, roleHolderSessions{cfg.sessions}, role)
+		project, name := contracts.ParseRoleClaimKey(role)
+		resolved, holderErr := roles.ResolveHolder(holderCtx, cfg.claims(), roleHolderSessions{cfg.sessions}, project, name)
 		cancelHolder()
 		// The walk forwards to a live holder alone, and walks with no holder for every other
 		// resolution, one that did not answer included.
@@ -1330,7 +1331,8 @@ func roleKeepDrainHolds(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // which can lack a claim the bucket holds or keep one the bucket dropped. Reading through
 // roleLaneClaims keeps the bound on a claim read in one place for both lanes.
 func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) (string, error) {
-	claim, err := roleLaneClaims{cfg.registry}.RoleClaim(ctx, role)
+	project, name := contracts.ParseRoleClaimKey(role)
+	claim, err := roleLaneClaims{cfg.claims()}.RoleClaim(ctx, project, name)
 	if err != nil {
 		return "", err
 	}

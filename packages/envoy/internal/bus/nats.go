@@ -50,6 +50,7 @@ type connectOpts struct {
 	background                  bool
 	silentCutDetection          bool
 	immediateReconnect          bool
+	privacyRequiredSuffix       string
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
@@ -76,6 +77,10 @@ func parseConnectOptions[O ConnectOption](options []O) connectOpts {
 	for _, o := range options {
 		o.apply(&opts)
 	}
+	// The suffix ends the name whatever option set the name and in whatever order, so a client
+	// that names itself (WithName, ConnectRoleLane's and ConnectSessionConsumers' own names) still
+	// declares the mode it was told to.
+	opts.name += opts.privacyRequiredSuffix
 	return opts
 }
 
@@ -166,6 +171,16 @@ func WithEnvironment(lookup func(string) (string, bool)) ConnectOption {
 // takes its name as a parameter, and not this option.
 func WithName(name string) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.name = name })
+}
+
+// WithPrivacyRequired ends the name of every connection the client makes with suffix, which
+// declares the listener's required privacy mode to the NATS auth service: a hub rendered private
+// admits a listener's connection only when its client name ends in that suffix (natsgrant's
+// PrivacyRequiredSuffix, which the caller passes: natsgrant imports this package, so this package
+// cannot import it). The suffix is a constant of the build, read from no variable, so no client
+// built before this option and no all-public listener carries it. An empty suffix adds nothing.
+func WithPrivacyRequired(suffix string) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.privacyRequiredSuffix = suffix })
 }
 
 // WithConnectInBackground has the constructor (Connect, ConnectOwningStream, Dial) return without
