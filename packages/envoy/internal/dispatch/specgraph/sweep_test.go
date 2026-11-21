@@ -429,8 +429,7 @@ func withoutResultsOf(t *testing.T, base fstest.MapFS, c Check, commit string) m
 		}
 	}
 	want := slices.DeleteFunc(slices.Clone(s.Results), func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit })
-	fsys := cloneFiles(base)
-	editTree(t, fsys, "results.json", func() treeEdit { return resultsWithout(slices.Clone(out)) })
+	fsys := editTree(t, base, "results.json", func() treeEdit { return resultsWithout(slices.Clone(out)) })
 	if read, err := ReadScenario(fsys); err != nil || !reflect.DeepEqual(read.Results, want) {
 		t.Fatalf("the sweep took the results of %s at %s out of results.json, and the reader reads %d results (%v), where it should read %d", c.ID, commit, len(read.Results), err, len(want))
 	}
@@ -835,7 +834,7 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 	type row struct {
 		kind, reason  string
 		scenario      string
-		setup         func(t *testing.T, fsys fstest.MapFS)
+		setup         func(t *testing.T, fsys fstest.MapFS) fstest.MapFS
 		file          string
 		place         []string
 		subject       int    // from 1
@@ -844,8 +843,8 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 	}
 	// carriedFailure is carry with a failure of c at c1 after its pass, which carries to c2, and a
 	// pass at c2 after it and a caught failing example planted on c2: c2 reads unknown (disagree).
-	carriedFailure := func(t *testing.T, fsys fstest.MapFS) {
-		editTree(t, fsys, "results.json", func() treeEdit { return failureCarriedToC2() })
+	carriedFailure := func(t *testing.T, fsys fstest.MapFS) fstest.MapFS {
+		return editTree(t, fsys, "results.json", func() treeEdit { return failureCarriedToC2() })
 	}
 	rows := []row{
 		{kind: "a file of a commit's tree", reason: "a tied file that the later commit does not hold changed, so c1's pass carries no more to c2 (R8)",
@@ -887,7 +886,7 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 	for _, r := range rows {
 		base := scenarioFS(t, filepath.Join("testdata", "scenarios", r.scenario))
 		if r.setup != nil {
-			r.setup(t, base)
+			base = r.setup(t, base)
 		}
 		without := changedFile(t, base, r.file, treeChange{place: r.place, out: true}, func() treeWriter { return leftOutAt })
 		for _, read := range []struct {
@@ -930,10 +929,11 @@ func failureCarriedToC2() treeEdit {
 	}
 }
 
-// refusalAdded is a copy of base, of its own (cloneFiles), with CI's refusal of the check id at
+// refusalAdded is a copy of base, of its own (editTree), with CI's refusal of the check id at
 // commit added to uncited.json by its writer (refusalAt), read back by the reader against the
 // refusals that the sweep means, which it builds before the writer runs from a decode of base of
-// their own: those of base, and that one with the rule test-did-not-run (refusalRead).
+// their own: those of base, and that one with the rule test-did-not-run (refusalRead). The guard
+// compares base, the sweep's own base, around the writer and its builder.
 func refusalAdded(t *testing.T, base fstest.MapFS, commit, id string) fstest.MapFS {
 	t.Helper()
 	want := map[string]map[string]string{commit: {}}
@@ -941,8 +941,7 @@ func refusalAdded(t *testing.T, base fstest.MapFS, commit, id string) fstest.Map
 		want[at] = maps.Clone(checks)
 	}
 	want[commit][id] = "test-did-not-run"
-	fsys := cloneFiles(base)
-	editTree(t, fsys, "uncited.json", func() treeEdit { return refusalAt(commit, id) })
+	fsys := editTree(t, base, "uncited.json", func() treeEdit { return refusalAt(commit, id) })
 	refusalRead(t, fsys, commit, id, want)
 	return fsys
 }

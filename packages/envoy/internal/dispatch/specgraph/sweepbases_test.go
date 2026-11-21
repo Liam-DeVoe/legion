@@ -192,7 +192,7 @@ func builtBases() map[string]builtBase {
 		// true.
 		"wait-cycle with the outcomes of its two first runs swapped": {"wait-cycle", func(t *testing.T, fsys fstest.MapFS) (fstest.MapFS, fstest.MapFS) {
 			from := cloneFiles(fsys)
-			editTree(t, fsys, "results.json", func() treeEdit { return firstOutcomesSwapped() })
+			fsys = editTree(t, fsys, "results.json", func() treeEdit { return firstOutcomesSwapped() })
 			return fsys, from
 		}, func(t *testing.T, name string, fsys fstest.MapFS) {
 			readsAt(t, name, fsys, "a-sent-message-reaches-a-listener", failedAtB1, "m1")
@@ -307,10 +307,10 @@ func builtBases() map[string]builtBase {
 	} {
 		table[row.name] = builtBase{"carry", func(t *testing.T, fsys fstest.MapFS) (fstest.MapFS, fstest.MapFS) {
 			from := cloneFiles(fsys)
-			editTree(t, fsys, "results.json", func() treeEdit { return resultsAdded(row.adds) })
-			editTree(t, fsys, "jobs.json", func() treeEdit { return jobsEnded(row.jobsAt) })
+			fsys = editTree(t, fsys, "results.json", func() treeEdit { return resultsAdded(row.adds) })
+			fsys = editTree(t, fsys, "jobs.json", func() treeEdit { return jobsEnded(row.jobsAt) })
 			for _, e := range row.then {
-				editTree(t, fsys, e.file, func() treeEdit { return e.writer() })
+				fsys = editTree(t, fsys, e.file, func() treeEdit { return e.writer() })
 			}
 			return fsys, from
 		}, func(t *testing.T, name string, fsys fstest.MapFS) {
@@ -353,18 +353,19 @@ func builtBases() map[string]builtBase {
 	// reads it, so that a builder that adds nothing fails by name.
 	addsTo := []struct {
 		how   string
-		build func(t *testing.T, fsys fstest.MapFS)
+		build func(t *testing.T, fsys fstest.MapFS) fstest.MapFS
 		holds func(Scenario) bool
 	}{
-		{"with test_commit c1 on the failing run of ", func(t *testing.T, fsys fstest.MapFS) {
-			editTree(t, fsys, "results.json", func() treeEdit { return testCommitOnFailingRuns(graph) })
+		{"with test_commit c1 on the failing run of ", func(t *testing.T, fsys fstest.MapFS) fstest.MapFS {
+			return editTree(t, fsys, "results.json", func() treeEdit { return testCommitOnFailingRuns(graph) })
 		}, func(s Scenario) bool {
 			return slices.ContainsFunc(s.Results, func(r Result) bool {
 				return r.Check == graph && r.Kind == ResultRun && r.Outcome == OutcomeFail && r.TestCommit == "c1"
 			})
 		}},
-		{"with CI's refusal at c1 of ", func(t *testing.T, fsys fstest.MapFS) {
+		{"with CI's refusal at c1 of ", func(t *testing.T, fsys fstest.MapFS) fstest.MapFS {
 			fsys["uncited.json"] = &fstest.MapFile{Data: []byte(`{"c1": {"` + graph + `": "test-not-in-code"}}`)}
+			return fsys
 		}, func(s Scenario) bool { return s.Uncited["c1"][graph] == "test-not-in-code" }},
 	}
 	for what, kind := range map[string]converted{
@@ -379,7 +380,7 @@ func builtBases() map[string]builtBase {
 					fsys = kind.convert(t, fsys)
 				}
 				from := cloneFiles(fsys)
-				row.build(t, fsys)
+				fsys = row.build(t, fsys)
 				return fsys, from
 			}, func(t *testing.T, name string, fsys fstest.MapFS) {
 				readsAt(t, name, fsys, graph, kind.want, "m2")
@@ -538,10 +539,10 @@ func withSecondCheck(t *testing.T, base fstest.MapFS) fstest.MapFS {
 	if block == "" {
 		t.Fatalf("wait-cycle's approved.json holds no block of %s", old)
 	}
-	editTree(t, fsys, "approved.json", func() treeEdit { return nodeCopied(old, added, block) })
+	fsys = editTree(t, fsys, "approved.json", func() treeEdit { return nodeCopied(old, added, block) })
 	fsys["files/m1/spec.md"] = &fstest.MapFile{Data: append(slices.Clone(fsys["files/m1/spec.md"].Data), "\n"+block...)}
-	editTree(t, fsys, "results.json", func() treeEdit { return resultsCopied(old, added) })
-	editTree(t, fsys, "ties.json", func() treeEdit { return tiesCopied(old, added) })
+	fsys = editTree(t, fsys, "results.json", func() treeEdit { return resultsCopied(old, added) })
+	fsys = editTree(t, fsys, "ties.json", func() treeEdit { return tiesCopied(old, added) })
 	return fsys
 }
 

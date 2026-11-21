@@ -42,21 +42,26 @@ func scenarioFS(t *testing.T, dir string) fstest.MapFS {
 // tree from tree, the file's tree decoded for it alone, which it may build the new tree in.
 type treeEdit func(tree any) any
 
-// editTree changes the JSON file name of fsys by the writer that build gives, a writer of a sweep
-// or of a base, which takes the file's tree, decoded for it alone, its own to build the new tree
-// in, and gives the new one, which the guard encodes inside the call (writerCalled); and reads the
-// file back by its name, with each other file as a copy of fsys taken before the call holds it
-// (cloneFiles, filesRead), so that a writer that writes another file too fails by name, as does
-// one that changes a value of the package where it is built, where it is called or in a method of
-// a value that it gives. The value that the writer writes is the caller's to read back, against
-// what the caller states before the call, and a writer of a sweep is the function that a function
-// of the package gives (refusalAt, resultsWithout), so that it can name no variable of the sweep.
-func editTree(t *testing.T, fsys fstest.MapFS, name string, build func() treeEdit) {
+// editTree is a copy of base, of its own, with the JSON file name written by the writer that build
+// gives, a writer of a sweep or of a base, which takes the file's tree, decoded for it alone, its
+// own to build the new tree in, and gives the new one, which the guard encodes inside the call
+// (writerCalled). The guard compares base itself around the build and the call, the base that the
+// sweep reads or the base under construction, so that a writer or its builder that changes it, a
+// closure that names it among them, fails by name (filesKept); the copy is taken after the
+// compare, so it holds the files that the guard found unchanged. editTree then reads the file back
+// by its name, with each other file as base holds it (cloneFiles, filesRead), so that a writer that
+// writes another file too fails by name, as does one that changes a value of the package where it
+// is built, where it is called or in a method of a value that it gives. The value that the writer
+// writes is the caller's to read back, against what the caller states before the call, and a
+// writer of a sweep is the function that a function of the package gives (refusalAt,
+// resultsWithout), so that it can name no variable of the sweep.
+func editTree(t *testing.T, base fstest.MapFS, name string, build func() treeEdit) fstest.MapFS {
 	t.Helper()
-	before := cloneFiles(fsys)
-	data := writerCalled(t, "a writer of "+name, fsys, build, func(edit treeEdit) []byte { return encodeTree(t, edit(fileTree(t, fsys, name))) })
+	data := writerCalled(t, "a writer of "+name, base, build, func(edit treeEdit) []byte { return encodeTree(t, edit(fileTree(t, base, name))) })
+	fsys := cloneFiles(base)
 	fsys[name] = &fstest.MapFile{Data: data}
-	filesRead(t, before, fsys, map[string][]byte{name: data}, nil)
+	filesRead(t, base, fsys, map[string][]byte{name: data}, nil)
+	return fsys
 }
 
 // filesRead fails the test unless fsys, which a writer of a sweep made from a copy of base, holds
