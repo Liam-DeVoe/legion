@@ -3522,6 +3522,33 @@ for commit in 1111111111111111111111111111111111111111 2222222222222222222222222
 done
 check "a run script that only mentions the action pins nothing" \
   "$(is "$(contains "$out" 'dorny/paths-filter@4444444444444444444444444444444444444444')" false)"
+mkdir -p "$root/tools/data" "$root/tools/cased"
+cat > "$root/tools/data/action.yml" <<'YAML'
+name: Data
+inputs:
+  uses:
+    default: dorny/paths-filter@5555555555555555555555555555555555555555
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        uses: dorny/paths-filter@6666666666666666666666666666666666666666
+      run: echo "$uses"
+YAML
+cat > "$root/tools/cased/action.yaml" <<'YAML'
+name: Cased
+runs:
+  using: composite
+  steps:
+    - uses: Dorny/Paths-Filter@7777777777777777777777777777777777777777
+YAML
+git -C "$root" add tools/data/action.yml tools/cased/action.yaml
+run_check "$root"
+check "a key named uses in an env or an input pins nothing" \
+  "$(is "$(contains "$out" 'dorny/paths-filter@\(5555\|6666\)')" false)"
+check "the action's name in another case, in an action.yaml, is read" \
+  "$(contains "$out" "::error file=tools/cased/action.yaml::tools/cased/action.yaml:5 pins dorny/paths-filter@7777777777777777777777777777777777777777, whose js-yaml ")"
 
 echo "case: no node to read the filters with"
 # The filters are read with js-yaml under Node; without node the check ends naming it, as an

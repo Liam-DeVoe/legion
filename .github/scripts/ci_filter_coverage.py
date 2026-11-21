@@ -881,29 +881,28 @@ def check_filter_inputs(workflows: dict, problems: list[Annotation]) -> None:
                                             f"this check and gates its job on whatever it says, unread"))
 
 
-# What a step's `uses:` names when it pins dorny/paths-filter to a commit.
-PATHS_FILTER_PIN = re.compile(r"dorny/paths-filter@([0-9A-Fa-f]{40})")
+# What a step's `uses:` names when it pins dorny/paths-filter to a commit. GitHub resolves an
+# action's owner and repository without regard to case, so the name is matched so too.
+PATHS_FILTER_PIN = re.compile(r"dorny/paths-filter@([0-9A-Fa-f]{40})", re.IGNORECASE)
 
 
 def paths_filter_uses(document) -> list[str]:
-    """Every `uses` value naming dorny/paths-filter in a parsed workflow or action, at any depth:
-    a job's step, a composite action's step, or one written as a flow mapping or a block scalar
-    alike, since they are the same mapping once parsed. A value of any other key, a `run:` script
-    that only mentions the action among them, is no step of it."""
-    found, stack, seen = [], [document], set()
-    while stack:
-        node = stack.pop()
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        if isinstance(node, dict):
-            uses = node.get("uses")
-            if isinstance(uses, str) and uses.strip().startswith("dorny/paths-filter@"):
-                found.append(uses.strip())
-            stack.extend(node.values())
-        elif isinstance(node, list):
-            stack.extend(node)
-    return found
+    """Every step's `uses` value naming dorny/paths-filter, in any case, in a parsed workflow (each
+    job's `steps`) or action (a composite action's `runs.steps`): a step written as a flow mapping
+    or its value as a block scalar is the same mapping once parsed. Only steps are read, so a key
+    named `uses` in an `env`, a `with` or a `run:` script's text is no step of the action."""
+    steps = []
+    if isinstance(document, dict):
+        jobs = document.get("jobs")
+        for job in (jobs.values() if isinstance(jobs, dict) else []):
+            if isinstance(job, dict) and isinstance(job.get("steps"), list):
+                steps += job["steps"]
+        runs = document.get("runs")
+        if isinstance(runs, dict) and isinstance(runs.get("steps"), list):
+            steps += runs["steps"]
+    return [step["uses"].strip() for step in steps
+            if isinstance(step, dict) and isinstance(step.get("uses"), str)
+            and step["uses"].strip().lower().startswith("dorny/paths-filter@")]
 
 
 def check_paths_filter_pins(files: list, problems: list[Annotation]) -> None:
