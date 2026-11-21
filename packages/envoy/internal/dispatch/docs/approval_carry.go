@@ -593,6 +593,7 @@ func asksAgreeWithTheirNodes(ctx context.Context, tx pgx.Tx, artifactID string, 
 			indexed = append(indexed, ask.ID)
 		}
 	}
+	// kept for one release: stored-ask-state
 	answers, err := askNodeAnswers(ctx, tx, indexed)
 	if err != nil {
 		return versionAsks{}, false, err
@@ -627,6 +628,7 @@ func asksAgreeWithTheirNodes(ctx context.Context, tx pgx.Tx, artifactID string, 
 	for _, source := range sources {
 		copied = append(copied, source.ask.ID)
 	}
+	// kept for one release: stored-ask-state
 	if answers, err = askNodeAnswers(ctx, tx, copied); err != nil {
 		return versionAsks{}, false, err
 	}
@@ -740,6 +742,9 @@ func askAgreesWithItsNode(node *pmdoc.Node, ask, onNode model.Ask) bool {
 // the roll window's write with them (rollWindowAskAttributes) from the row, as a version written
 // while two builds serve, or by the release before, holds. Only a block every one of them would
 // change shows a state neither the row nor the node holds.
+//
+// kept for one release: roll-window-attributes
+// kept for one release: stored-ask-state
 func showsItsAsksState(node *pmdoc.Node, ask, onNode model.Ask, copied string) bool {
 	return !withoutStoredAskAttributes(attributesOf(node)) || !keptAskState(onNode, copied)(attributesOf(node)) ||
 		!rollWindowAskAttributesWithheld(ask, copied)(attributesOf(node)) ||

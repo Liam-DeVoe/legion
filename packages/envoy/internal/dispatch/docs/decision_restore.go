@@ -1656,6 +1656,7 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 	}
 	// Once the fleet is one build, a restored ask's block keeps the state its node holds
 	// (keptAskState, onItsNode).
+	// kept for one release: stored-ask-state
 	var nodes map[string]askNodeAnswer
 	if !twoBuilds {
 		var ids []string
@@ -1820,6 +1821,7 @@ func (r *issueRestore) writePresent(document string, live *pmdoc.Node, edits *pr
 				changed = true
 			}
 		}
+		// kept for one release: stored-ask-state
 		if !twoBuilds && withoutUnkeptAskAttributes(node) {
 			changed = true
 		}

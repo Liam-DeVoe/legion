@@ -965,18 +965,22 @@ func TestAnAskBlockMovedOutOfTheDecisionsDocumentKeepsItsShapedTies(t *testing.T
 // person's paragraph that cites the document among other words is the person's prose, which the
 // restore keeps wherever it stands in the part: before the pointer line, the ask takes the
 // pointer line's place after it; with no pointer line, the ask stands after the part's last
-// block. Each restore changed nothing else, so the approval carries, and no carry takes the
-// person's paragraph out of the version they approved.
+// block. So is a paragraph that names the decisions and says they are in the document with words
+// of its own between, which no pointer line's lead holds (pointerLineLead). Each restore changed
+// nothing else, so the approval carries, and no carry takes the person's paragraph out of the
+// version they approved.
 func TestTheRestoreKeepsAPersonsParagraphCitingTheDecisionsDocumentAmongOtherWords(t *testing.T) {
 	const pointer = "The decisions this spec rests on are in dispatch://DOC-1/artifact/decisions-md."
 	const prose = "We chose the base release because backups are cheap; the trade-offs are in dispatch://DOC-1/artifact/decisions-md."
+	const qualified = "The decisions the board rejected twice are in dispatch://DOC-1/artifact/decisions-md."
 	const head = "# Spec\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n\n"
 	const block = ":::ask{#q1 urgency=\"med\" multiple=\"false\"}\nWhich build writes the corpus?\n:::\n\n"
 	for _, test := range []struct {
-		name, part string
+		name, prose, part string
 	}{
-		{"before the pointer line", prose + "\n\n" + pointer + "\n"},
-		{"with no pointer line", prose + "\n"},
+		{"before the pointer line", prose, prose + "\n\n" + pointer + "\n"},
+		{"with no pointer line", prose, prose + "\n"},
+		{"naming the decisions with words of its own before `are in`, with no pointer line", qualified, qualified + "\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			issue := newRestoreIssue(t, head+block+"## Decisions\n\n"+test.part)
@@ -991,10 +995,10 @@ func TestTheRestoreKeepsAPersonsParagraphCitingTheDecisionsDocumentAmongOtherWor
 			}
 			spec := issue.latest(issue.spec)
 			part := spec[strings.Index(spec, "## Decisions"):]
-			if !strings.Contains(part, prose) {
+			if !strings.Contains(part, test.prose) {
 				t.Fatalf("the restored spec's Decisions part reads\n%s\nwant the person's paragraph citing the decisions document kept", part)
 			}
-			if strings.Contains(spec, pointer) || strings.Index(part, "#q1 urgency=") < strings.Index(part, prose) {
+			if strings.Contains(spec, pointer) || strings.Index(part, "#q1 urgency=") < strings.Index(part, test.prose) {
 				t.Errorf("the restored spec's Decisions part reads\n%s\nwant the ask after the person's paragraph, in place of any pointer line", part)
 			}
 		})

@@ -1105,7 +1105,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	// What the comment states, under the event that stored it, queued right after that event
-	// (graphstore.LatestEvent): its node's cause, its two base attributes, and the artifacts it
+	// (graphstore.LatestEvent): its node's cause, its base attributes, and the artifacts it
 	// is anchored to and owned by, with the move of its node row onto that event
 	// (graphstore.QueueCaused). Then who wrote it, as the node and tuple store holds it: the
 	// author's node and the comment's authored_by tuple, under the same event. A comment left out
@@ -1193,7 +1193,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 // the row and there is no node to name otherwise. The facts are not: on the request path no event
 // exists while the row is written, so they wait for the event that caused the write
 // (graphstore.QueueCaused), queued right after it in the same write phase, where refs.QueueStamp
-// already runs. The node's two base attributes wait with them: the write holds them for that
+// already runs. The node's base attributes wait with them: the write holds them for that
 // event rather than letting the node write state them, so that they carry the event that stored
 // the comment like every other fact of this write. The block index states its own nodes the same
 // way (graphstore.Uncaused). Each writer of a comment skips both for a comment left out of the
