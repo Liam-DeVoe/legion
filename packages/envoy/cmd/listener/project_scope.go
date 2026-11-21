@@ -393,11 +393,9 @@ func (s *edgeScope) namesHolder(sessions *session.SessionRegistry, holderID stri
 // read that did not answer is returned as its error, so the role read answers the bus-unavailable
 // 503. A nil scope, and a role no claim holds, both cost no read.
 func (s *edgeScope) holderConfirmed(ctx context.Context, sessions *session.SessionRegistry, result roles.Resolution) (roles.Resolution, error) {
-	if s == nil || result.State == roles.Unclaimed {
-		return result, nil
-	}
-	if !s.shows(result.Entry) {
-		return roles.Resolution{State: roles.Unclaimed}, nil
+	shown := s.holder(result)
+	if s == nil || shown.State == roles.Unclaimed {
+		return shown, nil
 	}
 	stored, ok, err := sessions.StoredByWriter(ctx, result.Holder)
 	if err != nil {
