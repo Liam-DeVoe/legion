@@ -89,10 +89,11 @@ func URL(raw string) string {
 //   - an "@" after the authority, in the path, the query or the fragment, is where a credential
 //     holding a "/", "?" or "#" written in the userinfo lands, its head then read as the authority
 //     (`https://<head>?<tail>@host`): such a URL is written URLWithCredentials from its "://" to
-//     its end, nothing of it kept (natsurl.UserinfoPastHost's rule, read on the text). A file URL is the
-//     one exception: it names a path on this machine, RFC 8089 gives it no userinfo to write a
-//     credential in, and a path's own "@" is common there (`node_modules/@scope/…`), so its path
-//     stays;
+//     its end, nothing of it kept (natsurl.UserinfoPastHost's rule, read on the text). A file URL
+//     of this machine, its authority empty or `localhost`, keeps an "@" in its path: RFC 8089
+//     gives it no userinfo to write a credential in, and a path's own "@" is common there
+//     (`file:///…/node_modules/@scope/…`). An "@" in such a URL's query or fragment, or in any
+//     file URL that names a host, marks it as any other;
 //   - the fragment starts at the first "#" after the authority, and it stays. A "?" after that "#"
 //     is the fragment's;
 //   - the query runs from the first "?" after the authority up to the fragment, or up to the end
@@ -141,8 +142,11 @@ func URLCredentials(text string) string {
 	// query it is and of each URL after it, whose "://" comes before the "?". The runes decoded
 	// from at and from an earlier position agree from at on, since the ":" of the "://" before at
 	// starts a rune either way. The search for the next "://" reads a stretch twice at most: once,
-	// and again from fragment after a removed query.
-	end := -1
+	// and again from fragment after a removed query. lastAt is the last "@" before end, found when
+	// end is: every URL that ends at end starts at or after the at it was found from, so a URL has
+	// an "@" past its host exactly when lastAt is at or after that host, and the stretches it is
+	// looked for in lie apart from one another.
+	end, lastAt := -1, -1
 	slash, question, hash := nextByte{c: '/', at: -1}, nextByte{c: '?', at: -1}, nextByte{c: '#', at: -1}
 	for at := 0; ; {
 		i := strings.Index(text[at:], "://")
@@ -163,14 +167,18 @@ func URLCredentials(text string) string {
 		}
 		if end < at {
 			end = at + orLen(strings.IndexFunc(text[at:], endsURL), len(text)-at)
+			lastAt = strings.LastIndexByte(text[at:end], '@')
+			if lastAt >= 0 {
+				lastAt += at
+			}
 		}
 		host := min(slash.from(text, at), question.from(text, at), hash.from(text, at), end)
 		// An "@" past the host writes the whole URL as the mark, and the search goes on from the
-		// URL's end: [host, end) is read here once, and every "://" in it is this URL's own. A
-		// query pending from a URL before this one lies in it only when that URL is a file URL,
-		// which an "@" past its host leaves whole, and which ends where this one does: the mark
-		// covers that query, so it is no longer pending.
-		if strings.IndexByte(text[host:end], '@') >= 0 && !fileSchemeEndsAt(text, sep) {
+		// URL's end, so every "://" in [host, end) is this URL's own. A query pending from a URL
+		// before this one lies in it only when that URL is a local file URL, which an "@" in its
+		// path leaves whole, and which ends where this one does: the mark covers that query, so it
+		// is no longer pending.
+		if lastAt >= host && !localFilePath(text, sep, at, host, min(question.from(text, host), hash.from(text, host), end), lastAt) {
 			replace(at, end, URLWithCredentials)
 			at = end
 			query = -1
@@ -191,6 +199,20 @@ func URLCredentials(text string) string {
 	}
 	out.WriteString(text[kept:])
 	return out.String()
+}
+
+// localFilePath reports whether the URL whose "://" is at sep, whose authority is text[at:host],
+// whose path ends at pathEnd (its first "?" or "#", or its end) and whose last "@" is at lastAt,
+// is a file URL of this machine whose every "@" past its host is in its path: its scheme is "file"
+// in any case, its authority is empty or `localhost`, and no "@" stands in its query or fragment.
+func localFilePath(text string, sep, at, host, pathEnd, lastAt int) bool {
+	if !fileSchemeEndsAt(text, sep) {
+		return false
+	}
+	if authority := text[at:host]; authority != "" && !strings.EqualFold(authority, "localhost") {
+		return false
+	}
+	return lastAt < pathEnd
 }
 
 // nextByte is the index of the next c in a text at or after the position it was last looked for

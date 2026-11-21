@@ -180,11 +180,48 @@ var urlCredentialsCases = []struct {
 		want: "notfile://" + URLWithCredentials,
 	},
 	{
-		// The file URL's query is pending when the URL in its path, with an "@" past its host, is
-		// written whole as the mark: the mark covers that query, which is not removed again.
-		name: "a URL with an @ past its host in a file URL's path",
+		// An "@" in a file URL's query (here a URL with a credential written in it) marks the file
+		// URL whole, as it would any other.
+		name: "an @ in a file URL's query",
 		text: "see file:///plugins/https://h.example/p?u=" + planted + "@g.example end",
+		want: "see file://" + URLWithCredentials + " end",
+	},
+	{
+		// The local file URL's query is pending when the URL in its path, with an "@" past its
+		// host, is written whole as the mark: the mark covers that query, which is not removed
+		// again.
+		name: "a URL with an @ past its host in a file URL's path",
+		text: "see file:///plugins/https://h.example/@x/p?u=1 end",
 		want: "see file:///plugins/https://" + URLWithCredentials + " end",
+	},
+	{
+		name: "a localhost file URL keeps its path's @",
+		text: "file://LocalHost/srv/@scope/x",
+		want: "file://LocalHost/srv/@scope/x",
+	},
+	{
+		// A file URL that names a host is no local path: a credential holding a "/", "?" or "#"
+		// written as its user puts the head where the host goes, and every such URL takes the mark.
+		name: "a file URL with a host and an @ in its path",
+		text: "file://madeUpHead0123/" + planted + "@host.example/x",
+		want: "file://" + URLWithCredentials,
+	},
+	{
+		name: "a file URL with a host and an @ in its fragment",
+		text: "File://madeUpHead0123#" + planted + "@host.example/x",
+		want: "File://" + URLWithCredentials,
+	},
+	{
+		name: "a file URL with a host and an @ in its query",
+		text: "file://madeUpHead0123?" + planted + "@host.example/x",
+		want: "file://" + URLWithCredentials,
+	},
+	{
+		// A local file URL whose query holds a URL with a password holding a "#": the "@" stands in
+		// the file URL's fragment, which marks it whole.
+		name: "a local file URL with an @ in its fragment",
+		text: "file:///a?q=https://u:madeUpHead0123#" + planted + "@h/",
+		want: "file://" + URLWithCredentials,
 	},
 	{
 		name: "a ? in prose with no URL",
@@ -265,8 +302,11 @@ func urlCredentialsQuadratic(text string) string {
 		for start > 0 && strings.IndexByte(schemeRunes, text[start-1]) >= 0 {
 			start--
 		}
-		scheme := text[start:sep]
-		if strings.IndexByte(text[host:end], '@') >= 0 && !strings.EqualFold(scheme, "file") {
+		scheme, authority := text[start:sep], text[at:host]
+		pathEnd := host + orLen(strings.IndexAny(text[host:end], "?#"), end-host)
+		local := strings.EqualFold(scheme, "file") && (authority == "" || strings.EqualFold(authority, "localhost")) &&
+			strings.IndexByte(text[pathEnd:end], '@') < 0
+		if strings.IndexByte(text[host:end], '@') >= 0 && !local {
 			replace(at, end, URLWithCredentials)
 			at = end
 			query = -1
@@ -298,7 +338,7 @@ func TestURLCredentialsGivesWhatTheRuleAsFirstWrittenGives(t *testing.T) {
 	for _, tc := range urlCredentialsCases {
 		texts = append(texts, tc.text)
 	}
-	pieces := []string{"https", "file", "9", "@", ":", "/", "?", "#", "=", " ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff"}
+	pieces := []string{"https", "file", "localhost", "9", "@", ":", "/", "?", "#", "=", " ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff"}
 	random := rand.New(rand.NewPCG(4193, 4463))
 	for range 5000 {
 		some := []string{"a", "://"}
