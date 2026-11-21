@@ -72,13 +72,35 @@ func TestADeleteAtReadKeepsTheRowWrittenAfterItsReadFoundNone(t *testing.T) {
 	}
 }
 
-// A value the caller's readable refuses can be a copy the server stored from another key's
-// record, which carries that record's Nats-Sequence header ahead of its own, so the revision a
-// direct get reports for it is the source's. The delete reads such a value again from the
-// stream's leader and deletes it at the sequence it is stored at, and the source keeps its record.
-// The control is the same delete with no readable, which reads no leader and is refused at the
-// source's revision, leaving the copy stored.
-func TestADeleteAtReadDeletesACopyItsReadableRefusesAtItsTrueSequence(t *testing.T) {
+// writingOnGet stores value under the key once a read of it answered a record, which is what a
+// registration landing between DeleteAtRead's read and its delete does over a live record. It
+// writes once.
+type writingOnGet struct {
+	nats.KeyValue
+	value []byte
+	wrote bool
+	err   error
+}
+
+func (kv *writingOnGet) Get(key string) (nats.KeyValueEntry, error) {
+	entry, err := kv.KeyValue.Get(key)
+	if err == nil && !kv.wrote {
+		kv.wrote = true
+		_, kv.err = kv.KeyValue.Put(key, kv.value)
+	}
+	return entry, err
+}
+
+// A record the server stored at a key as its answer to a direct get of another key's record
+// carries that record's Nats-Sequence header ahead of its own, so the revision a direct get
+// reports for it is the source's, and a delete fenced there is refused: the control. The delete
+// reads such a value again from the stream's leader and deletes it at the sequence it is stored
+// at, both where the caller's readable refuses the value (ReadStored's second read) and where it
+// takes it (the read after the refused delete finds a message the server wrote), and the source
+// keeps its record. A delete refused because a writer stored the key's record between the read and
+// the delete still answers that refusal and keeps that writer's record: the leader's answer is no
+// message the server wrote.
+func TestADeleteAtReadDeletesACopyAtItsTrueSequence(t *testing.T) {
 	const bucket = "kv_delete_at_read_copy"
 	_, kv := leaderReadBucket(t, bucket)
 	conn := kv.Streams().Conn()
@@ -86,25 +108,49 @@ func TestADeleteAtReadDeletesACopyItsReadableRefusesAtItsTrueSequence(t *testing
 	if err != nil {
 		t.Fatalf("put ses_source: %v", err)
 	}
-	copied := testnats.ServerWritesKey(t, conn, bucket, "ses_copy", testnats.DirectGetLast(bucket, "ses_source"), nil)
-	own := func(value []byte) bool { return string(value) == "ses_copy's own record" }
+	refused := testnats.ServerWritesKey(t, conn, bucket, "ses_copy", testnats.DirectGetLast(bucket, "ses_source"), nil)
+	reported, err := kv.Get("ses_copy")
+	if err != nil || reported.Revision() != source {
+		t.Fatalf("a direct get of ses_copy = revision %v (%v), want the source's %d: the control shows nothing to correct", reported, err, source)
+	}
+	if err := kv.Delete("ses_copy", nats.LastRevision(reported.Revision())); !errors.Is(err, nats.ErrKeyExists) {
+		t.Fatalf("a delete of ses_copy fenced on the direct get's revision = %v, want %v", err, nats.ErrKeyExists)
+	}
+	if stored := testnats.LastSequence(t, conn, bucket, "ses_copy"); stored != refused {
+		t.Fatalf("ses_copy's newest message is at %d after the refused delete, want the copy at %d", stored, refused)
+	}
 
-	revision, err := kv.DeleteAtRead(t.Context(), "ses_copy", nil)
-	if !errors.Is(err, nats.ErrKeyExists) || revision != source {
-		t.Fatalf("DeleteAtRead(ses_copy) with no readable = revision %d, %v; want the source's revision %d refused with %v: the control shows nothing to correct", revision, err, source, nats.ErrKeyExists)
-	}
-	if stored := testnats.LastSequence(t, conn, bucket, "ses_copy"); stored != copied {
-		t.Fatalf("ses_copy's newest message is at %d after the refused delete, want the copy at %d", stored, copied)
-	}
-
-	revision, err = kv.DeleteAtRead(t.Context(), "ses_copy", own)
-	if err != nil || revision != copied {
-		t.Fatalf("DeleteAtRead(ses_copy) = revision %d, %v; want the copy deleted at %d, the sequence it is stored at", revision, err, copied)
-	}
-	if _, err := kv.Get("ses_copy"); !errors.Is(err, nats.ErrKeyNotFound) {
-		t.Fatalf("Get(ses_copy) after the delete = %v, want %v", err, nats.ErrKeyNotFound)
+	for _, tc := range []struct {
+		key      string
+		readable func(value []byte) bool
+	}{
+		{"ses_copy", func(value []byte) bool { return string(value) == "ses_copy's own record" }},
+		{"ses_copy_taken", nil},
+	} {
+		copied := refused
+		if tc.key != "ses_copy" {
+			copied = testnats.ServerWritesKey(t, conn, bucket, tc.key, testnats.DirectGetLast(bucket, "ses_source"), nil)
+		}
+		revision, err := kv.DeleteAtRead(t.Context(), tc.key, tc.readable)
+		if err != nil || revision != copied {
+			t.Fatalf("DeleteAtRead(%s) = revision %d, %v; want the copy deleted at %d, the sequence it is stored at", tc.key, revision, err, copied)
+		}
+		if _, err := kv.Get(tc.key); !errors.Is(err, nats.ErrKeyNotFound) {
+			t.Fatalf("Get(%s) after the delete = %v, want %v", tc.key, err, nats.ErrKeyNotFound)
+		}
 	}
 	if entry, err := kv.Get("ses_source"); err != nil || entry.Revision() != source {
-		t.Fatalf("ses_source after the delete is %v (%v), want its record kept at %d", entry, err, source)
+		t.Fatalf("ses_source after the deletes is %v (%v), want its record kept at %d", entry, err, source)
+	}
+
+	if _, err := kv.Put("ses_raced_live", []byte("read")); err != nil {
+		t.Fatalf("put ses_raced_live: %v", err)
+	}
+	racing := &writingOnGet{KeyValue: kv.Legacy(), value: []byte("registered since")}
+	if _, err := NewKeyValue(racing, kv.WatchHandle(), kv.Streams()).DeleteAtRead(t.Context(), "ses_raced_live", nil); !IsCASConflict(err) || racing.err != nil {
+		t.Fatalf("DeleteAtRead(ses_raced_live) under a write = %v (the write: %v), want the refusal of a fence a writer moved", err, racing.err)
+	}
+	if entry, err := kv.Get("ses_raced_live"); err != nil || string(entry.Value()) != "registered since" {
+		t.Fatalf("ses_raced_live after the refused delete is %v (%v), want the record written under the delete's read", entry, err)
 	}
 }

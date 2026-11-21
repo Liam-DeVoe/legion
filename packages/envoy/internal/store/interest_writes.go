@@ -155,8 +155,15 @@ func (r *Registry) Upsert(item Interest, topics []string) (Interest, error) {
 // the same topics elsewhere, the listener's registration route filtering a session consumer,
 // plans once and writes that plan instead (PlanInterest, UpsertPlanned).
 func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []string) (Interest, error) {
-	for range interestWriteAttempts {
-		cur, revision, getErr := r.getWithRevision(ctx, item.SessionID, true)
+	for attempt := range interestWriteAttempts {
+		// A retry follows a write the bucket refused at the revision the last read reported, so it
+		// reads the row from the stream's leader (readLeader): a record the server wrote, which a
+		// direct get reports at another stream's sequence, is replaced at the one it is stored at.
+		read := readBucket
+		if attempt > 0 {
+			read = readLeader
+		}
+		cur, revision, getErr := r.getWithRevision(ctx, item.SessionID, read)
 		roles, err := r.controllerLaneRoles(ctx, item.SessionID, cur.Topics, item.Topics, topics)
 		if err != nil {
 			return Interest{}, err
@@ -192,7 +199,7 @@ func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []str
 // controller's claim that did not answer or failed (controllerLaneRoles): the route refuses the
 // registration rather than filter a consumer on a row the write would decide differently.
 func (r *Registry) PlanInterest(ctx context.Context, sessionID string, requested []string) (InterestPlan, error) {
-	return r.planInterest(ctx, sessionID, slices.Clone(requested), false)
+	return r.planInterest(ctx, sessionID, slices.Clone(requested), readCache)
 }
 
 // PlanInterestAfterConflict is PlanInterest over the row the bucket now holds rather than the
@@ -200,15 +207,21 @@ func (r *Registry) PlanInterest(ctx context.Context, sessionID string, requested
 // by the writer that stored that row, and a plan made from a cache still behind it would be
 // refused again. Its caller filters the session's consumer on this plan before writing it, as it
 // did for the first, so the filter and the row still name one set after a conflict.
+//
+// The row is read from the stream's leader (readLeader), and so is the row UpsertPlanned fences
+// this plan's write on (InterestPlan.afterConflict): a refusal is also what a record the server
+// wrote earns a write, since a direct get reports it at another stream's sequence, and the
+// leader's read answers such a record as no row of the session's at the sequence it is stored
+// at, which the write then replaces.
 func (r *Registry) PlanInterestAfterConflict(ctx context.Context, sessionID string, requested []string) (InterestPlan, error) {
-	return r.planInterest(ctx, sessionID, slices.Clone(requested), true)
+	return r.planInterest(ctx, sessionID, slices.Clone(requested), readLeader)
 }
 
-// planInterest is PlanInterest over a row read from the cache, or from the bucket alone when
-// fromBucket is set: a plan made again after the bucket refused a write at the revision the last
-// plan read must see the row that refused it, which the cache may not hold yet.
-func (r *Registry) planInterest(ctx context.Context, sessionID string, requested []string, fromBucket bool) (InterestPlan, error) {
-	cur, revision, err := r.getWithRevision(ctx, sessionID, fromBucket)
+// planInterest is PlanInterest over a row read as read says: from the cache, or from the stream's
+// leader for a plan made again after the bucket refused a write at the revision the last plan
+// read, which must see the row that refused it, which the cache may not hold yet.
+func (r *Registry) planInterest(ctx context.Context, sessionID string, requested []string, read interestRead) (InterestPlan, error) {
+	cur, revision, err := r.getWithRevision(ctx, sessionID, read)
 	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
 		return InterestPlan{}, err
 	}
@@ -217,9 +230,10 @@ func (r *Registry) planInterest(ctx context.Context, sessionID string, requested
 		return InterestPlan{}, err
 	}
 	return InterestPlan{
-		Roles:    roles,
-		Topics:   MergedTopics(sessionID, roles, cur.Topics, requested),
-		Revision: revision,
+		Roles:         roles,
+		Topics:        MergedTopics(sessionID, roles, cur.Topics, requested),
+		Revision:      revision,
+		afterConflict: read == readLeader,
 	}, nil
 }
 
@@ -256,7 +270,11 @@ var ErrInterestPlanConflict = errors.New("the interest record changed under the 
 // the skip, which is one call wide rather than the seconds the consumer call takes: a row
 // stored inside it refuses the write, and the skip inside it answers from the row that moved.
 func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan InterestPlan) (Interest, error) {
-	cur, revision, getErr := r.getWithRevision(ctx, item.SessionID, true)
+	read := readBucket
+	if plan.afterConflict {
+		read = readLeader
+	}
+	cur, revision, getErr := r.getWithRevision(ctx, item.SessionID, read)
 	if revision != plan.Revision {
 		return Interest{}, fmt.Errorf("write %s's interest record: %w", item.SessionID, ErrInterestPlanConflict)
 	}
@@ -580,7 +598,7 @@ func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, to
 // that could free nothing, whether the claim it marks names a process or none.
 func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string, release RoleReleaseAuthority) ([]string, error) {
 	if len(topics) == 0 {
-		record, _, err := r.getWithRevision(ctx, sessionID, true)
+		record, _, err := r.getWithRevision(ctx, sessionID, readBucket)
 		if err != nil && !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
 			return nil, err
 		}
@@ -613,7 +631,7 @@ func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string
 // (oneInterest) and not itself among them, in the record's order; none when the record cannot be
 // read.
 func (r *Registry) otherFormsHeld(ctx context.Context, sessionID string, topics []string) []string {
-	record, _, err := r.getWithRevision(ctx, sessionID, false)
+	record, _, err := r.getWithRevision(ctx, sessionID, readCache)
 	if err != nil {
 		return nil
 	}
@@ -701,7 +719,11 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 		return r.deleteInterest(ctx, sessionID)
 	}
 	for attempt := range interestWriteAttempts {
-		item, revision, err := r.getWithRevision(ctx, sessionID, attempt > 0)
+		read := readCache
+		if attempt > 0 {
+			read = readLeader
+		}
+		item, revision, err := r.getWithRevision(ctx, sessionID, read)
 		if errors.Is(err, ErrMalformedInterest) {
 			r.logger().Warn("registry left an interest record it cannot decode unchanged",
 				slog.String("session_id", sessionID),

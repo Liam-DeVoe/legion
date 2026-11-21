@@ -147,6 +147,9 @@ type InterestPlan struct {
 	Topics   []string
 	Revision uint64
 	Dropped  []string
+	// afterConflict is set on a plan PlanInterestAfterConflict made, whose row was read from the
+	// stream's leader; UpsertPlanned reads the row it fences the write on the same way.
+	afterConflict bool
 }
 
 // Without is the plan with topics left out of it: out of Topics, which the session's consumer is

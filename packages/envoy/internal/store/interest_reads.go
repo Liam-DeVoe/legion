@@ -54,7 +54,7 @@ func boundInterest(key string, value []byte) (Interest, error) {
 // it belongs to. A read of a bucket since recreated, or one the revision fence drops, is answered
 // but not cached: the new bucket's read delivers what it holds.
 func (r *Registry) Get(ctx context.Context, sessionID string) (Interest, error) {
-	item, _, err := r.getWithRevision(ctx, sessionID, false)
+	item, _, err := r.getWithRevision(ctx, sessionID, readCache)
 	return item, err
 }
 
@@ -73,8 +73,23 @@ func (r *Registry) Get(ctx context.Context, sessionID string) (Interest, error) 
 // the bucket holds no row for answers revision 0 with nats.ErrKeyNotFound, and a row this build
 // cannot decode answers the revision a write of it is fenced on with ErrMalformedInterest.
 func (r *Registry) RefreshAt(ctx context.Context, sessionID string) (Interest, uint64, error) {
-	return r.getWithRevision(ctx, sessionID, true)
+	return r.getWithRevision(ctx, sessionID, readBucket)
 }
+
+// interestRead is where getWithRevision reads a session's row from.
+type interestRead uint8
+
+const (
+	// readCache answers from the cache, and reads the bucket as readBucket does on a miss.
+	readCache interestRead = iota
+	// readBucket reads the bucket by a direct get, whatever the cache holds.
+	readBucket
+	// readLeader reads the key's newest message from the stream's leader, markers and the headers
+	// the stream stored with it included (bus.KeyValue.NewestFromLeader): the read a write makes
+	// again after the bucket refused it at the revision a direct get reported (UpsertWithin,
+	// PlanInterestAfterConflict, removeInterestTopics).
+	readLeader
+)
 
 // getWithRevision is Get with the bucket revision the record it answers was read at: the revision
 // the copy's fence holds on a cache hit, the entry's own on a bucket read, and 0 for a session the
@@ -86,11 +101,10 @@ func (r *Registry) RefreshAt(ctx context.Context, sessionID string) (Interest, u
 // (ErrInterestPlanConflict), and the plan made again over the bucket's own row carries the
 // revision that write needs.
 //
-// fromBucket reads the bucket even when the cache holds the record, for a caller whose cache may
-// be behind a write its answer must hold: one whose compare-and-swap the bucket refused, since
-// the cache is then behind the row that refused it and a plan made from the cache would be
-// refused again (UpsertPlanned), and one reading the topics a registration on another listener
-// has just stored (RefreshAt).
+// read says where the row is read from (interestRead). readBucket reads the bucket even when the
+// cache holds the record, for a caller whose cache may be behind a write its answer must hold: one
+// reading the topics a registration on another listener has just stored (RefreshAt), and the
+// planned write's own read of the row it is fenced on (UpsertPlanned).
 //
 // A record the direct get answers that is no row of the session's is read again from the stream's
 // leader (bus.KeyValue.GetFromLeader), and that read is what this answers, its revision included.
@@ -101,8 +115,18 @@ func (r *Registry) RefreshAt(ctx context.Context, sessionID string) (Interest, u
 // sequence on every attempt, and the session's every registration answers 503 for as long as the
 // copy stands; the leader's stream message get reports the sequence the message is stored at.
 // Only such a record costs the second read, so a session's own row is read once, as before.
-func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBucket bool) (Interest, uint64, error) {
-	if !fromBucket {
+//
+// A record that does read as the session's row can still be one the server wrote: a RePublish of
+// another stream naming the key's subject stores whatever body that stream was given, with that
+// stream's Nats-Sequence header, so a direct get reports it at that stream's sequence and a write
+// fenced there is refused at every attempt. readLeader, the read a write makes after such a
+// refusal, reads it from the leader with the headers it is stored with, and answers a record the
+// server wrote (bus.WrittenByServer) as no row of the session's (ErrInterestUnbound, wrapped in
+// ErrMalformedInterest) at the sequence it is stored at, which the write then replaces with the
+// session's own row; and a delete or purge marker as no row (nats.ErrKeyNotFound) at its own
+// sequence, which the write replaces the same way.
+func (r *Registry) getWithRevision(ctx context.Context, sessionID string, read interestRead) (Interest, uint64, error) {
+	if read == readCache {
 		r.mu.RLock()
 		item, ok := r.cache.Get(sessionID)
 		_, cached := r.watcher.Handle()
@@ -113,24 +137,45 @@ func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBu
 		}
 	}
 	kv, epoch := r.watcher.Handle()
-	entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
-	if !answered {
-		return Interest{}, 0, fmt.Errorf("read %s's interest record: %w", sessionID, err)
-	}
-	if err != nil {
-		return Interest{}, 0, err
-	}
-	fresh, err := boundInterest(sessionID, entry.Value())
-	if err != nil {
-		entry, err = kv.GetFromLeader(ctx, sessionID)
+	var entry nats.KeyValueEntry
+	var fresh Interest
+	var err error
+	if read == readLeader {
+		entry, err = kv.NewestFromLeader(ctx, sessionID)
+		switch {
+		case err != nil:
+			return Interest{}, 0, err
+		case entry.Operation() != nats.KeyValuePut:
+			return Interest{}, entry.Revision(), nats.ErrKeyNotFound
+		case bus.WrittenByServer(entry):
+			err = fmt.Errorf("%w: stored under %s, it is a message the server wrote", ErrInterestUnbound, sessionID)
+		default:
+			fresh, err = boundInterest(sessionID, entry.Value())
+		}
+	} else {
+		var answered bool
+		entry, answered, err = bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+		if !answered {
+			return Interest{}, 0, fmt.Errorf("read %s's interest record: %w", sessionID, err)
+		}
 		if err != nil {
 			return Interest{}, 0, err
 		}
 		fresh, err = boundInterest(sessionID, entry.Value())
+		if err != nil {
+			entry, err = kv.GetFromLeader(ctx, sessionID)
+			if err != nil {
+				return Interest{}, 0, err
+			}
+			fresh, err = boundInterest(sessionID, entry.Value())
+		}
 	}
 	if err != nil {
 		msg := "registry read an interest record it cannot decode"
-		if errors.Is(err, ErrInterestUnbound) {
+		switch {
+		case read == readLeader && bus.WrittenByServer(entry):
+			msg = "registry read an interest record the server wrote"
+		case errors.Is(err, ErrInterestUnbound):
 			msg = "registry read an interest record naming another session"
 		}
 		r.logger().Warn(msg,

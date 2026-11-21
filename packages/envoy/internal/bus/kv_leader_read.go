@@ -28,7 +28,8 @@ const (
 // the nats.KeyValueEntry Get answers for that key: the bucket, the key, the value, the stream
 // sequence that is the key's revision, the time the stream stored it, and whether it is a put, a
 // delete marker or a purge marker. Its Delta is 0, which is what nats.go's own entry answers for a
-// read of one key (kv.go:676-682, whose kve carries no delta either).
+// read of one key (kv.go:676-682, whose kve carries no delta either). header is the headers the
+// stream stores with the message, read by WrittenByServer.
 type leaderEntry struct {
 	bucket   string
 	key      string
@@ -36,6 +37,7 @@ type leaderEntry struct {
 	revision uint64
 	created  time.Time
 	op       nats.KeyValueOp
+	header   nats.Header
 }
 
 func (e leaderEntry) Bucket() string             { return e.bucket }
@@ -45,6 +47,40 @@ func (e leaderEntry) Revision() uint64           { return e.revision }
 func (e leaderEntry) Created() time.Time         { return e.created }
 func (e leaderEntry) Delta() uint64              { return 0 }
 func (e leaderEntry) Operation() nats.KeyValueOp { return e.op }
+
+// serverWrittenHeaders are the headers the server itself puts on a message it stores or hands
+// out: its stream and subject, its sequence and its time, which a direct get and a RePublish add
+// to what they send, and its source, which a stream that sources another adds (nats.go@v1.53.1
+// js.go:524-530, and Nats-Stream-Source). No writer of a KV bucket sends one: nats.go's Put,
+// Create, Update, Delete and Purge send the message with none of them.
+var serverWrittenHeaders = [...]string{nats.JSStream, nats.JSSubject, nats.JSSequence, nats.JSTimeStamp, "Nats-Stream-Source"}
+
+// WrittenByServer reports whether entry, a read of NewestFromLeader or GetFromLeader, is a message
+// the server wrote on its own and no writer's record: its stored headers carry one of
+// serverWrittenHeaders, or a status line (which nats.go decodes as the Status header). The server
+// stores such a message as its answer to a request naming the key's subject as its reply subject
+// (a direct get's copy of another key's record, a JetStream answer, a status record), and a
+// RePublish of another stream that names the key's subject stores one too, whatever body that
+// stream was given. nats.go reads a KV entry's revision from the first Nats-Sequence header of a
+// direct get's answer, so such a message carrying one is reported at another stream's sequence,
+// and a write fenced on that is refused at every attempt; the leader's read reports the sequence
+// it is stored at. An entry of any other read is no leader read, and answers false: only the
+// stream message get carries the headers the stream stored.
+func WrittenByServer(entry nats.KeyValueEntry) bool {
+	read, ok := entry.(leaderEntry)
+	if !ok {
+		return false
+	}
+	if read.header.Get("Status") != "" {
+		return true
+	}
+	for _, name := range serverWrittenHeaders {
+		if read.header.Get(name) != "" {
+			return true
+		}
+	}
+	return false
+}
 
 // GetFromLeader reads key as Get reads it, with one difference: the leader of the bucket's
 // stream answers it. It is the stream message get of that stream,
@@ -149,5 +185,6 @@ func (kv KeyValue) NewestFromLeader(ctx context.Context, key string) (nats.KeyVa
 		revision: message.Sequence,
 		created:  message.Time,
 		op:       op,
+		header:   message.Header,
 	}, nil
 }

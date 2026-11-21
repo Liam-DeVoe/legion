@@ -479,7 +479,11 @@ func (kv KeyValue) ReadStored(ctx context.Context, key string, readable func(val
 // DeleteAtRead deletes key at the revision it reads (ReadStored, with readable), so a write that
 // lands in between is kept, and returns that revision, 0 when there was none to read. A value
 // readable refuses is deleted at the revision the stream's leader reports for it, the one it is
-// stored at.
+// stored at. A delete the bucket refuses at the revision a direct get reported is followed by one
+// read of the key from the stream's leader: a record the server wrote (WrittenByServer), which a
+// direct get can report at another stream's sequence however its value reads, is deleted at the
+// sequence it is stored at, and any other answer leaves the refusal standing, a write that
+// landed in between being kept.
 //
 // A key the read finds missing is deleted at no revision at all, which fences nothing: nats.go
 // sends no expected-last-subject-sequence header for revision 0, so that delete would take
@@ -496,7 +500,15 @@ func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(v
 	switch {
 	case err == nil:
 		revision := entry.Revision()
-		return revision, kv.Delete(key, nats.LastRevision(revision))
+		err := kv.Delete(key, nats.LastRevision(revision))
+		if err == nil || !IsCASConflict(err) {
+			return revision, err
+		}
+		leader, leaderErr := kv.NewestFromLeader(ctx, key)
+		if leaderErr != nil || leader.Operation() != nats.KeyValuePut || !WrittenByServer(leader) {
+			return revision, err
+		}
+		return leader.Revision(), kv.Delete(key, nats.LastRevision(leader.Revision()))
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return 0, nil
 	case errors.Is(err, ErrRefused):
