@@ -1125,6 +1125,13 @@ func TestTheHeaderRefusesNoCallerAndMovesNoStaleRefusal(t *testing.T) {
 // caller that states a contract is exempt by none of them the less: a claim whose launch installs
 // no plugin, a claim whose update round is open, a claim stored working, and every claim of a
 // daemon that can relaunch nothing is served on the contract its registration recorded.
+//
+// The open round serves a stale claim whose plugin takes tasks, and no other: a claim whose plugin
+// takes no task is refused inside its round as outside one (supervise.StaleRefusesCalls,
+// TestAClaimWhosePluginTakesNoTaskIsRefusedInsideItsOpenRound below). While this daemon's own
+// contract is the take contract, no contract below it takes tasks, so the round's case records
+// the contract after this daemon's, which is stale and takes tasks, as
+// TestTurnOutcomeOfAStaleClaimNamingItsTakeFinishesTheTask stands it in.
 func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
 	recorded := DaemonAPIVersion - 1
 	stated := http.Header{pluginContractHeader: []string{strconv.Itoa(ServingFloor)}}
@@ -1133,6 +1140,8 @@ func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
 		name    string
 		harness func(t *testing.T) *harness
 		seed    func(t *testing.T, h *harness, token claim.Token)
+		// contract is the contract the claim records where it is not recorded's.
+		contract int
 	}{
 		{
 			name: "a claim whose launch installs no plugin",
@@ -1141,8 +1150,9 @@ func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
 			},
 		},
 		{
-			name:    "a claim whose update round is open",
-			harness: newHarness,
+			name:     "a claim whose update round is open",
+			harness:  newHarness,
+			contract: DaemonAPIVersion + 1,
 			seed: func(t *testing.T, h *harness, token claim.Token) {
 				staleWith(t, h, token, func(c *supervise.Claim) { c.UpdateRound = "round-1" })
 			},
@@ -1162,10 +1172,17 @@ func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := tc.harness(t)
 			relaunchable := tc.name != "a daemon that can relaunch nothing"
+			contract := recorded
+			if tc.contract != 0 {
+				contract = tc.contract
+				if supervise.TakesNoTask(contract) {
+					t.Fatalf("contract %d takes no task: an open round refuses such a claim, so this case proves nothing", contract)
+				}
+			}
 			token, boot := h.launch("LEGION-208", claim.RoleImplementer)
 			session := "ses_implementer"
 			current := h.registerContract(boot, session, DaemonAPIVersion, relaunchable)
-			h.makeStale(t, token, session, current.Secret, recorded)
+			h.makeStale(t, token, session, current.Secret, contract)
 			if tc.seed != nil {
 				tc.seed(t, h, token)
 			}
@@ -1185,6 +1202,38 @@ func TestTheExemptionsFromTheStaleRefusalStandWithAHeader(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A claim whose plugin takes no task is refused inside its open update round as outside one,
+// however the caller states its contract: on its old contract it takes none of its tasks, so the
+// stale-plugin lane relaunches it inside the round (supervise.StaleRefusesCalls,
+// internal/daemon's TestStalePluginBelowTheTakeContractIsRelaunchedInsideAPodRound), and the
+// refusal names the contract its registration recorded. The control is the round's own case
+// above, a claim whose plugin takes tasks, which the open round serves.
+func TestAClaimWhosePluginTakesNoTaskIsRefusedInsideItsOpenRound(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleImplementer)
+	session := "ses_implementer"
+	current := h.registerContract(boot, session, DaemonAPIVersion, true)
+	recorded := supervise.TaskTakeContract - 1
+	if !supervise.TakesNoTask(recorded) {
+		t.Fatalf("contract %d takes tasks: this case proves nothing", recorded)
+	}
+	h.makeStale(t, token, session, current.Secret, recorded)
+	staleWith(t, h, token, func(c *supervise.Claim) { c.UpdateRound = "round-1" })
+	if c := h.stored(token); c.UpdateRound != "round-1" {
+		t.Fatalf("the claim is in round %q, want round-1: this case proves nothing", c.UpdateRound)
+	}
+	stated := http.Header{pluginContractHeader: []string{strconv.Itoa(ServingFloor)}}
+
+	wantRefusal(t,
+		h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+			ClaimToken: token, SessionID: session, Secret: current.Secret, Generation: current.Generation,
+		}, stated),
+		http.StatusConflict, claim.StalePluginContract(recorded, DaemonAPIVersion).Message)
+	refused(t, h.request(http.MethodPost, "/legion/v1/grants", GrantRequest{
+		SessionID: session, Secret: current.Secret, Tree: "LEGION-208", Issue: "LEGION-208",
+	}, stated), http.StatusConflict, "STALE_PLUGIN_CONTRACT")
 }
 
 // staleWith is the claim as makeStale left it, with one more field of the stale window set on it
