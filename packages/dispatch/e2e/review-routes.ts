@@ -25,8 +25,8 @@ export interface ReviewSeed {
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
   /** The priority `/priorities/:id` is opened on: the first of the thirteen `e2e/review-seed.ts`
-   *  writes, which carries work in flight under it and work parked under it, so both pages draw
-   *  rows rather than the sentence a deployment that has written no priority draws. */
+   *  writes, which carries work in flight under it and work in backlog under it, so both pages
+   *  draw rows rather than the sentence a deployment that has written no priority draws. */
   readonly priority: string;
   /** The `from=…&to=…` query string, without the leading "?". */
   readonly deliveryQuery: string;
@@ -304,7 +304,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   // page's own heading is on the screen while the priorities read is still out, over `Loading
   // priorities`, and a fault's tab stands over its table while that fault list's own issue
   // listing is still out, so each entry waits for a row the seed wrote: the first priority of
-  // the order, the issue active under no priority, and the parked issue that advances one.
+  // the order, the issue active under no priority, and the issue in backlog that advances one.
   // Each fault list is the Issues table, named by the label the page passes it with " table"
   // after it (`features/project/IssuesTable.tsx`). The rows are `e2e/review-seed.ts`'s, so a
   // change to that corpus fails these entries rather than a baseline.
@@ -333,12 +333,12 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   {
     kind: "reviewed",
     layers: [...bothLayers, "shoot-phone"],
-    name: "priorities-parked",
-    path: () => "/priorities?tab=parked",
+    name: "priorities-backlog",
+    path: () => "/priorities?tab=backlog",
     pattern: "/priorities",
     ready: (page) => [
       page
-        .getByRole("table", { exact: true, name: "Parked priority work table" })
+        .getByRole("table", { exact: true, name: "Priority work in backlog or icebox table" })
         .getByRole("row", { name: /Agents page freshness folds/ }),
     ],
   },

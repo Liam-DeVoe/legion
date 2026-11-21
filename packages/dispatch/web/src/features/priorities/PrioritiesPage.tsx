@@ -14,23 +14,23 @@ import { runningIssueStatuses } from "../project/issues-table-model";
 import { useKeymapScope } from "../shell/keymap";
 import { NewPriority } from "./NewPriority";
 import { PrioritiesTable } from "./PrioritiesTable";
-import { PARKED_STATUSES } from "./priorities-model";
+import { BACKLOG_STATUSES } from "./priorities-model";
 
 /** The page's three tabs, as the address names each (`?tab=`): the order itself, which is the
  *  tab an address naming none opens, and the two faults. */
-type PrioritiesTab = "order" | "none" | "parked";
+type PrioritiesTab = "order" | "none" | "backlog";
 const TAB_PARAM = "tab";
 const TABS_ID = "priorities";
 
 /** The two faults, as the issue listing answers each: the work being done under no priority,
  *  in the statuses an issue is worked in, and the work whose own row names a priority standing
- *  in backlog or icebox, with the move that put it there - the read that answers the parked
- *  count (`advances=any&own=true&status=backlog&status=icebox&moved=true`). */
+ *  in backlog or icebox, with the move that put it there - the read that answers the count of
+ *  priority work in either (`advances=any&own=true&status=backlog&status=icebox&moved=true`). */
 const NO_PRIORITY: IssueListing = { advances: "none", statuses: runningIssueStatuses };
-const PARKED: IssueListing = {
+const BACKLOG: IssueListing = {
   advances: "any",
   own: true,
-  statuses: PARKED_STATUSES,
+  statuses: BACKLOG_STATUSES,
   moved: true,
 };
 
@@ -59,9 +59,9 @@ const FAULT_WIDTHS = {
   updated: { fit: true },
 } as const;
 
-/** Each fault list's own stored layout and the columns it opens with (`IssuesTable`). The parked
- *  list names besides the priority each issue is parked under, and when the work was moved
- *  there and by whom; it names no reason, since nothing records one until
+/** Each fault list's own stored layout and the columns it opens with (`IssuesTable`). The list
+ *  of work in backlog or icebox names besides the priority each issue stands under, and when
+ *  the work was moved there and by whom; it names no reason, since nothing records one until
  *  dispatch://INFRA-2934 does. Each draws its titles wrapped (`wrapTitles`), in up to eight
  *  lines: a fault row is read by its title, production's mostly run to 194 characters, which two
  *  lines of Title cut in most, and a few to 1,000, which eight lines end in '…' with the whole
@@ -82,10 +82,10 @@ const FAULT_WIDTHS = {
  *  its floor (`leaves`) gives up width where the others would leave Title less, the first named
  *  first, down to the narrowest it cuts nothing at. Each list keeps Title's floor with keys of 12
  *  characters (`INFRAWIDE-12`, 143 px with its unread dot) among the review corpus's rows, but
- *  the Parked list sorted by Claimed by, which leaves it 192 px; with a project's key of 9
- *  characters (`INFRAWIDE`, 95 px) beside such a key, every column at that narrowest leaves
- *  Title 257 px on the Active list and 172 on the Parked list, and 244 and 159 sorted by
- *  Claimed by. */
+ *  the backlog-or-icebox list sorted by Claimed by, which leaves it 192 px; with a project's key
+ *  of 9 characters (`INFRAWIDE`, 95 px) beside such a key, every column at that narrowest leaves
+ *  Title 257 px on the Active list and 172 on the backlog-or-icebox list, and 244 and 159 sorted
+ *  by Claimed by. */
 const NO_PRIORITY_LAYOUT = {
   key: "priorities-no-priority",
   opens: FAULT_OPENS,
@@ -100,7 +100,9 @@ const NO_PRIORITY_LAYOUT = {
   wrapTitles: true,
   statusLegend: true,
 } as const;
-const PARKED_LAYOUT = {
+const BACKLOG_LAYOUT = {
+  // The layout a reader stored keeps the key it was first stored under, which
+  // dispatch://INFRA-2017 renames together with the stored layouts.
   key: "priorities-parked",
   // When the work was moved there is how long it has stood as it is, which is what Updated says
   // on the other list, so Updated opens hidden here, one tick away under Columns, and the room
@@ -129,7 +131,7 @@ const PARKED_LAYOUT = {
 const TAB_LABELS: Record<PrioritiesTab, string> = {
   order: "Priorities",
   none: "Active under no priority",
-  parked: "Parked priority work",
+  backlog: "Priority work in backlog or icebox",
 };
 
 /**
@@ -144,17 +146,17 @@ export function PrioritiesPage(): ReactNode {
   const priorities = useQuery(prioritiesQuery());
   const [params, setParams] = useSearchParams();
   const asked = params.get(TAB_PARAM);
-  const tab: PrioritiesTab = asked === "none" || asked === "parked" ? asked : "order";
+  const tab: PrioritiesTab = asked === "none" || asked === "backlog" ? asked : "order";
   // The keys every table of the application is walked with (`j`, `k`, `x`, `o`, Enter), which
   // each table registers in the `project` scope. The registry holds one table's per page
   // (`features/project/issues-table-keys.ts`), and each tab draws exactly one table, so the keys
   // are that table's: the priorities, or a fault list. The work under a priority is on its own
   // page, which turns the scope on for that table alone.
   useKeymapScope("project");
-  // Each priority's title by its id, which the parked list's Advances column names a priority
-  // by, with its place in the order: the map holds them in the order the read answers them,
-  // which is the one order (`useIssueTableColumns`). Built once that read answers rather than
-  // once a render, since the parked list's columns are declared over it, and a map built afresh
+  // Each priority's title by its id, which the backlog-or-icebox list's Advances column names a
+  // priority by, with its place in the order: the map holds them in the order the read answers
+  // them, which is the one order (`useIssueTableColumns`). Built once that read answers rather
+  // than once a render, since that list's columns are declared over it, and a map built afresh
   // would rebuild them on every refetch. A title is what a person wrote; the id is a slug of it
   // and no name at all to a reader.
   const titles = useMemo(
@@ -216,7 +218,7 @@ export function PrioritiesPage(): ReactNode {
             tabs={[
               { id: "order", label: TAB_LABELS.order, count: rows.length },
               { id: "none", label: TAB_LABELS.none, count: body.work_under_no_priority.count },
-              { id: "parked", label: TAB_LABELS.parked, count: body.priority_work_parked.count },
+              { id: "backlog", label: TAB_LABELS.backlog, count: body.priority_work_parked.count },
             ]}
           />
         </div>
@@ -250,11 +252,11 @@ export function PrioritiesPage(): ReactNode {
         />
       )}
       {panel(
-        "parked",
+        "backlog",
         <IssuesTable
-          label={TAB_LABELS.parked}
-          layout={PARKED_LAYOUT}
-          listing={PARKED}
+          label={TAB_LABELS.backlog}
+          layout={BACKLOG_LAYOUT}
+          listing={BACKLOG}
           priorityTitles={titles}
           stateKey="k"
         />

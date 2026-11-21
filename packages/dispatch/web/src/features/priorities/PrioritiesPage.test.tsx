@@ -303,7 +303,7 @@ test("the page opens on the priorities, and each fault is a tab of its own the a
   expect(tabs.map((tab) => tab.getAttribute("aria-label"))).toEqual([
     "Priorities 3",
     "Active under no priority 1",
-    "Parked priority work 1",
+    "Priority work in backlog or icebox 1",
   ]);
   expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["true", "false", "false"]);
   // Only the chosen tab draws its table, so that table is the last thing on the page.
@@ -327,13 +327,15 @@ test("the page opens on the priorities, and each fault is a tab of its own the a
   expect(await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   expect(within(faults).queryByRole("row", { name: "CORE-9 Work CORE-9" })).toBeNull();
 
-  await user.click(screen.getByRole("tab", { name: "Parked priority work 1" }));
-  const parked = await screen.findByRole("table", { name: "Parked priority work table" });
-  expect(screen.getByTestId("address").textContent).toBe("REPLACE /priorities?tab=parked");
-  expect(screen.getAllByRole("table")).toEqual([parked]);
+  await user.click(screen.getByRole("tab", { name: "Priority work in backlog or icebox 1" }));
+  const backlog = await screen.findByRole("table", {
+    name: "Priority work in backlog or icebox table",
+  });
+  expect(screen.getByTestId("address").textContent).toBe("REPLACE /priorities?tab=backlog");
+  expect(screen.getAllByRole("table")).toEqual([backlog]);
   expect(screen.queryByText(/backlog or the icebox|\d+ issues? ·/)).toBeNull();
-  expect(await within(parked).findByRole("row", { name: "CORE-9 Work CORE-9" })).toBeDefined();
-  expect(within(parked).queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
+  expect(await within(backlog).findByRole("row", { name: "CORE-9 Work CORE-9" })).toBeDefined();
+  expect(within(backlog).queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
 
   await user.click(screen.getByRole("tab", { name: "Priorities 3" }));
   expect(await screen.findByRole("table", { name: "Priorities table" })).toBeDefined();
@@ -345,17 +347,19 @@ test("an address naming a fault's tab opens on it", async () => {
     FIFTEEN,
     [issue("CORE-9", ["linkage-closure"], { status: "backlog" })],
     true,
-    "/priorities?tab=parked"
+    "/priorities?tab=backlog"
   );
-  expect(await screen.findByRole("table", { name: "Parked priority work table" })).toBeDefined();
-  expect(screen.getByRole("tab", { name: "Parked priority work 0" })).toHaveAttribute(
+  expect(
+    await screen.findByRole("table", { name: "Priority work in backlog or icebox table" })
+  ).toBeDefined();
+  expect(screen.getByRole("tab", { name: "Priority work in backlog or icebox 0" })).toHaveAttribute(
     "aria-selected",
     "true"
   );
   expect(screen.queryByRole("table", { name: "Priorities table" })).toBeNull();
 });
 
-test("each fault table asks the issue listing for its statuses, and the parked one for the move", async () => {
+test("each fault table asks the issue listing for its statuses, and the backlog-or-icebox one for the move", async () => {
   const user = userEvent.setup();
   const { listing } = page(
     FIFTEEN,
@@ -376,7 +380,8 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     name: "Active under no priority table",
   });
   // The narrowing is the server's: the no-priority list names the statuses work is done in, and
-  // the parked list backlog and icebox with the move into them. Neither reads a closed issue.
+  // the backlog-or-icebox list those two statuses with the move into them. Neither reads a closed
+  // issue.
   expect(listing).toHaveBeenCalledWith({
     advances: ["none"],
     status: ["in_progress", "testing", "needs_review", "retro"],
@@ -399,7 +404,7 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   };
 
   // The no-priority list names each row's project and when it last changed, which is how long it
-  // has stood as it is (R6), and shows none of the parked columns.
+  // has stood as it is (R6), and shows none of the backlog-or-icebox list's columns.
   const inFlight = await cellsOf(faults, "OPS-12 Work OPS-12");
   expect(inFlight("Project").textContent).toBe("OPS");
   expect(within(inFlight("Updated")).getByRole("time").getAttribute("datetime")).toBe(
@@ -413,7 +418,7 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   expect(faultHeaders.some((text) => text.startsWith("Reason"))).toBe(false);
 
   // The list under no priority opens with R6's columns alone, offers every other column of the
-  // Issues table unticked, and does not offer the parked columns at all.
+  // Issues table unticked, and does not offer the backlog-or-icebox list's columns at all.
   await user.click(
     within(screen.getByRole("region", { name: "Active under no priority" })).getByRole("button", {
       name: "Columns",
@@ -427,27 +432,28 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     expect(within(menu).queryByRole("checkbox", { name })).toBeNull();
   await user.keyboard("{Escape}");
 
-  await user.click(screen.getByRole("tab", { name: "Parked priority work 0" }));
-  const parked = await screen.findByRole("table", {
-    name: "Parked priority work table",
+  await user.click(screen.getByRole("tab", { name: "Priority work in backlog or icebox 0" }));
+  const backlog = await screen.findByRole("table", {
+    name: "Priority work in backlog or icebox table",
   });
-  // The parked list opens with those but Updated, the priority each issue is parked under, and
-  // the move: when the work was moved there is how long it has stood, so Updated opens hidden,
-  // one tick away.
+  // The backlog-or-icebox list opens with those but Updated, the priority each issue stands
+  // under, and the move: when the work was moved there is how long it has stood, so Updated opens
+  // hidden, one tick away.
   await user.click(
-    within(screen.getByRole("region", { name: "Parked priority work" })).getByRole("button", {
-      name: "Columns",
-    })
+    within(screen.getByRole("region", { name: "Priority work in backlog or icebox" })).getByRole(
+      "button",
+      { name: "Columns" }
+    )
   );
-  const parkedMenu = screen.getByRole("dialog", { name: "Columns" });
+  const backlogMenu = screen.getByRole("dialog", { name: "Columns" });
   for (const name of [...R6_COLUMNS.filter((one) => one !== "Updated"), "Advances", "Moved there"])
-    expect(within(parkedMenu).getByRole("checkbox", { name })).toBeChecked();
+    expect(within(backlogMenu).getByRole("checkbox", { name })).toBeChecked();
   // No reason is recorded for a move until dispatch://INFRA-2934, so the list offers no Reason.
-  expect(within(parkedMenu).queryByRole("checkbox", { name: "Reason" })).toBeNull();
+  expect(within(backlogMenu).queryByRole("checkbox", { name: "Reason" })).toBeNull();
   for (const name of ["Updated", ...OTHER_COLUMNS])
-    expect(within(parkedMenu).getByRole("checkbox", { name })).not.toBeChecked();
+    expect(within(backlogMenu).getByRole("checkbox", { name })).not.toBeChecked();
   await user.keyboard("{Escape}");
-  // The parked read asks for the work whose own row names a priority, as the parked count does.
+  // The list's read asks for the work whose own row names a priority, as the page's count does.
   expect(listing).toHaveBeenCalledWith({
     advances: ["any"],
     own: true,
@@ -456,14 +462,15 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     open: true,
   });
 
-  // The parked list names the project, each priority advanced by its place in the order with its
-  // title, linking to it, and when the work was moved there and by whom, which stands for how
-  // long it has stood: no Updated column opens beside it. A row answered with no move draws an
-  // empty Moved there cell: absent is absent, and that cell does not say a record is missing.
-  const moved = await cellsOf(parked, "CORE-9 Work CORE-9");
+  // The backlog-or-icebox list names the project, each priority advanced by its place in the
+  // order with its title, linking to it, and when the work was moved there and by whom, which
+  // stands for how long it has stood: no Updated column opens beside it. A row answered with no
+  // move draws an empty Moved there cell: absent is absent, and that cell does not say a record
+  // is missing.
+  const moved = await cellsOf(backlog, "CORE-9 Work CORE-9");
   expect(moved("Project").textContent).toBe("CORE");
   expect(
-    within(parked)
+    within(backlog)
       .getAllByRole("columnheader")
       .some((header) => header.textContent?.startsWith("Updated"))
   ).toBe(false);
@@ -478,9 +485,11 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   expect(moved("Moved there").textContent).toContain("bob");
   // Advances stands at 160 px, under its 180 px cap, and Title takes what the rest leave. No row
   // of the list stands in Legion's queue, so no cell for a row's Start next follows its columns.
-  expect(within(parked).getByRole("columnheader", { name: /^Advances/ }).style.width).toBe("160px");
-  expect(within(parked).getAllByRole("columnheader").at(-1)?.textContent).not.toBe("");
-  const unrecorded = await cellsOf(parked, "OPS-4 Work OPS-4");
+  expect(within(backlog).getByRole("columnheader", { name: /^Advances/ }).style.width).toBe(
+    "160px"
+  );
+  expect(within(backlog).getAllByRole("columnheader").at(-1)?.textContent).not.toBe("");
+  const unrecorded = await cellsOf(backlog, "OPS-4 Work OPS-4");
   // Each priority is a chip that reads its place and then its title, drawn whole after it in the
   // same link, its title in its name and its tooltip.
   const chips = within(unrecorded("Advances")).getAllByRole("link");
@@ -532,7 +541,7 @@ test("with no priority a reader who may not write one is shown only the sentence
 const DESKTOP_BOX = 910;
 const PHONE_BOX = 342;
 
-test("a row counts the work in flight, waiting and parked, shows its newest event, and what closed when asked", async () => {
+test("a row counts the work in flight, waiting and in backlog or icebox, shows its newest event, and what closed when asked", async () => {
   const user = userEvent.setup();
   page(FIFTEEN, [], true, "/priorities", DESKTOP_BOX);
   const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });

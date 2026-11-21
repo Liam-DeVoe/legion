@@ -4287,7 +4287,7 @@ Each item below names a path with its method and identity, then its purpose.
     A blank `advances` is `400 INVALID_ADVANCES`.
     `own=true` keeps, of the issues the `advances` values answer, those whose own row names a priority a value matches and no issue above them carries it: a child that only inherits a priority, or restates one an issue above it carries, is left out, and `none`, which matches no priority, keeps nothing; without an `advances` value it filters nothing.
     `advances=none&status=in_progress&status=testing&status=needs_review&status=retro` and `advances=any&own=true&status=backlog&status=icebox` are the two fault lists of `GET /api/v1/priorities` whole and uncut.
-    `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the parked fault of `GET /api/v1/priorities` reads them;
+    `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the second fault of `GET /api/v1/priorities` reads them;
     a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
 
   - Summaries contain `key`, `title`, `status`, `priority`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.

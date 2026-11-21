@@ -45,7 +45,7 @@ func TestPrioritiesRead(t *testing.T) {
 		{"cut-the-queue", "Cut the queue", "Nobody waits a day for a review.", "bob"},
 		{"hold-the-line", "Hold the line", "The oldest work is finished first.", "alice"},
 		{"keep-the-lights-on", "Keep the lights on", "The deployment answers every hour.", "bob"},
-		{"park-the-bus", "Park the bus", "Work that waits says what it waits on.", "alice"},
+		{"pace-the-work", "Pace the work", "Work that waits says what it waits on.", "alice"},
 		{"two-at-once", "Two at once", "Work may advance more than one priority.", "bob"},
 	}
 	ids := make([]string, 0, len(written))
@@ -90,16 +90,16 @@ func TestPrioritiesRead(t *testing.T) {
 	// row says when it was moved and who moved it. Two children of it stand in `backlog` too:
 	// one only inherits the priority and one restates it, and neither is a fault, since the
 	// issue above them carries it already. The priority's own work still counts both.
-	parkedOwn := seedPriorityIssue(t, handler, "CORE", "Parked work", "todo", "", []string{"park-the-bus"})
-	moveTestIssue(t, handler, parkedOwn, "backlog", "bob")
-	inheritedOnly := seedPriorityIssue(t, handler, "CORE", "Parked under its parent's priority alone", "todo", parkedOwn, nil)
+	backlogOwn := seedPriorityIssue(t, handler, "CORE", "Backlog work", "todo", "", []string{"pace-the-work"})
+	moveTestIssue(t, handler, backlogOwn, "backlog", "bob")
+	inheritedOnly := seedPriorityIssue(t, handler, "CORE", "In backlog under its parent's priority alone", "todo", backlogOwn, nil)
 	moveTestIssue(t, handler, inheritedOnly, "backlog", "bob")
-	restated := seedPriorityIssue(t, handler, "CORE", "Parked restating its parent's priority", "todo", parkedOwn, []string{"park-the-bus"})
+	restated := seedPriorityIssue(t, handler, "CORE", "In backlog restating its parent's priority", "todo", backlogOwn, []string{"pace-the-work"})
 	moveTestIssue(t, handler, restated, "backlog", "bob")
 
 	// An issue both arms are true of: it states one priority itself and inherits another from
-	// its parent, and its row in the parked fault names both.
-	bothParent := seedPriorityIssue(t, handler, "WEB", "Both arms' parent", "todo", "", []string{"park-the-bus"})
+	// its parent, and its row in the second fault names both.
+	bothParent := seedPriorityIssue(t, handler, "WEB", "Both arms' parent", "todo", "", []string{"pace-the-work"})
 	bothArms := seedPriorityIssue(t, handler, "WEB", "Both arms", "todo", bothParent, []string{"two-at-once"})
 	moveTestIssue(t, handler, bothArms, "backlog", "alice")
 
@@ -116,7 +116,7 @@ func TestPrioritiesRead(t *testing.T) {
 		unplaced["retro"], []string{"two-at-once"})
 
 	// The bulk rows that hold each fault list past its fifty.
-	bulkUnplaced, bulkParked := seedBulkFaults(t, database, "park-the-bus")
+	bulkUnplaced, bulkBacklog := seedBulkFaults(t, database, "pace-the-work")
 
 	// The whole body, read as the page reads it.
 	body := readPriorities(t, handler, "")
@@ -212,74 +212,74 @@ func TestPrioritiesRead(t *testing.T) {
 	// The second fault: the issue that states its priority itself, with the moment it was moved
 	// and the actor who moved it, and no reason beside them. Its two children below it, one that
 	// inherits the priority and one that restates it, are no part of it.
-	notParked := map[string]string{
+	notFaulted := map[string]string{
 		inheritedOnly: "it names no priority itself",
 		restated:      "the issue above it carries the priority it names",
 	}
-	for key, why := range notParked {
+	for key, why := range notFaulted {
 		if slices.Contains(faultKeys(body.PriorityWorkParked.Issues), key) {
-			t.Fatalf("the parked priority work lists %s, want it left out: %s", key, why)
+			t.Fatalf("the priority work in backlog or icebox lists %s, want it left out: %s", key, why)
 		}
 	}
-	wantParked := 2 + bulkFaultRows
-	if body.PriorityWorkParked.Count != wantParked {
-		t.Fatalf("the parked priority work = %d, want %d", body.PriorityWorkParked.Count, wantParked)
+	wantBacklog := 2 + bulkFaultRows
+	if body.PriorityWorkParked.Count != wantBacklog {
+		t.Fatalf("the priority work in backlog or icebox = %d, want %d", body.PriorityWorkParked.Count, wantBacklog)
 	}
 	if len(body.PriorityWorkParked.Issues) != priorityFaultRows {
-		t.Fatalf("the parked priority work draws %d rows, want %d",
+		t.Fatalf("the priority work in backlog or icebox draws %d rows, want %d",
 			len(body.PriorityWorkParked.Issues), priorityFaultRows)
 	}
-	parked := parkedRow(t, body, parkedOwn)
-	if got := advanceEntries(parked.Advances); parked.Status != "backlog" ||
-		!slices.Equal(got, []string{"park-the-bus own"}) {
-		t.Fatalf("%s is parked in %q advancing %v, want backlog under park-the-bus, which it states itself",
-			parkedOwn, parked.Status, got)
+	own := backlogRow(t, body, backlogOwn)
+	if got := advanceEntries(own.Advances); own.Status != "backlog" ||
+		!slices.Equal(got, []string{"pace-the-work own"}) {
+		t.Fatalf("%s stands in %q advancing %v, want backlog under pace-the-work, which it states itself",
+			backlogOwn, own.Status, got)
 	}
-	if parked.MovedAt == nil || parked.MovedBy == nil || *parked.MovedBy != (model.Actor{Kind: "user", ID: "bob", Proven: true}) {
+	if own.MovedAt == nil || own.MovedBy == nil || *own.MovedBy != (model.Actor{Kind: "user", ID: "bob", Proven: true}) {
 		t.Fatalf("%s was moved at %v by %v, want the moment and the person the events record",
-			parkedOwn, parked.MovedAt, parked.MovedBy)
+			backlogOwn, own.MovedAt, own.MovedBy)
 	}
-	if parked.MovedAt.After(time.Now().UTC().Add(time.Minute)) || parked.MovedAt.Before(eightDaysAgo) {
-		t.Fatalf("%s says it was moved at %v, want the moment of the write this test made", parkedOwn, parked.MovedAt)
+	if own.MovedAt.After(time.Now().UTC().Add(time.Minute)) || own.MovedAt.Before(eightDaysAgo) {
+		t.Fatalf("%s says it was moved at %v, want the moment of the write this test made", backlogOwn, own.MovedAt)
 	}
 	assertNoReason(t, handler)
 
-	// Each parked row carries its `advances` entries as the issue read answers them: the one it
-	// states and the one it inherits, each marked.
-	together := parkedRow(t, body, bothArms)
-	if got := advanceEntries(together.Advances); !slices.Equal(got, []string{"park-the-bus inherited", "two-at-once own"}) {
-		t.Fatalf("%s is parked under %v, want the priority it inherits and the one it states, each marked",
+	// Each row of the second fault carries its `advances` entries as the issue read answers them:
+	// the one it states and the one it inherits, each marked.
+	together := backlogRow(t, body, bothArms)
+	if got := advanceEntries(together.Advances); !slices.Equal(got, []string{"pace-the-work inherited", "two-at-once own"}) {
+		t.Fatalf("%s stands in backlog under %v, want the priority it inherits and the one it states, each marked",
 			bothArms, got)
 	}
-	// Each priority counts the parked issues that state it with no issue above them carrying it:
-	// the issue of both arms under two-at-once alone, since it only inherits park-the-bus, and
-	// the bulk rows and the parent written above under park-the-bus.
-	if got := body.PriorityWorkParked.ByPriority; len(got) != 2 || got["two-at-once"] != 1 || got["park-the-bus"] != 1+bulkFaultRows {
-		t.Fatalf("the parked work by priority = %v, want two-at-once 1 and park-the-bus %d",
+	// Each priority counts the issues in backlog or icebox that state it with no issue above them
+	// carrying it: the issue of both arms under two-at-once alone, since it only inherits
+	// pace-the-work, and the bulk rows and the parent written above under pace-the-work.
+	if got := body.PriorityWorkParked.ByPriority; len(got) != 2 || got["two-at-once"] != 1 || got["pace-the-work"] != 1+bulkFaultRows {
+		t.Fatalf("the work in backlog or icebox by priority = %v, want two-at-once 1 and pace-the-work %d",
 			got, 1+bulkFaultRows)
 	}
-	// The priority's own work counts every issue under it, the two children parked too.
-	if got := priorityRow(t, body, "park-the-bus").Work.ByStatus["backlog"]; got != 4+bulkFaultRows {
-		t.Fatalf("park-the-bus counts %d issues in backlog, want %d: the parent, its two children, the issue of both arms and the bulk rows",
+	// The priority's own work counts every issue under it, the two children in backlog too.
+	if got := priorityRow(t, body, "pace-the-work").Work.ByStatus["backlog"]; got != 4+bulkFaultRows {
+		t.Fatalf("pace-the-work counts %d issues in backlog, want %d: the parent, its two children, the issue of both arms and the bulk rows",
 			got, 4+bulkFaultRows)
 	}
 
-	// The parked tab's listing answers the read's parked work, and the priority's own page
-	// still lists the two children.
-	listedParked := listedIssueKeys(t, handler, parkedTabListing)
-	for key, why := range notParked {
-		if slices.Contains(listedParked, key) {
-			t.Fatalf("%s answers %s, want it left out: %s", parkedTabListing, key, why)
+	// The backlog-or-icebox tab's listing answers the read's second fault, and the priority's own
+	// page still lists the two children.
+	listedBacklog := listedIssueKeys(t, handler, backlogTabListing)
+	for key, why := range notFaulted {
+		if slices.Contains(listedBacklog, key) {
+			t.Fatalf("%s answers %s, want it left out: %s", backlogTabListing, key, why)
 		}
 	}
-	if len(listedParked) != wantParked {
-		t.Fatalf("%s answers %d issues, want the read's %d", parkedTabListing, len(listedParked), wantParked)
+	if len(listedBacklog) != wantBacklog {
+		t.Fatalf("%s answers %d issues, want the read's %d", backlogTabListing, len(listedBacklog), wantBacklog)
 	}
-	scoped := "/api/v1/issues?advances=park-the-bus&open=true"
+	scoped := "/api/v1/issues?advances=pace-the-work&open=true"
 	scopedKeys := listedIssueKeys(t, handler, scoped)
-	for key := range notParked {
+	for key := range notFaulted {
 		if !slices.Contains(scopedKeys, key) {
-			t.Fatalf("%s answers %v, want %s among them: it advances park-the-bus", scoped, scopedKeys, key)
+			t.Fatalf("%s answers %v, want %s among them: it advances pace-the-work", scoped, scopedKeys, key)
 		}
 	}
 
@@ -296,12 +296,12 @@ func TestPrioritiesRead(t *testing.T) {
 			got, priorityFaultRows, bulkUnplaced[:priorityFaultRows])
 	}
 	if bulk.PriorityWorkParked.Count != bulkFaultRows || len(bulk.PriorityWorkParked.Issues) != priorityFaultRows {
-		t.Fatalf("the bulk project's parked work = %d issues drawn %d, want %d drawn %d",
+		t.Fatalf("the bulk project's work in backlog or icebox = %d issues drawn %d, want %d drawn %d",
 			bulk.PriorityWorkParked.Count, len(bulk.PriorityWorkParked.Issues), bulkFaultRows, priorityFaultRows)
 	}
-	if got := faultKeys(bulk.PriorityWorkParked.Issues); !slices.Equal(got, bulkParked[:priorityFaultRows]) {
-		t.Fatalf("the bulk project's parked work is drawn %v, want the newest %d by the time each was moved: %v",
-			got, priorityFaultRows, bulkParked[:priorityFaultRows])
+	if got := faultKeys(bulk.PriorityWorkParked.Issues); !slices.Equal(got, bulkBacklog[:priorityFaultRows]) {
+		t.Fatalf("the bulk project's work in backlog or icebox is drawn %v, want the newest %d by the time each was moved: %v",
+			got, priorityFaultRows, bulkBacklog[:priorityFaultRows])
 	}
 
 	// `?project=`: the counts and the two fault lists narrow, and the list of priorities does
@@ -320,9 +320,9 @@ func TestPrioritiesRead(t *testing.T) {
 			narrowed.WorkUnderNoPriority.Count, narrowed.WorkUnderNoPriority.ByProject)
 	}
 	if got := faultKeys(narrowed.PriorityWorkParked.Issues); narrowed.PriorityWorkParked.Count != 1 ||
-		!slices.Equal(got, []string{parkedOwn}) {
-		t.Fatalf("the parked work narrowed to CORE = %d rows %v, want %s alone",
-			narrowed.PriorityWorkParked.Count, got, parkedOwn)
+		!slices.Equal(got, []string{backlogOwn}) {
+		t.Fatalf("the work in backlog or icebox narrowed to CORE = %d rows %v, want %s alone",
+			narrowed.PriorityWorkParked.Count, got, backlogOwn)
 	}
 
 	// `?summary=true`: the two counts alone, which is what the navigation rail reads.
@@ -330,9 +330,9 @@ func TestPrioritiesRead(t *testing.T) {
 	if len(summary.Priorities) != 0 {
 		t.Fatalf("the summary draws %d priorities, want none", len(summary.Priorities))
 	}
-	if summary.WorkUnderNoPriority.Count != wantUnplaced || summary.PriorityWorkParked.Count != wantParked {
+	if summary.WorkUnderNoPriority.Count != wantUnplaced || summary.PriorityWorkParked.Count != wantBacklog {
 		t.Fatalf("the summary counts %d and %d, want the whole read's %d and %d",
-			summary.WorkUnderNoPriority.Count, summary.PriorityWorkParked.Count, wantUnplaced, wantParked)
+			summary.WorkUnderNoPriority.Count, summary.PriorityWorkParked.Count, wantUnplaced, wantBacklog)
 	}
 	if len(summary.WorkUnderNoPriority.Issues) != 0 || len(summary.PriorityWorkParked.Issues) != 0 {
 		t.Fatalf("the summary draws %d and %d rows, want none of either",
@@ -392,15 +392,15 @@ func priorityRow(t *testing.T, body model.Priorities, id string) model.PriorityR
 	return model.PriorityRow{}
 }
 
-// parkedRow is one row of the parked fault, by its key.
-func parkedRow(t *testing.T, body model.Priorities, key string) model.PriorityIssue {
+// backlogRow is one row of the second fault, priority work in backlog or icebox, by its key.
+func backlogRow(t *testing.T, body model.Priorities, key string) model.PriorityIssue {
 	t.Helper()
 	for _, issue := range body.PriorityWorkParked.Issues {
 		if issue.Key == key {
 			return issue
 		}
 	}
-	t.Fatalf("the parked work draws no row for %s: %v", key, faultKeys(body.PriorityWorkParked.Issues))
+	t.Fatalf("the work in backlog or icebox draws no row for %s: %v", key, faultKeys(body.PriorityWorkParked.Issues))
 	return model.PriorityIssue{}
 }
 

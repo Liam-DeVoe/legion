@@ -148,7 +148,7 @@ const PHONE_COUNTS = (
   [
     ["in-flight", "inFlight"],
     ["waiting", "waiting"],
-    ["parked", "parked"],
+    ["backlog", "backlog"],
   ] as const
 ).map(([column, field]) => ({ column, field, header: PRIORITY_COLUMNS_BY_ID.get(column)?.header }));
 
@@ -278,9 +278,9 @@ export const PRIORITY_COLUMN_DEFS: ColumnDef<PriorityItem>[] = columnDefs<Priori
       accessorFn: (item) => item.waiting,
       cell: ({ row }) => countCell(row.original.waiting),
     },
-    parked: {
-      accessorFn: (item) => item.parked,
-      cell: ({ row }) => countCell(row.original.parked),
+    backlog: {
+      accessorFn: (item) => item.backlog,
+      cell: ({ row }) => countCell(row.original.backlog),
     },
     closed: {
       accessorFn: (item) => item.closed,

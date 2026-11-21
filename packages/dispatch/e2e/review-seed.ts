@@ -102,14 +102,15 @@ interface Work {
  *    one of 756, each held by a session: one by each of the three workspace sessions that hold
  *    work and one by each claim holder (`Holder`), so that tab lists six rows, five of them
  *    claimed.
- *  - The first priority's work: eleven, beside the workflow issue, its child and the parked folds
+ *  - The first priority's work: eleven, beside the workflow issue, its child and the folds
  *    issue `seedWorkspace` writes, with titles of 85 to 190 characters and one of 736, in every
  *    open status, and three held by sessions, so its own page lists fourteen rows. One of the
  *    eleven stands in the icebox.
  *  - The rest of the order's work: one or two under each of the other priorities, so every row
  *    of the Priorities tab counts some, and several count two or more of a kind. One stands in
- *    the backlog, held by the claim holder whose title is led by an emoji, so the Parked tab
- *    lists three rows with the folds issue and the icebox one, one of them claimed.
+ *    the backlog, held by the claim holder whose title is led by an emoji, so the tab of priority
+ *    work in backlog or icebox lists three rows with the folds issue and the icebox one, one of
+ *    them claimed.
  *
  *  The two longest are created last, so every issue before them keeps the key it had before
  *  them, which the priorities' descriptions name. */
@@ -395,8 +396,9 @@ type WorkName = keyof typeof WORK;
  *  Dispatch reference in their first line, by `keys`, and three open on a short line with more
  *  paragraphs after it, as production's do: the Priorities tab's closed rows read each as its
  *  start, the paragraphs run together and the reference read as its short form. The text is
- *  invented and names no one real. The Priorities tab lists all of them, the Parked tab names
- *  the first after its chip, and the first's own page is the `priority` route.
+ *  invented and names no one real. The Priorities tab lists all of them, the tab of priority
+ *  work in backlog or icebox names the first after its chip, and the first's own page is the
+ *  `priority` route.
  *
  *  The first is the one `/priorities/:id` opens. It is written as the signed-in person rather
  *  than over the agent bearer, as every one is, because the margin of that page draws who wrote
@@ -763,7 +765,7 @@ Each page is read once it is drawn.
   // The priorities `/priorities` lists, the first of which `/priorities/:id` opens, and the work
   // under them. The workflow issue stands in `in_progress`, so the first's row counts it in
   // flight and its own page lists it; the freshness-folds issue stands in `backlog`, so it is a
-  // row of the second fault list, parked under the first. Three issues standing in triage
+  // row of the second fault list, under the first priority. Three issues standing in triage
   // advance the next three, so their rows count work waiting. Every other issue of
   // `seedWorkspace`'s that is in flight advances none, which is a row of the first fault list
   // beside `WORK`'s own. The relations are written last, so the activity of each issue keeps the

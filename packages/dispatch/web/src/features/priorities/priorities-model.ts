@@ -5,12 +5,12 @@ import { columnsById, phoneHidden, type TableColumn, tableLayout } from "./prior
 
 /** The statuses each count column adds up. In flight is the statuses an issue is being worked
  *  in, which the issues table's own status bar counts (`runningIssueStatuses`); waiting is work
- *  admitted and not started; parked is work that stands in the backlog or the icebox. The three
+ *  admitted and not started; backlog is work that stands in the backlog or the icebox. The three
  *  together are every open status, so no open issue under a priority is uncounted. */
 const WAITING_STATUSES: readonly IssueStatus[] = ["todo", "triage"];
-/** The one list of the parked statuses: the parked count here and the parked fault list of the
- *  priorities page (`PrioritiesPage.tsx`) both read it. */
-export const PARKED_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
+/** The one list of the statuses backlog and icebox: the count here and the priorities page's
+ *  fault list of the priority work in either (`PrioritiesPage.tsx`) both read it. */
+export const BACKLOG_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
 
 /** What the newest-event column files a row under when nothing under the priority has moved. */
 export const NEVER_MOVED = "Never";
@@ -24,7 +24,7 @@ export interface PriorityItem {
   readonly order: string;
   readonly inFlight: number;
   readonly waiting: number;
-  readonly parked: number;
+  readonly backlog: number;
   readonly closed: number;
   readonly newest: string | null;
 }
@@ -59,7 +59,7 @@ export function buildPriorityItems(rows: readonly PriorityRow[]): PriorityItem[]
     order: orderLabel(index),
     inFlight: countOf(priority.work.by_status, runningIssueStatuses),
     waiting: countOf(priority.work.by_status, WAITING_STATUSES),
-    parked: countOf(priority.work.by_status, PARKED_STATUSES),
+    backlog: countOf(priority.work.by_status, BACKLOG_STATUSES),
     closed: priority.work.closed_last_7_days,
     newest: priority.work.newest_event_at,
   }));
@@ -139,7 +139,7 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   },
   { id: "in-flight", header: "Active", ...COUNT },
   { id: "waiting", header: "Triage, Todo", ...COUNT },
-  { id: "parked", header: "Backlog, icebox", ...COUNT },
+  { id: "backlog", header: "Backlog, icebox", ...COUNT },
   { id: "closed", header: "Closed, 7 days", ...COUNT, hidden: true },
   {
     id: "newest",

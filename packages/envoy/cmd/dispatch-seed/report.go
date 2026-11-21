@@ -162,9 +162,9 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 			       ' relations stated=' || (select count(*) from stated) ||
 			       ' issues stating one=' || (select count(distinct key) from stated) ||
 			       ' issues under one, the inheritance counted=' || (select count(distinct key) from members)`},
-		// Parked priority work is an issue that states a priority no issue above it carries, as
-		// the route reads it (api's advancesOriginTerms): a relation the descent reaches from an
-		// issue above is carried there already.
+		// Priority work in backlog or icebox is an issue there that states a priority no issue above
+		// it carries, as the route reads it (api's advancesOriginTerms): a relation the descent
+		// reaches from an issue above is carried there already.
 		{"priority faults", `with recursive ` + priorityMemberTerms + `
 			select 'work in flight advancing none=' || (
 			         select count(*) from issues i
@@ -172,7 +172,7 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 			           and not exists (select 1 from members m where m.key = i.key)) ||
 			       ' priority work parked=' || (
 			         select count(distinct i.key) from issues i join stated s on s.key = i.key
-			         where i.closed_at is null and i.status in (` + priorityParkedStatuses + `)
+			         where i.closed_at is null and i.status in (` + priorityBacklogStatuses + `)
 			           and not exists (select 1 from members_spread m
 			                           where m.key = s.key and m.priority = s.priority and m.depth > 0))`},
 	}

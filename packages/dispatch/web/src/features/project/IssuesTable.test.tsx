@@ -2419,8 +2419,8 @@ const REGISTRY_OPENS = [
 const ticked = (name: string) =>
   (screen.getByRole("checkbox", { name }) as HTMLInputElement).checked;
 
-// A fault list of the priorities page opens with R6's columns alone (the parked list's set
-// here: the issue, its project, its status, who holds it, how long it has stood, and the move),
+// A fault list of the priorities page opens with R6's columns alone (the backlog-or-icebox list's
+// set here: the issue, its project, its status, who holds it, how long it has stood, and the move),
 // so it fits a desktop window. Every other column is one tick away under Columns, and no table
 // offers a Reason column until a reason is recorded (dispatch://INFRA-2934).
 test("a table given the columns it opens with shows those alone, with the row's checkbox, and offers every other one unticked", async () => {
@@ -2431,7 +2431,7 @@ test("a table given the columns it opens with shows those alone, with the row's 
     undefined,
     {
       layout: {
-        key: "parked",
+        key: "backlog",
         opens: ["key", "title", "status", "claim", "updated", "project", "moved"],
       },
       listing: { advances: "ship-it", moved: true },
