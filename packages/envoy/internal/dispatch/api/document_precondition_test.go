@@ -472,7 +472,7 @@ func TestDocumentEditBlockPreconditionCoversAReplaceThatWritesBlocks(t *testing.
 // nested in it included. A block guard must name what it always had to, the item's paragraph,
 // whose text the find matched, so such a delete guarded on that paragraph alone is taken, as it
 // always was, even after another writer changed a nested item: the change goes with the item. The
-// edit's answer names what it took that the guard did not check, the nested list, at the token the
+// edit's answer names what it took that the guard did not name, the nested list, at the token the
 // edit read it at, which is the changed one (INFRA-341, testing round 17, at 1808df5f).
 func TestAMarkerDeleteGuardedOnItsParagraphAloneAfterANestedChangeNamesWhatItTook(t *testing.T) {
 	handler, _, _ := preconditionTestHandler(t)
@@ -499,8 +499,8 @@ func TestAMarkerDeleteGuardedOnItsParagraphAloneAfterANestedChangeNamesWhatItToo
 }
 
 // A marker delete guarded on the item's paragraph alone, with no other writer about, is taken,
-// and its answer names the nested list it took, which the guard did not name, at its token: the
-// guard did not check it, and naming it would refuse the edit if it had changed.
+// and its answer names the nested list it took, which the guard did not name, at its token, to
+// compare with the one the caller read: naming it would refuse the edit if it had changed.
 func TestAMarkerDeleteGuardedOnItsParagraphAloneNamesTheNestedListItTook(t *testing.T) {
 	handler, _, _ := preconditionTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Marker delete warning", "- Parent\n  - Child\n- Other\n")
