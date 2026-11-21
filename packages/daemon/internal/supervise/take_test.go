@@ -475,10 +475,14 @@ func TestTakeAcceptedHoldsTheIssueInTurnForAnotherRoleUntilItsTurnEnds(t *testin
 // turn, and the machine publishes the task's number on its view (ClaimView.HeldTask), which the
 // daemon names to the claim in that turn (internal/daemon's HeldBehind). The record is the
 // refusal's own: the take accepted once that turn has ended leaves the view naming none, and so
-// does a refusal by any other hold. A held task retired outside the take — a newer task in its
-// place, or its phase ended — is named by nobody either, though no take was decided since.
+// does a refusal by any other hold. A take that fails decides nothing, so it leaves the task
+// named. A held task retired outside the take — a newer task in its place, or its phase ended —
+// is named by nobody either, though no take was decided since.
 func TestATakeRefusedIssueInTurnRecordsTheClaimItWaitsBehind(t *testing.T) {
-	type arrangement struct{ inTurn, phaseHolds bool }
+	type arrangement struct {
+		inTurn, phaseHolds bool
+		phaseErr           error
+	}
 	// held is the arrangement of TestTakeIsRefusedByEachHoldByName's issue-in-turn case: the
 	// claim's take of its phase task refused while another claim of the issue is in a turn.
 	held := func(t *testing.T, a *arrangement) (*harness, uint64) {
@@ -487,7 +491,7 @@ func TestATakeRefusedIssueInTurnRecordsTheClaimItWaitsBehind(t *testing.T) {
 		h := newHarness(t)
 		h.deps.Identity = adoptingIdentity
 		h.deps.IssueInTurn = func(string, claim.Token) (claim.Token, bool) { return testerToken, a.inTurn }
-		h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return a.phaseHolds, nil }
+		h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return a.phaseHolds, a.phaseErr }
 		h.restart()
 		h.manualTakes()
 		h.reach(StateReady)
@@ -513,6 +517,28 @@ func TestATakeRefusedIssueInTurnRecordsTheClaimItWaitsBehind(t *testing.T) {
 		h.must(IssueTurnEnded{Claim: h.token})
 		if text := h.mustTake(); text != "implement the plan" {
 			t.Fatalf("the take after the holder's turn ended = %q, want its task", text)
+		}
+		namesNone(t, h, "the accepted take")
+	})
+
+	// Another claim's turn end reaches the held claim while the holder is still in its turn, and
+	// the issue-record read the take makes (phaseHolds) fails once: nothing was decided, so the
+	// held take stays named to the holder, whose turn end still takes it once the store answers.
+	t.Run("a record read that fails while the holder is still in its turn", func(t *testing.T) {
+		var a arrangement
+		h, number := held(t, &a)
+		a.phaseErr = errBoom
+		if err := h.handle(IssueTurnEnded{Claim: h.token}); err == nil {
+			t.Fatal("the take at another claim's turn end decided with the record read failing: this case proves nothing")
+		}
+		if got := h.m.View().HeldTask; got != number {
+			t.Fatalf("after one failed record read while the holder's turn still ran, the view names task %d held, want %d: that turn's end still takes it", got, number)
+		}
+		a.phaseErr = nil
+		a.inTurn = false
+		h.must(IssueTurnEnded{Claim: h.token})
+		if text := h.mustTake(); text != "implement the plan" {
+			t.Fatalf("the take at the holder's turn end = %q, want its task", text)
 		}
 		namesNone(t, h, "the accepted take")
 	})

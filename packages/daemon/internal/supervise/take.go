@@ -751,7 +751,10 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // The issue-in-turn answer is recorded, in memory, as the number of the task it holds
 // (Machine.heldTask), and every other answer clears it: the machine publishes the number
 // (ClaimView.HeldTask), and the daemon names it to the claim whose turn holds it
-// (dispatch://INFRA-4130).
+// (dispatch://INFRA-4130). An error is no answer, so it leaves the record as the last answer left
+// it: a read of the issue's record that fails at another claim's turn end, while the turn that
+// holds the take still runs, would otherwise name the take to nobody until the next answer, though
+// that turn's end still takes it.
 //
 // This daemon queues no ask of an update round as a task: it publishes the ask to the role's
 // Envoy topic (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one
@@ -775,7 +778,12 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // dropped at a take or a hold's end would otherwise leave the sentence waiting for whatever task
 // comes next.
 func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped bool, err error) {
-	m.heldTask = 0
+	var held uint64
+	defer func() {
+		if err == nil {
+			m.heldTask = held
+		}
+	}()
 	if hold := m.claimHold(); hold != "" {
 		return hold, false, nil
 	}
@@ -830,7 +838,7 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 	if other, inTurn := m.adoptionWaits(); inTurn {
 		m.log.Info("supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share",
 			"task", p.Number, "issue", m.claim.Issue, "inTurn", other)
-		m.heldTask = p.Number
+		held = p.Number
 		return HoldIssueInTurn, false, nil
 	}
 	return "", false, nil

@@ -1409,7 +1409,8 @@ type Machine struct {
 	// it, its take, or its end clears it (armWaits).
 	unseenListed bool
 	// heldTask is the number the pending task had when takeable last answered issue-in-turn, and
-	// 0 where its last answer was anything else: another hold, a drop, a take it lets go ahead.
+	// 0 where its last answer was anything else: another hold, a drop, a take it lets go ahead. A
+	// takeable that fails is no answer and leaves it as it was.
 	// ClaimView.HeldTask publishes it only while the pending task still has that number, no take
 	// of it is accepted, and the claim's own state puts no hold on a take (claimHold), since a
 	// claim suspended or retired since takes nothing at the other claim's turn end. It is memory
