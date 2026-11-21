@@ -552,9 +552,10 @@ func bridge(t *testing.T, legion, addr string) {
 		t.Fatal("the shim spawned OMP before any hello was acked")
 	}
 
-	// hello → hello_ack → spawn.
+	// hello → hello_ack → spawn. Every hello here says the shim's backlog dropped nothing since its
+	// last connection (shimwire.Hello2.BacklogWhole): no gap below writes past its bound.
 	g.opened()
-	first.expect(t, stream.Hello{Claim: integrationClaim, Generation: integrationGeneration})
+	first.expect(t, stream.Hello{Claim: integrationClaim, Generation: integrationGeneration, BacklogWhole: true})
 	testwait.Eventually(t, "the shim to spawn OMP after the ack", shim.childStarted)
 	ctx := context.Background()
 	await, cancelAwait := context.WithTimeout(ctx, integrationWait)
@@ -608,7 +609,7 @@ func bridge(t *testing.T, legion, addr string) {
 	// The daemon is back on the same address: the shim redials, says hello again, and the turns
 	// from the gap arrive in the order OMP reported them, ahead of anything newer.
 	second := listen(t, addr, g.resolve)
-	second.expect(t, stream.Hello{Claim: integrationClaim, Generation: integrationGeneration})
+	second.expect(t, stream.Hello{Claim: integrationClaim, Generation: integrationGeneration, BacklogWhole: true})
 	if _, hellos := g.state(); hellos <= hellosBefore {
 		t.Fatalf("the restarted listener resolved no new hello (%d before, %d after)", hellosBefore, hellos)
 	}
@@ -683,7 +684,7 @@ func TestTheRealShimRedialsAHelloTheDaemonCouldNotResolve(t *testing.T) {
 
 	shim := startFakeOMPShim(t, legion, d.listener.Addr(), nil)
 
-	d.expect(t, stream.Hello{Claim: integrationClaim, Generation: integrationGeneration})
+	d.expect(t, stream.Hello{Claim: integrationClaim, Generation: integrationGeneration, BacklogWhole: true})
 	testwait.Eventually(t, "the shim to spawn OMP after the redial's ack", shim.childStarted)
 	mu.Lock()
 	resolved := hellos

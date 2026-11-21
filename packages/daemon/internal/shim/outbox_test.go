@@ -49,10 +49,10 @@ func outboxShim() (*shim, *strings.Builder) {
 }
 
 // attachConn attaches a connection that breaks after limit lines, as connect does once the
-// daemon has acked.
+// daemon has acked a hello that said what the backlog holds now.
 func attachConn(s *shim, limit int) *lineConn {
 	conn := &lineConn{limit: limit}
-	s.out.attach(conn, shimwire.NewWriter(conn))
+	s.out.attach(conn, shimwire.NewWriter(conn), s.out.whole())
 	return conn
 }
 

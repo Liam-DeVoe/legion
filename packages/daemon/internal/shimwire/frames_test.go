@@ -559,6 +559,35 @@ func TestHello2RoundTripsWithAndWithoutAnIdentity(t *testing.T) {
 	}
 }
 
+// A hello2's backlogWhole is written only where it is true, and a hello2 without it — from a shim
+// whose backlog dropped a frame since its last connection, or from one built before the member,
+// whose hello is those same bytes — decodes as false, which a daemon reads as a shim that cannot
+// say it dropped nothing (Hello2.BacklogWhole).
+func TestAHello2SaysItsBacklogIsWholeOnlyWhereItIs(t *testing.T) {
+	for _, tc := range []struct {
+		hello Hello2
+		line  string
+	}{
+		{Hello2{BootToken: "boot", BacklogWhole: true}, `{"type":"hello2","bootToken":"boot","backlogWhole":true}`},
+		{Hello2{BootToken: "boot"}, `{"type":"hello2","bootToken":"boot"}`},
+	} {
+		line, err := json.Marshal(tc.hello)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(line) != tc.line {
+			t.Fatalf("%#v encoded as %s, want %s", tc.hello, line, tc.line)
+		}
+		decoded, err := Decode(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := decoded.(Hello2); !ok || got != tc.hello {
+			t.Fatalf("%s decoded as %#v, want %#v", line, decoded, tc.hello)
+		}
+	}
+}
+
 func TestHello2ValidateNamesWhatIsMissing(t *testing.T) {
 	for name, tc := range map[string]struct {
 		frame Hello2

@@ -376,10 +376,11 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		locator = encoded
 	}
 	// The window is written as the array it is, never jsonb null: a claim with no report yet reads
-	// back as the empty array the column defaults to.
+	// back as the empty array the column defaults to. The claim's watermark rides on the oldest
+	// entry (storedTurnOutcome), the shape the column has always had.
 	outcomes := []byte("[]")
 	if len(c.TurnOutcomes) > 0 {
-		encoded, err := json.Marshal(c.TurnOutcomes)
+		encoded, err := json.Marshal(storedTurnOutcomes(c.TurnOutcomes, c.TurnOutcomeMark))
 		if err != nil {
 			return fmt.Errorf("put claim %s: encode its turn outcomes: %w", c.Token, err)
 		}
@@ -804,15 +805,14 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.Handshake.Generation = uint64(handshakeGeneration)
 	c.Handshake.QueuedAt, c.Handshake.ConfirmedAt = orZero(handshakeQueued), orZero(handshakeConfirmed)
 	if len(outcomes) > 0 {
-		if err := json.Unmarshal(outcomes, &c.TurnOutcomes); err != nil {
+		var stored []storedTurnOutcome
+		if err := json.Unmarshal(outcomes, &stored); err != nil {
 			return supervise.Claim{}, fmt.Errorf("read claim %s: decode its turn outcomes: %w", token, err)
 		}
-		if len(c.TurnOutcomes) == 0 {
-			// The column's empty array is a claim no turn has been reported for, which is the
-			// claim a machine holds before its first report: it reads back as that claim, not as
-			// an empty window of its own.
-			c.TurnOutcomes = nil
-		}
+		// The column's empty array is a claim no turn has been reported for, which is the claim a
+		// machine holds before its first report: it reads back as that claim, not as an empty
+		// window of its own.
+		c.TurnOutcomes, c.TurnOutcomeMark = turnOutcomesOf(stored)
 	}
 	if abandoned != nil {
 		if err := json.Unmarshal(abandoned, &c.Abandoned); err != nil {
@@ -883,6 +883,41 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		}
 	}
 	return c, nil
+}
+
+// storedTurnOutcome is one entry of the claims table's turn_outcomes column: a report of the
+// claim's window (supervise.TurnOutcome, whose tags are the column's keys) and, on the oldest entry
+// alone, the window's watermark (supervise.Claim.TurnOutcomeMark), so the mark is written and read
+// with the window in the one column. A mark on any other entry is none: no daemon writes one
+// there. A daemon built before the mark reads the column with no case for the key, and drops it.
+type storedTurnOutcome struct {
+	supervise.TurnOutcome
+	Watermark supervise.TurnOutcomeKey `json:"watermark,omitzero"`
+}
+
+// storedTurnOutcomes is the column's entries for window, with mark on the oldest.
+func storedTurnOutcomes(window []supervise.TurnOutcome, mark supervise.TurnOutcomeKey) []storedTurnOutcome {
+	stored := make([]storedTurnOutcome, len(window))
+	for i, o := range window {
+		stored[i].TurnOutcome = o
+	}
+	if len(stored) > 0 {
+		stored[0].Watermark = mark
+	}
+	return stored
+}
+
+// turnOutcomesOf is the window, and its watermark, that the column's entries hold: nil and the
+// zero key for an empty column.
+func turnOutcomesOf(stored []storedTurnOutcome) ([]supervise.TurnOutcome, supervise.TurnOutcomeKey) {
+	if len(stored) == 0 {
+		return nil, supervise.TurnOutcomeKey{}
+	}
+	window := make([]supervise.TurnOutcome, len(stored))
+	for i, o := range stored {
+		window[i] = o.TurnOutcome
+	}
+	return window, stored[0].Watermark
 }
 
 // instant is a time as a nullable column: the zero time is "not yet", which SQL says as null.

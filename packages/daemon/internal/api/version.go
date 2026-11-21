@@ -2998,8 +2998,13 @@ package api
 // starts the wait before its value is written again, and `held`, the number of the accepted take
 // whose text the producer still held unrun when the turn ended, which puts that take back to await
 // its own turn also where the daemon has lost its count of the process's turns (a daemon restarted
-// under it); each is optional, and a report without `held` is read as before. The three task
-// routes refuse in the coded shape (`{code, error}`), so a worker that sends a take or a seen
+// under it); each is optional, and a report without `held` is read as before. The worker shim's
+// `hello2` carries `backlogWhole`, true where the backlog the shim holds for a daemon that is not
+// connected dropped no frame since its last connection took it (shimwire.Hello2.BacklogWhole),
+// and left out when false; a hello without it, from a shim that dropped frames or one built before
+// the member, is read as a backlog that may have dropped them, on which no report gives a take a
+// daemon start restored its turn back, and a daemon built before the member ignores it. The three
+// task routes refuse in the coded shape (`{code, error}`), so a worker that sends a take or a seen
 // report again on a 502, 503 or 504 naming no code never reads a refusal of the daemon's own as an
 // outage; and none of them refuses a stale plugin with the stale-contract 409: a stale claim's take
 // is refused with the hold `stale-plugin`, and its read and its seen report are answered as any

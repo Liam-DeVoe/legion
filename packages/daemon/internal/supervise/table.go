@@ -24,10 +24,15 @@ import (
 type RuntimeObservation struct{ Observation runtime.Observation }
 
 // StreamHello is the shim connecting with this claim's boot token, resolved to its generation.
+// BacklogWhole is the hello's word that the connection is handed every frame the shim held for a
+// daemon since its last connection (shimwire.Hello2.BacklogWhole), which a take a daemon start
+// restored needs before a report can give it its turn back (bindRestoredAnchor); false is a shim
+// that dropped frames or cannot say.
 type StreamHello struct {
 	Claim        claim.Token
 	Generation   uint64
 	AgentSecrets *AgentSecretsIdentity
+	BacklogWhole bool
 }
 
 // StreamTurnStart is the agent's turn starting.
@@ -1422,10 +1427,11 @@ func enrolledOnly(m *Machine, ctx context.Context, _ Event) error { return m.ens
 // relaunch waits for its agent's word on whether it is in a turn (askTurn) is asked here
 // (askRestoredTurn): the hello carries no turn, and the shim replays what it held only once this
 // hello is answered. The first hello after a daemon start gives a restored take's anchor its
-// connection (bindRestoredAnchor), before anything else of the hello can fail.
-func reconnected(m *Machine, ctx context.Context, _ Event) error {
+// connection, where the hello says its shim's backlog is whole (bindRestoredAnchor), before
+// anything else of the hello can fail.
+func reconnected(m *Machine, ctx context.Context, ev Event) error {
 	m.disarm(TimerRegistration)
-	if err := m.bindRestoredAnchor(ctx); err != nil {
+	if err := m.bindRestoredAnchor(ctx, ev.(StreamHello)); err != nil {
 		return err
 	}
 	if err := m.ensureEnrolled(ctx); err != nil {
@@ -1522,7 +1528,7 @@ func turnAnswered(m *Machine, ctx context.Context, ev Event) error {
 // a restored take's anchor its connection as that does (bindRestoredAnchor).
 func reconnectedMidTurn(m *Machine, ctx context.Context, ev Event) error {
 	m.disarm(TimerRegistration)
-	if err := m.bindRestoredAnchor(ctx); err != nil {
+	if err := m.bindRestoredAnchor(ctx, ev.(StreamHello)); err != nil {
 		return err
 	}
 	if err := m.ensureEnrolled(ctx); err != nil {

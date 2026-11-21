@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -519,6 +521,29 @@ func (p *peer) expectHello(t *testing.T) {
 	}
 }
 
+// expectHelloSaying is expectHello for a hello that says, as whole, whether the backlog dropped a
+// frame since the last connection took it (shimwire.Hello2.BacklogWhole); which names the hello.
+func (p *peer) expectHelloSaying(t *testing.T, whole bool, which string) {
+	t.Helper()
+	frame := p.next(t)
+	hello, ok := frame.(shimwire.Hello2)
+	if !ok || hello.BootToken != bootToken || hello.BacklogWhole != whole {
+		t.Fatalf("%s was %#v, want hello2 with boot token %q and backlogWhole %t", which, frame, bootToken, whole)
+	}
+}
+
+// expectClosed holds that the shim closes the connection with nothing more on it; which names
+// the connection.
+func (p *peer) expectClosed(t *testing.T, which string) {
+	t.Helper()
+	if err := p.conn.SetReadDeadline(time.Now().Add(waitLimit)); err != nil {
+		t.Fatalf("set a read deadline: %v", err)
+	}
+	if line, err := p.r.ReadLine(); !errors.Is(err, io.EOF) {
+		t.Fatalf("%s carried %.80q (%v), want it closed with nothing on it", which, line, err)
+	}
+}
+
 // open is the daemon's side of a successful connect: the hello read and acked, and the child's
 // first frame — proof it was spawned and bridged — read back. It returns the child's pid.
 func (p *peer) open(t *testing.T) int {
@@ -976,10 +1001,13 @@ func TestAnAckedConnectionResetsTheBackoff(t *testing.T) {
 	clock.next(t, 200*time.Millisecond)
 }
 
-// What OMP writes while the daemon is away waits in a backlog of the newest 1000 lines and is
-// replayed in order, ahead of anything newer, once the next connection's hello is acked. The
-// hello is re-sent on that connection; a stream that dropped after its ack is redialled at once,
-// with no backoff; and overflowing the backlog is logged once for the shim's life.
+// What OMP writes while no daemon takes it waits in a backlog of the newest 1000 lines and is
+// replayed in order, ahead of anything newer, once a connection's hello that says what the backlog
+// dropped is acked. Here OMP writes past the bound while the redialled connection's hello waits
+// for its ack, so that connection, whose hello said the backlog dropped nothing, is closed behind
+// its ack with nothing on it, and the next one carries the replay. The hello is re-sent on every
+// connection; a stream that dropped after its ack is redialled at once, with no backoff; and
+// overflowing the backlog is logged once for the shim's life.
 func TestFramesFromADroppedConnectionReplayInOrderAfterTheNextAck(t *testing.T) {
 	path := socketPath(t)
 	daemon := listen(t, path)
@@ -991,13 +1019,16 @@ func TestFramesFromADroppedConnectionReplayInOrderAfterTheNextAck(t *testing.T) 
 
 	for round := 1; round <= 2; round++ {
 		_ = p.conn.Close()
-		sh.log.await(t, "reconnecting", round)
-		// 1200 frames and the end of a turn, all while no daemon is connected: the oldest 201
+		p = daemon.accept(t)
+		p.expectHello(t)
+		// 1200 frames and the end of a turn, all while that hello waits for its ack: the oldest 201
 		// cannot be kept.
 		if err := syscall.Kill(pid, syscall.SIGUSR1); err != nil {
 			t.Fatalf("signal the fake OMP: %v", err)
 		}
 		sh.log.awaitLine(t, "agent_end", round)
+		p.send(t, shimwire.HelloAck{})
+		p.expectClosed(t, "the connection whose hello said the backlog dropped nothing, acked after it dropped frames")
 
 		p = daemon.accept(t)
 		p.expectHello(t)
@@ -1016,6 +1047,72 @@ func TestFramesFromADroppedConnectionReplayInOrderAfterTheNextAck(t *testing.T) 
 	if got := sh.log.count("dropping oldest frames beyond the last 1000 lines"); got != 1 {
 		t.Fatalf("the backlog overflow was logged %d times, want once for the shim's life; log:\n%s", got, sh.log)
 	}
+	clock.idle(t)
+}
+
+// The hello says whether the backlog dropped a frame since the last connection took it
+// (shimwire.Hello2.BacklogWhole): the first hello, with nothing yet bound for a daemon, says it
+// dropped none; the one after the backlog overflowed while no daemon was connected says it dropped
+// some; and the one after a connection took that backlog whole says it dropped none again. A
+// backlog that overflows while a hello that said it dropped none waits for its ack goes to no
+// connection on that word: the shim closes the connection behind its ack with nothing replayed on
+// it, and the next hello says the backlog dropped frames and carries the replay.
+func TestTheHelloSaysWhetherTheBacklogDroppedAFrameSinceTheLastConnection(t *testing.T) {
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	clock := newClock()
+	sh := run(t, config(t, path, child), clock)
+	// overflow is 1200 frames and the end of a turn from the fake OMP, the round-th: the oldest
+	// 201 cannot be kept.
+	overflow := func(pid, round int) {
+		t.Helper()
+		if err := syscall.Kill(pid, syscall.SIGUSR1); err != nil {
+			t.Fatalf("signal the fake OMP: %v", err)
+		}
+		sh.log.awaitLine(t, "agent_end", round)
+	}
+	replayed := func(p *peer) {
+		t.Helper()
+		for want := 201; want < 1200; want++ {
+			var frame struct{ N int }
+			if err := json.Unmarshal(p.expectRaw(t, "fake_frame").JSON, &frame); err != nil || frame.N != want {
+				t.Fatalf("replayed frame %d (%v) where frame %d was due", frame.N, err, want)
+			}
+		}
+		p.expect(t, shimwire.AgentEnd{})
+	}
+
+	p := daemon.accept(t)
+	p.expectHelloSaying(t, true, "the first hello")
+	p.send(t, shimwire.HelloAck{})
+	pid := readyPID(t, p.expectRaw(t, "fake_ready"))
+
+	// The daemon goes away, its listener with it, so the redial is refused and waits out its
+	// backoff while OMP writes past the bound.
+	_ = daemon.ln.Close()
+	_ = p.conn.Close()
+	retry := clock.next(t, 200*time.Millisecond)
+	overflow(pid, 1)
+	daemon = listen(t, path)
+	retry.elapse()
+	p = daemon.accept(t)
+	p.expectHelloSaying(t, false, "the hello after the backlog overflowed with no daemon connected")
+	p.send(t, shimwire.HelloAck{})
+	replayed(p)
+
+	_ = p.conn.Close()
+	sh.log.await(t, "reconnecting", 2)
+	p = daemon.accept(t)
+	p.expectHelloSaying(t, true, "the hello after a connection took the backlog whole")
+	overflow(pid, 2)
+	p.send(t, shimwire.HelloAck{})
+	p.expectClosed(t, "the connection whose hello said the backlog dropped nothing, acked after it dropped frames")
+	sh.log.await(t, "closing that connection, and the next hello says so", 1)
+	p = daemon.accept(t)
+	p.expectHelloSaying(t, false, "the hello after that connection")
+	p.send(t, shimwire.HelloAck{})
+	replayed(p)
 	clock.idle(t)
 }
 

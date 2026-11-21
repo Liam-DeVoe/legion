@@ -23,11 +23,14 @@ type AgentSecretsIdentity struct {
 // Hello is a shim's hello accepted: the claim's connection is registered, at the generation its
 // boot token was minted for, with the identity the hello carried, if any. Under always-dial the
 // shim says hello before it spawns Oh My Pi, so a Hello says the pane's bridge is up, not that the
-// agent is.
+// agent is. BacklogWhole is the hello's word that the connection is handed every frame the shim
+// held for a daemon since its last connection, false where the hello does not say so
+// (shimwire.Hello2.BacklogWhole).
 type Hello struct {
 	Claim        claim.Token
 	Generation   uint64
 	AgentSecrets *AgentSecretsIdentity
+	BacklogWhole bool
 }
 
 // TurnStart is OMP's agent_start. It never names what caused the turn; which task a turn is the

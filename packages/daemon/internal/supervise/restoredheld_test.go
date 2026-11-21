@@ -7,6 +7,7 @@ package supervise
 // driven by its own sequence.
 
 import (
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -253,4 +254,53 @@ func TestAHeldReportPutsBackNoRestoredTakeWhoseOwnTurnMayHaveRun(t *testing.T) {
 		h.wantStillItsTurn(number, putBacks, "after the held report on the second connection,")
 		h.ownTurnFinishes(number, 3)
 	})
+}
+
+// A restored take's anchor reads the first connection after the daemon start as one that carries
+// every frame its shim held while no daemon was connected (bindRestoredAnchor), but a shim's
+// backlog drops its oldest frames past its bound. The probe of review round 3 (R3-5): the run the
+// daemon before the restart gave the take was running at the restart; while no daemon was
+// connected it ended and the take's own turn started, and the backlog dropped both frames; that
+// run's report, saying the take's text was held, lands before the first hello. Nothing puts the
+// take back, so the report of its own turn finishes the task, and the next task's start is its
+// own rather than the one a mark left for a turn still to come (Machine.reportedAhead):
+//
+//   - the hello does not say its shim's backlog is whole: one that dropped frames, and one of a
+//     release before the word, which says nothing of it;
+//   - the hello says the backlog is whole, and the agent does not answer on that connection, as on
+//     one the shim closes behind its ack because the backlog dropped frames while the hello waited
+//     for it; the next hello says the backlog dropped frames.
+//
+// The negative control: the head before this change (732f3a96), whose first hello binds the
+// anchor whatever it says and puts the take back, fails each where the take is to keep its turn.
+func TestAHeldReportPutsBackNoRestoredTakeOverAReplayThatMayHaveLostFrames(t *testing.T) {
+	droppedHello := func(h *harness) {
+		h.conn.SetStreaming(true)
+		h.conns.Register(h.token, h.conn)
+		h.must(StreamHello{Claim: h.token, Generation: h.generation()})
+	}
+	for _, tc := range []struct {
+		name  string
+		hello func(h *harness)
+	}{
+		{"the hello does not say the backlog is whole", droppedHello},
+		{"the agent does not answer on the connection of a hello that says it is", func(h *harness) {
+			h.conn.FailGetState(errors.New("the shim closed the connection behind its ack"))
+			h.connectInTurn()
+			h.conn.FailGetState(nil)
+			h.conns.Remove(h.token)
+			droppedHello(h)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, number := takeAcrossARestart(t, givenRunRunning)
+			putBacks := len(h.records.of(notTheTakesTurnLine))
+			h.reportHeldOf(2, 0, number)
+			tc.hello(h)
+			h.wantStillItsTurn(number, putBacks, "after the first hello,")
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			h.wantLateReportFinishesOnce(number, 3)
+			h.wantNextTaskStartsItsOwnTurn()
+		})
+	}
 }

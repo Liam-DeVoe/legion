@@ -172,6 +172,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "when the agent last said it could be prompted, which is what dates the two causes above"},
 	{Field: "TurnOutcomes", Column: ColumnWithheld,
 		Reason: "the window the run of refused turns is derived from, whose count reaches a reader as the failure's own sentence"},
+	{Field: "TurnOutcomeMark", Column: ColumnWithheld,
+		Reason: "the key below which the window answers a report sent again as a repeat, bookkeeping of the window it rides on"},
 	{Field: "Abandoned", Column: ColumnWithheld,
 		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
 	{Field: "EndedWork", Column: ColumnWithheld,

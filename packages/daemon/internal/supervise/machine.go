@@ -362,6 +362,16 @@ type Claim struct {
 	// and they are persisted, so a daemon restart reads the run the reports before it left rather
 	// than starting the count again. They go with the session whose turns they are (freshRun).
 	TurnOutcomes []TurnOutcome
+	// TurnOutcomeMark is the window's watermark, the zero key for none: the key of the newest
+	// report the window dropped to keep to its bound (recordTurnOutcome), below which every report
+	// of its generation was applied, and every report of an earlier generation is of a process the
+	// claim has left. Every report at or below it that the window does not hold is a repeat, since
+	// the window applied it before it dropped it, or it is of a turn no take of the claim's process
+	// holds and older than every report a run is derived over. The store writes it on the
+	// window's oldest entry, in the window's own column, and reads it back from there, so it is
+	// written and read with the window; a window always holds an entry where it has a mark, since
+	// the bound never empties it and freshRun drops the two together.
+	TurnOutcomeMark TurnOutcomeKey
 	// LastDeathCause is why the claim's process was last found gone — the runtime's own account of
 	// the death (runtime.Observation.Detail: an OOM kill, a node that went away, a pod the cluster
 	// evicted) — and LastStartFailure why its last start did not produce a running agent — a
