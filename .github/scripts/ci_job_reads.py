@@ -700,6 +700,14 @@ RULES = {
     f"{DAEMON}/internal/textcheck/owner_steps_way_back_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
                                "for owner_steps_way_back_doc_test.go:28 (wayBackBlockOfTheGuide, way_back_doc_test.go:146)")),
+    # This test reads internal/config's key table as source text rather than importing the
+    # package, so the table is a read of its own beside the guide.
+    f"{DAEMON}/internal/textcheck/plan_guidance_rollback_doc_test.go": reads(
+        (f"{DAEMON}/internal/config/keytable.go",
+         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+         "for plan_guidance_rollback_doc_test.go:34 (shippedText of planGuidanceKeyTable)"),
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
+                               "for plan_guidance_rollback_doc_test.go:42 (shippedText of wayBackGuide)")),
     f"{DAEMON}/internal/textcheck/role_model_doc_test.go": reads(
         *((guide, "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
                   "for role_model_doc_test.go:34 (shippedText of each of roleModelGuides, :17-22)")
