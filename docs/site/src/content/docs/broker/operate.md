@@ -1233,13 +1233,29 @@ from every account `BROKER_SERVICE_LOGINS` lists, and answers the release `404` 
 route takes `thumbprint` and `generation` (migration 0032): a broker before it refuses every
 registration the daemon sends with `400`.
 
-One later release raises the floor while its listener runs. From that release, the broker gives a
-session that opens `legion-daemon:` only as the fixed session of a `BROKER_EXCHANGE_ACCOUNTS`
-entry, and refuses a pod-session registration of one `400 SESSION_INVALID`. The Envoy listener of
-that release takes a token of such a session for a Legion daemon's own, which may remove the
-current registration of any session. An older broker lets a caller name such a session for itself.
-So while a listener of that release or a later one runs, roll the broker back no further than that
-release.
+One later release raises the floor while its listener runs: the first that carries
+cybermonklabs/legion#4723. From that release, the broker gives a session that opens
+`legion-daemon:` only as the fixed session of a `BROKER_EXCHANGE_ACCOUNTS` entry, and refuses a
+pod-session registration of one `400 SESSION_INVALID`. The Envoy listener of that release takes a
+token of such a session for a Legion daemon's own, which may remove the current registration of any
+session. An older broker lets a caller name such a session for itself. So while a listener of that
+release or a later one runs, roll the broker back no further than that release.
+
+That release, and the release that refuses `ENVOY_API_TOKEN` below, are each the first
+`legion-envoy` tag that contains its pull request's merge commit. Find one in a clone of this
+repository, with the pull request's number:
+
+```sh
+git fetch --tags origin
+merge=$(gh pr view <number> --repo cybermonklabs/legion --json mergeCommit --jq .mergeCommit.oid)
+git tag --contains "$merge" --list 'legion-envoy-v*' | sort -V | head -1
+```
+
+It prints the release. It prints nothing while no release carries the merge, and `git tag` stops
+with `malformed object name` while the pull request has not merged. Each release's notes say it as
+well: the first that carries #4723 says the broker refuses a pod-session registration of a
+`legion-daemon:` session `400 SESSION_INVALID`, and the first that carries #4757 says a non-empty
+`ENVOY_API_TOKEN` refuses the listener's start.
 
 **To the floor or later**, change nothing in the daemons:
 
@@ -1266,10 +1282,11 @@ daemon off the exchange first, in this order:
 
 1. Roll the Envoy listener back to the last release that takes its shared bearer, `ENVOY_API_TOKEN`,
    and give it that variable in the same change
-   ([Running the listener](/legion/dispatch/envoy/#running-the-listener)). Every release from the
-   floor, legion-envoy-v32.20.0, to legion-envoy-v32.38.0 takes the variable. A later release's
-   listener refuses to start while it is set, naming it. Once that release ships, the last release
-   that takes the variable is the one just before it; until then, it is the newest release.
+   ([Running the listener](/legion/dispatch/envoy/#running-the-listener)). The release that refuses
+   `ENVOY_API_TOKEN` is the first that carries cybermonklabs/legion#4757, found as above: its
+   listener refuses to start while the variable is set, naming it. Roll back to the release just
+   before it, or, while no release carries that pull request, to the newest release. Every release
+   from the floor, legion-envoy-v32.20.0, to legion-envoy-v32.38.0 takes the variable.
    - Make it one change. The newer listener refuses to start with the variable set. The older
      listener, bound off loopback, refuses to start without it unless the
      `ENVOY_OIDC_ISSUER`/`ENVOY_OIDC_AUDIENCE` pair or the Google pair is set: it does not count the
@@ -1277,10 +1294,10 @@ daemon off the exchange first, in this order:
    - Set it on the listener alone. A Dispatch of the release that refuses it refuses `ENVOY_TOKEN`
      at start too.
    - Until step 2, the newer daemon calls this listener with its broker token. A listener of a
-     release before the one that recognises a Legion daemon's own broker token holds that token to
-     its own session, as it holds every broker token. Such a listener refuses the daemon's clean
-     stop of another session's registration, so a role whose process ended is not read `gone` at
-     once. Go on to step 2 without a pause.
+     release before the first that carries cybermonklabs/legion#4723, found as above, holds that
+     token to its own session, as it holds every broker token. Such a listener refuses the daemon's
+     clean stop of another session's registration, so a role whose process ended is not read
+     `gone` at once. Go on to step 2 without a pause.
    - **Reversible:** yes, as the last step of the roll forward below.
    - **Takes:** one rollout of the listener, which reads the variable when it starts. On the
      `gcp:Dispatch` component the listener runs one pod by default, and its Deployment is
@@ -1294,6 +1311,9 @@ daemon off the exchange first, in this order:
    listener's bearer, and remove `runtime.kubernetes.agent_secrets.exchange_audience`. Where the
    file sets `dispatch_token_broker`, which needs `exchange_audience` too, replace it with
    `dispatch_token_file`. Run that release's `legion config check` on the file before the restart.
+   - Finish step 1 first. The earlier daemon does not check its bearer against the listener at
+     boot, so a listener that refuses the bearer shows only as failed calls: every publish, role
+     lookup and clean stop is answered `401`, and the daemon boots all the same.
    - **Reversible:** yes, once the broker is back at the floor or later. Roll the daemon forward and
      undo the changes to its file: the release that removes `envoy_token_file` refuses a file that
      names it. A pod built while `exchange_audience` was unset carries no exchange identity, so a
@@ -1348,9 +1368,10 @@ step of the list above.
    identity. Let each agent push first.
    - **Reversible:** no, as rollback step 3.
    - **Takes:** as rollback step 3, for each claim.
-5. Roll the Envoy listener forward to the release that refuses `ENVOY_API_TOKEN`, and remove the
-   variable in the same change. The newer listener refuses to start while it is set, and the older
-   one needs it off loopback unless an identity-token pair is set.
+5. Roll the Envoy listener forward to the release that refuses `ENVOY_API_TOKEN`, the first that
+   carries cybermonklabs/legion#4757, found as above, or a later one, and remove the variable in the
+   same change. The newer listener refuses to start while it is set, and the older one needs it off
+   loopback unless an identity-token pair is set.
    - **Reversible:** yes, as rollback step 1.
    - **Takes:** one rollout of the listener, as rollback step 1.
 
