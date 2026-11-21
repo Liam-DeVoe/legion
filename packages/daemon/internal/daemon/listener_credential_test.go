@@ -482,26 +482,37 @@ runtime:
       exchange_audience: legion-broker-exchange
 `
 
-// TestTheBootRefusesAListenerThatRefusesTheDaemonsToken: a listener that answers the daemon's
-// broker token 401 or 403, because it takes no broker tokens or because envoy_url is not its
-// ENVOY_PUBLIC_URL, refuses the boot, naming envoy_url and ENVOY_PUBLIC_URL, rather than leave every
-// listener call failing with no line saying why; a 503 before that refusal is waited out first. A
-// 503, as a starting listener answers, is asked again, and the boot goes on once the listener
-// answers that nobody holds the controller role. A 500 is the listener's answer from behind its
-// credential check (only its route handlers write one), so the boot goes on after that one lookup.
-// Each row counts the lookups the boot made.
+// TestTheBootRefusesAListenerThatRefusesTheDaemonsToken: the boot goes on only on an answer the
+// listener gives behind its credential check, and refuses on every other, naming envoy_url and
+// ENVOY_PUBLIC_URL, rather than leave every listener call failing with no line saying why. A 401
+// or 403 (a listener that takes no broker token, or whose ENVOY_PUBLIC_URL is not envoy_url), a
+// redirect, and a 404 whose body is not the listener's (a server at envoy_url that is not the
+// listener) each refuse it; a 503 before a refusal is waited out first. The controls: a 503, as a
+// starting listener answers, is asked again, and the boot goes on once the listener answers that
+// nobody holds the controller role; a 500, which only the listener's route handlers write, after
+// the check, lets the boot go on after that one lookup. Each row counts the lookups the boot made.
 func TestTheBootRefusesAListenerThatRefusesTheDaemonsToken(t *testing.T) {
 	fastReadiness(t, bootprobe.Retry{Initial: time.Millisecond, Max: 4 * time.Millisecond})
+	const (
+		unclaimed = `{"error":"no claim","reason":"` + roleholder.Unclaimed + `"}`
+		foreign   = `<html>404 page not found</html>`
+	)
+	type answer struct {
+		status int
+		body   string
+	}
 	for name, tc := range map[string]struct {
-		answers []int
+		answers []answer
 		refused bool
 		asked   int
 	}{
-		"a 401":                                {[]int{http.StatusUnauthorized}, true, 1},
-		"a 403":                                {[]int{http.StatusForbidden}, true, 1},
-		"a 503, then a 401":                    {[]int{http.StatusServiceUnavailable, http.StatusUnauthorized}, true, 2},
-		"control: a 503, then no holder":       {[]int{http.StatusServiceUnavailable, http.StatusNotFound}, false, 2},
-		"control: a 500 from behind the check": {[]int{http.StatusInternalServerError}, false, 1},
+		"a 401":                                {[]answer{{http.StatusUnauthorized, `{"error":"unauthorized"}`}}, true, 1},
+		"a 403":                                {[]answer{{http.StatusForbidden, `{"error":"forbidden"}`}}, true, 1},
+		"a redirect":                           {[]answer{{http.StatusTemporaryRedirect, ""}}, true, 1},
+		"a 404 that is not the listener's":     {[]answer{{http.StatusNotFound, foreign}}, true, 1},
+		"a 503, then a 401":                    {[]answer{{http.StatusServiceUnavailable, ""}, {http.StatusUnauthorized, `{"error":"unauthorized"}`}}, true, 2},
+		"control: a 503, then no holder":       {[]answer{{http.StatusServiceUnavailable, ""}, {http.StatusNotFound, unclaimed}}, false, 2},
+		"control: a 500 from behind the check": {[]answer{{http.StatusInternalServerError, `{"error":"the role claim does not decode"}`}}, false, 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			broker := newCredentialBroker(t, mintsTheDaemonsToken)
@@ -509,12 +520,15 @@ func TestTheBootRefusesAListenerThatRefusesTheDaemonsToken(t *testing.T) {
 			asked := 0
 			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				mu.Lock()
-				status := tc.answers[min(asked, len(tc.answers)-1)]
+				given := tc.answers[min(asked, len(tc.answers)-1)]
 				asked++
 				mu.Unlock()
+				if given.status == http.StatusTemporaryRedirect {
+					w.Header().Set("Location", "http://elsewhere.invalid"+r.URL.Path)
+				}
 				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(status)
-				_, _ = io.WriteString(w, `{"error":"unauthorized","reason":"`+roleholder.Unclaimed+`"}`)
+				w.WriteHeader(given.status)
+				_, _ = io.WriteString(w, given.body)
 			}))
 			t.Cleanup(listener.Close)
 			_, err := settleCredentials(t.Context(), listenerBrokerConfig(listener.URL), "", "", getenvOf(podIdentity(t, broker.url)), quietLogger())

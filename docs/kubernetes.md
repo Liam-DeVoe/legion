@@ -8825,8 +8825,8 @@ Each listener call carries `Authorization: DPoP <token>` and a proof of the call
 The listener checks that URL against its own `ENVOY_PUBLIC_URL`, so `envoy_url` must be that origin, and the listener must take broker tokens (`ENVOY_AGENT_SECRETS_URL` and the settings beside it, `packages/envoy/cmd/listener/brokerauth.go`); a listener without them answers the token `401`.
 So the boot, after its first trade, reads the project's controller role at the listener with the token.
 It waits out a listener that does not answer, or answers `429`, `502`, `503` or `504`, and no boot budget bounds that wait.
-A `401` or `403` refuses the boot, naming `envoy_url` and `ENVOY_PUBLIC_URL` (`listenerCredentialOf`).
-Any other answer came past the listener's credential check, and the boot goes on: a `500` among them, which only the listener's route handlers write, after that check.
+The boot goes on only on an answer the listener gives behind its credential check: a holder, no holder (its `404` naming the role unclaimed), or a `500`, which only its route handlers write.
+Every other answer refuses the boot, naming `envoy_url` and `ENVOY_PUBLIC_URL` (`listenerCredentialOf`): a `401` or `403`, and a redirect or a body that is not the listener's, which is a server at `envoy_url` that is not the listener.
 Without that check, every listener call the daemon makes would fail and no line would say why.
 The boot then logs `legion daemon's Envoy listener credential` with `credential=broker` and the `session`, and never a token.
 A daemon that presents the bearer logs no such line.
@@ -8841,8 +8841,9 @@ The secrets broker gives a session that opens `legion-daemon:` only as the fixed
 It refuses such a name in every request that names its own session, and in every pod-session registration (`daemonNamed`, `packages/envoy/internal/cipher/exchange/exchange.go`).
 So only the daemon's own `BROKER_EXCHANGE_ACCOUNTS` entry mints that token.
 Such a token may make the daemon's clean stop of another session's registration, a `DELETE /v1/sessions/<session>` that names `if_not_registered_after`, so a role whose process ended is still `gone` at once.
-The stop's moment is the daemon's own clock when the process ended, so the listener takes it only up to five minutes past its own clock (`daemonCleanStopSkew`).
-A later moment would remove whatever registration stands, as an unconditional delete does.
+The stop's moment is the daemon's own clock when the process ended, and the listener takes it only up to five minutes past its own clock (`daemonCleanStopSkew`), which catches a daemon whose clock runs well ahead.
+That bound does not narrow what the token can do: a stop dated at the listener's now removes every registration written before the request arrives, so a daemon's token can remove the current registration of any session, of any project, as the shared bearer could.
+Only a later narrowing to sessions of the daemon's own project, which needs the listener's session record to carry its projects, will bound that.
 Its unconditional delete of another session, a delete that names only `client_instance_id`, and a stop dated more than five minutes ahead are refused `403`.
 The listener's sender limit does not count its notices, which carry no sender, as it never counted the daemon's notices under the bearer.
 The listener recognises the daemon by that token's session and project alone, not by the projects of the session it stops.

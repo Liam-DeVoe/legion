@@ -542,11 +542,7 @@ func (r *Runtime) dispatchCredential(l *launch, pod *corev1.Pod) error {
 		return nil
 	}
 	if r.dispatch.Transition == "" {
-		return fmt.Errorf("launch %s: %w", l.spec.Claim, &runtime.AwaitingPodRound{
-			Pod: r.locatorFor(l.spec.Claim, l.spec.Role, pod.UID, l.spec.Generation),
-			Reason: fmt.Sprintf("pod %s carries no exchange identity and dispatch_token_transition_file is not set; its update round replaces it",
-				l.name),
-		})
+		return r.awaitingPodRound(l, pod, "dispatch_token_transition_file is not set")
 	}
 	l.secrets[dispatchTokenKey] = r.dispatch.Transition
 	return nil
@@ -567,10 +563,17 @@ func (r *Runtime) listenerCredential(l *launch, pod *corev1.Pod) error {
 	if !r.listenerBroker || l.trades(r) {
 		return nil
 	}
+	return r.awaitingPodRound(l, pod, "envoy_token_file is not set, so its role would hold no credential for the Envoy listener")
+}
+
+// awaitingPodRound is the refusal of a launch that keeps pod, which carries no exchange identity,
+// where its role would hold no credential for want of one: runtime.AwaitingPodRound, naming the pod
+// by the locator this launch's process in it would have had (locatorFor), and why the identity is
+// missed (missing) (dispatchCredential, listenerCredential).
+func (r *Runtime) awaitingPodRound(l *launch, pod *corev1.Pod, missing string) error {
 	return fmt.Errorf("launch %s: %w", l.spec.Claim, &runtime.AwaitingPodRound{
-		Pod: r.locatorFor(l.spec.Claim, l.spec.Role, pod.UID, l.spec.Generation),
-		Reason: fmt.Sprintf("pod %s carries no exchange identity and envoy_token_file is not set, so its role would hold no credential for the Envoy listener; its update round replaces it",
-			l.name),
+		Pod:    r.locatorFor(l.spec.Claim, l.spec.Role, pod.UID, l.spec.Generation),
+		Reason: fmt.Sprintf("pod %s carries no exchange identity and %s; its update round replaces it", l.name, missing),
 	})
 }
 

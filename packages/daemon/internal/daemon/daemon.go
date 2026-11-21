@@ -1022,15 +1022,15 @@ type listenerCredential struct {
 //
 // Under the broker the boot reads the project's controller role at the listener with that token
 // first, at the boot gate's pacing (readinessRetry), and waits out a listener that does not answer
-// or answers 429, 502, 503 or 504, as it waits out Dispatch's whoami. A 401 or 403 refuses the boot,
-// naming envoy_url and ENVOY_PUBLIC_URL: the proof names envoy_url, which the listener checks
-// against its own ENVOY_PUBLIC_URL, and a listener that takes no broker token refuses every one, so
-// otherwise every listener call the daemon makes would fail for ever and no line would say why.
-// Any other answer came past the listener's credential check, which is all the boot reads it for,
-// and the boot goes on: a holder or none, a body the lookup cannot read, or a 500, which only the
-// listener's route handlers write, once its credential check has passed (a role claim it cannot
-// decode), and which the boot does not wait out, since asking again changes nothing until an
-// operator mends that claim.
+// or answers 429, 502, 503 or 504, as it waits out Dispatch's whoami. The boot goes on only on an
+// answer the listener gives behind its credential check: a holder, no holder (its 404 naming the
+// role unclaimed), or a 500, which only its route handlers write (a role claim it cannot decode),
+// and which the boot does not wait out, since asking again changes nothing until an operator mends
+// that claim. Every other answer refuses the boot, naming envoy_url and ENVOY_PUBLIC_URL: a 401 or
+// 403, which a listener that takes no broker token, or one whose ENVOY_PUBLIC_URL is not envoy_url
+// (the origin every proof names), gives every call; and a redirect or a body that is not the
+// listener's (a 404 it cannot read, say), which is a server at envoy_url that is not the listener.
+// Otherwise every listener call the daemon makes would fail for ever and no line would say why.
 func listenerCredentialOf(ctx context.Context, cfg config.Config, envoyToken string, broker *cipherclient.Client, log *slog.Logger) (listenerCredential, error) {
 	if !cfg.ListenerPresentsBrokerToken() {
 		return listenerCredential{bearer: envoyToken}, nil
@@ -1043,13 +1043,13 @@ func listenerCredentialOf(ctx context.Context, cfg config.Config, envoyToken str
 	lookup := credential.publisher(cfg.EnvoyURL).RoleHolder
 	err = bootprobe.Run(ctx, "Envoy listener role lookup under the daemon's broker token", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
 		_, _, err := lookup(ctx, string(claim.ControllerToken(project)))
-		if refused := (*notify.RoleLookupRefused)(nil); errors.As(err, &refused) && refused.Status != http.StatusUnauthorized && refused.Status != http.StatusForbidden {
+		if refused := (*notify.RoleLookupRefused)(nil); errors.As(err, &refused) && refused.Status == http.StatusInternalServerError {
 			return nil
 		}
 		return err
 	}, bootTimeout, listenerUnanswered))
 	if err != nil {
-		return listenerCredential{}, fmt.Errorf("envoy_token_file is unset, so the daemon presents its broker token to the Envoy listener at envoy_url %s, which refuses it: %w; the listener must take broker tokens (ENVOY_AGENT_SECRETS_URL and the settings beside it), and envoy_url must be its ENVOY_PUBLIC_URL, the origin every proof names",
+		return listenerCredential{}, fmt.Errorf("envoy_token_file is unset, so the daemon presents its broker token to the Envoy listener at envoy_url %s, which does not answer it as the listener: %w; the listener must take broker tokens (ENVOY_AGENT_SECRETS_URL and the settings beside it), and envoy_url must be its ENVOY_PUBLIC_URL, the origin every proof names",
 			cfg.EnvoyURL, err)
 	}
 	log.Info(listenerCredentialLine, "credential", "broker", "session", dispatch.DaemonSession(cfg.Project))
