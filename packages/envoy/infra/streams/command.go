@@ -64,7 +64,7 @@ func Command(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if word != "check" {
 		return usage("the word is check; streams update and streams census are the writer hold's held commands")
 	}
-	settings, err := readSettings(*replicas, *maxBytes, *maxAge)
+	settings, err := ReadSettings(*replicas, *maxBytes, *maxAge)
 	if err != nil {
 		return usage("%v", err)
 	}
@@ -85,9 +85,10 @@ func Command(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return printReport(stdout, Check(ctx, conn, settings))
 }
 
-// readSettings reads the deployment's settings as each program reads them (bus.ParseNATSReplicas,
-// bus.ParseStreamMaxBytes, bus.ParseSessionMaxAge).
-func readSettings(replicas, maxBytes, maxAge string) (streamset.Settings, error) {
+// ReadSettings reads the deployment's settings as each program reads them (bus.ParseNATSReplicas,
+// bus.ParseStreamMaxBytes, bus.ParseSessionMaxAge): `envoy-infra streams check` here, and the
+// writer hold's `streams update|census`.
+func ReadSettings(replicas, maxBytes, maxAge string) (streamset.Settings, error) {
 	var settings streamset.Settings
 	var err error
 	if settings.Replicas, err = bus.ParseNATSReplicas(replicas); err != nil {
