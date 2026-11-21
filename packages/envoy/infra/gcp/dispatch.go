@@ -193,6 +193,13 @@ type DispatchArgs struct {
 	// connection presents one credential, and nothing of the seed is mounted, classed or granted;
 	// unset, natsSeedSecret is required.
 	NatsAudience string `pulumi:"natsAudience,optional"`
+	// PrivateHubs are the NATS URLs of the hubs that serve private projects, in production the
+	// clustered hub alone and never the VM hub, Dispatch's own first: each switch to private proves
+	// that every one of them admits Dispatch before it commits. It renders DISPATCH_PRIVATE_HUBS in
+	// the order given and each URL once at its first place; empty or unset renders nothing. A
+	// rendered DISPATCH_PRIVATE_HUBS beside no DISPATCH_HUB_ADMISSION_TOKEN_FILE, the token each
+	// proof presents, is an input error at preview (dispatchHubsNeedTheirToken).
+	PrivateHubs []string `pulumi:"privateHubs,optional"`
 
 	SignInClientId     string             `pulumi:"signInClientId,optional"`
 	SignInClientSecret pulumi.StringInput `pulumi:"signInClientSecret,optional" provider:"secret"`
@@ -706,6 +713,7 @@ type dispatchSettings struct {
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
 	natsAudience                                string
+	privateHubs                                 []string
 	oidcAudience, oidcIssuer                    string
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
@@ -1047,6 +1055,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"natsUrl", args.NatsUrl != nil},
 		{"natsSeedSecret", args.NatsSeedSecret != nil},
 		{"natsAudience", args.NatsAudience != ""},
+		{"privateHubs", len(args.PrivateHubs) > 0},
 		{"agentSecretsUrl", args.AgentSecretsUrl != ""},
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
 		{"oidcAudience", args.OidcAudience != ""},
@@ -1488,6 +1497,19 @@ func newDispatchExistingDatabaseInstance(args *DispatchArgs) (bool, error) {
 	return true, nil
 }
 
+// dispatchPrivateHubs is privateHubs as DISPATCH_PRIVATE_HUBS renders it: each URL trimmed, empty
+// ones dropped, in the order given and each once at its first place, so Dispatch's own hub, which
+// the stack names first, stays first.
+func dispatchPrivateHubs(entries []string) []string {
+	var hubs []string
+	for _, entry := range entries {
+		if entry = strings.TrimSpace(entry); entry != "" && !slices.Contains(hubs, entry) {
+			hubs = append(hubs, entry)
+		}
+	}
+	return hubs
+}
+
 // dispatchDeletionProtection resolves deletionProtection, true when the consumer sets nothing. It
 // guards what the component makes: its own cluster, its own Cloud SQL instance and the database
 // dispatch on it, and the Tailscale Service. A cluster existingCluster names and an instance
@@ -1761,6 +1783,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.agentSecretsURL = agentSecretsURL
 	s.agentSecretsAudience = agentSecretsAudience
 	s.natsAudience = args.NatsAudience
+	s.privateHubs = dispatchPrivateHubs(args.PrivateHubs)
 	s.oidcAudience = oidcAudience
 	s.oidcIssuer = args.OidcIssuer
 	s.appClientID = args.AppClientId

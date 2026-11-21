@@ -1305,6 +1305,16 @@ Each unset renders nothing, and the binaries then keep one copy and set no byte 
 stream keeping the one it has. Both are independent of `natsInCluster`: a hub outside
 this cluster can be clustered too.
 
+`privateHubs` (a list of NATS URLs) is the hubs that serve private projects, in production the
+clustered hub alone and never the VM hub, Dispatch's own first: each switch to private proves that
+every one of them admits Dispatch through the auth callout before it commits. It renders
+`DISPATCH_PRIVATE_HUBS=<url>,<url>` in the order given, each URL once at its first place; empty or
+unset renders nothing. Dispatch refuses to start with hubs to prove and no
+`DISPATCH_HUB_ADMISSION_TOKEN_FILE`, the token each proof presents, so a render whose environment
+holds `DISPATCH_PRIVATE_HUBS` and not that file is an input error at `pulumi preview` naming
+`privateHubs`; this component renders no hub-admission token yet, so every non-empty `privateHubs`
+is refused until the change that mounts it.
+
 `natsAudience` (plain), unset by default, moves both NATS clients onto the NATS auth service the
 secrets broker runs: the app's `envoy-dispatch` and the listener's `envoy-listener` each connect
 as user `service` with a projected token of their own pod's ServiceAccount for this audience, the
