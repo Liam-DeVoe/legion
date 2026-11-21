@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which is what these rows read
-import { fireEvent, render } from "@testing-library/react";
+import { render } from "@testing-library/react";
 
+import { pressAsInputMethod } from "../__tests__/input-method-keys";
 import { inputMethodKey } from "./inputMethodKey";
 
 // An input method's key is one pressed in a composition, marked `isComposing`, or the one that
@@ -26,10 +26,7 @@ test("React's key event is read through its native event, the same three ways", 
   );
   try {
     const field = view.getByLabelText("Words");
-    // user-event cannot mark a key as an input method's, so all three keys are fired the same way.
-    fireEvent.keyDown(field, { isComposing: true, key: "Enter" });
-    fireEvent.keyDown(field, { isComposing: false, key: "Enter", keyCode: 229 });
-    fireEvent.keyDown(field, { key: "Enter" });
+    pressAsInputMethod(field, "Enter");
     expect(read).toEqual([true, true, false]);
   } finally {
     view.unmount();

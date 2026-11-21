@@ -1,5 +1,5 @@
 import { act, type RenderResult, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
@@ -12,15 +12,20 @@ import type {
   ArtifactApproval,
   Ask,
   AskRead,
+  IssueDetails,
   Priorities,
   PriorityRow,
+  UserIssueState,
 } from "../../api/types";
 import { PAGE_COLORS } from "../../theme/classes";
 import { ProofDocument } from "../doc/ProofDocument";
 import { DocumentRuntime } from "../doc/runtime";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { MarginProvider } from "../margin/margin-context";
+import { issue as marginIssue } from "../margin/margin-fixture";
+import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
 import { NoTooltips } from "./NoTooltips";
+import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 /** What `shared-controls.options.test.tsx` and `shared-controls.tooltips.test.tsx` both draw the
  *  shared controls with, and read them by. */
@@ -432,6 +437,45 @@ export const idlePriorityWrite: IssuePriorityWrite = {
   stopped: undefined,
   submit: () => undefined,
 };
+
+/** The issue the identity block's typed editors are open on: the margin fixture's issue, with no
+ *  documents, as `shared-writes.test.ts` builds its own. */
+export const ISSUE: IssueDetails = {
+  ...marginIssue,
+  artifacts: [],
+  last_seq: 250,
+  primary_artifact_id: "",
+  status: "todo",
+};
+
+/** The reader's own state of `ISSUE`. */
+export const STATE: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
+
+/** The identity block's editor of `field` (`IssueFieldForms`), open as the page opens it: on the
+ *  drafts of the page's `useIssueHeaderWrites`, and closed as the page closes it, which `onClose`,
+ *  where a case gives one, is told of. */
+export function OpenFieldForm({
+  field,
+  onClose,
+}: {
+  field: IssueField;
+  onClose?: () => void;
+}): ReactNode {
+  const writes = useIssueHeaderWrites(ISSUE, STATE);
+  const [open, setOpen] = useState<IssueField | null>(field);
+  return (
+    <IssueFieldForms
+      field={open}
+      isClosed={false}
+      issue={ISSUE}
+      onClose={() => {
+        onClose?.();
+        setOpen(null);
+      }}
+      writes={writes}
+    />
+  );
+}
 
 export const minutesFromNow = (minutes: number) =>
   new Date(Date.now() + minutes * 60_000).toISOString();

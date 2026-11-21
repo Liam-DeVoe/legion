@@ -33,8 +33,6 @@ import type {
   Issue,
   IssueClaim,
   IssueComponents,
-  IssueDetails,
-  UserIssueState,
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -79,7 +77,6 @@ import {
   UnresponsiveRouteMarker,
 } from "../issue/RouteReach";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
-import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -87,7 +84,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useDialog } from "../shell/useDialog";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
-import { FormActions, type IssueField, IssueFieldForms } from "./IssueFieldForms";
+import { FormActions, type IssueField } from "./IssueFieldForms";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE, PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
 import {
@@ -104,6 +101,7 @@ import {
   LIVE_SESSION,
   listed,
   minutesFromNow,
+  OpenFieldForm,
   offPageColours,
   openAsk,
   priorities,
@@ -119,7 +117,6 @@ import {
   undraw,
   VERIFICATION_ID,
 } from "./shared-controls-fixture";
-import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 /**
  * The options the shared controls take: each option's default is `main`'s shape, the options of
@@ -5840,37 +5837,6 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
     confirm.mockRestore();
   }
 });
-
-/** An issue the identity block's typed editors edit: the margin fixture's issue, with no
- *  documents, as `shared-writes.test.ts` builds its own. */
-const fieldIssue: IssueDetails = {
-  ...marginIssue,
-  artifacts: [],
-  last_seq: 250,
-  primary_artifact_id: "",
-  status: "todo",
-};
-
-const fieldState: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
-
-/** The identity block's editor of `field`, open as the page opens it: on the drafts of the
- *  page's `useIssueHeaderWrites`, and closed by its `onClose`, which `onClose` here is told of. */
-function OpenFieldForm({ field, onClose }: { field: IssueField; onClose: () => void }): ReactNode {
-  const writes = useIssueHeaderWrites(fieldIssue, fieldState);
-  const [open, setOpen] = useState<IssueField | null>(field);
-  return (
-    <IssueFieldForms
-      field={open}
-      isClosed={false}
-      issue={fieldIssue}
-      onClose={() => {
-        onClose();
-        setOpen(null);
-      }}
-      writes={writes}
-    />
-  );
-}
 
 /** Presses Escape in the `field` box, open in Details on a phone, and checks that the press
  *  closed the box alone: the box is gone, its `onClose` ran, and the press, marked

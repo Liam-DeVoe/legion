@@ -1,11 +1,11 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the add form's Escape row below reads
-import { fireEvent, render, waitFor, within } from "@testing-library/react";
+import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -177,15 +177,12 @@ test("an input method's Escape leaves the add form open, and a plain Escape clos
   try {
     await user.click(view.q.getByRole("button", { name: "Add a priority to CORE-9" }));
     const picker = await view.q.findByRole("combobox", { name: "Priority to advance" });
-    // user-event cannot mark a key as an input method's, so the two such Escapes are fired.
-    expect(fireEvent.keyDown(picker, { isComposing: true, key: "Escape" })).toBe(true);
-    expect(fireEvent.keyDown(picker, { isComposing: false, key: "Escape", keyCode: 229 })).toBe(
-      true
-    );
-    expect(view.q.queryByRole("combobox", { name: "Priority to advance" })).toBe(picker);
-
-    // The plain Escape goes the same way as the two above, so only the composition mark differs.
-    expect(fireEvent.keyDown(picker, { key: "Escape" })).toBe(false);
+    expect(
+      pressAsInputMethod(picker, "Escape", {
+        beforePlain: () =>
+          expect(view.q.queryByRole("combobox", { name: "Priority to advance" })).toBe(picker),
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
     await waitFor(() =>
       expect(view.q.queryByRole("combobox", { name: "Priority to advance" })).toBeNull()
     );

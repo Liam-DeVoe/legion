@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { renderHook } from "@testing-library/react";
 
+import { pressAsInputMethod } from "../__tests__/input-method-keys";
 import { usePanelDismiss } from "./usePanelDismiss";
 
 // The Escape that ends an IME composition is the composition's, marked `isComposing`, or sent
@@ -27,35 +28,13 @@ test("an Escape that ends an IME composition, marked or sent with keyCode 229, l
   );
   try {
     field.focus();
-    // user-event has no form for a key that ends a composition, so the event is made by hand.
-    field.dispatchEvent(
-      new KeyboardEvent("keydown", {
-        bubbles: true,
-        cancelable: true,
-        isComposing: true,
-        key: "Escape",
-      })
-    );
-    expect(changes, "the Escape that ended a composition closed the panel").toEqual([]);
-    expect(document.activeElement, "that Escape moved the focus").toBe(field);
-    expect(behind.length, "that Escape stopped short of the view behind").toBe(1);
-
-    field.dispatchEvent(
-      new KeyboardEvent("keydown", {
-        bubbles: true,
-        cancelable: true,
-        isComposing: false,
-        key: "Escape",
-        keyCode: 229,
-      })
-    );
-    expect(changes, "Safari's Escape that ended a composition closed the panel").toEqual([]);
-    expect(document.activeElement, "that Escape moved the focus").toBe(field);
-    expect(behind.length, "that Escape stopped short of the view behind").toBe(2);
-
-    field.dispatchEvent(
-      new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
-    );
+    pressAsInputMethod(field, "Escape", {
+      beforePlain: () => {
+        expect(changes, "an Escape that ended a composition closed the panel").toEqual([]);
+        expect(document.activeElement, "that Escape moved the focus").toBe(field);
+        expect(behind.length, "that Escape stopped short of the view behind").toBe(2);
+      },
+    });
     expect(changes).toEqual([false]);
     expect(document.activeElement).toBe(trigger);
     expect(behind.length, "the panel's Escape reached the view behind").toBe(2);

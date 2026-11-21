@@ -218,10 +218,10 @@ export function confineKey(
     // each one on a touch selection as the reader's new selection, which it hides and shows again
     // 400 ms later (`@legion/proof-editor`'s `dispatch-action-bar.ts`): read before every key, the
     // bar blinked at each Ctrl+C on a touch device with a keyboard. Not for an input method's key
-    // (`inputMethodKey`), nor the `Process` a browser sends for a key the input method takes: the
-    // input method holds the caret then, and ProseMirror reads the page itself as a composition
-    // starts and as it ends, and leaves a key pressed in one alone (`inOrNearComposition`).
-    if (!inputMethodKey(event) && event.key !== "Process" && !holdsSelection(view, ...selected)) {
+    // (`inputMethodKey`): the input method holds the caret then, and ProseMirror reads the page
+    // itself as a composition starts and as it ends, and leaves a key pressed in one alone
+    // (`inOrNearComposition`).
+    if (!inputMethodKey(event) && !holdsSelection(view, ...selected)) {
       document.dispatchEvent(new Event("selectionchange"));
     }
     return;

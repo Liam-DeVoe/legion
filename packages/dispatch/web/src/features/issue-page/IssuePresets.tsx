@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import {
   borderTransparent,
   focusVisibleRing,
@@ -143,9 +144,11 @@ export function IssuePresets({
     // listener of the page's that a layer under it added earlier. A dialog open over the row
     // takes the press wherever the focus is: not yet in it, the frame after it opens, or gone to
     // the page. Whether one is open is `useDialog`'s registry's answer (`dialogOpen()`), which
-    // also decides which dialog the key closes, as Details' drawer asks it.
+    // also decides which dialog the key closes, as Details' drawer asks it. An input method's
+    // Escape (`inputMethodKey`) is the input method's, and the menu stays open: the focus can be
+    // in a field while it is, as `e` opens the title's editor without closing it.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== "Escape" || inDialog(event.target)) return;
+      if (event.key !== "Escape" || inputMethodKey(event) || inDialog(event.target)) return;
       if (dialogOpen()) return;
       event.preventDefault();
       setOpen(undefined);

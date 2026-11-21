@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the row below reads
-import { fireEvent, render } from "@testing-library/react";
+import { render } from "@testing-library/react";
 
+import { pressAsInputMethod } from "../__tests__/input-method-keys";
 import { submitOnModifiedEnter } from "./submitOnModifiedEnter";
 
 // A reader typing Chinese, Japanese or Korean confirms a word with Enter: that Enter is the input
@@ -22,16 +22,12 @@ test("the Ctrl+Enter that confirms an input method's word submits nothing, and a
   );
   try {
     const field = view.getByLabelText("Words");
-    // user-event cannot mark a key as an input method's, so the two such keys are fired.
-    expect(fireEvent.keyDown(field, { ctrlKey: true, isComposing: true, key: "Enter" })).toBe(true);
     expect(
-      fireEvent.keyDown(field, { ctrlKey: true, isComposing: false, key: "Enter", keyCode: 229 })
-    ).toBe(true);
-    expect(submitted).toBe(0);
-
-    // The plain Ctrl+Enter goes the same way as the two above, so only the composition mark
-    // differs.
-    expect(fireEvent.keyDown(field, { ctrlKey: true, key: "Enter" })).toBe(false);
+      pressAsInputMethod(field, "Enter", {
+        beforePlain: () => expect(submitted).toBe(0),
+        held: { ctrlKey: true },
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
     expect(submitted).toBe(1);
   } finally {
     view.unmount();

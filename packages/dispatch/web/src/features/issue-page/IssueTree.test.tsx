@@ -20,6 +20,7 @@ import * as Y from "yjs";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
@@ -1237,6 +1238,48 @@ test("Escape closes the body a press outside the outline keeps, from the page or
   await user.keyboard("{Escape}");
   expect(document.activeElement).toBe(document.body);
   await waitFor(() => expect(first.querySelector("[data-node-body]")).toBeNull());
+});
+
+// The page's Escape lets go at once of the row a press outside the outline keeps (above). A press
+// on a field outside takes the focus into the field, where a reader typing Chinese, Japanese or
+// Korean drops a candidate with Escape: that Escape is the input method's, marked `isComposing`,
+// or sent unmarked with keyCode 229 after the composition's end, as Safari sends it (WebKit bug
+// 165004). It lets go of nothing at once; it ends the press as any key does (`trackPress`), and the
+// row goes as that press ends. A plain Escape after it lets the row go at once.
+test("an input method's Escape in a field a press outside the outline holds lets go of no row at once, and a plain Escape does", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(
+    node({
+      children: [
+        addressedComment("comment-1", "The first words."),
+        addressedComment("comment-2", "The second words."),
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  const name = "A field outside the outline";
+  const field = render(<input aria-label={name} />).getByRole("textbox", { name });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  const [first] = rowsFor(view.container, "comment-1");
+  if (first === undefined) throw new Error("the first row is not drawn");
+  await waitFor(() => expect(first.querySelector("[data-node-body]")).not.toBeNull());
+
+  await user.pointer({ keys: "[MouseLeft>]", target: field });
+  expect(document.activeElement).toBe(field);
+  pressAsInputMethod(field, "Escape", {
+    beforePlain: () =>
+      expect(
+        first.querySelector("[data-node-body]"),
+        "an input method's Escape let go of the row at once"
+      ).not.toBeNull(),
+  });
+  expect(
+    first.querySelector("[data-node-body]"),
+    "the plain Escape did not let go of the row at once"
+  ).toBeNull();
+  await user.pointer({ keys: "[/MouseLeft]" });
 });
 
 // Safari focuses no button a press lands on, so a press on a control outside the outline takes
@@ -4056,11 +4099,10 @@ test("Ctrl+B right after Shift+ArrowRight in the node's paragraph bolds the lett
 
 // While the reader composes with an input method, the input method holds the caret, and
 // ProseMirror reads the page itself as the composition starts and as it ends: the row has the
-// editor read no caret for an input method's key - the `Process` a browser sends for a key the
-// input method takes, any key with `isComposing`, or the key that ends a composition, which Safari
-// sends unmarked with keyCode 229 (WebKit bug 165004) - and reads it first for a plain key pressed
-// after, as for Backspace. The case makes the move and the delete the browser would, as the
-// Backspace case above does.
+// editor read no caret for an input method's key (`inputMethodKey`) - any key with `isComposing`,
+// or one sent unmarked with keyCode 229, as Safari sends the key that ends a composition (WebKit
+// bug 165004) - and reads it first for a plain key pressed after, as for Backspace. The case makes
+// the move and the delete the browser would, as the Backspace case above does.
 test("an input method's key has the row's editor read no caret, and a plain Backspace after it does", async () => {
   setViewport(1440);
   const user = userEvent.setup();

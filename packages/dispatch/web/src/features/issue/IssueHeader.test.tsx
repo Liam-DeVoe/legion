@@ -1,12 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the title box's composition row and the boxes' Escape row send
-import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
+import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { settle } from "../../__tests__/fake-clock";
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { api } from "../../api/client";
 import { userStateQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
@@ -258,14 +258,12 @@ test("the Enter that confirms an input method's word in the title's box keeps th
     await view.user.click(view.q.getByRole("heading", { level: 1 }));
     const box = view.q.getByRole("textbox", { name: "Issue title" });
     expect(box).toHaveFocus();
-    // Keys user-event cannot mark as an input method's.
-    fireEvent.keyDown(box, { isComposing: true, key: "Enter" });
-    fireEvent.keyDown(box, { isComposing: false, key: "Enter", keyCode: 229 });
-    expect(view.q.getByRole("textbox", { name: "Issue title" })).toBe(box);
-    expect(box).toHaveFocus();
-
-    // The plain Enter goes the same way as the two above, so only the composition mark differs.
-    fireEvent.keyDown(box, { key: "Enter" });
+    pressAsInputMethod(box, "Enter", {
+      beforePlain: () => {
+        expect(view.q.getByRole("textbox", { name: "Issue title" })).toBe(box);
+        expect(box).toHaveFocus();
+      },
+    });
     expect(view.q.queryByRole("textbox", { name: "Issue title" })).toBeNull();
   } finally {
     view.unmount();
@@ -296,14 +294,12 @@ test("an input method's Escape in the title's, the route's or the parent's box k
       const box = view.q.getByRole("textbox", { name }) as HTMLInputElement;
       await view.user.type(box, "x");
       const draft = box.value;
-      // user-event cannot mark a key as an input method's, so the two such Escapes are fired.
-      fireEvent.keyDown(box, { isComposing: true, key: "Escape" });
-      fireEvent.keyDown(box, { isComposing: false, key: "Escape", keyCode: 229 });
-      expect(view.q.queryByRole("textbox", { name }), `${name} closed`).toBe(box);
-      expect(box.value, `${name} dropped its draft`).toBe(draft);
-
-      // The plain Escape goes the same way as the two above, so only the composition mark differs.
-      fireEvent.keyDown(box, { key: "Escape" });
+      pressAsInputMethod(box, "Escape", {
+        beforePlain: () => {
+          expect(view.q.queryByRole("textbox", { name }), `${name} closed`).toBe(box);
+          expect(box.value, `${name} dropped its draft`).toBe(draft);
+        },
+      });
       expect(view.q.queryByRole("textbox", { name }), `${name} stayed open`).toBeNull();
     }
   } finally {

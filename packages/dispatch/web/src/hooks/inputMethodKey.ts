@@ -9,10 +9,12 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
  *
  * Who reads it, and no one keeps a check of their own: every handler of Enter or Escape typed
  * into a text field - an input, a textarea or a contenteditable - React's `onKeyDown` and a
- * native listener alike, and every handler that passes over a composition, the key registry's
- * among them (`features/shell/keymap.ts`), which the page's bound keys go through. Arrow, Tab
- * and Backspace handlers of a field are not in that range, unless they pass over a composition,
- * as the row editor's Tab does (`features/issue-page/useNodeEditing.ts`).
+ * native listener alike, the field's own or one on the document or the window that a field's key
+ * reaches, and every handler that passes over a composition, the key registry's among them
+ * (`features/shell/keymap.ts`), which the page's bound keys go through. A listener that only
+ * notes that a key was pressed acts on no key and is not in that range; nor are Arrow, Tab and
+ * Backspace handlers of a field, unless they pass over a composition, as the row editor's Tab
+ * does (`features/issue-page/useNodeEditing.ts`).
  */
 export function inputMethodKey(event: KeyboardEvent | ReactKeyboardEvent): boolean {
   const key = "nativeEvent" in event ? event.nativeEvent : event;

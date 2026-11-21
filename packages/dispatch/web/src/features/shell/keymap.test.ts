@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { createKeymap, DIALOG_SCOPE, type KeyBinding, type Keymap } from "./keymap";
 
 interface Harness {
@@ -401,12 +402,17 @@ test("an already-handled key (defaultPrevented) or an input method's, marked com
   } finally {
     document.body.removeEventListener("keydown", swallow);
   }
-  expect(press("j", { isComposing: true })).toBe(false);
-  expect(next.fired()).toBe(0);
-  expect(press("j", { isComposing: false, keyCode: 229 })).toBe(false);
-  expect(next.fired()).toBe(0);
-  expect(press("j")).toBe(true);
-  expect(next.fired()).toBe(1);
+  // The registry hears the page's keys on the window, as `KeymapProvider` binds it.
+  const hear = (event: KeyboardEvent) => keymap.handleKeyDown(event);
+  window.addEventListener("keydown", hear);
+  try {
+    expect(
+      pressAsInputMethod(document.body, "j", { beforePlain: () => expect(next.fired()).toBe(0) })
+    ).toEqual({ composing: true, plain: false, safari: true });
+    expect(next.fired()).toBe(1);
+  } finally {
+    window.removeEventListener("keydown", hear);
+  }
 });
 
 test("project and board are page scopes: their bindings are described under their own scope and the innermost wins", () => {

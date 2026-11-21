@@ -499,12 +499,16 @@ html:has([data-issue-page]) {
      target (WCAG 2.2's 2.5.8), because the header at 390 px is held to eight lines and 250 px,
      nine lines and 280 px while an approval request waits. `revert-layer` takes the floor above
      off and gives back the size the control's own classes set. A menu or a dialog a header
-     control opens keeps the 44 px floor. The rule takes no `html:has()` scope, because under one
-     each change of the page recalculated the style of every control of the page (decision 176);
-     its `[data-issue-page]` ancestor keeps it to the new page. */
+     control opens keeps the 44 px floor: a `role="menu"`, a `role="dialog"`, and the issue's
+     actions menu, a group of buttons rather than a `role="menu"` (`[data-issue-actions-menu]`,
+     `IssueActionsMenu.tsx`). The rule takes no `html:has()` scope, because under one each change
+     of the page recalculated the style of every control of the page (decision 176); its
+     `[data-issue-page]` ancestor keeps it to the new page. */
   [data-issue-page]
     [data-issue-header]
-    :is(button, a, select, textarea):not([role="menu"] *):not([role="dialog"] *) {
+    :is(button, a, select, textarea):not([role="menu"] *):not([role="dialog"] *):not(
+      [data-issue-actions-menu] *
+    ) {
     min-width: revert-layer;
     min-height: revert-layer;
   }

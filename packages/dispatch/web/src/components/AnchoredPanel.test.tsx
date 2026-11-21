@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the Escape row below reads
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { type ReactNode, useRef, useState } from "react";
 
+import { pressAsInputMethod } from "../__tests__/input-method-keys";
 import { AnchoredPanel } from "./AnchoredPanel";
 
 /** A control and the panel it opens, holding a field a reader types in, as a picker's search box
@@ -33,15 +33,12 @@ test("an input method's Escape in the panel's field leaves the panel open, and a
   try {
     // The panel is portalled to the body, outside the render's container.
     const field = screen.getByRole("textbox", { name: "Search filters" });
-    // user-event cannot mark a key as an input method's, so the two such Escapes are fired.
-    expect(fireEvent.keyDown(field, { isComposing: true, key: "Escape" })).toBe(true);
-    expect(fireEvent.keyDown(field, { isComposing: false, key: "Escape", keyCode: 229 })).toBe(
-      true
-    );
-    expect(screen.queryByRole("textbox", { name: "Search filters" })).toBe(field);
-
-    // The plain Escape goes the same way as the two above, so only the composition mark differs.
-    expect(fireEvent.keyDown(field, { key: "Escape" })).toBe(false);
+    expect(
+      pressAsInputMethod(field, "Escape", {
+        beforePlain: () =>
+          expect(screen.queryByRole("textbox", { name: "Search filters" })).toBe(field),
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
     expect(screen.queryByRole("textbox", { name: "Search filters" })).toBeNull();
   } finally {
     view.unmount();

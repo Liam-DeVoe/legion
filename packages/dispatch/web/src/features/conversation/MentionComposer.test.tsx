@@ -9,6 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
@@ -1120,14 +1121,12 @@ test("an input method's Escape leaves the open mention picker open, and a plain 
     fireEvent.change(field, { target: { value: "hello @pla" } });
     await screen.findByRole("listbox", { name: "Mention suggestions" });
 
-    // user-event cannot mark a key as an input method's, so the two such Escapes are fired.
-    fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
-    fireEvent.keyDown(field, { isComposing: false, key: "Escape", keyCode: 229 });
-    expect(screen.queryByRole("listbox", { name: "Mention suggestions" })).not.toBeNull();
-    expect(seen).toEqual([]);
-
-    // The plain Escape goes the same way as the two above, so only the composition mark differs.
-    fireEvent.keyDown(field, { key: "Escape" });
+    pressAsInputMethod(field, "Escape", {
+      beforePlain: () => {
+        expect(screen.queryByRole("listbox", { name: "Mention suggestions" })).not.toBeNull();
+        expect(seen).toEqual([]);
+      },
+    });
     expect(screen.queryByRole("listbox", { name: "Mention suggestions" })).toBeNull();
     expect(field.value).toBe("hello @pla");
   } finally {
@@ -1147,14 +1146,12 @@ test("an input method's Escape in the composer asks no Discard, and a plain Esca
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
     await user.click(field);
     await user.paste("a draft to keep");
-    // user-event cannot mark a key as an input method's, so the two such Escapes are fired.
-    fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
-    fireEvent.keyDown(field, { isComposing: false, key: "Escape", keyCode: 229 });
-    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
-    expect(field.value).toBe("a draft to keep");
-
-    // The plain Escape goes the same way as the two above, so only the composition mark differs.
-    fireEvent.keyDown(field, { key: "Escape" });
+    pressAsInputMethod(field, "Escape", {
+      beforePlain: () => {
+        expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
+        expect(field.value).toBe("a draft to keep");
+      },
+    });
     await screen.findByRole("button", { name: "Discard" });
   } finally {
     view.unmount();
@@ -1214,22 +1211,23 @@ test("the Enter that confirms an input method's word picks no mention, and a pla
 
   try {
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    // The field's own `change` to open the picker, and keys user-event cannot mark as an input
-    // method's.
+    // The field's own `change` to open the picker, which user-event has no form for, and the
+    // ArrowDown that makes an option active, sent to the field as the change is: it never takes
+    // the focus here, and user-event presses a key on the focused element.
     fireEvent.change(field, { target: { value: "@" } });
     await screen.findByRole("listbox", { name: "Mention suggestions" });
     fireEvent.keyDown(field, { key: "ArrowDown" });
     expect(field.getAttribute("aria-activedescendant")).not.toBeNull();
 
-    // user-event cannot mark a key as an input method's, so the two such Enters are fired.
-    expect(fireEvent.keyDown(field, { isComposing: true, key: "Enter" })).toBe(true);
-    expect(fireEvent.keyDown(field, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
-    expect(field.value).toBe("@");
-    expect(screen.getByRole("listbox", { name: "Mention suggestions" })).not.toBeNull();
-    expect(seen).toEqual([]);
-
-    // The plain Enter goes the same way as the two above, so only the composition mark differs.
-    expect(fireEvent.keyDown(field, { key: "Enter" })).toBe(false);
+    expect(
+      pressAsInputMethod(field, "Enter", {
+        beforePlain: () => {
+          expect(field.value).toBe("@");
+          expect(screen.getByRole("listbox", { name: "Mention suggestions" })).not.toBeNull();
+          expect(seen).toEqual([]);
+        },
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
     await waitFor(() => expect(field.value).toBe("@legion-planner"));
   } finally {
     window.removeEventListener("keydown", watch);
@@ -1247,13 +1245,11 @@ test("the Enter that confirms an input method's word in an option's label adds n
     const before = labels().length;
     const first = labels()[0];
     if (first === undefined) throw new Error("the ask builder drew no option label");
-    // Keys user-event cannot mark as an input method's.
-    expect(fireEvent.keyDown(first, { isComposing: true, key: "Enter" })).toBe(true);
-    expect(fireEvent.keyDown(first, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
-    expect(labels()).toHaveLength(before);
-
-    // The plain Enter goes the same way as the two above, so only the composition mark differs.
-    expect(fireEvent.keyDown(first, { key: "Enter" })).toBe(false);
+    expect(
+      pressAsInputMethod(first, "Enter", {
+        beforePlain: () => expect(labels()).toHaveLength(before),
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
     expect(labels()).toHaveLength(before + 1);
   } finally {
     view.unmount();

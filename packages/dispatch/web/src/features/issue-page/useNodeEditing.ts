@@ -300,9 +300,7 @@ export function useNodeEditing({
         take(editor);
       },
       none: () => {
-        letGo.current?.();
-        letGo.current = undefined;
-        editorView.current = undefined;
+        take(undefined);
         hold.current = "none";
         holdChanged.current?.();
       },

@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the Enter row below reads
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { NameVersionDialog } from "./NameVersionDialog";
 
@@ -109,13 +109,9 @@ test("the Enter that confirms an input method's word saves no version, and a pla
     const input = screen.getByLabelText("What changed?");
     await user.click(input);
     await user.paste("Tightened the intro");
-    // user-event cannot mark a key as an input method's, so the two such Enters are fired.
-    expect(fireEvent.keyDown(input, { isComposing: true, key: "Enter" })).toBe(true);
-    expect(fireEvent.keyDown(input, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
-    expect(saved).toEqual([]);
-
-    // The plain Enter goes the same way as the two above, so only the composition mark differs.
-    expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
+    expect(
+      pressAsInputMethod(input, "Enter", { beforePlain: () => expect(saved).toEqual([]) })
+    ).toEqual({ composing: true, plain: false, safari: true });
     expect(saved).toEqual(["Tightened the intro"]);
   } finally {
     view.unmount();

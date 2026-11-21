@@ -6,14 +6,14 @@ import {
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the composition row sends
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
 import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
@@ -562,13 +562,11 @@ test("the Enter that confirms an input method's word opens no row, and a plain E
     expect(input).toHaveAttribute("aria-activedescendant", first.id);
     const route = screen.getByTestId("current-route").textContent;
 
-    // Keys user-event cannot mark as an input method's, read by whether the box took them.
-    expect(fireEvent.keyDown(input, { isComposing: true, key: "Enter" })).toBe(true);
-    expect(fireEvent.keyDown(input, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
-    expect(screen.getByTestId("current-route").textContent).toBe(route);
-
-    // The plain Enter goes the same way as the two above, so only the composition mark differs.
-    expect(fireEvent.keyDown(input, { key: "Enter" })).toBe(false);
+    expect(
+      pressAsInputMethod(input, "Enter", {
+        beforePlain: () => expect(screen.getByTestId("current-route").textContent).toBe(route),
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
     expect(screen.getByTestId("current-route").textContent).toBe(
       "/issues/LEGION-2/spec?q=astrolabe"
     );

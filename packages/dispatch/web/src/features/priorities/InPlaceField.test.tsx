@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the Enter row below reads
-import { fireEvent, render, within } from "@testing-library/react";
+import { render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
+
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { InPlaceField } from "./InPlaceField";
 
 /**
@@ -70,14 +71,14 @@ test("the Enter that confirms an input method's word saves nothing and keeps the
     const field = within(view.container).getByRole("textbox", { name: "Title" });
     await user.clear(field);
     await user.type(field, "New name");
-    // user-event cannot mark a key as an input method's, so the two such Enters are fired.
-    expect(fireEvent.keyDown(field, { isComposing: true, key: "Enter" })).toBe(true);
-    expect(fireEvent.keyDown(field, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
-    expect(saved).toEqual([]);
-    expect(document.activeElement).toBe(field);
-
-    // The plain Enter goes the same way as the two above, so only the composition mark differs.
-    expect(fireEvent.keyDown(field, { key: "Enter" })).toBe(false);
+    expect(
+      pressAsInputMethod(field, "Enter", {
+        beforePlain: () => {
+          expect(saved).toEqual([]);
+          expect(document.activeElement).toBe(field);
+        },
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
     expect(saved.at(0)).toBe("New name");
     expect(document.activeElement).not.toBe(field);
   } finally {

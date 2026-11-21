@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the author row below reads
-import { fireEvent, render, within } from "@testing-library/react";
+import { render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { SearchFilterBar } from "./SearchFilterBar";
 import type { SearchBarFilters } from "./search-filters";
 
@@ -20,15 +20,9 @@ test("the Enter that confirms an input method's word in the author box takes no 
     const author = within(view.container).getByRole("searchbox", { name: "Author" });
     await user.click(author);
     await user.paste("alice");
-    // user-event cannot mark a key as an input method's, so the two such Enters are fired.
-    expect(fireEvent.keyDown(author, { isComposing: true, key: "Enter" })).toBe(true);
-    expect(fireEvent.keyDown(author, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(
-      true
-    );
-    expect(narrowed).toEqual([]);
-
-    // The plain Enter goes the same way as the two above, so only the composition mark differs.
-    expect(fireEvent.keyDown(author, { key: "Enter" })).toBe(false);
+    expect(
+      pressAsInputMethod(author, "Enter", { beforePlain: () => expect(narrowed).toEqual([]) })
+    ).toEqual({ composing: true, plain: false, safari: true });
     expect(narrowed).toEqual([{ author: "alice" }]);
   } finally {
     view.unmount();

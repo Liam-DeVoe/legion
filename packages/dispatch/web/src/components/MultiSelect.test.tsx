@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: the two outside-press sites below are a pointerdown with no release, and the Enter row's keys are marked as an input method's (`isComposing`, keyCode 229); user-event has a form for neither.
+// biome-ignore lint/style/noRestrictedImports: the two outside-press sites below are a pointerdown with no release, which user-event has no form for.
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
+import { pressAsInputMethod } from "../__tests__/input-method-keys";
 import { MultiSelect } from "./MultiSelect";
 
 function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
@@ -128,15 +129,11 @@ test("the Enter that confirms an input method's word in the search toggles no ro
       "aria-activedescendant",
       screen.getByRole("option", { name: "api" }).id
     );
-    // user-event cannot mark a key as an input method's, so the two such Enters are fired.
-    expect(fireEvent.keyDown(search, { isComposing: true, key: "Enter" })).toBe(true);
-    expect(fireEvent.keyDown(search, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(
-      true
-    );
-    expect(screen.getByTestId("selected").textContent).toBe("");
-
-    // The plain Enter goes the same way as the two above, so only the composition mark differs.
-    expect(fireEvent.keyDown(search, { key: "Enter" })).toBe(false);
+    expect(
+      pressAsInputMethod(search, "Enter", {
+        beforePlain: () => expect(screen.getByTestId("selected").textContent).toBe(""),
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
     expect(screen.getByTestId("selected").textContent).toBe("api");
   } finally {
     view.unmount();

@@ -7,6 +7,7 @@ import { Link, MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -470,45 +471,16 @@ test("an Escape that ends an IME composition, marked or sent with keyCode 229, l
       jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
     });
     expect(screen.getByRole("tooltip")).toBeTruthy();
-    // user-event has no form for a key that ends a composition, so the event is made by hand.
-    act(() => {
-      document.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          bubbles: true,
-          cancelable: true,
-          isComposing: true,
-          key: "Escape",
-        })
-      );
-    });
-    expect(
-      screen.queryByRole("tooltip"),
-      "the Escape that ended a composition closed the card"
-    ).toBeInTheDocument();
-    expect(behind.length, "the Escape that ended a composition stopped short of the page").toBe(1);
-    act(() => {
-      document.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          bubbles: true,
-          cancelable: true,
-          isComposing: false,
-          key: "Escape",
-          keyCode: 229,
-        })
-      );
-    });
-    expect(
-      screen.queryByRole("tooltip"),
-      "Safari's Escape that ended a composition closed the card"
-    ).toBeInTheDocument();
-    expect(
-      behind.length,
-      "Safari's Escape that ended a composition stopped short of the page"
-    ).toBe(2);
-    act(() => {
-      document.dispatchEvent(
-        new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" })
-      );
+    pressAsInputMethod(document, "Escape", {
+      beforePlain: () => {
+        expect(
+          screen.queryByRole("tooltip"),
+          "an Escape that ended a composition closed the card"
+        ).toBeInTheDocument();
+        expect(behind.length, "an Escape that ended a composition stopped short of the page").toBe(
+          2
+        );
+      },
     });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     expect(behind.length, "the card's Escape reached the page").toBe(2);

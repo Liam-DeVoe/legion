@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, and for an Enter and an Escape marked as an input method's (`isComposing`, keyCode 229), neither of which user-event has a form for
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -10,6 +10,7 @@ import {
   holdNotifications,
   recordCommits,
 } from "../../__tests__/commits";
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -482,13 +483,9 @@ test("RepoControl restores nothing on an input method's Escape, and restores on 
   try {
     await user.click(box());
     await user.paste("-typo");
-    // Keys user-event cannot mark as an input method's, so the two such Escapes are fired.
-    fireEvent.keyDown(box(), { isComposing: true, key: "Escape" });
-    fireEvent.keyDown(box(), { isComposing: false, key: "Escape", keyCode: 229 });
-    expect(box().value).toBe("acme/gadgets-typo");
-
-    // The plain Escape goes the same way as the two above, so only the composition mark differs.
-    fireEvent.keyDown(box(), { key: "Escape" });
+    pressAsInputMethod(box(), "Escape", {
+      beforePlain: () => expect(box().value).toBe("acme/gadgets-typo"),
+    });
     expect(box().value).toBe("acme/gadgets");
   } finally {
     unmount();
@@ -517,16 +514,14 @@ test("inside NoTooltips an input method's Escape leaves the repository box open,
     // The focus in the box starts the mappings' read, which lands before what follows.
     await settleReads();
     await user.keyboard("acme/web");
-    // Keys user-event cannot mark as an input method's, read by whether the place took them.
-    expect(fireEvent.keyDown(typed, { isComposing: true, key: "Escape" })).toBe(true);
-    expect(fireEvent.keyDown(typed, { isComposing: false, key: "Escape", keyCode: 229 })).toBe(
-      true
-    );
-    expect(field()).toBe(typed);
-    expect(typed.value).toBe("acme/web");
-
-    // The plain Escape goes the same way as the two above, so only the composition mark differs.
-    expect(fireEvent.keyDown(typed, { key: "Escape" })).toBe(false);
+    expect(
+      pressAsInputMethod(typed, "Escape", {
+        beforePlain: () => {
+          expect(field()).toBe(typed);
+          expect(typed.value).toBe("acme/web");
+        },
+      })
+    ).toEqual({ composing: true, plain: false, safari: true });
     expect(field()).toBeNull();
   } finally {
     undraw(view);
@@ -721,17 +716,15 @@ test("RepoControl writes nothing on the Enter that confirms an input method's wo
   try {
     await user.click(box());
     await user.paste("acme/gadgets");
-    // Keys user-event cannot mark as an input method's, read by whether the box took them.
-    expect(fireEvent.keyDown(box(), { isComposing: true, key: "Enter" })).toBe(true);
-    expect(fireEvent.keyDown(box(), { isComposing: false, key: "Enter", keyCode: 229 })).toBe(true);
-    await act(async () => {});
-    expect(patchIssue).not.toHaveBeenCalled();
-
-    // The plain Enter goes the same way as the two above, so only the composition mark differs.
-    expect(fireEvent.keyDown(box(), { key: "Enter" })).toBe(false);
+    expect(pressAsInputMethod(box(), "Enter")).toEqual({
+      composing: true,
+      plain: false,
+      safari: true,
+    });
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
     );
+    expect(patchIssue).toHaveBeenCalledTimes(1);
   } finally {
     unmount();
     patchIssue.mockRestore();

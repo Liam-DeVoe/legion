@@ -1,8 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: user-event cannot mark a key as an input method's (`isComposing`, keyCode 229), which the filter row below reads
-import { fireEvent, render, within } from "@testing-library/react";
+import { render, within } from "@testing-library/react";
 
+import { pressAsInputMethod } from "../../__tests__/input-method-keys";
 import { api } from "../../api/client";
 import type { IssueSummary } from "../../api/types";
 import { issue } from "../margin/margin-fixture";
@@ -57,15 +57,9 @@ test("the Enter that confirms an input method's word in the filter picks no refe
     const scope = within(view.container);
     await scope.findByRole("button", { name: "CORE-2: Related work" });
     const filter = scope.getByRole("textbox", { name: "Filter issues" });
-    // user-event cannot mark a key as an input method's, so the two such Enters are fired.
-    expect(fireEvent.keyDown(filter, { isComposing: true, key: "Enter" })).toBe(true);
-    expect(fireEvent.keyDown(filter, { isComposing: false, key: "Enter", keyCode: 229 })).toBe(
-      true
-    );
-    expect(picked).toEqual([]);
-
-    // The plain Enter goes the same way as the two above, so only the composition mark differs.
-    expect(fireEvent.keyDown(filter, { key: "Enter" })).toBe(false);
+    expect(
+      pressAsInputMethod(filter, "Enter", { beforePlain: () => expect(picked).toEqual([]) })
+    ).toEqual({ composing: true, plain: false, safari: true });
     expect(picked).toEqual(["dispatch://CORE-2"]);
   } finally {
     view.unmount();

@@ -12,6 +12,7 @@ import { useNavigate } from "react-router-dom";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
+import { inputMethodKey } from "../../hooks/inputMethodKey";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
 import { buildIssuePath } from "../refs/routes";
@@ -1476,7 +1477,10 @@ export function useReleaseFocus({
   // The tree the focus left while a press was under way, whose row that keeps until the task
   // after the press ends, and the latest `onLeave`, which that task calls, or an Escape anywhere
   // on the page before it. The Escape is read in the capture phase, so a handler that answers
-  // the key and stops it - a menu closing, a dialog closing - still lets the row go.
+  // the key and stops it - a menu closing, a dialog closing - still lets the row go. An input
+  // method's Escape (`inputMethodKey`), typed into the field the press went down on, closes no
+  // layer and lets nothing go at once: it ends the press as any key does (`trackPress`), and the
+  // row goes as that press ends.
   const left = useRef<HTMLElement | null>(null);
   const leave = useRef(onLeave);
   leave.current = onLeave;
@@ -1497,7 +1501,7 @@ export function useReleaseFocus({
       if (!tree.contains(document.activeElement)) leave.current();
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") release();
+      if (event.key === "Escape" && !inputMethodKey(event)) release();
     };
     const listening = new AbortController();
     window.addEventListener("keydown", closeOnEscape, { capture: true, signal: listening.signal });
