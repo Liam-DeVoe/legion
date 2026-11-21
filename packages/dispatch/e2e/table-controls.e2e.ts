@@ -6838,3 +6838,85 @@ test("a group card deleted on another device while it holds the focus leaves the
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// SLOW(>=2s): a save whose re-read is held offline until the 30 s request deadline ends its hold.
+// INFRA-3135, round 22 (the tester's, measured in builds Jobs infra-3135-p1-h and -p1-b at
+// da0804df and a1c78223): at 1440 px the reader presses Enter on Save delivery settings, the
+// save lands, and the browser is offline before the page reads its answer, so the re-read that
+// draws the stored record is one TanStack pauses. Save is disabled from the press, so the focus
+// falls to the body. At da0804df the hold ends at the request deadline, 30 s after the save's
+// answer, but the page's rescue hands the focus on at 30.03 s, before Save is enabled again, to
+// the Preview section's New issue page checkbox, so Save gets nothing back and the reader's next
+// Space toggles that setting. At a1c78223 the rescue moves the focus to the same checkbox at
+// 30.07 s, with Save still held after 45 s. The architect's rulings of 2026-11-20 20:3xZ
+// (open-items.md, "Review round 3"): the form keeps its identity through a save, so Save keeps
+// the reader's focus, and every hold ends at a timer of its own while the browser is offline
+// too. No engine tag: the landing is decided by the hold's timer and the rescue's, both in the
+// page's own code, so another engine would repeat what Chromium shows.
+test("Save delivery settings keeps the keyboard focus through a save whose re-read the browser cannot send", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await seedDeliveryFixture();
+  // The save proves the GitHub App can read the deploy repository; the fake answers it.
+  await seedFakeGithub({ "acme/widgets": { contents: "read", installation_id: 301 } });
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.goto("/settings");
+  const save = page.getByRole("button", { name: "Save delivery settings" });
+  await expect(save).toBeEnabled();
+  await page.getByLabel("Deploy workflow").fill(".github/workflows/deploy-two.yml");
+  const context = page.context();
+  // The save reaches Dispatch and lands. The browser is offline before the page has its answer,
+  // so the re-read the answer starts is one the browser cannot send.
+  await page.route("**/api/v1/settings/delivery", async (route) => {
+    if (route.request().method() !== "PUT") return route.fallback();
+    const response = await route.fetch();
+    await context.setOffline(true);
+    await page.waitForFunction(() => !navigator.onLine);
+    await route.fulfill({ response });
+  });
+  try {
+    await save.focus();
+    // A log, not one instant's read: every element the focus enters after the press.
+    const entered = await save.evaluateHandle((button) => {
+      const log: string[] = [];
+      document.addEventListener(
+        "focusin",
+        (event) => {
+          const target = event.target;
+          if (target === button) {
+            log.push("Save");
+            return;
+          }
+          if (!(target instanceof HTMLElement)) return;
+          const label = target instanceof HTMLInputElement ? target.labels?.[0]?.textContent : null;
+          const named = target.getAttribute("aria-label") || label || target.textContent || "";
+          log.push(`${target.tagName.toLowerCase()} "${named.trim().slice(0, 40)}"`);
+        },
+        true
+      );
+      return log;
+    });
+    await page.keyboard.press("Enter");
+    // The hold's own contract is the request deadline, 30 s from the save's answer
+    // (REQUEST_DEADLINE_MS, web/src/api/client.ts); 45 s holds it with room to spare.
+    await expect(save).toBeEnabled({ timeout: 45_000 });
+    // The page's rescue runs a frame and a task after Save comes back, so it is done by now.
+    await nextFrames(page);
+    await nextFrames(page);
+    const wrong: string[] = [];
+    // One read is the answer: Save is enabled again, and nothing else moves the focus now.
+    const onSave = await save.evaluate((button) => button === document.activeElement);
+    // Read after the same hand-offs as the read above, so where the focus is is settled.
+    const holder = await focusHolder(page);
+    if (!onSave) wrong.push(`1440 px, offline re-read: the focus is on ${holder.name}, not Save`);
+    const others = (await entered.jsonValue()).filter((name) => name !== "Save");
+    if (others.length > 0)
+      wrong.push(
+        `1440 px, offline re-read: after the press the focus entered ${others.join(", ")}`
+      );
+    expect(wrong, wrong.join("; ")).toEqual([]);
+  } finally {
+    await context.setOffline(false);
+  }
+});
