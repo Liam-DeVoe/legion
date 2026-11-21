@@ -430,7 +430,7 @@ type Claims struct {
 	// and commit, its event, its run and attempt, its runner and the check run of its job, as the
 	// run's own GitHub token named them. It is set exactly when Scope is ProjectScopeResults, and
 	// nil for every other decision. The provider writes it onto the stored session and an
-	// introspection answers it (oauth.ClaimCI), so a resource server holds the token's writes to
+	// introspection answers it (oauthwire.ClaimCI), so a resource server holds the token's writes to
 	// that run's commit and job.
 	CI *oauthwire.CIRun
 }

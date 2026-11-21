@@ -2,10 +2,8 @@ package requests
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
-	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
@@ -79,15 +77,12 @@ func (m *Machine) resultValues(ctx context.Context, id string) (map[string]Airlo
 }
 
 // checkRunOf is the check run of the job a result grant was made for, read from the run the grant
-// carries under oauth.ClaimCI through the one declaration the exchange wrote it with
-// (oauthwire.CIRun), and "" for a grant whose run does not read as one.
+// carries under oauthwire.ClaimCI by the one decoder introspection reads a token's run with
+// (oauthwire.CIRunOf), and "" for a grant whose run does not read as one: the connection's lines
+// then name no check run, and nothing else of the grant changes.
 func checkRunOf(grant oauthstore.ResultGrant) string {
-	raw, err := json.Marshal(grant.Extra[oauth.ClaimCI])
-	if err != nil {
-		return ""
-	}
-	var run oauthwire.CIRun
-	if json.Unmarshal(raw, &run) != nil {
+	run, err := oauthwire.CIRunOf(grant.Extra[oauthwire.ClaimCI])
+	if err != nil || run == nil {
 		return ""
 	}
 	return run.CheckRunID

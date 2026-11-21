@@ -212,14 +212,15 @@ func TestResultGrantMasksThePlaceholderInAGitHubJob(t *testing.T) {
 }
 
 // TestABrokerRefusalRunsNothing: the broker's refusal of the trade is printed, the command never
-// runs, and result-grant exits 1.
+// runs, and result-grant exits 1. The refusal quotes the run's token it was sent, as a broker's
+// error may, and the line printed holds [redacted] in its place and never the token.
 func TestABrokerRefusalRunsNothing(t *testing.T) {
-	broker := startResultBroker(t, http.StatusBadRequest, map[string]any{"error": "invalid_request", "error_description": "no result entry lists this run"})
+	broker := startResultBroker(t, http.StatusBadRequest, map[string]any{"error": "invalid_request", "error_description": "no result entry lists the run of subject token the-runs-oidc-token"})
 	stdout, stderr, exit := runResultGrant(t, broker)
 	if exit != 1 || strings.Contains(stdout, "PATH=") || !strings.Contains(stderr, "invalid_request") {
 		t.Fatalf("result-grant refused by the broker = exit %d, stdout %q, stderr %q; want exit 1, nothing run and the refusal printed", exit, stdout, stderr)
 	}
-	if strings.Contains(stderr, "the-runs-oidc-token") {
-		t.Fatalf("the refusal printed the run's token: %s", stderr)
+	if strings.Contains(stderr, "the-runs-oidc-token") || !strings.Contains(stderr, "subject token [redacted]") {
+		t.Fatalf("the refusal printed = %q; want the run's token as [redacted], and never the token", stderr)
 	}
 }
