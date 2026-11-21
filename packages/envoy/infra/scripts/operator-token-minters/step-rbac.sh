@@ -77,6 +77,11 @@ else
   # every binding of system:masters but the bootstrap one.
   groups_verdict "$step" "${GROUPS_CONFIG["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-unknown:the cluster list gave no authenticatorGroupsConfig}"
   settings_verdict "$step" "${CLUSTER_SETTINGS["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-}"
+  # GKE Standard runs a privileged or hostPath pod, which Autopilot refuses: such a pod on the
+  # operator's node reads the kubelet's credentials and every ServiceAccount token on the node, the
+  # operator's included, by a path no review here sees.
+  [ "${AUTOPILOT["$PROJECT/$OPERATOR_LOCATION/$CLUSTER"]:-}" = true ] ||
+    unknown "$step" "the cluster is GKE Standard, not Autopilot, so a privileged or hostPath pod on the operator's node can read the kubelet's credentials and the operator's ServiceAccount token there, a node escape no RBAC review here sees"
   masters_bindings "$step" "" "cluster:$CLUSTER"
   # Name-limited rights, which a review that names nothing never finds: impersonate each bound group
   # and user by name, bind and escalate every binding's role and patch and update every binding by

@@ -156,16 +156,22 @@
 #                     fleet memberships list`, which drops the answer's `unreachable` locations: a
 #                     listing that could not reach a location reads complete there. A refused
 #                     listing, one with an unreachable location, and one that lists no membership
-#                     (which cannot be told from one that saw nothing) are UNKNOWN. Each fleet scope
-#                     (`gcloud container fleet scopes list`) is UNKNOWN too: its namespaces and RBAC
+#                     (which cannot be told from one that saw nothing) are UNKNOWN, unless --fleet
+#                     none says the pool project has no fleet: then an empty listing passes and each
+#                     membership listed is a finding naming it. Each fleet scope (the API's
+#                     projects/<pool>/locations/-/scopes, every page; `gcloud container fleet scopes
+#                     list` asks locations/global alone) is UNKNOWN too: its namespaces and RBAC
 #                     role bindings reach every member cluster bound to it, the operator's namespace
 #                     and member included, and this check does not analyse them; a refused listing
 #                     is UNKNOWN. A member that is a GKE cluster is read
 #                     through `gcloud container clusters get-credentials` in its own project, any
 #                     other through `gcloud container fleet memberships get-credentials` (the
-#                     Connect gateway); the operator's cluster, and a cluster the project step read,
-#                     are not read twice. GKE authorizes IAM beside RBAC, so for each GKE member in
-#                     a project other than --project, Policy Analyzer's holders on that project of
+#                     Connect gateway); such a member is UNKNOWN besides, since its own cloud's
+#                     authorizers and token issuer may grant beside the RBAC read here, unless
+#                     --rbac-only-member names it. The operator's cluster, and a cluster the project
+#                     step read, are not read twice. GKE authorizes IAM beside RBAC, so for each GKE
+#                     member in a project other than --project, Policy Analyzer's holders on that
+#                     project of
 #                     each guard right's container.* permission (container.namespaces.create,
 #                     serviceAccounts.create and pods.create; clusters.impersonate, clusterRoles.bind
 #                     and escalate, clusterRoleBindings.create and update, roles.bind and escalate,
@@ -246,7 +252,10 @@
 # review sees who either lets in: on each GKE cluster of the pool, read from the cluster list
 # (legacyAbac, identityServiceConfig) or `gcloud container clusters describe`, either one on is
 # UNKNOWN on that cluster's step, and so is a describe that was refused. container.clusters.update,
-# by which a holder turns legacy ABAC on, is asked through IAM beside the rights' permissions.
+# by which a holder turns legacy ABAC on, is asked through IAM beside the rights' permissions. The
+# operator's cluster must be Autopilot (autopilot.enabled in the cluster list): GKE Standard runs a
+# privileged or hostPath pod, which on the operator's node reads the kubelet's credentials and the
+# operator's ServiceAccount token, a node escape no review sees, so Standard is UNKNOWN.
 #
 # In every IAM step a `user:` member is a person and allowed; a group the analysis expands is judged
 # by its members, and one it does not expand is a finding; Google's own service agents
@@ -336,6 +345,12 @@ usage: operator-token-minters.sh [flags]
   --pool-project ID          the project whose workload pool (ID.svc.id.goog) the operator's and
                              the broker's ServiceAccounts are in, and whose fleet's member clusters
                              share it (default --project)
+  --fleet none               the pool project has no fleet: an empty membership listing passes, and
+                             each membership listed is a finding (without it, an empty listing is
+                             UNKNOWN, since it cannot be told from one that saw nothing)
+  --rbac-only-member ID      a member of the pool project's fleet that is no GKE cluster and whose
+                             cloud grants nothing beside its RBAC; repeatable (without it, such a
+                             member is UNKNOWN)
   --namespace NS             the operator's namespace (default envoy-operator)
   --service-account NAME     the operator's Kubernetes ServiceAccount (default envoy-operator)
   --guarded NS/NAME          one more namespace and ServiceAccount the pool's Workload Identity binds
@@ -380,8 +395,8 @@ for ((arg = 1; arg <= $#; arg++)); do
   esac
 done
 PROJECT="" CLUSTER="" LOCATION="" POOL_PROJECT="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
-SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT=""
-AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=()
+SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT="" FLEET=""
+AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=() RBAC_ONLY_MEMBERS=()
 while [ "$#" -gt 0 ]; do
   flag="$1"
   shift
@@ -392,7 +407,7 @@ while [ "$#" -gt 0 ]; do
   case "$flag" in
     --project | --cluster | --location | --pool-project | --namespace | --service-account | --gsa | --agent-namespace | --broker-account | \
       --broker-workload | --sql-instance | --db-secret | --broker-state | --signing-secret | --secret | \
-      --rbac-render | --iam-preview | --analysis-scope | --credentials-arg | --report | --guarded)
+      --rbac-render | --iam-preview | --analysis-scope | --credentials-arg | --report | --guarded | --fleet | --rbac-only-member)
       [ "$#" -gt 0 ] || usage_error "$flag needs a value"
       value="$1"
       shift
@@ -421,9 +436,12 @@ while [ "$#" -gt 0 ]; do
     --credentials-arg) CREDENTIALS_ARGS+=("$value") ;;
     --report) REPORT="$value" ;;
     --guarded) GUARDED_FLAGS+=("$value") ;;
+    --fleet) FLEET="$value" ;;
+    --rbac-only-member) RBAC_ONLY_MEMBERS+=("$value") ;;
   esac
 done
 [ -n "$POOL_PROJECT" ] || POOL_PROJECT="$PROJECT"
+case "$FLEET" in "" | none) ;; *) usage_error "--fleet takes none, not $FLEET" ;; esac
 # The guarded pairs: the operator's first, then the broker's (--broker-workload), then each
 # --guarded, each once.
 GUARDED=("$NAMESPACE/$KSA")

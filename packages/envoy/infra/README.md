@@ -4156,10 +4156,13 @@ not a person (a person is an email outside `gserviceaccount.com`), and anyone un
 reports every binding of `system:masters` but the bootstrap one. Any other Group is no finding while
 GKE's Google Groups for RBAC is off, and reads UNKNOWN where it is on or on a fleet member that is no
 GKE cluster, as an email-shaped User bound there does; a cluster with legacy ABAC or the identity
-service for GKE on, a fleet scope and an empty fleet read UNKNOWN too. It reads code first
-(`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming
-each principal and right, or 2 naming each step it could not read, a run that stopped mid-way
-included.
+service for GKE on, a fleet scope and an empty fleet read UNKNOWN too. A deployment whose pool
+project has no fleet passes `--fleet none`: an empty membership list then passes, and each
+membership listed is a finding. A fleet member that is no GKE cluster reads UNKNOWN, since its own
+cloud may grant beside its RBAC, unless `--rbac-only-member <membership>` says it does not. It
+reads code first (`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing
+found, 1 naming each principal and right, or 2 naming each step it could not read, a run that
+stopped mid-way included.
 `--report <file>` writes the same as JSON, and is deleted when a run starts, so a report is that
 run's or none. `scripts/operator-token-minters.test.sh` runs every plant and control against a fake
 `kubectl`, `gcloud`, `curl` and `agent-secrets`.

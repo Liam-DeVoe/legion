@@ -200,7 +200,7 @@ build_world() {
   mkdir -p "$world/clusters/operator-cluster" "$world/secrets"
   printf '%s\n' "$project" >"$world/project"
   printf '%s\n' "$number" >"$world/number"
-  jq -n '[{name: "operator-cluster", location: "us-central1", status: "RUNNING"}]' >"$world/clusters.json"
+  jq -n '[{name: "operator-cluster", location: "us-central1", status: "RUNNING", autopilot: {enabled: true}}]' >"$world/clusters.json"
   # The pool project's fleet, holding the operator's cluster alone.
   jq -n --arg p "$project" '{project: $p, unreachable: [],
     memberships: [{id: "operator-cluster", location: "global", gke: {project: $p, location: "us-central1", cluster: "operator-cluster"}}]}' \

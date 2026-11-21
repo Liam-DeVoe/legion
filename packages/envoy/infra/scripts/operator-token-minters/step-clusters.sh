@@ -14,8 +14,9 @@ CLUSTERS_LISTED=false CLUSTERS_COMPLETE=false OPERATOR_FOUND=false OPERATOR_LOCA
 # Workload Identity step reads, so its fleet part does not read one twice. GROUPS_CONFIG: the same
 # key's Google Groups for RBAC, `on:<security group>` or `off` (groups_verdict). CLUSTER_SETTINGS:
 # the same key's settings that authorize or authenticate outside RBAC and Google, `abac` and
-# `identity` joined by commas (settings_verdict).
-declare -A PROJECT_CLUSTERS=() GROUPS_CONFIG=() CLUSTER_SETTINGS=()
+# `identity` joined by commas (settings_verdict). AUTOPILOT: the same key's autopilot.enabled,
+# `true` or `false`, which the RBAC step judges for the operator's cluster.
+declare -A PROJECT_CLUSTERS=() GROUPS_CONFIG=() CLUSTER_SETTINGS=() AUTOPILOT=()
 # SETTINGS_JQ: a cluster's CLUSTER_SETTINGS, from its JSON as the cluster list or describe gives it.
 SETTINGS_JQ='([if .legacyAbac.enabled == true then "abac" else empty end,
   if .identityServiceConfig.enabled == true then "identity" else empty end] | join(","))'
@@ -34,13 +35,15 @@ elif [ ! -s "$WORK/clusters.tsv" ]; then
   unknown "$step" "the project lists no cluster, so the operator's cluster cannot be read"
 else
   CLUSTERS_LISTED=true
-  while IFS=$'\t' read -r name location groups settings; do
+  # Settings last: read splits on a run of tabs as one, so an empty field elsewhere would shift.
+  while IFS=$'\t' read -r name location groups autopilot settings; do
     PROJECT_CLUSTERS["$PROJECT/$location/$name"]=1
     GROUPS_CONFIG["$PROJECT/$location/$name"]="$groups"
+    AUTOPILOT["$PROJECT/$location/$name"]="$autopilot"
     CLUSTER_SETTINGS["$PROJECT/$location/$name"]="$settings"
   done < <(jq -r '.[] | [.name, .location,
       (if .authenticatorGroupsConfig.enabled == true then "on:" + (.authenticatorGroupsConfig.securityGroup // "") else "off" end),
-      '"$SETTINGS_JQ"'] | @tsv' "$WORK/clusters.json")
+      (.autopilot.enabled == true | tostring), '"$SETTINGS_JQ"'] | @tsv' "$WORK/clusters.json")
   clusters_text="$(awk -F'\t' '{ printf "%s%s (%s)", (NR > 1 ? ", " : ""), $1, $2 }' "$WORK/clusters.tsv")"
   same_name="$(awk -F'\t' -v c="$CLUSTER" '$1 == c { n++; l = l (n > 1 ? ", " : "") $2 } END { print n + 0 "\t" l }' "$WORK/clusters.tsv")"
   if [ -n "$LOCATION" ]; then

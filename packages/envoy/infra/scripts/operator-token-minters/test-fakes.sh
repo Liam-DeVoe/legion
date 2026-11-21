@@ -95,11 +95,6 @@ case "${words[*]}" in
       // error("no such cluster")' "$world/clusters.json" ||
       { echo "ERROR: (gcloud.container.clusters.describe) NOT_FOUND: cluster $cluster in ${flag[location]:-} of project ${flag[project]:-} not found" >&2; exit 1; }
     ;;
-  "container fleet scopes list")
-    # The fleet's scopes: the world's scopes.json, or none.
-    [ ! -e "$world/refuse-scopes" ] || refuse container.fleet.scopes.list "Permission 'gkehub.scopes.list' denied on 'projects/${flag[project]:-}/locations/global/scopes'"
-    if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi
-    ;;
   "container fleet memberships get-credentials "*)
     # A member of the fleet that is no GKE cluster, through the Connect gateway.
     id="${words[4]}"
@@ -331,8 +326,10 @@ EOF
 
 # --- Fake curl: the GKE Hub API's GET projects/<p>/locations/-/memberships, as v1 answers it
 # (ListMembershipsResponse: resources, nextPageToken, unreachable), one membership a page, the
-# unreachable locations on the first page alone. The bearer token must come in through the
-# configuration curl reads on stdin (-K -), never on the command line. ---
+# unreachable locations on the first page alone; and GET projects/<p>/locations/-/scopes
+# (ListScopesResponse: scopes, nextPageToken) from the world's scopes.json, one scope a page. The
+# bearer token must come in through the configuration curl reads on stdin (-K -), never on the
+# command line. ---
 fake curl <<'EOF'
 config="$(cat)"
 url="" token=""
@@ -354,12 +351,20 @@ done
 scheme=Bearer
 [[ "$config" == *"header = \"Authorization: $scheme example-access-token\""* ]] || { echo "fake curl: no bearer token on stdin" >&2; exit 2; }
 fleet_project="$(jq -r .project "$world/fleet.json")"
-if [ "$url" != "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ] || [ -e "$world/refuse-fleet" ]; then
-  project_of="${url#https://gkehub.googleapis.com/v1/projects/}"
-  printf '{"error": {"code": 403, "message": "Permission %s denied on %s", "status": "PERMISSION_DENIED"}}\n' \
-    "'gkehub.memberships.list'" "'projects/${project_of%%/*}/locations/-/memberships'"
+deny() {
+  printf '{"error": {"code": 403, "message": "Permission %s denied on %s", "status": "PERMISSION_DENIED"}}\n' "'$1'" "'$2'"
   echo "curl: (22) The requested URL returned error: 403" >&2
   exit 22
+}
+project_of="${url#https://gkehub.googleapis.com/v1/projects/}"
+if [ "$url" = "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/scopes" ]; then
+  [ ! -e "$world/refuse-scopes" ] || deny gkehub.scopes.list "projects/$fleet_project/locations/-/scopes"
+  { if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi; } |
+    jq --argjson at "${token:-0}" '. as $s | {scopes: [$s[$at] // empty]} + (if $at + 1 < ($s | length) then {nextPageToken: "\($at + 1)"} else {} end)'
+  exit 0
+fi
+if [ "$url" != "https://gkehub.googleapis.com/v1/projects/$fleet_project/locations/-/memberships" ] || [ -e "$world/refuse-fleet" ]; then
+  deny gkehub.memberships.list "projects/${project_of%%/*}/locations/-/memberships"
 fi
 jq --argjson at "${token:-0}" '
   . as $w

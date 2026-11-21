@@ -138,22 +138,34 @@ done 5<"$WORK/pool-clusters.tsv"
 # memberships list`: that command's list drops the answer's `unreachable` field, so a listing
 # that missed a location would read as complete.
 fleet_memberships() {
+  FLEET_ERROR=""
+  hub_list memberships gkehub.memberships.list "$WORK/fleet-pages.json" || { FLEET_ERROR="$HUB_ERROR"; return 1; }
+  if ! jq -r -s -L "$LIB" -f "$LIB/fleet.jq" "$WORK/fleet-pages.json" >"$WORK/fleet.rec" 2>"$WORK/fleet.err"; then
+    FLEET_ERROR="the GKE Hub API's answer holds no list of memberships: $(first_line "$WORK/fleet.err")"
+    return 1
+  fi
+}
+
+# hub_list COLLECTION PERMISSION PAGES: every page of the GKE Hub API's
+# projects/$POOL_PROJECT/locations/-/COLLECTION, each page's JSON a line of PAGES. Returns 1 with
+# HUB_ERROR, naming PERMISSION, when the listing was refused or a page is not JSON.
+hub_list() {
   local token page="" pages=0 status why
   local -a query
-  FLEET_ERROR=""
+  HUB_ERROR=""
   if ! have curl; then
-    FLEET_ERROR="curl is not on PATH"
+    HUB_ERROR="curl is not on PATH"
     return 1
   fi
   if ! token="$(gcloud auth print-access-token --quiet 2>"$WORK/token.err")" || [ -z "$token" ]; then
-    FLEET_ERROR="gcloud auth print-access-token gave no access token for the running identity: $(last_line "$WORK/token.err")"
+    HUB_ERROR="gcloud auth print-access-token gave no access token for the running identity: $(last_line "$WORK/token.err")"
     return 1
   fi
-  : >"$WORK/fleet-pages.json"
+  : >"$3"
   while :; do
     pages=$((pages + 1))
     if [ "$pages" -gt 1000 ]; then
-      FLEET_ERROR="the listing did not end within 1000 pages"
+      HUB_ERROR="the listing of projects/$POOL_PROJECT/locations/-/$1 did not end within 1000 pages"
       return 1
     fi
     query=(--data-urlencode pageSize=100)
@@ -162,40 +174,38 @@ fleet_memberships() {
     # The token goes in through curl's configuration on stdin, never on a command line.
     printf 'header = "Authorization: Bearer %s"\n' "$token" |
       curl -sS --fail-with-body --max-time 60 -G -K - "${query[@]}" \
-        "https://gkehub.googleapis.com/v1/projects/$POOL_PROJECT/locations/-/memberships" >"$WORK/fleet-page.json" 2>"$WORK/fleet.err" || status=$?
+        "https://gkehub.googleapis.com/v1/projects/$POOL_PROJECT/locations/-/$1" >"$WORK/hub-page.json" 2>"$WORK/hub.err" || status=$?
     if [ "$status" -ne 0 ]; then
-      why="$(jq -r '[.error.code, .error.status, .error.message] | map(select(. != null) | tostring) | join(" ")' "$WORK/fleet-page.json" 2>/dev/null |
+      why="$(jq -r '[.error.code, .error.status, .error.message] | map(select(. != null) | tostring) | join(" ")' "$WORK/hub-page.json" 2>/dev/null |
         sed -n '1{s/[[:cntrl:]]/ /g;p;}')" || true
-      [ -n "$why" ] || why="$(last_line "$WORK/fleet.err")"
-      FLEET_ERROR="the GKE Hub API refused the listing of projects/$POOL_PROJECT/locations/-/memberships (it needs gkehub.memberships.list there): $why"
+      [ -n "$why" ] || why="$(last_line "$WORK/hub.err")"
+      HUB_ERROR="the GKE Hub API refused the listing of projects/$POOL_PROJECT/locations/-/$1 (it needs $2 there): $why"
       return 1
     fi
-    if ! jq -c . "$WORK/fleet-page.json" >>"$WORK/fleet-pages.json" 2>"$WORK/fleet.err"; then
-      FLEET_ERROR="the GKE Hub API's answer is not JSON: $(first_line "$WORK/fleet.err")"
+    if ! jq -c . "$WORK/hub-page.json" >>"$3" 2>"$WORK/hub.err"; then
+      HUB_ERROR="the GKE Hub API's answer is not JSON: $(first_line "$WORK/hub.err")"
       return 1
     fi
-    page="$(jq -r '.nextPageToken // ""' "$WORK/fleet-page.json")"
+    page="$(jq -r '.nextPageToken // ""' "$WORK/hub-page.json")"
     [ -n "$page" ] || break
   done
-  if ! jq -r -s -L "$LIB" -f "$LIB/fleet.jq" "$WORK/fleet-pages.json" >"$WORK/fleet.rec" 2>"$WORK/fleet.err"; then
-    FLEET_ERROR="the GKE Hub API's answer holds no list of memberships: $(first_line "$WORK/fleet.err")"
-    return 1
-  fi
 }
 
-# fleet_scopes: the pool project's fleet scopes (`gcloud container fleet scopes list`). A scope's
-# namespaces and RBAC role bindings reach every member cluster bound to it, the operator's namespace
-# and Workload Identity member included, and this check does not analyse them: each scope is
-# UNKNOWN, and so is a refused listing. Sets SCOPES to how many it listed.
+# fleet_scopes: the pool project's fleet scopes, from the API's scopes.list on locations/-, every
+# page (`gcloud container fleet scopes list` lists only the permitted scopes at locations/global, so
+# a scope elsewhere would read as none). A scope's namespaces and RBAC role bindings reach every
+# member cluster bound to it, the operator's namespace and Workload Identity member included, and
+# this check does not analyse them: each scope is UNKNOWN, and so is a refused listing. Sets SCOPES
+# to how many it listed.
 fleet_scopes() {
   local scope
   SCOPES=0
-  if ! gcloud container fleet scopes list --project="$POOL_PROJECT" --format=json --quiet >"$WORK/scopes.json" 2>"$WORK/scopes.err"; then
-    unknown "$step" "gcloud container fleet scopes list --project $POOL_PROJECT was refused (it needs gkehub.scopes.list), so a scope whose namespaces and RBAC role bindings reach the members is not seen: $(first_line "$WORK/scopes.err")"
+  if ! hub_list scopes gkehub.scopes.list "$WORK/scope-pages.json"; then
+    unknown "$step" "$HUB_ERROR, so a scope whose namespaces and RBAC role bindings reach the members is not seen"
     return
   fi
-  if ! jq -r '.[] | .name' "$WORK/scopes.json" >"$WORK/scopes.list" 2>"$WORK/scopes.err"; then
-    unknown "$step" "gcloud container fleet scopes list --project $POOL_PROJECT answered no JSON list: $(first_line "$WORK/scopes.err")"
+  if ! jq -r '.scopes[]?.name' "$WORK/scope-pages.json" >"$WORK/scopes.list" 2>"$WORK/scopes.err"; then
+    unknown "$step" "the GKE Hub API's scopes answer holds no list of scopes: $(first_line "$WORK/scopes.err")"
     return
   fi
   while IFS= read -r scope; do
@@ -204,10 +214,20 @@ fleet_scopes() {
   done <"$WORK/scopes.list"
 }
 
+# rbac_only ID: whether --rbac-only-member names the membership ID.
+rbac_only() {
+  local named
+  for named in ${RBAC_ONLY_MEMBERS[@]+"${RBAC_ONLY_MEMBERS[@]}"}; do
+    [ "$named" != "$1" ] || return 0
+  done
+  return 1
+}
+
 # The pool project's fleet: every member cluster shares the workload pool, so a ServiceAccount
 # envoy-operator/envoy-operator there is the operator's member too. The operator's own cluster,
 # and a cluster the project's list held, are read above. A listing that holds no membership cannot
-# be told from one that saw nothing, so it is UNKNOWN; the fleet's scopes are read beside it.
+# be told from one that saw nothing, so it is UNKNOWN, unless --fleet none says the pool has no
+# fleet; with it, each membership listed is a finding. The fleet's scopes are read beside it.
 step="live: Workload Identity: the fleet of $pool_name"
 if [ -z "$POOL_PROJECT" ]; then
   unknown "$step" "no --project or --pool-project: the workload pool's project is not named"
@@ -225,6 +245,9 @@ else
         continue
       fi
       members=$((members + 1))
+      [ "$FLEET" != none ] ||
+        finding "membership:$POOL_PROJECT/$location/$id" "is registered to the fleet of project $POOL_PROJECT, though --fleet none says it has no member" \
+          "" "membership:$POOL_PROJECT/$location/$id" "" "the GKE Hub API's listing"
       if [ -n "$gke_cluster" ]; then
         # The operator's cluster is --cluster in the operator's location, never by name alone; a
         # member of that name in the project, while the operator's location is unknown, cannot be
@@ -263,6 +286,10 @@ else
         here=$((here + 1))
         label="$POOL_PROJECT/$location/$id"
         cstep="live: Workload Identity on fleet member $id"
+        # Its own cloud's authorizers and the membership's token issuer can grant beside RBAC, and
+        # this check reads its RBAC alone.
+        rbac_only "$id" ||
+          unknown "$cstep" "it is no GKE cluster, so its own cloud's authorizers and token issuer may grant beside the RBAC read here; --rbac-only-member $id says it has none"
         if ! kube_for_membership "$id" "$location"; then
           unknown "$cstep" "$KUBE_ERROR"
           continue
@@ -270,11 +297,15 @@ else
         read_other_cluster "$cstep" "membership:$label" " on fleet member $label" own
       fi
     done 6<"$WORK/fleet.rec"
-    [ "$members" -gt 0 ] ||
-      unknown "$step" "the GKE Hub API lists no membership in the fleet, so an answer that saw nothing cannot be told from a fleet that holds none"
+    [ "$members" -gt 0 ] || [ "$FLEET" = none ] ||
+      unknown "$step" "the GKE Hub API lists no membership in the fleet, so an answer that saw nothing cannot be told from a fleet that holds none (--fleet none says it has none)"
   fi
   fleet_scopes
   if [ "${#FINDINGS[@]}" -eq "$fleet_f" ] && [ "${#UNKNOWNS[@]}" -eq "$fleet_u" ]; then
-    pass "$step" "$members membership(s) listed, every location reached: $own the operator's cluster, $above read above as clusters of the project, $here read here, and the fleet holds no scope"
+    if [ "$members" -eq 0 ]; then
+      pass "$step" "the GKE Hub API lists no membership in the fleet, as --fleet none says, and the fleet holds no scope"
+    else
+      pass "$step" "$members membership(s) listed, every location reached: $own the operator's cluster, $above read above as clusters of the project, $here read here, and the fleet holds no scope"
+    fi
   fi
 fi
