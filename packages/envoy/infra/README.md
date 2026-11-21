@@ -706,7 +706,7 @@ resources each of those is, the sandbox and the public origin in the paragraph u
 | Private services access range and connection | Cloud SQL receives a private IP on the component's VPC. | Not built |
 | Autopilot cluster | Enables the Secret Manager add-on, Secret Sync with rotation (GKE 1.33 or later; a new Secret Manager version reaches a synced Kubernetes Secret whose SecretProviderClass reads `versions/latest` without an apply), and Workload Identity. | Built |
 | Cloud SQL instance, database, user and generated password | PostgreSQL 18 by default (`databaseVersion`), private IP only, automated backups and point-in-time recovery. | Not built |
-| Kubernetes namespace (not with `existingNamespace`), ServiceAccount `<hostname>`, Secrets, ConfigMap and SecretProviderClass | The app's and the listener's account, which Workload Identity lets mount the NATS seed; the generated application secrets (`<hostname>-dispatch`), the listener's generated bearer in a Secret of its own (`<hostname>-listener`, one key `ENVOY_API_TOKEN`), the front door's auth key (`<hostname>-tailnet-auth-key`, one key `TS_AUTHKEY`), the Serve configuration (ConfigMap `<hostname>-serve`, rendered from the component's own names and registered after the Tailscale Service), and the NATS seed mount (and, with `azureEmbedKeySecret`, a second SecretProviderClass, `<hostname>-azure-embed-key`, for the Azure embedder's key, and with `chatTokenSecret` a third, `<hostname>-chat-token`, for the answerer's bearer token). | Not built |
+| Kubernetes namespace (not with `existingNamespace`), ServiceAccounts `<hostname>` and `<hostname>-listener`, Secrets, ConfigMap and SecretProviderClass | The app's account, `<hostname>`, which Workload Identity lets mount the NATS seed and whose projected token the app presents to the listener, and the listener's own, `<hostname>-listener`, which Workload Identity lets mount the seed and which holds nothing else, so no listener pod carries the app's account; the generated application secrets (`<hostname>-dispatch`), the listener's generated bearer in a Secret of its own (`<hostname>-listener`, one key `ENVOY_API_TOKEN`), the front door's auth key (`<hostname>-tailnet-auth-key`, one key `TS_AUTHKEY`), the Serve configuration (ConfigMap `<hostname>-serve`, rendered from the component's own names and registered after the Tailscale Service), and the NATS seed mount (and, with `azureEmbedKeySecret`, a second SecretProviderClass, `<hostname>-azure-embed-key`, for the Azure embedder's key, and with `chatTokenSecret` a third, `<hostname>-chat-token`, for the answerer's bearer token). | Not built |
 | Tailscale Service `svc:<hostname>` | The name every reader reaches Dispatch at, which the component declares itself through the `tailscale` provider it is given: one port, `tcp:443`, no tags, and a comment naming `<hostname>.<tailnetDnsName>`, the tailnet name it serves. It requests no tags because the OAuth client that creates it may not be allowed to set any, and Tailscale refuses a Service whose requested tags that client may not set; the hosts' own `tags` are what auto-approve them as the Service's hosts, and a tailnet policy grants the Service by its name. It is a tailnet resource and no child of the cluster, so it is parented on the component alone, its `protect` follows `deletionProtection` rather than being fixed (a child's explicit `Protect` overrides what it would inherit, so a fixed one could be changed only by a resource transform on the component or a state edit), and it is registered after the Cloud SQL instance. The provider's create is an upsert, so one that already exists under that name is adopted, its comment and ports overwritten; the request carries no tags, and Tailscale's API reference does not say whether the live Service keeps its own ([Moving a stack that declares the Service itself](#moving-a-stack-that-declares-the-service-itself)). | Not built |
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
 | Secret `<hostname>-tailnet-tls` | The Tailscale Service's certificate, its key and the ACME account key (keys `tls.crt`, `tls.key` and `acme-account.key.pem`), which the front door's pods publish and seed from ([The front door](#the-front-door)). The component declares it with no data and ignores its contents, so a later preview never plans to undo what the pods wrote, and no pod template carries its checksum, so a renewed certificate rolls no pod. | Not built |
@@ -1623,17 +1623,22 @@ the first apply stops at the app's readiness wait, and a grant made then lets th
 finish. The component itself grants that
 principal `roles/secretmanager.secretAccessor` only on the NATS seed secret (and on the Azure key
 secret when `azureEmbedKeySecret` is set, and on the chat token's secret when `chatTokenSecret`
-is), and the app and the listener, which mount the seed,
-wait for that grant to be written, as the app waits for the Azure key's and the chat token's. IAM can take minutes to apply
+is), and grants the listener's own account, `<hostname>-listener`, the same role on the NATS seed
+secret alone (`<hostname>-listener-nats-seed-accessor`); the app and the listener, which mount the
+seed, each wait for their own account's grant to be written, as the app waits for the Azure key's
+and the chat token's. IAM can take minutes to apply
 a new binding (Google cites typically two, sometimes seven or more), and a pod restarts until it
-can mount. The app and the listener share that one Kubernetes service account, which holds no
-Role: no pod creates a Secret, since each front-door node keeps its tailnet state on its own pod's
-`emptyDir`, and the front door's pods run as `<hostname>-tailnet`, whose Role lets it write only
-the Secret `<hostname>-tailnet-tls`.
+can mount. Each pod runs as an account of its own: the app as `<hostname>`, the listener as
+`<hostname>-listener` and the front door as `<hostname>-tailnet`, so only the app's pods can
+project a token naming `<hostname>`, the one account the listener takes a send's role mark from.
+The app's and the listener's accounts hold no Role: no pod creates a Secret, since each front-door
+node keeps its tailnet state on its own pod's `emptyDir`, and the front door's account's Role lets
+it `get` and `patch` only the Secret `<hostname>-tailnet-tls`, so no account of the component may
+create a pod or a service-account token.
 
 The `serviceAccountIssuer` and `serviceAccountSubject` outputs are the issuer and subject of the
-app's and the listener's Kubernetes service-account tokens (the front door's pods run as an
-account the subject never names): the cluster's own issuer,
+app's Kubernetes service-account tokens (the listener's and the front door's pods run as accounts
+the subject never names): the cluster's own issuer,
 `https://container.googleapis.com/v1/projects/<project id>/locations/<location>/clusters/<cluster name>`,
 and `system:serviceaccount:<namespace>:<hostname>`. For the component's own cluster, `<location>`
 is `region` and `<cluster name>` is `hostname`. With `existingCluster` they are the location that
@@ -1641,7 +1646,7 @@ the lookup reports and the name that `existingCluster` gives. The keyless Azure 
 them, for the embedder and the answerer alike: the
 managed identity `azureClientId` names holds a federated identity credential whose issuer is
 `serviceAccountIssuer`, whose subject is `serviceAccountSubject` and whose audience is
-`api://AzureADTokenExchange` (or the `azureFederationAudience` set), which admits these pods'
+`api://AzureADTokenExchange` (or the `azureFederationAudience` set), which admits the app pods'
 projected tokens and no other, and the identity needs a role on the Azure AI Foundry resource that
 lets it call each deployment it is given, the embedding deployment's and the chat deployment's.
 The component writes nothing in Azure: the consumer's Azure program
@@ -1661,9 +1666,24 @@ alone.
 
 The app pod runs `envoy-dispatch` with the Cloud SQL Auth Proxy native sidecar, which listens only
 on `127.0.0.1:5432` with `--private-ip`. The listener pod runs `envoy-listener` alone, bound to
-`0.0.0.0:9020` rather than to loopback, so its API demands a bearer: the component generates one,
-keeps it in the Secret `<hostname>-listener`, and gives the same value to `envoy-dispatch` as
-`ENVOY_TOKEN`. The listener runs as machine `<hostname>`, so the hub's user for this deployment
+`0.0.0.0:9020` rather than to loopback, so its API demands a bearer. It verifies the app's own
+projected service-account token: `ENVOY_OIDC_ISSUER` is the cluster's issuer (the
+`serviceAccountIssuer` output), `ENVOY_OIDC_AUDIENCE` the listener's own URL,
+`http://<hostname>-listener.<namespace>.svc.cluster.local:9020`, and `ENVOY_OIDC_ACCOUNTS` and
+`ENVOY_DISPATCH_PRINCIPAL` both `system:serviceaccount:<namespace>:<hostname>`, so that branch
+admits the app's account alone, and a send's role mark (the role a message for a `role:` route is
+sent for) is taken from that account alone. The app pod mounts that token, minted by the kubelet
+for the listener's URL with `expirationSeconds: 3600` and rewritten before it expires, read-only at
+`/var/run/secrets/envoy-listener/token`, which `ENVOY_ACCOUNT_TOKEN_FILE` names and Dispatch reads
+at every listener call. The component also generates a shared bearer, keeps it in the Secret
+`<hostname>-listener`, and gives it to the listener as `ENVOY_API_TOKEN` and to `envoy-dispatch`
+as `ENVOY_TOKEN`, which Dispatch presents only on a call with no role mark that the listener refused
+`401` on the account token twice: a listener of the release before this one verifies no account
+token, and the app does not wait for the listener's rollout (in the SOCKS5 mode the listener waits
+for the front door, which the app must come back without), so while both roll a new app pod can
+reach an old listener pod, and such a call is made again on the shared token rather than refused. A
+send for a `role:` route is never made on it: one an old listener refuses fails its attempt, which
+the delivery records. The listener runs as machine `<hostname>`, so the hub's user for this deployment
 sets `dispatchMachineId` to the component's `hostname`. Both Envoy containers mount the NATS seed
 at `/var/run/secrets/envoy/nats-seed`; the seed remains outside Pulumi state. With
 `agentSecretsUrl` set, the `envoy-dispatch` container alone also mounts its projected
@@ -3694,8 +3714,9 @@ below 2 s moves it earlier). Measured on the hub's image (nats-server 2.15.1, na
 under an authorization timeout of 5 s, an answer after 3.5 s failed the client at 2.1 s. The
 TypeScript client the plugins use (nats.js 2.29.3) waits that PING out: on nats-server 2.15.1 it
 was admitted on answers at 1.0 s and 1.8 s under the default timeout and at 3.5 s under 5 s, while
-nats.go was admitted at 1.0 s and 1.8 s and failed at 3.5 s. So the 1.5 s budget is the Go
-client's. Without a callout the text is byte for byte what it was before callouts existed. With a
+nats.go was admitted at 1.0 s and 1.8 s and failed at 3.5 s. nats.go v1.55.0 still rejects an
+unexpected first protocol response during connection initialization (`nats.go:2942-3306`). So the
+1.5 s budget is the Go client's. Without a callout the text is byte for byte what it was before callouts existed. With a
 `noAuthUser`, `no_auth_user` follows the authorization block, naming that user's key.
 
 With a callout, the text then ends with three top-level lines, after the authorization block and
@@ -3725,8 +3746,8 @@ connection, because its process froze or its node lost its network. dispatch://I
 the auth service a liveness probe that restarts a replica whose process stops answering, which acts
 in seconds. A liveness probe does nothing when a replica's node loses its network: then only these
 lines act, in 40 to 80 s. The lines do not catch a replica whose request handler deadlocks while its
-process runs, since nats.go answers a PING from its read loop (nats.go v1.53.1 `processPing`, called
-at `parser.go:324`). Neither the ping nor the pod's readiness takes such a replica out of the queue
+process runs, since nats.go answers a PING from its read loop (nats.go v1.55.0 `processPing`,
+called at `nats.go:4278`, from `parser.go:324`). Neither the ping nor the pod's readiness takes such a replica out of the queue
 group: a queue subscriber leaves the group only when the service itself unsubscribes or closes its
 connection, so INFRA-840's service must do that when its handler stops answering.
 
@@ -3925,8 +3946,9 @@ credential-free session user holding `SessionPermissions`, are checked against r
 2.10 and 2.15.1 servers, the session user's refusal of the stream's stored-message get included,
 as are a
 session consumer the listener's user creates, pulls, acks, restarts and deletes, both of its role
-lane queue groups, and the session user's refusal of a consumer create; `AGENTS.md` in this
-directory says how.
+lane queue groups, and the session user's refusal of a consumer create, in
+`core/permissions_live_test.go` under the `natslive` tag; "Changing the module", below, gives the
+command that runs it.
 
 `ListenerHostPermissions(machineID)` is the grant of a listener's own NATS user, one no session
 shares: `ListenerPermissions(machineID)`, the session consumers' calls included, then a plain
@@ -3944,29 +3966,50 @@ a registration `consumer` and relays a send on the session's relay subject, with
 `EdgePermissions(machineID, projects)` is the grant of an edge listener's own NATS user: the
 listener that serves the sessions of an outside person's projects (`ENVOY_EDGE_PROJECTS`), which no
 session and no other listener shares. It is `ListenerPermissions(machineID)` with these changes and
-no other, and it refuses a project list that is not project keys, sorted, each once. In place of
-`notifications.>` it publishes this list and no other notification topic: `notifications.agent.>`
-(a send); `notifications.role.<KEY>.>` for each project (a role message in the form that names the
-project); `notifications.envoy.deliver.*` (a relay frame); `notifications.envoy.relayreply.>` (the
-relay receipts); `notifications.envoy.resume.>` (where a deleted session consumer stopped); and
+no other. It refuses a machine id that is not one subject token and a project list that is empty
+or not project keys, sorted, each once. In place of `notifications.>` it publishes this list and
+no other notification topic: `notifications.agent.>` (a send); `notifications.role.<KEY>.>` for
+each project (a role message in the form that names the project); `notifications.envoy.deliver.*`
+(a relay frame); `notifications.envoy.relayreply.>` (every edge machine's relay receipts, since the
+listener serving a session's relay socket answers on the family of the machine holding the
+session's consumer); `notifications.envoy.resume.>` (where a deleted session consumer stopped); and
 `notifications.envoy.exceptions.notifications.agent.>` and
 `notifications.envoy.exceptions.notifications.role.<KEY>.>` for each project (a failed delivery's
 report, and an unheld role's refusal). So a direct publish of the edge's reaches no Dispatch,
-GitHub, Slack, team or Legion event, no role message of another project or in the form that names
-none, nothing on the kept role lane `notifications.envoy.kept.>` and no other exception lane. It
-holds no `$JS.API.STREAM.CREATE` or `UPDATE` of `ENVOY_NOTIFICATIONS`: an edge listener reads the
-stream and its start ends, naming the stream, on a server that has none. It subscribes its own
-machine's inbox prefix `_INBOX_envoy_edge_<machine id>.>` in place of `_INBOX.>`, so one edge
-replica is delivered no other replica's replies, every session's relay subject
-`notifications.envoy.deliver.*` and the relay receipts `notifications.envoy.relayreply.>`, and no
-role lane: every connection of an edge listener names its inboxes under that prefix, and a shared
-listener forwards a role message held at the edge to the holder's agent subject. Its lists name no
-`agentstream.` subject.
+GitHub, Slack, team or Legion event, no other project's role lane and no role lane in the form
+that names no project, nothing on the kept role lane `notifications.envoy.kept.>` and no other
+exception lane. A message on a role lane of its own project that
+names a role of another project is the shared listeners' role lane to refuse, which it does once
+the edge mode of #4657 is in. It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
+`ENVOY_NOTIFICATIONS` or of any bucket's stream (`KV_<bucket>`), so it can change no stream's
+subjects, limits or republish. On the hub's image a republish to a `$JS.API.…` subject reaches
+that subject's subscribers and the JetStream API takes no action on it; the edge cannot set one
+anyway. An edge listener reads the stream and its start ends, naming the stream, on a server that has
+none, and it finds each bucket: one the server lacks, or holds at fewer copies than
+`ENVOY_NATS_REPLICAS`, ends the start naming the refused create or raise. It subscribes its own
+machine's inbox prefix
+`_INBOX_envoy_edge_<machine id>.>` in place of `_INBOX.>`, so one edge machine is delivered no
+other machine's replies, every session's relay subject `notifications.envoy.deliver.*`, its own
+machine's relay receipts `notifications.envoy.relayreply.<machine id>.>`, so no edge machine
+subscribes another machine's receipts, and no stream it reads captures them, and no role lane: every
+connection of an edge listener names its inboxes under that prefix, and a shared listener forwards
+a role message held at the edge to the holder's agent subject. Its lists name no `agentstream.`
+subject.
+
+The relay receipts, and the subscription to the relay subjects, are for the relay socket of #4658:
+no program at this head uses them. At this head the edge's session relay names a frame's receipt
+under its inbox prefix, which no session's grant publishes, so at this head alone no session
+answers an edge listener's relay frame over NATS. Since every edge machine publishes every
+machine's receipts, one edge machine can forge a receipt for another machine's frame. That adds
+nothing past the reach below: an edge machine can already update or delete any consumer.
 
 An edge listener holds itself to that list. It keeps no role message for a role's next holder and
 hands no kept lane over, so a publish to a role no session holds is answered 404 with its refusal's
 exception, and the shared listeners' sweeps, every five minutes, hand the kept lane of a role held
-at the edge to its holder. A delivery exception whose lane the list does not hold, such as the
+at the edge to its holder. A claim at the edge that takes a role from another session writes no
+takeover record and runs no takeover pass, and its session relay copies no role message to a kept
+lane: a frame of a role another session holds goes to the edge session as every frame does. A
+delivery exception whose lane the list does not hold, such as the
 report of a refused GitHub or Dispatch event a session follows, is not published: the message is
 acknowledged undelivered to that session and counted on
 `envoy_edge_exceptions_withheld_total{topic_prefix, reason}`.
@@ -3978,20 +4021,36 @@ What the lists do not hold back:
   permission can hold these calls to the edge's own consumers. The edge can create, update,
   delete, read and pull any consumer of the stream, every other listener's durable, Dispatch's
   and every session's consumer among them. By updating another listener's durable it can take
-  that listener's push deliveries.
+  that listener's push deliveries, and a consumer it creates on any filter reads any stored
+  message, another project's Dispatch event among them.
 - nats-server checks a push consumer's deliver subject against no permission, only that the
-  stream does not carry it. So through a consumer it creates, the edge can put any message it
-  stored, or any message of the stream, on any subject the stream does not carry: every
-  project's role lanes and their exception lanes, any reply inbox, and the agent stream subjects.
-  A deliver subject the stream carries (Dispatch, GitHub, Slack, team, Legion, the kept lane) is
-  refused as a cycle.
+  stream does not carry it, and delivers only where a client subscribes. A delivery is sent under
+  the message's own stream subject, not the deliver subject: each subscription matching the
+  deliver subject receives it as a message of the stream's subject. So through a consumer it
+  creates, the edge can hand any message it stored, or any message of the stream, to any
+  subscriber of any subject the stream does not carry: every project's role lanes and their
+  exception lanes, any reply inbox, and the agent stream subjects. A deliver subject the stream
+  carries is refused as a cycle: the agent subjects, Dispatch, GitHub, Slack, Legion, Ghostwispr,
+  WhatsApp and team topics, the exception lanes of the agent subjects and of team topics, the
+  kept lane and the resume lane.
+- A push consumer's delivery takes no JetStream API action: the API's import sees the stream
+  subject, not `$JS.API.`, so a delivery to `$JS.API.STREAM.DELETE`, `PURGE` or `UPDATE` of a
+  stream, or to the delete of a bucket's stream, leaves the stream as it was. A stream whose
+  subjects take the deliver subject - another stream of the account, a key-value bucket's stream
+  among them - stores the delivery under its stream subject, as a message of that stream and
+  never as a key, and counts it toward that stream's limits. That is the one write this route
+  has, and it needs some other client to subscribe the deliver subject.
 - nats-server 2.15.1 admits a subscription to `notifications.envoy.deliver.>` under the allow
   entry `notifications.envoy.deliver.*`, and delivers it a subject two tokens past the prefix. No
   Envoy program publishes such a subject: a relay subject names its session by one token.
 - Today's agent, relay and resume subjects name no project, so an edge listener can publish on
-  any session's, and a consumer on any filter reads any stored message.
+  any session's.
 - Its key-value calls write every record of the seven listener buckets: interests, roles,
-  sessions, known sessions, Legion agents, CI state and DPoP proofs.
+  sessions, known sessions, Legion agents, CI state and DPoP proofs. They include a consumer on
+  each bucket's stream, which does not carry the notification subjects, so such a consumer can
+  deliver a bucket's message onto the Dispatch, GitHub, Slack, Legion, team, kept and resume
+  subjects wherever a client subscribes them: the cycle refusal above holds only for the
+  notification stream's own consumers.
 
 Its read is the whole bus until subjects and keys name their project, and its writes through the
 consumer calls are as wide until something other than the edge creates its consumers. The auth
@@ -4003,13 +4062,21 @@ and project `PRIV`.
 Under the `natslive` tag, against the hub's image, `natsgrant/natsgrant_live_test.go` publishes on
 each subject of the list and on the kept lane, another project's role, a role that names no
 project, the Legion wake topic, a Slack topic and a GitHub exception lane, and the server refuses
-exactly the second group. `TestTheEdgeGrantsConsumerCallsReachPastItsPublishList` there pins the
-reach above: a push consumer of the edge's delivers on another project's role subject, a deliver
-subject the stream carries is refused as a cycle, the edge updates and deletes another listener's
-durable, and a subscription under `deliver.>` is delivered a two-token subject.
-`cmd/listener/edge_live_test.go` runs the listener under the set: it starts, relays a send and is
-reached by a role message through a shared listener, with no refusal, and its start ends, naming
-the prefix, under the set without it.
+exactly the second group. `TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts`
+there has one edge machine answer another machine's frame on that machine's receipt subject, and
+be refused a subscription to that machine's receipts.
+`TestTheEdgeGrantsConsumerCallsReachPastItsPublishList` pins the consumer reach above: a push
+consumer of the edge's delivers on another project's role subject, a consumer of the edge's reads
+another project's stored Dispatch event, a deliver subject the stream carries is refused as a
+cycle, the edge updates and deletes another listener's durable, and a subscription under
+`deliver.>` is delivered a two-token subject.
+`TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI` pins the JetStream API and capture
+outcomes on scratch streams and buckets of the edge's account, and the stream subject a delivery
+is received under. `cmd/listener/edge_live_test.go`
+runs the listener under the set: it starts, relays a send and is reached by a role message through
+a shared listener, with no refusal, and its start ends, naming the prefix, under the set without
+it. Its relay frames are answered by an observer whose grant publishes the edge's inbox prefix,
+reach no rendered set holds.
 
 `DaemonPermissions()` is the grant of a Legion daemon's dedicated NATS user. It publishes the
 notification stream's info request, its stored-message get
@@ -4058,5 +4125,35 @@ calls too), and its grant adds none of those calls, so the server refuses it the
 
 ## Changing the module
 
-`AGENTS.md` in this directory covers the module's own `go.work`, the rules every component follows,
-and how to run the unit and live tests.
+`AGENTS.md` in this directory gives the rules every change and every component follows. Run each
+go command from `packages/envoy/infra`, whose own `go.work` binds this module and `packages/envoy`;
+`./...` from `packages/envoy` does not reach this module.
+
+```bash
+gofmt -l .
+go vet -tags pulumilive,natslive ./...
+go test ./...                                   # unit tests
+go test -count=1 -run '<name>' ./gcp/           # one test
+go test -count=1 -timeout 30m -tags natslive ./core/ ./seed/ ./gcp/
+go test -count=1 -tags pulumilive -v -timeout 15m ./host/
+```
+
+The unit tests need no Pulumi CLI and no Docker. The `gcp` ones run the rendered shell scripts
+under `/bin/sh` (`ENVOY_TEST_SHELL=bash` runs them under bash) and need `curl`, `jq`, `openssl`,
+`blkid`, `mkfs.ext4` and GNU `cmp` on the machine; without one they fail, they do not skip.
+
+The `natslive` tests run a real nats-server: those of `core` and `seed` from the published NATS
+images, on Docker, and those of `gcp` from helm and the NATS tools they `go install` first, which
+takes minutes on a cold cache.
+
+The `pulumilive` tests need the `pulumi` CLI, `ENVOY_SMOKE_HELD_PORT_IMAGE` and
+`ENVOY_INFRA_DOCKER_PLUGIN`; without them a test fails and prints the commands that build both.
+Keep `-count=1`: the test cache cannot see a rebuilt image behind a fixed tag.
+
+CI runs the unit and `natslive` tests in `.github/workflows/ci-job-envoy-infra-go.yaml` at the
+repository root, and the `pulumilive` tests in the `envoy-smoke` job (`ci-job-envoy-smoke.yaml`).
+
+A plugin release is cut by a commit that changes a file in a package directory that
+`go list -deps ./cmd/...` reaches, Envoy's own packages included, or another input of the build
+that the "Determine next version" step of `.github/workflows/release-envoy-infra.yaml` lists. A
+commit to this README or to `docs/` cuts none.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -13,18 +14,20 @@ import (
 
 	"github.com/gorilla/websocket"
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // Row 1, in one process: a message to S is stored, the owning replica relays it, the socket's
 // replica forwards it to the session as a msg frame under the sid it subscribed with, carrying
-// the frame's headers and its receipt subject, which is an edge relay's (bus.RelayReplyPrefix) and
-// not a reply inbox; the session answers done over the socket, the socket's replica publishes it
+// the frame's headers and its receipt subject, which is under the owning machine's own receipt
+// family (natsgrant.EdgeRelayReplyPrefix) and not a reply inbox, since the edge's grant subscribes
+// that family alone; the session answers done over the socket, the socket's replica publishes it
 // on that subject, and the owner's consumer acks the message. Its control is the live row's
 // (relay_socket_live_test.go): the receipt not published, and the message is still pending.
 func TestARelaySocketForwardsAFrameAndPublishesItsReceipt(t *testing.T) {
@@ -41,8 +44,8 @@ func TestARelaySocketForwardsAFrameAndPublishesItsReceipt(t *testing.T) {
 	if frame.Op != "msg" || frame.sid(t) != 1 || frame.Subject != bus.DeliverSubject(session) {
 		t.Fatalf("the socket sent %s, want a msg of sid 1 on %s", frame.raw, bus.DeliverSubject(session))
 	}
-	if !strings.HasPrefix(frame.Reply, bus.RelayReplyPrefix) {
-		t.Fatalf("the frame's receipt subject is %q, want one under %s: an edge relay answers no reply inbox", frame.Reply, bus.RelayReplyPrefix)
+	if owned := natsgrant.EdgeRelayReplyPrefix(rig.owner.relays.machineID) + "."; !strings.HasPrefix(frame.Reply, owned) {
+		t.Fatalf("the frame's receipt subject is %q, want one under the owning machine's %s: the edge's grant subscribes no other receipt family and no reply inbox", frame.Reply, owned)
 	}
 	var item contracts.Envelope
 	if err := json.Unmarshal(frame.data(t), &item); err != nil || item.EventID != stored.EventID {
@@ -211,11 +214,11 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 		{name: "its token's exp passed", life: 2 * time.Second, want: &expired,
 			later: func(rig *relaySocketRig, session, token string) {
 				rig.clock.advance(3 * time.Second)
-				rig.broker.Says(token, brokertoken.Introspection{})
+				rig.broker.Says(token, ciphertoken.Introspection{})
 			}},
 		{name: "its token was revoked", life: time.Hour, want: &refused,
 			later: func(rig *relaySocketRig, session, token string) {
-				rig.broker.Says(token, brokertoken.Introspection{})
+				rig.broker.Says(token, ciphertoken.Introspection{})
 			}},
 		{name: "its answer binds no key", life: time.Hour, want: &refused,
 			later: func(rig *relaySocketRig, session, token string) {
@@ -247,7 +250,7 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 			client.stillOpen(5*relaySocketTestCheck, "before the answer changed")
 
 			row.later(rig, session, token)
-			rig.clock.advance(brokertoken.AffirmativeCacheTTL + time.Second)
+			rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
 			if row.want == nil {
 				client.stillOpen(10*relaySocketTestCheck, "an answer that stands")
 				return
@@ -387,8 +390,8 @@ func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
 	}{
 		{name: "a revoke", within: 2*relaySocketTestCheck + relaySocketCloseGrace + time.Second,
 			close: func(_ *testing.T, rig *relaySocketRig, token string) {
-				rig.broker.Says(token, brokertoken.Introspection{})
-				rig.clock.advance(brokertoken.AffirmativeCacheTTL + time.Second)
+				rig.broker.Says(token, ciphertoken.Introspection{})
+				rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
 			}},
 		{name: "the listener's stop", within: relaySocketCloseGrace + time.Second,
 			close: func(t *testing.T, rig *relaySocketRig, _ string) {
@@ -465,10 +468,10 @@ func TestARelaySocketWhoseWriteFailsIsDroppedAtOnce(t *testing.T) {
 // A socket whose client reads its frames slower than they come falls past its subscription's
 // pending limits: nats.go drops the frames past them, and the socket closes 1013 slow_consumer at
 // its next check, on which its client opens it again and the owning relay sends the dropped frames
-// again, since it heard no receipt for them. The client here reads one frame each 50 ms, and 40
-// frames of 512 KiB come at once: it reads the frames written before the close and then the close.
-// Control: the subscription left at nats.go's own limits (64 MiB); nothing is dropped, the socket
-// stays open, and the row fails naming it.
+// again, since it heard no receipt for them. The client here reads one frame each 50 ms, and 80
+// frames of 512 KiB come at once, past the socket's 32 frames and 16 MiB: it reads the frames
+// written before the close and then the close. Control: the subscription left at nats.go's own
+// limits (64 MiB); nothing is dropped, the socket stays open, and the row fails naming it.
 func TestARelaySocketWhoseSubscriptionFallsBehindClosesSlowConsumer(t *testing.T) {
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_slow_consumer"
@@ -485,7 +488,7 @@ func TestARelaySocketWhoseSubscriptionFallsBehindClosesSlowConsumer(t *testing.T
 			time.Sleep(50 * time.Millisecond)
 		}
 	}()
-	flood(t, rig.owner.url, session, 40)
+	flood(t, rig.owner.url, session, 80)
 	select {
 	case err := <-ended:
 		var closed *websocket.CloseError
@@ -493,7 +496,7 @@ func TestARelaySocketWhoseSubscriptionFallsBehindClosesSlowConsumer(t *testing.T
 			t.Fatalf("the socket that fell behind ended with %v, want a close %d %q", err, websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatalf("the socket whose client reads one frame each 50 ms was still open 10s after 40 frames of 512 KiB came at once, want it closed %d %q", websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer)
+		t.Fatalf("the socket whose client reads one frame each 50 ms was still open 10s after 80 frames of 512 KiB came at once, want it closed %d %q", websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer)
 	}
 }
 
@@ -556,19 +559,95 @@ func TestARelaySocketClosesWhenItsSubscriptionIsLost(t *testing.T) {
 }
 
 // An open socket closes 4401 at its token's expiry, not at the next check, which here is an hour
-// away: its client trades for a fresh token at once. Control: no check at the expiry; the socket
-// stays open past it, and the row fails naming how long it waited.
+// away: its client trades for a fresh token at once. The stand-in answers the token live all
+// along with exp the whole second at or before its expiry, as the real broker answers it for up
+// to a second past that exp, so the close rests on the socket reading the exp and not on the
+// broker's refusal. Control: the verdict reading only the broker's refusal as expired; the socket
+// stays open past the exp, and the row fails naming it.
 func TestAnOpenSocketClosesAtItsTokensExpiry(t *testing.T) {
 	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
 	const session = "ses_edge_expiring"
 	token := "access-token-that-expires-in-two-seconds"
 	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), 2*time.Second, relaySocketProject))
 	client := rig.openWith(t, session, token)
-	// What the broker answers once the token's life ended.
-	rig.broker.Says(token, brokertoken.Introspection{})
 	if code, text := client.closeCode(4 * time.Second); code != relaySocketCloseExpired || text != relaySocketReasonExpired {
 		t.Fatalf("the socket closed %d %q at its token's expiry, want %d %q\n%s", code, text, relaySocketCloseExpired, relaySocketReasonExpired, rig.logs.String())
 	}
+}
+
+// A socket the listener closes (here 4403, its token revoked) drops its connection as soon as the
+// client answers the close frame, not when relaySocketCloseGrace runs out: a client that reopens
+// once its connection ends (Bun's WebSocket fires close only then) reopens at once. The client
+// here answers the close as gorilla/websocket does, and the row times the end of the connection
+// from the close frame. Control: the reader leaving the connection to end's grace once end has
+// run; the connection ends a whole grace after the close, and the row fails naming how long.
+func TestARelaySocketDropsItsConnectionWhenTheClientAnswersTheClose(t *testing.T) {
+	rig := newRelaySocketRig(t)
+	const session = "ses_edge_close_answered"
+	client, token := rig.open(t, session)
+	rig.broker.Says(token, ciphertoken.Introspection{})
+	rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
+	if code, text := client.closeCode(5 * time.Second); code != relaySocketCloseRefused || text != relaySocketReasonRefused {
+		t.Fatalf("the socket closed %d %q, want %d %q", code, text, relaySocketCloseRefused, relaySocketReasonRefused)
+	}
+	closed := time.Now()
+	raw := client.conn.NetConn()
+	if err := raw.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set the read deadline: %v", err)
+	}
+	_, err := raw.Read(make([]byte, 1))
+	ended := time.Since(closed)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("the connection after the answered close read %v, want the listener's end of it (EOF)", err)
+	}
+	if ended > relaySocketCloseGrace/4 {
+		t.Fatalf("the connection ended %s after the answered close, want it dropped at the client's answer, well inside the %s grace", ended.Round(time.Millisecond), relaySocketCloseGrace)
+	}
+	t.Logf("the connection ended %s after the answered close", ended.Round(time.Millisecond))
+}
+
+// A client that reads promptly keeps its socket however large the session's backlog: an edge
+// relay holds at most relayEdgeInFlight of a session's frames in flight (its consumers'
+// MaxAckPending), within the socket's pending limits, so a restart at the ack floor with 300
+// frames waiting sends them as fast as the client answers them. The backlog is stored while no
+// socket subscribes, and the session's next registration restarts the relay at the floor.
+// Control: the edge's consumers at bus.SessionConsumerMaxAckPending; the restart sends hundreds
+// at once, past the socket's limits, and the socket closes 1013 slow_consumer.
+func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
+	const session, backlog = "ses_edge_backlog", 300
+	rig.owner.subscribe(t, consumerRegistration(session, "epoch-1"))
+	stored := map[string]bool{}
+	for range backlog {
+		item, _ := rig.owner.storeEvent(t, contracts.LegacyAgentSubject(session))
+		stored[item.EventID] = true
+	}
+	client, _ := rig.open(t, session)
+	client.sub(1, bus.DeliverSubject(session))
+	client.ping()
+	<-client.pongs
+	rig.owner.subscribe(t, consumerRegistration(session, "epoch-2"))
+	seen := map[string]bool{}
+	deadline := time.After(60 * time.Second)
+	for len(seen) < backlog {
+		select {
+		case frame := <-client.frames:
+			if frame.Op != "msg" {
+				t.Fatalf("the socket sent %s after %d of %d frames, want only msg frames", frame.raw, len(seen), backlog)
+			}
+			var item contracts.Envelope
+			if err := json.Unmarshal(frame.data(t), &item); err != nil || !stored[item.EventID] {
+				t.Fatalf("the socket sent %q (%v), which is none of the stored backlog", frame.data(t), err)
+			}
+			seen[item.EventID] = true
+			client.pub(frame.Reply, relayReplyDone)
+		case err := <-client.closed:
+			t.Fatalf("the socket of a prompt client closed after %d of %d frames: %v\n%s", len(seen), backlog, err, rig.logs.String())
+		case <-deadline:
+			t.Fatalf("the socket of a prompt client was sent %d of %d frames in 60s", len(seen), backlog)
+		}
+	}
+	client.stillOpen(time.Second, "after the backlog")
 }
 
 // A frame over 1 MiB closes the socket 1009 (control: a frame just under the bound is read and

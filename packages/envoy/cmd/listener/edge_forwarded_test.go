@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"authelia.com/provider/oauth2/handler/rfc9449"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -43,7 +43,7 @@ type edgeLBPresentation struct {
 }
 
 // presentEdgeLB is the request caller's client signs for method and path under token.
-func presentEdgeLB(t *testing.T, caller *brokertokentest.Caller, method, path, token, body string) edgeLBPresentation {
+func presentEdgeLB(t *testing.T, caller *ciphertokentest.Caller, method, path, token, body string) edgeLBPresentation {
 	t.Helper()
 	signed := caller.Signed(t, method, listenerBrokerOrigin+path, token)
 	return edgeLBPresentation{method: method, path: path, body: body,
@@ -67,9 +67,9 @@ func (p edgeLBPresentation) through(peer string, forwarded ...string) *http.Requ
 
 // edgeLBBroker is a stub broker that calls edgeLBToken the collaborator's live token, of
 // edgeLBProject and bound to caller's key.
-func edgeLBBroker(t *testing.T, caller *brokertokentest.Caller) *brokertokentest.StubBroker {
+func edgeLBBroker(t *testing.T, caller *ciphertokentest.Caller) *ciphertokentest.StubBroker {
 	t.Helper()
-	broker := brokertokentest.NewStubBroker(t)
+	broker := ciphertokentest.NewStubBroker(t)
 	answer := sessionAnswer("ses_collaborator", "outside@example.com", caller.JKT())
 	answer.Projects = []string{edgeLBProject}
 	broker.Says(edgeLBToken, answer)
@@ -83,7 +83,7 @@ func edgeLBBroker(t *testing.T, caller *brokertokentest.Caller) *brokertokentest
 func edgeLBTokens(t *testing.T, brokerURL string, replay rfc9449.DPoPReplayStorage) *brokerTokens {
 	t.Helper()
 	frozen := time.Now()
-	return listenerBrokerTokensOver(t, brokerURL, replay, func(options *brokertoken.Options) {
+	return listenerBrokerTokensOver(t, brokerURL, replay, func(options *ciphertoken.Options) {
 		options.AddressLimit = ratelimit.Limit{Every: time.Hour, Burst: 2}
 		options.Now = func() time.Time { return frozen }
 	})
@@ -101,8 +101,8 @@ var noContent = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { 
 // stub broker that knows edgeLBToken alone.
 type edgeLBSender struct {
 	t       *testing.T
-	caller  *brokertokentest.Caller
-	broker  *brokertokentest.StubBroker
+	caller  *ciphertokentest.Caller
+	broker  *ciphertokentest.StubBroker
 	handler http.Handler
 	junk    int
 }
@@ -114,7 +114,7 @@ func newEdgeLBSender(t *testing.T, logged io.Writer) *edgeLBSender {
 	if logged == nil {
 		logged = io.Discard
 	}
-	caller := brokertokentest.NewCaller(t)
+	caller := ciphertokentest.NewCaller(t)
 	broker := edgeLBBroker(t, caller)
 	handler := apiAuth(edgeLBAuth(edgeLBTokens(t, broker.Server.URL, &spentProofsInMemory{}), logging.NewWithWriter("test-machine", logged)), noContent)
 	return &edgeLBSender{t: t, caller: caller, broker: broker, handler: handler}

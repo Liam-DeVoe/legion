@@ -34,15 +34,7 @@ func ListenerHostPermissions(machineID string) Permissions {
 	return rules(natsgrant.ListenerHost(machineID))
 }
 
-// EdgePermissions is the grant of an edge listener's own NATS user as machine machineID, serving
-// projects (natsgrant.Edge): ListenerPermissions with the edge's own lanes in place of every
-// notification topic (the agent subjects, each project's role subjects, the relay subjects and
-// receipts, the resume lane, and the exception lanes of the agent subjects and of each project's
-// role subjects), no create or update of the stream, its own inbox prefix in place of every reply
-// inbox, every session's relay subject and the relay receipts, and no role lane. A project list
-// natsgrant.Edge refuses is refused here, with its reason. What the set does not hold back - the
-// session consumers' calls, which reach every consumer of the stream and deliver to any subject
-// the stream does not carry - is natsgrant.Edge's to say.
+// EdgePermissions is the grant of an edge listener's own NATS user (natsgrant.Edge), or its refusal.
 func EdgePermissions(machineID string, projects []string) (Permissions, error) {
 	grant, err := natsgrant.Edge(machineID, projects)
 	if err != nil {

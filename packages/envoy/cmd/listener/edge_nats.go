@@ -2,10 +2,12 @@ package main
 
 // edge_nats.go is what an edge listener does differently on NATS, so that it runs under the edge's
 // grant (natsgrant.Edge) and asks the server for nothing that grant leaves out: every connection
-// names its inboxes under the edge's own prefix, the main client reads the stream and never
+// names its inboxes under its machine's prefix, the main client reads the stream and never
 // creates or changes it, and the start opens no role lane and publishes no Legion wake report. Its
 // delivery handlers keep no role message and hand no kept lane over, and publish a delivery
-// exception only on a lane the grant holds (edgeGrant).
+// exception only on a lane the grant holds (edgeGrant). main builds the edgeGrant once, when
+// ENVOY_EDGE_PROJECTS names a project, and every part of the listener that differs at the edge
+// branches on it being set.
 
 import (
 	"context"
@@ -13,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -25,32 +28,20 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// edgeMode reports whether cfg is an edge listener's: one that serves the projects
-// ENVOY_EDGE_PROJECTS names (config.Service.EdgeProjects).
-func edgeMode(cfg config.Service) bool { return len(cfg.EdgeProjects) > 0 }
-
-// listenerConnectOptions are the options every NATS connection of the listener takes, the main
-// client's and the session consumers' alike: in edge mode the edge's inbox prefix for its machine
-// (natsgrant.EdgeInboxPrefix), which is the one inbox family its grant subscribes, and none
-// otherwise.
-func listenerConnectOptions(cfg config.Service) []bus.ConnectOption {
-	if !edgeMode(cfg) {
-		return nil
-	}
-	return []bus.ConnectOption{bus.WithInboxPrefix(natsgrant.EdgeInboxPrefix(cfg.MachineID))}
-}
-
-// connectListenerBus opens the listener's main client. Every listener but an edge one owns the
-// stream (bus.ConnectOwningStream, listenerStreamOptions): it creates it when the server has none
-// and keeps its configuration. An edge listener's grant holds no create or update of the stream,
-// so its client owns none (bus.Connect) and its start reads the stream and refuses, naming it,
-// when the server has none (edgeStreamPresent); its buckets are raised as every listener's are,
-// at their open, and no keeper raises them after.
-func connectListenerBus(cfg config.Service) (*bus.Client, error) {
-	if !edgeMode(cfg) {
+// connectListenerBus opens the listener's main client. Every listener but an edge one (edge nil)
+// owns the stream (bus.ConnectOwningStream, listenerStreamOptions): it creates it when the server
+// has none and keeps its configuration. An edge listener's grant holds no create or update of the
+// stream, so its client owns none (bus.Connect), names its inboxes under its machine's prefix, and
+// its start reads the stream and refuses, naming it, when the server has none
+// (edgeStreamPresent). Its grant creates and raises no bucket's stream either, so each bucket is
+// found at its open (bus.EnsureKeyValue), and a bucket the server lacks, or holds at fewer copies
+// than ENVOY_NATS_REPLICAS, ends the open naming the create or raise the server refused; no
+// keeper raises a bucket after.
+func connectListenerBus(cfg config.Service, edge *edgeGrant) (*bus.Client, error) {
+	if edge == nil {
 		return bus.ConnectOwningStream(cfg.NATSURLs, listenerStreamOptions(cfg)...)
 	}
-	client, err := bus.Connect(cfg.NATSURLs, append(listenerConnectOptions(cfg), bus.WithSilentCutDetection())...)
+	client, err := bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithSilentCutDetection())...)
 	if err != nil {
 		return nil, err
 	}
@@ -87,10 +78,13 @@ func edgeStreamPresent(client *bus.Client, timeout time.Duration) error {
 }
 
 // edgeGrant is an edge listener's own NATS grant (natsgrant.Edge) as the listener holds itself to
-// it, beside the server's refusal of every subject the grant leaves out: the subjects it publishes,
-// and the count of the delivery exceptions it withheld because their lane is not among them
-// (withholds). Only an edge listener holds one (listenerDeliveryHandlerConfig.edge).
+// it, beside the server's refusal of every subject the grant leaves out: its machine's inbox
+// prefix, the subjects it publishes, and the count of the delivery exceptions it withheld because
+// their lane is not among them (withhold). Only an edge listener holds one; every other listener's
+// is nil, and each method answers for it as that listener does.
 type edgeGrant struct {
+	// inboxPrefix is natsgrant.EdgeInboxPrefix(machine id).
+	inboxPrefix string
 	// publish is natsgrant.Edge(machine id, ENVOY_EDGE_PROJECTS).Publish.
 	publish []string
 	// withheld is envoy_edge_exceptions_withheld_total{topic_prefix, reason}.
@@ -98,41 +92,53 @@ type edgeGrant struct {
 }
 
 // newEdgeGrant is the grant of the edge listener of machineID serving projects, counting what it
-// withholds on met. It refuses what natsgrant.Edge refuses: a project list config.Load would not
-// have read.
+// withholds on met. It refuses what natsgrant.Edge refuses: a machine id that is not one subject
+// token, and a project list config.Load would not have read.
 func newEdgeGrant(machineID string, projects []string, met *metrics.Registry) (*edgeGrant, error) {
 	grant, err := natsgrant.Edge(machineID, projects)
 	if err != nil {
-		return nil, fmt.Errorf("edge mode: the edge listener's grant: %w", err)
+		return nil, fmt.Errorf("edge mode: the edge listener's grant for ENVOY_MACHINE_ID %q and ENVOY_EDGE_PROJECTS %q: %w", machineID, strings.Join(projects, ","), err)
 	}
 	return &edgeGrant{
-		publish: grant.Publish,
+		inboxPrefix: natsgrant.EdgeInboxPrefix(machineID),
+		publish:     grant.Publish,
 		withheld: met.NewCounter("envoy_edge_exceptions_withheld_total",
 			"Delivery exceptions the edge listener did not publish because its NATS grant holds no publish of their lane, by the topic prefix of the message each reports and its reason; the message is finalized as if the exception had gone out"),
 	}, nil
 }
 
-// withholds reports whether the edge withholds item's delivery exception for reason: whether the
-// exception's lane (bus.ExceptionTopicPrefix followed by item.Topic) is under none of its grant's
-// publish entries. The grant publishes the exception lanes of the agent subjects and of its
-// projects' role subjects, so what it withholds is the report of a fan-out refusal on any other
-// topic a session follows - a GitHub or Dispatch event whose delivery mode the session does not
-// advertise, or that no one can read (fanoutRefusalOutcome) - and the refusal of a role topic that
-// names none of its projects. The server would refuse that publish, and the listener would log
-// exceptionPublishFailedLine, which the deployed publish-failure alarm matches, for a lane the
-// grant leaves out on purpose. A withheld exception is counted and logged here, and the delivery it
-// reports is finalized as it would be had it gone out: the message is acknowledged, undelivered to
-// that session. A nil grant, every other listener's, withholds nothing.
-func (g *edgeGrant) withholds(logger *logging.Logger, item contracts.Envelope, reason string) bool {
+// connectOptions are the options every NATS connection of the listener takes, the main client's
+// and the session consumers' alike: an edge listener's inbox prefix, the one inbox family its
+// grant subscribes, and none for every other listener.
+func (g *edgeGrant) connectOptions() []bus.ConnectOption {
 	if g == nil {
-		return false
+		return nil
+	}
+	return []bus.ConnectOption{bus.WithInboxPrefix(g.inboxPrefix)}
+}
+
+// publishesException reports whether the listener publishes item's delivery exception: whether
+// the exception's lane (bus.ExceptionTopicPrefix followed by item.Topic) is under one of its
+// grant's publish entries, which every other listener's (a nil grant) is. The edge's grant
+// publishes the exception lanes of the agent subjects and of its projects' role subjects, so what
+// it does not publish is the report of a fan-out refusal on any other topic a session follows - a
+// GitHub or Dispatch event whose delivery mode the session does not advertise, or that no one can
+// read (fanoutRefusalOutcome) - and the refusal of a role topic that names none of its projects.
+// The server would refuse that publish, and the listener would log exceptionPublishFailedLine,
+// which the deployed publish-failure alarm matches, for a lane the grant leaves out on purpose.
+func (g *edgeGrant) publishesException(item contracts.Envelope) bool {
+	if g == nil {
+		return true
 	}
 	lane := bus.ExceptionTopicPrefix + item.Topic
-	if slices.ContainsFunc(g.publish, func(entry string) bool { return bus.SubjectContains(entry, lane) }) {
-		return false
-	}
+	return slices.ContainsFunc(g.publish, func(entry string) bool { return bus.SubjectContains(entry, lane) })
+}
+
+// withhold counts and logs item's delivery exception for reason as withheld, in place of its
+// publish, when publishesException answered false. The delivery it reports is finalized as it
+// would be had it gone out: the message is acknowledged, undelivered to that session.
+func (g *edgeGrant) withhold(logger *logging.Logger, item contracts.Envelope, reason string) {
 	g.withheld.Inc([2]string{"topic_prefix", metrics.TopicPrefix(item.Topic)}, [2]string{"reason", reason})
 	logger.Info("edge listener withheld a delivery exception its grant does not publish",
 		slog.String("topic", item.Topic), slog.String("event_id", item.EventID), slog.String("reason", reason))
-	return true
 }

@@ -32,8 +32,10 @@ package main
 // ping handler on that reader only once every frame read before it is handled; nothing here
 // installs another.
 //
-// A frame's receipt subject is the owning replica's, under bus.RelayReplyPrefix
-// (startSessionRelays in edge mode), which the edge's grant publishes and subscribes: no reply
+// A frame's receipt subject is the owning machine's, under its receipt family
+// (natsgrant.EdgeRelayReplyPrefix; startSessionRelays in edge mode), which the edge's grant
+// publishes for every machine and subscribes for its own: the socket takes a receipt under any
+// machine's family (bus.RelayReplyPrefix), since it answers frames other machines own, and no reply
 // inbox is answered from here. The connection probe (connection_probe.go) is never forwarded and
 // never answered: the subscription itself is what keeps the session connected, and a probe costs
 // its sender at most its one second. A message on the relay subject that is no relay frame (its
@@ -62,8 +64,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -77,7 +79,7 @@ const (
 	// relaySocketCheckDefault is how often an open socket pings its client and asks the broker
 	// about its token: inside the 120 s backend timeout of the edge's load balancer, and the 20 s
 	// of a revoke's 25 s bound (the broker's answer is reused for at most
-	// brokertoken.AffirmativeCacheTTL more).
+	// ciphertoken.AffirmativeCacheTTL more).
 	relaySocketCheckDefault = 20 * time.Second
 	// relaySocketReadLimit is the largest frame a client may send; a larger one closes the socket
 	// 1009, which gorilla/websocket writes.
@@ -95,9 +97,17 @@ const (
 	// relaySocketPendingMsgs and relaySocketPendingBytes are the pending limits of a socket's
 	// subscription: the frames nats.go queues for it while its client reads them slower than they
 	// come. Past them nats.go drops frames, and the socket closes 1013 slow_consumer; a dropped
-	// frame is sent again by its owning relay, which hears no receipt for it.
-	relaySocketPendingMsgs  = 16
-	relaySocketPendingBytes = 2 << 20
+	// frame is sent again by its owning relay, which hears no receipt for it. The owning relay
+	// holds at most relayEdgeInFlight of a session's frames in flight, so a client that reads
+	// promptly never comes near them: twice that many frames, the second half room for a
+	// redelivery beside the frames it replaces, and that many frames of relayFrameMaxBytes. With
+	// relaySocketMaxPerSession and relaySocketMaxPerListener they bound what a session's sockets
+	// buffer (64 MiB) and what a replica's do.
+	relaySocketPendingMsgs  = 2 * relayEdgeInFlight
+	relaySocketPendingBytes = relayEdgeInFlight * relayFrameMaxBytes
+	// relayFrameMaxBytes is the largest message the hub carries (nats-server's max_payload, 1 MiB),
+	// and so the largest relay frame.
+	relayFrameMaxBytes = 1 << 20
 	// relaySocketReplyWindow is how long a forwarded frame's receipt subject may be published on.
 	relaySocketReplyWindow = 10 * time.Minute
 	// relaySocketMaxReplies bounds the receipt subjects one socket remembers; past it the oldest
@@ -374,7 +384,7 @@ type relaySocket struct {
 	session string
 	// admitted is the caller the upgrade was admitted as, which every later answer is compared
 	// with.
-	admitted brokertoken.Caller
+	admitted ciphertoken.Caller
 	// expires is when the upgrade's answer said the token stops being live, zero when it named no
 	// expiry.
 	expires time.Time
@@ -462,8 +472,12 @@ func (socket *relaySocket) read() {
 		if err != nil {
 			// The client's close frame, which gorilla answers, a frame past the read limit, which
 			// gorilla answers 1009, or a connection that ended: the socket ends with nothing more
-			// to write, and end drops the connection.
+			// to write, and the connection is dropped now. When the listener closed the socket
+			// itself, end already ran and left the connection to its grace (relaySocketCloseGrace)
+			// for this answer; the answer is in, so the client is not kept waiting out the rest of
+			// that grace for its connection's end, which a client that reopens on it waits for.
 			socket.end(0, "")
+			_ = conn.Close()
 			return
 		}
 		extend()
@@ -848,11 +862,14 @@ func (socket *relaySocket) subscribed() bool {
 }
 
 // verdict asks the broker about the socket's token again, the answer it gave reused for at most
-// brokertoken.AffirmativeCacheTTL and no proof checked a second time, and answers the close code
+// ciphertoken.AffirmativeCacheTTL and no proof checked a second time, and answers the close code
 // and reason the socket ends with, 0 while it stays open:
 //
-//   - the token's expiry has passed and the broker no longer holds it live: 4401, on which the
-//     client trades for a fresh token and opens again at once;
+//   - the token's expiry has passed: 4401, on which the client trades for a fresh token and
+//     opens again at once. That is so whether the broker no longer holds it live or still
+//     answers it live with an exp that has passed: the broker writes exp as the whole second at
+//     or before the true expiry, and holds the token live until that true expiry, up to a second
+//     later, which the expiry's timer (watch) would otherwise miss until the next tick;
 //   - the broker no longer holds it live before its expiry (a revoke, a login ended early), or
 //     holds it as something no session's token is: 4403;
 //   - the answer names another caller than the one the socket was admitted as (its session, its
@@ -863,20 +880,23 @@ func (socket *relaySocket) subscribed() bool {
 func (socket *relaySocket) verdict() (int, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), relaySocketCheckWait)
 	defer cancel()
-	caller, _, err := socket.sockets.brokers.verifier.Load().LiveUntil(ctx, socket.check)
+	caller, until, err := socket.sockets.brokers.verifier.Load().LiveUntil(ctx, socket.check)
 	var why string
 	switch {
 	case err == nil:
+		if !until.IsZero() && !socket.sockets.now().Before(until) {
+			return relaySocketCloseExpired, relaySocketReasonExpired
+		}
 		if sameRelayCaller(caller, socket.admitted) {
 			return 0, ""
 		}
 		why = "the broker's answer names another caller than the socket was opened as"
-	case errors.Is(err, brokertoken.ErrNotActive):
+	case errors.Is(err, ciphertoken.ErrNotActive):
 		if !socket.expires.IsZero() && !socket.sockets.now().Before(socket.expires) {
 			return relaySocketCloseExpired, relaySocketReasonExpired
 		}
 		why = err.Error()
-	case errors.Is(err, brokertoken.ErrNotASession), errors.Is(err, brokertoken.ErrKeyMismatch):
+	case errors.Is(err, ciphertoken.ErrNotASession), errors.Is(err, ciphertoken.ErrKeyMismatch):
 		why = err.Error()
 	default:
 		socket.sockets.logger.Warn("listener: the relay socket could not ask the broker about its token; it is closed",
@@ -889,7 +909,7 @@ func (socket *relaySocket) verdict() (int, string) {
 }
 
 // sameRelayCaller reports whether a later answer names the caller the socket was admitted as.
-func sameRelayCaller(answer, admitted brokertoken.Caller) bool {
+func sameRelayCaller(answer, admitted ciphertoken.Caller) bool {
 	return answer.Session == admitted.Session && answer.Person == admitted.Person && answer.Service == admitted.Service &&
 		answer.ProjectScope == admitted.ProjectScope && answer.ReadOnly == admitted.ReadOnly &&
 		slices.Equal(answer.Projects, admitted.Projects)

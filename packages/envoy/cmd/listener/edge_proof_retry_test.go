@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/logging"
 )
 
@@ -42,7 +42,7 @@ func (s *switchableSpentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jt
 // that did not answer is the 503 of a check that stopped before the proof was recorded.
 func TestEdgeRetryOfAProofAfterAPreAuth503IsServed(t *testing.T) {
 	logger := logging.NewWithWriter("test-machine", io.Discard)
-	caller := brokertokentest.NewCaller(t)
+	caller := ciphertokentest.NewCaller(t)
 	broker := edgeLBBroker(t, caller)
 	served := http.NewServeMux()
 	served.Handle("/v1/", noContent)
@@ -106,7 +106,7 @@ func TestEdgeRetryOfAProofAfterAPreAuth503IsServed(t *testing.T) {
 // 503 a route of that kind answers a fault with, and every later one as served.
 type edgeLBRig struct {
 	handler http.Handler
-	caller  *brokertokentest.Caller
+	caller  *ciphertokentest.Caller
 }
 
 // faultOnce is a route that answers its first request with fault and every later one 204.
@@ -126,7 +126,7 @@ func faultOnce(fault func(http.ResponseWriter)) http.Handler {
 func newEdgeLBRig(t *testing.T) *edgeLBRig {
 	t.Helper()
 	client := setupPublishTestClient(t)
-	caller := brokertokentest.NewCaller(t)
+	caller := ciphertokentest.NewCaller(t)
 	broker := edgeLBBroker(t, caller)
 	accountFile := filepath.Join(t.TempDir(), "account-token")
 	if err := os.WriteFile(accountFile, []byte("listener-account-token\n"), 0o600); err != nil {

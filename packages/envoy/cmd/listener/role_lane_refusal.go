@@ -41,10 +41,14 @@ const refusalExceptionBound = 64 << 10
 //
 // edge is the edge listener's grant, nil on every other listener: an edge listener publishes the
 // exception only where its grant holds the lane, a role subject of one of its projects, and
-// withholds and counts one of any other role topic (edgeGrant.withholds).
+// withholds and counts one of any other role topic (edgeGrant.publishesException, withhold).
 func publishRefusalException(client *bus.Client, logger *logging.Logger, edge *edgeGrant, item contracts.Envelope, result roles.Resolution) {
 	reason := string(result.State)
-	if !roleholder.IsNoHolderReason(reason) || edge.withholds(logger, item, reason) {
+	if !roleholder.IsNoHolderReason(reason) {
+		return
+	}
+	if !edge.publishesException(item) {
+		edge.withhold(logger, item, reason)
 		return
 	}
 	exception, err := deliveryExceptionEnvelope(item, reason, result.Holder, refusalExceptionBound)

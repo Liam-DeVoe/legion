@@ -54,7 +54,7 @@ type listenerDeliveryHandlerConfig struct {
 	// no role message for a role's next holder and hands no kept lane over (keepForNextHolder,
 	// drainKeptRole, startKeptRoleSweep): the shared listeners' sweeps hand every lane over, a
 	// role held at the edge among them. And it publishes a delivery exception only on a lane the
-	// grant holds (edgeGrant.withholds).
+	// grant holds (edgeGrant.publishesException).
 	edge *edgeGrant
 	// forwardRole publishes a role-lane envelope to the holder's agent subject under msgID, its
 	// Nats-Msg-Id when not empty, and returns the wait for its outcome; main.go wires
@@ -100,6 +100,14 @@ type listenerDeliveryHandlerConfig struct {
 	// roleKeptUndecodable counts the kept copies a walk ended because no read can decode them
 	// (envoy_role_kept_undecodable_total, judgeKeptRoleCopy).
 	roleKeptUndecodable *metrics.Counter
+	// takeoverFaults holds the takeover copy's test seams (takeoverFaultSet), shared by every copy
+	// of this configuration - its routes, relays and sweep - and nil in main.go, which forces no
+	// fault.
+	takeoverFaults *takeoverFaultHooks
+	// keepPublish is the stored publish a keep makes (keepRoleMessage): main.go sets it to
+	// client.PublishStoredAck, and so does every test that builds a config, while a test that
+	// answers a keep's publish itself replaces it on its copy.
+	keepPublish keptRolePublish
 	// publishDeadLetter stores a dead letter, item, on subject - the agent subject of the session
 	// whose kept copy a walk dropped - under the Nats-Msg-Id msgID, and returns the stream's
 	// refusal or failure; a duplicate the stream drops is no error (endKeptCopyWithDeadLetter).
@@ -382,8 +390,8 @@ type deliveryOutcome struct {
 	// exceptionReason, when non-empty, publishes a delivery exception via
 	// publishDeliveryException for control topics. fanoutRefusal publishes one for this terminal
 	// fanout outcome on any topic, each on the transport its own lane takes. An edge listener
-	// withholds one whose lane its grant does not publish (edgeGrant.withholds), and the outcome is
-	// otherwise applied as it would be had the exception gone out.
+	// withholds one whose lane its grant does not publish (edgeGrant.publishesException), and the
+	// outcome is otherwise applied as it would be had the exception gone out.
 	exceptionReason string
 	fanoutRefusal   bool
 	// origin identifies the durable message an exception is about (exceptionOrigin), "" for none.
@@ -422,9 +430,10 @@ func applyDeliveryOutcome(cfg listenerDeliveryHandlerConfig, item contracts.Enve
 	if outcome.log != nil {
 		outcome.log(cfg.logger)
 	}
-	if outcome.exceptionReason != "" && !isExceptionsTopic(item.Topic) && (isControlTopic(item.Topic) || outcome.fanoutRefusal) &&
-		!cfg.edge.withholds(cfg.logger, item, outcome.exceptionReason) {
-		if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.origin); err != nil {
+	if outcome.exceptionReason != "" && !isExceptionsTopic(item.Topic) && (isControlTopic(item.Topic) || outcome.fanoutRefusal) {
+		if !cfg.edge.publishesException(item) {
+			cfg.edge.withhold(cfg.logger, item, outcome.exceptionReason)
+		} else if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.origin); err != nil {
 			cfg.logger.Error(exceptionPublishFailedLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
 			if outcome.exceptionFailureClearsAttempt {
 				cfg.attemptCache.Clear(item.DedupeKey, outcome.sessionID)
@@ -628,35 +637,43 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 		message.finalize(false)
 		return
 	}
-	// The lane names its role in either form; the claim it resolves is the one that name is keyed
-	// by (store.RoleClaimKeyOf): the bare name, or <project>.<role> for a free-form role under a
-	// project. A Legion role named under a project it does not work for reaches no holder
-	// (roleLaneProjectError): its claim is keyed on the bare name, so the lane of another project
-	// naming it would hand that project's message to the role's own project's holder.
+	if forward, ok := resolveRoleForward(cfg, item); ok {
+		cfg.roleForwards.enqueue(forward)
+	}
+	message.finalize(false)
+}
+
+// resolveRoleForward resolves the holder of item's role, judges the forward to it by the lane's
+// rules (resolveCoreRoleHolder, beforeForward) with the dedupe and attempt caches as the record of
+// what the holder already took, reports a refusal with the lane's own lines, and returns the
+// forward to make, stamped with when its resolution started (roleForward.resolvedAt), and whether
+// to make one. The lane names its role in either form; the claim it resolves is the one that name
+// is keyed by (roleOfLaneTopic, store.RoleClaimKeyOf): the bare name, or <project>.<role> for a
+// free-form role under a project. A Legion role named under a project it does not work for
+// reaches no holder (roleLaneProjectError): its claim is keyed on the bare name, so the lane of
+// another project naming it would hand that project's message to the role's own project's holder.
+func resolveRoleForward(cfg listenerDeliveryHandlerConfig, item contracts.Envelope) (roleForward, bool) {
 	lane := strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix)
 	if err := roleLaneProjectError(lane); err != nil {
 		cfg.logger.Warn("listener role lane refused a role named under a project it does not work for; no holder is sent it",
 			slog.String("topic", item.Topic), slog.String("event_id", item.EventID), slog.String("error", err.Error()))
-		message.finalize(false)
-		return
+		return roleForward{}, false
 	}
-	role := store.RoleClaimKeyOf(lane)
+	role, _ := roleOfLaneTopic(item.Topic)
+	resolvedAt := cfg.now()
 	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)
 	if !ok {
-		message.finalize(false)
-		return
+		return roleForward{}, false
 	}
 	verdict := beforeForward(item, sessionID, holder, func(key, recipient string) bool {
 		return cfg.dedupeCache.Seen(key, recipient) || cfg.attemptCache.Seen(key, recipient)
 	})
 	if verdict.kind != forwardAllowed {
 		applyDeliveryOutcome(cfg, item, refusedRoleForwardOutcome(verdict, item, sessionID, roleLaneRefusalLines))
-		message.finalize(false)
-		return
+		return roleForward{}, false
 	}
 	cfg.attemptCache.Record(item.DedupeKey, sessionID)
-	cfg.roleForwards.enqueue(roleForward{item: item, sessionID: sessionID})
-	message.finalize(false)
+	return roleForward{item: item, sessionID: sessionID, resolvedAt: resolvedAt}, true
 }
 
 // roleLaneProjectError is why a role lane named in the form that names a project

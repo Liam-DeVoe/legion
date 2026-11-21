@@ -53,7 +53,7 @@ Current secret names:
 
 - `ENVOY_GITHUB_WEBHOOK_SECRET`
 
-The secrets broker (`cmd/broker`) supports these types for `agent-secrets secret create --type` and `secret retag --type`:
+The secrets broker (`cmd/cipherd`) supports these types for `agent-secrets secret create --type` and `secret retag --type`:
 
 - `github-app`: stores an App id and private key; releases installation tokens for its listed GitHub owners.
 
@@ -104,26 +104,64 @@ The broker reads each typed secret’s value once for each new version or type, 
 
 - `docs` — architecture, constraints, external repo touchpoints
 
+## Development
+
+Run the Go commands from `packages/envoy`:
+
+```bash
+go build ./cmd/dispatch ./cmd/listener
+go test -timeout 20m ./...
+go test -count=1 -run '^TestName$' ./internal/bus/
+gofmt -l .
+go vet ./...
+```
+
+`internal/dispatch/api` alone takes close to `go test`'s ten-minute default deadline, so a
+run that includes it passes `-timeout 20m` (`docs/testing.md` at the repository root, "Go's
+package deadline").
+
+`./...` here does not build `infra/`, a Go module of its own that imports packages of this
+one (`internal/bus` and `internal/contracts` among them): after a change to one of them,
+vet `infra/` too (`infra/README.md`, "Changing the module").
+
+The Postgres-backed tests read `DISPATCH_TEST_DATABASE_URL` (Dispatch) and
+`BROKER_TEST_DATABASE_URL` (the secrets broker). Without them most of those tests skip, and
+`go test` still prints `ok`. `scripts/dev-postgres.sh` starts a pgvector Postgres and
+prints its URL, and `scripts/database-skips.sh` (`scripts/README.md`) fails a run on any
+skip.
+
+Build tags hold the slow and live suites, which `go test ./...` does not build: among them
+`natslive` (a NATS image, so it needs Docker), `smoke` (the listener image),
+`multiprocess` (Dispatch and the broker), and Dispatch's `twobuild` and `memory`
+(`cmd/dispatch/README.md`, "Tests"). The `ci-job-*.yaml` files in `.github/workflows/` at
+the repository root show how CI runs each.
+
+`internal/dispatch/pmdoc` tests compare with the browser editor through bun scripts in
+`pmdoc/gen`: they need `bun` and a `bun install` at the repository root. Without `bun` they
+skip, except where `CI` is set, where they fail.
+
 ## The edge listener
 
 `ENVOY_EDGE_PROJECTS` makes a listener the edge listener, the one an outside person's agents reach Envoy through.
 It names the projects the edge serves: project keys separated by commas or white space, read as a broker token's own list is (`parseEdgeProjects`, `internal/config/config.go`).
-A list that no token could carry refuses the start, naming the variable.
-Unset or blank, the listener serves as every other listener does, and nothing in this section applies.
+A list that no token could carry refuses the start, naming the variable, and so does a set value that names no project, such as a lone comma or white space.
+Unset or empty, the listener serves as every other listener does, and nothing in this section applies.
 
 The edge holds each session to the projects of the broker token that admitted it, also in a deployment where each project is public.
-It gives a session no message of no project, except the GitHub events of its projects' repositories.
-The header of `cmd/listener/project_scope.go` lists the rules and the function that holds each, and `cmd/listener/edge_mode_test.go` tests each:
+It follows, stores and shows a session no topic of no project, except the GitHub topics of its projects' repositories, and it releases at each registration every claim the session holds of another project's role.
+A role message the role lane forwarded to the session's own agent subject before that registration, or after a later claim another writer made for the session, travels on that subject: the relay's check of each frame's topic, which the edge needs before it opens, is what holds those frames to the token's projects.
+The header of `cmd/listener/project_scope.go` lists the rules and the function that holds each; `cmd/listener/edge_mode_test.go` and `cmd/listener/edge_repositories_test.go` test each:
 
-- **Start**: the edge refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting, `ENVOY_WEBHOOKS` or a webhook secret, and without the broker-token settings (`ENVOY_AGENT_SECRETS_URL`, `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` or `ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`, and `ENVOY_PUBLIC_URL`).
+- **Start**: the edge refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting, `ENVOY_DISPATCH_PRINCIPAL`, `ENVOY_WEBHOOKS` or a webhook secret, and without the broker-token settings (`ENVOY_AGENT_SECRETS_URL`, `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` or `ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`, and `ENVOY_PUBLIC_URL`).
   Each refusal names the variable (`validateEdgeMode`).
+  Dispatch sends its role-marked messages through a shared listener, and no session of the edge sends as Dispatch, so the edge names no principal whose send may carry a role mark.
 
 - **Admission**: `/v1` admits a broker token alone, of project scope `named` or `person`, that lists at least one project and only projects the edge serves (`EdgeAdmits`).
   Any other session's broker token gets `403` with the reason `token_not_admitted`, logged as `listener: edge listener refused a broker token`.
   A read-only token, and a request with no broker token, get `401` before any handler runs: the listener's verifier refuses a read-only token as no session's.
 
 - **Behind Google's load balancer**: the edge is reached through Google's global external Application Load Balancer, so every request comes from one of its proxies, in `35.191.0.0/16` or `130.211.0.0/22`.
-  From those ranges the edge reads its caller's address from the second-to-last entry of the one `X-Forwarded-For` line the balancer writes, and keys the broker token's introspection bucket on it (a burst of 20, then five a second, per address and process: `brokertoken.DefaultAddressLimit`); an IPv6 caller is keyed by its `/64`.
+  From those ranges the edge reads its caller's address from the second-to-last entry of the one `X-Forwarded-For` line the balancer writes, and keys the broker token's introspection bucket on it (a burst of 20, then five a second, per address and process: `ciphertoken.DefaultAddressLimit`); an IPv6 caller is keyed by its `/64`.
   A request from those ranges with no `X-Forwarded-For`, more than one line, a line of one entry, or an entry there that is no IP address gets `400` before the broker is asked anything, logged as `listener: edge request without the address Google's load balancer forwards`.
   A request from any other address is keyed on its connection, as on every other listener, and its `X-Forwarded-For` chooses nothing (`edgeCallerAddress`, `cmd/listener/edge_forwarded.go`).
   The `400` body is the listener's plain error (`listenerwire.APIError`), since no project rule refused the request.
@@ -155,14 +193,20 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   It acknowledges any other GitHub event undelivered and counts it in `envoy_edge_github_withheld_total`:
   under `reason="not_in_project"`, or under `reason="answer_unknown"` while a project of the session has no fresh answer.
   In that second case the session's next frame carries `Envoy-Gap: true` with `Envoy-Gap-Reason: repository_withheld`, and every frame that is not GitHub's is delivered as before.
+  The mark is kept for the session until a frame carrying it is published: across the session's relay runs on this listener, and on the session's entry in `envoy_sessions` (`session.SessionEntry.RepositoryGap`), which the next listener to relay the session reads after a move or a restart.
   A gap mark with no reason is the stream's own retention gap, and a frame that marks both carries no reason.
   A refresh removes a session's interest in a repository that left its projects.
 
 - **Publishes**: `POST /v1/messages/publish` takes only a role subject in the form that names the project, `notifications.role.<KEY>.<role>`, of one of the token's projects and for a role that works for that project;
   anything else gets `403 topic_not_published` (`edgePublishRefusal`).
 
+- **Senders**: `POST /v1/messages/send` and `POST /v1/messages/publish` take only a message from the session itself: `source` `agent` or left out, and `source_session` the token's session.
+  Any other gets `403 sender_not_session` (`edgeSenderRefusal`), so no edge session sends a message under another source, such as a Dispatch event or a person's message, or under no session.
+
 - **Roles**: `POST /v1/roles/set` and `GET /v1/roles/{role}` take only a role that works for one of the token's projects, else `403 role_not_in_project` (`edgeRoleRefusal`).
-  `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title and capabilities (`edgeRoleHolder`).
+  `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title, client instance and capabilities (`edgeRoleHolder`).
+  Each registration first releases every claim the session holds of another project's role, which another listener granted it or a token that listed more did, and the answer's `warnings` name it (`store.Registry.ReleaseRefusedRoleClaims`); a release that fails refuses the registration with the retryable `503`, and nothing of it is stored. It renews only the session's claims of roles of its token's projects.
+  A claimant made live again is handed the kept messages of its token's projects' roles alone.
 
 - **Sends**: `POST /v1/messages/send` reaches only a session whose registering token listed one of the sender's projects.
   Any other target gets the `404` of a session no listener has heard of, and no wake is reported (`sessionOfProjects`).
@@ -203,18 +247,19 @@ Every other listener answers the path `404`, an upgrade included, so no shared l
 - **Order**: the socket handles each frame whole, a `sub`'s subscribe and the flush that makes the server hold it included, before it reads the next one.
   The client's `flush()` is a WebSocket ping, so its pong comes only after every frame sent before it is handled.
 
-- **What it carries**: a frame's receipt subject is the owning replica's, under `notifications.envoy.relayreply.` (`bus.RelayReplyPrefix`), since the edge's grant publishes no reply inbox and the socket may be on the other replica (`startSessionRelays`).
+- **What it carries**: a frame's receipt subject is the owning machine's, under `notifications.envoy.relayreply.<machine id>.` (`natsgrant.EdgeRelayReplyPrefix`), since the edge's grant publishes no reply inbox and the socket may be on another machine (`startSessionRelays`): the edge's grant publishes every machine's receipts and subscribes only its own, so the socket's replica publishes the client's receipt on the owner's subject, which the owner alone reads.
+  The owning replica holds at most 16 of a session's frames in flight, awaiting `done` or `nak` (its session consumers' MaxAckPending, `relayEdgeInFlight`), so a client that reads promptly takes any backlog with its socket open.
   The connection probe is never forwarded or answered, and a message on the relay subject whose reply is no relay receipt is not forwarded either.
 
 - **While it is open**: every 20 seconds, and once at its token's expiry, the socket asks the broker about its token again, from a copy of the upgrade request, spending nothing of the source address's introspection budget (`Verifier.LiveUntil`); every 20 seconds it also pings its client.
-  It closes `4401 credential_expired` at the token's expiry, `4403 credential_refused` when the broker no longer holds the token live (a revoke of the token or of the device login it was traded from) or its answer names another caller, and `1013 broker_unavailable` when the broker cannot be asked.
-  It closes `1013 nats_unavailable` when its subscription is lost, and `1013 slow_consumer` when its client reads its frames slower than they come, past 16 frames or 2 MiB held for it.
+  It closes `4401 credential_expired` at the token's expiry, also while the broker still answers it live with that `exp` for up to a second after it, `4403 credential_refused` when the broker no longer holds the token live (a revoke of the token or of the device login it was traded from) or its answer names another caller, and `1013 broker_unavailable` when the broker cannot be asked.
+  It closes `1013 nats_unavailable` when its subscription is lost, and `1013 slow_consumer` when its client reads its frames slower than they come, past 32 frames or 16 MiB held for it.
   The listener's stop closes every socket `1012 listener_stopping`.
   A close takes at most one second (`relaySocketCloseGrace`), also for a client that reads nothing: no close or check waits for a data frame blocked on such a client, and a write that fails drops the connection at once.
   A frame unanswered at a close, or dropped for a slow consumer, is sent again by the owning relay, so a reopen loses nothing.
 
 - **Tests**: `cmd/listener/relay_socket_test.go` runs the socket in one process with a stand-in broker, on the rig of `relay_socket_fixture_test.go`.
-  `cmd/listener/relay_socket_live_test.go` (build tag `natslive`) runs two edge listeners under `natsgrant.Edge` on the hub's NATS image, with the real broker of `internal/broker/brokertest` and 30-second tokens; its binary checks every second (`-ldflags "-X main.relaySocketCheckBuild=1s"`).
+  `cmd/listener/relay_socket_live_test.go` (build tag `natslive`) runs two edge listeners under `natsgrant.Edge` on the hub's NATS image, with the real broker of `internal/cipher/ciphertest` and 30-second tokens; its binary checks every second (`-ldflags "-X main.relaySocketCheckBuild=1s"`).
 
 ## Local end-to-end
 
