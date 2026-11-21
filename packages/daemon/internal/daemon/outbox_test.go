@@ -1079,15 +1079,17 @@ func TestOutboxSuperviseStartsResumesSuspendsStopsAndDeduplicatesDelivery(t *tes
 	if len(runtime.CallsOf("Resume")) != 1 {
 		t.Fatalf("resume calls = %d, want one", len(runtime.CallsOf("Resume")))
 	}
-	// A tree's close is the expiry of its linger.
-	until := time.Now().Add(-time.Minute)
-	issue.Phase, issue.Status, issue.LingerUntil = phase.Done, "done", &until
+	// The issue's close as done (R24 of dispatch://INFRA-3320) retires its own claims, each session
+	// kept for a reopen: no tree's close ends them any more.
+	issue.Phase, issue.Status = phase.Done, "done"
 	putOutboxIssue(t, pool, records, issue)
-	if err := runner.execute(context.Background(), mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "tree_close", Tree: issue.Tree, Role: claim.RolePlanner, Generation: issue.Generation, Linger: issue.Generation}, time.Now())); err != nil {
-		t.Fatalf("close the planner's tree: %v", err)
+	closed := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "issue_close", Tree: issue.Tree, Role: claim.RolePlanner, Generation: issue.Generation}, time.Now())
+	closed.ID = 59
+	if err := runner.execute(context.Background(), closed); err != nil {
+		t.Fatalf("close the planner's issue: %v", err)
 	}
 	if got := machine.Claim().State; got != supervise.StateRetired {
-		t.Fatalf("claim state after its tree's close = %s, want retired", got)
+		t.Fatalf("claim state after its issue's close = %s, want retired", got)
 	}
 }
 
@@ -1342,8 +1344,9 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 1, Status: "in_progress"}
-	putOutboxIssue(t, pool, records, issue)
+	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Generation: 1, Status: "in_progress", HoldsGate: true}
+	// Its copy row too, so the notices of its moves are routed on a chain the copy shows.
+	putChainIssue(t, pool, records, issue)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{Issue: issue.Key, Repo: "acme/widgets", Number: 114, Branch: "legion/LEGION-208", HeadSHA: "f8f30933", Failing: []string{}, State: record.PullRequestOpen})
 	}); err != nil {
@@ -2236,14 +2239,16 @@ func TestARuntimeThatProvisionsInItsPodsLeavesTheHostWithoutWorkspaces(t *testin
 	}
 }
 
-// A re-admission starts the root's architect again. The linger suspended it, so the start normally
-// resumes it and the resume's ready tells it its tree. It is still running in two cases: its claim
-// was mid-launch when the linger's suspend ran, which the machine ignores while launching, so it
-// came up during the linger and was told nothing; or the re-admission's start ran before the
-// linger's suspend. Then the start finds it working and only records itself: no ready follows, and
-// without a catch-up the architect would sit through the new generation untold. The start tells
-// it, as a ready would, for the launch that runs. A start that launches the claim tells nothing:
-// its ready will.
+// A new run of an issue (decision 8 of dispatch://INFRA-4730: a todo on a record at phase done, the
+// reopen of a merged issue, the rerun of a parked child) starts its architect again. The stop or
+// the close before it suspended or retired that claim, so the start normally resumes it and the
+// resume's ready tells it its issue. It is still running in two cases: its claim was mid-launch
+// when the stop's suspend ran, which the machine ignores while launching, so it came up while the
+// issue was out of work and was told nothing; or the new run's start ran before the stop's
+// suspend. Then the start finds it working and only records itself: no ready follows, and without
+// a catch-up the architect would sit through the new generation untold. The start tells it, as a
+// ready would, for the launch that runs. A start that launches the claim tells nothing: its ready
+// will.
 func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -2303,7 +2308,7 @@ func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 		t.Fatalf("start the running architect for generation 2: %v", err)
 	}
 	told := catchUpReasons()
-	want := fmt.Sprintf("the tree of LEGION-208 at generation 2 as the daemon records it now; start or resume it as your role says launch=%d", launch)
+	want := fmt.Sprintf("the issues under LEGION-208, which you own, at generation 2 as the daemon records them now; start or resume your issue as your role says launch=%d", launch)
 	if len(told) != 1 || told[0] != want || machine.Claim().State != supervise.StateReady {
 		t.Fatalf("after the generation 2 start, catch-ups %q with the architect %s; want one, %q, and the architect left running", told, machine.Claim().State, want)
 	}
@@ -2326,21 +2331,19 @@ func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 // refusal permanent, and both Dispatch kinds take that reading (permanentRefusal): each row is
 // finished with its architect's notice written in the finish's own transaction. Before, one
 // dispatch_message row of a closed issue failed ISSUE_CLOSED once a minute for days with nobody
-// told. The issue's tree has finished here, which is how a Dispatch issue usually comes to be
-// closed, so neither notice reaches anyone either: the architect stopped with the tree
-// (stoppedWithTree), and each notice is finished undelivered with its own line rather than
-// published. So a closed issue costs the outbox one attempt per row and leaves it empty.
+// told. Each notice then reaches the architect that owns the issue, once (R18 of
+// dispatch://INFRA-3320). So a closed issue costs the outbox one attempt per row and leaves it
+// empty.
 func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	now := time.Now().UTC()
-	// The root LEGION-1 lingers (its tree has finished) and its architect is suspended with it,
-	// the pair stoppedWithTree reads. LEGION-2's notices are that root architect's, since
-	// LEGION-2 has no sub-architect of its own running.
-	noticeTree(t, pool, records, true)
+	// LEGION-2 has no sub-architect of its own, so its notices are those of the architect of
+	// LEGION-1, the issue above it on its Dispatch chain, which holds its role.
+	noticeTree(t, pool, records, false)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 	const body = "READY #42 at head\n\nthe rest of the packet"
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.MessagePost{Body: body}, now))
 	// The status write carries no reason, so it makes the one Dispatch call its status is. Every
@@ -2506,24 +2509,21 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 		}
 	}
 
-	// The notices the finishes wrote run on the next drain, and reach nobody: the architect that
-	// owns them stopped with the tree that finished, so each is finished undelivered with its own
-	// line rather than published.
+	// The notices the finishes wrote run on the next drain, and each reaches LEGION-1's architect
+	// once, the refused message's and the refused status write's.
 	if err := runner.RunOnce(ctx); err != nil {
 		t.Fatalf("run the outbox notices: %v", err)
 	}
-	if attempts, delivered := publisher.snapshot(); attempts != 0 || len(delivered) != 0 {
-		t.Fatalf("published %d notices (%+v), want none to an architect stopped with its finished tree", attempts, delivered)
+	told := map[string]int{}
+	_, delivered := publisher.snapshot()
+	for _, published := range delivered {
+		if published.topic != architectTopic(t, "LEGION-1") {
+			t.Fatalf("a refusal's notice was published to %s, want LEGION-1's architect: %+v", published.topic, published)
+		}
+		told[published.payload.(record.Notice).Reason]++
 	}
-	const undelivered = "outbox notice finished undelivered: its architect stopped with its finished tree"
-	told := map[int64]bool{}
-	lines := loggedLines(t, logs.String(), undelivered)
-	for _, line := range lines {
-		told[rowOf(line)] = true
-	}
-	if len(lines) != 2 || !told[messageNotice.id] || !told[statusNotice.id] {
-		t.Fatalf("logged %q for rows %v, want it once for the refused message's notice %d and once for the status write's %d: %s",
-			undelivered, told, messageNotice.id, statusNotice.id, logs.String())
+	if len(delivered) != 2 || told[messageNotice.notice.Reason] != 1 || told[statusNotice.notice.Reason] != 1 {
+		t.Fatalf("published %+v, want the refused message's notice and the refused status write's, each once to LEGION-1's architect", delivered)
 	}
 	if remaining := outboxRows(t, pool); remaining != 0 {
 		t.Fatalf("%d rows left in the outbox, want the refusals and their notices all finished", remaining)
