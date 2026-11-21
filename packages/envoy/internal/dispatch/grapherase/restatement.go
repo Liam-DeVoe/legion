@@ -198,6 +198,12 @@ func (e *Erasure) forgetEmbeddings(ctx context.Context, tx pgx.Tx, read erasedRe
 // the arm writes them from the latest version left, which holds none of the erased text either.
 // A document with no markdown version left is not marked: the arm writes nothing for it
 // (docs' windowDocument) and would leave the mark standing.
+//
+// The documents are bound as uuids and compared with the column as it is stored, so the update
+// reaches each row through document_block_versions' primary key: a cast of the column would have
+// it read the whole table under the run's owner locks (R5). The bind cannot fail, since each
+// document is the part before '#' of a window id readEmbeddings read only where that part is the
+// block's own document's id, which ownDocument reads as a uuid's text (a.id::text).
 func (e *Erasure) restateEmbeddings(ctx context.Context, tx pgx.Tx, forgotten forgottenEmbeddings) error {
 	if len(forgotten.issues) > 0 {
 		tag, err := tx.Exec(ctx, `
@@ -213,7 +219,7 @@ func (e *Erasure) restateEmbeddings(ctx context.Context, tx pgx.Tx, forgotten fo
 	if len(forgotten.documents) > 0 {
 		if _, err := tx.Exec(ctx, `
 			update document_block_versions owed set windows_owed_at = coalesce(owed.windows_owed_at, now())
-			where owed.artifact_id::text = any($1::text[])
+			where owed.artifact_id = any($1::uuid[])
 			  and exists (select 1 from artifact_versions left_standing
 			              where left_standing.artifact_id = owed.artifact_id and left_standing.markdown is not null)`,
 			forgotten.documents); err != nil {
