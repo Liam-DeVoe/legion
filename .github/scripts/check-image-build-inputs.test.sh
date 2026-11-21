@@ -146,6 +146,16 @@ sed -i '/data\/pages.json/d' "$root/docker/app.Dockerfile"
 sed -i 's|^RUN bun build|RUN\t--mount=type=bind,source=data,target=/repo/data bun build|' "$root/docker/app.Dockerfile"
 run_check "$root"
 check "a RUN with a tab before its mount passes" "$(is "$status" 0)"
+# BuildKit ends a line at a line feed alone (bufio.ScanLines), so a vertical tab, a form feed or a
+# lone carriage return after COPY is white space inside the instruction, not the end of its line.
+for space in 'vertical tab:\v' 'form feed:\f' 'carriage return:\r'; do
+  name=${space%%:*}
+  root=$(fixture "copy-${name// /-}")
+  write_dockerfile "$root"
+  sed -i "s|^COPY data/pages.json data/pages.json\$|COPY${space#*:}data/pages.json data/pages.json|" "$root/docker/app.Dockerfile"
+  run_check "$root"
+  check "a COPY with a $name after its word passes" "$(is "$status" 0)"
+done
 root=$(fixture continued)
 write_dockerfile "$root"
 sed -i 's|^COPY data/pages.json data/pages.json$|COPY\t\\\n    data/pages.json data/pages.json|' "$root/docker/app.Dockerfile"
@@ -164,6 +174,12 @@ check "names the dropped file" "$(contains "$out" 'which reads data/pages.json')
 printf 'data\n!data/pages.json\n' > "$root/.dockerignore"
 run_check "$root"
 check "passes once a later ! line takes it back" "$(is "$status" 0)"
+# Docker reads a .dockerignore by the same lines, so a vertical tab inside a line ends no pattern.
+root=$(fixture ignored-vertical-tab)
+write_dockerfile "$root"
+printf 'other\vdata\n' > "$root/.dockerignore"
+run_check "$root"
+check "a .dockerignore line with a vertical tab in it is one pattern, which drops no file" "$(is "$status" 0)"
 
 echo "case: a Bun build no row names is refused"
 root=$(fixture unnamed)

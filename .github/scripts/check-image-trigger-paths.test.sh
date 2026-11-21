@@ -221,6 +221,17 @@ printf 'RUN\t--mount=type=bind,source=packages/other,target=/o cat /o/readme.md\
 run_check "$root"
 check "a RUN with a tab before its mount fails" "$(is "$status" 1)"
 check "  and names the mounted source" "$(contains "$out" 'does not cover packages/other (docker/Dockerfile:7)')"
+# BuildKit ends a line at a line feed alone (bufio.ScanLines), so a vertical tab, a form feed or a
+# lone carriage return after COPY is white space inside the instruction, not the end of its line.
+for space in 'vertical tab:\v' 'form feed:\f' 'carriage return:\r'; do
+  name=${space%%:*}
+  root=$(fixture "copy-${name// /-}")
+  # shellcheck disable=SC2059 # the format holds the escape of the character under test
+  printf "COPY${space#*:}packages/other /other\n" >> "$root/docker/Dockerfile"
+  run_check "$root"
+  check "a COPY with a $name after its word fails" "$(is "$status" 1)"
+  check "  and names its source" "$(contains "$out" 'does not cover packages/other (docker/Dockerfile:7)')"
+done
 root=$(fixture continued)
 printf 'COPY \\\n    packages/other /other\n' >> "$root/docker/Dockerfile"
 run_check "$root"

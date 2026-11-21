@@ -207,6 +207,7 @@ from workflow_paths import (
     dockerignore_filter,
     events,
     glob_regex,
+    read_docker_file,
     unread_filter_patterns,
     unread_patterns,
     walk,
@@ -1687,7 +1688,7 @@ for workflow, job_name, step, context, dockerfile, _ in builds:
         inputs.append((f"{entry[2]} (computed into this build's inputs)", [entry[2]]))
     # Each COPY, ADD and RUN bind mount, read by the one Dockerfile grammar that
     # check-image-build-inputs.sh reads too (workflow_paths.py).
-    for line, command, arguments in dockerfile_instructions(Path(dockerfile).read_text()):
+    for line, command, arguments in dockerfile_instructions(read_docker_file(dockerfile)):
         try:
             if command in {"COPY", "ADD"}:
                 operands = copy_operands(arguments)

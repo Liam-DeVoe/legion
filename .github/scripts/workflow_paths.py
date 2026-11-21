@@ -82,7 +82,7 @@ def dockerignore_filter(path: str | None):
     if path is None:
         return lambda _: False
     rules = []
-    for line in Path(path).read_text().splitlines():
+    for line in docker_lines(read_docker_file(path)):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -100,6 +100,26 @@ def dockerignore_filter(path: str | None):
         return dropped
 
     return ignored
+
+
+def read_docker_file(path: str | Path) -> str:
+    """The text of a Dockerfile or a .dockerignore as its bytes hold it: read with no translation of
+    its line ends, which Path.read_text would make, turning a lone carriage return into a line
+    feed before docker_lines reads it."""
+    with open(path, newline="") as file:
+        return file.read()
+
+
+def docker_lines(text: str) -> list[str]:
+    """The lines of a Dockerfile or a .dockerignore as Docker reads them: Go's bufio.ScanLines,
+    which BuildKit's parser and the .dockerignore reader scan with, ends a line at a line feed
+    alone and drops one carriage return before it. So a vertical tab, a form feed or a lone
+    carriage return stays in its line, where str.splitlines would end one there, and inside an
+    instruction it is white space (INSTRUCTION_WORD_END). Read the text with read_docker_file."""
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return [line.removesuffix("\r") for line in lines]
 
 
 class DockerfileUnreadable(ValueError):
@@ -121,13 +141,13 @@ def _command(instruction: str) -> tuple[str, str]:
 
 
 def dockerfile_instructions(text: str) -> Iterator[tuple[int, str, str]]:
-    """(line, command, arguments) of each instruction of a Dockerfile, as Docker reads one: comment
-    lines dropped, also inside a continuation, continuation lines joined, blank lines skipped, the
-    command in upper case and ended by any white space (_command), the line the one the instruction
-    starts on. check-image-trigger-paths.sh reads the context sources of each, and
-    check-image-build-inputs.sh where each puts them."""
+    """(line, command, arguments) of each instruction of a Dockerfile, as Docker reads one: its
+    lines as BuildKit ends them (docker_lines), comment lines dropped, also inside a continuation,
+    continuation lines joined, blank lines skipped, the command in upper case and ended by any white
+    space (_command), the line the one the instruction starts on. check-image-trigger-paths.sh
+    reads the context sources of each, and check-image-build-inputs.sh where each puts them."""
     pending, start = "", 0
-    for number, raw in enumerate(text.splitlines(), start=1):
+    for number, raw in enumerate(docker_lines(text), start=1):
         stripped = raw.strip()
         if not pending:
             start = number

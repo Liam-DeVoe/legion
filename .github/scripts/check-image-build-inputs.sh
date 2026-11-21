@@ -60,7 +60,7 @@ from pathlib import Path
 
 from image_build_entries import STAGES
 from workflow_paths import (DockerfileUnreadable, bind_mounts, copy_operands, dockerfile_instructions,
-                            dockerignore_filter, glob_regex, walk)
+                            dockerignore_filter, glob_regex, read_docker_file, walk)
 
 REPO = os.path.realpath(".")
 problems: list[str] = []
@@ -100,7 +100,7 @@ def instructions(path: str) -> list[dict]:
     out = []
     stage, workdir, finals = None, "/", {}
     index = 0
-    for line, command, arguments in dockerfile_instructions(Path(path).read_text()):
+    for line, command, arguments in dockerfile_instructions(read_docker_file(path)):
         if command == "FROM":
             if stage is not None:
                 finals[stage] = workdir
