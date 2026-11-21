@@ -8081,6 +8081,7 @@ each issue's pod (every role of it alike) and the image probe's.
   either way, stop it declaring the ConfigMap first.
   To change a role's model, edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
   Pods started after that use it; a running pod keeps the files it started with until it restarts, since both are mounted by `subPath`, which the kubelet never refreshes.
+  Where the deployment's `plan_guidance` file names the models that its recent issues ran on, measure them again once issues have run on the new model, and write that sentence again: Legion reads no model from that file.
   The example overlay also turns `retry.modelFallback` on (LEGION-578's decision:
   a failed model call is retried on another model;
   which model is the repository's `retry.fallbackChains` to name):
