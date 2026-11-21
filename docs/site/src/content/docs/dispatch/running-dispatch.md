@@ -421,8 +421,10 @@ serves a hub `DISPATCH_PRIVATE_HUBS` does not name, or a hub that no entry serve
 
 `DISPATCH_PRIVATE_LISTENERS` is a JSON list, one object per listener workload: `name`, `hub` (a URL
 of `DISPATCH_PRIVATE_HUBS`), `source` (the secrets broker's base URL), `host` (the `Host` a read
-carries) and `instances` (`host:port` of a headless Service whose addresses are every replica,
-ready or not). Every proof's result, failed or passing, is the go-live report at
+carries), `instances` (`host:port` of a headless Service whose addresses are every replica,
+ready or not) and `token_file` (the file of Dispatch's own projected token for that listener's
+audience, which each read of its replicas presents, since every listener verifies a token for its
+own audience alone). Every proof's result, failed or passing, is the go-live report at
 `GET /private-readiness`: each hub `admitted`, `refused` or `unknown` and each listener replica
 `answered`, `failed` or `unknown`, with status 200 whatever it holds and no project named. It
 answers only Dispatch's own service account, `DISPATCH_SERVICE_ACCOUNT`, presenting its projected

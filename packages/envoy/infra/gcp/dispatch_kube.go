@@ -845,10 +845,20 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 			valueEnv("DISPATCH_HUB_ADMISSION_TOKEN_FILE", dispatchHubAdmissionTokenDir+"/token"),
 			valueEnv("DISPATCH_PRIVATE_LISTENERS", string(listeners)),
 			valueEnv("DISPATCH_SERVICE_ACCOUNT", "system:serviceaccount:"+s.namespace+":"+s.hostname))
-		for _, token := range []struct{ name, dir, audience string }{
+		tokens := []struct{ name, dir, audience string }{
 			{"hub-admission-token", dispatchHubAdmissionTokenDir, natsgrant.HubAdmissionAudience},
 			{"readiness-token", dispatchReadinessTokenDir, s.oidcAudience},
-		} {
+		}
+		// And one for each listener of privateListeners, for that listener's audience, which each
+		// read of its replicas presents: every listener verifies a token for its own audience
+		// alone. Dispatch's own listener has no entry here: every call to it presents the token
+		// envoy-dispatch already mounts for it.
+		for index, listener := range s.privateListeners {
+			if listener.Audience != "" {
+				tokens = append(tokens, struct{ name, dir, audience string }{fmt.Sprintf("listener-token-%d", index), dispatchListenerTokenDir(listener.Name), listener.Audience})
+			}
+		}
+		for _, token := range tokens {
 			appMounts = append(appMounts, corev1.VolumeMountArgs{Name: pulumi.String(token.name), MountPath: pulumi.String(token.dir), ReadOnly: pulumi.Bool(true)})
 			appVolumes = append(appVolumes, corev1.VolumeArgs{Name: pulumi.String(token.name), Projected: &corev1.ProjectedVolumeSourceArgs{Sources: corev1.VolumeProjectionArray{
 				corev1.VolumeProjectionArgs{ServiceAccountToken: &corev1.ServiceAccountTokenProjectionArgs{Audience: pulumi.String(token.audience), ExpirationSeconds: pulumi.Int(3600), Path: pulumi.String("token")}},

@@ -30,10 +30,11 @@ const (
 	dispatchListenerInstancesHost = dispatchListenerInstances + ".dispatch.svc.cluster.local"
 )
 
-// privateListener is one entry of privateListeners for a workload named name serving hub.
+// privateListener is one entry of privateListeners for a workload named name serving hub, whose
+// listener verifies tokens for the audience https://<name>.example.
 func privateListener(name, hub string) gcp.DispatchPrivateListenerArgs {
 	host := name + "-instances.envoy.svc.cluster.local"
-	return gcp.DispatchPrivateListenerArgs{Name: name, Hub: hub, Source: privacySourceURL, Host: host, Instances: host + ":9020"}
+	return gcp.DispatchPrivateListenerArgs{Name: name, Hub: hub, Source: privacySourceURL, Host: host, Instances: host + ":9020", Audience: "https://" + name + ".example"}
 }
 
 // privateHubsArgs is dispatchArgs with two private hubs, Dispatch's own first, a listener workload
@@ -122,10 +123,18 @@ func TestDispatchRendersItsListenerInventory(t *testing.T) {
 	var listeners []map[string]string
 	require.NoError(t, json.Unmarshal([]byte(raw), &listeners), raw)
 	require.Equal(t, []map[string]string{
-		{"name": "envoy-hub-listener", "hub": privateHubURL, "source": privacySourceURL, "host": "envoy-hub-listener-instances.envoy.svc.cluster.local", "instances": "envoy-hub-listener-instances.envoy.svc.cluster.local:9020"},
-		{"name": "other-hub-listener", "hub": otherPrivateHubURL, "source": privacySourceURL, "host": "other-hub-listener-instances.envoy.svc.cluster.local", "instances": "other-hub-listener-instances.envoy.svc.cluster.local:9020"},
-		{"name": "example-dispatch-listener", "hub": privateHubURL, "source": privacySourceURL, "host": dispatchListenerInstancesHost, "instances": dispatchListenerInstancesHost + ":9020"},
+		{"name": "envoy-hub-listener", "hub": privateHubURL, "source": privacySourceURL, "host": "envoy-hub-listener-instances.envoy.svc.cluster.local", "instances": "envoy-hub-listener-instances.envoy.svc.cluster.local:9020", "token_file": "/var/run/secrets/envoy-listener-envoy-hub-listener/token"},
+		{"name": "other-hub-listener", "hub": otherPrivateHubURL, "source": privacySourceURL, "host": "other-hub-listener-instances.envoy.svc.cluster.local", "instances": "other-hub-listener-instances.envoy.svc.cluster.local:9020", "token_file": "/var/run/secrets/envoy-listener-other-hub-listener/token"},
+		{"name": "example-dispatch-listener", "hub": privateHubURL, "source": privacySourceURL, "host": dispatchListenerInstancesHost, "instances": dispatchListenerInstancesHost + ":9020", "token_file": "/var/run/secrets/envoy-listener/token"},
 	}, listeners, "each entry of privateListeners, then Dispatch's own listener for its own hub alone")
+	// Each listener verifies a token for its own audience alone, so each entry's file holds
+	// Dispatch's own token for that entry's audience. Dispatch's own listener's is the token every
+	// call to that listener presents, which the component mounts whatever privateHubs holds.
+	for _, name := range []string{"envoy-hub-listener", "other-hub-listener"} {
+		audience, expiration := projectedToken(t, template, app, "/var/run/secrets/envoy-listener-"+name+"/token")
+		require.Equal(t, "https://"+name+".example", audience, "%s's token is for that listener's audience", name)
+		require.EqualValues(t, 3600, expiration)
+	}
 
 	listenerTemplate := deploymentPodTemplate(t, m, "example-dispatch-listener")
 	labels := listenerTemplate["metadata"].(map[string]any)["labels"]
@@ -182,6 +191,18 @@ func TestDispatchRendersItsListenerInventory(t *testing.T) {
 		}},
 		{"the name of Dispatch's own listener", "privateListeners[1]", "privateListeners[1] (example-dispatch-listener) has the name of", func(a *gcp.DispatchArgs) {
 			a.PrivateListeners[1].Name = "example-dispatch-listener"
+		}},
+		{"a blank audience", "privateListeners[0]", "privateListeners[0] (envoy-hub-listener) has no audience", func(a *gcp.DispatchArgs) {
+			a.PrivateListeners[0].Audience = " "
+		}},
+		{"a name that is no DNS label", "privateListeners[1]", "privateListeners[1] (Other/Hub) has a name that is not a DNS-1123 label", func(a *gcp.DispatchArgs) {
+			a.PrivateListeners[1].Name = "Other/Hub"
+		}},
+		{"the host of another entry", "privateListeners[1]", "privateListeners[1] (other-hub-listener) has the host of privateListeners[0]", func(a *gcp.DispatchArgs) {
+			a.PrivateListeners[1].Host = a.PrivateListeners[0].Host
+		}},
+		{"the host of Dispatch's own listener", "privateListeners[0]", "privateListeners[0] (envoy-hub-listener) has the host of Dispatch's own listener", func(a *gcp.DispatchArgs) {
+			a.PrivateListeners[0].Host = dispatchListenerInstancesHost
 		}},
 		{"privateListeners without privateHubs", "privateListeners[0]", "privateListeners[0] (envoy-hub-listener) serves the hub " + privateHubURL + ", which privateHubs does not name", func(a *gcp.DispatchArgs) {
 			a.PrivateHubs, a.ListenerPrivacySource = nil, nil
