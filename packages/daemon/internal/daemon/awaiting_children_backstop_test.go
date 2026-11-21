@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -77,6 +78,60 @@ func TestTheReleaseOfAWaitingParentsPodArmsNoBackstop(t *testing.T) {
 			if open != tc.armed || earlier != 0 {
 				t.Fatalf("after the release in %s: %d backstops of this release open and %d of the earlier one; want %d and none",
 					tc.at, open, earlier, tc.armed)
+			}
+		})
+	}
+}
+
+// The daemon releases the quiet pod of a parent waiting on its open Dispatch children as it
+// releases any quiet pod (dispatch://INFRA-3320 R11): the idle rule reads the issue's phase for
+// nothing but a phase reminder (workflow.IdleRelease), so the idle pass
+// (workflowRuntime.releaseIdlePods) writes the same three rows for the same quiet pod — the save,
+// the role stop and the teardown — and the drain leaves its implementer suspended by `released`
+// and its Sandbox torn down by the release's own teardown. That teardown arms no backstop for
+// the waiting parent, since no role works awaiting_children (outbox.armBackstops,
+// workflow.OpenPhaseRole), where the same release in implementing, the control, arms the released
+// implementer's.
+func TestAWaitingParentsQuietPodIsReleasedAsAnyQuietPodAndArmsNoBackstop(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		at    phase.Phase
+		armed int
+	}{
+		{name: "in implementing, the control", at: phase.Implementing, armed: 1},
+		{name: "in awaiting_children", at: phase.AwaitingChildren},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			rig := newIdleRigIn(t, tc.at)
+			rig.runner.backstop = time.Hour
+
+			queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
+			if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+				t.Fatalf("queued rows in %s = %v, want the save, then the role stop, then the teardown", tc.at, queued)
+			}
+
+			rig.drain(t)
+
+			if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {
+				t.Fatalf("the released implementer in %s = %s by %s, want suspended by released", tc.at, got.State, got.SuspendedBy)
+			}
+			if _, suspended := rig.rt.reads(); suspended != 1 {
+				t.Fatalf("Sandbox teardowns in %s = %d, want one", tc.at, suspended)
+			}
+			if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {
+				t.Fatalf("teardowns asked in %s = %v, want the release's alone: the issue stays in the workflow", tc.at, asked)
+			}
+			if rig.marked(t) {
+				t.Fatalf("the finished release in %s left its mark behind", tc.at)
+			}
+			var open int
+			if err := rig.pool.QueryRow(ctx, `select count(*) from pod_wake_backstops where issue = $1 and not fired`,
+				rig.issue.Key).Scan(&open); err != nil {
+				t.Fatalf("count the open backstops: %v", err)
+			}
+			if open != tc.armed {
+				t.Fatalf("open backstops after the release in %s = %d, want %d", tc.at, open, tc.armed)
 			}
 		})
 	}

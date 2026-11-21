@@ -214,6 +214,9 @@ const (
 	pwMovedIntoTheWait = "%s: the issue moved into awaiting_children, where it waits on its open Dispatch children."
 	// pwNextTask is when the issue's next task comes, in every form.
 	pwNextTask = "The daemon gives the issue its next task once its children are finished."
+	// pwLeaveUncommitted is the words no phase-ended message carries: each form says what the
+	// worker commits and pushes, or that it writes and pushes nothing more.
+	pwLeaveUncommitted = "leave whatever you have uncommitted"
 )
 
 // pwDropped is what the implementer is told of dropped, a merge forward of issue's pull request
@@ -244,6 +247,8 @@ func pwDroppedBody(issue string, dropped record.DroppedMergeForward) string {
 //   - one, to any other worker: it writes and pushes nothing more, since the implementer may be
 //     merging in the workspace they share, and puts what it found on the Dispatch issue, and it is
 //     not told to commit and push.
+//
+// No form carries the words pwLeaveUncommitted: each says what the worker does with what it has.
 func pwToldR10(t *testing.T, ended []record.PhaseEnded, role claim.Role, from phase.Phase, reason string, dropped *record.DroppedMergeForward) {
 	t.Helper()
 	if len(ended) != 1 || ended[0].Role != role || ended[0].From != from || ended[0].To != phase.AwaitingChildren ||
@@ -272,6 +277,9 @@ func pwToldR10(t *testing.T, ended []record.PhaseEnded, role claim.Role, from ph
 	}
 	if unsaid != "" && strings.Contains(message, unsaid) {
 		t.Fatalf("the %s was told %q, want no %q in it", role, message, unsaid)
+	}
+	if strings.Contains(message, pwLeaveUncommitted) {
+		t.Fatalf("the %s was told %q, want no %q in it: each form says what the worker does with what it has", role, message, pwLeaveUncommitted)
 	}
 	if !reflect.DeepEqual(ended[0].MergeForward, dropped) {
 		t.Fatalf("the phase-ended message names the dropped merge forward %+v, want %+v", ended[0].MergeForward, dropped)
@@ -343,6 +351,26 @@ func pwSeedForward(t *testing.T, pool *pgxpool.Pool, asked *record.MergeForward)
 		pr.MergeForward = asked
 		if err := records.PutPullRequest(context.Background(), tx, *pr); err != nil {
 			t.Fatalf("record the merge forward of %s: %v", spParent, err)
+		}
+	})
+}
+
+// pwConflicting records the parent's pull request, which pwPullRequest recorded, as the daemon's
+// two reads of GitHub a minute apart leave a head they judge conflicting with its base when its
+// base's rules require nothing (workflow's mergeability): CONFLICTING and dirty at head-42, and
+// that head held as the confirmed conflict (record.PullRequest.ConflictingHead), which is what a
+// conflict round is read against (classify.ConflictRound).
+func pwConflicting(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	inTx(t, pool, func(tx pgx.Tx) {
+		records := record.NewStore()
+		pr, err := records.PullRequest(context.Background(), tx, spParent)
+		if err != nil || pr == nil {
+			t.Fatalf("read the pull request of %s = %+v, %v; want the one recorded", spParent, pr, err)
+		}
+		pr.Mergeability, pr.MergeState, pr.ConflictingHead = record.MergeabilityConflicting, record.MergeStateDirty, pr.HeadSHA
+		if err := records.PutPullRequest(context.Background(), tx, *pr); err != nil {
+			t.Fatalf("record the conflict of %s: %v", spParent, err)
 		}
 	})
 }
@@ -501,7 +529,8 @@ func pwMoves() []pwMove {
 	}
 }
 
-// pwHoldsMove runs one of the nine moves on a live tree whose root is the parent, holding the slot
+// pwHoldsMove runs one move a start follows (the nine of pwMoves, and the tester's fail at a
+// conflicting head) on a live tree whose root is the parent, holding the slot
 // its phase keeps, with its pull request open and one child filed and not released, and reads what
 // R9 and R10 say the move writes: the parent in awaiting_children holding the move's start with its
 // reason, its slot freed and no worker started; one awaiting-children notice, carrying what the
@@ -748,6 +777,18 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	for _, move := range pwMoves() {
 		t.Run(move.name, func(t *testing.T) { pwHoldsMove(t, move) })
 	}
+
+	// The one move back whose counts differ: a move made while the record holds the pull request's
+	// own head conflicting with its base counts the implementer's pass and no pair, and fires no
+	// hook (workflow's recordPass, classify.ConflictRound), whether a child holds its start or not
+	// (internal/workflow's TestEveryBackwardMoveIsCountedByItsPair reads the move with no child).
+	// The tester's fail stands for it, under the deployment's hook on every move back.
+	t.Run("the tester's fail at a head conflicting with its base counts the pass, no pair and no hook", func(t *testing.T) {
+		pwHoldsMove(t, pwMove{name: "the tester's fail at a head conflicting with its base", from: phase.Testing, seed: pwConflicting,
+			source: "api", fact: intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester, Claim: "tester",
+				Summary: "a check failed", Verdict: "fail", Commit: "head-42", HandoffRecord: "test-1", HandoffVersion: 1},
+			start: phase.Implementing, cause: "the tester completed testing", summary: "a check failed", verdict: "fail", pass: 1})
+	})
 
 	// R10's "every move into awaiting_children" over a merge forward of the parent's pull request:
 	// each of the 15 paths into awaiting_children (pwPaths), under each of the three states of the

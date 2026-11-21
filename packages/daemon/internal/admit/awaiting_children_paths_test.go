@@ -197,6 +197,67 @@ func TestARootReadmittedFromTheBacklogHoldsNoStart(t *testing.T) {
 	}
 }
 
+// R11's root that the controller moved to the backlog while it waited on its children: the
+// controller sets it back to todo once an open child stands under it, which is the controller
+// skill's rule (skills/legion-controller), outside this package. From that todo the daemon's half
+// follows: the root waits in the admission line at todo for a slot, as any re-admitted root does,
+// and holds that slot only until its design gate opens and its first phase waits on its open
+// child. The cap's one slot is another tree's issue's when the todo is applied, so the re-admitted
+// root stands in the line holding none; once that issue leaves the workflow the next pass admits
+// the root to the slot it frees; its architect registers the design gate and the person approves
+// it, and with the child still open the root starts no phase, gives the slot back and stands in
+// admission.blocked with its child.
+func TestARootSetBackToTodoFromTheBacklogWaitsInTheLineAndHoldsItsSlotUntilItsGateOpens(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 1)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	seedStarted(t, pool, spFiller, phase.Implementing, nil)
+	spWaiting(t, pool, spParent, phase.Implementing, acHeldTask, acHeldReason, func(issue *record.Issue) { issue.LastDispatchSeq = 1 })
+	seedMirrorChild(t, pool, spChild, "backlog", spParent)
+
+	apply(t, pool, admission, "moved-to-backlog", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+		Status: "backlog", Title: spParent, Rank: spParent, HandedOver: true}, engine)
+	if onBacklog := issue(t, pool, spParent); onBacklog.Phase != phase.Done || onBacklog.LingerUntil == nil {
+		t.Fatalf("the root on the backlog = phase %s, linger %v; want done and lingering", onBacklog.Phase, onBacklog.LingerUntil)
+	}
+
+	apply(t, pool, admission, "set-back-to-todo", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
+		Status: "todo", Title: spParent, Rank: spParent, HandedOver: true}, engine)
+	if got := issue(t, pool, spParent); got.Generation != 2 || got.Phase != phase.Admitted || holdsSlot(t, pool, spParent) {
+		t.Fatalf("the root set back to todo = generation %d, phase %s, holding a slot %t (slots %v); want generation 2 at admitted holding none while the cap is full",
+			got.Generation, got.Phase, holdsSlot(t, pool, spParent), slots(t, pool))
+	}
+	assertWaiting(t, pool, []string{spParent})
+
+	// The other tree's issue leaves the workflow, and the next pass admits the root to the slot it
+	// frees.
+	finished := issue(t, pool, spFiller)
+	finished.Phase, finished.Status = phase.Done, "done"
+	putIssue(t, pool, finished)
+	spPass(t, pool, admission)
+	if !holdsSlot(t, pool, spParent) || holdsSlot(t, pool, spFiller) {
+		t.Fatalf("slots after the pass = %v, want the root's alone", slots(t, pool))
+	}
+	if starts := architectStarts(t, pool, spParent); starts != 1 {
+		t.Fatalf("starts of the root's architect = %d, want one", starts)
+	}
+	assertWaiting(t, pool, nil)
+
+	// Its architect registers the design gate and the person approves it. The child is open, so the
+	// root starts no phase and gives the slot back.
+	seedGate(t, pool, record.DesignGate{Issue: spParent, ArtifactID: "artifact-300", LatestVersion: 1})
+	applyFact(t, pool, admission, "gate-approved", intake.DispatchArtifact{Key: spParent, ArtifactID: "artifact-300",
+		Kind: intake.DispatchArtifactApproved, Version: 1, Mark: record.EventMark{Seq: 4, At: reviewedAt}})
+	if root := issue(t, pool, spParent); root.Phase != phase.Admitted || holdsSlot(t, pool, spParent) {
+		t.Fatalf("the root at its gate's opening = phase %s, holding a slot %t; want admitted holding none while %s is open",
+			root.Phase, holdsSlot(t, pool, spParent), spChild)
+	}
+	if want := []record.BlockedIssue{{Issue: spParent, BlockedBy: []string{spChild}}}; !reflect.DeepEqual(blockedNow(t, pool, admission), want) {
+		t.Fatalf("blocked = %#v, want %#v", blockedNow(t, pool, admission), want)
+	}
+}
+
 // The re-admission's own clear of the held start, read where it is written (readmit's non-orphan
 // branch): a root whose record still stands in awaiting_children when its todo re-admits it — a
 // row no departure of this release leaves, since the leave writes the phase done and takes the

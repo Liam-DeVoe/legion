@@ -27,6 +27,11 @@ import (
 // moved into the phase while another tree's issue holds the cap's one slot
 // (internal/projection's TestAWaitingParentStandsInBlockedWithItsOpenChildrenAlone reads it from
 // the records).
+//
+// The completion route's side of the return is staleTesterCompletionAfterTheReturn: the tester's
+// completion of its round from before the wait, sent at the same head after the return, is
+// refused HANDOFF_STALE_ENTRY, moves nothing and records nothing, and the completion of the
+// return's task is taken.
 func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	const (
 		parent = "LEGION-300"
@@ -103,4 +108,6 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	if state.Issues[parent].Phase != phase.AwaitingChildren || state.Admission.Held[0].Reason != record.HeldAwaitingChildren {
 		t.Fatalf("the source state = %+v, %+v; want it left as it was", state.Issues[parent], state.Admission.Held)
 	}
+
+	t.Run(staleCompletionAfterTheReturn, staleTesterCompletionAfterTheReturn)
 }

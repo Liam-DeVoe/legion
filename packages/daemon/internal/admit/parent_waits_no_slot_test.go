@@ -998,7 +998,38 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		}
 	})
 
-	t.Run("a held planning after the architect's backward move comes back at planning, and its implementing round asks for no forward merge", func(t *testing.T) {
+	// The architect's last lever during the wait (R11): it moves a child out of the parent's tree.
+	// A child Dispatch shows under no parent now is no open child of the parent (blockers.Mirror's
+	// readingOf copies the parent Dispatch shows, none among them), so the next pass ends the wait
+	// and the parent comes back at the start it held, on the task it held, naming no child as
+	// merged: the child did not merge.
+	t.Run("a child moved out from under the waiting parent to no parent ends the wait, and the parent comes back at the start it held", func(t *testing.T) {
+		pool, admission, wait := pnMovedParent(t, phase.Testing, nil, "api", tested("fail", "the empty list panics"),
+			phase.Implementing, "the tester completed testing")
+
+		pwApplied(t, pool, admission, "dispatch", "moved-out", intake.DispatchIssue{Key: spChild, ResolvedRepo: "acme/widgets", Seq: 2,
+			Type: "issue.updated", Status: "todo", Title: spChild, Rank: spChild})
+		spPass(t, pool, admission)
+
+		back := issue(t, pool, spParent)
+		if back.Phase != phase.Implementing || back.ChildrenWait != nil {
+			t.Fatalf("the parent after its one child moved to no parent = phase %s, held start %+v; want implementing, the start it held",
+				back.Phase, back.ChildrenWait)
+		}
+		starts := pwWorkerStarts(t, pool, spParent)
+		if len(starts) != 1 || starts[0].role != claim.RoleImplementer || !strings.HasPrefix(starts[0].task, wait.Task) ||
+			strings.Contains(starts[0].task, "merged during the wait") {
+			t.Fatalf("starts of %s = %+v, want the implementer's on the held task %q, naming no child as merged", spParent, starts, wait.Task)
+		}
+		pnAsksNoForwardMerge(t, "the implementer's task", starts[0].task)
+	})
+
+	// The parent that held planning after the architect's backward move comes back at planning with
+	// that reason, and no task of its later rounds asks for a forward merge: the planner's, the
+	// implementer's after the plan, the tester's after it, the implementer's after the tester
+	// fails that round, the tester's of the next round, and the reviewer's once the tester passes
+	// it.
+	t.Run("a held planning after the architect's backward move comes back at planning, and no task of its later rounds asks for a forward merge", func(t *testing.T) {
 		const reason = "the plan missed the empty list"
 		pool, admission, wait := pnMovedParent(t, phase.Accepting, nil, "api",
 			intake.BackwardMove{Issue: spParent, Requester: claim.RoleArchitect, To: phase.Planning, Reason: reason},
@@ -1024,6 +1055,27 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			t.Fatalf("the parent after its planner's completion = phase %s, want implementing", got.Phase)
 		}
 		pnAsksNoForwardMerge(t, "the first implementing task after the wait", pnWorkerStart(t, pool, spParent, claim.RoleImplementer).Task)
+
+		for _, round := range []struct {
+			what string
+			fact intake.HandoffComplete
+			at   phase.Phase
+		}{
+			{what: "the first testing task after the wait", at: phase.Testing, fact: intake.HandoffComplete{Generation: 1, Issue: spParent,
+				Role: claim.RoleImplementer, Claim: "implementer", Summary: "implemented", Commit: "head-42", HandoffRecord: "implement-2", HandoffVersion: 2}},
+			{what: "the implementing task after the tester's fail", at: phase.Implementing, fact: intake.HandoffComplete{Generation: 1, Issue: spParent,
+				Role: claim.RoleTester, Claim: "tester", Summary: "the empty list panics", Verdict: "fail", Commit: "head-42", HandoffRecord: "test-2", HandoffVersion: 2}},
+			{what: "the testing task of the next round", at: phase.Testing, fact: intake.HandoffComplete{Generation: 1, Issue: spParent,
+				Role: claim.RoleImplementer, Claim: "implementer", Summary: "the empty list handled", Commit: "head-42", HandoffRecord: "implement-3", HandoffVersion: 3}},
+			{what: "the reviewing task once the tester passes the round", at: phase.Reviewing, fact: intake.HandoffComplete{Generation: 1, Issue: spParent,
+				Role: claim.RoleTester, Claim: "tester", Summary: "every check passed", Verdict: "pass", Commit: "head-42", HandoffRecord: "test-3", HandoffVersion: 3}},
+		} {
+			pwApplied(t, pool, admission, "api", round.what, round.fact)
+			if got := issue(t, pool, spParent); got.Phase != round.at {
+				t.Fatalf("the parent before %s = phase %s, want %s", round.what, got.Phase, round.at)
+			}
+			pnAsksNoForwardMerge(t, round.what, pnWorkerStart(t, pool, spParent, phase.RoleFor(round.at)).Task)
+		}
 	})
 
 	// k13's parent that comes back at implementing on a pull request that does not conflict: the
