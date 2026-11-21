@@ -39,6 +39,7 @@ import {
   outlineRows,
   tabStopRow,
 } from "./issue-page-i";
+import { planBody } from "./issue-page-k";
 import {
   computedBorderWidth,
   controlLook,
@@ -65,8 +66,8 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
  * `phase`, seeds what it reads with the seeds of `e2e/issue-layout-seed.ts` or the Decisions
  * view's own `e2e/issue-page-q.ts`, and reads the page through D's `e2e/issue-page.ts`, G's
  * `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and the view's own `e2e/issue-page-q.ts`. The
- * row of the address a view draws no row for reads the Verification view too, through V's
- * `e2e/issue-page-v.ts`.
+ * row of the address a view draws no row for reads the Verification and Plan views too, through
+ * V's `e2e/issue-page-v.ts` and K's `e2e/issue-page-k.ts`.
  *
  * Seven rows, each under the title of the check it answers:
  *
@@ -88,8 +89,10 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
  *   Verification a comment of the issue, which the view draws as a row of its own, a comment
  *   the issue holds none of, and a plan task under a statement, which the view draws no row for
  *   and the outline lands on in its place; under Decisions a comment the issue holds none of, a
- *   block no node carries and a comment id written short that names none. Each is named on the
- *   view's address, and each that names nothing draws part I's line for it where the view was.
+ *   block no node carries and a comment id written short that names none; under Plan a comment
+ *   the issue holds none of, and a plan task, which the view draws as a step and lands on. Each
+ *   is named on the view's address, and each that names nothing draws part I's line for it
+ *   where the view was.
  *
  * Each row's first reading waits out the page's load under a message of its own, before G's
  * `expectIssuePageDrawn`: on a build whose slot draws nothing, every row fails on what the view
@@ -892,15 +895,20 @@ const FALLBACK_LINES = {
 // a load of its own: the gone comment, a `#b-` fragment naming a block no node carries, and that
 // comment id written short.
 //
+// Then the Plan view, which draws a row for a plan task alone: the gone comment draws part I's
+// line, and the plan task under the statement keeps the view, which lands on the task's step as
+// its own address does, with the focus on that step's row once the page has gone quiet.
+//
 // Each view is read first at its own address, so each line is drawn where the view drew its
 // rows; its gone comment is the first address read whose node the view draws no row for, so a
 // stage that keeps the view fails on the words of that comment's line, and the Verification view
 // comes first, so such a stage fails there. Each project at its own width: `chromium` the
 // desktop's and `iphone` the phone's.
-// SLOW(>=2s): the whole issue seeded with three more writes, then eight loads: one waited on
-// until the view settles, one until the page goes quiet, one until the outline puts the focus on
-// the plan task's row, and three until the item's read, which the page asks again before it says
-// the item is missing, has settled.
+// SLOW(>=2s): the whole issue seeded with three more writes, then eleven loads: one waited on
+// until the view settles, two until the view draws its rows, two until the page goes quiet, one
+// until the outline puts the focus on the plan task's row, one until the block's line is drawn,
+// and four until the item's read, which the page asks again before it says the item is missing,
+// has settled.
 test("an address the view draws no row for draws the outline's line for it in the view's place, with the focus on that line @phone", async ({
   browser,
 }) => {
@@ -1011,6 +1019,41 @@ test("an address the view draws no row for draws the outline's line for it in th
       decisionsBody(page),
       `a comment id written short that names none ${at}`
     );
+
+    await openPreset(page, seeded.key, "plan");
+    // The Plan view's first reading: it draws its steps at its own address.
+    await expect
+      .poll(() => planBody(page).locator("[data-node-row]").count(), {
+        message: `the Plan view draws no step ${at}`,
+      })
+      .toBeGreaterThan(0);
+    await expectIssuePageDrawn(page);
+
+    const plan = presetPath(seeded.key, "plan");
+    await gotoIssue(page, `${plan}?comment=${GONE_COMMENT}`);
+    await expectFallbackLine(
+      page,
+      FALLBACK_LINES.comment(seeded.key),
+      planBody(page),
+      `a gone comment under Plan ${at}`
+    );
+    // The plan task the Verification view drew no row for is a step of the Plan view, which keeps
+    // the view and lands on the step once every read has answered, as the page going quiet says.
+    await gotoIssue(page, `${plan}#b-${taskBlock}`);
+    await expectLoadSettled(traffic);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: `a plan task under Plan leaves the focus off its step, on the page's body or elsewhere ${at}`,
+      })
+      .toBe(task);
+    await expect(
+      planBody(page).locator(`[data-node-row][data-node-id="${task}"]`),
+      `a plan task under Plan leaves the focus off the view's step for it ${at}`
+    ).toBeFocused();
+    await expect(
+      outlineRows(page),
+      `a plan task under Plan draws the outline in the view's place ${at}`
+    ).toHaveCount(0);
   });
 });
 

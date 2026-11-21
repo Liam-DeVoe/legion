@@ -13,7 +13,7 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../../api/queries";
-import type { ArtifactBlock, IssueAskRow, IssueDetails } from "../../../api/types";
+import type { ArtifactBlock, Comment, IssueAskRow, IssueDetails } from "../../../api/types";
 import { useIsHuman, type WhoAmIReadOptions } from "../../../hooks/useIsHuman";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
@@ -146,12 +146,15 @@ function focusedRow(): string | undefined {
   return document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
 }
 
-/** Which slot the stage drew, by each slot's own mark: a view's body, the Decisions view's or the
- *  Verification view's, or the body that draws the outline or a line in its place. */
+/** Which slot the stage drew, by each slot's own mark: a view's body, the Decisions view's, the
+ *  Plan view's or the Verification view's, or the body that draws the outline or a line in its
+ *  place. */
 function drawnSlot(view: RenderResult): string {
   const { container } = view;
   if (container.querySelector("[data-issue-body]") !== null) return "the body";
-  const drawn = container.querySelector("[data-decisions-body], [data-verification-body]");
+  const drawn = container.querySelector(
+    "[data-decisions-body], [data-plan-body], [data-verification-body]"
+  );
   return drawn === null ? "nothing" : "the view";
 }
 
@@ -623,4 +626,70 @@ test("a comment of the issue or a check, named on the Verification view's addres
     );
     cleanup();
   }
+});
+
+// The Plan view draws a row for a task alone, so a comment named beside it has no row of the view
+// to land on. Once every read is held the view tells the stage so, and the stage draws the outline
+// in the view's place: for an id no comment holds, the comment's own read finds none, and the
+// outline's line says so, with the focus on it, where the view had drawn its step.
+test("a comment the issue holds none of, named on the Plan view's address, draws the outline's line that says so in the view's place, with the focus on it", async () => {
+  answerVerificationReads();
+  const read = spyOn(api, "getComment").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
+  );
+  try {
+    const view = drawStage(`?comment=${GONE_COMMENT}`, { issue: verifiedIssue(), preset: "plan" });
+    const heading = await waitFor(() => view.getByRole("heading", { name: "Comment not found" }), {
+      onTimeout: () =>
+        new Error(
+          `the address of a comment the issue holds none of drew no line saying so under Plan; the stage drew ${drawnSlot(view)}, with the focus on ${focusedRow() ?? document.activeElement?.tagName}`
+        ),
+    });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(drawnSlot(view), "the Plan view was drawn beside the line").toBe("the body");
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// A comment the tree holds is no task either, so the Plan view draws no row for it, where the
+// Verification view draws it as a row of its own: the stage draws the outline in the Plan view's
+// place, which lands on the comment's row.
+test("a comment of the issue, named on the Plan view's address, draws the outline in the view's place, with the focus on the comment's row", async () => {
+  answerVerificationReads();
+  const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "plan" });
+  await waitFor(() => {
+    const row = view.container.querySelector(
+      '[data-issue-body] [data-node-row][data-node-id="head-b"]'
+    );
+    expect(
+      row,
+      `the outline drew no row for the comment; the stage drew ${drawnSlot(view)}`
+    ).not.toBeNull();
+    expect(row, `the comment's address left the focus on ${focusedRow()}`).toHaveFocus();
+  });
+  expect(drawnSlot(view), "the Plan view was drawn beside the outline").toBe("the body");
+});
+
+// A task the Plan view draws keeps the view, which lands on the task's step by its own rule. The
+// comments read is held out until the view has landed, so the view tells the stage whether it
+// draws the task as that read answers, which is the last read the tree waits on.
+test("a task of the plan, named on the Plan view's address, keeps the view, with the focus on the task's step", async () => {
+  answerVerificationReads();
+  const commentsOut = Promise.withResolvers<Comment[]>();
+  spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
+  const view = drawStage(`#b-${PLAN_TASK}`, { issue: verifiedIssue(), preset: "plan" });
+  // The task's step: the row of the view's chart that stands for it.
+  const step = `[data-plan-body] [data-node-row][data-node-id="${blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK)}"]`;
+  await waitFor(() => {
+    const row = view.container.querySelector(step);
+    expect(
+      row,
+      `the view drew no step for the task; the stage drew ${drawnSlot(view)}`
+    ).not.toBeNull();
+    expect(row, `the task's address left the focus on ${focusedRow()}`).toHaveFocus();
+  });
+  await act(async () => commentsOut.resolve([...TWO_THREADS]));
+  expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+  expect(view.container.querySelector(step), "the focus left the task's step").toHaveFocus();
 });
