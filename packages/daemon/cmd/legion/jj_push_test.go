@@ -658,10 +658,6 @@ type rolePushWant struct {
 	others bool
 	// same is each commit id that stays visible, with the author it keeps.
 	same map[string]rolePushIdentity
-	// waiting is whether @ holds a write no command has snapshotted, which the push's own
-	// snapshot takes after the step: the printed new commit is then matched to the remote's by its
-	// change.
-	waiting bool
 	// diverges is whether the push may add a visible commit to a divergent change.
 	diverges bool
 	// metaedits, when not zero, is the number of metaedit operations the push adds.
@@ -728,6 +724,10 @@ type rolePushRewrite struct {
 	// rebased is whether an earlier metaedit of the same step rebases it first, so the old id
 	// printed may be a later commit of its change.
 	rebased bool
+	// snapshotted is whether it is @ with a write no command has snapshotted, which the step's
+	// one snapshot takes before its rewrite, so the old id printed is the commit that snapshot
+	// made of it, a later commit of its change.
+	snapshotted bool
 }
 
 // rolePushPrinted is one line `legion jj: <role>: <old> -> <new>`.
@@ -1000,13 +1000,13 @@ func (f *rolePushFixture) checkRewrites(want rolePushWant, printed []rolePushPri
 	for _, w := range want.rewrites {
 		found := false
 		for i, p := range printed {
-			if used[i] || p.role != w.role || (p.old != w.old && !w.rebased) {
+			if used[i] || p.role != w.role || (p.old != w.old && !w.rebased && !w.snapshotted) {
 				continue
 			}
 			if f.changeOf(p.old) != w.change || f.changeOf(p.new) != w.change {
 				continue
 			}
-			if !want.waiting && !slices.Contains(landed[w.change], rolePushRemoteCommit{id: p.new, name: w.author.name, email: w.author.email}) {
+			if !slices.Contains(landed[w.change], rolePushRemoteCommit{id: p.new, name: w.author.name, email: w.author.email}) {
 				continue
 			}
 			used[i], found = true, true
@@ -1083,9 +1083,10 @@ func rolePushWaitingRow(form rolePushWaitingForm, rewrite bool) rolePushRow {
 
 // waiting makes @ for a push of form: a commit on main that the other role's jj new made, or the
 // implementer's when rewrite is false, and that the implementer described, with a write on disk
-// that no command has snapshotted. It answers @ as the step reads it, and what the push leaves:
-// the remote holds @'s change under form's ref with the write and the implementer's author, and
-// the step printed its rewrite of @ when rewrite is true.
+// that no command has snapshotted. It answers @ as the step reads it before its snapshot, and what
+// the push leaves: the remote holds @'s change under form's ref with the write and the
+// implementer's author, and the step printed its rewrite of @, the commit its snapshot made of @,
+// when rewrite is true.
 func (f *rolePushFixture) waiting(form rolePushWaitingForm, rewrite bool) (rolePushChange, rolePushWant) {
 	f.t.Helper()
 	maker := rolePushReviewer
@@ -1106,11 +1107,11 @@ func (f *rolePushFixture) waiting(form rolePushWaitingForm, rewrite bool) (roleP
 	if ref == "" {
 		ref = "push-" + c.change[:12]
 	}
-	want := rolePushWant{waiting: true, refs: []rolePushRef{{ref: "refs/heads/" + ref, commits: []rolePushCommit{
+	want := rolePushWant{refs: []rolePushRef{{ref: "refs/heads/" + ref, commits: []rolePushCommit{
 		{change: c.change, author: rolePushImplementer, file: "waiting.txt", content: rolePushWaitingContent},
 	}}}}
 	if rewrite {
-		want.rewrites = []rolePushRewrite{{role: "implementer", author: rolePushImplementer, change: c.change, old: c.commit}}
+		want.rewrites = []rolePushRewrite{{role: "implementer", author: rolePushImplementer, change: c.change, old: c.commit, snapshotted: true}}
 	}
 	return c, want
 }
@@ -1463,8 +1464,8 @@ func rolePushRevsetRows() []rolePushArgsRow {
 			return []string{"git", "push", "-r", "ancestors(" + c.commit + ", " + depth + ")"}, rolePushSends("legion/K-1", c, "implementer", impl)
 		}},
 		// @ beside C1, a commit on main, with a write in @ that no command has snapshotted: the
-		// push's own snapshot takes the write after the step's rewrite of @, and the remote gets
-		// both changes with the implementer's author, @'s with the write.
+		// step's one snapshot takes the write before its rewrite of @, and the remote gets both
+		// changes with the implementer's author, @'s with the write.
 		{name: "-c @ | <C1>, @ with a waiting write", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
 			c1 := work(f, "main", "work 1")
 			_, want := f.waiting(rolePushWaitingChange, true)
@@ -1473,23 +1474,22 @@ func rolePushRevsetRows() []rolePushArgsRow {
 			want.rewrites = append(want.rewrites, sent.rewrites...)
 			return []string{"git", "push", "-c", "@ | " + c1.commit}, want
 		}},
-		// The commit id of @, with a write in @ that no command has snapshotted: the step's rewrite
-		// of @ makes another working-copy commit, which the push's own snapshot rewrites once more
-		// with the write, so the real push names it as @, and the remote gets @'s change with the
-		// write and the implementer's author.
+		// The commit id of @, with a write in @ that no command has snapshotted: the step's one
+		// snapshot takes the write and hides the commit the id names, which stands for @, its
+		// change's one visible commit, so the real push names it as @ after the step's rewrite of @,
+		// and the remote gets @'s change with the write and the implementer's author.
 		{name: "-c <the commit id of @>, @ with a waiting write", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
 			w, want := f.waiting(rolePushWaitingChange, true)
 			return []string{"git", "push", "-c", w.commit}, want
 		}},
 		// The commit id @ had before a describe of @ that took no snapshot hid it, with a write in @
 		// that no command has snapshotted: the hidden commit stands for @, its change's one visible
-		// commit, so the real push names it as @ after the step's rewrite of @, whose old id is the
-		// one the describe made, and the remote gets @'s change with the write and the
+		// commit, before the step's one snapshot and after it, so the real push names it as @ after
+		// the step's rewrite of @, and the remote gets @'s change with the write and the
 		// implementer's author.
 		{name: "-c <the commit id of a hidden predecessor of @>, @ with a waiting write", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
 			hidden, want := f.waiting(rolePushWaitingChange, true)
 			f.jj(impl, "--ignore-working-copy", "describe", "-m", rolePushMessage("work in @, described again", "implementer"))
-			want.rewrites[0].old = f.read("@").commit
 			return []string{"git", "push", "-c", hidden.commit}, want
 		}},
 	}
@@ -2431,11 +2431,134 @@ func TestAPushWithNothingToChangeAddsNoOperation(t *testing.T) {
 	})
 }
 
+// descendant makes the state of the rows of a descendant of the working copy: P on main, which the
+// reviewer made with the implementer's trailer; E on P and Y on E, which the implementer made with
+// its own trailer, under be and by; Q on main, which the reviewer made with the implementer's
+// trailer, under bq; each bookmark tracked, which origin holds at the seed; @ brought back to E by
+// jj edit, as restoreWorkspace (internal/launcher/restore.go) brings a saved working copy back; and
+// a write in E that no command has snapshotted. The implementer's mine() then names Y and E, which
+// descendant checks, and once the step has rewritten P, P too, and Q too once it has rewritten Q,
+// which heads(mine()) then names beside Y.
+func (f *rolePushFixture) descendant() (p, e, y, q rolePushChange) {
+	f.t.Helper()
+	impl, rev := rolePushImplementer, rolePushReviewer
+	for _, name := range []string{"be", "by", "bq"} {
+		f.track(name)
+	}
+	q = f.commitOn(rev, impl, "main", rolePushMessage("Q", "implementer"))
+	p = f.commitOn(rev, impl, "main", rolePushMessage("P", "implementer"))
+	e = f.commitOn(impl, impl, p.commit, rolePushMessage("E", "implementer"))
+	y = f.commitOn(impl, impl, e.commit, rolePushMessage("Y", "implementer"))
+	f.bookmark("bq", q.commit)
+	f.bookmark("be", e.commit)
+	f.bookmark("by", y.commit)
+	f.jj(impl, "edit", e.commit)
+	if mine := strings.Fields(f.jj(impl, "--ignore-working-copy", "log", "--no-graph", "-r", "mine()", "-T", `commit_id ++ "\n"`)); !slices.Equal(mine, []string{y.commit, e.commit}) {
+		f.t.Fatalf("the implementer's mine() names %v before the push, want Y and E, %s and %s, alone", mine, y.commit, e.commit)
+	}
+	f.writeFile(filepath.Join(f.repo, "waiting.txt"), rolePushWaitingContent)
+	return p, e, y, q
+}
+
+// rolePushDescendantRows are the pushes of a descendant of the working copy whose write no command
+// has snapshotted (rolePushFixture.descendant), each pushed by the implementer.
+func rolePushDescendantRows() []rolePushNamedRow {
+	impl, rev := rolePushImplementer, rolePushReviewer
+	// written is c as origin holds it after the push: with the write, and the implementer's
+	// author.
+	written := func(c rolePushChange) rolePushCommit {
+		return rolePushCommit{change: c.change, author: impl, file: "waiting.txt", content: rolePushWaitingContent}
+	}
+	// rewritten is c as origin holds it after the push through the form's jj, with the
+	// implementer's author, and held as it holds it after jj alone's, as it was.
+	rewritten := func(c rolePushChange) rolePushCommit { return rolePushCommit{change: c.change, author: impl} }
+	held := func(c rolePushChange) rolePushCommit {
+		return rolePushCommit{change: c.change, author: rev, commit: c.commit}
+	}
+	rewrite := func(c rolePushChange) rolePushRewrite {
+		return rolePushRewrite{role: "implementer", author: impl, change: c.change, old: c.commit}
+	}
+	return []rolePushNamedRow{
+		// -r sends each bookmark that points at a commit it names: be on E and by on Y, and not bq
+		// on Q, which stays where track put it, the seed. mine() names P too once the step has
+		// rewritten it, so the real push gets the ids of Y and of @.
+		{name: "-r mine(), mine() naming E on be and Y on by, @ brought back to E with a waiting write", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
+			p, e, y, q := f.descendant()
+			refs := func(under rolePushCommit) []rolePushRef {
+				return []rolePushRef{
+					{ref: "refs/heads/be", commits: []rolePushCommit{written(e), under}},
+					{ref: "refs/heads/by", commits: []rolePushCommit{written(y), written(e), under}},
+					{ref: "refs/heads/bq"},
+				}
+			}
+			want := rolePushWant{
+				refs: refs(rewritten(p)), rewrites: []rolePushRewrite{rewrite(p)}, same: map[string]rolePushIdentity{q.commit: rev},
+				ids: []rolePushIDs{{argument: "mine()", commits: 2, words: 1, bound: rolePushRevisionBound}}, oneWord: true,
+			}
+			alone := rolePushWant{refs: refs(held(p)), same: map[string]rolePushIdentity{p.commit: rev, q.commit: rev}}
+			return []string{"git", "push", "-r", "mine()"}, want, alone
+		}},
+		// -b bq sends Q, which the step rewrites with P: heads(mine()) names Q too after the step,
+		// so the real push gets n as the id of Y. be and by stay where track put them, the seed.
+		{name: "-b bq --named n=heads(mine()), heads(mine()) naming Y, @ brought back to E with a waiting write", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
+			p, e, y, q := f.descendant()
+			refs := func(underY, onQ rolePushCommit) []rolePushRef {
+				return []rolePushRef{
+					{ref: "refs/heads/n", commits: []rolePushCommit{written(y), written(e), underY}},
+					{ref: "refs/heads/bq", commits: []rolePushCommit{onQ}},
+					{ref: "refs/heads/be"}, {ref: "refs/heads/by"},
+				}
+			}
+			want := rolePushWant{
+				refs: refs(rewritten(p), rewritten(q)), rewrites: []rolePushRewrite{rewrite(p), rewrite(q)},
+				ids: []rolePushIDs{{argument: "heads(mine())", commits: 1, words: 1, bound: rolePushRevisionBound}}, oneWord: true,
+			}
+			alone := rolePushWant{refs: refs(held(p), held(q)), same: map[string]rolePushIdentity{p.commit: rev, q.commit: rev}}
+			return []string{"git", "push", "-b", "bq", "--named", "n=heads(mine())"}, want, alone
+		}},
+	}
+}
+
+// A push whose step has a commit to change sends each descendant of @ as the step left it, with a
+// write in @ that no command has snapshotted: the step takes the push's one snapshot before its
+// rewrite, so every commit id it reads, Y's among them, names a commit the push's own snapshot
+// leaves as it is (rolePushDescendantRows). Over P, the other role's commit with the implementer's
+// trailer, E on P under be and Y on E under by, the implementer's, and Q on main under bq, the
+// other role's with the implementer's trailer, with @ brought back to E by jj edit and a write in
+// E, `-r mine()` sends be and by, and `-b bq --named n=heads(mine())` puts n on Y, which the step
+// gives the push as its id, each commit of E's and Y's with the write. The push exits 0, origin
+// holds the refs the row names and no other beside main, P and Q, where sent, with the
+// implementer's author, the step prints each rewrite and the line of the ids, and no change is
+// divergent; jj alone, on a twin state made the same way, sends the same refs with the write, P and
+// Q as they were.
+func TestADescendantOfTheWorkingCopyGoesWithItsWaitingWrite(t *testing.T) {
+	t.Parallel()
+	rolePushRunNamed(t, rolePushDescendantRows())
+}
+
+// opsSince is the description of each operation after op, an operation id, in the repository's
+// log, the newest first.
+func (f *rolePushFixture) opsSince(op string) []string {
+	f.t.Helper()
+	var descriptions []string
+	for line := range strings.SplitSeq(f.jj(rolePushImplementer, "--ignore-working-copy", "op", "log", "--no-graph", "-T", `id ++ " " ++ description.first_line() ++ "\n"`), "\n") {
+		id, description, _ := strings.Cut(line, " ")
+		if id == op {
+			return descriptions
+		}
+		descriptions = append(descriptions, description)
+	}
+	f.t.Fatalf("the operation log holds no operation %s", op)
+	return nil
+}
+
 // The step's jj commands run one after another, and the real push starts after the last of them
 // ends (a recording jj ahead of the real one writes when each starts and ends). With a write in @
-// that no command has snapshotted and a rewrite to make, every command the recording jj sees
-// before the real push carries --ignore-working-copy, so a step command that would snapshot fails
-// the row, and the remote gets the write.
+// that no command has snapshotted and a rewrite to make, the recording jj sees one command of the
+// step's at most with no --ignore-working-copy, its snapshot, and none after the step's first
+// metaedit; the repository's operation log holds one snapshot of the push's, older than each
+// metaedit of the step, so the real push's own snapshot added no commit; and the remote gets the
+// write in the commit the step printed.
 func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 	t.Parallel()
 	// --bookmark on @, -c @ and the push with no argument: the forms that name @ by a bookmark, by
@@ -2449,17 +2572,26 @@ func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 			t.Parallel()
 			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, rolePushRecords)
-				f.pushAndCheck(row.args, row.setup(f))
+				want := row.setup(f)
+				before := f.op()
+				f.pushAndCheck(row.args, want)
 				calls, pushes := f.oneRealPush()
 				push := calls[pushes]
 				steps := slices.Delete(slices.Clone(calls), pushes, pushes+1)
-				if !slices.ContainsFunc(steps, func(c rolePushCall) bool { return c.has("metaedit") }) {
+				isMetaedit := func(c rolePushCall) bool { return c.has("metaedit") }
+				if !slices.ContainsFunc(steps, isMetaedit) {
 					t.Errorf("the recording jj ran %v before the push, want the step's metaedit among them", steps)
 				}
 				slices.SortFunc(steps, func(a, b rolePushCall) int { return cmp.Compare(a.start, b.start) })
+				snapshots := 0
 				for i, call := range steps {
 					if !call.has("--ignore-working-copy") {
-						t.Errorf("the step ran %q with no --ignore-working-copy, which takes a snapshot", call.args)
+						if snapshots++; snapshots > 1 {
+							t.Errorf("the step ran %q with no --ignore-working-copy, a snapshot after its first", call.args)
+						}
+						if slices.ContainsFunc(steps[:i], isMetaedit) {
+							t.Errorf("the step ran %q with no --ignore-working-copy, a snapshot after its first metaedit", call.args)
+						}
 					}
 					if i > 0 && call.start < steps[i-1].end {
 						t.Errorf("the step ran %q from %d before %q ended at %d", call.args, call.start, steps[i-1].args, steps[i-1].end)
@@ -2467,6 +2599,15 @@ func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 					if push.start < call.end {
 						t.Errorf("the real push started at %d, before the step's %q ended at %d", push.start, call.args, call.end)
 					}
+				}
+				// Newest first: an operation after the snapshot's index is older than it.
+				ops := f.opsSince(before)
+				taken := slices.Index(ops, "snapshot working copy")
+				switch {
+				case taken < 0 || slices.Contains(ops[taken+1:], "snapshot working copy"):
+					t.Errorf("the push added the operations %q, newest first, want one snapshot of the working copy", ops)
+				case slices.ContainsFunc(ops[taken+1:], func(op string) bool { return strings.HasPrefix(op, "edit commit metadata") }):
+					t.Errorf("the push added the operations %q, newest first, want its snapshot older than each metaedit", ops)
 				}
 			})
 		})
@@ -2546,8 +2687,8 @@ var rolePushPanesRows = []struct {
 
 // A pane's jj never runs itself again: with its directory twice on PATH, with a host's jj script
 // after it that calls jj by PATH, and behind a second Legion bin directory, the step runs once (one
-// dry run, one metaedit, one push, which the recording jj sees) and the remote gets the trailer's
-// author.
+// dry run before its snapshot and one after it, one snapshot, one metaedit, one push, which the
+// recording jj sees) and the remote gets the trailer's author.
 func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
@@ -2562,7 +2703,7 @@ func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 				divergent := f.divergence()
 				code, _, stderr := f.pushOn(path, impl, rolePushBookmark...)
 				f.check(rolePushSends("legion/K-1", c, "implementer", impl), code, stderr, divergent, 0)
-				var dry, metaedit, push int
+				var dry, snapshot, metaedit, push int
 				for _, call := range f.calls() {
 					switch {
 					case call.has("metaedit"):
@@ -2571,10 +2712,12 @@ func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 						dry++
 					case call.realPush():
 						push++
+					case !call.has("--ignore-working-copy"):
+						snapshot++
 					}
 				}
-				if dry != 1 || metaedit != 1 || push != 1 {
-					t.Errorf("the recording jj saw %d dry runs, %d metaedits and %d pushes, want one of each: the step runs once\n%v", dry, metaedit, push, f.calls())
+				if dry != 2 || snapshot != 1 || metaedit != 1 || push != 1 {
+					t.Errorf("the recording jj saw %d dry runs, %d snapshots, %d metaedits and %d pushes, want two dry runs, one before the snapshot and one after it, and one of each other: the step runs once\n%v", dry, snapshot, metaedit, push, f.calls())
 				}
 			})
 		})
