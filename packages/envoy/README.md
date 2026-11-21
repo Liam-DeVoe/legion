@@ -113,7 +113,7 @@ Unset or blank, the listener serves as every other listener does, and nothing in
 
 The edge holds each session to the projects of the broker token that admitted it, also in a deployment where each project is public.
 It gives a session no message of no project, except the GitHub events of its projects' repositories.
-The header of `cmd/listener/project_scope.go` lists the rules and the function that holds each, and `cmd/listener/edge_mode_test.go` tests each:
+The header of `cmd/listener/project_scope.go` lists the rules and the function that holds each; `cmd/listener/edge_mode_test.go` and `cmd/listener/edge_repositories_test.go` test each:
 
 - **Start**: the edge refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting, `ENVOY_WEBHOOKS` or a webhook secret, and without the broker-token settings (`ENVOY_AGENT_SECRETS_URL`, `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` or `ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`, and `ENVOY_PUBLIC_URL`).
   Each refusal names the variable (`validateEdgeMode`).
@@ -135,14 +135,20 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   It acknowledges any other GitHub event undelivered and counts it in `envoy_edge_github_withheld_total`:
   under `reason="not_in_project"`, or under `reason="answer_unknown"` while a project of the session has no fresh answer.
   In that second case the session's next frame carries `Envoy-Gap: true` with `Envoy-Gap-Reason: repository_withheld`, and every frame that is not GitHub's is delivered as before.
+  The mark is kept for the session until a frame carrying it is published, also across the session's relay runs on this listener (a new delivery epoch, a pull or publish error, a receipt pause).
   A gap mark with no reason is the stream's own retention gap, and a frame that marks both carries no reason.
   A refresh removes a session's interest in a repository that left its projects.
 
 - **Publishes**: `POST /v1/messages/publish` takes only a role subject in the form that names the project, `notifications.role.<KEY>.<role>`, of one of the token's projects and for a role that works for that project;
   anything else gets `403 topic_not_published` (`edgePublishRefusal`).
 
+- **Senders**: `POST /v1/messages/send` and `POST /v1/messages/publish` take only a message from the session itself: `source` `agent` or left out, and `source_session` the token's session.
+  Any other gets `403 sender_not_session` (`edgeSenderRefusal`), so no edge session sends a message under another source, such as a Dispatch event or a person's message, or under no session.
+
 - **Roles**: `POST /v1/roles/set` and `GET /v1/roles/{role}` take only a role that works for one of the token's projects, else `403 role_not_in_project` (`edgeRoleRefusal`).
-  `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title and capabilities (`edgeRoleHolder`).
+  `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title, client instance and capabilities (`edgeRoleHolder`).
+  A registration renews only the session's claims of roles of its token's projects: a claim the session holds of another project's role, which another listener granted it or a token that listed more did, is released, not renewed, and the answer's `warnings` name it (`store.Registry.RenewRoleClaimsHeldTo`).
+  A claimant made live again is handed the kept messages of its token's projects' roles alone.
 
 - **Sends**: `POST /v1/messages/send` reaches only a session whose registering token listed one of the sender's projects.
   Any other target gets the `404` of a session no listener has heard of, and no wake is reported (`sessionOfProjects`).
