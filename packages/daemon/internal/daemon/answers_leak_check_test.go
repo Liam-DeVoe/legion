@@ -210,7 +210,7 @@ func openAnswerTool(t *testing.T, stateDir string, check ghtool.LeakChecker, log
 	t.Helper()
 	tools := ghTools{host: ghtool.Host{
 		GH: filepath.Join(t.TempDir(), "gh"), Legion: "/opt/legion/bin/legion", StateDir: stateDir, LeakCheck: check, Environ: []string{"PATH=/usr/bin:/bin"},
-		Credential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
+		Credential: appauth.GitHubCredential(outboxTokens{}, servesLegion, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
 		Calls:      &answerCalls{}, Log: log, Now: time.Now,
 	}, bounds: config.AnswerBounds{GHCall: 20 * time.Second, GHOutputChars: 60000, GHCalls: 20}}
 	tool, err := tools.Open(context.Background(), ghtool.Agent{Issue: "LEGION-9", Role: claim.RoleImplementer, Session: "ses_implementer", Phase: "implement",
@@ -270,10 +270,10 @@ func TestAKubernetesDaemonsAnswerLoopRunsTheCheckItInstalledFromTheRuntimesReade
 		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
 		BootTimeout:  time.Second, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: time.Second, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
-		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
+		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, servesLegion, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
+		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, servesLegion, ghrepo.Renames{}, legionInstalled, nil, quietLogger()),
 		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),
-		RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories, LeakCheck: reader, LeakCheckSetting: reader.setting(),
+		RepositoryCache: defaultRepositoryCache(t), CacheRepositories: noRepositories, LeakCheck: reader, LeakCheckSetting: reader.setting(),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -139,7 +139,7 @@ func (w *workflowRuntime) answersTools(ctx context.Context, cfg config.Config, p
 	host := ghtool.Host{
 		GH: p.answers.gh, Git: p.tools["git"], Legion: legion, StateDir: cfg.StateDir,
 		LeakCheck: check, LeakCheckManifestSHA256: cfg.LeakCheck.ManifestSHA256, Environ: environ,
-		Credential: appauth.GitHubCredential(w.apps, p.repositories.Accepted, cfg.RepositoryRenames, nil, nil, w.log), Calls: st, Log: w.log, Now: time.Now,
+		Credential: appauth.GitHubCredential(w.apps, p.repositories.servesRepository, cfg.RepositoryRenames, nil, nil, w.log), Calls: st, Log: w.log, Now: time.Now,
 	}
 	return ghTools{host: host, bounds: cfg.Answers.Bounds}, stop, nil
 }

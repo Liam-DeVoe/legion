@@ -1100,10 +1100,10 @@ register_asker() {
 # default, and the second owner's repository at it too, never as the default: every rig issue works
 # the smoke repository, and A17 names the second one in its question. Dispatch keys a mapping by
 # repository, so a repository names one project at a time and the second pass's call moves the
-# mapping off the first pass's project. A workflow daemon reads the mapping at boot and exits when
-# its project has none (`project <key> has no repository mapped in Dispatch`), so every boot on a
-# pass's project — A13's second round of daemons as much as the pass's own — maps the repository to
-# that project first.
+# mapping off the first pass's project. The daemon reads no mapping (main's #4493): it takes each
+# issue's repository from Dispatch, which resolves an issue that names none to its project's
+# default repository, so every boot on a pass's project — A13's second round of daemons as much as
+# the pass's own — sets that default first, or the pass's rig issues would resolve to none.
 map_repo() {
   dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$1" '{project: $project, default: true}')" >/dev/null
   [ -z "$second_repo" ] ||

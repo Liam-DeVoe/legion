@@ -197,7 +197,7 @@ func OpenHandoffs(ctx context.Context, js jetstream.JetStream, pool Pool, spec H
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", notificationStream, err)
 	}
-	consumer, err := openConsumer(ctx, stream, pool, spec.Logger, jetstream.ConsumerConfig{
+	consumer, err := openConsumer(ctx, js, stream, pool, spec.Logger, jetstream.ConsumerConfig{
 		Durable:       handoffConsumerName(spec.Project),
 		FilterSubject: listenerwire.LegionHandoffSubject(spec.Project, ">"),
 		AckPolicy:     jetstream.AckExplicitPolicy,

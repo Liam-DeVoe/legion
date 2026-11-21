@@ -44,13 +44,14 @@ func helpDir(t *testing.T) string {
 	return dir
 }
 
-// servedRepositories is the project's mapping the test's bundles are built from: two owners, the
-// issue's own `acme` with a second repository beside the one the role writes to, and `Sjawhar`,
-// whose repositories the role only reads.
-func servedRepositories() []ghrepo.Repository {
-	return []ghrepo.Repository{
-		ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("acme/other"), ghrepo.MustParse("Sjawhar/legion"),
-	}
+// servedRepositories is whether the test's bundles serve repo, as the daemon's rename rule answers
+// it (appauth.GitHubCredential's served): the three repositories of two owners, the issue's own
+// `acme` with a second repository beside the one the role writes to, and `Sjawhar`, whose
+// repositories the role only reads, compared as GitHub compares names, regardless of case.
+func servedRepositories(repo ghrepo.Repository) bool {
+	return slices.ContainsFunc([]string{"acme/widgets", "acme/other", "Sjawhar/legion"}, func(served string) bool {
+		return strings.EqualFold(served, repo.String())
+	})
 }
 
 // fakeTokens mints a lease per App role and owner, a read-only one marked as such, as
