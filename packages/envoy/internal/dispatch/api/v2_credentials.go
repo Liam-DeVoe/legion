@@ -52,11 +52,16 @@ func (s *server) v2CredentialRows() []routeRow {
 	return []routeRow{
 		{
 			Method: http.MethodGet, Pattern: "/credential-grants", Auth: authAny, Versions: onlyV2,
-			Description: "The credential grants the caller may revoke, from the secrets broker, newest first: the live " +
-				"grants of the sessions the caller operates, automatic or approved by anyone, and the grants the caller " +
-				"approved on anyone's session, each {grant_id, granted, record_id, enrollment, names, approver, " +
-				"decided_by, expires_at, created_at}. Dispatch names the caller from its own session, so nobody lists " +
-				"another person's. Needs the person scope. " + brokerPageText + ". " + brokerRelayText + ".",
+			Description: "The live credential grants of the caller's Live grants page, from the secrets broker, newest " +
+				"first: those the caller approved, those of the caller's own sessions, those the model judge approved in " +
+				"anyone's stead, and those a pod that acts for no person took without asking (a service's pod, or a " +
+				"person's pod the broker no longer maps), which nobody may revoke; each {grant_id, granted, record_id, " +
+				"enrollment, names, approver, decided_by, expires_at, created_at}. A grant the caller approved, or whose " +
+				"session acts for the caller, is listed whatever project it touches; a person's pod the broker no longer " +
+				"maps to the caller acts for no one, so its other grants are listed to the caller naming no operator. Any " +
+				"other grant of a private project the caller may not see is left out, and one the broker cannot ask " +
+				"Dispatch about is left out while it cannot. Dispatch names the caller from its own session, so nobody " +
+				"lists another person's. Needs the person scope. " + brokerPageText + ". " + brokerRelayText + ".",
 			Handler:  s.listCredentialGrantsV2,
 			Resource: "credential-grants", Kind: kindCollection, Key: "{id}",
 			Query:       brokerListV2Query{},
@@ -66,10 +71,15 @@ func (s *server) v2CredentialRows() []routeRow {
 		},
 		{
 			Method: http.MethodDelete, Pattern: "/credential-grants/{id}", Auth: authAny, Versions: onlyV2,
-			Description: "Revoke a credential grant as the caller: the secrets broker allows it only when the caller is " +
-				"the grant's approver or its enrollment's operator, and a revoke has no way back. 204. Needs the person " +
-				"and approve scopes; a credential scoped to one project is refused. 404 CREDENTIAL_GRANT_NOT_FOUND for an " +
-				"id the broker holds no grant of, and " + brokerRelayText + ".",
+			Description: "Revoke a credential grant as the caller, as the secrets broker decides: its approver, or the " +
+				"person its enrollment acts for, ends it whatever project it touches, and a revoke has no way back. 204. " +
+				"A grant revoked by someone it does not name is 404 CREDENTIAL_GRANT_NOT_FOUND when it belongs to a " +
+				"private project the caller may not see, as an id the broker holds no grant of, and 503 " +
+				"PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one " +
+				"whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box " +
+				"each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke " +
+				"succeeds once it stays put. Needs the person and approve scopes; a credential scoped to one project is " +
+				"refused. 404 CREDENTIAL_GRANT_NOT_FOUND for an id the broker holds no grant of, and " + brokerRelayText + ".",
 			Handler:  s.revokeCredentialGrantV2,
 			Resource: "credential-grants", Kind: kindItem, Key: "{id}",
 			Shape:       routeShape{Status: http.StatusNoContent},
@@ -109,9 +119,12 @@ func (s *server) v2CredentialRows() []routeRow {
 				"dismissal {record_id, dismissed_by, dismissed_at}: only a person whose list holds it may dismiss it " +
 				"(403 NOT_APPROVER), a request that can still be decided is 409 RECORD_PENDING, and one that was " +
 				"decided, or cancelled before its deadline, is 409 RECORD_TERMINAL; a request already dismissed is " +
-				"answered the dismissal the broker holds, and nothing is written. Deciding needs the person and " +
-				"approve scopes, dismissing the person scope; a credential scoped to one project is refused. 404 " +
-				"CREDENTIAL_REQUEST_NOT_FOUND for an id the broker holds no request of, and " + brokerRelayText + ".",
+				"answered the dismissal the broker holds, and nothing is written. Whichever the state, a secret request " +
+				"of a private project the caller may not see is 404 CREDENTIAL_REQUEST_NOT_FOUND, as an id the broker " +
+				"holds no request of, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. Deciding " +
+				"needs the person and approve scopes, dismissing the person scope; a credential scoped to one project is " +
+				"refused. 404 CREDENTIAL_REQUEST_NOT_FOUND for an id the broker holds no request of, and " +
+				brokerRelayText + ".",
 			Handler:  s.putCredentialRequestStateV2,
 			Resource: "state", Kind: kindState,
 			Body: requestBody{Kind: bodyStateUnion, Arms: map[string]any{
@@ -288,6 +301,9 @@ func (s *server) listCredentialGrantsV2(w http.ResponseWriter, r *http.Request) 
 
 // revokeCredentialGrantV2 answers DELETE /api/v2/credential-grants/{id}: the revoke POST
 // /api/v1/credential-grants/{id}/revoke relays (Client.RevokeByApprover), the caller the approver.
+// The broker answers a grant of a private project the caller may not see 404 NOT_FOUND, as an id
+// it holds no grant of, so that too is CREDENTIAL_GRANT_NOT_FOUND; 503 PROJECT_ACCESS_UNAVAILABLE,
+// 403 NOT_APPROVER and 409 GRANT_MOVING are relayed as /api/v1 relays them.
 func (s *server) revokeCredentialGrantV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -394,8 +410,10 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 // it. The no-op rule of dispatch://INFRA-4071/spec R8 is the broker's own: it records a request's
 // dismissal once and answers every later one with that dismissal's values, writing nothing, so a
 // request already dismissed is answered 200 as it stands. The broker's 404 of an id it holds no
-// request of is the route's CREDENTIAL_REQUEST_NOT_FOUND, and every other refusal - 403
-// NOT_APPROVER, 409 RECORD_PENDING, 409 RECORD_TERMINAL - is relayed as /api/v1 relays it.
+// request of, or of a private project's request the caller may not see, is the route's
+// CREDENTIAL_REQUEST_NOT_FOUND, and every other refusal - 403 NOT_APPROVER, 503
+// PROJECT_ACCESS_UNAVAILABLE, 409 RECORD_PENDING, 409 RECORD_TERMINAL - is relayed as /api/v1
+// relays it.
 func dismissCredentialRequestV2(w http.ResponseWriter, r *http.Request, client *cipher.Client, login string) {
 	dismissed, err := client.Dismiss(r.Context(), r.PathValue("id"), login)
 	if err != nil {
