@@ -124,7 +124,19 @@ func workRows(race bool) []workRow {
 // "one statement that refers to many footnotes", and the statements of the first, hold a word or
 // two each, and the row of purpose lines of one id times the reader alone (read), since the walk
 // that it is for is the reader's, and the judgment of each line costs several times the reading of
-// it.
+// it. The judge of the ways out in the whole text (wholeText) and the count of the texts and
+// footnotes that hold a footnote (rotationCanChange) have four rows, each n found in the same way,
+// on the machine of 288 cores at a load average of about 1,200: many sentences of one text, each
+// with a way out that the whole text reads, whose walk, every text read whole for each way out,
+// grew 133.6 times at the least n whose windows cputest reads (6), so its n is that of a smaller
+// window of about 110 ms (23); many lines of one text, whose walk, the bound of the readings of a
+// text read whole taken away, grew 128.6 times at 6, so its n is 12; one claim that refers to many
+// footnotes, one in each eight of which has a way out that takes a verb away, whose walk, the
+// count of the claim's footnotes read again for each way out, first passed the bound at 1,024
+// (32.5; 31.8 at 724), so its n is 2,048, where the footnotes of the other seven, "It.", keep the
+// table's time; and a chain of footnotes, each of whose ways out takes a verb away, whose walk, the
+// walk up from a footnote's ring that goes on where the verbs stay as they were, first passed it at
+// 64 (33.9), so its n is 128.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -295,11 +307,11 @@ func workTable() []workRow {
 			extracted(func(n int) string {
 				return procedureCheck("If the run fails, " + strings.Repeat("read the log, ", n) + "send the report.")
 			})},
-		{"many sentences of one text, each with a way out that the whole text reads", ruleStopNoSpace, 300,
+		{"many sentences of one text, each with a way out that the whole text reads", ruleStopNoSpace, 23,
 			extracted(units(":::check{#c}\nDispatch reads it.", " Dispatch checks a%d.B now.", end))},
-		{"many lines of one text, each with a way out that the whole text reads", ruleStopNoSpace, 300,
+		{"many lines of one text, each with a way out that the whole text reads", ruleStopNoSpace, 12,
 			extracted(units(":::check{#c}\nDispatch reads it.", "\u2028Dispatch checks a%d.B now.", end))},
-		{"one claim that refers to many footnotes, one in each eight of which has a way out that takes a verb away", "ste100-synonym-rotation", 300,
+		{"one claim that refers to many footnotes, one in each eight of which has a way out that takes a verb away", "ste100-synonym-rotation", 2_048,
 			extracted(func(n int) string {
 				var markdown strings.Builder
 				markdown.WriteString(units(":::check{#c}\nDispatch keeps it", "[^%d]", ".\n:::\n\n")(n))
@@ -312,7 +324,7 @@ func workTable() []workRow {
 				}
 				return markdown.String()
 			})},
-		{"a chain of footnotes, each of whose ways out takes a verb away", "ste100-synonym-rotation", 300,
+		{"a chain of footnotes, each of whose ways out takes a verb away", "ste100-synonym-rotation", 128,
 			extracted(func(n int) string {
 				var markdown strings.Builder
 				markdown.WriteString(":::check{#c}\nDispatch keeps it[^1].\n:::\n\n")
