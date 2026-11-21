@@ -446,6 +446,10 @@ type LineFacts struct {
 	// LineWaitingOnIssue until the wait ends. Only the caller can fill it, for the reason Held
 	// gives, and it is read again on every pass as ChildWaits is (blockers.startedWaits).
 	Waits map[string][]string
+	// Rule is the slot rule the line and every judgement over these facts read (SlotRule): the
+	// admission pass's own rule for the facts it judges, and the daemon's for the facts the state
+	// projection reads. The zero value is the daemon's own rule (SlotRule.OrMain).
+	Rule SlotRule
 }
 
 // ChildWait is why one parent's own first phase waits: the open Dispatch children under it, in

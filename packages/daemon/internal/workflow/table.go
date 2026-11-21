@@ -1,6 +1,9 @@
 package workflow
 
-import "github.com/sjawhar/legion/daemon/internal/phase"
+import (
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
 
 // TriggerKind names the observation that can advance a workflow phase.
 type TriggerKind string
@@ -17,6 +20,15 @@ const (
 	TriggerPullRequestMerged   TriggerKind = "pull_request_merged"
 	TriggerSignOff             TriggerKind = "sign_off"
 	TriggerBackward            TriggerKind = "backward"
+	// TriggerConflict is the move back to implementing of a head that conflicts with its base,
+	// under a slot rule whose conflicting head moves back (record.ConflictMovesBack, TableFor).
+	// The daemon's own rule keeps the phase and merges the base forward, so its table carries no
+	// row of it.
+	TriggerConflict TriggerKind = "conflict"
+	// TriggerChecksRed is the move back to implementing by red checks, under a slot rule whose
+	// conflicting head moves back that way (record.ConflictChecksRed, TableFor). The daemon's own
+	// rule carries no row of it.
+	TriggerChecksRed TriggerKind = "checks_red"
 )
 
 // EffectKind identifies the durable outbox consequences selected by a row. EffectSuspend is the
@@ -70,6 +82,14 @@ var Table = append([]Row{
 	// GitHub's merge of the pull request as the phase's own terminating fact.
 	{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
 }, backwardRows()...)
+
+// TableFor is the transition table an engine under rule runs: Table, the daemon's own, and for a
+// rule whose conflicting head moves back (record.SlotRule.Conflict), the rows of that move. A
+// replay of a recorded window reads the table of the rule it replays through here, so the rows a
+// past release ran are the rule's and never a second table beside the daemon's.
+func TableFor(rule record.SlotRule) []Row {
+	return Table
+}
 
 // backwardRows is the edge from every phase back to each phase before it. Like every other row,
 // each writes the status of the phase it enters, so a move back into planning writes in_progress,

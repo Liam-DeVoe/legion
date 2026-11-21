@@ -150,6 +150,12 @@ type Config struct {
 	// reads nothing, so a record names no session and no model, which is the API-only daemon and
 	// every test that reads no agent.
 	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
+	// SlotRule is the slot rule this engine's transitions read (record.SlotRule): the slot mark
+	// each start of a phase worker carries (StartOrOwe) and the table of the moves a conflicting
+	// head makes (TableFor). The zero value is the daemon's own rule (record.SlotRule.OrMain),
+	// which every engine a caller builds without one runs; a replay of a recorded window sets the
+	// rule it replays.
+	SlotRule record.SlotRule
 }
 
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.

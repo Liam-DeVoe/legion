@@ -66,6 +66,11 @@ type Inputs struct {
 	// Now is the instant the held rows are read at (record.Store.HeldRows) and their waits are
 	// measured from.
 	Now time.Time
+	// SlotRule is the slot rule the state is read under (record.SlotRule): the daemon's own, and
+	// a replay's under the rule it replays, so the line, the held words and the answer of `why`
+	// name each issue by the rule that placed it. The zero value is the daemon's own rule
+	// (record.SlotRule.OrMain).
+	SlotRule record.SlotRule
 }
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The

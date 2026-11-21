@@ -111,6 +111,10 @@ type Admission struct {
 	// as work.
 	workerSilence    time.Duration
 	workerBackground time.Duration
+
+	// rule is the slot rule this pass judges by (UseSlotRule): record.MainRule, the daemon's own,
+	// unless a caller that replays a recorded window under another rule set one.
+	rule record.SlotRule
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -152,6 +156,16 @@ func (a *Admission) UseWorkerSilence(silence, background time.Duration) {
 	a.workerBackground = background
 }
 
+// UseSlotRule sets the slot rule this admission's passes judge by (record.SlotRule): which phases
+// keep a slot, which waits give it back, the order of the line and what a start may take from the
+// cap. New sets the daemon's own, record.MainRule, and a replay of a recorded window sets the rule
+// it replays. It is a setter rather than a parameter of New for the reason UseExperiments is: every
+// test that admits anything builds an admission, and the daemon's own rule is what each of them
+// runs.
+func (a *Admission) UseSlotRule(rule record.SlotRule) {
+	a.rule = rule
+}
+
 var _ intake.Handler = (*Admission)(nil)
 
 // New creates an admission handler for one Dispatch project. engine is the workflow's own, shared
@@ -163,7 +177,7 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
 		source: experiment.CryptoSource, pending: make(map[string]intake.DispatchIssue),
-		unclassifiedLogged: make(map[string]uint64)}
+		unclassifiedLogged: make(map[string]uint64), rule: record.MainRule}
 }
 
 // Apply records root and orphan todo observations of issues handed to Legion and every newer
