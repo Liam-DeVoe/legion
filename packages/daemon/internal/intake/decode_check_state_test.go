@@ -97,6 +97,14 @@ func TestTheIntakeDecodesACheckStateChangedEvent(t *testing.T) {
 			Key: "ACME-2", Mark: record.EventMark{Seq: 42, At: checkStateEventAt}, Repo: "acme/widgets",
 			Head: "2222222222222222222222222222222222222222", PullRequests: []int{71}, Checks: []string{},
 			Check: "", CheckVersion: 0, State: "", Reason: "", Roles: []string{}, CICase: "", Serial: 1}},
+		// The fixture's forms carry no role and no CI case, so a decoder that dropped either would
+		// pass both; this form names each.
+		{"the check form with roles and a CI run going on", "ACME-1", 44,
+			withPayloadField(t, withPayloadField(t, fixture.CheckForm, "roles", []string{"implementer", "tester"}), "ci_case", "not_completed"),
+			DispatchCheckState{
+				Key: "ACME-1", Mark: record.EventMark{Seq: 44, At: checkStateEventAt}, Repo: "acme/widgets",
+				Head: "1111111111111111111111111111111111111111", PullRequests: []int{70}, Checks: []string{"k1", "k2"},
+				Check: "k1", CheckVersion: 1, State: "no", Reason: "fail", Roles: []string{"implementer", "tester"}, CICase: "not_completed", Serial: 1}},
 	} {
 		t.Run(tc.form, func(t *testing.T) {
 			event := checkStateEvent(t, fixture, tc.key, tc.seq, tc.payload)
