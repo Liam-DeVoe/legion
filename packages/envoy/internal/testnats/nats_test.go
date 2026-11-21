@@ -294,32 +294,166 @@ func TestAServerOtherTestsUseRefusesAReload(t *testing.T) {
 	Connect(t, uri).Close()
 }
 
-// A Reload once a client has sent the server a direct get fails the test, naming the count, and
-// leaves the server as it was with its clients let through: nats-server's answer to a direct get
-// races a reload (Server.Reload). A Reload before the first direct get reloads, and so does one of
-// a server a Stop and a Start made anew, which counts afresh.
-func TestAReloadAfterADirectGetFailsNamingIt(t *testing.T) {
-	server, uri := Start(t)
-	conn := Connect(t, uri)
-	defer conn.Close()
-	js, err := conn.JetStream()
+// directGetReloads is how many reloads TestAReloadUnderDirectGetsAnswersEveryOne makes under its
+// readers' direct gets, on reloadConnections connections with reloadRequesters readers each.
+const directGetReloads = 25
+
+// directGetForm is one way a client's direct get reaches a stream: config is the server's
+// configuration, and getter opens the bucket "direct" on conn, creating it with key "k" when
+// create is set, and returns one direct get of that key.
+type directGetForm struct {
+	name   string
+	config string
+	getter func(conn *natsgo.Conn, create bool) (func() error, error)
+}
+
+// kvGetter is the getter of a KV get, through a JetStream context with opts: nats.go gets a key of
+// a bucket that allows direct gets, as every bucket it creates does, by a direct get.
+func kvGetter(opts ...natsgo.JSOpt) func(*natsgo.Conn, bool) (func() error, error) {
+	return func(conn *natsgo.Conn, create bool) (func() error, error) {
+		js, err := conn.JetStream(append(opts, natsgo.MaxWait(30*time.Second))...)
+		if err != nil {
+			return nil, err
+		}
+		var kv natsgo.KeyValue
+		if create {
+			if kv, err = js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "direct"}); err == nil {
+				_, err = kv.Put("k", []byte("v"))
+			}
+		} else {
+			kv, err = js.KeyValue("direct")
+		}
+		if err != nil {
+			return nil, err
+		}
+		return func() error {
+			entry, err := kv.Get("k")
+			if err == nil && string(entry.Value()) != "v" {
+				err = fmt.Errorf("the get answered %q, want v", entry.Value())
+			}
+			return err
+		}, nil
+	}
+}
+
+// directGetForms are the three ways a direct get reaches a stream that the reload test runs: a KV
+// get, a KV get through the prefix of the server's JetStream domain, and a request on a subject the
+// global account's mapping turns into a direct get.
+var directGetForms = []directGetForm{
+	{name: "kv", config: hostOnlyConfig, getter: kvGetter()},
+	{name: "domain", config: "jetstream { domain: hub }\n", getter: kvGetter(natsgo.Domain("hub"))},
+	{name: "mapped", config: "mappings { \"dg.>\": \"$JS.API.DIRECT.GET.>\" }\n", getter: func(conn *natsgo.Conn, create bool) (func() error, error) {
+		if create {
+			if _, err := kvGetter()(conn, true); err != nil {
+				return nil, err
+			}
+		}
+		return func() error {
+			reply, err := conn.Request("dg.KV_direct.$KV.direct.k", nil, 30*time.Second)
+			if err != nil {
+				return err
+			}
+			if stream := reply.Header.Get("Nats-Stream"); stream != "KV_direct" || string(reply.Data) != "v" {
+				return fmt.Errorf("the mapped request answered stream %q, status %q, data %q; want a direct get of KV_direct", stream, reply.Header.Get("Status"), reply.Data)
+			}
+			return nil
+		}, nil
+	}},
+}
+
+// A reload under clients' direct gets answers every get and keeps every connection, and under the
+// race detector it is no data race, whichever way the gets reach the stream (directGetForms).
+// nats-server reads its options without the lock as it answers a direct get, on the client's own
+// goroutine (Server.Reload), and every reload sets them anew (setOpts) whatever it changes: with
+// the hold and the barrier alone, without the lock order Reload takes (Server.ordered), -race
+// reported that race in each form.
+func TestAReloadUnderDirectGetsAnswersEveryOne(t *testing.T) {
+	for _, form := range directGetForms {
+		t.Run(form.name, func(t *testing.T) {
+			server, uri := StartConfig(t, form.config, []string{"-js"}, true)
+			first := Connect(t, uri)
+			t.Cleanup(first.Close)
+			if _, err := form.getter(first, true); err != nil {
+				t.Fatalf("create the bucket: %v", err)
+			}
+			stop := make(chan struct{})
+			var answered atomic.Int64
+			failures := make(chan error, reloadConnections*reloadRequesters)
+			var readers sync.WaitGroup
+			halt := sync.OnceFunc(func() {
+				close(stop)
+				readers.Wait()
+			})
+			defer halt()
+			for range reloadConnections {
+				conn := Connect(t, uri)
+				t.Cleanup(conn.Close)
+				get, err := form.getter(conn, false)
+				if err != nil {
+					t.Fatalf("open the bucket: %v", err)
+				}
+				for range reloadRequesters {
+					readers.Go(func() {
+						for {
+							select {
+							case <-stop:
+								return
+							default:
+							}
+							if err := get(); err != nil {
+								failures <- err
+								return
+							}
+							answered.Add(1)
+						}
+					})
+				}
+			}
+			for n := 1; n <= directGetReloads; n++ {
+				if err := server.Reload(t, form.config); err != nil {
+					t.Fatalf("reload %d: %v", n, err)
+				}
+			}
+			halt()
+			close(failures)
+			for err := range failures {
+				t.Errorf("a direct get across the reloads failed: %v", err)
+			}
+			if answered.Load() == 0 {
+				t.Fatal("no direct get was answered; this test says nothing about a reload under direct gets")
+			}
+			if reloads := strings.Count(server.Log(), "Reloaded server configuration"); reloads != directGetReloads {
+				t.Fatalf("the server reloaded %d times, want %d", reloads, directGetReloads)
+			}
+			t.Logf("%d direct gets answered across %d reloads", answered.Load(), directGetReloads)
+		})
+	}
+}
+
+// A Reload of a server that a client reached around the relay, at the server's own port, and sent
+// a message fails the test naming that client, and the server does not reload: the hold cannot stop
+// that client, so nothing orders its gets before the reload. Such a client that has sent nothing
+// leaves the reload as it was.
+func TestAReloadOfAServerAClientReachedAroundTheRelayFailsNamingIt(t *testing.T) {
+	server, _ := Start(t)
+	address, err := server.address()
 	if err != nil {
 		t.Fatal(err)
 	}
-	kv, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "reloaded"})
+	around, err := natsgo.Connect("nats://"+address, natsgo.NoReconnect())
 	if err != nil {
-		t.Fatalf("create bucket: %v", err)
+		t.Fatalf("connect at the server's own port: %v", err)
 	}
-	if _, err := kv.Put("k", []byte("v")); err != nil {
-		t.Fatalf("put: %v", err)
-	}
+	t.Cleanup(around.Close)
 	if err := server.Reload(t, hostOnlyConfig); err != nil {
-		t.Fatalf("a reload before any direct get: %v", err)
+		t.Fatalf("a reload while that client has sent nothing: %v", err)
 	}
-	if _, err := kv.Get("k"); err != nil {
-		t.Fatalf("direct get: %v", err)
+	if err := around.Publish("around.relay", []byte("one")); err != nil {
+		t.Fatalf("publish: %v", err)
 	}
-
+	if err := around.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
 	refused := &fatalRecorder{TB: t}
 	done := make(chan struct{})
 	go func() {
@@ -327,20 +461,32 @@ func TestAReloadAfterADirectGetFailsNamingIt(t *testing.T) {
 		_ = server.Reload(refused, hostOnlyConfig)
 	}()
 	<-done
-	if want := fmt.Sprintf("a reload of the NATS server at %s, whose clients have sent it direct gets (1)", uri); !strings.Contains(refused.message, want) {
-		t.Fatalf("the reload after a direct get ended with %q, want it to say %q", refused.message, want)
+	if want := "reached it around the relay and sent it 1 messages, which no hold reaches"; !strings.Contains(refused.message, want) {
+		t.Fatalf("the reload ended with %q, want it to say %q", refused.message, want)
 	}
 	if reloads := strings.Count(server.Log(), "Reloaded server configuration"); reloads != 1 {
-		t.Fatalf("the server reloaded %d times, want once, before the direct get", reloads)
+		t.Fatalf("the server reloaded %d times, want once, before the client sent a message", reloads)
 	}
-	if _, err := kv.Get("k"); err != nil {
-		t.Fatalf("a direct get after the refused reload, which must let the clients through: %v", err)
-	}
+}
 
-	server.Stop(t)
-	server.Start(t)
-	if err := server.Reload(t, hostOnlyConfig); err != nil {
-		t.Fatalf("a reload of the restarted server, which no client has sent a direct get: %v", err)
+// A Reload of a cluster member fails the test naming its routes, and the member does not reload:
+// the member answers a direct get that comes over a route on the stream's own goroutine, which
+// no hold of its clients reaches.
+func TestAReloadOfAClusterMemberFailsNamingItsRoutes(t *testing.T) {
+	cluster := StartCluster(t, 3)
+	member := cluster.Servers[0]
+	refused := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = member.Reload(refused, hostOnlyConfig)
+	}()
+	<-done
+	if want := "routes and 0 leafnode connections, and answers their direct gets on goroutines no hold reaches"; !strings.Contains(refused.message, want) {
+		t.Fatalf("the reload ended with %q, want it to say %q", refused.message, want)
+	}
+	if strings.Contains(member.Log(), "Reloaded server configuration") {
+		t.Fatalf("the member reloaded:\n%s", member.Log())
 	}
 }
 

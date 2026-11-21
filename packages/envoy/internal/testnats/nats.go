@@ -28,9 +28,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -152,8 +154,8 @@ func (s *sharedTB) run() {
 // servers that each declare accounts accounts, and only the newest of them hands accounts out: once
 // it has handed out every one, the next test's account is on a server the account server starts
 // for that test, and the full one goes on serving the tests that hold its accounts until the
-// account server ends. No server of it is ever reloaded to declare more, since a reload races the
-// direct gets of every test the server serves (Server.Reload).
+// account server ends. No server of it is ever reloaded to declare more: a reload would hold every
+// test's clients, and it raced their direct gets (Server.Reload).
 type accountServer struct {
 	accounts int
 
@@ -287,9 +289,6 @@ type Server struct {
 	srv       *natsserver.Server
 	jetStream bool
 	monitor   string
-	// directGetsAtLaunch is the relay's count of direct gets when the running nats-server
-	// started: the ones past it reached this nats-server (Reload).
-	directGetsAtLaunch int64
 }
 
 // URL is the server's client URL, which stays the same across every Stop and Start: it names the
@@ -425,26 +424,30 @@ func (s *Server) Freeze(t testing.TB) func() {
 // delayed by the reload; what the server sends reaches the clients throughout, less the relay's
 // own PONGs. A server whose relay is frozen cannot answer the relay, so its Reload fails.
 //
-// The hold does not keep a reload clear of the direct gets the server answered before it.
-// nats-server (v2.11.4 through v2.15.3, and its main at a0385c9af342 of 2026-11-20) reads its
-// options' MaxPending without the lock setOpts writes them under, as it answers a direct get
-// (getDirectRequest and getDirectMulti, stream.go:6365 and 6236 in v2.15.1; reported as
-// nats-io/nats-server#8914). The hold orders that read before the reload in time, but not for the
-// race detector, as the importing account's lock orders the read above: -race reported a reload of
-// the shared server, hold and all, against another test's KV get (envoy-go-race at
-// cybermonklabs/legion#3924's 6591974b), and a reload of a test's own server that came after 100
-// KV gets on it. So Reload fails t, and leaves the server as it was, once a client of the running
-// server has sent a direct get (the relay counts them, as its clients publish to
-// $JS.API.DIRECT.GET.>): a test reloads its server before its clients' first direct get. A
-// server that hands JetStream accounts to many tests (accountServer), whose direct gets come from
-// other tests at any time, refuses every reload.
+// The barrier puts the reload after the direct gets the server answered, in time, but not for the
+// race detector. nats-server (v2.11.4 through v2.15.3, and its main at a0385c9af342 of 2026-11-20)
+// reads its options' MaxPending without the lock setOpts writes them under, as it answers a direct
+// get (getDirectRequest and getDirectMulti, stream.go:6365 and 6236 in v2.15.1; reported as
+// nats-io/nats-server#8914): -race reported a reload of the shared server, hold and all, against
+// another test's KV get (envoy-go-race at cybermonklabs/legion#3924's 6591974b). A server answers
+// a client's direct get on that client's own goroutine, whatever subject it came by (a mapping, a
+// JetStream domain's prefix), and answers the relay's PING later on that goroutine under the
+// client's lock (processPing, client.go:2805). So after the barrier Reload takes every client's
+// lock in turn (ordered), which orders each of those reads before the reload for the race detector
+// too: without that order, TestAReloadUnderDirectGetsAnswersEveryOne drew the race in every run.
+// That covers only what the relay holds and the clients' own goroutines run: a server with routes
+// or leafnode connections, whose direct gets for them run on the stream's goroutine (mset.gets,
+// stream.go:6143 and 6206 in v2.15.1), or one that a client reached around the relay and sent a
+// message, refuses the reload and fails t; a client that first reaches it around the relay during
+// the reload is not seen. A server that hands JetStream accounts to many tests (accountServer)
+// refuses every reload: it would hold every test's clients.
 func (s *Server) Reload(t testing.TB, config string) error {
 	t.Helper()
 	if s.shared {
-		t.Fatalf("testnats: a reload of the NATS server at %s, which other tests use: it races the direct gets the server answers them (Server.Reload); reload a server of the test's own", s.url)
+		t.Fatalf("testnats: a reload of the NATS server at %s, which other tests use: it would hold every one of their clients and change their server under them (Server.Reload); reload a server of the test's own", s.url)
 	}
 	s.mu.Lock()
-	srv, jetStream, launched := s.srv, s.jetStream, s.directGetsAtLaunch
+	srv, jetStream := s.srv, s.jetStream
 	s.mu.Unlock()
 	if srv == nil {
 		t.Fatal("reload the configuration of a NATS server that is not running")
@@ -473,10 +476,9 @@ func (s *Server) Reload(t testing.TB, config string) error {
 		release()
 		t.Fatalf("hold the NATS server's clients still for its reload: %v", err)
 	}
-	// With the clients held, no direct get can reach the server before the reload.
-	if gets := s.relay.directGetsSent() - launched; gets > 0 {
+	if err := s.ordered(srv); err != nil {
 		release()
-		t.Fatalf("testnats: a reload of the NATS server at %s, whose clients have sent it direct gets (%d): it races them (Server.Reload); reload it before the test's first direct get", s.url, gets)
+		t.Fatalf("testnats: a reload of the NATS server at %s: %v (Server.Reload)", s.url, err)
 	}
 	// ConfigureOptions and ReloadOptions meet over natsserver.FlagSnapshot, a package-level
 	// variable of nats-server; serverOptions clears it under the same lock this takes.
@@ -489,6 +491,28 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	}
 	if err := os.Rename(pending, s.configPath); err != nil {
 		t.Fatalf("keep the configuration the server took: %v", err)
+	}
+	return nil
+}
+
+// ordered takes the lock of each client connection of srv in turn, through Connz, which reads each
+// one under its lock, once the barrier has had each held client's PONG: the race detector then
+// orders everything the server did on those clients' goroutines before the barrier's PING ahead of
+// whatever the caller does next (Reload). It returns why the reload is not ordered so: srv has
+// routes or leafnode connections, or a client the relay does not hold has sent srv a message.
+func (s *Server) ordered(srv *natsserver.Server) error {
+	if routes, leafs := srv.NumRoutes(), srv.NumLeafNodes(); routes+leafs > 0 {
+		return fmt.Errorf("it has %d routes and %d leafnode connections, and answers their direct gets on goroutines no hold reaches", routes, leafs)
+	}
+	connz, err := srv.Connz(&natsserver.ConnzOptions{Limit: math.MaxInt32})
+	if err != nil {
+		return fmt.Errorf("list its connections: %w", err)
+	}
+	held := s.relay.upstreams()
+	for _, conn := range connz.Conns {
+		if address := net.JoinHostPort(conn.IP, strconv.Itoa(conn.Port)); !held[address] && conn.InMsgs > 0 {
+			return fmt.Errorf("a client at %s reached it around the relay and sent it %d messages, which no hold reaches", address, conn.InMsgs)
+		}
 	}
 	return nil
 }
@@ -674,7 +698,6 @@ func (s *Server) launch(t testing.TB) {
 	defer s.mu.Unlock()
 	s.srv = srv
 	s.jetStream = opts.JetStream
-	s.directGetsAtLaunch = s.relay.directGetsSent()
 	if addr := srv.MonitorAddr(); addr != nil {
 		s.monitor = "http://" + addr.String()
 	}
