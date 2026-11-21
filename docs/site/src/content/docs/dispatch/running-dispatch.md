@@ -871,9 +871,10 @@ it serves. Its migrations take about a second: the first builds the new table em
 one, and the second makes every later write of `embeddings` write both tables. The server's
 embeddings fill then copies the stored rows into the new table, in batches of 200, and swaps the
 two tables when it is done. On a bench of production's size (995,184 rows over 20 projects, 15.7
-GiB) the copy took 71 minutes and the swap held both tables for 247 ms: plan on about 71 minutes of
-copying, during which meaning search reads the old table, and one hold of about a quarter of a
-second, during which reads and writes of `embeddings` wait. The log says
+GiB) the copy took 71 to 82 minutes and the swap held both tables for 247 to 341 ms, over five
+runs: plan on about 80 minutes of copying, during which meaning search reads the old table, and
+one hold of about a third of a second, during which reads and writes of `embeddings` wait. The log
+says
 `dispatch: the embeddings partition copy began`, then `... is copying` every 30 seconds with the
 rows so far, then `... finished` with `rows` (read) and `inserted`, and last
 `dispatch: embeddings is partitioned by project: the copy is swapped in` with `held`, how long the
