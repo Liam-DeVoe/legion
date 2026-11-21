@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -32,8 +33,10 @@ import (
 // has none and keeps its configuration. An edge listener's grant holds no create or update of the
 // stream, so its client owns none (bus.Connect), names its inboxes under its machine's prefix, and
 // its start reads the stream and refuses, naming it, when the server has none
-// (edgeStreamPresent); its buckets are raised as every listener's are, at their open, and no
-// keeper raises them after.
+// (edgeStreamPresent). Its grant creates and raises no bucket's stream either, so each bucket is
+// found at its open (bus.EnsureKeyValue), and a bucket the server lacks, or holds at fewer copies
+// than ENVOY_NATS_REPLICAS, ends the open naming the create or raise the server refused; no
+// keeper raises a bucket after.
 func connectListenerBus(cfg config.Service, edge *edgeGrant) (*bus.Client, error) {
 	if edge == nil {
 		return bus.ConnectOwningStream(cfg.NATSURLs, listenerStreamOptions(cfg)...)
@@ -94,7 +97,7 @@ type edgeGrant struct {
 func newEdgeGrant(machineID string, projects []string, met *metrics.Registry) (*edgeGrant, error) {
 	grant, err := natsgrant.Edge(machineID, projects)
 	if err != nil {
-		return nil, fmt.Errorf("edge mode: the edge listener's grant: %w", err)
+		return nil, fmt.Errorf("edge mode: the edge listener's grant for ENVOY_MACHINE_ID %q and ENVOY_EDGE_PROJECTS %q: %w", machineID, strings.Join(projects, ","), err)
 	}
 	return &edgeGrant{
 		inboxPrefix: natsgrant.EdgeInboxPrefix(machineID),

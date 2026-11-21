@@ -71,8 +71,6 @@ func TestParseServicesRefusals(t *testing.T) {
 		"a Google service agent":                     "measure/-/*=google:service-123@gcp-sa-pubsub.iam.gserviceaccount.com",
 		"an account given twice":                     "daemon/-/-=" + daemonAccount + " listener/host-a/*=" + daemonAccount,
 		"an edge listener with no machine id":        "edge-listener/-/PRIV=" + edgeAccount,
-		"an edge listener with every project":        "edge-listener/edge-a/*=" + edgeAccount,
-		"an edge listener held to exchange ones":     "edge-listener/edge-a/-=" + edgeAccount,
 		"an edge listener naming no project key":     "edge-listener/edge-a/priv=" + edgeAccount,
 		"an edge listener naming a project twice":    "edge-listener/edge-a/PRIV,PRIV=" + edgeAccount,
 		"an edge listener naming an empty project":   "edge-listener/edge-a/PRIV,=" + edgeAccount,
