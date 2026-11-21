@@ -1192,19 +1192,37 @@ function handedToConstruct(node: ts.Node, tree: ts.SourceFile): boolean {
   return false;
 }
 
-/** The name a member chain starts from: `badgeLow` of `badgeLow.text`, `edge` of
- *  `edge.excerpt?.text`. */
-function rootOf(expression: ts.Expression): ts.Identifier | undefined {
+/** The member chain `expression` reads: the name it starts from, where it starts from one, and
+ *  the key of each member it reads after that name, in order - a property's name, an element's
+ *  literal key, and `undefined` for any other element key - through `!`, `?.` and brackets:
+ *  `edge.excerpt?.text` is `edge`, then `excerpt` and `text`. */
+function memberChain(expression: ts.Expression): {
+  readonly path: readonly (string | undefined)[];
+  readonly root: ts.Identifier | undefined;
+} {
+  const path: (string | undefined)[] = [];
   let at = expression;
-  while (
-    ts.isPropertyAccessExpression(at) ||
-    ts.isElementAccessExpression(at) ||
-    ts.isNonNullExpression(at) ||
-    ts.isParenthesizedExpression(at)
-  ) {
-    at = at.expression;
+  for (;;) {
+    if (ts.isPropertyAccessExpression(at)) {
+      path.unshift(at.name.text);
+      at = at.expression;
+    } else if (ts.isElementAccessExpression(at)) {
+      const key = uncast(at.argumentExpression);
+      path.unshift(ts.isStringLiteral(key) || ts.isNumericLiteral(key) ? key.text : undefined);
+      at = at.expression;
+    } else if (ts.isNonNullExpression(at) || ts.isParenthesizedExpression(at)) {
+      at = at.expression;
+    } else {
+      break;
+    }
   }
-  return ts.isIdentifier(at) ? at : undefined;
+  return { path, root: ts.isIdentifier(at) ? at : undefined };
+}
+
+/** The name a member chain starts from (`memberChain`): `badgeLow` of `badgeLow.text`, `edge`
+ *  of `edge.excerpt?.text`. */
+function rootOf(expression: ts.Expression): ts.Identifier | undefined {
+  return memberChain(expression).root;
 }
 
 /** The names `tree` imports, each with the module it comes from. A name from the theme module
@@ -1243,9 +1261,14 @@ function uncast(expression: ts.Expression): ts.Expression {
 
 /** The constants `tree` declares at its top level as an object literal, by name, each with that
  *  literal: a table of the page's own words is one (`issue-page/slots/body.tsx`'s
- *  `ABSENT_LINES`, whose lines each hold a `heading`). Which member read off one is words the
- *  file wrote is `readsWordTable`'s to say. */
+ *  `ABSENT_LINES`, whose lines each hold a `heading`). A name the file binds again anywhere below
+ *  its top level is no table (`namesBoundBelowTop`), since a read of it may be of that other
+ *  binding, and neither is a name the file writes to (`writtenNames`), since what it holds is
+ *  then no longer what its literal says. Which member read off a table is words the file wrote
+ *  is `readsWordTable`'s to say. */
 function wordTablesOf(tree: ts.SourceFile): ReadonlyMap<string, ts.ObjectLiteralExpression> {
+  const below = namesBoundBelowTop(tree);
+  const written = writtenNames(tree);
   const tables = new Map<string, ts.ObjectLiteralExpression>();
   for (const statement of tree.statements) {
     if (
@@ -1257,12 +1280,94 @@ function wordTablesOf(tree: ts.SourceFile): ReadonlyMap<string, ts.ObjectLiteral
     for (const declaration of statement.declarationList.declarations) {
       const value =
         declaration.initializer === undefined ? undefined : uncast(declaration.initializer);
-      if (value !== undefined && ts.isObjectLiteralExpression(value)) {
-        if (ts.isIdentifier(declaration.name)) tables.set(declaration.name.text, value);
+      const name = ts.isIdentifier(declaration.name) ? declaration.name.text : undefined;
+      if (
+        value !== undefined &&
+        ts.isObjectLiteralExpression(value) &&
+        name !== undefined &&
+        !below.has(name) &&
+        !written.has(name)
+      ) {
+        tables.set(name, value);
       }
     }
   }
   return tables;
+}
+
+/** Every name a declaration below `tree`'s top level binds (`boundNames`): a variable's - a
+ *  `var` in an inner block among them - a parameter's, a catch clause's, and the own name of a
+ *  function or a class, declared or written as an expression. A top-level declaration's own
+ *  names are the top level's; whatever it holds is below it. */
+function namesBoundBelowTop(tree: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+  const below = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) || ts.isParameter(node)) {
+      for (const name of boundNames(node.name)) names.add(name);
+    } else if (
+      (ts.isFunctionDeclaration(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isClassExpression(node)) &&
+      node.name !== undefined
+    ) {
+      names.add(node.name.text);
+    }
+    ts.forEachChild(node, below);
+  };
+  for (const statement of tree.statements) {
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (declaration.initializer !== undefined) below(declaration.initializer);
+      }
+    } else if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) {
+      ts.forEachChild(statement, (child) => {
+        if (child !== statement.name) below(child);
+      });
+    } else {
+      below(statement);
+    }
+  }
+  return names;
+}
+
+/** Every name `tree` writes to, as the root of what it writes (`memberChain`): what an
+ *  assignment of any kind assigns, compound ones among them, what `++` or `--` steps, what
+ *  `delete` takes out, and the first argument of `Object.assign`. */
+function writtenNames(tree: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+  const write = (target: ts.Expression | undefined): void => {
+    const root = target === undefined ? undefined : memberChain(target).root;
+    if (root !== undefined) names.add(root.text);
+  };
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    ) {
+      write(node.left);
+    } else if (
+      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      (node.operator === ts.SyntaxKind.PlusPlusToken ||
+        node.operator === ts.SyntaxKind.MinusMinusToken)
+    ) {
+      write(node.operand);
+    } else if (ts.isDeleteExpression(node)) {
+      write(node.expression);
+    } else if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === "Object" &&
+      node.expression.name.text === "assign"
+    ) {
+      write(node.arguments[0]);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  return names;
 }
 
 /** The key a member of an object literal is written under, `undefined` for a computed one. */
@@ -1273,89 +1378,21 @@ function memberKey(name: ts.PropertyName): string | undefined {
   return undefined;
 }
 
-/** Whether a scope around `name`, below the file's top level, declares that name again: a
- *  function's parameter or its own name, or a variable, a function or a class of a block. */
-function shadowed(name: ts.Identifier): boolean {
-  for (let scope = name.parent; !ts.isSourceFile(scope); scope = scope.parent) {
-    if (ts.isFunctionLike(scope)) {
-      const own = (scope as ts.FunctionLikeDeclarationBase).name;
-      if (own !== undefined && ts.isIdentifier(own) && own.text === name.text) return true;
-      if (scope.parameters.some((parameter) => boundNames(parameter.name).includes(name.text))) {
-        return true;
-      }
-    }
-    if (ts.isCatchClause(scope) && scope.variableDeclaration !== undefined) {
-      if (boundNames(scope.variableDeclaration.name).includes(name.text)) return true;
-    }
-    if (
-      (ts.isForStatement(scope) || ts.isForOfStatement(scope) || ts.isForInStatement(scope)) &&
-      scope.initializer !== undefined &&
-      ts.isVariableDeclarationList(scope.initializer) &&
-      scope.initializer.declarations.some((one) => boundNames(one.name).includes(name.text))
-    ) {
-      return true;
-    }
-    const statements =
-      ts.isBlock(scope) ||
-      ts.isModuleBlock(scope) ||
-      ts.isCaseClause(scope) ||
-      ts.isDefaultClause(scope)
-        ? scope.statements
-        : undefined;
-    for (const statement of statements ?? []) {
-      if (
-        ts.isVariableStatement(statement) &&
-        statement.declarationList.declarations.some((one) =>
-          boundNames(one.name).includes(name.text)
-        )
-      ) {
-        return true;
-      }
-      if (
-        (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) &&
-        statement.name?.text === name.text
-      ) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 /**
  * Whether `leaf`, a member read off a name, reads words the file itself wrote: the name is one of
- * `tables`, a top-level constant object literal that no scope around `leaf` declares again, and
- * the read's path, resolved inside that literal - a named member by its key, a computed one by
- * every member at that place - reaches nothing but string literals and templates with no
- * substitution. `ABSENT_LINES[kind].heading` is such a read; a holder of a record
- * (`last.node.text`, where `node` is written `undefined`), a record filled at run time
- * (`byKey[id].title`, an empty literal) and a local that shadows a table's name are not.
+ * `tables` (`wordTablesOf`), and the read's path (`memberChain`), resolved inside that literal -
+ * a named member by its key, a computed one by every member at that place - reaches nothing but
+ * string literals and templates with no substitution. `ABSENT_LINES[kind].heading` is such a
+ * read; a holder of a record (`last.node.text`, where `node` is written `undefined`) and a
+ * record filled at run time (`byKey[id].title`, an empty literal) are not.
  */
 function readsWordTable(
   leaf: ts.PropertyAccessExpression,
   tables: ReadonlyMap<string, ts.ObjectLiteralExpression>
 ): boolean {
-  const path: (string | undefined)[] = [];
-  let at: ts.Expression = leaf;
-  for (;;) {
-    if (ts.isPropertyAccessExpression(at)) {
-      path.unshift(at.name.text);
-      at = at.expression;
-    } else if (ts.isElementAccessExpression(at)) {
-      const argument = uncast(at.argumentExpression);
-      path.unshift(
-        ts.isStringLiteral(argument) || ts.isNumericLiteral(argument) ? argument.text : undefined
-      );
-      at = at.expression;
-    } else if (ts.isNonNullExpression(at) || ts.isParenthesizedExpression(at)) {
-      at = at.expression;
-    } else {
-      break;
-    }
-  }
-  if (!ts.isIdentifier(at)) return false;
-  const table = tables.get(at.text);
-  if (table === undefined || shadowed(at)) return false;
+  const { path, root } = memberChain(leaf);
+  const table = root === undefined ? undefined : tables.get(root.text);
+  if (table === undefined) return false;
   let values: ts.Expression[] = [table];
   for (const key of path) {
     const next: ts.Expression[] = [];
@@ -1591,12 +1628,8 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
   /** The stored text a member chain off a record reads (`PROSE_RECORDS`): the path of the field
    *  it reads, as `reading.tree` of `chip.reading?.tree`, where that field holds one. */
   const recordField = (leaf: ts.Expression, record: string): string | undefined => {
-    const path: string[] = [];
-    for (let at = leaf; !ts.isIdentifier(at); ) {
-      if (ts.isPropertyAccessExpression(at)) path.unshift(at.name.text);
-      if (!(ts.isPropertyAccessExpression(at) || ts.isNonNullExpression(at))) return undefined;
-      at = at.expression;
-    }
+    const { path, root } = memberChain(leaf);
+    if (root === undefined || path.some((key) => key === undefined)) return undefined;
     const read = path.join(".");
     return PROSE_RECORDS.get(record)?.some((field) => `${read}.`.startsWith(`${field}.`))
       ? read
@@ -1959,8 +1992,8 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
   {
     file: `${FEATURES}/issue-page/issue-tree.ts`,
     holds:
-      "the issue's words, its key and then its title, which the words filter matches and the batched name read's citations are read from, drawn nowhere (`nodeWords`)",
-    written: "node.text",
+      "the issue's title, joined to its key for the words the words filter matches and the batched name read's citations are read from, drawn nowhere (`nodeWords`)",
+    written: "title",
   },
   {
     file: `${FEATURES}/issue/AssigneeControl.tsx`,
@@ -3088,9 +3121,9 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
   });
 
   // The rule exempts a read only where the literal itself holds the words it reaches: a holder
-  // of a record, a record filled at run time and a local that shadows a table's name each read a
-  // stored text, and each is still a draw.
-  test("a holder, a record filled at run time and a local that shadows a table each draw their stored text", () => {
+  // of a record and a record filled at run time each read a stored text, and each is still a
+  // draw.
+  test("a holder and a record filled at run time each draw their stored text", () => {
     const source = [
       "const LINES = {",
       '  absent: { heading: "Not found" },',
@@ -3105,15 +3138,101 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
       "    </div>",
       "  );",
       "}",
-      "export function Shadowed() {",
-      "  const LINES = useDecision();",
-      "  return <h2>{LINES.question}</h2>;",
-      "}",
     ].join("\n");
     expect(draws(source)).toEqual([
       "fixture.tsx:9 text a JSX child",
       "fixture.tsx:10 body a JSX child",
-      "fixture.tsx:16 question a JSX child",
+    ]);
+  });
+
+  // A name the file binds again anywhere below its top level is no table (`namesBoundBelowTop`):
+  // a read of it may be of that other binding, whose words came from a read, so it is still a
+  // draw wherever it stands - under a local of the table's name, read off a key the table holds.
+  test("a local that shadows a table's name draws its stored text", () => {
+    const source = [
+      "const LINES = {",
+      '  absent: { heading: "Not found" },',
+      "} as const;",
+      "export function Shadowed() {",
+      "  const LINES = useDecision();",
+      "  return <h2>{LINES.absent.heading}</h2>;",
+      "}",
+    ].join("\n");
+    expect(draws(source)).toEqual(["fixture.tsx:6 heading a JSX child"]);
+  });
+
+  // The same for a `var` of the table's name in an inner block, which binds the name for the
+  // whole function around it, outside the block too.
+  test("a var of a table's name in an inner block draws its stored text", () => {
+    const source = [
+      "const LINES = {",
+      '  absent: { heading: "Not found" },',
+      "} as const;",
+      "export function Late({ late }: { late: boolean }) {",
+      "  if (late) {",
+      "    var LINES = useDecision();",
+      "  }",
+      "  return <h2>{LINES.absent.heading}</h2>;",
+      "}",
+    ].join("\n");
+    expect(draws(source)).toEqual(["fixture.tsx:8 heading a JSX child"]);
+  });
+
+  // The same for a class expression of the table's name, which binds the name inside the class.
+  test("a class expression named as a table draws its stored text", () => {
+    const source = [
+      "const LINES = {",
+      '  absent: { heading: "Not found" },',
+      "} as const;",
+      "export const Card = class LINES {",
+      "  static absent = useDecision();",
+      "  render() {",
+      "    return <h2>{LINES.absent.heading}</h2>;",
+      "  }",
+      "};",
+    ].join("\n");
+    expect(draws(source)).toEqual(["fixture.tsx:7 heading a JSX child"]);
+  });
+
+  // A table the file writes to holds what its literal says no longer (`writtenNames`): whatever
+  // writes it - an assignment to a member, a compound one, `++`, `--`, `delete` or
+  // `Object.assign` - a read of it is still a draw. A table nothing writes keeps its exemption.
+  test("a table the file writes to draws what it holds, however it is written", () => {
+    const source = [
+      'const ONE = { absent: { heading: "Not found" } };',
+      'const TWO = { absent: { heading: "Not found" } };',
+      'const THREE = { absent: { heading: "Not found" } };',
+      'const FOUR = { absent: { heading: "Not found" } };',
+      'const FIVE = { absent: { heading: "Not found" } };',
+      'const SIX = { absent: { heading: "Not found" } };',
+      'const KEPT = { absent: { heading: "Not found" } };',
+      "export function Filled({ decision }: { decision: Decision }) {",
+      "  ONE.absent.heading = decision.heading;",
+      "  TWO.absent.heading += decision.heading;",
+      "  THREE.absent.count++;",
+      "  --SIX.absent.count;",
+      "  delete FOUR.absent;",
+      "  Object.assign(FIVE.absent, decision);",
+      "  return (",
+      "    <div>",
+      "      <h2>{ONE.absent.heading}</h2>",
+      "      <h2>{TWO.absent.heading}</h2>",
+      "      <h2>{THREE.absent.heading}</h2>",
+      "      <h2>{FOUR.absent.heading}</h2>",
+      "      <h2>{FIVE.absent.heading}</h2>",
+      "      <h2>{SIX.absent.heading}</h2>",
+      "      <h2>{KEPT.absent.heading}</h2>",
+      "    </div>",
+      "  );",
+      "}",
+    ].join("\n");
+    expect(draws(source)).toEqual([
+      "fixture.tsx:17 heading a JSX child",
+      "fixture.tsx:18 heading a JSX child",
+      "fixture.tsx:19 heading a JSX child",
+      "fixture.tsx:20 heading a JSX child",
+      "fixture.tsx:21 heading a JSX child",
+      "fixture.tsx:22 heading a JSX child",
     ]);
   });
 

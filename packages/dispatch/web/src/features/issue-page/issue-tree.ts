@@ -459,7 +459,12 @@ export function drawnLine({
  *  read is asked to name are read from (`useIssueTree.ts`), which a name in an address's place
  *  would drop. */
 export function nodeWords(node: TreeNode): string {
-  if (node.type === "issue") return `${node.id} ${node.text}`;
+  if (node.type === "issue") {
+    // The issue's title, joined to its key for the words alone (`surface-lists.test.ts`'s list
+    // of what holds no draw).
+    const title = node.text;
+    return `${node.id} ${title}`;
+  }
   return node.tree === undefined ? node.text : wordsOf(node.tree);
 }
 
@@ -532,8 +537,19 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * What the page publishes from the targets of the batched reference read (`reads.targets`) for
  * every surface beside the tree to name them by (`refs/reference-names.tsx`), each read by the
  * rule a chip naming the target is named by (`treeContext`), so a link and a chip naming one
- * target never disagree. All four are read from one context in one walk over the targets, so
- * they cannot disagree either.
+ * target never disagree: the chip of each answered target, named by `chipNaming`.
+ */
+export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
+  const context = treeContext(reads);
+  return chipNaming(
+    (reads.targets ?? []).map((target) => [target.ref, context.chipOf(target.ref)] as const)
+  );
+}
+
+/**
+ * How the page names each target the batched reference read answered, by its reference and the
+ * chip naming it (`targetNaming`). Each reference is in one of the four, read from its chip in
+ * one walk, so the four cannot disagree.
  *
  * - **`readings`**: how each target that something answers to now is named, by its address: the
  *   reading of a chip naming it (`NodeChip.reading`), which the store projects.
@@ -546,18 +562,18 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  *   issue's block it sent no words for - which a surface reads for itself, as a link to the
  *   target does (R8).
  */
-export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
-  const context = treeContext(reads);
+export function chipNaming(
+  entries: Iterable<readonly [reference: string, chip: NodeChip]>
+): Omit<PublishedReferences, "asked"> {
   const ambiguous = new Set<string>();
   const gone = new Set<string>();
   const unnamed = new Set<string>();
   const readings = new Map<string, ReferenceNameReading>();
-  for (const target of reads.targets ?? []) {
-    const chip = context.chipOf(target.ref);
-    if (chip.ambiguous === true) ambiguous.add(target.ref);
-    else if (chip.gone) gone.add(target.ref);
-    else if (chip.reading === undefined) unnamed.add(target.ref);
-    else readings.set(target.ref, chip.reading);
+  for (const [reference, chip] of entries) {
+    if (chip.ambiguous === true) ambiguous.add(reference);
+    else if (chip.gone) gone.add(reference);
+    else if (chip.reading === undefined) unnamed.add(reference);
+    else readings.set(reference, chip.reading);
   }
   return { ambiguous, gone, readings, unnamed };
 }
