@@ -1344,7 +1344,7 @@ func restoreStop(ctx context.Context, a *admission, cause error, left *restoreLe
 	if restoreRules.noStopEntry {
 		return what
 	}
-	if err := errors.Unwrap(a.stop(ctx, what.Error())); err != nil {
+	if err := errors.Unwrap(a.stop(ctx, what.Error(), left.journal(ctx, a))); err != nil {
 		return errors.Join(what, fmt.Errorf("and its stop entry: %w", err))
 	}
 	return what

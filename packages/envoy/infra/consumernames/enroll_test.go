@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -289,8 +290,9 @@ func (h *stack) enrollRun(id, project string) (int, string, string) {
 }
 
 // enrollRequireStopped asserts that enroll of project under a hold of its own wrote a stop entry
-// naming want, wrote neither the store's marker nor the broker's cutover record, and left the hold
-// releasable: its release is admitted and moves the row to released.
+// naming want and recording holdrecord.LeftUnchanged, wrote neither the store's marker nor the
+// broker's cutover record, and left the hold releasable: its release is admitted, since every stop
+// recorded unchanged, and moves the row to released.
 func (h *stack) enrollRequireStopped(project string, store *selection.PGStore, want ...string) {
 	h.t.Helper()
 	id := h.heldHold(holdrecord.WorkflowEnroll)
@@ -299,6 +301,7 @@ func (h *stack) enrollRequireStopped(project string, store *selection.PGStore, w
 	last := h.enrollLast(id)
 	require.Equal(h.t, enrollCommand, last.Command)
 	require.Equal(h.t, "stop", last.State, "enroll of %s ends in its stop entry", project)
+	require.Equal(h.t, holdrecord.LeftUnchanged, last.Outputs["left"], "the stop records that no run of enroll changed anything")
 	for _, w := range want {
 		require.Contains(h.t, stderr, w)
 		require.Contains(h.t, last.Outputs["reason"], w, "the stop entry names what enroll found")
@@ -432,10 +435,12 @@ func TestEnrollANewProjectAfterTheWindow(t *testing.T) {
 // TestAnEnrollRerunAfterACrashCompletes: enroll killed after its store marker write, or after its
 // broker cutover record write too, is admitted again under the same hold, finds this hold's own
 // writes, keeps them and completes the record, and the hold is released. A rerun that finds this
-// hold's own writes beside something that would have stopped it (a checkpoint) writes no stop
-// entry, since a stop would let the hold be released over a half-made enrolment: it exits UNKNOWN
-// with its intent pending, so the release is refused and only its own rerun is admitted. Control:
-// the same checkpoint without any write of this hold makes enroll stop (TestEnrollANewProjectAfterTheWindow).
+// hold's own writes beside something that stops it (a checkpoint, a marker naming another stream)
+// writes a stop recording what every run left, this hold's marker and cutover record, which counts
+// as changed: hold release is refused, and the way out is enroll's rerun, which completes once the
+// finding is gone, or hold abort, whose intent carries the stop's record. Control: the same
+// checkpoint without any write of this hold makes enroll stop recording unchanged, and that hold
+// is released (TestEnrollANewProjectAfterTheWindow).
 func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
 	h := newStack(t)
 	ctx := context.Background()
@@ -490,36 +495,58 @@ func TestAnEnrollRerunAfterACrashCompletes(t *testing.T) {
 		id, db := crashed("ENRPART", selection.StoreState{}, false)
 		requireCompleted(id, "ENRPART", db, last+1)
 	})
-	t.Run("a finding beside this hold's own writes leaves the intent pending", func(t *testing.T) {
+	t.Run("a finding beside this hold's own writes stops recording them", func(t *testing.T) {
 		const project = "ENRHALF"
 		id, db := crashed(project, whole, false)
 		_, err := db.Exec(ctx, `insert into consumer_positions (consumer, stream_seq, stream_time) values ($1, 7, now())`, daemonFixedPrefix+project+"-wake")
 		require.NoError(t, err)
 		code, _, stderr := h.enrollRun(id, project)
-		require.Equal(t, 2, code)
-		require.Contains(t, stderr, "UNKNOWN")
+		require.Equal(t, 1, code)
 		require.Contains(t, stderr, "consumer_positions holds a checkpoint of "+daemonFixedPrefix+project+"-wake")
 		last := h.enrollLast(id)
 		require.Equal(t, enrollCommand, last.Command)
-		require.Equal(t, "intent", last.State, "no stop entry beside this hold's own writes")
-		require.ErrorIs(t, h.release(id), holdrecord.ErrBusy, "the release is refused while enroll's intent is pending")
+		require.Equal(t, "stop", last.State)
+		require.Equal(t, daemonFamily(project)+": store marker done, hold "+id+"'s", last.Outputs["left"], "the stop records the marker an earlier run of enroll wrote")
+		require.ErrorIs(t, h.release(id), holdrecord.ErrOutOfOrder, "hold release is refused over a stop that changed something")
 		_, err = db.Exec(ctx, `delete from consumer_positions`)
 		require.NoError(t, err)
 		requireCompleted(id, project, db, crashedBoundary)
 	})
-	t.Run("this hold's marker naming another stream identity leaves the intent pending", func(t *testing.T) {
+	t.Run("this hold's marker naming another stream identity stops, and hold abort ends the hold", func(t *testing.T) {
 		const project = "ENRWRONG"
-		id, db := crashed(project, selection.StoreState{Boundary: crashedBoundary, StreamID: "another-stream"}, false)
+		id, db := crashed(project, selection.StoreState{Boundary: crashedBoundary, StreamID: "another-stream"}, true)
 		code, _, stderr := h.enrollRun(id, project)
-		require.Equal(t, 2, code)
+		require.Equal(t, 1, code)
 		require.Contains(t, stderr, "this hold's marker records stream identity another-stream, and "+notifications+" carries "+identity)
-		require.Equal(t, "intent", h.enrollLast(id).State)
+		stop := h.enrollLast(id)
+		require.Equal(t, "stop", stop.State)
+		left := daemonFamily(project) + ": store marker done and broker cutover record done, hold " + id + "'s"
+		require.Equal(t, left, stop.Outputs["left"])
 		state, err := selection.NewPGStore(db).State(ctx)
 		require.NoError(t, err)
 		require.Equal(t, "another-stream", state.StreamID, "the refused rerun wrote nothing")
-		_, ok := h.enrollCutover(daemonFamily(project))
-		require.False(t, ok, "the refused rerun wrote no cutover record")
+		require.ErrorIs(t, h.release(id), holdrecord.ErrOutOfOrder, "hold release is refused over a stop that changed something")
+		inputs := h.enrollAbort(id)
+		require.Contains(t, slices.Collect(maps.Values(inputs)), enrollCommand+": "+left, "hold abort's intent carries what the stop left")
+		require.Equal(t, "released", string(h.row().Phase))
 	})
+}
+
+// enrollAbort ends hold id the way `hold abort` writes its journal and the row: its admission,
+// whose intent carries each stop's record of what its command left (returned), the row's move to
+// released, and its done entry.
+func (h *stack) enrollAbort(id string) map[string]string {
+	h.t.Helper()
+	ctx := context.Background()
+	_, err := h.s.Records.Admit(ctx, id, holdrecord.Request{Command: holdrecord.CommandAbort}, nil)
+	require.NoError(h.t, err, "hold abort is admitted once enroll stopped")
+	intent := h.enrollLast(id)
+	require.Equal(h.t, holdrecord.CommandAbort, intent.Command)
+	row := h.row()
+	_, err = h.s.Records.MoveRow(ctx, row.Gen, natsgrant.OperatorPhaseReleased, id, "the test's abort")
+	require.NoError(h.t, err)
+	require.NoError(h.t, h.s.Records.AppendDone(ctx, id, holdrecord.CommandAbort, nil))
+	return intent.Inputs
 }
 
 // enrollStream is the notification stream's identity and last sequence, read as the operator.

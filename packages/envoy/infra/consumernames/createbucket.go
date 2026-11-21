@@ -276,7 +276,7 @@ func (l *createBucketLeft) journal() string {
 // naming what the run left, and answers err with that named: an UNKNOWN stays UNKNOWN.
 func createBucketStopped(ctx context.Context, a *admission, err error, left *createBucketLeft) error {
 	reason := fmt.Sprintf("%v; it left %s", err, left)
-	if serr := a.stop(ctx, reason); errors.Unwrap(serr) != nil {
+	if serr := a.stop(ctx, reason, left.journal()); errors.Unwrap(serr) != nil {
 		return fmt.Errorf("%w; it left %s; and its stop entry: %w", err, left, errors.Unwrap(serr))
 	}
 	return fmt.Errorf("%w; it left %s", err, left)

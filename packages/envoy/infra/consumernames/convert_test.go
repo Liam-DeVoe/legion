@@ -513,7 +513,9 @@ func TestConvertStartsAGoneCohortMemberAtItsSavedFloorAndStopsForANameWithNoStar
 			}
 			return c.CachedInfo(), nil
 		},
-		First: func(context.Context) (selection.Start, error) { return selection.Start{Native: selection.NativeNew}, nil },
+		First: func(context.Context) (selection.Start, error) {
+			return selection.Start{Native: selection.NativeNew}, nil
+		},
 	})
 	require.NoError(t, err)
 	require.Equal(t, []uint64{3, 4}, rig.consume(sel.Record.Current, 10, 0), "the expired member's pending messages")

@@ -122,7 +122,7 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 		return err
 	}
 	if !found {
-		return a.stop(ctx, fmt.Sprintf("hold %s has no cohort record: consumer-names prepare --hold %s did not run before hold set, so no fixed name's floor before the hold is known", r.o.holdID, r.o.holdID))
+		return a.stop(ctx, fmt.Sprintf("hold %s has no cohort record: consumer-names prepare --hold %s did not run before hold set, so no fixed name's floor before the hold is known", r.o.holdID, r.o.holdID), convertLeft(r.o.holdID, convertSet{}, false))
 	}
 	nc, _, err := r.conn(ctx)
 	if err != nil {
@@ -156,7 +156,7 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 		if err != nil {
 			return err
 		}
-		return a.stop(ctx, refusal)
+		return a.stop(ctx, refusal, convertLeft(r.o.holdID, set, found))
 	}
 	if !found {
 		if gen, err = c.saveSet(ctx, r, set, 0); err != nil {
@@ -184,7 +184,7 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 		}
 	}
 	if len(noStart) > 0 {
-		return a.stop(ctx, convertNoStartReason(r.o.holdID, noStart))
+		return a.stop(ctx, convertNoStartReason(r.o.holdID, noStart), convertLeft(r.o.holdID, set, true))
 	}
 
 	// List again: a fixed name still present is converted, whatever its family's marker says, and
@@ -226,7 +226,7 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 				if err != nil {
 					return err
 				}
-				return a.stop(ctx, refusal)
+				return a.stop(ctx, refusal, convertLeft(r.o.holdID, set, true))
 			}
 			if gen, err = c.saveSet(ctx, r, set, gen); err != nil {
 				return err
@@ -250,7 +250,7 @@ func (c convertRule) run(ctx context.Context, r *run) error {
 			}
 		}
 		if len(noStart) > 0 {
-			return a.stop(ctx, convertNoStartReason(r.o.holdID, noStart))
+			return a.stop(ctx, convertNoStartReason(r.o.holdID, noStart), convertLeft(r.o.holdID, set, true))
 		}
 	}
 	if !clean {
@@ -294,6 +294,17 @@ func convertNoStartReason(holdID string, names []convertNoStart) string {
 		parts[i] = "no safe start for " + n.logical + " (" + n.why + ")"
 	}
 	return strings.Join(parts, "; ") + fmt.Sprintf(": give each one with consumer-names replay --key <K> --from <seq> --hold %s, then run convert --hold %s again", holdID, holdID)
+}
+
+// convertLeft is what a stop of convert left outside the journal: holdrecord.LeftUnchanged while no
+// run of convert in this hold has saved its set, since every change a run makes (the bucket
+// barrier's put, a record, a consumer's delete or create, a marker) comes after that save; else the
+// saved set and whatever every run of convert made of it.
+func convertLeft(holdID string, set convertSet, saved bool) string {
+	if !saved {
+		return holdrecord.LeftUnchanged
+	}
+	return fmt.Sprintf("convert's saved set of %d fixed names under hold %s (its convert record), and every selection record, fresh name and fixed name's deletion a run of convert made of it", len(set.Names), holdID)
 }
 
 // convertHubError is a hub reading of writerhold's that failed: its UNKNOWN stays UNKNOWN here

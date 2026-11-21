@@ -13,11 +13,11 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/internal/holdrecord"
 )
 
 // enrollCommand is the enroll's command in the hold's journal, the one command of the workflow
-// holdrecord.WorkflowEnroll (internal/holdrecord/table.go, tableFor): final, Stoppable, and a
-// stop that changed nothing outside the journal leaves the hold releasable.
+// holdrecord.WorkflowEnroll (internal/holdrecord/table.go, tableFor): final and Stoppable.
 const enrollCommand = "consumer-names enroll"
 
 // enrollUndefinedTable is Postgres's SQLSTATE for a relation that does not exist.
@@ -45,13 +45,16 @@ const enrollUndefinedTable = "42P01"
 // entry, which completes the hold's record. A stream that carries no identity refuses the
 // enrolment: the daemon could never count its last floor.
 //
-// A stop leaves the hold releasable only when the command changed nothing outside the journal (the
-// table's stopLeavesNothing), so it stops only while none of this hold's own writes exist. A rerun
-// after a crash finds this hold's marker or cutover record, skips what is written and completes,
-// keeping the boundary and identity its marker already records (a marker of this hold that lacks
-// either is written again with them); if it also finds something that would have stopped it, or
-// any check fails after a write, it exits leaving its intent pending (UNKNOWN), so only its own
-// rerun is admitted.
+// Every refusal of its own checks writes a stop entry (admission.stop) that records what every run
+// of enroll in this hold left outside the journal (enrollLeft): holdrecord.LeftUnchanged while no
+// run has written this hold's store marker or the family's broker cutover record, which it reads
+// at its start, since an earlier run may have crashed after a write; else each of those that
+// exists, which counts as changed, so hold release is refused and the way out is enroll's rerun
+// (admitted again, as it has no done entry) or hold abort. A rerun finds this hold's marker or
+// cutover record, skips what is written and completes, keeping the boundary and identity its marker
+// already records (a marker of this hold that lacks either is written again with them). A reading
+// or a write whose outcome it cannot know is UNKNOWN and writes no stop: what it changed is not
+// known, and the intent stays pending for its rerun, which reads again.
 func (r *run) enroll(ctx context.Context) error {
 	project := r.o.daemon
 	family := daemonFamily(project)
@@ -147,28 +150,38 @@ func (r *run) enroll(ctx context.Context) error {
 	case markerOwn && marker.StreamID != "" && marker.StreamID != streamID:
 		problems = append(problems, fmt.Sprintf("this hold's marker records stream identity %s, and %s carries %s", marker.StreamID, notifications, streamID))
 	}
-	own := markerOwn || brokerOwn
 	if len(problems) > 0 {
-		reason := strings.Join(problems, "; ")
-		if own {
-			return unknownf(nil, "%s, beside this hold's own enrolment writes; the intent stays pending for enroll's rerun", reason)
-		}
-		return a.stop(ctx, reason)
+		return a.stop(ctx, strings.Join(problems, "; "), enrollLeft(family, r.o.holdID, markerOwn, brokerOwn))
 	}
 
-	// The writes. From here no refusal writes a stop entry: an earlier write may have landed. A
-	// marker of this hold keeps the boundary it recorded, the lower one.
+	// Before its first write, the held re-read again (plan §3a, "Every held command"), so no writer
+	// connected across the hold has made a consumer of the store's names since the listing.
+	if err := a.reread(ctx); err != nil {
+		return err
+	}
+	// The writes. A marker of this hold keeps the boundary it recorded, the lower one.
 	boundary := stream.State.LastSeq + 1
 	if markerOwn && marker.Boundary > 0 {
 		boundary = marker.Boundary
 	}
 	if !(markerOwn && marker.Boundary > 0 && marker.StreamID != "") {
-		if err := enrollWriteMarker(ctx, db, store, marker, revision, markerFound, r.o.holdID, boundary, streamID); err != nil {
+		err := enrollWriteMarker(ctx, db, store, marker, revision, markerFound, r.o.holdID, boundary, streamID)
+		var refused *enrollRefusal
+		switch {
+		case errors.As(err, &refused):
+			return a.stop(ctx, fmt.Sprintf("%s's marker: %v", family, err), enrollLeft(family, r.o.holdID, markerOwn, brokerOwn))
+		case err != nil:
 			return unknownf(err, "%s's marker", family)
 		}
+		markerOwn = true
 	}
 	if !brokerOwn {
-		if _, err := r.records.PutCutover(ctx, family, selection.CutoverDone, r.o.holdID); err != nil {
+		_, err := r.records.PutCutover(ctx, family, selection.CutoverDone, r.o.holdID)
+		var route *holdrecord.RouteError
+		switch {
+		case errors.As(err, &route):
+			return a.stop(ctx, fmt.Sprintf("the broker refused the cutover record %s: %v", family, err), enrollLeft(family, r.o.holdID, markerOwn, brokerOwn))
+		case err != nil:
 			return unknownf(err, "the broker's cutover record %s, after the store's marker was written", family)
 		}
 	}
@@ -180,6 +193,29 @@ func (r *run) enroll(ctx context.Context) error {
 		family, selection.CutoverDone, r.o.holdID, formatSeq(boundary), streamID)
 	return nil
 }
+
+// enrollLeft is what every run of enroll in this hold left outside the journal, which its stop
+// records: holdrecord.LeftUnchanged while no run has written this hold's store marker (marker) or
+// the family's broker cutover record (broker), else each of them that exists.
+func enrollLeft(family, holdID string, marker, broker bool) string {
+	var left []string
+	if marker {
+		left = append(left, "store marker done")
+	}
+	if broker {
+		left = append(left, "broker cutover record done")
+	}
+	if len(left) == 0 {
+		return holdrecord.LeftUnchanged
+	}
+	return fmt.Sprintf("%s: %s, hold %s's", family, strings.Join(left, " and "), holdID)
+}
+
+// enrollRefusal is a marker write the store refused for good: another writer's marker put there
+// under the write, or a conditional write refused again and again. The write did not land.
+type enrollRefusal struct{ what string }
+
+func (e *enrollRefusal) Error() string { return e.what }
 
 // enrollLogicalNames are the logical names of project's daemon: legion-go-<project>-<kind> for
 // each kind it opens (daemonKinds).
@@ -224,8 +260,9 @@ func enrollReadMarker(ctx context.Context, db Database) (selection.StoreState, u
 // enrollWriteMarker writes the store's marker through store's conditional sentinel write: cutover
 // done naming holdID, boundary and streamID, keeping every other field of the marker it read
 // (state, at revision, found). A refused write reads again, and ends once it reads a whole marker
-// this hold wrote; a marker of this hold that lacks the boundary or the identity is written again,
-// and a marker another writer put there in the meantime is an error.
+// this hold wrote; a marker of this hold that lacks the boundary or the identity is written again.
+// A marker another writer put there in the meantime, or a write refused every time, is an
+// *enrollRefusal: the write did not land. Any other error is a write whose outcome is not known.
 func enrollWriteMarker(ctx context.Context, db Database, store familyStore, state selection.StoreState, revision uint64, found bool, holdID string, boundary uint64, streamID string) error {
 	for range 8 {
 		write := state
@@ -248,10 +285,10 @@ func enrollWriteMarker(ctx context.Context, db Database, store familyStore, stat
 		case own && state.Boundary > 0 && state.StreamID != "":
 			return nil
 		case found && state.Cutover != "" && !own:
-			return fmt.Errorf("the marker changed under the write: it reads %s from %s", state.Cutover, enrollHoldName(state.Hold))
+			return &enrollRefusal{fmt.Sprintf("the marker changed under the write: it reads %s from %s", state.Cutover, enrollHoldName(state.Hold))}
 		}
 	}
-	return fmt.Errorf("the marker's write was refused eight times")
+	return &enrollRefusal{"the marker's conditional write was refused eight times"}
 }
 
 // enrollCheckpoints names each checkpoint the store's daemon keeps (consumer_positions, keyed by

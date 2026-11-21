@@ -63,15 +63,15 @@ type run struct {
 	e              env
 	stdout, stderr io.Writer
 
-	records   *holdrecord.Client
-	nc        *nats.Conn
-	js        jetstream.JetStream
-	operator  *writerhold.Operator
+	records  *holdrecord.Client
+	nc       *nats.Conn
+	js       jetstream.JetStream
+	operator *writerhold.Operator
 	// heldStreams are the protected streams the latest held re-read read, which a command's
 	// postcheck compares against (writerhold.Postcheck's step 1).
 	heldStreams []writerhold.StreamReading
-	databases map[string]Database
-	closers   []func()
+	databases   map[string]Database
+	closers     []func()
 }
 
 func (r *run) close() {
@@ -378,15 +378,19 @@ func (a *admission) done(ctx context.Context, outputs map[string]string) error {
 	return a.r.records.AppendDone(ctx, a.r.o.holdID, a.command, outputs)
 }
 
-// stop writes the command's stop entry with reason, when the command is Stoppable in its
-// workflow, and answers reason as the command's refusal; where it is not Stoppable, the intent
-// stays pending, so only its rerun is admitted (holdrecord.ErrBusy for any other).
-func (a *admission) stop(ctx context.Context, reason string) error {
+// stop writes the command's stop entry with reason and left, what every run of the command in this
+// hold changed outside the journal: holdrecord.LeftUnchanged when none changed anything, which is
+// the only stop hold release is admitted over; anything else counts as changed, and the way out is
+// the command's rerun or hold abort (holdrecord.Client.AppendStopLeft). It writes the entry when
+// the command is Stoppable in its workflow, and answers reason as the command's refusal; where it
+// is not Stoppable, the intent stays pending, so only its rerun is admitted (holdrecord.ErrBusy for
+// any other).
+func (a *admission) stop(ctx context.Context, reason, left string) error {
 	refusal := errors.New(reason)
 	if !holdrecord.Stoppable(a.workflow, a.command) {
 		return refusal
 	}
-	if err := a.r.records.AppendStop(ctx, a.r.o.holdID, a.command, reason); err != nil {
+	if err := a.r.records.AppendStopLeft(ctx, a.r.o.holdID, a.command, reason, left); err != nil {
 		return fmt.Errorf("%s; and its stop entry: %w", reason, err)
 	}
 	return refusal
