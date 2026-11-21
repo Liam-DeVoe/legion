@@ -235,9 +235,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// the live agent view reads (session_owners, access.SessionContentClause) is recorded
 		// here, before the request reads anything: a session that only reads is tied too.
 		if err := s.tieBrokerSession(r.Context(), caller.Session, caller.Person); err != nil {
-			slog.Warn("dispatch: a broker-issued token's session could not be tied to its person", "error", err)
-			return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE",
-				"this session's person could not be recorded; try again in a minute")
+			if refusal := s.tieFailureRefusal(r.Context(), err); refusal != nil {
+				return model.Actor{}, false, refusal
+			}
 		}
 	}
 	if caller.Service != "" {
@@ -272,4 +272,24 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	accesslog.Note(r.Context(), accesslog.KindBrokerToken, writer)
 	return actor, false, nil
+}
+
+// tieFailureRefusal is what a broker-issued token's request is answered when its session's tie to
+// its person (tieBrokerSession) could not be written, err the failed write. While any project is
+// private the tie decides what the live agent view relays and which conversations a restricted
+// member reads (access.SessionContentClause), so the request is refused 503 DATABASE_UNAVAILABLE
+// and the caller comes back, as before. While no project is private every reader that may watch a
+// session watches it without a tie (R9), so the failure is logged and the request served: the
+// pair is not held as written (tieBrokerSession keeps only a pair it wrote), so the session's next
+// request writes it again. A read of whether any project is private that fails too refuses, since
+// nothing then says the tie decides nothing.
+func (s *server) tieFailureRefusal(ctx context.Context, err error) *apiError {
+	private, readErr := access.AnyProjectPrivate(ctx, s.deps.Store.Pool)
+	if readErr != nil || private {
+		slog.Warn("dispatch: a broker-issued token's session could not be tied to its person", "error", err, "private_read_error", readErr)
+		return errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE",
+			"this session's person could not be recorded; try again in a minute")
+	}
+	slog.Warn("dispatch: a broker-issued token's session could not be tied to its person; no project is private, so the request is served and its session's next request writes the tie again", "error", err)
+	return nil
 }
