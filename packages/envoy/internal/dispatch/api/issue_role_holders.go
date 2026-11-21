@@ -213,8 +213,8 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	if !s.isIssueDaemon(r, actor, key) {
 		project, _, _ := strings.Cut(key, "-")
 		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
-			"only the Legion daemon of project %s names the sessions that hold the roles of %s. That daemon writes as session %s.",
-			project, key, legionDaemonSessionOf(key)))
+			"only a Legion daemon names the sessions that hold the roles of %s: the daemon of project %s, as session %s, or another project's daemon, as session legion-daemon:<P> with a broker token that names P and proves that session.",
+			key, project, legionDaemonSessionOf(key)))
 		return
 	}
 	if input.Holders == nil {

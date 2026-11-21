@@ -203,8 +203,9 @@ func (s *server) requireIssueDaemon(w http.ResponseWriter, r *http.Request, supp
 	}
 	key := r.PathValue("key")
 	if !s.isIssueDaemon(r, actor, key) {
-		writeError(w, codeStepWriter, http.StatusForbidden,
-			fmt.Sprintf("only the session %s writes %s of %s", legionDaemonSessionOf(key), record, key))
+		writeError(w, codeStepWriter, http.StatusForbidden, fmt.Sprintf(
+			"only a Legion daemon writes %s of %s: the session %s, or the session legion-daemon:<P> of another project's daemon whose broker token names P and proves that session",
+			record, key, legionDaemonSessionOf(key)))
 		return model.Actor{}, "", false
 	}
 	return actor, key, true

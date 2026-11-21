@@ -319,11 +319,11 @@ func TestARatingBelongsToARetroRecordAlone(t *testing.T) {
 	}
 }
 
-// Only the daemon of the issue's project rates a retro, as only it writes the retro's record: a
-// person, an agent's session and the daemon of another project, each sending the rating the
-// daemon's own write lands with, are refused 403 STEP_WRITER, whether the retro's record exists or
-// not, and the retro the daemon recorded stays unrated; the daemon's rating of it lands, which is
-// the control.
+// Under a credential that proves no session, only the daemon of the issue's project rates a retro,
+// as only it writes the retro's record: a person, an agent's session and the daemon of another
+// project, each sending the rating the daemon's own write lands with, are refused 403 STEP_WRITER,
+// whether the retro's record exists or not, and the retro the daemon recorded stays unrated; the
+// daemon's rating of it lands, which is the control.
 func TestARatingIsTheDaemonsAlone(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
@@ -788,9 +788,10 @@ func TestTheReadOfPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
 	}
 }
 
-// Only the daemon of the issue's project writes its plan, as it writes its steps (403 STEP_WRITER);
-// an issue Dispatch does not hold is 404 ISSUE_NOT_FOUND; a closed issue takes it; the write
-// appends no event and answers the plan as it stands.
+// Under a credential that proves no session, only the daemon of the issue's project writes its
+// plan, as it writes its steps (403 STEP_WRITER); an issue Dispatch does not hold is 404
+// ISSUE_NOT_FOUND; a closed issue takes it; the write appends no event and answers the plan as it
+// stands.
 func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 	handler := newTestHandler(t)
 	issues := createListedIssues(t, handler, "LEG", 2)

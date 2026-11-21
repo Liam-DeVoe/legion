@@ -256,8 +256,9 @@ func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
 	}
 }
 
-// Only the session of the issue's project's daemon writes a record: a person, the daemon of
-// another project and an agent's session are each refused, and that daemon's write lands.
+// Under a credential that proves no session, only the session of the issue's project's daemon
+// writes a record: a person, the daemon of another project and an agent's session are each
+// refused, and that daemon's write lands.
 func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
