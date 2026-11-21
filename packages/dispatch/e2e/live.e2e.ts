@@ -106,7 +106,7 @@ test("live: bob's ask updates alice's Inbox and project badges without reload @p
   await issuePage.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
 
   await expect(navigation.getByRole("link", { name: "Inbox" })).toContainText("1");
-  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toContainText("1");
+  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toHaveText(`${core}Core1`);
   expect(issuePage.url()).toContain(readingIssue.key);
 
   // The question arrives as a row of the list, carrying its first line; from 1280 px the
@@ -152,7 +152,7 @@ test("live: answering an ask updates the Inbox and project badges immediately", 
   await issuePage.goto(`/issues/${readingIssue.key}`);
   const navigation = issuePage.getByRole("navigation", { name: "Navigation" });
   await expect(navigation.getByRole("link", { name: "Inbox" })).toContainText("1");
-  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toContainText("1");
+  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toHaveText(`${core}Core1`);
 
   await inboxPage.getByTestId(`ask-${ask.id}`).getByRole("radio", { name: "Yes" }).check();
   await inboxPage
@@ -166,7 +166,7 @@ test("live: answering an ask updates the Inbox and project badges immediately", 
   // sidebar (issuePage), so both badges changing proves the update came from the
   // stream rather than from the mutation's optimistic cache update.
   await expect(navigation.getByRole("link", { name: "Inbox" })).toHaveText("Inbox");
-  await expect(navigation.locator(`a[href="/projects/${core}"]`)).not.toContainText("1");
+  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toHaveText(`${core}Core`);
   expect(issuePage.url()).toContain(readingIssue.key);
 
   await issuePage.screenshot({
@@ -318,7 +318,7 @@ test("live: resolving an ask updates its pinned issue's open-ask count", async (
     const pinned = page
       .getByRole("navigation", { name: "Navigation" })
       .getByRole("link", { name: new RegExp(`${issue.key}.*Pinned ask`) });
-    await expect(pinned).toContainText("1");
+    await expect(pinned).toHaveText(`${issue.key}Pinned ask1`);
     pinnedReads = 0;
 
     await resolveAsk(ask.id, { kind: "retracted", reason: "No longer needed" }, bob);

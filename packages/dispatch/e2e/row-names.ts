@@ -19,8 +19,23 @@ export interface RowIdentity {
   readonly nonce: string;
 }
 
-/** How many names the five-letter suffix tells apart: 26 ** 5 (A-Z). */
-const SUFFIXES = 26 ** 5;
+/** The symbols a suffix is spelled in: the twenty consonants other than Y, then the ten digits.
+ *  Playwright matches a role's `name` string as a case-insensitive substring of an accessible
+ *  name, so a key whose suffix spelled a word matched a control named by that word:
+ *  `rowKey("CORE")` once drew COREPLYQU, and `{ name: "Reply" }` on its comment card also
+ *  matched the "Copy reference dispatch://COREPLYQU-1/…" button (conversation.e2e.ts, nightly
+ *  44915867310). With no vowel and no Y, a suffix spells only what consonants and digits spell
+ *  alone, as "DNS" or "P0" do. A word can still run on from the logical key's own last letters
+ *  into the suffix's first - CLOSE and ND hold "Send" - and `exact: true` keeps such a name to
+ *  its own control. */
+const SUFFIX_SYMBOLS = "BCDFGHJKLMNPQRSTVWXZ0123456789";
+
+/** How many names the five-character suffix tells apart: 30 ** 5, 24,300,000. */
+const SUFFIXES = SUFFIX_SYMBOLS.length ** 5;
+
+/** How many numbers `rowNumberOf` tells apart: 26 ** 5, 11,881,376. 10,000 more still fits a
+ *  Postgres `integer`, which a pull request's number is. */
+const ROW_NUMBERS = 26 ** 5;
 
 /** The first number `rowNumberOf` answers. Every number the suite writes as a fixed one - the
  *  review corpus's pull requests and runs (e2e/delivery-seed.ts), a pull request a spec names -
@@ -34,14 +49,14 @@ function rowDigest(row: RowIdentity, logical: string): Buffer {
     .digest();
 }
 
-/** The five letters A-Z, in base 26, of `rowDigest(row, logical)`: the suffix a row key and a
- *  row's person put after the name a spec writes. */
+/** The five characters of `SUFFIX_SYMBOLS`, in base 30, of `rowDigest(row, logical)`: the suffix
+ *  a row key and a row's person put after the name a spec writes. */
 function rowSuffix(row: RowIdentity, logical: string): string {
   let rest = rowDigest(row, logical).readUIntBE(0, 6) % SUFFIXES;
   let suffix = "";
   for (let place = 0; place < 5; place += 1) {
-    suffix = String.fromCharCode(65 + (rest % 26)) + suffix;
-    rest = Math.floor(rest / 26);
+    suffix = SUFFIX_SYMBOLS.charAt(rest % SUFFIX_SYMBOLS.length) + suffix;
+    rest = Math.floor(rest / SUFFIX_SYMBOLS.length);
   }
   return suffix;
 }
@@ -57,7 +72,8 @@ export function checkLogicalLogin(caller: string, logical: string): void {
 }
 
 /** `rowKey`'s key (e2e/test.ts): the first five characters of `logical` and `rowSuffix`'s five
- *  letters. */
+ *  consonants and digits. It starts with `logical`'s first letter and is at most ten characters,
+ *  so it is a key `PROJECT_KEY_PATTERN` (@legion/contracts) takes. */
 export function rowKeyOf(row: RowIdentity, logical: string): string {
   if (!/^[A-Z][A-Z0-9]*$/.test(logical)) {
     throw new Error(
@@ -67,8 +83,8 @@ export function rowKeyOf(row: RowIdentity, logical: string): string {
   return `${logical.slice(0, 5)}${rowSuffix(row, logical)}`;
 }
 
-/** `rowPerson`'s login (e2e/test.ts): `logical` whole and `rowSuffix`'s five letters,
- *  lower-cased. */
+/** `rowPerson`'s login (e2e/test.ts): `logical` whole and `rowSuffix`'s five consonants and
+ *  digits, lower-cased. */
 export function rowPersonOf(row: RowIdentity, logical: string): string {
   checkLogicalLogin("rowPerson", logical);
   return `${logical}${rowSuffix(row, logical).toLowerCase()}`;
@@ -86,8 +102,8 @@ export function rowSessionIdOf(row: RowIdentity, logical: string): string {
 }
 
 /** `rowNumber`'s number (e2e/test.ts): the digest of `number:` and `logical` read as a number
- *  below 26 ** 5, plus `FIRST_ROW_NUMBER`. */
+ *  below `ROW_NUMBERS`, plus `FIRST_ROW_NUMBER`. */
 export function rowNumberOf(row: RowIdentity, logical: string): number {
   checkLogicalLogin("rowNumber", logical);
-  return FIRST_ROW_NUMBER + (rowDigest(row, `number:${logical}`).readUIntBE(0, 6) % SUFFIXES);
+  return FIRST_ROW_NUMBER + (rowDigest(row, `number:${logical}`).readUIntBE(0, 6) % ROW_NUMBERS);
 }

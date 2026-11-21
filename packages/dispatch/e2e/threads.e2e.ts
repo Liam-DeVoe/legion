@@ -473,7 +473,7 @@ test("a session retraction leaves its reason on the card and removes the human's
   await issuePage.getByRole("tab", { name: "Spec" }).click();
   const navigation = issuePage.getByRole("navigation", { name: "Navigation" });
   await expect(navigation.getByRole("link", { name: "Inbox" })).toContainText("1");
-  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toContainText("1");
+  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toHaveText(`${core}Core1`);
   const margin = issuePage.getByTestId("margin-sheet");
   await expect(margin.getByTestId(`ask-${ask.id}`)).toBeVisible();
 

@@ -131,16 +131,19 @@ function runningRow(): RowIdentity {
  *  that no two rows share a project and a row reads none another row left.
  *
  *  It is the first five characters of `logical` (all of it when it is shorter) and five more,
- *  the letters A-Z in base 26, from a SHA-256 of the row (`testId`, `repeatEachIndex`, `retry`,
- *  its phase), of this process's nonce and of `logical` itself (`rowKeyOf`, e2e/row-names.ts),
- *  so two logical keys of one row differ even when their first five characters agree. A key is
- *  at most ten characters, and starts with A-Z, as the server's ProjectKeyPattern requires
- *  (`^[A-Z][A-Z0-9]{1,9}$`, packages/envoy/internal/contracts/generated.go).
+ *  the consonants other than Y and the digits in base 30, from a SHA-256 of the row (`testId`,
+ *  `repeatEachIndex`, `retry`, its phase), of this process's nonce and of `logical` itself
+ *  (`rowKeyOf`, e2e/row-names.ts), so two logical keys of one row differ even when their first
+ *  five characters agree. A key is at most ten characters, and starts with A-Z, as the server's
+ *  ProjectKeyPattern requires (`^[A-Z][A-Z0-9]{1,9}$`,
+ *  packages/envoy/internal/contracts/generated.go).
  *
- *  The suffix is letters, never digits, so a key holds a digit only where its logical key does:
- *  a count drawn beside a key (`toContainText("2")`), or a digit a row says is not there
- *  (`not.toContainText("1")`), never meets a digit the key brought, and reads the same text it
- *  read beside "CORE".
+ *  The suffix holds no vowel and no Y, so it spells no word a control is named by beyond what
+ *  consonants and digits spell alone (`SUFFIX_SYMBOLS`, e2e/row-names.ts, says why). It holds
+ *  digits, so a key holds digits its logical key does not: a count drawn beside a key is read
+ *  in its element's whole text, the key in it (`toHaveText`), never as a digit the text holds
+ *  (`toContainText("1")`), which a digit of the key would pass, or, said to be absent
+ *  (`not.toContainText("1")`), fail.
  *
  *  Within a row every call with the same `logical` answers the same key, so a row, its hooks and
  *  the helpers it calls agree without passing the key around; a row that moves on to a next
@@ -195,12 +198,12 @@ export function rowSessionId(logical: string): string {
  *  in `pull_request_heads`, by repository and number; the address of an external link, which
  *  names one) and a row reads none another row left.
  *
- *  It is `rowKey`'s suffix read as a number rather than spelled in letters, from the same SHA-256
- *  of the row, of this process's nonce and of `number:` and `logical`, plus 10,000
- *  (`rowNumberOf`, e2e/row-names.ts): a whole number from 10,000 up and below 10,000 + 26 ** 5,
- *  so it fits a Postgres `integer`, which a pull request's number is. Within a row (a phase of
- *  it, `nextRowPhase`) every call with the same `logical` answers the same number; outside a
- *  running row it throws, as `rowKey` does.
+ *  It is drawn as `rowKey`'s suffix is, from a SHA-256 of the row, of this process's nonce and
+ *  of `number:` and `logical`, but read as a number below 26 ** 5 rather than spelled, plus
+ *  10,000 (`rowNumberOf`, e2e/row-names.ts): a whole number from 10,000 up and below
+ *  10,000 + 26 ** 5, so it fits a Postgres `integer`, which a pull request's number is. Within a
+ *  row (a phase of it, `nextRowPhase`) every call with the same `logical` answers the same
+ *  number; outside a running row it throws, as `rowKey` does.
  *
  *      const pull = rowNumber("pull");
  *      const url = `https://github.com/acme/widgets/pull/${pull}`; */
@@ -216,11 +219,11 @@ const namedPeople = new Set<string>();
  *  that a row reading one person's list - an Inbox, its counts, read and unread state, the pins
  *  a person keeps - reads a list no other row added to.
  *
- *  It is `logical` whole and five more letters, a-z: `rowKey`'s suffix, from the same SHA-256 of
- *  the row, of this process's nonce and of `logical`, lower-cased (`rowPersonOf`,
- *  e2e/row-names.ts), since the server records a login trimmed and lower-cased
- *  (`authDevSignIn`, packages/envoy/internal/dispatch/routes/devsignin.go): `alice` ->
- *  `alicekqzvm`. Two logical logins of one row differ, and so does one logical login in two
+ *  It is `logical` whole and five more characters, consonants other than y and digits:
+ *  `rowKey`'s suffix, from the same SHA-256 of the row, of this process's nonce and of `logical`,
+ *  lower-cased (`rowPersonOf`, e2e/row-names.ts), since the server records a login trimmed and
+ *  lower-cased (`authDevSignIn`, packages/envoy/internal/dispatch/routes/devsignin.go): `alice`
+ *  -> `alicek7zvm`. Two logical logins of one row differ, and so does one logical login in two
  *  rows. Within a row (a phase of it, `nextRowPhase`) every call with the same `logical` answers
  *  the same login; outside a running row it throws, as `rowKey` does.
  *

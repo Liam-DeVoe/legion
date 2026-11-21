@@ -68,8 +68,8 @@ test("sidebar shows Inbox, Pinned, one row per project with its open-ask badge, 
     const navigation = page.getByRole("navigation", { name: "Navigation" });
     await expect(navigation.getByRole("link", { name: "Inbox" })).toContainText("3");
     await expect(navigation.getByRole("heading", { name: "Pinned" })).toHaveCount(0);
-    await expect(navigation.locator(`a[href="/projects/${core}"]`)).toContainText("2");
-    await expect(navigation.locator(`a[href="/projects/${ops}"]`)).toContainText("1");
+    await expect(navigation.locator(`a[href="/projects/${core}"]`)).toHaveText(`${core}Core2`);
+    await expect(navigation.locator(`a[href="/projects/${ops}"]`)).toHaveText(`${ops}Operations1`);
     await expect(navigation.getByRole("link", { name: "Settings" })).toBeVisible();
     await expect(
       navigation.getByRole("link", { name: new RegExp(`^(${core}|${ops})-\\d+`) })

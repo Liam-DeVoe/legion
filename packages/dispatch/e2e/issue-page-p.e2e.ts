@@ -1780,7 +1780,7 @@ test("the header draws the words of its two counts as a reader reads them @phone
 
 /** The logical login of a reader of the row's own (`rowPerson`, e2e/test.ts) whose login is as
  *  long as the measured root's assignee's, `dana@example.dev`: 16 characters, these eleven and
- *  the five letters of the row's own. Everyone who has signed in is one list, the options of
+ *  the five characters of the row's own. Everyone who has signed in is one list, the options of
  *  every assignee control, which a fixed login would stay in for every later row of the worker;
  *  the row's own person is taken out of it again when the row ends (`ownPeople`). */
 const LONG_LOGIN = "danaexample";

@@ -550,7 +550,7 @@ test("inbox shows current asks and answers issue asks in the margin @pr", async 
   await expect(inboxRows).toHaveCount(2);
   const navigation = alicePage.getByRole("navigation", { name: "Navigation" });
   await expect(navigation.getByRole("link", { name: "Inbox" })).toContainText("2");
-  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toContainText("2");
+  await expect(navigation.locator(`a[href="/projects/${core}"]`)).toHaveText(`${core}Core2`);
 
   const textOnlyAsk = await createAsk(
     secondIssue.key,
