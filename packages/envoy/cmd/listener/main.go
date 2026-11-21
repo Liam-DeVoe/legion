@@ -1034,10 +1034,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// A Google identity token's issuer is Google itself, so only its audience is a setting.
+	// A Google identity token's issuer is Google itself, so only its audience is a setting. Its
+	// key-set wait is the projected-token verifier's, so a Google key set that hangs reaches
+	// Dispatch as a 503 inside its call window too.
 	var googleCallers *googleIdentities
 	if googleAudience != "" {
-		googleVerifier, err := oidc.Discover(context.Background(), oidc.GoogleIssuer, googleAudience, oidc.DiscoveryTimeout)
+		googleVerifier, err := discoverListenerVerifier(context.Background(), oidc.GoogleIssuer, googleAudience)
 		if err != nil {
 			log.Fatal(err)
 		}

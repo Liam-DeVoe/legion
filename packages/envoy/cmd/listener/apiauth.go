@@ -486,29 +486,20 @@ func resolveListenerOIDCConfig(getenv func(string) string) (issuer, audience str
 	return oidc.ConfigFromEnv(getenv, "ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE")
 }
 
-// listenerKeySetWait is the longest the listener's verifier waits on its issuer's key-set read
-// (oidc.Keys.FetchWait) before it answers the token unjudged, a 503 (refuseIdentityToken).
-// It is below the window Dispatch's client gives each call (envoy.DefaultTimeout, 5 s), so a key
-// set that hangs reaches Dispatch as a 503 it retries rather than as its own timeout; the read
-// goes on under FetchTimeout for the next call. The secrets broker and Dispatch's own verifier
-// set none and wait the read out.
+// listenerKeySetWait is the longest the listener's verifiers wait on an issuer's key-set read
+// (oidc.Keys.FetchWait, which oidc.Discover sets from its keySetWait) before they answer the token
+// unjudged, a 503 (refuseIdentityToken). It is below the window Dispatch's client gives each call
+// (envoy.DefaultTimeout, 5 s), so a key set that hangs reaches Dispatch as a 503 it retries rather
+// than as its own timeout; the read goes on under FetchTimeout for the next call. The secrets
+// broker and Dispatch's own verifier set none and wait the read out.
 const listenerKeySetWait = 3 * time.Second
 
-// discoverListenerVerifier is oidc.Discover for the listener's /v1, its key-set wait bounded by
-// listenerKeySetWait: nil, nil for an unconfigured pair, and the discovery read under
-// oidc.DiscoveryTimeout, refusing the boot when it fails.
+// discoverListenerVerifier is oidc.Discover for one of the listener's /v1 verifiers, the
+// projected-token one and Google's alike, its key-set wait bounded by listenerKeySetWait: nil,
+// nil for an unconfigured pair, and the discovery read under oidc.DiscoveryTimeout, refusing the
+// boot when it fails.
 func discoverListenerVerifier(ctx context.Context, issuer, audience string) (*oidc.Verifier, error) {
-	if issuer == "" {
-		return nil, nil
-	}
-	discovery, cancel := context.WithTimeout(ctx, oidc.DiscoveryTimeout)
-	defer cancel()
-	keys, err := oidc.NewKeys(discovery, issuer)
-	if err != nil {
-		return nil, err
-	}
-	keys.FetchWait = listenerKeySetWait
-	return oidc.NewWithKeys(issuer, audience, keys), nil
+	return oidc.Discover(ctx, issuer, audience, oidc.DiscoveryTimeout, listenerKeySetWait)
 }
 
 // serviceAccountSubjectPrefix begins every subject a projected service-account token carries,
