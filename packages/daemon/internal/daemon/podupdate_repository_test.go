@@ -478,19 +478,24 @@ func TestACorrectionWhileAnImageRoundRunsNamesThePodsRepositoryWhenThePodGoes(t 
 // workspace found (workspaceLostMessage), and that message says where the work is as the message
 // on a gone pod does. The round here opens for the image alone over a pod of podUpdateRepo, the
 // daemon suspended the planner, and the read through the implementer finds one commit that no
-// branch holds. Where Dispatch moves the issue to podUpdateCorrectedRepo while the round runs, the
-// message names that work by podUpdateRepo and not by origin, sends each role to the issue branch
-// of podUpdateRepo, names podUpdateCorrectedRepo as the new pod's origin and, on a kept volume,
-// names the workspace of podUpdateRepo: the round's repository and the record as it stands when
-// the message is written (roundMove). The control is the same round of an issue that never moved,
-// whose message is the text of every other such replacement, word for word.
+// branch holds, or fails. Where Dispatch moves the issue to podUpdateCorrectedRepo while the round
+// runs, the message names the work by podUpdateRepo and not by origin, in what it says the read
+// found or could not know as in what it says of the disk: the read ran in the round's pod, whose
+// origin was podUpdateRepo. It sends each role to the issue branch of podUpdateRepo, names
+// podUpdateCorrectedRepo as the new pod's origin and, on a kept volume, names the workspace of
+// podUpdateRepo: the round's repository and the record as it stands when the message is written
+// (roundMove). The control is the same round of an issue that never moved, whose message is the
+// text of every other such replacement, word for word.
 func TestAReplacementOverAPassedOverRoleNamesThePodsRepositoryWhereTheIssueMoved(t *testing.T) {
 	madeBefore := podUpdateStart.Add(-time.Hour)
 	const (
 		// atOrigin and ofThePods are the words the message names the work that no branch holds
-		// with, on an issue that never moved and on one that moved off the pod's repository.
-		atOrigin  = "Work that is not on a branch at origin"
-		ofThePods = "Work that is not on a branch of the repository `" + podUpdateRepo + "`"
+		// with, on an issue that never moved and on one that moved off the pod's repository, and
+		// heldAtOrigin and heldOfThePods the words it names the work the read was for with.
+		atOrigin      = "Work that is not on a branch at origin"
+		ofThePods     = "Work that is not on a branch of the repository `" + podUpdateRepo + "`"
+		heldAtOrigin  = "no branch or tag at origin holds"
+		heldOfThePods = "no branch or tag of the repository `" + podUpdateRepo + "` holds"
 		// lost and kept are what the message says of the pod and its disk.
 		lost = "The pod and its disk are gone."
 		kept = "The pod is gone. Its disk is a kept volume, and the volume is still there."
@@ -498,24 +503,42 @@ func TestAReplacementOverAPassedOverRoleNamesThePodsRepositoryWhereTheIssueMoved
 	for _, tc := range []struct {
 		name string
 		// keptVolumeAt is when the issue's Sandbox made the kept volume that is the pod's disk,
-		// nil for an ephemeral disk, and corrected is whether Dispatch moves the issue to
-		// podUpdateCorrectedRepo while the round runs.
-		keptVolumeAt *time.Time
-		corrected    bool
-		// gone, work and pushed are what the message says of the pod and its disk, of the work
-		// that no branch holds, and of the work each role pushed.
-		gone, work, pushed string
+		// nil for an ephemeral disk, corrected is whether Dispatch moves the issue to
+		// podUpdateCorrectedRepo while the round runs, and fails is whether the read fails with
+		// errPassedOverRead rather than find the one commit.
+		keptVolumeAt     *time.Time
+		corrected, fails bool
+		// gone, held, work and pushed are what the message says of the pod and its disk, the
+		// words it names the work the read was for with, what it says of the work that no
+		// branch holds, and of the work each role pushed.
+		gone, held, work, pushed string
 	}{
-		{"an ephemeral disk of an issue that never moved", nil, false, lost, atOrigin + " is lost.", podUpdateAtOrigin},
-		{"a kept volume of an issue that never moved", &madeBefore, false, kept,
+		{"an ephemeral disk of an issue that never moved", nil, false, false, lost, heldAtOrigin,
+			atOrigin + " is lost.", podUpdateAtOrigin},
+		{"a kept volume of an issue that never moved", &madeBefore, false, false, kept, heldAtOrigin,
 			atOrigin + " is on that volume. The next pod of this issue mounts the volume.", podUpdateAtOrigin},
-		{"an ephemeral disk of an issue that moved", nil, true, lost, ofThePods + " is lost.", pushedMovedTo(podUpdateCorrectedRepo)},
-		{"a kept volume of an issue that moved", &madeBefore, true, kept,
+		{"a read that fails on an issue that never moved", nil, false, true, lost, heldAtOrigin,
+			atOrigin + " is lost.", podUpdateAtOrigin},
+		{"an ephemeral disk of an issue that moved", nil, true, false, lost, heldOfThePods,
+			ofThePods + " is lost.", pushedMovedTo(podUpdateCorrectedRepo)},
+		{"a kept volume of an issue that moved", &madeBefore, true, false, kept, heldOfThePods,
 			keptWorkMovedTo(ofThePods, podUpdateCorrectedRepo), pushedMovedTo(podUpdateCorrectedRepo)},
+		{"a read that fails on an issue that moved", nil, true, true, lost, heldOfThePods,
+			ofThePods + " is lost.", pushedMovedTo(podUpdateCorrectedRepo)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), suspendedRole(claim.RolePlanner, supervise.SuspendedByDaemon))
-			rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+			read := "Before the replacement, the daemon read the issue workspace. " +
+				"The read found work that " + tc.held + ". " +
+				"The workspace held one commit that " + tc.held + ": " + passedOverCommit + "."
+			if tc.fails {
+				rig.rt.FailWorkspaceWork(podUpdateIssue, errPassedOverRead)
+				read = "Before the replacement, the daemon tried to read the issue workspace. " +
+					"The read failed: " + errPassedOverRead.Error() + ". " +
+					"The daemon does not know if the workspace held work that " + tc.held + "."
+			} else {
+				rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+			}
 			if tc.keptVolumeAt != nil {
 				rig.rt.ScriptKeptVolume(podUpdateIssue, *tc.keptVolumeAt)
 			}
@@ -540,9 +563,7 @@ func TestAReplacementOverAPassedOverRoleNamesThePodsRepositoryWhereTheIssueMoved
 				"The reasons were: " + podUpdateDrift + ". " + tc.gone + "\n\n" +
 				"The round did not wait for these roles, because no process of these roles ran in the pod: " +
 				"planner (suspended).\n\n" +
-				"Before the replacement, the daemon read the issue workspace. " +
-				"The read found work that no branch or tag at origin holds. " +
-				"The workspace held one commit that no branch or tag at origin holds: " + passedOverCommit + ".\n\n" +
+				read + "\n\n" +
 				tc.work + " " + tc.pushed
 			if messages[0] != want {
 				t.Fatalf("the message on the issue =\n%s\nwant\n%s", messages[0], want)

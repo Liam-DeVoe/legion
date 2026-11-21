@@ -71,11 +71,12 @@ import (
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
 // dispatch://INFRA-3136's 20261118073048 and 20261118172458, cybermonklabs/legion#4464's
-// 20261119003157 (dispatch://INFRA-4374), cybermonklabs/legion#4581's 20261120042902
-// (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717 (dispatch://INFRA-4729) and
-// dispatch://INFRA-2040's 20261121160000, 20261121160100 and 20261121160200, so an upgrade of a
-// database main migrated applies it just before those nine. It adds
-// pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
+// 20261119003157 (dispatch://INFRA-4374), cybermonklabs/legion#4573's 20261120012547
+// (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902 (dispatch://INFRA-4108),
+// cybermonklabs/legion#4598's 20261120055717 (dispatch://INFRA-4729) and dispatch://INFRA-2040's
+// 20261121160000, 20261121160100 and 20261121160200, so an upgrade of a database main migrated
+// applies it just before those ten. It adds pull_requests.statuses at its default, the empty
+// list, and it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), and it touches no outbox_kind_check.
@@ -94,15 +95,15 @@ import (
 // 20261117064152, cybermonklabs/legion#4488's 20261117023932, dispatch://INFRA-1997's
 // 20261117112334, dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337),
 // dispatch://INFRA-3136's 20261118073048 and 20261118172458, cybermonklabs/legion#4464's
-// 20261119003157, cybermonklabs/legion#4581's 20261120042902, cybermonklabs/legion#4598's
-// 20261120055717 and dispatch://INFRA-2040's 20261121160000, 20261121160100 and 20261121160200: it
-// names every kind the merge-queue list names and its own. The two kind lists
-// above it are named here too: the step record's (20261117000528, cybermonklabs/legion#4400)
-// restates 20261116165926's kinds with step_record, and the plan record's (20261117023932,
-// cybermonklabs/legion#4488) restates those with plan_record. They stand above every other
-// version of the list that rewrites outbox_kind_check but cybermonklabs/legion#4464's
-// 20261119003157 and dispatch://INFRA-2040's 20261121160100, so an upgrade applies them after all
-// the others and before those two. The count
+// 20261119003157, cybermonklabs/legion#4573's 20261120012547, cybermonklabs/legion#4581's
+// 20261120042902, cybermonklabs/legion#4598's 20261120055717 and dispatch://INFRA-2040's
+// 20261121160000, 20261121160100 and 20261121160200: it names every kind the merge-queue list
+// names and its own. The two kind lists above it are named here too: the step record's
+// (20261117000528, cybermonklabs/legion#4400) restates 20261116165926's kinds with step_record,
+// and the plan record's (20261117023932, cybermonklabs/legion#4488) restates those with
+// plan_record. They stand above every other version of the list that rewrites outbox_kind_check
+// but cybermonklabs/legion#4464's 20261119003157 and dispatch://INFRA-2040's 20261121160100, so an
+// upgrade applies them after all the others and before those two. The count
 // of starts of each step (20261117004117) creates tables and a function of its own, and its roll
 // forward (20261117064152) changes nothing on a database no rollback touched; neither touches
 // outbox_kind_check. The four after them touch no outbox_kind_check either. dispatch://INFRA-1997's
@@ -118,6 +119,11 @@ import (
 // two, phase_ended among them. The same migration deletes the queued phase_ended rows, the seeded
 // one below among them, and adds pull_requests.conflict_read and pull_requests.merge_forward, both
 // null on every row it finds.
+// cybermonklabs/legion#4573's set-back sequence (20261120012547, dispatch://INFRA-3178) is applied
+// after all of these and before cybermonklabs/legion#4581's 20261120042902,
+// cybermonklabs/legion#4598's 20261120055717 and dispatch://INFRA-2040's three. It runs no
+// statement, so it changes nothing on a database main migrated, and it touches no
+// outbox_kind_check.
 // cybermonklabs/legion#4581's mark of a launch that had Oh My Pi resume a claim's session by its
 // id (20261120042902, dispatch://INFRA-4108) stands above every other version of this list but
 // cybermonklabs/legion#4598's 20261120055717 and dispatch://INFRA-2040's three; it adds
@@ -185,6 +191,9 @@ var thisBranchsMigrations = []int{
 	// read and the merge forward, which deletes the queued phase_ended rows and adds the pull
 	// request's two merge-forward columns.
 	20261119003157,
+	// cybermonklabs/legion#4573 (dispatch://INFRA-3178): the set-back's sequence, which runs no
+	// statement.
+	20261120012547,
 	// cybermonklabs/legion#4581 (dispatch://INFRA-4108): the mark of a launch that had Oh My Pi
 	// resume a claim's session by its id, claims.agent_resume_generation.
 	20261120042902,
@@ -213,11 +222,12 @@ var thisBranchsMigrations = []int{
 // 20261117064152, the kind list with the plan record (cybermonklabs/legion#4488's
 // 20261117023932), dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
 // 20261117200337, dispatch://INFRA-3136's 20261118073048 and 20261118172458,
-// cybermonklabs/legion#4464's 20261119003157, cybermonklabs/legion#4581's 20261120042902
-// (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717 (dispatch://INFRA-4729) and
-// dispatch://INFRA-2040's 20261121160000, 20261121160100 and 20261121160200,
-// which is why the loop below holds the list rather than counting it, so that a version added
-// above any of them is named here rather than read as main's.
+// cybermonklabs/legion#4464's 20261119003157, cybermonklabs/legion#4573's 20261120012547
+// (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902 (dispatch://INFRA-4108),
+// cybermonklabs/legion#4598's 20261120055717 (dispatch://INFRA-4729) and dispatch://INFRA-2040's
+// 20261121160000, 20261121160100 and 20261121160200, which is why the loop below holds the list
+// rather than counting it, so that a version added above any of them is named here rather than
+// read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

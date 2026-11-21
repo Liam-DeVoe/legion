@@ -18,8 +18,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// rerunChildKey is the child of the correction rig's live root that the test here parks and runs
-// again, and rerunChildTitle and rerunChildRank are what Dispatch shows of it.
+// rerunChildKey is the child of the correction rig's live root that the test here takes out of the
+// workflow and runs again, and rerunChildTitle and rerunChildRank are what Dispatch shows of it.
 const (
 	rerunChildKey   = "LEGION-401"
 	rerunChildTitle = "the child"
@@ -28,7 +28,7 @@ const (
 
 // childStatusWrite applies the daemon's own write of the child's status, at seq and with the
 // child resolved to resolved, the way api's recordOwnStatusWrite applies the issue Dispatch
-// answered park_child's and rerun_child's write with: Dispatch's view of the issue
+// answered rerun_child's write with: Dispatch's view of the issue
 // (intake.ObservedIssue) carrying the event that write makes (intake.OwnStatusWrite) as Delivered,
 // which ApplyFact applies in the view's place for an issue the workflow records, through the
 // workflow then admission. The route prepares the fact first (its PrepareRepository), which for a
@@ -47,18 +47,21 @@ func (r *correctionRig) childStatusWrite(seq int64, status, resolved string) {
 }
 
 // TestRepositoryCorrectionFollowsRerunChildIntoTheFirstLaunch is the launch half of api's
-// TestRepositoryCorrectionFollowsRerunChild, which proves the record half: a child parked on
-// acme/widgets that Dispatch moves to acme/tools while it is parked, then run again by
+// TestRepositoryCorrectionFollowsRerunChild, which proves the record half: a child out of the
+// workflow on acme/widgets that Dispatch moves to acme/tools meanwhile, then run again by
 // rerun_child, starts its next run (generation 2) on acme/tools, with acme/widgets kept as the
 // repository it left. This proves that the first worker launch of that run, the planner's, is
 // addressed so: its task names acme/tools at its default branch as the issue's repository, says
 // the daemon changed the repository from acme/widgets and when, and says the work is on
 // acme/tools now; and the launch itself works acme/tools at release/v7.1.
 //
-// The park and the rerun are each the route's own status write applied as the route applies it
-// (childStatusWrite: intake.ObservedIssue of the issue Dispatch answered, with
-// intake.OwnStatusWrite of it as Delivered), through the rig's engine then admission, the
-// handler pair the api applies a fact through. The launch is built by the daemon's own specs over
+// The child leaves the workflow by a backlog written in Dispatch, delivered as the event consumer
+// delivers a move with no session (intake.DispatchIssue): the owning architect's own backlog is
+// taken as that move is (workflow's owningArchitectsMove, dispatch://INFRA-3178). The rerun is the
+// route's own status write applied as the route applies it (childStatusWrite:
+// intake.ObservedIssue of the issue Dispatch answered, with intake.OwnStatusWrite of it as
+// Delivered). Each goes through the rig's engine then admission, the handler pair the api applies
+// a fact through. The launch is built by the daemon's own specs over
 // the workflow's own launch read (workflowRuntime.issueLaunchRepository) on the same database, as
 // newLeftPullRequestRig builds it, so nothing between the record and the task is faked.
 func TestRepositoryCorrectionFollowsRerunChildIntoTheFirstLaunch(t *testing.T) {
@@ -80,15 +83,17 @@ func TestRepositoryCorrectionFollowsRerunChildIntoTheFirstLaunch(t *testing.T) {
 		t.Fatalf("record the child of %s: %v", correctionKey, err)
 	}
 
-	// park_child writes backlog while Dispatch still resolves the child to acme/widgets.
-	r.childStatusWrite(3, "backlog", "acme/widgets")
-	parked := recordOf(t, r.pool, r.records, rerunChildKey)
-	if parked.Phase != phase.Done || parked.Status != "backlog" || parked.Generation != 1 || parked.Repo != "acme/widgets" || parked.RepoCorrection != nil {
-		t.Fatalf("the parked child = %#v, want it out of the workflow at generation 1, backlog, on acme/widgets and corrected in nothing", parked)
+	// The child leaves the workflow by a backlog in Dispatch while Dispatch still resolves it to
+	// acme/widgets.
+	applyFact(t, r.pool, "dispatch", "child-backlog-3", r.prepared(intake.DispatchIssue{Key: rerunChildKey, Seq: 3, Type: "issue.updated",
+		Status: "backlog", Title: rerunChildTitle, Parent: correctionKey, Rank: rerunChildRank, ResolvedRepo: "acme/widgets"}), r.engine, r.admission)
+	out := recordOf(t, r.pool, r.records, rerunChildKey)
+	if out.Phase != phase.Done || out.Status != "backlog" || out.Generation != 1 || out.Repo != "acme/widgets" || out.RepoCorrection != nil {
+		t.Fatalf("the child out of the workflow = %#v, want it at generation 1, backlog, on acme/widgets and corrected in nothing", out)
 	}
 
-	// Dispatch moves the child to acme/tools while it is parked, so the issue Dispatch answers
-	// rerun_child's todo with resolves to acme/tools.
+	// Dispatch moves the child to acme/tools while it is out of the workflow, so the issue
+	// Dispatch answers rerun_child's todo with resolves to acme/tools.
 	r.childStatusWrite(4, "todo", "acme/tools")
 	rerun := recordOf(t, r.pool, r.records, rerunChildKey)
 	r.correctedOn(rerun, "acme/tools", "release/v7.1", "acme/tools", "acme/widgets")

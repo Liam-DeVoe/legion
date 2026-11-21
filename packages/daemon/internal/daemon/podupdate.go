@@ -2953,8 +2953,9 @@ type podDrift struct {
 //
 // The pod's repository goes with the drift whatever the record holds, so every round records the
 // repository its pod was built from at its open, and not only a round a correction opened: a
-// correction can land while a round that another drift opened runs, and the message on that
-// round's pod, should the pod go, reads the record against that repository then (roundMove).
+// correction can land while a round that another drift opened runs, and each message of that
+// round on the issue reads the record against that repository when it is written (roundMove's
+// callers).
 func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) podDrift {
 	var reasons []string
 	for _, c := range group {
@@ -3700,6 +3701,19 @@ func pushedWorkMessage(moved repositoryMove) string {
 		moved.from, moved.to)
 }
 
+// podOrigin is the words a message of a round on the issue names the repository of the round's
+// pod with, where it names the work that is or is not on that repository's branches and tags
+// (workspaceLostMessage, workspaceRead.found): "at origin" where moved is no move. Where moved is
+// a move (roundMove), it names the repository the pod was built from: the read of the workspace
+// ran in that pod, whose origin was that repository, and a role reads the message in the new pod,
+// whose origin is the repository the issue's record holds now, which holds none of that work.
+func podOrigin(moved repositoryMove) string {
+	if moved == (repositoryMove{}) {
+		return "at origin"
+	}
+	return fmt.Sprintf("of the repository `%s`", moved.from)
+}
+
 // keptDiskMessage is what a message of a round on the issue says of the work on a kept volume
 // that is still there (podWentMessage, workspaceLostMessage), unpushed being the words that
 // message names that work with. Where moved is a move (roundMove: the repository the gone pod was
@@ -3739,10 +3753,11 @@ func keptDiskMessage(issue, unpushed string, moved repositoryMove) string {
 // (roundKeptVolume), so the message says the work is on that volume, as podWentMessage does.
 //
 // Where moved is a move (roundMove), the message says of it what podWentMessage says, in the same
-// sentences (pushedWorkMessage, keptDiskMessage), and it names the work that no branch holds by
-// the repository the pod was built from rather than by origin: in the new pod, origin is the
-// repository the record holds now, which holds none of that work. The issue's spec requires this
-// message (dispatch://INFRA-4109 R1, R7). Another agent reads it, so it follows ASD-STE100, as
+// sentences (pushedWorkMessage, keptDiskMessage), and each of its sentences that names the work
+// that no branch holds, what the read found included, names it by the repository the pod was
+// built from rather than by origin (podOrigin): in the new pod, origin is the repository the
+// record holds now, which holds none of that work. The issue's spec requires this message
+// (dispatch://INFRA-4109 R1, R7). Another agent reads it, so it follows ASD-STE100, as
 // podWentMessage does.
 func workspaceLostMessage(issue, round, reasons string, named []supervise.Claim, read workspaceRead, kept bool,
 	moved repositoryMove) string {
@@ -3750,10 +3765,7 @@ func workspaceLostMessage(issue, round, reasons string, named []supervise.Claim,
 	if read.noProcess() {
 		roles = "These roles did not answer the update ask before the replacement. No process of these roles ran in the pod: "
 	}
-	unpushed := "Work that is not on a branch at origin"
-	if moved != (repositoryMove{}) {
-		unpushed = fmt.Sprintf("Work that is not on a branch of the repository `%s`", moved.from)
-	}
+	unpushed := "Work that is not on a branch " + podOrigin(moved)
 	gone, work := "The pod and its disk are gone.", unpushed+" is lost."
 	if kept {
 		gone = "The pod is gone. Its disk is a kept volume, and the volume is still there."
@@ -3766,35 +3778,38 @@ func workspaceLostMessage(issue, round, reasons string, named []supervise.Claim,
 %s
 
 %s %s`,
-		round, roundOpenedFor(reasons), gone, roles, roleStates(named), read.found(), work, pushedWorkMessage(moved))
+		round, roundOpenedFor(reasons), gone, roles, roleStates(named), read.found(moved), work, pushedWorkMessage(moved))
 }
 
 // found is what the issue's message says the read found (workspaceLostMessage): that no process
 // could make it, the error it failed with, or the change in the working copy and the work commits,
-// by id up to shimwire.MaxWorkspaceWorkCommits of them and by count all of them.
-func (r workspaceRead) found() string {
+// by id up to shimwire.MaxWorkspaceWorkCommits of them and by count all of them. It names the
+// repository whose branches and tags hold none of that work as moved names it (podOrigin).
+func (r workspaceRead) found(moved repositoryMove) string {
+	held := "no branch or tag " + podOrigin(moved) + " holds"
+	unknown := "The daemon does not know if the workspace held work that " + held + "."
 	if r.noProcess() {
-		return strings.TrimSuffix(noProcessRead, ".") + ", so the daemon did not read it before the replacement. The daemon does not know if the workspace held work that no branch or tag at origin holds."
+		return strings.TrimSuffix(noProcessRead, ".") + ", so the daemon did not read it before the replacement. " + unknown
 	}
 	if r.err != nil {
 		// The message is stored and read by the issue's roles, so the read's error, which the
 		// shim's jj wrote, is kept in it as any far side's error text is (storetext.FarSideError).
-		return fmt.Sprintf("Before the replacement, the daemon tried to read the issue workspace. The read failed: %s. The daemon does not know if the workspace held work that no branch or tag at origin holds.",
-			storetext.FarSideError(r.err.Error()))
+		return fmt.Sprintf("Before the replacement, the daemon tried to read the issue workspace. The read failed: %s. %s",
+			storetext.FarSideError(r.err.Error()), unknown)
 	}
-	found := []string{"Before the replacement, the daemon read the issue workspace. The read found work that no branch or tag at origin holds."}
+	found := []string{"Before the replacement, the daemon read the issue workspace. The read found work that " + held + "."}
 	if r.work.Changed {
 		found = append(found, fmt.Sprintf("The working copy held a change (commit %s).", r.work.Head))
 	}
 	commits := strings.Join(r.work.Commits, ", ")
 	switch {
 	case r.work.Count > len(r.work.Commits):
-		found = append(found, fmt.Sprintf("The workspace held %d commits that no branch or tag at origin holds. The first %d of these commits are: %s.",
-			r.work.Count, len(r.work.Commits), commits))
+		found = append(found, fmt.Sprintf("The workspace held %d commits that %s. The first %d of these commits are: %s.",
+			r.work.Count, held, len(r.work.Commits), commits))
 	case r.work.Count == 1:
-		found = append(found, fmt.Sprintf("The workspace held one commit that no branch or tag at origin holds: %s.", commits))
+		found = append(found, fmt.Sprintf("The workspace held one commit that %s: %s.", held, commits))
 	case r.work.Count > 1:
-		found = append(found, fmt.Sprintf("The workspace held %d commits that no branch or tag at origin holds: %s.", r.work.Count, commits))
+		found = append(found, fmt.Sprintf("The workspace held %d commits that %s: %s.", r.work.Count, held, commits))
 	}
 	return strings.Join(found, " ")
 }
