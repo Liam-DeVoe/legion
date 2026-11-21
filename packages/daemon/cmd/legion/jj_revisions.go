@@ -1,16 +1,20 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"unsafe"
 )
 
 // This file holds what the step (jjStep, jj.go) keeps of each revision argument of the push: the
-// commits it names before any rewrite (readRevisions), and the word it reaches each dry run and
-// the real push with (jjStep.words), which names those commits as revisionWord says; one the step
-// prints a line for (revisionWord's fallback) may not.
+// commits it names before any rewrite (readRevisions), the words it reaches each dry run and the
+// real push with (jjStep.given, jjStep.words), which name those commits as revisionGiven says, and
+// whether the push's command would still be under jjArgMax bytes once the rewrite of setAuthors
+// leaves each argument its words (checkArgMax).
 
 // jjSent is one commit a revision argument sends after the step (jjStep.sends): its full id, and
 // whether it is the working-copy commit.
@@ -29,6 +33,14 @@ func (c jjSent) word() string {
 	return c.id
 }
 
+// revision is revision argument i's word, split where the argument starts: prefix, what stands in
+// front of it (the name of --named, or the option's own spelling where the value is attached to
+// it), and argument, the revset the role wrote.
+func (p jjPush) revision(i int) (prefix, argument string) {
+	r := p.revisions[i]
+	return p.args[r.index][:r.offset], p.args[r.index][r.offset:]
+}
+
 // readRevisions reads each revision argument of the push with jj itself, before any rewrite: the
 // commits of it that the step can rewrite (readRevision), and, for an argument with such a commit,
 // every commit it names (revisionSets, read by ids), each with whether it is the working-copy
@@ -41,7 +53,7 @@ func (c jjSent) word() string {
 // the commit id of @ is after a rewrite of @ hid it; one whose change has none, or more than one,
 // stands for itself. An argument whose read jj refuses (a revset jj cannot parse or resolve, an
 // ambiguous prefix, a commit that a git command made and that no jj command has imported yet) is
-// followed by nothing, and goes to the dry run and the real push as the role wrote it (words): jj
+// followed by nothing, and goes to the dry run and the real push as the role wrote it (given): jj
 // alone may still push such a commit, since the real push imports it, while none of the step's
 // commands, which run with --ignore-working-copy, imports it or can read it. The dry run then
 // fails as the read did, with jj's error, which the step cannot read (dryRunFilled).
@@ -49,15 +61,16 @@ func (s *jjStep) readRevisions() error {
 	s.revisionSets = make([][]jjSent, len(s.push.revisions))
 	s.revisionCommits = make([][]*jjFollowed, len(s.push.revisions))
 	var hidden []string
-	for i, r := range s.push.revisions {
-		commits, err := s.readRevision(r)
+	for i := range s.push.revisions {
+		_, argument := s.push.revision(i)
+		commits, err := s.readRevision(argument)
 		if err != nil {
 			return err
 		}
 		if len(commits) == 0 {
 			continue
 		}
-		ids, working, err := s.ids(s.push.args[r.index][r.offset:])
+		ids, working, err := s.ids(argument)
 		if err != nil {
 			continue
 		}
@@ -89,15 +102,15 @@ func (s *jjStep) readRevisions() error {
 	return nil
 }
 
-// readRevision reads revision argument r as the role wrote it, with jjCommitTemplate: the commits
-// of `((<argument>) & mutable()) ~ ::remote_bookmarks()`, or none where jj refuses the read. Those
-// are the commits of the argument that the step can rewrite: it rewrites no commit that a remote
-// bookmark holds or that is under one (readSet, readFillable), and a metaedit moves only the
-// commits it rewrites and their descendants, which no remote bookmark holds either. Leaving the
-// rest out keeps small, for a broad argument such as `::<C>` on a pushed branch, both this read and
-// what the step follows of it through each later read.
-func (s *jjStep) readRevision(r jjRevision) ([]jjCommitRead, error) {
-	commits, err := s.read("((" + s.push.args[r.index][r.offset:] + ") & mutable()) ~ ::remote_bookmarks()")
+// readRevision reads argument, a revision argument as the role wrote it, with jjCommitTemplate:
+// the commits of `((<argument>) & mutable()) ~ ::remote_bookmarks()`, or none where jj refuses the
+// read. Those are the commits of the argument that the step can rewrite: it rewrites no commit
+// that a remote bookmark holds or that is under one (readSet, readFillable), and a metaedit moves
+// only the commits it rewrites and their descendants, which no remote bookmark holds either.
+// Leaving the rest out keeps small, for a broad argument such as `::<C>` on a pushed branch, both
+// this read and what the step follows of it through each later read.
+func (s *jjStep) readRevision(argument string) ([]jjCommitRead, error) {
+	commits, err := s.read("((" + argument + ") & mutable()) ~ ::remote_bookmarks()")
 	var failed jjStepFailure
 	if errors.As(err, &failed) {
 		return nil, nil
@@ -105,58 +118,90 @@ func (s *jjStep) readRevision(r jjRevision) ([]jjCommitRead, error) {
 	return commits, err
 }
 
-// words is the push's words, and the lines the step prints of them: each revision argument as the
-// step gives it (revisionWord), with its line where it has one, and every other word as the role
-// wrote it, every byte, each option's own spelling included. Without moved, a revision argument
-// counts every followed commit that no longer stands for itself, whether readRevisions' reading of
-// a hidden commit as its change's one visible commit or a metaedit of the step moved it: the words
-// of each pass of the dry run (dryRunFilled), and the real push's after a step that ends without
-// error. With moved, it counts only a commit a metaedit of the step moved (jjFollowed): the real
-// push's words after a step that changes nothing more (errJJAsWritten), which are the role's own
-// but for such a commit (the step's loop over a commit with no author can move one before a dry
-// run it cannot read, and an earlier metaedit one before a metaedit that jj refuses). Only the real
-// push's words print their lines (runJJ); a dry run's drop them.
-func (s *jjStep) words(moved bool) (words, lines []string) {
-	words = slices.Clone(s.push.args)
-	for i, r := range s.push.revisions {
-		word, line := s.revisionWord(i, moved)
-		words[r.index] = word
-		if line != "" {
-			lines = append(lines, line)
-		}
-	}
-	return words, lines
+// jjGiven is a revision argument as the step gives it to a pass of the dry run or to the real push
+// (revisionGiven): words, the words that hold it, each with what stands in front of the argument in
+// its word (the name of --named, or the option's own spelling where the value is attached to it);
+// ids, where those words give it as the ids of its commits, those ids, each a full commit id or
+// `@`, and else nil; and line, the one line the step prints of it, or "" for none.
+type jjGiven struct {
+	words []string
+	ids   []string
+	line  string
 }
 
-// revisionWord is the word that holds revision argument i as the step gives it, with what stands
-// in front of the argument in that word kept (the name of --named, or the option's own spelling
-// where the value is attached to it), and line, the one line the step prints of it, or "" for
-// none. The word names, as jj resolves it then, exactly the commits the argument sends (sends):
-// each commit it named before any rewrite, or the commit that stands for one now that a counted
-// followed commit no longer stands for (words' moved). So each revision argument reaches each pass
-// of the dry run and the real push naming exactly the commits it named before the step, each one a
-// metaedit of the step replaced as the commit that replaced it, and nothing in the argument that a
-// rewrite changes, a change offset `<change>/<n>`, `latest()`, `heads()` or an author revset, makes
-// the push send a commit the role did not name. Only two words of 4, each of which prints a line,
-// may name other commits: the primary form that jj did not resolve to them, and the argument as
-// the role wrote it. The word is:
+// given is each revision argument as the step gives it to a pass (revisionGiven), by its place in
+// push.revisions. Without moved, an argument counts every followed commit that no longer stands
+// for itself, whether readRevisions' reading of a hidden commit as its change's one visible commit
+// or a metaedit of the step moved it: the words of each pass of the dry run (dryRunFilled), and the
+// real push's after a step that ends without error. With moved, it counts only a commit a metaedit
+// of the step moved (jjFollowed): the real push's words after a step that changes nothing more
+// (errJJAsWritten), which are the role's own but for such a commit (the step's loop over a commit
+// with no author can move one before a dry run it cannot read or before checkArgMax, and an earlier
+// metaedit one before a metaedit that jj refuses). Only the real push prints the lines (runJJ); a
+// dry run drops them.
+func (s *jjStep) given(moved bool) []jjGiven {
+	given := make([]jjGiven, len(s.push.revisions))
+	for i := range given {
+		given[i] = s.revisionGiven(i, moved)
+	}
+	return given
+}
+
+// words is the push's words with each revision argument in the words that given gives it, and
+// every other word as the role wrote it, every byte, each option's own spelling included; dry
+// leaves out the words that stay on the real push alone (jjPush.pushOnly). An argument in more
+// than one word repeats its option: each word of a value attached to its option (`-r<ids>`,
+// `--revisions=<ids>`) carries the option as the role spelled it, and the word of the option
+// stands again before each word after the first of a value that follows it (`-r <ids>`). jj takes
+// -c and -r more than once and sends the union of what they name. --named names one commit, so
+// its argument is never in more than one word.
+func (s *jjStep) words(given []jjGiven, dry bool) []string {
+	words := make([]string, 0, len(s.push.args))
+	next := 0
+	for j, word := range s.push.args {
+		if dry && s.push.pushOnly[j] {
+			continue
+		}
+		if next == len(s.push.revisions) || s.push.revisions[next].index != j {
+			words = append(words, word)
+			continue
+		}
+		for k, w := range given[next].words {
+			if k > 0 && s.push.revisions[next].offset == 0 {
+				words = append(words, s.push.args[j-1])
+			}
+			words = append(words, w)
+		}
+		next++
+	}
+	return words
+}
+
+// revisionGiven is revision argument i as the step gives it (jjGiven). Its words name, as jj
+// resolves them then, exactly the commits the argument sends (sends): each commit it named before
+// any rewrite, or the commit that stands for one now that a counted followed commit no longer
+// stands for (given's moved). So each revision argument reaches each pass of the dry run and the
+// real push naming exactly the commits it named before the step, each one a metaedit of the step
+// replaced as the commit that replaced it, and nothing in the argument that a rewrite changes, a
+// change offset `<change>/<n>`, `latest()`, `heads()` or an author revset, makes the push send a
+// commit the role did not name. Its words are:
 //
 //  1. the argument as the role wrote it, every byte, where no commit of it counts;
 //  2. the same where jj resolves the argument as written now to exactly the commits it sends, as
 //     jj moves `@`, a bookmark and a change id to the commit a metaedit made;
-//  3. else the primary form (checkedPrimary), where jj resolves it to exactly those commits;
+//  3. else the primary form (checkedPrimary), where jj resolves it to exactly those commits and
+//     its word is under jjWordBound bytes;
 //  4. else, where jj resolves the form to other commits (a hidden commit written into it puts it
 //     and its ancestors into all(), which can change what a filter of the argument means), or
 //     refuses a read of 2 or 3, or the step runs no read of 3 (checkedPrimary), the commits it
-//     sends as their ids (jjExplicitIDs), where that word is under jjWordBound bytes, else the
-//     primary form, where its word is, else the argument as the role wrote it, with a line that
-//     says which: for the primary form, with the commits by which jj's resolution of it differs
-//     from those it sends, or that jj did not resolve it. Only the real push prints that line
-//     (runJJ), and the push goes on.
-func (s *jjStep) revisionWord(i int, moved bool) (word, line string) {
-	r := s.push.revisions[i]
-	word = s.push.args[r.index]
-	prefix, argument := word[:r.offset], word[r.offset:]
+//     sends as their ids, in as many words of its option as keep each under jjWordBound bytes
+//     (jjWords, words), with a line that says so. Only the real push prints that line (runJJ),
+//     and the push goes on.
+//
+// So no word the step writes in place of an argument is over jjWordBound bytes, and none names
+// commits other than those the argument sends.
+func (s *jjStep) revisionGiven(i int, moved bool) jjGiven {
+	prefix, argument := s.push.revision(i)
 	var counted []*jjFollowed
 	for _, f := range s.revisionCommits[i] {
 		if f.commit != f.origin && (f.moved || !moved) {
@@ -164,59 +209,53 @@ func (s *jjStep) revisionWord(i int, moved bool) (word, line string) {
 		}
 	}
 	if len(counted) == 0 {
-		return word, ""
+		return s.written(i)
 	}
 	send, sendIDs := s.sends(i, counted)
 	now, _, err := s.ids(argument)
 	if err == nil && jjSameSet(now, sendIDs) {
-		return word, ""
+		return s.written(i)
 	}
-	primary, got, resolved, same := s.checkedPrimary(argument, err == nil, counted, send, sendIDs)
-	if same {
-		return prefix + primary, ""
+	if primary, same := s.checkedPrimary(prefix, argument, err == nil, counted, send, sendIDs); same {
+		return jjGiven{words: []string{prefix + primary}}
 	}
-	ids := make([]string, len(send))
-	for k, c := range send {
-		ids[k] = c.word()
+	given := jjIDsGiven(prefix, send)
+	given.line = fmt.Sprintf("legion jj: revision `%s` names other commits after the step; the push gets the commits it named before the step, as the step left them, by their ids", argument)
+	if len(given.words) > 1 {
+		given.line = fmt.Sprintf("legion jj: revision `%s` names other commits after the step; the push gets the %d commits it named before the step, as the step left them, by their ids, in %d words of its option, each under %d bytes", argument, len(given.ids), len(given.words), jjWordBound)
 	}
-	given, explicit := jjExplicitIDs(prefix, ids)
-	switch {
-	case explicit:
-		return given, fmt.Sprintf("legion jj: revision `%s` names other commits after the step; the push gets the commits it named before the step, as the step left them, by their ids", argument)
-	case len(prefix)+len(primary) < jjWordBound:
-		differs := "which jj did not resolve"
-		if resolved {
-			in := make(map[string]bool, len(got))
-			for _, id := range got {
-				in[id] = true
-			}
-			var leaves []string
-			for _, c := range send {
-				if !in[c.id] {
-					leaves = append(leaves, c.id)
-				}
-			}
-			differs = "which adds " + jjCommitList(jjNotIn(got, sendIDs)) + " and leaves out " + jjCommitList(leaves)
-		}
-		return prefix + primary, fmt.Sprintf("legion jj: revision `%s` names other commits after the step, and the word of the ids of the %d commits it named before the step would not be under %d bytes; the push gets `%s`, %s", argument, len(send), jjWordBound, primary, differs)
-	default:
-		return word, fmt.Sprintf("legion jj: revision `%s` names other commits after the step, and neither the word of the ids of the %d commits it named before the step nor its primary form would be under %d bytes; the push gets it as written", argument, len(send), jjWordBound)
-	}
+	return given
 }
 
-// checkedPrimary is the primary form of revision argument argument (revisionWord's 3),
+// written is revision argument i as the role wrote it: its one word, every byte.
+func (s *jjStep) written(i int) jjGiven {
+	return jjGiven{words: []string{s.push.args[s.push.revisions[i].index]}}
+}
+
+// jjIDsGiven is a revision argument that gives the push sent, the commits it sends, as their ids
+// (jjSent.word), in as many words of its option as keep each, prefix, what stands in front of the
+// argument, then the ids joined by ` | `, under jjWordBound bytes (jjWords).
+func jjIDsGiven(prefix string, sent []jjSent) jjGiven {
+	ids := make([]string, len(sent))
+	for k, c := range sent {
+		ids[k] = c.word()
+	}
+	return jjGiven{words: jjWords(prefix, ids, ""), ids: ids}
+}
+
+// checkedPrimary is the primary form of revision argument argument (revisionGiven's 3),
 // `(<argument>) ~ (<old>) ~ (<extra>) | <new> | <missing>` (jjPrimary): old the ids of counted's
 // commits, new the commits that stand for them, extra the commits jj resolves less,
 // `(<argument>) ~ (<old>)`, to that the argument does not send, and missing those it sends (send,
 // whose ids sendIDs holds) that are neither among them nor new, `@` for the working-copy commit in
 // new and missing. Inside the form the argument means what it meant in that read, so the form
-// resolves to the commits it sends. got is the commits jj resolves the form to, where resolved,
-// and same is whether those are exactly send's. The step reads less only where readable, jj having
-// resolved the argument as written now, and where less is under jjWordBound bytes: the form holds
-// less, so it would not be under the bound either. It reads the form only where it read less and
-// the form is under the bound. A read it does not run leaves the form unresolved, as one jj
-// refuses. Without the read of less, the form is less, then ` | <new>`.
-func (s *jjStep) checkedPrimary(argument string, readable bool, counted []*jjFollowed, send []jjSent, sendIDs map[string]bool) (primary string, got []string, resolved, same bool) {
+// resolves to the commits it sends. same is whether jj resolves the form to exactly send's
+// commits, the form's word, prefix and then the form, being under jjWordBound bytes. The step reads
+// less only where readable, jj having resolved the argument as written now, and where the word of
+// the form without that read, less then ` | <new>`, is under jjWordBound bytes: the form holds
+// that one, so its word would not be under the bound either. It reads the form only where it read
+// less and the form's word is under the bound.
+func (s *jjStep) checkedPrimary(prefix, argument string, readable bool, counted []*jjFollowed, send []jjSent, sendIDs map[string]bool) (primary string, same bool) {
 	var old, added []string
 	isNew := map[string]bool{}
 	for _, f := range counted {
@@ -228,21 +267,19 @@ func (s *jjStep) checkedPrimary(argument string, readable bool, counted []*jjFol
 	}
 	less := "(" + argument + ") ~ (" + strings.Join(old, " | ") + ")"
 	primary = less + " | " + strings.Join(added, " | ")
-	if !readable || len(less) >= jjWordBound {
-		return primary, nil, false, false
+	if !readable || len(prefix)+len(primary) >= jjWordBound {
+		return primary, false
 	}
 	left, _, err := s.ids(less)
 	if err != nil {
-		return primary, nil, false, false
+		return primary, false
 	}
 	primary = jjPrimary(less, left, added, send, sendIDs, isNew)
-	if len(primary) >= jjWordBound {
-		return primary, nil, false, false
+	if len(prefix)+len(primary) >= jjWordBound {
+		return primary, false
 	}
-	if got, _, err = s.ids(primary); err != nil {
-		return primary, nil, false, false
-	}
-	return primary, got, true, jjSameSet(got, sendIDs)
+	got, _, err := s.ids(primary)
+	return primary, err == nil && jjSameSet(got, sendIDs)
 }
 
 // jjPrimary is the primary form of a revision argument (checkedPrimary): less, the argument less
@@ -284,6 +321,117 @@ func jjNotIn(ids []string, set map[string]bool) []string {
 	return out
 }
 
+// jjArgMax is the bound, in bytes, under which the step keeps each command of its own that grows
+// with the commits it names, the push's (checkArgMax) and each metaedit's (jjStep.metaedit): each
+// string of its arguments and of its environment with the NUL that ends it, and the pointer to each
+// (jjSize), which Linux refuses past 2,097,152 bytes, a quarter of the usual 8 MiB stack
+// (execve(2)). It is a variable so that this package's test binary, run as legion, can lower it
+// (TestMain); nothing in the legion binary changes it.
+var jjArgMax = 2_097_152
+
+// checkArgMax decides, before setAuthors rewrites rewrites, the current ids of the commits it
+// would rewrite, whether the push can still run once each revision argument has the words the
+// step would give it after that rewrite (revisionGiven). Those may be the ids of its commits
+// whatever its primary form: a read that jj refuses, a check of the form that fails, or a commit
+// the form would add, makes revisionGiven fall to them. So the step counts an argument with a
+// commit that the rewrite would move in the larger of its word as the role wrote it and the ids of
+// every commit of its set (revisionSets, jjIDsGiven), each as long as the id that stands for it
+// after the rewrite, and every other argument as the role wrote it (largestGiven). Where the push's
+// command with those words would not be under jjArgMax bytes (commandSize), the step prints one
+// line that names the argument with the most ids, their number and the limit (asWritten), and
+// answers errJJAsWritten: setAuthors rewrites nothing, and the push runs with the role's own
+// words, but for an argument with a commit that the fill of a commit with no author moved
+// (jjStep.given). Else it answers nil.
+//
+// The commits the rewrite would move of an argument are its followed commits (revisionCommits)
+// that stand now for one of rewrites or for a descendant of one, which a metaedit moves: the
+// commits of jj's `(<rewrites>)::`, read in as few commands as keep each revset under jjWordBound
+// bytes (jjWords, eachID), among the commits of the argument's set that the step can rewrite, the
+// only ones of that set a metaedit can move (readRevision); and each of its followed commits that
+// no longer stands for itself already: a hidden commit that readRevisions reads as its change's
+// one visible commit, or one that the fill moved (dryRunFilled). Those are among its followed
+// commits, so the step reads no descendant where the push's command is under the limit with every
+// argument that has a followed commit counted so: the answer would be nil all the same.
+func (s *jjStep) checkArgMax(rewrites []string) error {
+	asIDs := make([]jjGiven, len(s.push.revisions))
+	for i, commits := range s.revisionCommits {
+		if len(commits) > 0 {
+			prefix, _ := s.push.revision(i)
+			asIDs[i] = jjIDsGiven(prefix, s.revisionSets[i])
+		}
+	}
+	given, widest := s.largestGiven(asIDs, func(*jjFollowed) bool { return true })
+	if widest < 0 || s.commandSize(given) < jjArgMax {
+		return nil
+	}
+	descendants, err := s.eachID(jjWords("(", jjCommitIDs(rewrites), ")::"))
+	if err != nil {
+		return err
+	}
+	moves := make(map[string]bool, len(descendants))
+	for _, id := range descendants {
+		moves[id] = true
+	}
+	given, widest = s.largestGiven(asIDs, func(f *jjFollowed) bool { return moves[f.commit] || f.commit != f.origin })
+	if widest < 0 || s.commandSize(given) < jjArgMax {
+		return nil
+	}
+	_, argument := s.push.revision(widest)
+	return s.asWritten("set the author", fmt.Sprintf("revision `%s` would go to the push as the ids of its %d commits, and the push's arguments and environment would not be under %d bytes", argument, len(asIDs[widest].ids), jjArgMax))
+}
+
+// largestGiven is each revision argument as checkArgMax counts it: one with a followed commit that
+// moves, as moves says, in the larger (givenSize) of its word as the role wrote it and asIDs's
+// words of it, and every other as the role wrote it. widest is the place of the argument with the
+// most ids among the first, or -1 where there is none.
+func (s *jjStep) largestGiven(asIDs []jjGiven, moves func(*jjFollowed) bool) (given []jjGiven, widest int) {
+	given, widest = make([]jjGiven, len(s.push.revisions)), -1
+	for i, commits := range s.revisionCommits {
+		given[i] = s.written(i)
+		if !slices.ContainsFunc(commits, moves) {
+			continue
+		}
+		if s.givenSize(i, asIDs[i]) > s.givenSize(i, given[i]) {
+			given[i] = asIDs[i]
+		}
+		if widest < 0 || len(asIDs[i].ids) > len(asIDs[widest].ids) {
+			widest = i
+		}
+	}
+	return given, widest
+}
+
+// givenSize is the bytes that revision argument i, as g gives it, takes of the push's command
+// (jjStep.words, jjSize): each of its words, and, where its value follows its option, that option's
+// word again before each of them after the first.
+func (s *jjStep) givenSize(i int, g jjGiven) int {
+	size := jjSize(g.words...)
+	if r := s.push.revisions[i]; r.offset == 0 {
+		size += (len(g.words) - 1) * jjSize(s.push.args[r.index-1])
+	}
+	return size
+}
+
+// commandSize is the bytes that Linux counts against jjArgMax (jjSize) for the push with each
+// revision argument as given gives it. The arguments are next and the push's words, with the dry
+// run's flags (jjDryRunFlags), which its dry run has beside the same words, and the environment is
+// the step's (env) with wrappedJJStepped set to a digest (jjStepped), which the real push has
+// beside it; so each of the two commands counts that many bytes or fewer.
+func (s *jjStep) commandSize(given []jjGiven) int {
+	return jjSize(s.words(given, false)...) + jjSize(jjDryRunFlags...) + jjSize(s.env...) +
+		jjSize(s.next, wrappedJJStepped+"=") + hex.EncodedLen(sha256.Size)
+}
+
+// jjSize is the bytes that Linux counts against jjArgMax (execve(2)) for words, strings of a
+// command's arguments or environment: each with the NUL that ends it, and the pointer to it.
+func jjSize(words ...string) int {
+	size := 0
+	for _, word := range words {
+		size += len(word) + 1 + int(unsafe.Sizeof(uintptr(0)))
+	}
+	return size
+}
+
 // sends is the commits revision argument i sends after the step, send, and their ids, sendIDs:
 // each commit it named before any rewrite (revisionSets), or, for the origin of one of counted, the
 // followed commits of it that no longer stand for themselves, the commit that stands for that one
@@ -306,29 +454,6 @@ func (s *jjStep) sends(i int, counted []*jjFollowed) (send []jjSent, sendIDs map
 		}
 	}
 	return send, sendIDs
-}
-
-// jjCommitList is ids joined by `, `, or `no commit` where there is none.
-func jjCommitList(ids []string) string {
-	if len(ids) == 0 {
-		return "no commit"
-	}
-	return strings.Join(ids, ", ")
-}
-
-// jjExplicitIDs is the word of a revision argument that gives the push its commits as their ids:
-// prefix, what stands in front of the argument in its word, then ids, each a full commit id or
-// `@`, joined by ` | `. ok is whether that word is under jjWordBound bytes; where it is not,
-// there is no word, and the step builds none.
-func jjExplicitIDs(prefix string, ids []string) (word string, ok bool) {
-	size := len(prefix) + len(" | ")*max(len(ids)-1, 0)
-	for _, id := range ids {
-		size += len(id)
-	}
-	if size >= jjWordBound {
-		return "", false
-	}
-	return prefix + strings.Join(ids, " | "), true
 }
 
 // jjSameSet is whether ids, commit ids each once as jj prints them, are exactly the ids of set.
@@ -364,4 +489,13 @@ func (s *jjStep) ids(revset string) (ids []string, working string, err error) {
 		}
 	}
 	return ids, working, nil
+}
+
+// eachID is the full id of each commit of revsets, read with one command for each (ids), each
+// once, in the order the reads print them (jjEachOnce).
+func (s *jjStep) eachID(revsets []string) ([]string, error) {
+	return jjEachOnce(revsets, func(revset string) ([]string, error) {
+		ids, _, err := s.ids(revset)
+		return ids, err
+	}, func(id string) string { return id })
 }

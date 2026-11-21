@@ -33,13 +33,23 @@ import (
 //     PATH, with the real jj (or a recording jj ahead of it) after it.
 //
 // Every row runs under both forms. The file names nothing the step's change adds: the table's
-// variable is written out, and every command's environment is built here. So it compiles and runs
-// at the base too, where docker/jj hands no push to `legion jj` and workerbin.Install writes no jj;
-// there the tests of a change fail, and those of what stays pass.
+// variable and those of the test binary's bounds of the step are written out, and every command's
+// environment is built here. So it compiles and runs at the base too, where docker/jj hands no push
+// to `legion jj` and workerbin.Install writes no jj; there the tests of a change fail, and those of
+// what stays pass.
 
 // rolePushVariable is the table of every role's identity that the daemon writes into a role
 // process's environment.
 const rolePushVariable = "LEGION_ROLE_IDENTITIES"
+
+// rolePushBoundVariable is the variable that this package's test binary, run as legion, reads as
+// the step's bound, in bytes, of a word it builds of ids; the legion binary reads no such variable.
+const rolePushBoundVariable = "LEGION_TEST_JJ_WORD_BOUND"
+
+// rolePushArgMaxVariable is the variable that this package's test binary, run as legion, reads as
+// the step's limit, in bytes, of the push's command and of each metaedit's; the legion binary reads
+// no such variable.
+const rolePushArgMaxVariable = "LEGION_TEST_JJ_ARG_MAX"
 
 // rolePushIdentity is the identity a role's process has, its JJ_USER and JJ_EMAIL.
 type rolePushIdentity struct{ name, email string }
@@ -141,6 +151,10 @@ fi`
   rm -f "$out"
   ran=1
 fi`
+	// rolePushMeasuresMetaedit appends the environment of every metaedit, as execve(2) handed it
+	// to the recording jj (/proc/<pid>/environ), then \036, which no variable holds, to the file
+	// of the recording jj's path with `.environ` after it (metaeditSizes).
+	rolePushMeasuresMetaedit = `if [ -n "$is_metaedit" ]; then { cat /proc/$$/environ; printf '\036'; } >>"$0.environ"; fi`
 )
 
 // rolePushUnreadableLine is the line rolePushUnreadableDryRun adds.
@@ -216,11 +230,14 @@ type rolePushFixture struct {
 	timestamp string
 	// table is LEGION_ROLE_IDENTITIES in every command's environment, or nil to leave it unset.
 	table *string
-	log   string // the recording jj's log, or "" when there is no recording jj
-	bare  string // the remote origin
-	repo  string // the clone, a colocated jj repository; its workspace is the default one
-	seed  string // the commit id of the remote's main, under every ref the tests read
-	files int
+	// bound and argMax are rolePushBoundVariable and rolePushArgMaxVariable in every command's
+	// environment, each in bytes, or 0 to leave it unset.
+	bound, argMax int
+	log           string // the recording jj's log, or "" when there is no recording jj
+	bare          string // the remote origin
+	repo          string // the clone, a colocated jj repository; its workspace is the default one
+	seed          string // the commit id of the remote's main, under every ref the tests read
+	files         int
 }
 
 // newRolePushWrapper makes the form's jj for a test, with a recording jj between it and the real
@@ -345,8 +362,8 @@ func (f *rolePushFixture) install(path string) string {
 
 // env is the whole environment of one of a role's commands: the PATH given, a home, a temporary
 // directory and a jj configuration of the test's own, no git configuration of the host's, the
-// role's identity, the table, and the row's fixed timestamp where it set one. Nothing is
-// inherited, so no variable of the pod's reaches it.
+// role's identity, the table, and the row's bounds of the step and fixed timestamp where it set
+// them. Nothing is inherited, so no variable of the pod's reaches it.
 func (f *rolePushFixture) env(path string, as rolePushIdentity) []string {
 	env := []string{
 		"PATH=" + path, "TMPDIR=" + f.tmp,
@@ -358,6 +375,12 @@ func (f *rolePushFixture) env(path string, as rolePushIdentity) []string {
 	env = append(env, fixtureenv.Home(f.home)...)
 	if f.table != nil {
 		env = append(env, rolePushVariable+"="+*f.table)
+	}
+	if f.bound != 0 {
+		env = append(env, rolePushBoundVariable+"="+strconv.Itoa(f.bound))
+	}
+	if f.argMax != 0 {
+		env = append(env, rolePushArgMaxVariable+"="+strconv.Itoa(f.argMax))
 	}
 	if f.timestamp != "" {
 		env = append(env, "JJ_TIMESTAMP="+f.timestamp)
@@ -655,6 +678,9 @@ type rolePushWant struct {
 	cannotSetNames string
 	// noMetaedit is whether the recording jj must see no metaedit.
 	noMetaedit bool
+	// ids are the lines `legion jj: revision `<argument>` names other commits after the step; …
+	// in <k> words of its option, …` the push prints, in order.
+	ids []rolePushIDs
 	// pushed, when not nil, checks the words of the real push, which a recording jj ahead of the
 	// real one saw (oneRealPush).
 	pushed func(words []string)
@@ -705,6 +731,25 @@ type rolePushPrinted struct{ role, old, new string }
 
 var rolePushRewriteLine = regexp.MustCompile(`^legion jj: ([a-z]+): ([0-9a-f]{40}) -> ([0-9a-f]{40})$`)
 
+// rolePushIDs is one line `legion jj: revision `<argument>` names other commits after the step;
+// the push gets the <n> commits … by their ids, in <k> words of its option, each under <bound>
+// bytes`: the argument, n, k and the bound.
+type rolePushIDs struct {
+	argument              string
+	commits, words, bound int
+}
+
+var rolePushIDsLine = regexp.MustCompile("^legion jj: revision `(.*)` names other commits after the step; the push gets the ([0-9]+) commits it named before the step, as the step left them, by their ids, in ([0-9]+) words of its option, each under ([0-9]+) bytes$")
+
+// rolePushNumbers is each of parts as a number; each is digits alone (rolePushIDsLine).
+func rolePushNumbers(parts ...string) []int {
+	numbers := make([]int, len(parts))
+	for i, part := range parts {
+		numbers[i], _ = strconv.Atoi(part)
+	}
+	return numbers
+}
+
 const (
 	rolePushCannotReadPrefix = "legion jj: could not read what the push sends: "
 	rolePushCannotSetPrefix  = "legion jj: could not set the author: "
@@ -716,6 +761,7 @@ const (
 // rolePushLines is each line of legion jj's on a push's standard error, by kind.
 type rolePushLines struct {
 	rewrites   []rolePushPrinted
+	ids        []rolePushIDs
 	cannotRead []string
 	cannotSet  []string
 	table      []string
@@ -730,6 +776,11 @@ func rolePushStepLines(stderr string) rolePushLines {
 		}
 		if parts := rolePushRewriteLine.FindStringSubmatch(line); parts != nil {
 			lines.rewrites = append(lines.rewrites, rolePushPrinted{role: parts[1], old: parts[2], new: parts[3]})
+			continue
+		}
+		if parts := rolePushIDsLine.FindStringSubmatch(line); parts != nil {
+			n := rolePushNumbers(parts[2:]...)
+			lines.ids = append(lines.ids, rolePushIDs{argument: parts[1], commits: n[0], words: n[1], bound: n[2]})
 			continue
 		}
 		switch {
@@ -845,6 +896,9 @@ func (f *rolePushFixture) check(want rolePushWant, code int, stderr string, dive
 		if !strings.Contains(line, want.cannotSetNames) {
 			t.Errorf("the push printed %q, want the line to name %q", line, want.cannotSetNames)
 		}
+	}
+	if !slices.Equal(lines.ids, want.ids) {
+		t.Errorf("the push printed %v of a revision it gives as ids in more than one word, want %v; it printed:\n%s", lines.ids, want.ids, stderr)
 	}
 	f.checkRewrites(want, lines.rewrites, landed, stderr)
 	for commit, author := range want.same {
@@ -1674,11 +1728,13 @@ func (f *rolePushFixture) onlyRefs(want rolePushWant) {
 	}
 }
 
-// rolePushNamedRow is a push whose revision argument a rewrite of the step can make name other
-// commits than it named before the step. setup makes the state it runs on, and answers the push's
-// arguments, what the push through the form's jj must leave, and what jj alone must leave on a
-// twin state made the same way, which the row checks where alone is true. again is whether the
-// same push, run again after the first, must exit 0 and leave the remote as the first left it.
+// rolePushNamedRow is a push of a revision argument that a test may check against jj alone
+// (rolePushRunNamed): one that a rewrite of the step can make name other commits than it named
+// before the step, or one whose command would pass the step's limit. setup makes the state it
+// runs on, and answers the push's arguments, what the push through the form's jj must leave, and
+// what jj alone must leave on a twin state made the same way, which the row checks where alone is
+// true. again is whether the same push, run again after the first, must exit 0 and leave the
+// remote as the first left it.
 type rolePushNamedRow struct {
 	name         string
 	alone, again bool
@@ -1791,20 +1847,14 @@ func rolePushNamedRows() []rolePushNamedRow {
 	}
 }
 
-// A revision argument that a rewrite of the step can make name other commits than it named before
-// the step reaches the real push naming exactly the commits it named before, each one the step
-// rewrote as rewritten (rolePushNamedRows): a change offset `<change>/<n>`, which counts a change's
-// commits newest first, the step's own among them, and an author revset whose author the step's
-// rewrite gives another commit. The push exits 0, origin holds the refs the row names and no other
-// beside main, each commit with its trailer's author, the step prints each rewrite, and no change
-// is divergent; jj alone, on a twin state made the same way, sends what the row says it does. A -c
-// of a change offset run again exits 0, without `Bookmark already exists`, and leaves origin as
-// the first push left it. `-r ::<change>/1` on a history of more than 3,000 commits sends the
-// rewritten commit alone, and the real push's revision, which a recording jj ahead of the real one
-// sees, is under the bound of 100,000 bytes, which the ids of the commits it names are over.
-func TestARevisionArgumentSendsTheCommitsItNamedBeforeTheStep(t *testing.T) {
-	t.Parallel()
-	for _, row := range rolePushNamedRows() {
+// rolePushRunNamed runs each row under each form: where alone is true, jj alone on a twin state
+// first, which must leave what the row's alone says and no other ref beside main on origin; then
+// the push through the form's jj, with a recording jj ahead of the real one, which must leave what
+// the row's want says and no other ref beside main on origin; and, where again is true and the
+// test has not failed, the same push once more, which must exit 0, without `Bookmark already
+// exists`, and leave origin as the first push left it.
+func rolePushRunNamed(t *testing.T, rows []rolePushNamedRow) {
+	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
@@ -1843,6 +1893,432 @@ func TestARevisionArgumentSendsTheCommitsItNamedBeforeTheStep(t *testing.T) {
 	}
 }
 
+// A revision argument that a rewrite of the step can make name other commits than it named before
+// the step reaches the real push naming exactly the commits it named before, each one the step
+// rewrote as rewritten (rolePushNamedRows): a change offset `<change>/<n>`, which counts a change's
+// commits newest first, the step's own among them, and an author revset whose author the step's
+// rewrite gives another commit. The push exits 0, origin holds the refs the row names and no other
+// beside main, each commit with its trailer's author, the step prints each rewrite, and no change
+// is divergent; jj alone, on a twin state made the same way, sends what the row says it does. A -c
+// of a change offset run again exits 0, without `Bookmark already exists`, and leaves origin as
+// the first push left it. `-r ::<change>/1` on a history of more than 3,000 commits sends the
+// rewritten commit alone, and the real push's revision, which a recording jj ahead of the real one
+// sees, is under the bound of 100,000 bytes, which the ids of the commits it names are over.
+func TestARevisionArgumentSendsTheCommitsItNamedBeforeTheStep(t *testing.T) {
+	t.Parallel()
+	rolePushRunNamed(t, rolePushNamedRows())
+}
+
+// rolePushLowBound is the step's bound of a word of ids, in bytes, that the rows of
+// TestARevisionPastALoweredBoundGetsItsIDsInWordsOfItsOption set (rolePushBoundVariable): over the
+// 92 bytes of two commit ids joined by ` | ` behind `--change=`, and over each revset of the step's
+// reads of one commit, the longest of which, `(mutable() | (::(<C>) & mutable())) ~
+// ::remote_bookmarks()`, is 95 bytes; and under the 126 bytes of three commit ids joined so, and so
+// under the shortest primary form of an argument that names three commits the step rewrites.
+const rolePushLowBound = 100
+
+// rolePushLowArgMax is the step's limit of a command, in bytes, that the rows of
+// TestAPushPastTheLimitOfACommandSetsNoAuthor set (rolePushArgMaxVariable): under the environment
+// alone of any push of these tests, which holds the table, a PATH of temporary directories and the
+// role's identity.
+const rolePushLowArgMax = 1000
+
+// rolePushIDsHistory is how many commits the history of
+// TestARevisionPastTheBoundGetsItsIDsInWordsOfItsOption has: enough that their ids, joined by
+// ` | `, are over rolePushRevisionBound bytes, 103,197 of them, which two words keep under it, and
+// so that the shortest primary form of an argument naming them all, which holds each id twice, is
+// over the bound too.
+const rolePushIDsHistory = 2400
+
+// checkOptionWords checks that words, the arguments of a command the recording jj ran (what), give
+// the revision argument of option in count words, each under bound bytes with option where option
+// is attached to its value (it ends with `=`), and answers the ids those words hold, which must be
+// n full commit ids, each once.
+func (f *rolePushFixture) checkOptionWords(what string, words []string, option string, count, n, bound int) []string {
+	f.t.Helper()
+	attached := strings.HasSuffix(option, "=")
+	var values []string
+	for k, word := range words {
+		switch value, ok := strings.CutPrefix(word, option); {
+		case attached && ok:
+			values = append(values, value)
+		case !attached && word == option && k+1 < len(words):
+			values = append(values, words[k+1])
+		}
+	}
+	if len(values) != count {
+		f.t.Errorf("%s gives %d words of %s, want %d: %.300q", what, len(values), option, count, words)
+	}
+	var ids, bad []string
+	seen := map[string]bool{}
+	for _, value := range values {
+		word := value
+		if attached {
+			word = option + value
+		}
+		if len(word) >= bound {
+			f.t.Errorf("%s gives a word of %s of %d bytes, want under %d", what, option, len(word), bound)
+		}
+		for _, id := range strings.Split(value, " | ") {
+			if len(id) != 40 || !rolePushFullID.MatchString(id) || seen[id] {
+				bad = append(bad, id)
+			}
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(bad) > 0 {
+		f.t.Errorf("%s gives %d terms in its words of %s that are no full commit id or one given before, the first %.100q", what, len(bad), option, bad[0])
+	}
+	if len(ids) != n {
+		f.t.Errorf("%s gives %d ids in its words of %s, want %d", what, len(ids), option, n)
+	}
+	return ids
+}
+
+// checkIDsHistory checks what a push of option, -r or -c, leaves of the history of
+// TestARevisionPastTheBoundGetsItsIDsInWordsOfItsOption: origin holds each of its commits with
+// author, under legion/K-1 for -r and under a bookmark push-<change> of each for -c, and no other
+// ref beside main. It names the first commit with another author and how many have one.
+func (f *rolePushFixture) checkIDsHistory(option string, author rolePushIdentity) {
+	f.t.Helper()
+	run := f.runner(f.setupPath, rolePushImplementer)
+	var others []string
+	refs := map[string]bool{}
+	for line := range strings.SplitSeq(strings.TrimSpace(run.Out(f.root, f.git, "--git-dir", f.bare, "for-each-ref", "--format=%(refname)%1f%(authorname)%1f%(authoremail)")), "\n") {
+		fields := strings.Split(line, "\x1f")
+		if len(fields) != 3 || fields[0] == "refs/heads/main" {
+			continue
+		}
+		refs[fields[0]] = true
+		if email := strings.TrimSuffix(strings.TrimPrefix(fields[2], "<"), ">"); fields[1] != author.name || email != author.email {
+			others = append(others, fields[0]+" by "+fields[1]+" "+fields[2])
+		}
+	}
+	want := map[string]bool{"refs/heads/legion/K-1": true}
+	if option == "-c" {
+		want = map[string]bool{}
+		for _, change := range strings.Fields(f.jj(rolePushImplementer, "--ignore-working-copy", "log", "--no-graph", "-r", f.seed+"..legion/K-1", "-T", `change_id ++ "\n"`)) {
+			want["refs/heads/push-"+change[:12]] = true
+		}
+	}
+	if !maps.Equal(refs, want) {
+		f.t.Errorf("origin holds %d refs beside main, want %d, those of the push of %s", len(refs), len(want), option)
+	}
+	if option == "-r" {
+		got, _ := f.remoteCommits(f.bare, "refs/heads/legion/K-1")
+		if len(got) != rolePushIDsHistory {
+			f.t.Errorf("origin holds %d commits of legion/K-1 above the seed, want %d", len(got), rolePushIDsHistory)
+		}
+		for _, c := range got {
+			if c.name != author.name || c.email != author.email {
+				others = append(others, c.id+" by "+c.name+" <"+c.email+">")
+			}
+		}
+	}
+	if len(others) > 0 {
+		f.t.Errorf("origin holds %d commits with another author than %s <%s>, the first %s", len(others), author.name, author.email, others[0])
+	}
+}
+
+// `jj git push -r <S>..<C>` and `-c <S>..<C>`, S the seed and C the tip of a history of 2,400
+// commits that no remote holds, each of which the reviewer authored with the implementer's trailer
+// (rolePushFixture.mutableHistory), legion/K-1 on C and, for -r, tracked. The step rewrites every
+// commit, and the argument then names the old, hidden commits; neither its primary form nor the
+// ids of its 2,400 commits in one word is under the bound of 100,000 bytes. The real push gets
+// those ids in two words of the argument's option, `-r <ids> -r <ids>` (a recording jj ahead of
+// the real one sees them), and no command the step runs has a word of 100,000 bytes or more. The
+// push exits 0, origin holds each commit with the implementer's author, under legion/K-1 for -r
+// and under a bookmark of -c's own for each for -c, and no other ref beside main, the step prints
+// one rewrite for each commit and one line of the ids in two words, and no change is divergent.
+// jj alone, on a twin history made the same way, sends the commits with the reviewer's author.
+func TestARevisionPastTheBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
+	t.Parallel()
+	for _, option := range []string{"-r", "-c"} {
+		t.Run(option, func(t *testing.T) {
+			t.Parallel()
+			setup := func(f *rolePushFixture) []string {
+				if option == "-r" {
+					f.track("legion/K-1")
+				}
+				f.mutableHistory(rolePushIDsHistory)
+				return []string{"git", "push", option, f.seed + ".." + f.read("legion/K-1").commit}
+			}
+			// jj alone runs no form of Legion's, so one twin stands for both forms.
+			twin := newRolePushFixture(t, rolePushPod, "")
+			args := setup(twin)
+			if code, _, stderr := trailerRunWithin(t, rolePushLongLimit, twin.repo, twin.env(twin.setupPath, rolePushImplementer), strings.NewReader(""), twin.real, args...); code != 0 {
+				t.Fatalf("jj alone exited %d:\n%s", code, stderr)
+			}
+			twin.checkIDsHistory(option, rolePushReviewer)
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, rolePushRecords)
+				args := setup(f)
+				divergent := f.divergence()
+				code, stderr := f.pushLong(rolePushImplementer, args...)
+				rewrites, printed := rolePushCountRewrites(stderr)
+				f.check(rolePushWant{others: true, ids: []rolePushIDs{{argument: args[3], commits: rolePushIDsHistory, words: 2, bound: rolePushRevisionBound}}}, code, printed, divergent, 0)
+				f.checkIDsHistory(option, rolePushImplementer)
+				if rewrites != rolePushIDsHistory {
+					t.Errorf("the push printed %d rewrites, want %d; it printed beside them:\n%s", rewrites, rolePushIDsHistory, printed)
+				}
+				calls, push := f.oneRealPush()
+				for _, call := range calls {
+					for _, word := range call.args {
+						if len(word) >= rolePushRevisionBound {
+							t.Errorf("the recording jj ran %.120q… with a word of %d bytes, want each under %d", strings.Join(call.args, " "), len(word), rolePushRevisionBound)
+						}
+					}
+				}
+				f.checkOptionWords("the real push", calls[push].args, option, 2, rolePushIDsHistory, rolePushRevisionBound)
+			})
+		})
+	}
+}
+
+// A revision argument of three commits on main that the reviewer made with the implementer's
+// trailer, with the step's bound of a word of ids lowered to rolePushLowBound bytes, under the ids
+// of the three joined: `-c <C1> | <C2> | <C3>`, and `--change=<H1> | <H2> | <H3>`, each H the
+// commit a describe of C hid, which stands for C. The step rewrites the three, and the real push
+// gets their ids in two words of the argument's option as the role spelled it, `-c <ids> -c <id>`
+// and `--change=<ids> --change=<id>`, each under the bound (a recording jj ahead of the real one
+// sees them); each dry run of the --change= row gets the ids of the commits that stand for the
+// three then in two such words too. The push exits 0, origin holds each commit under a bookmark of
+// -c's own with the implementer's author, the step prints each rewrite and one line of the ids in
+// two words, and no change is divergent.
+func TestARevisionPastALoweredBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
+	t.Parallel()
+	impl, rev := rolePushImplementer, rolePushReviewer
+	work := func(f *rolePushFixture) []rolePushChange {
+		f.bound = rolePushLowBound
+		cs := make([]rolePushChange, 3)
+		for i := range cs {
+			cs[i] = f.commitOn(rev, impl, "main", rolePushMessage("work "+strconv.Itoa(i+1), "implementer"))
+		}
+		return cs
+	}
+	// split is the push of argument by option, which sends cs, and what it leaves; dry is whether
+	// each dry run gives the argument in words of option too.
+	split := func(f *rolePushFixture, option, argument string, cs []rolePushChange, dry bool) ([]string, rolePushWant) {
+		want := rolePushWant{ids: []rolePushIDs{{argument: argument, commits: len(cs), words: 2, bound: rolePushLowBound}}}
+		changes := map[string]bool{}
+		for _, c := range cs {
+			sent := rolePushSends("push-"+c.change[:12], c, "implementer", impl)
+			want.refs = append(want.refs, sent.refs...)
+			want.rewrites = append(want.rewrites, sent.rewrites...)
+			changes[c.change] = true
+		}
+		check := func(what string, words []string) {
+			got := map[string]bool{}
+			for _, id := range f.checkOptionWords(what, words, option, 2, len(cs), rolePushLowBound) {
+				got[f.changeOf(id)] = true
+			}
+			if !maps.Equal(got, changes) {
+				f.t.Errorf("%s gives the argument commits of changes %v, want one of each of %v", what, got, changes)
+			}
+		}
+		want.pushed = func(words []string) {
+			check("the real push", words)
+			for _, call := range f.calls() {
+				if dry && call.has("push") && call.has("--dry-run") {
+					check("a dry run", call.args)
+				}
+			}
+		}
+		if strings.HasSuffix(option, "=") {
+			return []string{"git", "push", option + argument}, want
+		}
+		return []string{"git", "push", option, argument}, want
+	}
+	ids := func(cs []rolePushChange) string {
+		var ids []string
+		for _, c := range cs {
+			ids = append(ids, c.commit)
+		}
+		return strings.Join(ids, " | ")
+	}
+	rolePushRunArgs(t, rolePushRecords, []rolePushArgsRow{
+		{name: "-c <C1> | <C2> | <C3>", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			cs := work(f)
+			return split(f, "-c", ids(cs), cs, false)
+		}},
+		{name: "--change=<H1> | <H2> | <H3>, each H the commit a describe of C hid", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			cs := work(f)
+			hidden := ids(cs)
+			for i, c := range cs {
+				f.jj(impl, "describe", c.commit, "-m", rolePushMessage("work "+strconv.Itoa(i+1)+", described again", "implementer"))
+				cs[i] = f.read(c.change)
+			}
+			return split(f, "--change=", hidden, cs, true)
+		}},
+	})
+}
+
+// rolePushPastTheLimit is what the line `legion jj: could not set the author: …; the push runs as
+// written` says of a push whose command, with revision argument as the ids of its n commits, would
+// not be under rolePushLowArgMax bytes.
+func rolePushPastTheLimit(argument string, n int) string {
+	return "revision `" + argument + "` would go to the push as the ids of its " + strconv.Itoa(n) + " commits, and the push's arguments and environment would not be under " + strconv.Itoa(rolePushLowArgMax) + " bytes"
+}
+
+// The pushes of a revision argument of two commits on main that the step would rewrite, with the
+// step's limit of a command lowered to rolePushLowArgMax bytes, under any push's command, and its
+// bound of a word of ids left at 100,000 bytes, over the argument's primary form; the step's
+// rewrite would still move the argument's commits, so its words could be the ids of its commits
+// after that rewrite, and the step decides before it rewrites anything that the push's command
+// would then pass the limit. It sets no author, prints one line `legion jj: could not set the
+// author: revision `<argument>` would go to the push as the ids of its 2 commits, …` that names
+// the limit, and the push runs as written, exit 0, with no change divergent and origin holding no
+// ref beside main but those of -c:
+//
+//   - `-c "<C1> | <C2>"`, C1 and C2 two commits that the reviewer made with the implementer's
+//     trailer: the step prints no rewrite and runs no metaedit (a recording jj ahead of the real
+//     one sees none), the real push gets the role's own words, every byte, and origin holds C1
+//     and C2 as they were, with the reviewer's author, as jj alone leaves them on a twin state
+//     made the same way;
+//   - `-c "<E> | <C>"`, E a commit with an empty author and the implementer's trailer, which the
+//     step fills before it decides, and C one that the reviewer made with the implementer's
+//     trailer: the step prints the rewrite of E alone and runs one metaedit, that fill, and the
+//     real push sends E as the fill left it, with the implementer's author, in place of the
+//     hidden E, and C as it was, with the reviewer's author.
+func TestAPushPastTheLimitOfACommandSetsNoAuthor(t *testing.T) {
+	t.Parallel()
+	impl, rev := rolePushImplementer, rolePushReviewer
+	rolePushRunNamed(t, []rolePushNamedRow{
+		{name: "-c <C1> | <C2>", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
+			f.argMax = rolePushLowArgMax
+			c1 := f.commitOn(rev, impl, "main", rolePushMessage("work 1", "implementer"))
+			c2 := f.commitOn(rev, impl, "main", rolePushMessage("work 2", "implementer"))
+			args := []string{"git", "push", "-c", c1.commit + " | " + c2.commit}
+			alone := rolePushWant{same: map[string]rolePushIdentity{c1.commit: rev, c2.commit: rev}}
+			for _, c := range []rolePushChange{c1, c2} {
+				alone.refs = append(alone.refs, rolePushRef{ref: "refs/heads/push-" + c.change[:12], commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}}})
+			}
+			want := alone
+			want.cannotSet, want.cannotSetNames = 1, rolePushPastTheLimit(args[3], 2)
+			want.noMetaedit = true
+			want.pushed = func(words []string) {
+				if !slices.Equal(words, args) {
+					f.t.Errorf("the real push ran with %q, want the role's own words %q", words, args)
+				}
+			}
+			return args, want, alone
+		}},
+		{name: "-c <E> | <C>, E with an empty author", setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
+			f.argMax = rolePushLowArgMax
+			e := f.commitOn(rolePushNobody, rolePushNobody, "main", rolePushMessage("work 1", "implementer"))
+			c := f.commitOn(rev, impl, "main", rolePushMessage("work 2", "implementer"))
+			args := []string{"git", "push", "-c", e.commit + " | " + c.commit}
+			want := rolePushWant{
+				refs: []rolePushRef{
+					{ref: "refs/heads/push-" + e.change[:12], commits: []rolePushCommit{{change: e.change, author: impl}}},
+					{ref: "refs/heads/push-" + c.change[:12], commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}}},
+				},
+				rewrites:  []rolePushRewrite{{role: "implementer", author: impl, change: e.change, old: e.commit}},
+				same:      map[string]rolePushIdentity{c.commit: rev},
+				metaedits: 1,
+				cannotSet: 1, cannotSetNames: rolePushPastTheLimit(args[3], 2),
+			}
+			return args, want, rolePushWant{}
+		}},
+	})
+}
+
+// rolePushPartsHistory is how many commits the history of
+// TestAMetaeditPastTheLimitOfACommandRunsInParts has: the `-r <id>` of each takes 60 bytes of a
+// metaedit's command, 18,000 bytes for them all, several times the room rolePushPartsRoom leaves.
+const rolePushPartsHistory = 300
+
+// rolePushPartsRoom is how many bytes over the push's environment the step's limit of a command in
+// TestAMetaeditPastTheLimitOfACommandRunsInParts is: over what a metaedit of the step's adds to
+// that environment, its words but its `-r <id>` and the variables legion jj and the form's jj set,
+// some hundreds of bytes, and so room for dozens of commits in each part.
+const rolePushPartsRoom = 4096
+
+// metaeditSizes is the bytes that Linux counted against its limit (execve(2)) for each metaedit
+// that the recording jj of rolePushMeasuresMetaedit ran, in order: each string of its arguments,
+// the recording jj's path first, and of its environment, with the NUL that ends it and the 8-byte
+// pointer to it.
+func (f *rolePushFixture) metaeditSizes() []int {
+	f.t.Helper()
+	data, err := os.ReadFile(f.next + ".environ")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	environs := strings.Split(strings.TrimSuffix(string(data), "\x1e"), "\x1e")
+	var sizes []int
+	for _, call := range f.calls() {
+		if !call.has("metaedit") {
+			continue
+		}
+		if len(sizes) == len(environs) {
+			f.t.Fatalf("the recording jj ran more metaedits than the %d environments it wrote", len(environs))
+		}
+		environ := environs[len(sizes)]
+		sizes = append(sizes, rolePushSize(append([]string{f.next}, call.args...)...)+len(environ)+8*strings.Count(environ, "\x00"))
+	}
+	if len(sizes) != len(environs) {
+		f.t.Fatalf("the recording jj ran %d metaedits and wrote %d environments", len(sizes), len(environs))
+	}
+	return sizes
+}
+
+// rolePushSize is the bytes that Linux counts against its limit (execve(2)) for words, strings of
+// a command's arguments or environment: each with the NUL that ends it and the 8-byte pointer to
+// it.
+func rolePushSize(words ...string) int {
+	size := 0
+	for _, word := range words {
+		size += len(word) + 1 + 8
+	}
+	return size
+}
+
+// `jj git push -b legion/K-1` of a history of 300 commits that no remote holds, each of which the
+// reviewer authored with the implementer's trailer (mutableHistory), with the step's limit of a
+// command lowered (rolePushArgMaxVariable) to rolePushPartsRoom bytes over the push's environment,
+// which one metaedit of the 300 commits would pass. The push has no revision argument, so the
+// step's decision on the push's command does not stop it: it runs the implementer's metaedit in
+// two parts or more, the command of each, its arguments and its environment, under the limit (a
+// recording jj ahead of the real one measures each, metaeditSizes), and sets every author. The
+// push exits 0, origin's legion/K-1 holds the 300 commits, each with the implementer's author, the
+// step prints one rewrite for each commit and no other line, and no change is divergent.
+func TestAMetaeditPastTheLimitOfACommandRunsInParts(t *testing.T) {
+	t.Parallel()
+	impl := rolePushImplementer
+	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+		f := newRolePushFixture(t, form, rolePushMeasuresMetaedit)
+		f.mutableHistory(rolePushPartsHistory)
+		f.argMax = rolePushSize(f.env(f.path, impl)...) + rolePushPartsRoom
+		divergent := f.divergence()
+		code, stderr := f.pushLong(impl, "git", "push", "-b", "legion/K-1")
+		rewrites, printed := rolePushCountRewrites(stderr)
+		f.check(rolePushWant{others: true}, code, printed, divergent, 0)
+		if rewrites != rolePushPartsHistory {
+			t.Errorf("the push printed %d rewrites, want %d; it printed beside them:\n%s", rewrites, rolePushPartsHistory, printed)
+		}
+		got, _ := f.remoteCommits(f.bare, "refs/heads/legion/K-1")
+		var others []string
+		for _, c := range got {
+			if c.name != impl.name || c.email != impl.email {
+				others = append(others, c.id+" by "+c.name+" <"+c.email+">")
+			}
+		}
+		if len(got) != rolePushPartsHistory || len(others) > 0 {
+			t.Errorf("origin holds %d commits of legion/K-1 above the seed, %d with another author than the implementer's (%q), want %d, none", len(got), len(others), others, rolePushPartsHistory)
+		}
+		sizes := f.metaeditSizes()
+		if len(sizes) < 2 {
+			t.Errorf("the step ran %d metaedits, want the implementer's in two parts or more", len(sizes))
+		}
+		for i, size := range sizes {
+			if size >= f.argMax {
+				t.Errorf("metaedit %d of %d took %d bytes of arguments and environment, want under the step's limit, %d", i+1, len(sizes), size, f.argMax)
+			}
+		}
+	})
+}
+
 // rolePushLongLimit is how long a push of a long history may run (pushLong): jj's own metaedit of
 // more than 3,000 commits takes half a minute on an idle machine, which a busy one stretches past
 // trailerRunLimit's minute.
@@ -1859,6 +2335,20 @@ func (f *rolePushFixture) pushLong(as rolePushIdentity, args ...string) (code in
 	}
 	code, _, stderr = trailerRunWithin(f.t, rolePushLongLimit, f.repo, f.env(f.path, as), strings.NewReader(""), sh, append([]string{"-c", `exec jj "$@"`, "jj"}, args...)...)
 	return code, stderr
+}
+
+// rolePushCountRewrites reads a push's standard error, stderr: how many of its lines are rewrites
+// (rolePushRewriteLine), and every other line, printed, which check reads.
+func rolePushCountRewrites(stderr string) (rewrites int, printed string) {
+	var rest []string
+	for line := range strings.SplitSeq(stderr, "\n") {
+		if rolePushRewriteLine.MatchString(line) {
+			rewrites++
+		} else {
+			rest = append(rest, line)
+		}
+	}
+	return rewrites, strings.Join(rest, "\n")
 }
 
 // A push of a history that no remote holds and that is longer than one revset of the step's reads
@@ -1883,16 +2373,7 @@ func TestAPushOfALongHistorySetsEveryAuthor(t *testing.T) {
 		f.mutableHistory(rolePushHistory)
 		divergent := f.divergence()
 		code, stderr := f.pushLong(rolePushImplementer, rolePushBookmark...)
-		var rest []string
-		rewrites := 0
-		for line := range strings.SplitSeq(stderr, "\n") {
-			if rolePushRewriteLine.MatchString(line) {
-				rewrites++
-			} else {
-				rest = append(rest, line)
-			}
-		}
-		printed := strings.Join(rest, "\n")
+		rewrites, printed := rolePushCountRewrites(stderr)
 		f.check(rolePushWant{others: true}, code, printed, divergent, 0)
 		f.checkHistory(rolePushImplementer, printed)
 		if rewrites != rolePushHistory {
@@ -2474,7 +2955,7 @@ func TestADryRunHelpOrAtOperationRunsNoStep(t *testing.T) {
 				if code != aloneCode || out != aloneOut {
 					t.Errorf("the push exited %d and printed %q, want %d and %q, as jj alone does", code, out, aloneCode, aloneOut)
 				}
-				if lines := rolePushStepLines(stderr); len(lines.rewrites)+len(lines.cannotRead)+len(lines.cannotSet)+len(lines.table)+len(lines.unknown) != 0 {
+				if lines := rolePushStepLines(stderr); len(lines.rewrites)+len(lines.ids)+len(lines.cannotRead)+len(lines.cannotSet)+len(lines.table)+len(lines.unknown) != 0 {
 					t.Errorf("the push printed a line of the step's, want none:\n%s", stderr)
 				}
 				f.checkSame(c.commit, rev)
