@@ -371,19 +371,22 @@ hidden one that stands for another, replaced by the commit that stands for it.
 An argument none of whose commits moved reaches the push as written, and so does one that jj,
 resolving it again after the rewrite, resolves to that set, such as `@`, a bookmark or a change id.
 Any other argument can name other commits once the step has rewritten some, as a change offset
-`<change>/<n>`, `latest(...)` or `author(...)` can, so the push gets
+`<change>/<n>`, `latest(...)` or `author(...)` can, so the push gets the primary form,
 `(<the argument as written>) ~ (<the old ids>) ~ (<the ids it now names and must not>) | <the new
 ids> | <the ids it must send and no longer names>`, with `@` for the working-copy commit, so that
 the push's own snapshot still resolves it, and with each empty part left out.
-The step has jj resolve that text once more and checks that it names the set; where it does not,
-or where jj refuses one of those reads, the push gets the set as ids joined by ` | `, `@` for the
-working-copy commit, while that word stays under 100,000 bytes, and otherwise the text above, and
-the step prints one `legion jj:` line that says which.
+The step has jj resolve the primary form once more and checks that it names the set; where it does
+not, where jj refuses one of those reads, or where the form would not be under 100,000 bytes and
+the step does not run the read, the push gets the set as ids joined by ` | `, `@` for the
+working-copy commit, while that word stays under 100,000 bytes, else the primary form while its
+word does, else the argument as the role wrote it, and the step prints one `legion jj:` line that
+says which.
 No word the step writes passes Linux's 131,072-byte limit on one argument, but for a role's own
-argument that is that long already: the text it adds to an argument grows with the commits it
-moved and the ones whose naming the rewrite changed, never with the whole set that, for example,
-`::C` names, and each of its reads that lists commit or change ids runs once for each part of the
-list under 100,000 bytes, so a push of thousands of commits still runs.
+argument that is that long already: the primary form grows with the commits the step moved and the
+ones whose naming the rewrite changed, never with the whole set that, for example, `::C` names;
+the set as ids is given only under 100,000 bytes; and each of the step's reads of a list of commit
+or change ids runs once for each part of the list under 100,000 bytes, so a push of thousands of
+commits still runs.
 It changes no commit that a remote bookmark holds and no immutable commit.
 It sets the author of no commit that has no `Legion-Role` trailer or whose role has no identity in
 the table.
