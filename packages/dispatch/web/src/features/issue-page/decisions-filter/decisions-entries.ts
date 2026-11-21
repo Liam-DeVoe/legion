@@ -13,7 +13,14 @@ import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
 import { EVENT_FRESH, issueAsksQuery, standsFailed } from "../useIssueTree";
-import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./decisions-parts";
+import {
+  askIdOf,
+  type DecisionsEntry,
+  type DecisionsParts,
+  decisionsParts,
+  isReading,
+  placements,
+} from "./decisions-parts";
 
 /**
  * The one seam between today's reads and the Decisions view: it turns the decisions read, the
@@ -62,6 +69,11 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * view still draws from, so it is not among the refused; nor are the comments and the blocks,
  * which only move a decision between parts.
  *
+ * The seam says too which decisions are a person's write-up of an answered question
+ * (`writeUps`), which the model draws no entry for (`isReading`), and which questions each one
+ * restates: an address naming a write-up lands on the row of a question it answers, and only
+ * the decisions read and the asks can tell a write-up from a person's decision of its own.
+ *
  * The hook is the module's one export and its answer's type is its own, so the read that
  * replaces this module has one name to give the view and nothing else of it to keep.
  */
@@ -92,6 +104,12 @@ interface DecisionsEntries {
    *  (`standsFailed`): it holds no answer, and a fetch of it failed since it last held one. A read
    *  stays here while it runs again, until it answers. */
   readonly unreadable: readonly DecisionsRead[];
+  /** Each person's write-up of an answered question of this issue (`isReading`), by its node's
+   *  id, with the node ids of the answered questions it restates. The list draws no row for a
+   *  write-up, so an address naming one lands on the row of a question it answers. Undefined
+   *  while the asks read holds no answer and is not refused: until it answers, an answer it
+   *  brings may make any person's decision a write-up. */
+  readonly writeUps: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 }
 
 /** The Decisions view's parts and how the reads they come from stand, from the issue, the
@@ -204,7 +222,29 @@ export function useDecisionsEntries({
           : newestFirst([...model.yours, ...model.others], root),
     };
   }, [asks, changes, decisions, issue.key, nodeIdOf, reader, root, view]);
-  return { parts, readsHeld, retry, retrying, unreadable };
+  // The write-ups, read as the model reads them (`decisionsParts`): an answered question is an
+  // ask the tree holds with an answer on it, named by the ask's own id, which is how a decision
+  // names the question it restates, and a decision's row is the one its node's address names.
+  const writeUps = useMemo(() => {
+    if (asks === undefined && !asksRefused) return undefined;
+    const placed = [...placements(root).values()].map((place) => place.node);
+    const questions = new Map<string, string>();
+    for (const node of placed) {
+      const id = askIdOf(node);
+      if (id !== undefined && node.answer !== undefined) questions.set(id, node.id);
+    }
+    const answered = new Set(questions.keys());
+    const rows = new Map((decisions?.decisions ?? []).map((row) => [row.ref, row]));
+    const found = new Map<string, ReadonlySet<string>>();
+    for (const node of placed) {
+      const row = node.type === "decision" ? rows.get(node.reference ?? "") : undefined;
+      if (row === undefined || !isReading(row, answered)) continue;
+      const restated = (row.asks ?? []).flatMap((ask) => questions.get(ask) ?? []);
+      found.set(node.id, new Set(restated));
+    }
+    return found;
+  }, [asks, asksRefused, decisions, root]);
+  return { parts, readsHeld, retry, retrying, unreadable, writeUps };
 }
 
 /**

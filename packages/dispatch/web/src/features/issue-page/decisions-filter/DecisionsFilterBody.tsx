@@ -152,7 +152,9 @@ export function DecisionsFilterBody({
   /** What the page last asked of the outline: go to a node, which the Contents pane's list
    *  asks (`outline-request.tsx`). Each ask is acted on once. */
   request?: OutlineRequest;
-  /** The node the address names, which takes the focus once per address (R19). */
+  /** The node the address names, which takes the focus once per address (R19): its own row, or
+   *  for a person's write-up of an answered question, which is no row here, the row of a
+   *  question it answers. */
   reveal?: string;
   /** The whole tree, which holds each ask and each decision and each statement a tie names. */
   root: TreeNode;
@@ -164,7 +166,7 @@ export function DecisionsFilterBody({
   waitingPress?: number;
 }): ReactNode {
   const navigate = useNavigate();
-  const { parts, readsHeld, retry, retrying, unreadable } = useDecisionsEntries({
+  const { parts, readsHeld, retry, retrying, unreadable, writeUps } = useDecisionsEntries({
     issue,
     reader,
     root,
@@ -364,19 +366,29 @@ export function DecisionsFilterBody({
   // An address that names an entry puts the focus on it, once per address (R19), and one that
   // names a node of another kind, a comment say, on that node's row, drawn first: the row is
   // not on the page until the reads that hold it have answered, so this looks again on every
-  // list the body draws, and unfolds the foot where the entry is one of its own.
+  // list the body draws, and unfolds the foot where the entry is one of its own. A person's
+  // write-up of an answered question is no entry (`writeUps`), so an address naming one puts the
+  // focus on the first row the list draws of a question it answers. A decision the list draws
+  // before the asks read has answered may yet turn out to be a write-up, which leaves the list
+  // once it does, so the address lands on no decision until the seam can tell.
   const taken = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (reveal === undefined || taken.current === reveal) return;
-    if (!drawn.some((entry) => entry.node.id === reveal)) {
-      if (partOf.get(reveal) === "agents") setFootShown(true);
+    const answered = writeUps?.get(reveal);
+    const to =
+      answered === undefined ? reveal : drawn.find((entry) => answered.has(entry.node.id))?.node.id;
+    if (to === undefined) return;
+    const entry = drawn.find((each) => each.node.id === to);
+    if (entry === undefined) {
+      if (partOf.get(to) === "agents") setFootShown(true);
       return;
     }
-    const row = rowOf(body.current, reveal);
+    if (entry.kind === "decision" && writeUps === undefined) return;
+    const row = rowOf(body.current, to);
     if (row === null) return;
     taken.current = reveal;
     row.focus();
-  }, [drawn, partOf, reveal]);
+  }, [drawn, partOf, reveal, writeUps]);
 
   // Whether the focus on the foot's control is the one this body put there on its own, which
   // the reader has not yet pressed, typed on or left. The tree takes the focus only from a

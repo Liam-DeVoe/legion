@@ -1,23 +1,19 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, type RenderResult, render, waitFor } from "@testing-library/react";
+import { act, cleanup, type RenderResult, render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-import { api } from "../../../api/client";
+import { ApiError, api } from "../../../api/client";
+import type { IssueAskRow } from "../../../api/types";
+import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { MarginProvider } from "../../margin/margin-context";
 import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { OutlineRequestProvider } from "../outline-request";
+import { TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { EMPTY_STATE_LINES } from "../page-words";
-import { ViewDecisionsSlot } from "../slots/view-decisions";
-import { issueDetails, KEY } from "./decisions-fixtures";
-
-/**
- * The line the Decisions view's slot hands its body for an issue that holds no question and no
- * decision it draws: the empty issue's own line where no words are typed, and the line that says
- * nothing matched where they are. Words of spaces alone filter nothing (the view trims them), so
- * they draw the empty issue's line too.
- */
+import { ProvidersSlot } from "../slots/providers";
+import { StageSlot } from "../slots/stage";
+import { decision, decisionNode, decisionsRead, issueDetails, KEY } from "./decisions-fixtures";
 
 /** Every read the page's tree is built from, answered with nothing, and who is reading. */
 function stubReads(): { mockRestore(): void }[] {
@@ -58,20 +54,22 @@ afterEach(() => {
   for (const stub of stubs) stub.mockRestore();
 });
 
-/** The slot on the issue's Decisions address with `search` after it, under the page's own
- *  providers. */
-function drawSlot(search: string): RenderResult {
+/** The page's stage at the issue's Decisions address with `after` after it, a search or a
+ *  fragment, under the page's own providers, as the page's root draws it
+ *  (`IssueOutlinePage.tsx`): the stage's own views, each slot filled as `SLOT_FILLED` has it. */
+function drawStage(after: string): RenderResult {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const route = parseIssuePath(`/issues/${KEY}/decisions`);
   if (route === undefined) throw new Error("the Decisions address names no route");
+  const issue = issueDetails();
   return render(
-    <MemoryRouter initialEntries={[`/issues/${KEY}/decisions${search}`]}>
+    <MemoryRouter initialEntries={[`/issues/${KEY}/decisions${after}`]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
-            <OutlineRequestProvider>
-              <ViewDecisionsSlot issue={issueDetails()} route={route} />
-            </OutlineRequestProvider>
+            <ProvidersSlot issue={issue} route={route}>
+              <StageSlot issue={issue} route={route} />
+            </ProvidersSlot>
           </MarginProvider>
         </KeymapProvider>
       </QueryClientProvider>
@@ -87,12 +85,178 @@ async function emptyLineOf(view: RenderResult): Promise<string | null | undefine
   return view.container.querySelector("[data-decisions-body] p")?.textContent;
 }
 
+/** The node id of the row that holds the focus, or undefined where no row does. */
+function focusedRow(): string | undefined {
+  return document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
+}
+
+/** Which slot the stage drew, by each slot's own mark: the Decisions view's list, or the body
+ *  that draws the outline or a line in its place. */
+function drawnSlot(view: RenderResult): string {
+  const { container } = view;
+  if (container.querySelector("[data-issue-body]") !== null) return "the body";
+  return container.querySelector("[data-decisions-body]") === null ? "nothing" : "the view";
+}
+
+// The line the Decisions view's slot hands its body for an issue that holds no question and no
+// decision it draws: the empty issue's own line where no words are typed, and the line that says
+// nothing matched where they are. Words of spaces alone filter nothing (the view trims them), so
+// they draw the empty issue's line too.
 test("no words draw the empty issue's line, and words that match nothing the no-match line", async () => {
-  expect(await emptyLineOf(drawSlot(""))).toBe(EMPTY_STATE_LINES.decisions);
+  expect(await emptyLineOf(drawStage(""))).toBe(EMPTY_STATE_LINES.decisions);
   cleanup();
-  expect(await emptyLineOf(drawSlot("?q=zzz"))).toBe(EMPTY_STATE_LINES.no_match);
+  expect(await emptyLineOf(drawStage("?q=zzz"))).toBe(EMPTY_STATE_LINES.no_match);
 });
 
 test("words of spaces alone draw the empty issue's line, as no words do", async () => {
-  expect(await emptyLineOf(drawSlot("?q=%20%20"))).toBe(EMPTY_STATE_LINES.decisions);
+  expect(await emptyLineOf(drawStage("?q=%20%20"))).toBe(EMPTY_STATE_LINES.decisions);
+});
+
+/** An id that names no comment of the issue, which the comment's own read answers 404 for. */
+const GONE_COMMENT = "5f0c2a9e-7d41-4b8a-9c3e-2e6d1b7a4c90";
+
+// An address beside the Decisions view names a node of the outline. Where the view's tree holds
+// none, the view lands on nothing, and the stage draws the outline's fallback in its place, as it
+// did before the view was filled: for an id no comment holds, the comment's own read finds none,
+// and the page says so where the outline would be, with the focus on that line.
+test("a comment the issue holds none of, named beside the Decisions view, draws the outline's line that says so, with the focus on it", async () => {
+  const read = spyOn(api, "getComment").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
+  );
+  try {
+    const view = drawStage(`?comment=${GONE_COMMENT}`);
+    const heading = await waitFor(() => view.getByRole("heading", { name: "Comment not found" }), {
+      onTimeout: () =>
+        new Error(
+          `the address of a comment the issue holds none of drew no line saying so; the stage drew ${drawnSlot(view)}, with the focus on ${document.activeElement?.tagName}`
+        ),
+    });
+    expect(read).toHaveBeenCalledWith(GONE_COMMENT);
+    await waitFor(() =>
+      expect(document.activeElement, "the line that names no comment does not hold the focus").toBe(
+        heading
+      )
+    );
+    expect(drawnSlot(view), "the view was drawn beside the line").toBe("the body");
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// A block the tree holds no node of, named by a `#b-` fragment on the Decisions view's address:
+// the stage draws the outline's line that the outline has no row for it, with the focus on it.
+test("a block no node carries, named on the Decisions view's address, draws the outline's line that says so, with the focus on it", async () => {
+  const view = drawStage("#b-no-such-block");
+  const heading = await waitFor(
+    () => view.getByRole("heading", { name: "No row for this block" }),
+    {
+      onTimeout: () =>
+        new Error(
+          `the address of a block no node carries drew no line saying so; the stage drew ${drawnSlot(view)}, with the focus on ${document.activeElement?.tagName}`
+        ),
+    }
+  );
+  await waitFor(() =>
+    expect(document.activeElement, "the line that names no block does not hold the focus").toBe(
+      heading
+    )
+  );
+  expect(heading.parentElement?.textContent).toContain(
+    `That link names no row of ${KEY}'s outline.`
+  );
+  expect(drawnSlot(view), "the view was drawn beside the line").toBe("the body");
+});
+
+// A comment the tree holds, named beside the Decisions view, is the view's to land on: it draws the
+// comment as a row before its parts, with the focus on it, and the stage keeps the view once every
+// read is held.
+test("a comment the tree holds, named beside the Decisions view, keeps the view, with the focus on the comment's row", async () => {
+  const comments = spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
+  try {
+    const view = drawStage("?comment=reply-b");
+    await waitFor(() =>
+      expect(focusedRow(), `the stage drew ${drawnSlot(view)}, with the focus on no row`).toBe(
+        "reply-b"
+      )
+    );
+    // Every read has answered, and the view has said whether its tree draws the comment.
+    await waitInAct(20);
+    expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+    expect(focusedRow(), "the focus left the comment's row").toBe("reply-b");
+  } finally {
+    comments.mockRestore();
+  }
+});
+
+/** The issue's asks as the asks read answers them, with no reply under either: a question still
+ *  open, and one the reader answered. */
+const ASKED: readonly IssueAskRow[] = [
+  answeredAsk({ id: "ask-open", answer: null, question: "Which flag?", state: "open" }),
+  answeredAsk({ id: "ask-answered" }),
+].map((asked) => ({ ...asked, last_reply: null }));
+
+/** The decisions read: the reader's write-up of their answer to `ask-answered`, a section the
+ *  server marks a person's because it names that ask. */
+const WRITE_UP = decisionsRead([
+  decision("writeup", { asks: ["ask-answered"], kind: "person", waiting_review: false }),
+]);
+
+/** The write-up's node, which the view draws no row for once the asks read tells it. */
+const WRITE_UP_NODE = decisionNode("writeup").id;
+
+// A person's decision whose section names a question of this issue they answered is their
+// write-up of that answer, which the view draws no row for: the question's own row is the
+// decision. An address naming the write-up keeps the view and lands on the row of the question
+// it answers, though a question still open stands first in the list and the stage would give its
+// row the focus.
+test("a person's write-up of an answered question, named on the Decisions view's address, keeps the view, with the focus on the question's row", async () => {
+  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
+  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(WRITE_UP);
+  try {
+    const view = drawStage("#b-writeup");
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        `the write-up's address left the focus elsewhere; the stage drew ${drawnSlot(view)}`
+      ).toBe("ask-answered")
+    );
+    await waitInAct(20);
+    expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+    expect(focusedRow(), "the focus left the question's row").toBe("ask-answered");
+    expect(
+      view.container.querySelector(`[data-node-id="${WRITE_UP_NODE}"]`),
+      "the view drew the write-up as a row"
+    ).toBeNull();
+  } finally {
+    asks.mockRestore();
+    decisions.mockRestore();
+  }
+});
+
+// Until the asks read answers, nothing tells the write-up from a decision of the person's own, so
+// the list draws it as one, under the reader's decisions. The address waits for the asks rather
+// than land on that row, which leaves the list once they answer and would take the focus with it.
+test("a write-up's address waits for the asks read, which answers after the decisions read, and lands on the question's row", async () => {
+  const asksOut = Promise.withResolvers<IssueAskRow[]>();
+  const asks = spyOn(api, "listIssueAsks").mockReturnValue(asksOut.promise);
+  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(WRITE_UP);
+  try {
+    const view = drawStage("#b-writeup");
+    await waitFor(() =>
+      expect(
+        view.container.querySelector(`[data-node-id="${WRITE_UP_NODE}"]`),
+        "the write-up was drawn as no decision of its own while the asks read is out"
+      ).not.toBeNull()
+    );
+    await act(async () => asksOut.resolve([...ASKED]));
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        `the write-up's address left the focus elsewhere once the asks answered; the stage drew ${drawnSlot(view)}`
+      ).toBe("ask-answered")
+    );
+  } finally {
+    asks.mockRestore();
+    decisions.mockRestore();
+  }
 });

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -9,22 +9,26 @@ import { DecisionsFilterBody } from "../decisions-filter/DecisionsFilterBody";
 import { issueAddress } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
+import { useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
-import type { SlotProps } from "../slot-props";
-import { EVENT_FRESH, useIssueTree } from "../useIssueTree";
+import { EVENT_FRESH } from "../useIssueTree";
 import { waitingPressOf } from "../waiting";
+import type { ViewSlotProps } from "./stage";
 
 /** Filled by INFRA-1196 part Q, "The Decisions view". */
-export function ViewDecisionsSlot({ issue, route }: SlotProps): ReactNode {
+export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
   // The Decisions view (part Q's R1): the issue's asks and decisions as one list in parts, drawn
   // from the issue's one tree as the Decisions view leaves it. The stage draws this slot only
   // where the address opens Decisions (`slots/stage.tsx`).
-  const { hash, search, state } = useLocation();
+  const { hash, key: following, search, state } = useLocation();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
-  const { root } = useIssueTree(issue);
+  // The tree, and whether every read its nodes come from holds its answer (`useOutlineReads`),
+  // each under the key and with the freshness the tree reads it by, so they cost no request of
+  // their own.
+  const { readsHeld, root } = useOutlineReads(issue);
   // Who is reading, whose own answers carry the ink rule and whose decisions stand under "Your
   // decisions": the shell's one read of who is signed in, so it costs no request of its own, and
   // kept fresh as the tree keeps it (`EVENT_FRESH`), so a press of Decisions reads it no second
@@ -34,6 +38,22 @@ export function ViewDecisionsSlot({ issue, route }: SlotProps): ReactNode {
   // address that names a node the words filter would not have matched still draws it; the
   // entry it names takes the focus, once per address (R6).
   const { named, reveal } = useAddressTarget(root, address);
+  // Whether the tree holds the node an address beside the view names, said to the stage once
+  // for each following of the address, once every read the tree is built from holds its
+  // answer (`ViewSlotProps.onAddressDrawn`). The list draws every node the tree holds that an
+  // address names: an ask or a decision as an entry, a node of another kind as the row before
+  // the parts, a decision the decisions read holds no row for in the foot, and a person's
+  // write-up of an answered question, which is no row here, on the row of the question it
+  // answers (`DecisionsFilterBody`). Where the tree holds none, the stage draws the outline's
+  // fallback in the view's place. It is said before the browser paints, so where the reads were
+  // held as the view was drawn, as on Back to its address, no list is painted in its place.
+  const beside = address.target !== undefined && address.document === undefined;
+  const told = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!beside || !readsHeld || told.current === following) return;
+    told.current = following;
+    onAddressDrawn(reveal !== undefined);
+  }, [beside, following, onAddressDrawn, readsHeld, reveal]);
   const view = useMemo(
     () => presetView(root, "decisions", address.filter, named),
     [address.filter, named, root]
