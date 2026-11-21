@@ -16,8 +16,14 @@ import {
   type JjRunner,
   type LatestHandoff,
 } from "@legion/pi-shared/handoff-record";
-import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
+import {
+  executePhaseOp,
+  isPhaseOp,
+  PHASE_OPS,
+  phaseOpParameters,
+} from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
+import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { z } from "zod";
 import { createLegionTool, type LegionToolSession } from "./tools";
@@ -312,6 +318,14 @@ const EVERY_SESSION: readonly LegionToolSession[] = [
   { kind: "controller", sessionID: "ses_controller" },
 ];
 
+/** Each session kind with the article a refusal names it with: "an architect", "a phase-worker",
+ * "a controller". */
+const KIND_WORDS: Readonly<Record<LegionToolSession["kind"], string>> = {
+  architect: "an architect",
+  "phase-worker": "a phase-worker",
+  controller: "a controller",
+};
+
 const toolFor = (active: LegionToolSession) =>
   createLegionTool({
     pi,
@@ -342,7 +356,6 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
       enum: [
         "register_gate",
         "release_children",
-        "request_backward_move",
         "retry_or_escalate",
         "sign_off",
         "close_root",
@@ -351,6 +364,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "read_record",
         "read_release_records",
         "handoff_complete",
+        "request_backward_move",
         "ready_for_update",
         "review_verdict",
         "read_state",
@@ -436,6 +450,38 @@ test("the schema the Oh My Pi tool exposes carries every field the phase ops tak
   const properties = Object.keys(declared.properties ?? {});
   expect(properties).toContain("wake_at");
   for (const field of Object.keys(phaseOpParameters(z))) expect(properties).toContain(field);
+});
+
+// The phase ops are defined once, in `PHASE_OPS`, and every host's `legion` tool serves that list:
+// this one and claude-envoy's MCP tool (`packages/claude-envoy/tests/legion-tool.test.ts` holds
+// the same of it), so the two list the same phase ops, review_verdict among them. Each claim
+// session's call of each is answered as the shared executor answers that claim's call: its
+// arguments, and who may run it, are the executor's to hold, never refused here as an operation
+// the session's kind has not.
+test("the tool's list of phase ops is PHASE_OPS, review_verdict among them, and each claim session's call of each reaches the shared executor", async () => {
+  const declared = z.toJSONSchema(toolFor(claimSession("reviewer")).parameters as z.ZodType);
+  const listed = declared.properties?.op;
+  const ops = (typeof listed === "object" ? listed.enum : undefined) ?? [];
+  expect(ops.filter((op) => typeof op === "string" && isPhaseOp(op))).toEqual([...PHASE_OPS]);
+  for (const active of EVERY_SESSION) {
+    if (active.kind === "controller") continue;
+    const tool = toolFor(active);
+    for (const op of PHASE_OPS) {
+      const shared = await executePhaseOp(
+        {
+          daemon: recordingDaemon({}).daemon(),
+          claim: active,
+          handoffReport: noHandoffReport,
+          branchHead: noBranchHead,
+        },
+        { op }
+      ).then(
+        (answer) => toolSuccess(JSON.stringify(answer), answer),
+        (error: unknown) => toolFailure(error)
+      );
+      expect(await tool.execute("", { op }, undefined, undefined, context())).toEqual(shared);
+    }
+  }
 });
 
 test("a root architect's handoff_complete is refused as unavailable before its arguments are read", async () => {
@@ -637,7 +683,12 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   for (const session of [architect, worker]) {
     await expect(run(session, { op: "read_state" })).resolves.toMatchObject({
       isError: true,
-      content: [{ type: "text", text: `read_state is not available to a ${session.kind} session` }],
+      content: [
+        {
+          type: "text",
+          text: `read_state is not available to ${KIND_WORDS[session.kind]} session`,
+        },
+      ],
     });
     await expect(
       run(session, { op: "set_status", issue: "LEGION-208", status: "todo" })
@@ -890,12 +941,14 @@ test("the legion tool's description says who sends which verdict word", () => {
   expect(tool.description).not.toContain("when your role's instructions require one");
 });
 
-// The reviewer's verdict on a head that moved past review goes through review_verdict, which the
-// tool offers to a reviewer session alone: it posts a fresh grant with the verdict, the head and
-// the tester's pass the verdict carries there to `POST /legion/v1/review-verdict`, and closes no
-// phase. Every other session is refused the operation by name before any grant is minted, and a
+// The reviewer's verdict on a head that moved past review goes through review_verdict, a phase op
+// this tool serves from its one shared definition (`PHASE_OPS`): a reviewer session's call posts a
+// fresh grant with the verdict, the head and the tester's pass the verdict carries there to
+// `POST /legion/v1/review-verdict`, and closes no phase. Every other claim session, the root
+// architect's, a sub-architect's and the implementer's among them, is refused it by its role before
+// any grant is minted; the controller, which has no phase op, is refused it as every phase op. A
 // word that is no verdict of the reviewer's, or a call naming no head, is refused the same way.
-test("review_verdict is offered to a reviewer session alone, and posts the verdict, the commit and testedCommit", async () => {
+test("review_verdict is taken from a reviewer session alone, and posts the verdict, the commit and testedCommit", async () => {
   const head = "c0de0000000000000000000000000000000000ff";
   const tested = "7e57000000000000000000000000000000000aa1";
   const call = {
@@ -964,16 +1017,22 @@ test("review_verdict is offered to a reviewer session alone, and posts the verdi
     expect(refused.posted).toEqual([]);
   }
 
-  for (const active of EVERY_SESSION.filter(
+  const others = EVERY_SESSION.filter(
     (session) => session.kind === "controller" || session.role !== "reviewer"
-  )) {
+  );
+  expect(
+    others.map((session) => (session.kind === "controller" ? "controller" : session.role))
+  ).toEqual(["architect", "architect", "planner", "implementer", "tester", "merger", "controller"]);
+  for (const active of others) {
     const other = toolOver(active);
-    const who = active.kind === "controller" ? "controller" : active.role;
     await expect(other.tool.execute("", call, undefined, undefined, context())).resolves.toEqual({
       content: [
         {
           type: "text",
-          text: `review_verdict is the reviewer's alone, and not available to a ${who} session`,
+          text:
+            active.kind === "controller"
+              ? "review_verdict is not available to a controller session"
+              : `review_verdict is the reviewer's alone, and this session is the ${active.role}'s`,
         },
       ],
       details: {},
@@ -2171,7 +2230,10 @@ test("pause and resume are offered to no architect and no phase worker", async (
     for (const parameters of [{ op: "pause", reason: "the provider is down" }, { op: "resume" }]) {
       await expect(tool.execute("", parameters, undefined, undefined, context())).resolves.toEqual({
         content: [
-          { type: "text", text: `${parameters.op} is not available to a ${session.kind} session` },
+          {
+            type: "text",
+            text: `${parameters.op} is not available to ${KIND_WORDS[session.kind]} session`,
+          },
         ],
         details: {},
         isError: true,

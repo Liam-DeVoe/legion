@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { LEGION_ROLES } from "@legion/contracts";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PLAN_RATING_LEAST,
@@ -73,6 +74,7 @@ function runtime(
     "/legion/v1/state": state,
     "/legion/v1/grants": daemonFixture("grant.json"),
     "/legion/v1/handoff/complete": daemonFixture("handoff-complete.json"),
+    "/legion/v1/review-verdict": daemonFixture("review-verdict.json"),
   };
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
@@ -117,6 +119,11 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       summary: { type: "string" },
       verdict: { enum: ["pass", "pending", "fail", "approve", "changes"] },
       testedCommit: { type: "string" },
+      commit: {
+        type: "string",
+        description:
+          "review_verdict's head: the pull request's current head, the commit your verdict is on",
+      },
       wake_at: { type: "string" },
       plan_rating: { type: "integer", minimum: 1, maximum: 5 },
       plan_reason: { type: "string" },
@@ -279,9 +286,12 @@ test("each op refuses its arguments whole before any daemon request, naming ever
     ],
     [
       { op: "set_status" },
-      "op is one of read_record, read_release_records, handoff_complete, request_backward_move",
+      "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update, review_verdict",
     ],
-    [{}, "op is one of read_record, read_release_records, handoff_complete, request_backward_move"],
+    [
+      {},
+      "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update, review_verdict",
+    ],
   ] as const;
   for (const [input, message] of refusals) {
     await expect(executePhaseOp(ops, input)).rejects.toThrow(message);
@@ -304,17 +314,19 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
   });
 });
 
+/** LEGION-208's reviewer, the claim whose completion ended its review round. */
+const reviewer: ClaimCapability = {
+  ...implementer,
+  sessionID: "ses_reviewer",
+  role: "reviewer",
+  claimToken: "legion-legion-legion-208-reviewer",
+};
+
 // The reviewer ends its review with its own verdict, approve or changes, on the head its review
 // record names, and names in testedCommit the commit of the tester's pass that verdict carries to
 // that head; the tool posts the verdict and testedCommit as given, beside the record and the head
 // the pane found for the reviewer's phase.
 test("handoff_complete takes a reviewer's verdict approve, with testedCommit", async () => {
-  const reviewer: ClaimCapability = {
-    ...implementer,
-    sessionID: "ses_reviewer",
-    role: "reviewer",
-    claimToken: "legion-legion-legion-208-reviewer",
-  };
   const tested = "7".repeat(40);
   const { ops, routes, posted, lookups } = runtime(reviewer, stateAtPhase("reviewing"));
   await expect(
@@ -336,7 +348,11 @@ test("handoff_complete takes a reviewer's verdict approve, with testedCommit", a
   });
 
   await expect(
-    executePhaseOp(ops, { op: "handoff_complete", summary: "The parser breaks.", verdict: "changes" })
+    executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "The parser breaks.",
+      verdict: "changes",
+    })
   ).resolves.toEqual(daemonFixture("handoff-complete.json"));
   expect(posted.at(-1)).toEqual({
     grantId: "grant-for-one-command",
@@ -344,6 +360,100 @@ test("handoff_complete takes a reviewer's verdict approve, with testedCommit", a
     verdict: "changes",
     ...REPORT,
   });
+});
+
+// A head that moves while its issue stands past its review (accepting, retro or merging) gets the
+// verdict of the round's recorded reviewer through review_verdict, which every host's `legion`
+// tool serves from this one definition: a fresh grant with the verdict, the head and the tester's
+// pass the verdict carries there, posted to `POST /legion/v1/review-verdict`. The call writes no
+// handoff, so it reads no record and looks no handoff report up.
+test("review_verdict is one phase op, defined once, that posts the verdict, the commit and testedCommit to /legion/v1/review-verdict", async () => {
+  expect(PHASE_OPS.filter((op) => op === "review_verdict")).toEqual(["review_verdict"]);
+  expect(
+    PhaseOpArguments.options.filter((option) => option.shape.op.value === "review_verdict")
+  ).toHaveLength(1);
+
+  const head = "e".repeat(40);
+  const tested = "7".repeat(40);
+  const { ops, routes, posted, lookups } = runtime(reviewer, stateAtPhase("retro"));
+  await expect(
+    executePhaseOp(ops, {
+      op: "review_verdict",
+      verdict: "approve",
+      commit: head,
+      testedCommit: tested,
+      summary: "The retro commit changes no code that runs.",
+    })
+  ).resolves.toEqual({});
+  expect(routes).toEqual(["/legion/v1/grants", "/legion/v1/review-verdict"]);
+  expect(posted).toEqual([
+    { sessionId: "ses_reviewer", secret: "U2VjcmV0", tree: "LEGION-208", issue: "LEGION-208" },
+    {
+      grantId: "grant-for-one-command",
+      verdict: "approve",
+      commit: head,
+      testedCommit: tested,
+      summary: "The retro commit changes no code that runs.",
+    },
+  ]);
+
+  // A verdict that carries no tester's pass names no testedCommit, and the body carries none.
+  await expect(
+    executePhaseOp(ops, {
+      op: "review_verdict",
+      verdict: "changes",
+      commit: head,
+      summary: "The retro commit breaks the parser.",
+    })
+  ).resolves.toEqual({});
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    verdict: "changes",
+    commit: head,
+    summary: "The retro commit breaks the parser.",
+  });
+  expect(lookups).toEqual([]);
+});
+
+// review_verdict is the reviewer's alone, whichever host runs it: every other claim, an
+// architect's among them, is refused it by its role before its arguments are read, after any field
+// the op never takes, as a root architect's completion is. A reviewer's call is refused naming each
+// wrong argument. Nothing is minted or posted for any of them.
+test("review_verdict is refused to every session but a reviewer's, and a reviewer's wrong arguments, before any daemon request", async () => {
+  const call = { op: "review_verdict", verdict: "approve", commit: "e".repeat(40), summary: "s" };
+  for (const role of LEGION_ROLES.filter((each) => each !== "reviewer")) {
+    const { ops, routes } = runtime({ ...implementer, role });
+    const refusal = `review_verdict is the reviewer's alone, and this session is the ${role}'s`;
+    for (const input of [call, { op: "review_verdict" }]) {
+      await expect(executePhaseOp(ops, input)).rejects.toThrow(new Error(refusal));
+    }
+    await expect(executePhaseOp(ops, { ...call, round: "pod:1" })).rejects.toThrow(
+      new Error(
+        `review_verdict does not accept field "round"; it takes verdict, commit, testedCommit, summary; ${refusal}`
+      )
+    );
+    expect(routes).toEqual([]);
+  }
+
+  const { ops, routes } = runtime(reviewer);
+  const refusals = [
+    [{ ...call, verdict: "pass" }, "review_verdict requires verdict approve or changes"],
+    [{ ...call, commit: " " }, "review_verdict requires commit"],
+    [{ ...call, testedCommit: " " }, "review_verdict requires testedCommit"],
+    [{ ...call, summary: "" }, "review_verdict requires summary"],
+    [
+      { op: "review_verdict" },
+      "review_verdict requires verdict approve or changes; review_verdict requires commit; review_verdict requires summary",
+    ],
+    [
+      { ...call, round: "pod:1" },
+      'review_verdict does not accept field "round"; it takes verdict, commit, testedCommit, summary',
+    ],
+  ] as const;
+  for (const [input, message] of refusals) {
+    await expect(executePhaseOp(ops, input)).rejects.toThrow(new Error(message));
+  }
+  expect(routes).toEqual([]);
 });
 
 // One description serves every role, so it says who sends which verdict word, and what the
