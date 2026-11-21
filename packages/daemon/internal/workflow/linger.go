@@ -202,7 +202,7 @@ func leaveState(w Walk, status string) record.TaskState {
 
 // endTaskWithLeave writes issue out of the workflow at status: its task ends with its run where it
 // stands, in the state its leave gives it (moveTask, leaveState), which writes the phase done, and
-// its hold and its wait on a person are cleared, in the caller's transaction (WriteIssue). Every
+// its hold and its wait on a person are cleared, in the caller's transaction (writeIssueOn). Every
 // leave ends a task here: a child's (leave), a root's that begins its linger (beginLinger) and a
 // waiting root's while the operator runs a tree under its key (leaveUnderOperator). issue is the
 // caller's record, which it writes with any field it set, and which stands as written after.
@@ -215,7 +215,7 @@ func (e *Engine) endTaskWithLeave(ctx context.Context, tx pgx.Tx, issue *record.
 		return err
 	}
 	issue.Hold, issue.Awaiting = nil, nil
-	return e.WriteIssue(ctx, tx, *issue)
+	return e.writeIssueOn(ctx, tx, *issue, w)
 }
 
 // releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is
