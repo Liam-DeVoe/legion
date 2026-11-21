@@ -498,8 +498,8 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 	if !isRole {
 		return reportedNotice{}, false
 	}
-	project, token, legacy := subjectforms.CanonicalRole(lane)
-	if (!legacy && project != subjectforms.RoleProject(token)) || !strings.HasPrefix(token, "legion-"+r.project+"-") || !strings.HasSuffix(token, "-"+string(claim.RoleArchitect)) {
+	project, token, _ := subjectforms.CanonicalRole(lane)
+	if project != subjectforms.RoleProject(token) || !strings.HasPrefix(token, "legion-"+r.project+"-") || !strings.HasSuffix(token, "-"+string(claim.RoleArchitect)) {
 		return reportedNotice{}, false
 	}
 	var notice record.Notice

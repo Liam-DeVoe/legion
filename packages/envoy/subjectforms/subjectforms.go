@@ -40,7 +40,7 @@ func CanonicalRole(role string) (project, name string, legacy bool) {
 
 // RoleProject is contracts.RoleProject: the project a role works for, read from the role's own
 // name. A Legion role, legion-<token>-…, works for the project whose key is its token in upper
-// case, and every other role for none (contracts.NoProject).
+// case when that is a project key, and every other role for none (contracts.NoProject).
 func RoleProject(role string) string {
 	return contracts.RoleProject(role)
 }
