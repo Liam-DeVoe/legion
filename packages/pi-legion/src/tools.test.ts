@@ -264,7 +264,8 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "under it now: wait for the ancestor to close, then release it. " +
   "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
   "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
-  "capability, each repository not served with why, as legion state prints it, one line per recorded issue, and under each issue " +
+  "capability, each repository whose last GitHub read failed or that a role App is not installed on, with why " +
+  "(none for one GitHub has not answered yet), one line per recorded issue, and under each issue " +
   "Legion still runs its slot, hold, gate and each claim's state with its last turn times — and with issue, issues, " +
   "phase or settings returns the full records it names; " +
   "set_status moves an issue to todo, backlog or icebox. " +
@@ -2691,8 +2692,9 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 // repositories, so the summary prints, after the capabilities, cmd/legion's repositoryLines for
 // `repositories.live`: one line for each entry GitHub's last read did not name or GitHub answered
 // a role App is not installed on, with both reasons where both hold and the name it is served
-// under, and none for a repository served or not answered yet.
-test("read_state with no field prints legion state's line for each repository not served", async () => {
+// under, and none for a repository both Apps are installed on whose last read named it, or one
+// GitHub has not answered yet.
+test("read_state with no field prints legion state's line for each repository whose read failed or that lacks an App", async () => {
   const state = legionState({
     capabilities: [{ name: "subagents", status: "present", detail: "6 agents discovered" }],
     repositories: {

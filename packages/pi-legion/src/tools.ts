@@ -333,7 +333,11 @@ function stateSummary(state: LegionState): string {
     // optional (LEGION_ANSWER_READS), so an entry with no repository is left out.
     if (liveRepository.repo === undefined) continue;
     const served = liveRepository.servedAs ?? liveRepository.repo;
-    const why = [liveRepository.readError, appsNotInstalled(liveRepository.apps, served)].filter(
+    // A local name for the entry's `apps`, so a reader of the consumer sources ties
+    // `apps.implement` and `apps.review` in appsNotInstalled to `repositories.live[].apps`
+    // (pi-shared's declared-read test binds a name one `const` deep).
+    const apps = liveRepository.apps;
+    const why = [liveRepository.readError, appsNotInstalled(apps, served)].filter(
       (reason): reason is string => reason !== undefined && reason !== ""
     );
     if (why.length === 0) continue;
@@ -603,7 +607,8 @@ export function createLegionTool(deps: {
         "under it now: wait for the ancestor to close, then release it. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
-        "capability, each repository not served with why, as legion state prints it, one line per recorded issue, and under each issue " +
+        "capability, each repository whose last GitHub read failed or that a role App is not installed on, with why " +
+        "(none for one GitHub has not answered yet), one line per recorded issue, and under each issue " +
         "Legion still runs its slot, hold, gate and each claim's state with its last turn times — and with issue, issues, " +
         "phase or settings returns the full records it names; " +
         "set_status moves an issue to todo, backlog or icebox. " +
