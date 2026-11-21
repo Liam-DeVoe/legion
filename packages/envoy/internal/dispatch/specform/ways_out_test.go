@@ -116,7 +116,19 @@ func judgedAll(c Context, texts []Text) []broken {
 }
 
 // procedureOf is a procedure of one check whose run is body.
-func procedureOf(body string) Text { return Text{Node: "v-run", Kind: KindProcedure, Body: body, Where: where} }
+func procedureOf(body string) Text {
+	return Text{Node: "v-run", Kind: KindProcedure, Body: body, Where: where}
+}
+
+// claimOf is a claim of one check whose words are body.
+func claimOf(body string) Text {
+	return Text{Node: "c-claim", Kind: KindClaim, Body: body, Where: where}
+}
+
+// quotedRun is a statement whose two sentences ste-lint reads as one piece of 23 words, as no
+// piece ends at a stop that a closing quote follows: the user and the host apart make 21 words of
+// the second sentence, and a piece of 26.
+const quotedRun = `The guide says "Run it." The job copies the report to deploy@build.example.com: each night after the tests of the merge pass on main.`
 
 // statementOf is a statement named node whose body is body, referring to notes.
 func statementOf(node, body string, notes ...*Footnote) Text {
@@ -147,8 +159,11 @@ const codedStatement = "After the night build of the main branch the job runs `m
 // gives at least one way out, so a finding that stops giving any fails here too. The rows after the
 // first sixteen are the forms whose ways out another rule refuses, each with the way out that is
 // left: in the sentence as the rules read it, code font and all, also for a text that the page
-// shows with no code font; at each place of one finding, in two sentences and in one; and in a
-// footnote, with the sentences of the largest statement that refers to it.
+// shows with no code font; at each place of one finding, in two sentences and in one; in a
+// footnote, with the sentences of the largest statement that refers to it; and in the whole text,
+// for the rules that read more than one sentence (wholeText): code font that takes a verb of a
+// synonym group away from its first place, a piece of ste-lint that runs on past a closing quote,
+// and a footnote whose verbs stand beside those of the text that holds it.
 func TestEachWayOutOfARefusalPasses(t *testing.T) {
 	for _, row := range []wayRow{
 		own(procedureOf("Read each open approval request and record its version.")),
@@ -217,6 +232,18 @@ func TestEachWayOutOfARefusalPasses(t *testing.T) {
 			note := sharedNote()
 			return inNote("1", statementOf("b", "Dispatch keeps each record.", note), statementOf("a", "`Dispatch`.", note))
 		}(),
+		// The rules that read the whole text: the code font of Foo.Validate takes "Validate" away
+		// from the first place of its verb, so the text's finding of two verbs for one action
+		// quotes "validated", and only the space is left; the user and the host apart make a piece
+		// of 26 words of two sentences that ste-lint joins at the closing quote, so only the paths
+		// are left; and the code font of a footnote's Foo.Validate takes its verb away beside a
+		// text that uses "check", which leaves no group of two verbs, and beside one that uses
+		// "confirms", which gives the text a new finding, so there only the space is left.
+		own(claimOf("Dispatch checks Foo.Validate at boot. It validated the file.")),
+		own(claimOf("Dispatch removes Foo.Delete at boot. It deleted the file.")),
+		own(statement(quotedRun)),
+		inNote("1", noted(KindStatement, "Dispatch checks each record.", "It calls Foo.Validate at boot.")),
+		inNote("1", noted(KindClaim, "Dispatch confirms each record.", "It checks Foo.Validate at boot.")),
 	} {
 		c := planted()
 		texts := row.read(t)
@@ -277,7 +304,15 @@ func TestEachWayOutOfARefusalPasses(t *testing.T) {
 // each way out keeps in bounds gives all three. It reads a footnote's sentences with those of the
 // largest statement that refers to it, so a space in a footnote of one sentence under a statement
 // of one is no way out, in either order of a statement of one and one of no sentence, while under
-// a claim, or under a statement whose own words are code font alone, it is.
+// a claim, or under a statement whose own words are code font alone, it is. It reads the rules
+// that read more than one sentence in the whole text (wholeText): the code font of Foo.Validate,
+// beside "validated" in the next sentence, is no way out, so a statement of the two sentences
+// gives none, and a claim the space alone, while beside "reads" it is; the user and the host apart
+// are no way out where ste-lint joins their sentence to one before a closing quote, and are one
+// where no quote joins them; a way out of a list item of two sentences that ends in "and" changes
+// the item that the finding of dangling-conjunction quotes, so it gives none, while the item that
+// ends in a stop gives both; and the code font of a footnote's Foo.Validate is a way out beside a
+// text that uses "keeps" or "checks", and none beside one that uses "confirms".
 func TestAWayOutStaysWhereTheOtherFindingsStayAsTheyWere(t *testing.T) {
 	for _, test := range []struct {
 		row  wayRow
@@ -312,6 +347,19 @@ func TestAWayOutStaysWhereTheOtherFindingsStayAsTheyWere(t *testing.T) {
 			note := sharedNote()
 			return inNote("1", statementOf("b", "Dispatch keeps each record.", note), statementOf("a", "`Dispatch`.", note))
 		}(), map[Rule]int{ruleStopNoSpace: 1}},
+		{own(statement("Dispatch checks Foo.Validate at boot. It validated the file.")), map[Rule]int{}},
+		{own(statement("Dispatch removes Foo.Delete at boot. It deleted the file.")), map[Rule]int{}},
+		{own(claimOf("Dispatch checks Foo.Validate at boot. It validated the file.")), map[Rule]int{ruleStopNoSpace: 1}},
+		{own(claimOf("Dispatch checks Foo.Validate at boot. It reads the file.")), map[Rule]int{ruleStopNoSpace: 2}},
+		{own(claimOf("Dispatch checks Foo.Validate at boot.\u2028It validated the file.")), map[Rule]int{ruleStopNoSpace: 1}},
+		{own(statement(quotedRun)), map[Rule]int{rulePerson: 2}},
+		{own(statement("The guide says to run it. The job copies the report to deploy@build.example.com: each night after the tests of the merge pass on main.")),
+			map[Rule]int{rulePerson: 3}},
+		{own(claimOf("- Dispatch reads Web.Config. It keeps the record and")), map[Rule]int{}},
+		{own(claimOf("- Dispatch reads Web.Config. It keeps the record.")), map[Rule]int{ruleStopNoSpace: 2}},
+		{inNote("1", noted(KindClaim, "Dispatch keeps each record.", "It checks Foo.Validate at boot.")), map[Rule]int{ruleStopNoSpace: 2}},
+		{inNote("1", noted(KindStatement, "Dispatch checks each record.", "It calls Foo.Validate at boot.")), map[Rule]int{ruleStopNoSpace: 1}},
+		{inNote("1", noted(KindClaim, "Dispatch confirms each record.", "It checks Foo.Validate at boot.")), map[Rule]int{ruleStopNoSpace: 1}},
 	} {
 		got := map[Rule]int{}
 		for _, each := range judgedAll(planted(), test.row.read(t)) {
@@ -336,7 +384,7 @@ func TestAWayOutThatKeepsItsFindingIsNoWayOut(t *testing.T) {
 	const line = "The service reads Web.Config at its start."
 	judge := newWayJudge(planted(), nil, KindStatement, false)
 	sentences := sentencesOf(line)
-	judge.told(len(sentences), joinedIn(sentences))
+	judge.told(len(sentences), joinedIn(sentences), line, nil)
 	unit := unitKey{text: line}
 	state := judge.unit(unit)
 	for _, test := range []struct {

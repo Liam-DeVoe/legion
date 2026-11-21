@@ -5,7 +5,8 @@ body: |-
   only. A line of `error` and of `refusal` still writes the detail, then the ways out. A way out is
   judged at each place of its finding's words in a sentence, and a finding of the words that the
   page shows is judged in the sentence of the text as the rules of the form read it, code font and
-  all.
+  all. A way out is also judged in the whole text by the rules that read more than one sentence:
+  two verbs for one action, ste-lint's long sentence and a list item that ends in "and" or "or".
 time: 2026-11-21T08:59:19Z
 custom:
     Issue: pr4179

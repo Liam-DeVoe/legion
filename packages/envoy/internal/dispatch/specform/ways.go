@@ -3,6 +3,8 @@ package specform
 import (
 	"fmt"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
 // maxJudgedInSentence is how many findings of one sentence the judge of the ways out reads the
@@ -56,12 +58,9 @@ func (o offer) said(ways string) string {
 // each place of its words, and the writer changes the words at each place, so the judge offers a
 // way out only where it passes in the sentence of each place, with the way out written at each
 // place of the finding's words in that sentence: it first takes each place (survey), then judges.
-// No way out adds a verb of a synonym group of ste-lint: a way out writes a space, code font, a
-// stop and a capital, "that", "ssh -l", a path after a colon or the words that go on from a
-// condition, none of which a group holds, and each word that it moves ste-lint already reads, at
-// a stop and at an "@" too, so the judge reads no verb of a group (the rule synonym-rotation reads
-// the text whole). A nil judge offers each way out unjudged: the judge's own reading of a sentence
-// is one.
+// A rule that reads more than one sentence, such as synonym-rotation, which reads the text whole,
+// the judge reads in the whole text that the way out writes at each place (wholeText). A nil judge
+// offers each way out unjudged: the judge's own reading of a sentence is one.
 type wayJudge struct {
 	c      Context
 	people [][]string
@@ -83,6 +82,11 @@ type wayJudge struct {
 	ranked    map[unitKey]int
 	units     map[unitKey]*judgedUnit
 	given     map[wayKey]offer
+	// whole is the text as the judge reads it for the rules that read more than one sentence
+	// (told), and elsewhere, for the judge of a footnote, what wholeText.elsewhere says
+	// (footnoteJudge.rotationCanChange).
+	whole     *wholeText
+	elsewhere func(before, after ste.Verbs) bool
 }
 
 // unitKey is a sentence that the judge reads, or the address of a link or an image (address),
@@ -130,10 +134,11 @@ func newWayJudge(c Context, people [][]string, kind Kind, shown bool) *wayJudge 
 }
 
 // told gives the judge what the form rules read of the whole text: how many sentences count for
-// the rule sentences, with those of its footnotes, and how many stops with no space after them it
-// holds (joined). The count of the judge of a footnote that a statement holds stays the
-// statement's (heldIn).
-func (j *wayJudge) told(count, joined int) {
+// the rule sentences, with those of its footnotes, how many stops with no space after them it
+// holds (joined), and the text itself as one line with the verbs of its footnotes (held), for the
+// rules that read more than one sentence (wholeText). The count of the judge of a footnote that a
+// statement holds stays the statement's (heldIn).
+func (j *wayJudge) told(count, joined int, line string, held []ste.Verbs) {
 	if j == nil {
 		return
 	}
@@ -141,6 +146,9 @@ func (j *wayJudge) told(count, joined int) {
 		j.count = count
 	}
 	j.joined = joined
+	if j.whole == nil || j.whole.line != line {
+		j.whole = newWholeText(line, held, j.elsewhere)
+	}
 }
 
 // heldIn tells the judge of a footnote that a statement holds it, a statement of count sentences
@@ -167,7 +175,8 @@ func (j *wayJudge) survey(find func()) {
 
 // offered is the offer of ways, the ways out of a finding of rule whose ways out change from in
 // unit, the sentence that holds it, or the address that holds it (address), with a zero wayOut in
-// place of each that passes no reading (passes) at some place of the finding (survey). A finding
+// place of each that passes no reading (passes) at some place of the finding (survey), or that the
+// whole text that it writes at each place refuses (wholeText.passes). A finding
 // past maxJudgedInSentence of the findings of a unit that holds it gives none, and its offer says
 // so (past); so does one whose sentence is not known at some place (unit ""), with no word of it,
 // and one that survey did not see. A nil judge offers ways as they are, and so does each judge a
@@ -204,6 +213,13 @@ func (j *wayJudge) offered(unit string, address bool, rule Rule, from string, wa
 		state := j.unit(at)
 		for index, way := range given.ways {
 			if way != (wayOut{}) && !j.passes(state, at, rule, way) {
+				given.ways[index] = wayOut{}
+			}
+		}
+	}
+	if j.whole != nil {
+		for index, way := range given.ways {
+			if way != (wayOut{}) && !j.whole.passes(key, way, places) {
 				given.ways[index] = wayOut{}
 			}
 		}

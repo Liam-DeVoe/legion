@@ -456,13 +456,14 @@ func serverPage(c Context, address string) (text.Ref, bool) {
 // with the footnotes that it refers to, are the footnote's one finding (footnoteJudge.rotations),
 // however many texts refer to it. It also answers how many sentences the line has, and the verbs
 // of the synonym groups that it uses. judge judges the ways out of each finding (wayJudge): it is
-// told the line's count of sentences and of its stops with no space after them before any way out
-// is judged, and each way out of a stop with no space after it is judged in the sentence that
-// holds the word, as sentencesOf reads it.
+// told the line's count of sentences and of its stops with no space after them, and the line
+// itself with the verbs of its footnotes for the rules that read more than one sentence
+// (wholeText), before any way out is judged, and each way out of a stop with no space after it is
+// judged in the sentence that holds the word, as sentencesOf reads it.
 func formBreaks(kind Kind, line string, noted footnotesHeld, judge *wayJudge) ([]broken, int, ste.Verbs) {
 	sentences := sentencesOf(line)
 	lint, verbs := ste.LintVerbs(line)
-	judge.told(len(sentences)+noted.count, joinedIn(sentences))
+	judge.told(len(sentences)+noted.count, joinedIn(sentences), line, noted.verbs)
 	var found []broken
 	for _, sentence := range sentences {
 		for _, word := range sentence.stopsWithNoSpace() {
@@ -486,10 +487,15 @@ func formBreaks(kind Kind, line string, noted footnotesHeld, judge *wayJudge) ([
 		found = append(found, instructionBreaks(line, judge)...)
 	}
 	for _, finding := range lint {
-		found = append(found, broken{rule: Rule("ste100-" + finding.Rule), detail: fmt.Sprintf("ASD-STE100 does not permit %s: %q", steRules[finding.Rule], finding.Match)})
+		found = append(found, steBreak(finding))
 	}
 	found = append(found, rotationBreaks(ste.Rotations(verbs, noted.verbs), "its footnotes")...)
 	return found, len(sentences), verbs
+}
+
+// steBreak is the finding of the form for a hard finding of ste-lint, by the rule's own name.
+func steBreak(finding ste.Finding) broken {
+	return broken{rule: Rule("ste100-" + finding.Rule), detail: fmt.Sprintf("ASD-STE100 does not permit %s: %q", steRules[finding.Rule], finding.Match)}
 }
 
 // rotationBreaks is a finding of the rule synonym-rotation for each synonym group of rotated, the

@@ -68,6 +68,9 @@ type footnoteJudge struct {
 	// inStatement is, for each footnote that a statement holds, the count of sentences of the
 	// largest such statement (statements).
 	inStatement map[*Footnote]int
+	// users is how many texts of prose and footnotes use each verb of the synonym groups in their own
+	// words, by its bit in ste.Verbs, read once (rotationCanChange).
+	users []int
 }
 
 // footnoteJudgment is one footnote judged: the findings of the form rules, the findings of the
@@ -135,6 +138,7 @@ func (j *footnoteJudge) judgment(note *Footnote) *footnoteJudgment {
 		return judged
 	}
 	judged := &footnoteJudgment{judge: newWayJudge(j.c, j.people, kindFootnote, note.Held.Shown != "")}
+	judged.judge.elsewhere = func(before, after ste.Verbs) bool { return j.rotationCanChange(before, after) }
 	judged.judge.survey(func() { j.find(note, judged) })
 	j.judged[note] = judged
 	return judged
@@ -160,6 +164,64 @@ func (j *footnoteJudge) findings(note *Footnote) *footnoteJudgment {
 func (j *footnoteJudge) find(note *Footnote, judged *footnoteJudgment) {
 	judged.form, judged.sentences, judged.verbs = formBreaks(kindFootnote, oneLine(note.Body), footnotesHeld{}, judged.judge)
 	judged.references = heldBreaks(j.c, j.people, note.Body, note.Held, judged.judge)
+}
+
+// rotationCanChange reports whether a way out of a finding of a footnote that changes the verbs of
+// the synonym groups that the footnote's words use from before to after can give a finding of the
+// rule synonym-rotation that the verbs of footnotes give: of the footnote with the footnotes that
+// it refers to (rotations), and of each text that holds it (held). Such a finding is of the verbs
+// of one group that two parts or more use together, so a new one can stand only in a group whose
+// verbs the way out changes and of which, after it, the footnote and the other texts and footnotes
+// of the judgment use two verbs or more: in a group of fewer, no text or footnote gives such a
+// finding after the way out. The finding of the footnote's own words is wholeText's to read.
+func (j *footnoteJudge) rotationCanChange(before, after ste.Verbs) bool {
+	if j.users == nil {
+		j.countUsers()
+	}
+	var others ste.Verbs
+	for bit, count := range j.users {
+		if own := before&(1<<bit) != 0; count > 1 || count == 1 && !own {
+			others |= 1 << bit
+		}
+	}
+	for _, group := range (before ^ after).GroupsEach() {
+		if ((after | others) & group).Count() > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// countUsers counts, for each verb of the synonym groups, the texts of prose and the footnotes that
+// use it in their own words (users): each footnote that a text holds once.
+func (j *footnoteJudge) countUsers() {
+	j.users = make([]int, 64)
+	add := func(verbs ste.Verbs) {
+		for bit := range j.users {
+			if verbs&(1<<bit) != 0 {
+				j.users[bit]++
+			}
+		}
+	}
+	seen := map[*Footnote]bool{}
+	var walk []*Footnote
+	for _, text := range j.texts {
+		if prose(text.Kind) && text.Kind != KindLine {
+			_, verbs := ste.LintVerbs(oneLine(text.Body))
+			add(verbs)
+		}
+		walk = append(walk, text.Notes...)
+	}
+	for len(walk) > 0 {
+		note := walk[len(walk)-1]
+		walk = walk[:len(walk)-1]
+		if seen[note] {
+			continue
+		}
+		seen[note] = true
+		add(j.judgment(note).verbs)
+		walk = append(walk, note.Notes...)
+	}
 }
 
 // statements is, for each footnote that a statement holds, the count of sentences of the largest
