@@ -33,11 +33,13 @@ package main
 //     (edgeSenderRefusal).
 //   - Roles: a claim or a read names a role that works for one of the token's projects
 //     (edgeRoleRefusal), and a role held by a session of none of them reads as one no claim holds
-//     in a role read, a role send's answers and a claim's 409 (edgeScope.holder,
-//     edgeScope.namesHolder). A registration first releases the session's claims of other projects'
-//     roles, refused 503 when a release fails (edgeTopicHold.releaseRefusedRoles), renews its
-//     token's projects' roles alone (edgeTopicHold.holdsRole), and a claimant is handed the kept
-//     messages of those alone (edgeScope.roles).
+//     in a role read, a role send's answers and a claim's 409, which name neither its holder nor
+//     its claim revision (edgeScope.holder, edgeScope.namesHolder, roleHeldElsewhere); a read of a
+//     holder's session that does not answer names no holder either (edgeScope.unresolved). A
+//     registration first releases the session's claims of other projects' roles, refused 503 when
+//     a release fails (edgeTopicHold.releaseRefusedRoles), renews its token's projects' roles
+//     alone (edgeTopicHold.holdsRole), and a claimant is handed the kept messages of those alone
+//     (edgeScope.roles).
 //   - Sends: the target session's token lists one of the token's projects, else the send is
 //     answered as to a missing session (edgeScope.hides).
 //   - Reads: the session list, the registry, the session rows' roles and topics and the Legion
@@ -247,6 +249,36 @@ func (s *edgeScope) namesHolder(sessions *session.SessionRegistry, holderID stri
 	entry, _ := sessions.Lookup(holderID)
 	return s.shows(entry)
 }
+
+// unresolved is err, the error of a resolution of role's holder that failed
+// (roles.ResolveHolder), as an answer the scope holds gives it. A read of the holder's session
+// that did not answer (roles.ReadError at roles.SessionRead) names that session in its text, a
+// session the scope may not show, so the scope answers it in the listener's own words
+// (edgeHolderUnread), which name the role and no holder, and logger gets the read's own error.
+// The answer keeps the status and Retry-After the read's error gets (writeBusUnavailable), which
+// edgeHolderUnread unwraps to. Every other error names no holder, and is answered as it is. A nil
+// scope answers err as it is.
+func (s *edgeScope) unresolved(role string, err error, logger *logging.Logger) error {
+	var read *roles.ReadError
+	if s == nil || !errors.As(err, &read) || read.Step != roles.SessionRead {
+		return err
+	}
+	logger.Warn("edge listener could not read a role holder's session; its answer names no holder",
+		slog.String("role", role), slog.String("holder_session_id", read.Holder), slog.String("error", err.Error()))
+	return &edgeHolderUnread{role: role, err: err}
+}
+
+// edgeHolderUnread is the error an edge answer gives a read of a role holder's session that did
+// not answer (edgeScope.unresolved): its text names the role alone, and it unwraps to the read's
+// own error, which decides how the answer is written.
+type edgeHolderUnread struct {
+	role string
+	err  error
+}
+
+func (e *edgeHolderUnread) Error() string { return "read the holder session of role " + e.role }
+
+func (e *edgeHolderUnread) Unwrap() error { return e.err }
 
 // roleOfProjects reports whether role, named by its claim's key, works for one of projects: the
 // project its key gives (contracts.ParseRoleClaimKey) is one of them. It is the edge's rule for a

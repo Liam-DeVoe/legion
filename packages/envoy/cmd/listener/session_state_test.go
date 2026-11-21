@@ -192,7 +192,7 @@ func TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas(t *tes
 
 	for attempt := range 5 {
 		recorder := httptest.NewRecorder()
-		roleGetHandler(d).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+		roleGetHandler(d, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 		if recorder.Code != http.StatusNotFound {
 			t.Fatalf("lookup %d: status %d, body %s; want 404", attempt, recorder.Code, recorder.Body.String())
 		}

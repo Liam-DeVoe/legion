@@ -14,10 +14,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -265,6 +267,23 @@ func requireNamesNone(t *testing.T, asked, body string, names ...string) {
 	}
 }
 
+// stalledSessionGetKV is a session bucket whose read of key does not answer until released is
+// closed, as a bucket whose direct get of one entry stopped answering; every other call is the
+// bucket's own.
+type stalledSessionGetKV struct {
+	natsgo.KeyValue
+	key      string
+	released <-chan struct{}
+}
+
+func (kv stalledSessionGetKV) Get(key string) (natsgo.KeyValueEntry, error) {
+	if key != kv.key {
+		return kv.KeyValue.Get(key)
+	}
+	<-kv.released
+	return nil, errors.New("the session bucket's read of the entry never answered")
+}
+
 // The edge names a role's holder only when that holder is a session of the reader's projects
 // (edgeScope.holder): a role of the reader's project can be claimed by any session, and its claim
 // record can be written by any writer of the role bucket, so a holder outside the reader's
@@ -275,9 +294,14 @@ func requireNamesNone(t *testing.T, asked, body string, names ...string) {
 // unclaimed role, with no holder, process, state, last registration or claim revision, and its
 // text names neither session; a role send to either role names no holder in its answer; and the
 // 409 of a claim of S_pub's role, a soft one or one naming the revision 0 the read gave, names no
-// holder either. The positive control: a third PRIV role held by S_peer, a session of PRIV, is
-// answered whole to the same token, a send to it names S_peer, and so does the 409 of a soft claim
-// of it. Control: with edge mode off each answer names its holder.
+// holder either, nor the claim revision the read did not give. The positive control: a third PRIV
+// role held by S_peer, a session of PRIV, is answered whole to the same token, a send to it names
+// S_peer, and so do the 409 of a soft claim of it and the 409 of a claim naming revision 0, which
+// gives the claim's revision too. A read of a holder's session that does not answer names no
+// holder either: with the session bucket's read of S_gone stalled, GET /v1/roles/<role> and a
+// role send to S_gone's role are the 503 of a bus that did not answer, with Retry-After, in the
+// listener's own words, where the read's own error names the session it read. Control: with edge
+// mode off each answer names its holder.
 func TestAnEdgeRoleAnswerNamesNoForeignHolder(t *testing.T) {
 	rig := newEdgeRig(t)
 	const reader, peer, foreign, gone = "ses_edge_answer_reader", "ses_edge_answer_peer", "ses_edge_answer_pub", "ses_edge_answer_pub_gone"
@@ -361,9 +385,42 @@ func TestAnEdgeRoleAnswerNamesNoForeignHolder(t *testing.T) {
 			t.Errorf("POST /v1/roles/set %s: status %d %s, want 409: the role is held", body, status, answer)
 		}
 		requireNamesNone(t, "POST /v1/roles/set "+body, answer, names...)
+		var conflict map[string]json.RawMessage
+		_ = json.Unmarshal([]byte(answer), &conflict)
+		if revision, ok := conflict["claim_revision"]; ok {
+			t.Errorf("POST /v1/roles/set %s answers %s, whose claim_revision is %s: the claim of a holder outside the reader's projects is given a revision its read gave as 0", body, answer, revision)
+		}
 	}
 	if status, answer := claim(fmt.Sprintf(`{"session_id":%q,"role":%q,"soft":true}`, reader, peerRole)); status != http.StatusConflict || !strings.Contains(answer, `"holder":"`+peer+`"`) {
 		t.Errorf("a soft claim of %s: status %d %s, want the 409 naming %s, a session of PRIV", peerRole, status, answer, peer)
+	}
+	if status, answer := claim(fmt.Sprintf(`{"session_id":%q,"role":%q,"if_claim_revision":0}`, reader, peerRole)); status != http.StatusConflict ||
+		!strings.Contains(answer, `"holder":"`+peer+`"`) || !strings.Contains(answer, `"claim_revision":`+strconv.FormatUint(whole.ClaimRevision, 10)) {
+		t.Errorf("a claim of %s at revision 0: status %d %s, want the 409 naming %s, a session of PRIV, and the claim's revision %d", peerRole, status, answer, peer, whole.ClaimRevision)
+	}
+
+	// The read of S_gone's session from the bucket, which a resolution makes for a holder the
+	// listener's copy does not hold live (roleHolderSessions.Holder), stalls until the test ends.
+	released := make(chan struct{})
+	t.Cleanup(func() { close(released) })
+	swapSessionBucket(t, rig.deps.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
+		return stalledSessionGetKV{KeyValue: kv, key: gone, released: released}
+	})
+	sent := fmt.Sprintf(`{"topic":%q,"source":"agent","source_session":%q,"message":"to the role"}`, contracts.RoleTopicPrefix+"PRIV."+goneRole, reader)
+	for _, unread := range []struct{ method, path, body string }{
+		{http.MethodGet, "/v1/roles/" + goneRole, ""},
+		{http.MethodPost, "/v1/messages/publish", sent},
+	} {
+		asked := unread.method + " " + unread.path + " while the read of the holder's session does not answer"
+		recorder := rig.call(t, unread.method, token, unread.path, unread.body)
+		t.Logf("%s: status %d %s", asked, recorder.Code, strings.TrimSpace(recorder.Body.String()))
+		var refusal listenerwire.APIError
+		_ = json.Unmarshal(recorder.Body.Bytes(), &refusal)
+		if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "1" || !strings.HasPrefix(refusal.Error, busUnansweredPrefix) {
+			t.Errorf("%s: status %d, Retry-After %q, %s; want the 503 of a bus that did not answer, with Retry-After: 1",
+				asked, recorder.Code, recorder.Header().Get("Retry-After"), strings.TrimSpace(recorder.Body.String()))
+		}
+		requireNamesNone(t, asked, recorder.Body.String(), names...)
 	}
 }
 

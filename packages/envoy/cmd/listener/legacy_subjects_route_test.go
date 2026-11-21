@@ -255,7 +255,7 @@ func TestARoleIsFoundByEitherFormOfItsName(t *testing.T) {
 
 			for _, name := range []string{tc.role, tc.project + "." + tc.role} {
 				recorder := httptest.NewRecorder()
-				roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+name, nil))
+				roleGetHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+name, nil))
 				var answer struct {
 					Holder string `json:"holder"`
 				}
