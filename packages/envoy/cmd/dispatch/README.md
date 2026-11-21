@@ -5429,9 +5429,8 @@ Each item below names a path with its method and identity, then its purpose.
   a version a route writes (a named version, an upload, an edit) moves it to the agent whatever its bytes.
   Only the first move since the request was opened or handed back notifies, even when a thread reply had already left it waiting on the agent;
   a later move, while `requested_version` is already below the version it named, is `quiet: true`, `notify: false`, and reaches no follower.
-  A person's answer, resolve, decline, close or reopen of an ask writes one version, which changes only the server-owned attributes of the ask's block: `state`, and `answered_by` and `answered_at` where the ask is answered.
-  After an answer, a resolve or a decline, a standing approval carries to that version and the row keeps whoever held its turn;
-  a close withdraws the row and its version, which a settlement of the closed issue writes, carries no approval, so the approval reads stale until the reopen, whose version keeps the restored row's turn and carries it.
+  A person's answer, resolve, decline, close or reopen of an ask writes one version, changing only its block's `state`, `answered_by` and `answered_at`:
+  a standing approval carries to it and the row keeps its turn, but a close withdraws the row and its version carries no approval, until the reopen's carries it.
   A second call does one of two things, by what the row waits on:
 
   - Calling this route again while the row waits on the agent - moved, or a thread reply newer than its last hand-back holds the turn - hands it back to the human:
