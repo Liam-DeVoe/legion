@@ -1925,9 +1925,11 @@ type ApproverGrant struct {
 // the pod it enrolled acts for no person. That is a pod whose login carried no person
 // (enrollments.operator), and a person's pod that BROKER_POD_OPERATORS no longer maps to the
 // person its login carried (operatorOf). Without this a pod could take a shared agent-tier secret
-// and nobody would see it. Every signed-in person sees these, as every signed-in person already
-// lists and revokes the service login behind them, which no person approved
-// (enroll.Service.LiveCredentials, record.MayDecide). The sentinel record.AnyoneApprover and an
+// and nobody would see it. Every signed-in person the person rule shows such a grant to sees it.
+// Who may end it is a separate rule, the machine login's: a service's login every signed-in person
+// lists and revokes, which no person approved (enroll.Service.LiveCredentials, record.MayDecide),
+// while a person's pod login is the person's BROKER_POD_OPERATORS maps the account to now, and
+// theirs alone to revoke, whatever the grant names. The sentinel record.AnyoneApprover and an
 // empty login are no signed-in person and list nothing. No row that already belongs to somebody
 // moves: a grant with a person's approver, or on a person's own session (a mapped person's pod
 // included), is listed for that person and no one else, exactly as before.
@@ -1963,15 +1965,25 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	if login == "" || login == record.AnyoneApprover {
 		return nil, nil
 	}
-	// The query selects a pod's grant with no approver for everyone, whatever the enrollment's
-	// operator column says, and the loop below keeps it for a login the grant does not name only
-	// while the pod acts for no person (operatorOf): which pods do is BROKER_POD_OPERATORS', which
-	// the query cannot read. named says whether the row was selected by the login, as its
-	// approver, as the operator the enrollment's record names, or as the judge's anyone.
+	// The everyone arm takes a grant with no approver of a session a service's machine login
+	// enrolled that acts for no person: one with no operator, or a person's pod BROKER_POD_OPERATORS
+	// no longer maps to the operator its login carried (unmappedPersonPod). The mapping is the
+	// broker's setting, not a table, so it goes in as two parameters, each mapped account and the
+	// person it maps to, folded as record.CanonicalLogin folds them; the enrollment's operator is
+	// stored folded (a launcher credential's operator is written through CanonicalLogin, and an
+	// enrollment takes its credential's), and translate folds it again as fold.ASCII does, so the
+	// query and operatorOf agree on which pods are mapped, and the loop below drops no row it
+	// returns.
+	var mappedAccounts, mappedPersons []string
+	for account, person := range m.PodOperators {
+		if person = record.CanonicalLogin(person); person != "" {
+			mappedAccounts = append(mappedAccounts, account)
+			mappedPersons = append(mappedPersons, person)
+		}
+	}
 	rows, err := m.Store.Pool.Query(ctx, `select g.id, r.record_id, e.kind, e.runtime_id, coalesce(e.operator,''), e.slot, coalesce(g.approver,''), coalesce(r.decided_by,''), g.expires_at, g.created_at,
 		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}'),
-		coalesce(e.projects, '{}'), e.subject, r.reason,
-		coalesce(g.approver=$1 or e.operator=$1 or g.approver=$2, false), `+credentialColumns+`
+		coalesce(e.projects, '{}'), e.subject, r.reason, `+credentialColumns+`
 		from grants g
 		join requests r on r.id=g.request_id
 		join enrollments e on e.id=g.enrollment_id
@@ -1980,8 +1992,11 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		left join enrollments enr on enr.id=cr.enrollment_id
 		where g.revoked_at is null and `+grantUnexpired("g")+`
 		and (g.approver=$1 or e.operator=$1 or g.approver=$2
-			or (g.approver is null and c.service is not null and (e.operator is null or e.kind='pod')))
-		order by g.created_at desc`, login, record.AnyoneApprover)
+			or (g.approver is null and c.service is not null and (e.operator is null
+				or (e.kind='pod' and not exists (select 1 from unnest($3::text[], $4::text[]) as mapped(account, person)
+					where mapped.account=e.subject
+					and mapped.person=translate(e.operator, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'))))))
+		order by g.created_at desc`, login, record.AnyoneApprover, mappedAccounts, mappedPersons)
 	if err != nil {
 		return nil, err
 	}
@@ -1997,9 +2012,8 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		var g ApproverGrant
 		var s seen
 		var current, asked enrollmentRow
-		var named bool
 		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names,
-			&current.Projects, &current.Subject, &s.reason, &named,
+			&current.Projects, &current.Subject, &s.reason,
 			&asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects); err != nil {
 			return nil, err
 		}
@@ -2009,11 +2023,6 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 		}
 		s.sessionProjects = m.credentialsProjects(asked, current)
 		s.operator = m.operatorOf(current)
-		if !named && s.operator != nil {
-			// A mapped person's pod's grant, which the everyone arm selected only because the
-			// query cannot tell a mapped pod from one that acts for no person: it is its person's.
-			continue
-		}
 		// The row names the operator the revoke decides by (operatorOf), not the enrollment's
 		// record: a person's pod BROKER_POD_OPERATORS no longer maps names none, so the page
 		// offers Revoke only where the broker would take it, and an automatic grant of such a pod

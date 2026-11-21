@@ -76,13 +76,14 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 // errGrantMovedSinceJudged is revokeJudged's answer for a grant its transaction reads as held by
 // another enrollment, or as naming another approver, than the person rule judged it by
 // (grantJudged): an adoption moved it between the two reads. It writes nothing.
-var errGrantMovedSinceJudged = errors.New("the grant moved to another session after the person rule judged it")
+var errGrantMovedSinceJudged = errors.New("the grant moved to another box after the person rule judged it")
 
-// ErrGrantMoving is RevokeByApprover's answer for a grant that moved to another session between
-// the person rule and the transaction each of the revokeJudgeAttempts times it ran them
-// (errGrantMovedSinceJudged). Nothing was revoked or withheld, and the same revoke ends the grant
-// once it stays on one session; the API answers it 409 GRANT_MOVING.
-var ErrGrantMoving = errors.New("the grant kept moving to another session while the revoke ran")
+// ErrGrantMoving is RevokeByApprover's answer for a grant that moved to another box between the
+// person rule and the transaction each of the revokeJudgeAttempts times it ran them
+// (errGrantMovedSinceJudged): an adoption carries it to its session's new box, and a claim's
+// hand-over to another pod. Nothing was revoked or withheld, and the same revoke ends the grant
+// once it stays on one box; the API answers it 409 GRANT_MOVING.
+var ErrGrantMoving = errors.New("the grant kept moving to another box while the revoke ran")
 
 // revokeJudgeAttempts is how many times RevokeByApprover runs the person rule and its transaction
 // for a grant that keeps moving between them. Each move is an adoption's commit, which lands once
@@ -102,22 +103,20 @@ const revokeJudgeAttempts = 3
 // decide on the old holder. Once the lock is held, nothing moves the grant off that enrollment
 // until this transaction ends. The transaction asks for READ COMMITTED by name, so a changed
 // default level cannot hand the later reads the first statement's snapshot. Under REPEATABLE READ
-// the lock wait itself would still be granted, since an adoption only locks the rows it waits on
-// and updates none of them; the later read would then see the grant as it was before the move,
-// and only the grant's update would fail, with a serialization error (40001), so the revoke would
-// fail closed rather than decide on the old holder.
+// the later statements would share the first one's snapshot, taken before the session lock's
+// wait, and would miss what that wait committed.
 // TestARevokeWaitingOnAnAdoptionDecidesOnWhereTheAdoptionLeftTheGrant holds the named level on a
 // pool whose transactions default to REPEATABLE READ.
 //
-// An operator's withhold writes against each locked enrollment: the names bind the session, and
+// Every revoke here takes the session's lock before it locks the session's enrollments, whoever
+// revokes, since it has not yet read who the grant names (store.LockSession states the rule). An
+// operator's withhold then writes against each locked enrollment: the names bind the session, and
 // requests.Machine reads them by the enrollment's own id, so the box the session runs on must hold
-// them itself. Before it locks them, the transaction takes the session's lock (store.LockSession),
-// which an enrollment's adoption takes before it reads its predecessors (enroll.adopt). So an
-// enrollment of the session either committed before the lock statement, and is among the locked
-// ones, or is adopted after this commits, and takes the names off the boxes this wrote them on,
-// since a withheld name makes a box a predecessor whatever state it is in (adopt's withheld
-// clause). An adoption in flight when this begins holds the session's lock until it commits, and
-// this waits for it.
+// them itself. An enrollment's adoption takes the same lock before it reads its predecessors
+// (enroll.adopt), so an enrollment of the session either committed before the lock statement, and
+// is among the locked ones, or is adopted after this commits, and takes the names off the boxes
+// this wrote them on, since a withheld name makes a box a predecessor whatever state it is in
+// (adopt's withheld clause).
 func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string, judged grantJudged) error {
 	tx, err := m.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -201,10 +200,13 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 //
 // That is the spelling enroll.adopt's session rule (ofThisSession) matches a successor of the
 // same principal by, and narrower than the rule: it also matches the principals of paired
-// accounts and a pod's legacy rows. Those spellings are a pod's alone, and no pod withholds, so
-// the narrower set misses nothing a withhold needs: a service's pod acts for no person, and a
-// person's pod enrols with no session name, so it locks itself alone. For every holder whose
-// revoke withholds, a person's session, the two sets are the same, and so is the session lock's
+// accounts and a pod's legacy rows. Those spellings are a pod's alone, and no pod that names a
+// session follows a principal and withholds too, so the narrower set misses nothing a withhold
+// needs: a service's pod, the one pod that names and carries a session, acts for no person, so
+// its revoke never withholds; and a mapped person's pod, whose operator's revoke does withhold,
+// enrols with no session name and no carry principal (a person's pod login), so it locks and
+// withholds on itself alone and no session of it is adopted. For every holder that withholds
+// across a session, a person's session, the two sets are the same, and so is the session lock's
 // key, the session name and the carry principal, which adopt takes for the enrollment it makes.
 //
 // The session name and principal are read first and unlocked: both are written when the

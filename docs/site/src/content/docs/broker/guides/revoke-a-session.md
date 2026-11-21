@@ -52,7 +52,10 @@ broker refuses them any other `NOT_APPROVER` — so a grant with no approver and
 row reads **Ends with its machine login** instead: revoke the machine login that enrolled the
 session ([end a machine's login](#end-a-machines-login)), which ends every session it started,
 rather than that one row. Anyone signed in may revoke a service's login; a person's pod login only
-the person `BROKER_POD_OPERATORS` now maps the pod's account to may revoke.
+the person `BROKER_POD_OPERATORS` now maps the pod's account to may revoke. Whoever revokes, a
+grant that its session's new enrollments moved to another box each time the broker read it,
+three times in a row, is refused `409 GRANT_MOVING` with nothing revoked; run the same revoke
+again once the session stays on one box.
 
 ```console
 $ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -X POST -H @- -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/grants/<grant id>/revoke-by-approver"
