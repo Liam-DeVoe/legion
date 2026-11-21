@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -55,7 +55,7 @@ func TestAReplacedAccountsCredentialsActOnlyWhileABuildWithoutTheBindingIsInTheF
 	served := directServer(deps)
 	owner := carol
 	tokenActor := model.Actor{Kind: "session", Owner: &owner, ID: carol, Act: &model.ActorAct{TokenID: idA}}
-	brokerCaller := brokertoken.Caller{Person: carol, AccountIssuer: google, AccountSubject: "account-a", CredentialCreatedAt: time.Now().Add(-time.Hour)}
+	brokerCaller := ciphertoken.Caller{Person: carol, AccountIssuer: google, AccountSubject: "account-a", CredentialCreatedAt: time.Now().Add(-time.Hour)}
 	check := func(fleet string, held bool) {
 		t.Helper()
 		if response := agentRequest(t, handler, http.MethodGet, "/api/v1/whoami", nil, plaintext); held != (response.Code == http.StatusUnauthorized) {

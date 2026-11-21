@@ -32,7 +32,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -75,7 +75,8 @@ type AppContext struct {
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
 	// members of a Cognito pool's group, the people of a Google Workspace domain, or those people
 	// and the accounts outside the domain that a project names; the API holds a restricted
-	// member's tokens to that same rule (api.DepsInput.RestrictedAdmission). A nil SignIn is a
+	// member's tokens to that same rule (api.DepsInput.RestrictedAdmission), or, on a dev sign-in
+	// server, which has none, to AppContextOptions.DevRestrictedAdmission. A nil SignIn is a
 	// test/local header-identity or dev sign-in server, whose /auth/start and /auth/callback
 	// answer 503.
 	SignIn     *oidc.CodeFlow
@@ -139,7 +140,15 @@ type AppContextOptions struct {
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
-	Docs       docs.API
+	// EnvoyAccountTokenFile is the file holding Dispatch's own projected service-account token
+	// every Envoy listener call presents in EnvoyToken's place (cmd/dispatch:
+	// ENVOY_ACCOUNT_TOKEN_FILE); empty presents EnvoyToken.
+	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is ENVOY_ACCOUNT_GOOGLE_AUDIENCE, the audience of the Google Cloud
+	// machine's identity token every listener call presents in EnvoyToken's place instead
+	// (cmd/dispatch); empty presents none.
+	EnvoyGoogleAudience string
+	Docs                docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
@@ -157,7 +166,7 @@ type AppContextOptions struct {
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	// PrivateProjects are the keys of the projects the deployment has provisioned as private
 	// (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS), and BusProjects the writer of the private-projects
 	// record. See api.DepsInput.
@@ -209,6 +218,11 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// DevRestrictedAdmission is what a dev sign-in server (DevSignIn, which has no SignInRule) holds
+	// a restricted member's credentials to: cmd/dispatch sets identity.ListedAdmission over the
+	// access lists, the outside rule's list arm. A server with a SignInRule holds them to that rule
+	// instead, and BuildAppContext refuses this beside one, or without DevSignIn.
+	DevRestrictedAdmission identity.RestrictedAdmission
 	// BrokerRevocationsSuperseded is the process's count of revocations the secrets broker
 	// answered superseded (api.NewBrokerRevocationsSuperseded), beside Metrics; nil counts
 	// nothing. See api.DepsInput.
@@ -228,6 +242,17 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	}
 	if opts.Identity == nil {
 		return nil, fmt.Errorf("BuildAppContext: Identity required")
+	}
+	// The one rule a restricted member's credentials are held to: the sign-in rule where the
+	// server has one, and a dev sign-in server's list check where it has none.
+	var restricted identity.RestrictedAdmission
+	switch {
+	case opts.DevRestrictedAdmission != nil && (opts.SignInRule != nil || !opts.DevSignIn):
+		return nil, fmt.Errorf("BuildAppContext: DevRestrictedAdmission is a dev sign-in server's, which has no SignInRule")
+	case opts.DevRestrictedAdmission != nil:
+		restricted = opts.DevRestrictedAdmission
+	case opts.SignInRule != nil:
+		restricted = opts.SignInRule
 	}
 	var devSignInHost string
 	if opts.DevSignIn {
@@ -262,6 +287,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OutsideOrigin:          outsideOrigin,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
+		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,
+		EnvoyGoogleAudience:    opts.EnvoyGoogleAudience,
 		Docs:                   opts.Docs,
 		Embedder:               opts.Embedder,
 		Answerer:               opts.Answerer,
@@ -271,7 +298,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OIDC:                   opts.OIDC,
 		OIDCAccounts:           opts.OIDCAccounts,
 		AccessAccounts:         opts.AccessAccounts,
-		RestrictedAdmission:    opts.SignInRule,
+		RestrictedAdmission:    restricted,
 		BrokerTokens:           opts.BrokerTokens,
 		PrivateProjects:        opts.PrivateProjects,
 		BusProjects:            opts.BusProjects,
@@ -675,38 +702,43 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 
 // apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App, of a repository
 // that person may see (repositoryHidden): any other repository answers as one the App is not
-// installed on (githubapi.ProxyREST).
+// installed on, and while a project is private a read is held to its repository
+// (githubapi.ProxyREST).
 func (r *router) apiGithubRest(w http.ResponseWriter, req *http.Request) {
 	login, ok := r.login(w, req)
 	if !ok {
 		return
 	}
-	githubapi.ProxyREST(w, req, r.ctx.apiDeps.GitHub, func(owner, repo string) (bool, error) {
+	githubapi.ProxyREST(w, req, r.ctx.apiDeps.GitHub, func(owner, repo string) (githubapi.Gate, error) {
 		return r.repositoryHidden(req.Context(), login, owner+"/"+repo)
 	})
 }
 
-// repositoryHidden reports whether the person login may not see repository: the cookie's viewer
-// (access.Resolve of model.BrowserActor) fails refs.RepositoryClause. A repository is shown when an
-// issue of a project the person sees resolves to it, and otherwise only to an open viewer, when no
-// private project the person does not see owns it (refs.ProjectRepositoriesSQL: the issues that
-// resolve to it, whether open or done). It is one statement and asks GitHub nothing. A router with
-// no Store, a test's, has no viewer to resolve, so it reads the person as the closed viewer, which
-// sees no repository: every repository is hidden there.
-func (r *router) repositoryHidden(ctx context.Context, login, repository string) (bool, error) {
+// repositoryHidden is the GitHub proxy's gate for the person login and repository
+// (githubapi.Gate). Hidden is whether the cookie's viewer (access.Resolve of model.BrowserActor)
+// fails refs.RepositoryClause: a repository is shown when an issue of a project the person sees
+// resolves to it, and otherwise only to an open viewer, when no private project the person does
+// not see owns it (refs.ProjectRepositoriesSQL: the issues that resolve to it, whether open or
+// done). Held is the viewer's private flag, the one the clause's R9 arm reads: while the deployment
+// holds a private project the proxy follows no redirect off the repository, and with none it
+// follows GitHub's redirects as it always did (R9). It is one statement and asks GitHub nothing. A
+// router with no Store, a test's, has no viewer to resolve, so it reads the person as the closed
+// viewer, which sees no repository and reads as though a project were private: every repository is
+// hidden there.
+func (r *router) repositoryHidden(ctx context.Context, login, repository string) (githubapi.Gate, error) {
 	if r.ctx.Store == nil {
-		return true, nil
+		return githubapi.Gate{Hidden: true, Held: true}, nil
 	}
 	viewer, err := access.Resolve(ctx, r.ctx.Store.Pool, model.BrowserActor(login))
 	if err != nil {
-		return false, err
+		return githubapi.Gate{}, err
 	}
 	var visible bool
 	if err := r.ctx.Store.Pool.QueryRow(ctx, repositoryVisibleQuery,
 		refs.VisibilityArg(model.Actor{Viewer: &viewer}), repository).Scan(&visible); err != nil {
-		return false, fmt.Errorf("read whether %s sees %s: %w", login, repository, err)
+		return githubapi.Gate{}, fmt.Errorf("read whether %s sees %s: %w", login, repository, err)
 	}
-	return !visible, nil
+	return githubapi.Gate{Hidden: !visible, Held: viewer.AnyPrivate}, nil
 }
 
 // repositoryVisibleQuery is refs.RepositoryClause over the repository bound at $2 for the viewer

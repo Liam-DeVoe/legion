@@ -12,8 +12,8 @@ import (
 
 	gws "github.com/gorilla/websocket"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -29,7 +29,7 @@ import (
 func (s *outsideSignIn) approveRelayed(t *testing.T, subject string) string {
 	t.Helper()
 	code, generation := "ABCD-1234", s.sessionGeneration(t, reassignedEmail)
-	decision := agentsecrets.Decision{Approver: reassignedEmail, Code: &code, ApproverSessionGeneration: &generation}
+	decision := cipher.Decision{Approver: reassignedEmail, Code: &code, ApproverSessionGeneration: &generation}
 	if subject != "" {
 		decision.ApproverIssuer, decision.ApproverSubject = s.pool.URL(), subject
 	}
@@ -66,7 +66,7 @@ func TestOutsideSignInABrokerTokenOfAnAccountDispatchDoesNotRecordApprovesNothin
 	broker := newFakeBroker(t)
 	handler, background := s.brokerRouter(t, broker)
 	s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
-	box := brokertokentest.NewCaller(t)
+	box := ciphertokentest.NewCaller(t)
 	const token = "token-of-the-second-holders-sign-in"
 	broker.holds(&fakeCredential{id: "signin-second", person: reassignedEmail, subject: secondHolder, signIn: true, tokens: []string{token}}, box)
 
@@ -102,7 +102,7 @@ func TestOutsideSignInTheReplacedAccountsBrokerTokenEndsWithTheNewAccountsSignIn
 	broker := newFakeBroker(t)
 	handler, _ := s.brokerRouter(t, broker)
 	s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
-	machine, box := brokertokentest.NewCaller(t), brokertokentest.NewCaller(t)
+	machine, box := ciphertokentest.NewCaller(t), ciphertokentest.NewCaller(t)
 	const replacedToken, holderToken = "token-of-the-first-holders-machine", "token-of-the-second-holders-sign-in"
 	broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, subject: firstHolder, tokens: []string{replacedToken}}, machine)
 	broker.holds(&fakeCredential{id: "signin-second", person: reassignedEmail, subject: secondHolder, signIn: true, tokens: []string{holderToken}}, box)
@@ -171,7 +171,7 @@ func TestOutsideSignInABrokerTokensHeldRequestActsOnNothingOnceAnotherAccountSig
 			handler, _ := s.brokerRouter(t, broker)
 			s.workspaceSignIn(t, handler, reassignedEmail, firstHolder)
 			storetest.TestOnlyClearAccount(t, s.database, reassignedEmail)
-			machine := brokertokentest.NewCaller(t)
+			machine := ciphertokentest.NewCaller(t)
 			const token = "token-of-the-first-holders-machine"
 			broker.holds(&fakeCredential{id: "login-first", person: reassignedEmail, subject: firstHolder, tokens: []string{token}}, machine)
 
@@ -234,13 +234,13 @@ func TestOutsideSignInABrokerTokenRecordingNoAccountDispatchNamesIsHeldToWhenItW
 			if err := s.database.Pool.QueryRow(ctx, `select sub_recorded_at from people where email = $1`, reassignedEmail).Scan(&recordedAt); err != nil {
 				t.Fatalf("read when the first holder's sign-in recorded its account: %v", err)
 			}
-			credential := func(id string, createdAt time.Time) (*brokertokentest.Caller, string) {
-				machine := brokertokentest.NewCaller(t)
+			credential := func(id string, createdAt time.Time) (*ciphertokentest.Caller, string) {
+				machine := ciphertokentest.NewCaller(t)
 				token := "token-of-" + id
 				broker.holds(&fakeCredential{id: id, person: reassignedEmail, subject: c.subject, issuer: c.issuer, tokens: []string{token}, createdAt: createdAt}, machine)
 				return machine, token
 			}
-			refuse := func(when string, machine *brokertokentest.Caller, token string) {
+			refuse := func(when string, machine *ciphertokentest.Caller, token string) {
 				t.Helper()
 				requireBrokerTokenRecordsNoAccount(t, "GET /api/v1/whoami with a broker token whose credential "+c.credentialsWhose+", "+when,
 					brokerTokenRequest(t, handler, machine, http.MethodGet, "/api/v1/whoami", "", token))

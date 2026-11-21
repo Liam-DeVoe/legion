@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -19,7 +19,7 @@ import (
 // under them - only the broker can end. So the sign-in records the debt in its transaction, naming
 // the replaced account by its issuer and `sub` and the account that took the address by its `sub`
 // (store.BrokerRevocations, migration 20261116232217), and this loop pays it after the commit, in
-// whichever process a pass runs, with one call (agentsecrets.Client.RevokePersonSubject), until the
+// whichever process a pass runs, with one call (cipher.Client.RevokePersonSubject), until the
 // broker confirms: a process that dies between the commit and the call, or a broker that does not
 // answer, leaves the revocation owed for the next pass.
 //
@@ -60,17 +60,14 @@ const brokerRevocationRetry = 30 * time.Second
 // Claiming more would starve the rows the window skipped: a claim stamps every row it takes, and
 // the next claim orders by tried_at, the same moment for all of them, then recorded_at, so a pass
 // would send the same first rows again each time and never reach the others. Production's client
-// bounds a call at five seconds (agentsecrets.New), which makes this 5; a client bounded at
+// bounds a call at five seconds (cipher.New), which makes this 5; a client bounded at
 // nothing, or at the retry window or more, claims one row a pass, since no batch size is safe
 // under a call the client never gives up on.
 func brokerRevocationBatch(timeout time.Duration) int {
 	if timeout <= 0 || timeout >= brokerRevocationRetry {
 		return 1
 	}
-	if batch := int((brokerRevocationRetry - timeout) / timeout); batch > 1 {
-		return batch
-	}
-	return 1
+	return max(1, int((brokerRevocationRetry-timeout)/timeout))
 }
 
 // brokerRevocationMinGap is the least time between two passes' starts, whatever woke them
@@ -91,7 +88,7 @@ func RunBrokerRevocations(ctx context.Context, pass func(context.Context) time.T
 // revokeOwedBrokerCredentials is one pass of the loop: it claims up to
 // brokerRevocationBatch(the broker client's own bound on a call) owed revocations, at most one of
 // an address, and for each tells the broker the replaced account no
-// longer holds the address (agentsecrets.Client.RevokePersonSubject), with the address's session
+// longer holds the address (cipher.Client.RevokePersonSubject), with the address's session
 // generation the replacement left (session_generation), by which the broker refuses an approve
 // Dispatch checked before the replacement. One the broker confirms, by answering 200 revoked, is
 // settled at the generation the claim read, logged at WARN with what the broker ended. One the
@@ -167,8 +164,8 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 			// database recreated or restored without the broker's, or a generation written at the
 			// broker by hand - and the replaced account's broker credentials were not ended. So the
 			// revocation stays owed, where the owed gauges show it, the ERROR line names the
-			// address's generation now beside the two the broker compared, and the runbook
-			// ("Signing people in") gives the recovery. The client answers "superseded" only with
+			// address's generation now beside the two the broker compared, and the runbook's
+			// After a restore page gives the recovery. The client answers "superseded" only with
 			// superseded_by; the generation sent is boxed against a broker that supersedes a revoke
 			// that carried none.
 			var sent any
@@ -188,7 +185,7 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 				current = generation
 			}
 			s.deps.BrokerRevocationsSuperseded.Inc()
-			slog.Error("dispatch: the secrets broker answered a revocation superseded: Dispatch's session generation for the address is below the one the broker recorded, so the replaced account's broker credentials were not ended; the revocation stays owed until an operator settles it, and a lone Dispatch restore requires the runbook's reset before that (running-dispatch.md, \"Signing people in\")",
+			slog.Error("dispatch: the secrets broker answered a revocation superseded: Dispatch's session generation for the address is below the one the broker recorded, so the replaced account's broker credentials were not ended; the revocation stays owed until an operator settles it, and a lone Dispatch restore requires the runbook's reset before that (after-a-restore.md)",
 				"email", revocation.Email, "issuer", revocation.Issuer, "subject", revocation.Subject,
 				"session_generation", sent, "superseded_by", *revoked.SupersededBy, "address_session_generation", current,
 				"still_owed_unread", err != nil, "retry_in", brokerRevocationRetry)
@@ -264,9 +261,9 @@ func RegisterBrokerRevocationMetrics(registry *metrics.Registry, pool *store.Poo
 // superseded this process's loop heard, for a revocation it then leaves owed and logs at ERROR
 // (revokeOwedBrokerCredentials), once a claim, so a revocation left that way adds one each retry.
 // Any count above zero means Dispatch's session generation for an address is below the broker's,
-// and a replaced account's broker credentials were not ended; the runbook ("Signing people in")
+// and a replaced account's broker credentials were not ended; the runbook's After a restore page
 // gives the recovery, a reset of every person's sessions, tokens and broker credentials.
 func NewBrokerRevocationsSuperseded(registry *metrics.Registry) *metrics.Counter {
 	return registry.NewCounter("envoy_dispatch_broker_revocations_superseded_total",
-		"Revocation calls the secrets broker answered superseded, which Dispatch leaves owed: Dispatch's session generation for the address is below the broker's, and the replaced account's broker credentials stay live until the runbook's reset after a lone restore ends them (running-dispatch.md, Signing people in)")
+		"Revocation calls the secrets broker answered superseded, which Dispatch leaves owed: Dispatch's session generation for the address is below the broker's, and the replaced account's broker credentials stay live until the runbook's reset after a lone restore ends them (after-a-restore.md)")
 }

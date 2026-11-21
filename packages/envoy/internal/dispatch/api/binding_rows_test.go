@@ -12,7 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -40,9 +40,9 @@ func TestAnEntryTokenActsWhateverItsPersonsAccount(t *testing.T) {
 	const person = "dana@example.com"
 	ctx := context.Background()
 	people := store.NewPgPeopleStore(rig.database.Pool, testSigningKey, nil)
-	entry := brokertoken.Caller{Person: person, ProjectScope: brokertoken.ProjectScopeNamed, Projects: []string{"ACC"}}
-	own := brokertoken.Caller{Person: person, ProjectScope: brokertoken.ProjectScopePerson}
-	acts := func(when string, caller brokertoken.Caller) {
+	entry := ciphertoken.Caller{Person: person, ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{"ACC"}}
+	own := ciphertoken.Caller{Person: person, ProjectScope: ciphertoken.ProjectScopePerson}
+	acts := func(when string, caller ciphertoken.Caller) {
 		t.Helper()
 		if _, err := served.brokerPersonAdmitted(ctx, caller); err != nil {
 			t.Errorf("%s: %v, want it admitted", when, err)
@@ -84,9 +84,9 @@ func TestAnAccountOfAnotherIssuerIsRefusedOnceTheAddressRecordsOne(t *testing.T)
 		t.Fatal(err)
 	}
 	late := recordedAt.Add(10 * time.Minute)
-	foreign := brokertoken.Caller{Person: person, ProjectScope: brokertoken.ProjectScopePerson,
+	foreign := ciphertoken.Caller{Person: person, ProjectScope: ciphertoken.ProjectScopePerson,
 		AccountIssuer: "https://issuer.example", AccountSubject: "account-a", CredentialCreatedAt: late}
-	none := brokertoken.Caller{Person: person, ProjectScope: brokertoken.ProjectScopePerson, CredentialCreatedAt: late}
+	none := ciphertoken.Caller{Person: person, ProjectScope: ciphertoken.ProjectScopePerson, CredentialCreatedAt: late}
 	if _, err := served.brokerPersonAdmitted(ctx, foreign); err != nil {
 		t.Fatalf("a token of another issuer while no account is recorded: %v, want it admitted", err)
 	}
