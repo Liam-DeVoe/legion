@@ -501,14 +501,16 @@ func (c *Client) PrivateProjectsFresh(ctx context.Context) ([]PrivateProject, er
 // PrivateProjectsFresh answer that lists one. It is never cleared, and a restart starts it false.
 func (c *Client) SawPrivate() bool { return c.sawPrivate.Load() }
 
-// readPrivateProjects asks Dispatch's private-projects route once. The answer is refused when any
-// of its objects holds one key twice (duplicateKey), and then decoded with projects held raw, and
-// refused unless that value opens a JSON array before the array itself is decoded: a missing key
-// and a null would otherwise decode to the same nil a [] does, and a list read short is the one
-// answer no caller can tell from the truth.
+// readPrivateProjects asks Dispatch's private-projects route once. The answer is decoded with
+// projects held raw, and refused unless that value opens a JSON array before the array itself is
+// decoded: a missing key and a null would otherwise decode to the same nil a [] does, and a list
+// read short is the one answer no caller can tell from the truth. An answer holding one key twice
+// in an object, "projects" or an entry's "slack_channels", is get's refusal (duplicateKey).
 func (c *Client) readPrivateProjects(ctx context.Context) ([]PrivateProject, error) {
-	var body json.RawMessage
-	status, err := c.get(ctx, privateProjectsPath, nil, maxPrivateProjectsBytes, &body)
+	var wire struct {
+		Projects json.RawMessage `json:"projects"`
+	}
+	status, err := c.get(ctx, privateProjectsPath, nil, maxPrivateProjectsBytes, &wire)
 	if err != nil {
 		return nil, err
 	}
@@ -516,19 +518,6 @@ func (c *Client) readPrivateProjects(ctx context.Context) ([]PrivateProject, err
 		// get answers a 404 carrying PROJECT_NOT_FOUND as a status, the project route's answer
 		// about one project; this route names no project, so that 404 is no list either.
 		return nil, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q, which is no list of private projects", privateProjectsPath, status, projectNotFoundCode)
-	}
-	// encoding/json keeps the last of two members that share a key, so an answer carrying projects
-	// twice, or an entry carrying slack_channels twice, would read as whichever came last: [] and
-	// no private project, or a project with no channel to fence. Such an answer has two readings,
-	// and is no list.
-	if key, err := duplicateKey(body); err != nil || key != "" {
-		return nil, fmt.Errorf("projectaccess: dispatch's answer to %s holds the key %q twice in one object, so it is no list of private projects (%v)", privateProjectsPath, key, err)
-	}
-	var wire struct {
-		Projects json.RawMessage `json:"projects"`
-	}
-	if err := json.Unmarshal(body, &wire); err != nil {
-		return nil, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", privateProjectsPath, err)
 	}
 	raw := bytes.TrimSpace(wire.Projects)
 	switch {
@@ -655,6 +644,9 @@ func (c *Client) sweepLocked() {
 // returned as its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code
 // Dispatch's project route answers a project it does not hold with; any other 404 (a Dispatch
 // that does not serve the route, a wrong path behind an ingress) is a failure naming its code.
+// A 200 whose body holds one key twice in an object, at any depth, is an error too (duplicateKey):
+// encoding/json keeps the last of the two, so a project answer carrying "visibility" as "private"
+// and then "public" would read as public, and a list carrying "projects" twice as its last one.
 // Every other status, a transport failure and a body it could not read or decode are errors naming
 // what failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, limit int64, into any) (int, error) {
@@ -702,6 +694,9 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, limit i
 	}
 	if err := json.Unmarshal(body, into); err != nil {
 		return 0, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", path, err)
+	}
+	if key, err := duplicateKey(body); err != nil || key != "" {
+		return 0, fmt.Errorf("projectaccess: dispatch's answer to %s holds the key %q twice in one object, so it has two readings and is no answer (%v)", path, key, err)
 	}
 	return http.StatusOK, nil
 }

@@ -371,6 +371,41 @@ func TestAccessRefusesAVisibilityItDoesNotKnow(t *testing.T) {
 	}
 }
 
+// TestAccessRefusesAnAnswerThatHoldsAKeyTwice: a project answer carrying "visibility" twice, as
+// "private" and then "public", in the same case or another, has two readings, and encoding/json
+// would keep the last and read a private project as public. Access answers an error that is no
+// refusal of the broker and no "project not found", beside no answer, and keeps nothing, so the
+// next question asks Dispatch again.
+func TestAccessRefusesAnAnswerThatHoldsAKeyTwice(t *testing.T) {
+	for _, body := range []string{
+		`{"project":"PRIV","visibility":"private","owner":"carol@example.com","member_kind":"none","visible":false,"slack_channels":[],"visibility":"public"}`,
+		`{"project":"PRIV","visibility":"private","owner":"carol@example.com","member_kind":"none","visible":false,"slack_channels":[],"VISIBILITY":"public"}`,
+	} {
+		var mu sync.Mutex
+		calls := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+		t.Cleanup(server.Close)
+		client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+		for call := 1; call <= 2; call++ {
+			answer, err := client.Access(t.Context(), "PRIV", "")
+			if err == nil || errors.Is(err, projectaccess.ErrBrokerRefused) || errors.Is(err, projectaccess.ErrProjectNotFound) || answer.Visibility != "" {
+				t.Errorf("Access call %d of %s = %+v, %v; want no answer and an error that is neither ErrBrokerRefused nor ErrProjectNotFound", call, body, answer, err)
+			}
+		}
+		mu.Lock()
+		if calls != 2 {
+			t.Errorf("Dispatch was asked %d times for two questions of %s; want 2: an answer with two readings is never kept", calls, body)
+		}
+		mu.Unlock()
+	}
+}
+
 // TestAccessRefusesAnOversizedAnswer: an answer past 64 KiB is not Dispatch's and is refused
 // rather than read.
 func TestAccessRefusesAnOversizedAnswer(t *testing.T) {
