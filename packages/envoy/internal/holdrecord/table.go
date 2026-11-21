@@ -52,10 +52,19 @@ type rules struct {
 	// done prove's record before the abort releases is the hold's command's (t-10's), not this
 	// table's. After a failed re-prove on a disk that moved, the operator restores that target back
 	// onto the done prove's disk, a restore this table already admits, and then runs abort; if the
-	// proven disk is gone, an operator ends the hold by hand by the documented route, recorded as
-	// such. The residual: on this path clients reach the restored and proven hub before its census,
-	// until a streams-census hold runs clean.
+	// proven disk is gone, abort's check writes a stop naming it, and AbortAfterOwnStop's path
+	// follows. The residual: on this path clients reach the restored and proven hub before its
+	// census, until a streams-census hold runs clean.
 	HubAbortAfterStop bool
+	// AbortAfterOwnStop: hub-restore's hold abort is admitted again after its own stop, whenever
+	// that stop was written, and reruns the reconcile for the stores that stop named; its own
+	// pending intent, a rerun after a crash, admits it too, since the stop that admitted the
+	// crashed run is no longer its latest entry. An abort whose disk check found the done prove's
+	// disk gone (a 404 by name, or that name now has another numeric id) writes a stop naming the
+	// disk; that stop admits a restore onto another disk and a new hold prove there, which this
+	// table already admits before completion: the new prove's done opens a new epoch, abort's check
+	// reads the newest done prove, and abort is admitted again after its own stop.
+	AbortAfterOwnStop bool
 }
 
 // currentRules are the hold's rules as its design stands: the frozen model's v62 (every fix, with
@@ -63,7 +72,7 @@ type rules struct {
 // BackupCommand and HubAbortAfterStop.
 var currentRules = rules{ProveEpochs: true, AfterCompleteStrict: true, SelRecFinalRepeatable: true, RestoreKeyInTable: true,
 	Serialize: true, StopEntries: true, SetCommand: true, ConvertStoppable: true, WayOut: true, EveryCommandStoppable: true,
-	EndIsFinal: true, BackupCommand: true, HubAbortAfterStop: true}
+	EndIsFinal: true, BackupCommand: true, HubAbortAfterStop: true, AbortAfterOwnStop: true}
 
 var current = tableFor(currentRules)
 
@@ -92,6 +101,9 @@ type entry struct {
 	// hold prove, some command's latest entry is a stop: hub-restore's hold abort under
 	// HubAbortAfterStop.
 	stopLiftsExcludes bool
+	// ownStopLifts is a stopLiftsExcludes command whose own latest stop, whenever written, or its
+	// own pending intent lifts its excludes too: hub-restore's hold abort under AbortAfterOwnStop.
+	ownStopLifts bool
 }
 
 // table is one rule set's workflow table and rules.
@@ -125,7 +137,7 @@ func tableFor(r rules) table {
 		entry{name: "streams census", requires: []string{CommandProve}, final: true, epochal: r.ProveEpochs, repeatable: r.ProveEpochs,
 			stoppable: stop},
 		entry{name: CommandAbort, excludes: []string{CommandProve}, final: true, stoppable: stop, skipsSet: true,
-			stopLiftsExcludes: r.HubAbortAfterStop})
+			stopLiftsExcludes: r.HubAbortAfterStop, ownStopLifts: r.AbortAfterOwnStop})
 	buckets := func(name string) []entry { return []entry{{name: name, final: true, stoppable: stop && r.WayOut}} }
 	recreate, restore := buckets("buckets recreate"), buckets("buckets restore")
 	if r.BackupCommand {
@@ -265,7 +277,7 @@ func (t table) Decide(d Done, req modelRequest) error {
 		return wrap(ErrAlreadyDone, "the record is complete")
 	}
 	for _, x := range e.excludes {
-		if e.stopLiftsExcludes && stoppedSinceProve(d) {
+		if e.stopLiftsExcludes && (stoppedSinceProve(d) || (e.ownStopLifts && (latestIsStop(d.Ops, c) || slices.Contains(pending(d), c)))) {
 			break
 		}
 		if hasDone(d.Ops, x) {

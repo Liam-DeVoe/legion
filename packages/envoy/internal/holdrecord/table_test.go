@@ -195,10 +195,9 @@ func TestDecideRefusesInItsDocumentedOrder(t *testing.T) {
 // In hub-restore, after a done hold prove, hold abort is admitted once a command's latest entry
 // after that prove is a stop, as in every other workflow, and hold release stays refused:
 // hub-restore's completion includes its clean census. With no stop since the prove, a done prove
-// still excludes abort, and abort's own stop from before the prove counts for nothing: the model
-// found a hold stranded when it did (abort admitted on it, crashed, its rerun then excluded). Fails
-// if the exclusion stands after a stop: abort answers ErrExcluded; and if any stop lifts it: the
-// stale stop admits abort.
+// still excludes abort, and another command's stop from before the latest prove counts for
+// nothing. Fails if the exclusion stands after a stop: abort answers ErrExcluded; and if any stop
+// lifts it: the census's stop from before a second prove admits abort.
 func TestHubRestoreAbortFollowsAStopAfterAProve(t *testing.T) {
 	op := func(c, s string) Operation { return Operation{Command: c, State: s} }
 	proved := []Operation{op(CommandSet, stateIntent), op(CommandSet, stateDone), op(CommandProve, stateIntent), op(CommandProve, stateDone)}
@@ -213,9 +212,34 @@ func TestHubRestoreAbortFollowsAStopAfterAProve(t *testing.T) {
 	if err := Decide(Done{Workflow: WorkflowHubRestore, Ops: proved}, Request{Command: CommandAbort}); !errors.Is(err, ErrExcluded) {
 		t.Errorf("abort after a done prove and no stop answered %v, want ErrExcluded", err)
 	}
-	stale := Done{Workflow: WorkflowHubRestore, Ops: []Operation{op(CommandSet, stateIntent), op(CommandSet, stateDone),
-		op(CommandAbort, stateIntent), op(CommandAbort, stateStop), op(CommandProve, stateIntent), op(CommandProve, stateDone)}}
-	if err := Decide(stale, Request{Command: CommandAbort}); !errors.Is(err, ErrExcluded) {
-		t.Errorf("abort after its own stop from before a done prove answered %v, want ErrExcluded", err)
+	reproved := Done{Workflow: WorkflowHubRestore, Ops: append(append([]Operation{}, stopped.Ops...), op(CommandProve, stateIntent),
+		op(CommandProve, stateDone))}
+	if err := Decide(reproved, Request{Command: CommandAbort}); !errors.Is(err, ErrExcluded) {
+		t.Errorf("abort after the census's stop and a later done prove answered %v, want ErrExcluded", err)
+	}
+}
+
+// Rule (1) and rule (2) of the hold's design (V67r3-1), as the table admits them. An abort whose
+// disk check found the done prove's disk gone writes a stop naming it; after that stop a new hold
+// prove is admitted (restored onto another disk), and its done opens a new epoch that Proven reads;
+// and abort is admitted again after its own stop, whether written before that new prove or after.
+// Fails if abort's own stop does not lift a done prove's exclusion: the abort after the new prove
+// answers ErrExcluded.
+func TestHubRestoreAbortReturnsAfterItsOwnStop(t *testing.T) {
+	op := func(c, s string) Operation { return Operation{Command: c, State: s} }
+	gone := Operation{Command: CommandAbort, State: stateStop, Outputs: map[string]string{stopLeftKey: LeftUnchanged,
+		"reason": "the done prove's disk of A is gone: disk-7 answers 404"}}
+	d := Done{Workflow: WorkflowHubRestore, Ops: []Operation{op(CommandSet, stateIntent), op(CommandSet, stateDone),
+		op(CommandProve, stateIntent), {Command: CommandProve, State: stateDone, Outputs: map[string]string{"disk_id.A": "7"}},
+		op(CommandAbort, stateIntent), gone}}
+	if err := Decide(d, Request{Command: CommandProve}); err != nil {
+		t.Fatalf("a new prove after abort's gone-disk stop answered %v, want admitted", err)
+	}
+	d.Ops = append(d.Ops, op(CommandProve, stateIntent), Operation{Command: CommandProve, State: stateDone, Outputs: map[string]string{"disk_id.A": "9"}})
+	if p, ok := Proven(d); !ok || p.DiskIDs["A"] != "9" {
+		t.Fatalf("after the new prove Proven answers %v, %v; want the new epoch's disk 9", p.DiskIDs, ok)
+	}
+	if err := Decide(d, Request{Command: CommandAbort}); err != nil {
+		t.Errorf("abort after its own stop and the new prove answered %v, want admitted", err)
 	}
 }

@@ -4070,12 +4070,15 @@ stopped and no other command's intent is pending; `hold release` follows only a 
 one whose stops all left nothing changed. In `hub-restore`, before a done `hold prove`, `hold abort`
 passes its disk check only with each target's disk its step-1 one. After a done prove, `hold abort`
 is admitted only once the pending command's latest entry is a `stop` (a census that cannot read a
-stream, say), and is refused otherwise; it then releases the row, its entry carrying the stop's
-record of what was left, after `envoy-infra hold abort` compares each disk with the done prove's
-record. After a failed re-prove on a disk that moved, restore that target back onto the done
-prove's disk, then run `hold abort`. If the proven disk is gone, an operator ends the hold by hand
-by the documented route, and the hold's record says so. The residual: on this path clients reach
-the restored and proven hub before its census, until a `streams-census` hold runs clean.
+stream, say), or once its own latest entry is a stop, and is refused otherwise; it then releases
+the row, its entry carrying the stop's record of what was left, after `envoy-infra hold abort`
+compares each disk with the done prove's record. After a failed re-prove on a disk that moved,
+restore that target back onto the done prove's disk, then run `hold abort`. If the proven disk is
+gone (a 404 by name, or that name now has another numeric id), `hold abort` writes a stop naming
+it: restore that target onto another disk, run `hold prove` there, and run `hold abort` again,
+which reruns the reconcile for the stores its stop named and releases over the new prove's disks.
+The residual: on this path clients reach the restored and proven hub before its census, until a
+`streams-census` hold runs clean.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the

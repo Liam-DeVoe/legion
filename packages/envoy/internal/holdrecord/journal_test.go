@@ -831,6 +831,46 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 	})
 
+	// Rules (1) and (2): after a failed re-prove, abort's disk check finds the done prove's disk
+	// gone and its stop names it; the operator restores onto another disk and proves it, and abort,
+	// admitted again after its own stop, releases the row over the new epoch's disk.
+	t.Run("hub-restore: an abort that finds the proven disk gone stops, and after a new prove runs again", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-gone", holdrecord.WorkflowHubRestore, twoDisks)
+		run(t, c, "h-gone", cmd(holdrecord.CommandProve), map[string]string{"restored.A": "disk-7"}, map[string]string{"disk.A": "disk-7", "disk_id.A": "7"})
+		if _, err := c.Admit(ctx, "h-gone", cmd(holdrecord.CommandProve), map[string]string{"restored.A": "disk-8"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-gone", holdrecord.CommandProve, "disk-8 is not attached", holdrecord.LeftUnchanged); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Admit(ctx, "h-gone", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("abort after the failed re-prove: %v", err)
+		}
+		if err := c.AppendStopLeft(ctx, "h-gone", holdrecord.CommandAbort, "the done prove's disk of A is gone: disk-7 answers 404", holdrecord.LeftUnchanged); err != nil {
+			t.Fatalf("abort's gone-disk stop: %v", err)
+		}
+		run(t, c, "h-gone", cmd(holdrecord.CommandProve), map[string]string{"restored.A": "disk-9"}, map[string]string{"disk.A": "disk-9", "disk_id.A": "9"})
+		if _, err := c.Admit(ctx, "h-gone", cmd(holdrecord.CommandAbort), nil); err != nil {
+			t.Fatalf("abort after its own stop and the new prove: %v", err)
+		}
+		d, _ := journal(t, c, "h-gone")
+		if p, _ := holdrecord.Proven(d); p.DiskIDs["A"] != "9" {
+			t.Fatalf("the abort reads the done prove's disk %q, want the new epoch's 9", p.DiskIDs["A"])
+		}
+		current := row(t, c)
+		if _, err := c.MoveRow(ctx, current.Gen, natsgrant.OperatorPhaseReleased, "h-gone", "aborted over the new epoch's disk"); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.AppendDone(ctx, "h-gone", holdrecord.CommandAbort, nil); err != nil {
+			t.Fatal(err)
+		}
+		if d, _ := journal(t, c, "h-gone"); !d.Complete {
+			t.Fatal("hold abort's done entry did not complete the record")
+		}
+	})
+
 	t.Run("a pending convert makes every other command busy until its rerun finishes", func(t *testing.T) {
 		r := newRig(t)
 		c := r.client(t)

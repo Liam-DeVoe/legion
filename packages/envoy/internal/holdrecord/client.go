@@ -25,8 +25,10 @@
 // over the proven disks, which the hold's command compares with the prove's record (t-10's check):
 // clients then reach the restored and proven hub before its census, until a streams-census hold
 // runs clean. After a failed re-prove on a disk that moved, the operator restores that target back
-// onto the done prove's disk before running abort; if the proven disk is gone, an operator ends the
-// hold by hand by the documented route, recorded as such. The workflow table and Decide are the
+// onto the done prove's disk before running abort. If the proven disk is gone, abort's check writes
+// a stop naming it; the operator restores onto another disk and runs a new prove, and abort,
+// admitted again after its own stop, releases over that new epoch's disks. The workflow table and
+// Decide are the
 // ones model_test.go explores: every workflow from its true start, with crashes between any two
 // writes, two operator processes, restores landing outside the hold, the row lost and restored,
 // and any command failing for good after its intent, in hub-restore the census and a prove after a
