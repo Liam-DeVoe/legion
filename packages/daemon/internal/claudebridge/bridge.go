@@ -796,7 +796,7 @@ func (b *bridge) assistant(message json.RawMessage, subagent bool) {
 // whose text is the re-emitted user message's. The bridge's own user message (the seed) is no
 // delivery sent, so its echo answers none. The text of the task whose turn is running is read
 // first: its echo, and no other, is Claude Code having taken that text (taskRun.taken), so an Envoy
-// delivery's echo in the turn says nothing of the task's.
+// delivery's echo in the turn says nothing of the task's. That echo is logged, once a turn.
 func (b *bridge) echoed(message json.RawMessage) {
 	var texts []string
 	for _, block := range blocksOf(message) {
@@ -807,6 +807,7 @@ func (b *bridge) echoed(message json.RawMessage) {
 	text := strings.Join(texts, "\n")
 	if b.run.task != 0 && !b.run.taken && text == b.run.text {
 		b.run.taken = true
+		b.log.Printf("Claude Code took task %d's text", b.run.task)
 		return
 	}
 	for i, d := range b.taking {

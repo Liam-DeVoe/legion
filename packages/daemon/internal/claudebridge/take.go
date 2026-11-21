@@ -368,6 +368,16 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 	b.idle()
 }
 
+// runningOwn is whether the held value names the task whose turn is running and whose text that
+// turn took: Claude Code re-emitted it (taskRun.taken). Only such a turn's end holds the number
+// finished (runEnded). A turn whose text Claude Code never re-emitted is reported as no task's
+// (result), so its end marks nothing finished, and the bridge takes a newer revision of that
+// number the moment the turn ends. So the number is the running task's own only once the turn
+// took its text.
+func (b *bridge) runningOwn() bool {
+	return b.inRun && b.run.taken && b.task != nil && b.task.number == b.run.task
+}
+
 // takePending is whether the claim's take holds a task: an owed value not yet asked about — before
 // the ready line, or while Claude Code is in a turn or seeding —, a take being sent, one accepted
 // whose task has not started its turn yet, or a take of the held value refused in-turn during the
@@ -376,22 +386,25 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 // first three do not: it is set only while a turn runs and cleared as that turn ends (runEnded),
 // and deliver and idle read this only while no turn runs.
 //
-// A value naming the task whose turn is running, which the daemon can write again during that
-// turn, is not an unasked value here: the bridge takes nothing for it, since that turn's end holds
-// the number finished (runEnded), and pendingAnswer does not name it waiting either. That changes
-// neither deliver nor idle: the term differs only while a turn runs, and neither reads this then.
+// The daemon can write the running task's own number again during its turn. Once that turn has
+// taken the task's text (runningOwn), such a value is not an unasked value here: the bridge takes
+// nothing for it, since that turn's end holds the number finished (runEnded). In a turn whose text
+// Claude Code dropped, the value counts as unasked, as in a turn of no task: that turn's end marks
+// nothing finished, and the bridge takes the value as soon as the turn ends. That changes neither
+// deliver nor idle: the term differs only while a turn runs, and neither reads this then.
 func (b *bridge) takePending() bool {
-	runningOwn := b.inRun && b.task != nil && b.task.number == b.run.task
-	return (b.unasked() && !runningOwn) || b.asking != nil || b.held != nil || b.refusedInTurn
+	return (b.unasked() && !b.runningOwn()) || b.asking != nil || b.held != nil || b.refusedInTurn
 }
 
-// pendingAnswer is the answer to a take-pending query: whether the take is pending, and, while
-// Claude Code is in a turn, the number of the task the held value owes the claim where the turn is
-// not that task's and the bridge holds no accepted text of it — asked about or not, the turn did
-// not take it —, 0 otherwise.
+// pendingAnswer is the answer to a take-pending query: whether the take is pending (takePending),
+// and which task waits. While Claude Code is in a turn, Waiting is the number of the task the held
+// value owes the claim, asked about or not, unless the turn is that task's own and took its text
+// (runningOwn), or the bridge holds the task's accepted text for when the turn ends (held). A turn
+// of the task whose text Claude Code dropped took nothing, so in it the answer names the task
+// waiting, as in a turn of no task. Out of a turn, and in those two cases, Waiting is 0.
 func (b *bridge) pendingAnswer() *TakePendingAnswer {
 	answer := &TakePendingAnswer{Pending: b.takePending()}
-	if b.inRun && b.task != nil && b.owes(b.task.number) && b.task.number != b.run.task &&
+	if b.inRun && b.task != nil && b.owes(b.task.number) && !b.runningOwn() &&
 		(b.held == nil || b.task.number != b.held.number) {
 		answer.Waiting = b.task.number
 	}

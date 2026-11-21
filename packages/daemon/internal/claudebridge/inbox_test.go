@@ -135,6 +135,9 @@ func TestInboxTakePendingAnswersWhetherTheTakeHoldsATask(t *testing.T) {
 		r.open()
 		r.expect("agent_end", nil)
 		r.expect("agent_start", nil)
+		// The turn is the task's own only once Claude Code has re-emitted its text, which comes
+		// after agent_start; every hook of the turn asks after it.
+		r.logged("Claude Code took task 7's text")
 		r.pendingIs("in the task's own turn,", TakePendingAnswer{})
 		r.release("t1")
 		r.untilTurnEnds()
@@ -234,6 +237,9 @@ func TestInboxTakePendingIsFalseForTheRunningTasksOwnNumberWrittenAgain(t *testi
 
 	r.handTask(testTask, 1)
 	r.expect("agent_start", nil)
+	// The turn is the task's own only once Claude Code has re-emitted its text, which comes after
+	// agent_start; every hook of the turn asks after it.
+	r.logged("Claude Code took task 7's text")
 	r.pendingIs("in the task's own turn,", TakePendingAnswer{})
 	r.handTask(testTask, 2)
 	r.pendingIs("in the task's own turn, with its number written again at a newer revision,", TakePendingAnswer{})
@@ -277,4 +283,30 @@ func TestInboxTakePendingCountsTheRunningTasksNumberWrittenAgainWhenItsTextWasDr
 	if !got.Pending {
 		t.Fatalf("in task 7's turn whose text Claude Code dropped, with 7 written again at revision 2, the bridge answered the take-pending query %+v; want it pending, since that turn's end takes 7 at 2 at once (%q)", got, takes)
 	}
+}
+
+// In task 7's turn whose text Claude Code dropped, the turn did not take the text, so it is no
+// task's turn: the newer revision of 7 written during it waits as a value would during a turn of no
+// task. The take-pending answer names 7 waiting, which claude-envoy's PostToolUse hook names in its
+// note (R1), as well as pending.
+func TestInboxTakePendingNamesTheRunningTasksNumberWaitingWhenItsTextWasDropped(t *testing.T) {
+	d := newTaskDaemon(t)
+	d.answerTake = func(take claim.TakeRequest) (int, any) {
+		if take.Revision == 1 {
+			return accepted("drop t1")
+		}
+		return accepted("say the task taken again")
+	}
+	r := newTakingRig(t, d, "", daemonCalls{})
+	r.handReady()
+
+	r.handTask(testTask, 1)
+	r.expect("agent_start", nil)
+	r.handTask(testTask, 2)
+	r.pendingIs("in task 7's turn whose text Claude Code dropped, with 7 written again at revision 2,", TakePendingAnswer{Pending: true, Waiting: testTask})
+	r.release("t1")
+	r.untilTurnEnds()
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+	r.quiet()
 }
