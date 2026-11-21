@@ -1483,6 +1483,33 @@ func TestDatasetPackOverALargerBundleRemovesItsParts(t *testing.T) {
 	}
 }
 
+// build --from a directory that holds an earlier pack's manifest and parts beside a bundle packed
+// whole under another name cannot tell which the caller means, so it refuses and names both, as
+// it does for two manifests or two bundles, rather than read the earlier pack's inputs.
+func TestDatasetBuildFromADirectoryOfTwoBundlesRefuses(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	snapshot, verdicts := standardFixture().write(t, dir)
+	bundles := filepath.Join(dir, "bundle")
+	if err := os.MkdirAll(bundles, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed}, filepath.Join(bundles, "earlier.tar.gz"), 4096); err != nil || len(parts) < 3 {
+		t.Fatalf("the earlier pack wrote %v (%v), want parts and a manifest", parts, err)
+	}
+	if _, parts, err := packBundle(dsInputs{Snapshot: snapshot, Verdicts: verdicts, Seed: fixtureSeed + 1}, filepath.Join(bundles, "newer.tar.gz"), dsPartSize); err != nil || len(parts) != 0 {
+		t.Fatalf("the newer pack wrote %v (%v), want the bundle alone", parts, err)
+	}
+	out := filepath.Join(dir, "out")
+	var stdout, stderr bytes.Buffer
+	if code := run(t.Context(), []string{"dataset", "build", "--from", bundles, "--out", out}, &stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "bundles: name one") {
+		t.Errorf("build --from a directory of an earlier pack and a newer bundle: exit %d: %s; want the refusal that names both", code, stderr.String())
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Errorf("the refused build made %s (%v)", out, err)
+	}
+}
+
 // Every dataset step refuses an --out inside a repository, as the harness does, and makes no
 // directory there: each writes Dispatch or session text. fetch and named need --owner: they
 // hold no default owner.
