@@ -1156,6 +1156,41 @@ fresh_consumer_view() {
   printf "%s's selection record names current '%s'; the consumers carrying it as envoy.logical [%s]" "$1" "$current" "$carriers"
 }
 
+# What a session's consumer is, in either naming mode, each read under WHEN; the one place the
+# mode decides the reading:
+#   session_consumer_held SESSION WHEN  the session holds a consumer: s-<session> on the stream in
+#                                       the fixed mode, fresh_consumer_held in the fresh one
+#   session_consumer_gone SESSION WHEN  the session holds none: no s-<session> on the stream in the
+#                                       fixed mode, fresh_consumer_gone in the fresh one
+#   session_consumer_view SESSION WHEN  what those read, for a note or a failure
+session_consumer_held() {
+  local names
+  if [[ "$consumer_names" == fresh ]]; then
+    fresh_consumer_held "$1" "$2"
+    return
+  fi
+  stream_consumers "$2" names
+  [[ " $names " == *" s-$1 "* ]]
+}
+session_consumer_gone() {
+  local names
+  if [[ "$consumer_names" == fresh ]]; then
+    fresh_consumer_gone "$1" "$2"
+    return
+  fi
+  stream_consumers "$2" names
+  [[ " $names " != *" s-$1 "* ]]
+}
+session_consumer_view() {
+  local names
+  if [[ "$consumer_names" == fresh ]]; then
+    fresh_consumer_view "$1" "$2"
+    return
+  fi
+  stream_consumers "$2" names
+  printf "%s's fixed consumer s-%s among the stream's consumers [%s]" "$1" "$1" "$names"
+}
+
 # session_delivery_shown WHEN: both sessions take their messages from a session consumer of their
 # own, printed under WHEN and a failure when it is untrue. The listener reports `delivery` on every
 # row of GET /v1/sessions, written always and never omitempty: "consumer" for a session its own
@@ -1478,38 +1513,19 @@ stop_session_clean() {
 #   no_session_consumer    the stream carries a consumer for neither session this run is running;
 #                          one of a session an earlier window SIGKILLed is left out, since nothing
 #                          deregistered it and the sweep takes it an hour on
-# Each reads s-<session> in the fixed naming mode, and the session's selection record in the fresh
-# one (fresh_consumer_held, fresh_consumer_gone).
+# Each reads the session's consumer in the run's naming mode (session_consumer_held,
+# session_consumer_gone).
 stop_landed() {
-  local names
   if registered shared "$1"; then return 1; fi
-  if [[ "$consumer_names" == fresh ]]; then
-    fresh_consumer_gone "$1" "the clean stop of $1"
-    return
-  fi
-  stream_consumers "the clean stop of $1" names
-  [[ " $names " != *" s-$1 "* ]]
+  session_consumer_gone "$1" "the clean stop of $1"
 }
 consumer_held() {
-  local names
-  if [[ "$consumer_names" == fresh ]]; then
-    fresh_consumer_held "$1" "the consumer of $1"
-    return
-  fi
-  stream_consumers "the consumer of $1" names
-  [[ " $names " == *" s-$1 "* ]]
+  session_consumer_held "$1" "the consumer of $1"
 }
 no_session_consumer() {
-  local names label
-  if [[ "$consumer_names" == fresh ]]; then
-    for label in pi cc; do
-      fresh_consumer_gone "${sid[$label]}" "both sessions stopped" || return 1
-    done
-    return 0
-  fi
-  stream_consumers "both sessions stopped" names
+  local label
   for label in pi cc; do
-    [[ " $names " != *" s-${sid[$label]} "* ]] || return 1
+    session_consumer_gone "${sid[$label]}" "both sessions stopped" || return 1
   done
 }
 
@@ -1604,14 +1620,9 @@ run_window() {
     local names="" was="${sid[pi]}"
     stream_consumers "window g, before the clean stop" names
     note "window g: the stream's consumers before the clean stop [${names}]"
-    if [[ "$consumer_names" == fresh ]]; then
-      note "window g: before the clean stop, $(fresh_consumer_view "$was" "window g, before the clean stop")"
-      fresh_consumer_held "$was" "window g, before the clean stop" ||
-        fail "the Oh My Pi session holds no consumer on the stream before its clean stop: $(fresh_consumer_view "$was" "window g, before the clean stop"); the stream's consumers [${names}]"
-    else
-      [[ " $names " == *" s-${was} "* ]] ||
-        fail "the stream carries no consumer s-${was} for the Oh My Pi session before its clean stop: [${names}]"
-    fi
+    note "window g: before the clean stop, $(session_consumer_view "$was" "window g, before the clean stop")"
+    session_consumer_held "$was" "window g, before the clean stop" ||
+      fail "the Oh My Pi session holds no consumer on the stream before its clean stop: $(session_consumer_view "$was" "window g, before the clean stop")"
     stop_session_clean pi
     wait_until 60 stop_landed "$was" || true
     stream_consumers "window g, after the clean stop" names
@@ -1620,14 +1631,9 @@ run_window() {
       fail "the clean stop left the Oh My Pi session registered: $(session_view pi)"
     fi
     note "window g: omp exited on its stdin's end of file with no signal, and the listener acted on its plugin's DELETE — ${was} is registered no longer; the stream's consumers [${names}]"
-    if [[ "$consumer_names" == fresh ]]; then
-      note "window g: after the clean stop, $(fresh_consumer_view "$was" "window g, after the clean stop")"
-      fresh_consumer_gone "$was" "window g, after the clean stop" ||
-        fail "the clean stop left the Oh My Pi session a consumer: $(fresh_consumer_view "$was" "window g, after the clean stop"); the stream's consumers [${names}]"
-    else
-      [[ " $names " != *" s-${was} "* ]] ||
-        fail "the clean stop left the consumer s-${was} on the stream: [${names}]"
-    fi
+    note "window g: after the clean stop, $(session_consumer_view "$was" "window g, after the clean stop")"
+    session_consumer_gone "$was" "window g, after the clean stop" ||
+      fail "the clean stop left the Oh My Pi session a consumer: $(session_consumer_view "$was" "window g, after the clean stop")"
     publish_dispatch g
     publish_rest g "$via"
     sleep 3
@@ -1637,14 +1643,9 @@ run_window() {
     wait_until 120 consumer_held "$was" || true
     stream_consumers "window g, after the resume" names
     note "window g: ${was} resumed from its session file; the stream's consumers [${names}]"
-    if [[ "$consumer_names" == fresh ]]; then
-      note "window g: after the resume, $(fresh_consumer_view "$was" "window g, after the resume")"
-      fresh_consumer_held "$was" "window g, after the resume" ||
-        fail "the resumed Oh My Pi session holds no consumer on the stream: $(fresh_consumer_view "$was" "window g, after the resume"); the stream's consumers [${names}]"
-    else
-      [[ " $names " == *" s-${was} "* ]] ||
-        fail "the resumed Oh My Pi session has no consumer s-${was} on the stream: [${names}]"
-    fi
+    note "window g: after the resume, $(session_consumer_view "$was" "window g, after the resume")"
+    session_consumer_held "$was" "window g, after the resume" ||
+      fail "the resumed Oh My Pi session holds no consumer on the stream: $(session_consumer_view "$was" "window g, after the resume")"
     ;;
   h)
     # The brand-new session: one whose first registration follows a message already stored for it.
@@ -1864,7 +1865,7 @@ fi
 # past this run. The negative control above returns before this: a tree from before session
 # consumers were deleted leaves them behind by construction, and that is what --expect-lost went
 # to measure. In the fresh naming mode the judgement reads each session's selection record and the
-# consumers carrying its id as envoy.logical instead (fresh_consumer_gone).
+# consumers carrying its id as envoy.logical instead (session_consumer_gone).
 begin "the sessions stop"
 stop_session_clean pi
 stop_session_clean cc
@@ -1874,14 +1875,9 @@ consumers_at_end=""
 stream_consumers "both sessions have stopped" consumers_at_end
 note "the stream's consumers once both sessions had stopped cleanly: [${consumers_at_end}]"
 for label in pi cc; do
-  if [[ "$consumer_names" == fresh ]]; then
-    note "$label after its clean stop: $(fresh_consumer_view "${sid[$label]}" "both sessions have stopped")"
-    fresh_consumer_gone "${sid[$label]}" "both sessions have stopped" ||
-      fail "$label (${sid[$label]}) holds a consumer after it stopped cleanly: $(fresh_consumer_view "${sid[$label]}" "both sessions have stopped"); the stream's consumers [${consumers_at_end}]"
-  else
-    [[ " $consumers_at_end " != *" s-${sid[$label]} "* ]] ||
-      fail "the consumer of $label (s-${sid[$label]}) is on the stream after it stopped cleanly: [${consumers_at_end}]"
-  fi
+  note "$label after its clean stop: $(session_consumer_view "${sid[$label]}" "both sessions have stopped")"
+  session_consumer_gone "${sid[$label]}" "both sessions have stopped" ||
+    fail "$label (${sid[$label]}) holds a consumer after it stopped cleanly: $(session_consumer_view "${sid[$label]}" "both sessions have stopped"); the stream's consumers [${consumers_at_end}]"
 done
 if ((bad == 0 && order_ok == 1)); then
   printf 'ENVOY SESSION DELIVERY: PASS (every event once, the issue in order)\n'

@@ -37,10 +37,15 @@ func SessionBucketConfig(replicas int) jetstream.KeyValueConfig {
 
 // CreateSessionBucket creates SessionBucket at replicas copies (SessionBucketConfig) and writes
 // its sentinel state, as the operator's create-bucket does before the cutover, and answers a
-// KVStore of it on conn. A bucket that exists already is refused, since no writer may adopt a
-// bucket another may own. The sentinel is written only once the new stream answers, within ctx's
-// deadline, else createBucketWait (createBucket).
+// KVStore of it on conn. The sentinel names SessionFamily (WriteSentinel): a state that names
+// another family is refused before the bucket is created, since this bucket is the session
+// family's alone. A bucket that exists already is refused, since no writer may adopt a bucket
+// another may own. The sentinel is written only once the new stream answers, within ctx's deadline,
+// else createBucketWait (createBucket).
 func CreateSessionBucket(ctx context.Context, conn *nats.Conn, replicas int, state StoreState) (*KVStore, error) {
+	if _, err := ownSentinel(state, SentinelKey, SessionFamily); err != nil {
+		return nil, fmt.Errorf("consumer names: %s: %w", SessionBucket, err)
+	}
 	return createBucket(ctx, conn, SessionBucketConfig(replicas), state)
 }
 
@@ -50,12 +55,14 @@ const createBucketWait = 30 * time.Second
 
 // createBucket is CreateSessionBucket of the bucket config describes. On a cluster the new stream
 // answers nobody for a moment after its create: until it has a leader, and its interest has
-// reached the member conn is on, that member answers a read that the stream does not exist, or
-// finds no responder for a read or a write. Each is ErrNoStore, which for a bucket just created
-// means only "not yet", so the sentinel's leader read is tried again until the stream answers it
-// (no record, the key never written), and the sentinel's write until a responder takes it. Past
-// the bound the create fails naming the bucket; the bucket stays, with no sentinel, which every
-// call refuses (ErrNoSentinel) until a create-bucket run writes one.
+// reached the member conn is on, that member answers a read that the stream does not exist
+// (ErrNoStore), or finds no responder for a read or a write (nats.ErrNoResponders); and a meta
+// leader that has not yet applied the create answers a read "stream not found" for a moment even
+// after the stream answered one. For a bucket just created each means only "not yet", so the
+// sentinel's leader read is tried again until the stream answers it (no record, the key never
+// written), and the sentinel's write until a responder takes it. Past the bound the create fails
+// naming the bucket; the bucket stays, with no sentinel, which every call refuses (ErrNoSentinel)
+// until a create-bucket run writes one.
 func createBucket(ctx context.Context, conn *nats.Conn, config jetstream.KeyValueConfig, state StoreState) (*KVStore, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {
@@ -69,7 +76,7 @@ func createBucket(ctx context.Context, conn *nats.Conn, config jetstream.KeyValu
 		ctx, cancel = context.WithTimeout(ctx, createBucketWait)
 		defer cancel()
 	}
-	store := NewKVStore(config.Bucket, ConnRequester{conn})
+	store := newKVStore(config.Bucket, ConnRequester{conn})
 	_, _, err = untilAnswered(ctx, config.Bucket, func() ([]byte, uint64, error) { return store.last(ctx, SentinelKey) })
 	if err != nil && !errors.Is(err, ErrNoRecord) && !errors.Is(err, ErrRecordDeleted) {
 		return nil, err
@@ -84,12 +91,12 @@ func createBucket(ctx context.Context, conn *nats.Conn, config jetstream.KeyValu
 	return store, nil
 }
 
-// untilAnswered runs attempt until it answers anything but ErrNoStore, and answers that; once ctx
-// ends it answers the last ErrNoStore, naming the bucket.
+// untilAnswered runs attempt until it answers anything but ErrNoStore or nats.ErrNoResponders, and
+// answers that; once ctx ends it answers the last of those, naming the bucket.
 func untilAnswered(ctx context.Context, bucket string, attempt func() ([]byte, uint64, error)) ([]byte, uint64, error) {
 	for {
 		data, revision, err := attempt()
-		if !errors.Is(err, ErrNoStore) {
+		if !errors.Is(err, ErrNoStore) && !errors.Is(err, nats.ErrNoResponders) {
 			return data, revision, err
 		}
 		if sleep(ctx, 50*time.Millisecond) != nil {
@@ -113,11 +120,14 @@ func (r ConnRequester) Request(ctx context.Context, msg *nats.Msg) (*nats.Msg, e
 	return r.Conn.RequestMsgWithContext(ctx, msg)
 }
 
-// KVStore is a Store over a KV bucket's stream, through raw requests: each read takes the key's
-// last message from the stream's leader (a stream message get, which a direct get is not), so a
-// record written a moment ago is never read as absent, and a key whose last message is a delete
-// or a purge marker is seen as one (ErrRecordDeleted) rather than as a key never written. Each
-// write is a publish conditional on the key's last sequence, which is the record's revision.
+// KVStore is the session family's Store, over the selection bucket's stream, through raw requests:
+// each read takes the key's last message from the stream's leader (a stream message get, which a
+// direct get is not), so a record written a moment ago is never read as absent, and a key whose
+// last message is a delete or a purge marker is seen as one (ErrRecordDeleted) rather than as a key
+// never written. Each write is a publish conditional on the key's last sequence, which is the
+// record's revision. The session family is the one a KV bucket keeps, its session consumers'
+// records and the listener durables' (DurableKey); Dispatch's and the daemons' are in Postgres
+// (NewPGStore). So its sentinel must name SessionFamily.
 type KVStore struct {
 	bucket  string
 	request Requester
@@ -125,8 +135,14 @@ type KVStore struct {
 	timeout time.Duration
 }
 
-// NewKVStore is a KVStore over bucket, through request.
-func NewKVStore(bucket string, request Requester) *KVStore {
+// NewKVStore is the session family's store over SessionBucket, through request.
+func NewKVStore(request Requester) *KVStore {
+	return newKVStore(SessionBucket, request)
+}
+
+// newKVStore is NewKVStore over bucket: createBucket's, which a test runs on the session bucket's
+// configuration under other names.
+func newKVStore(bucket string, request Requester) *KVStore {
 	return &KVStore{bucket: bucket, request: request, timeout: 5 * time.Second}
 }
 
@@ -142,6 +158,11 @@ func (s *KVStore) State(ctx context.Context) (StoreState, error) {
 	return state, err
 }
 
+// sentinel reads the sentinel and its revision. A key never written, or whose last message is a
+// delete or purge marker, is a missing sentinel (ErrNoSentinel); a value under SentinelKey that is
+// not the session family's sentinel (decodeSentinel) is ErrMalformedSentinel, naming the key and
+// the value's sequence: a sentinel naming Dispatch's or a daemon's store under the session bucket's
+// key is none of its own.
 func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
 	data, revision, err := s.last(ctx, SentinelKey)
 	if errors.Is(err, ErrNoRecord) || errors.Is(err, ErrRecordDeleted) {
@@ -150,28 +171,30 @@ func (s *KVStore) sentinel(ctx context.Context) (StoreState, uint64, error) {
 	if err != nil {
 		return StoreState{}, 0, err
 	}
-	var state StoreState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return StoreState{}, 0, fmt.Errorf("consumer names: read %s of %s: %w", SentinelKey, s.bucket, err)
+	state, err := decodeSentinel(SentinelKey, SessionFamily, data)
+	if err != nil {
+		return StoreState{}, 0, fmt.Errorf("consumer names: the bucket %s's %s at sequence %d: %w", s.bucket, SentinelKey, revision, err)
 	}
 	return state, revision, nil
 }
 
-// Read implements Store.
+// Read implements Store. A value under logical that is not logical's record (decodeRecord) is
+// ErrMalformedRecord, naming the key and the value's sequence.
 func (s *KVStore) Read(ctx context.Context, logical string) (Record, uint64, error) {
 	data, revision, err := s.last(ctx, logical)
 	if err != nil {
 		return Record{}, 0, err
 	}
-	var record Record
-	if err := json.Unmarshal(data, &record); err != nil {
-		return Record{}, 0, fmt.Errorf("consumer names: read %s's record in %s: %w", logical, s.bucket, err)
+	record, err := decodeRecord(logical, data)
+	if err != nil {
+		return Record{}, 0, fmt.Errorf("consumer names: the key %s of %s at sequence %d: %w", logical, s.bucket, revision, err)
 	}
 	return record, revision, nil
 }
 
-// Write implements Store.
+// Write implements Store. It writes the record under its own key (Record.Key).
 func (s *KVStore) Write(ctx context.Context, logical string, record Record, revision uint64) (uint64, error) {
+	record.Key = logical
 	data, err := json.Marshal(record)
 	if err != nil {
 		return 0, err
@@ -179,9 +202,16 @@ func (s *KVStore) Write(ctx context.Context, logical string, record Record, revi
 	return s.put(ctx, logical, data, revision)
 }
 
-// WriteSentinel writes the sentinel if its revision is still revision (0: never written): the
-// operator's create-bucket and replay write it, and a test of a family writes it as they do.
+// WriteSentinel writes the sentinel, under its own key (StoreState.Key) and naming the session
+// family, which it sets when state names none (ownSentinel), if its revision is still revision
+// (0: never written): the operator's create-bucket and replay write it, and a test of a family
+// writes it as they do. A state naming another family is refused as ErrSentinelFamily, and
+// nothing is written.
 func (s *KVStore) WriteSentinel(ctx context.Context, state StoreState, revision uint64) (uint64, error) {
+	state, err := ownSentinel(state, SentinelKey, SessionFamily)
+	if err != nil {
+		return 0, fmt.Errorf("consumer names: the bucket %s's %s: %w", s.bucket, SentinelKey, err)
+	}
 	data, err := json.Marshal(state)
 	if err != nil {
 		return 0, err
@@ -223,7 +253,9 @@ func (s *KVStore) bound(ctx context.Context) (context.Context, context.CancelFun
 	return context.WithTimeout(ctx, s.timeout)
 }
 
-// last reads key's last message from the leader of the bucket's stream.
+// last reads key's last message from the leader of the bucket's stream. Only the server's answer
+// that the stream does not exist (10059) is ErrNoStore: a read no server answered (no responders)
+// tells nothing of the bucket, and is a failed read like a timeout.
 func (s *KVStore) last(ctx context.Context, key string) ([]byte, uint64, error) {
 	ctx, cancel := s.bound(ctx)
 	defer cancel()
@@ -235,9 +267,6 @@ func (s *KVStore) last(ctx context.Context, key string) ([]byte, uint64, error) 
 	}
 	reply, err := s.request.Request(ctx, &nats.Msg{Subject: "$JS.API.STREAM.MSG.GET." + s.stream(), Data: body})
 	if err != nil {
-		if errors.Is(err, nats.ErrNoResponders) {
-			return nil, 0, fmt.Errorf("%w: %s (%w)", ErrNoStore, s.stream(), err)
-		}
 		return nil, 0, fmt.Errorf("consumer names: read %s from %s: %w", key, s.stream(), err)
 	}
 	var response struct {

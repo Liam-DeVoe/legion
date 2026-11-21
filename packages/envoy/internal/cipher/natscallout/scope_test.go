@@ -17,6 +17,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -131,7 +133,7 @@ func (d *dispatchAnswers) hide(project string, hidden bool) {
 // heldDeps are Deps whose ServiceToken verifies tokens, whose exchange list is exchange, and
 // whose Dispatch is dispatch, with one pass over every project services can name made, as Start's
 // first pass is.
-func heldDeps(t *testing.T, tokens map[string]platformToken, exchange map[string][]string, dispatch *dispatchAnswers, services []ServiceEntry) Deps {
+func heldDeps(t *testing.T, tokens map[string]platformToken, exchange map[string][]string, dispatch *dispatchAnswers, services []config.NATSService) Deps {
 	t.Helper()
 	deps := Deps{ServiceToken: serviceTokens(tokens), Exchange: exchangeOf(exchange), Access: dispatch.access}
 	deps.held = newHeldAccess(deps, services)
@@ -165,7 +167,7 @@ func requireRefused(t *testing.T, err error, label, reason string) {
 // exceptions is served and PRIV's is refused by name, as is a subscribe to every reply inbox.
 func TestADaemonEntryIsHeldToItsExchangeProjects(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	exchange := map[string][]string{pubDaemonAccount: {"PUB"}}
 	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}, "PRIV": {"acme/priv"}}}
@@ -235,7 +237,7 @@ func TestADaemonEntryIsHeldToItsExchangeProjects(t *testing.T) {
 // the two apart.
 func TestAHeldDaemonConnectionNamedForAGenerationGetsThatNameAlone(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	exchange := map[string][]string{pubDaemonAccount: {"PUB"}}
 	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}}
@@ -290,7 +292,7 @@ func TestAHeldDaemonConnectionNamedForAGenerationGetsThatNameAlone(t *testing.T)
 // admission waits the three seconds, and this test fails naming how long it took.
 func TestAnAdmissionNeverWaitsOnDispatch(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}, blockAfter: 1, block: 3 * time.Second}
 	deps := Deps{
@@ -323,7 +325,7 @@ func TestAnAdmissionNeverWaitsOnDispatch(t *testing.T) {
 // once Dispatch answers that the entry's person no longer sees PUB, refused naming PUB.
 func TestAHeldAnswerFollowsDispatchAndOutlivesItsOutage(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}, private: map[string]bool{"PUB": true}}
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}}, dispatch, services)
@@ -340,7 +342,7 @@ func TestAHeldAnswerFollowsDispatchAndOutlivesItsOutage(t *testing.T) {
 	requireRefused(t, err, labelProjectNotVisible, "project not visible to the account's person: PUB")
 }
 
-// Dispatch refusing the broker's own account token (a 401 or 403, projectaccess.ErrBrokerRefused)
+// Dispatch refusing the broker's own account token (a 401 or 403, dispatchread.ErrBrokerRefused)
 // is no outage to admit through: the token exchange refuses every trade that asks Dispatch then
 // (oauth's refusedByDispatch), so a pass holding that refusal is complete, the auth service
 // refuses a connection held to what it refused, under its own label and naming why, and logs it
@@ -351,7 +353,7 @@ func TestAHeldAnswerFollowsDispatchAndOutlivesItsOutage(t *testing.T) {
 // last pass on a refusal, as on an outage: the daemon is admitted on the pass from before.
 func TestDispatchRefusingTheBrokersTokenRefusesAHeldConnection(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{
 		answers: map[string][]string{"OPS": {"acme/ops"}, "PUB": {"acme/pub"}},
@@ -371,7 +373,7 @@ func TestDispatchRefusingTheBrokersTokenRefusesAHeldConnection(t *testing.T) {
 
 	dispatch.hide("OPS", true)
 	dispatch.hide("PUB", true)
-	dispatch.fail(fmt.Errorf("%w: dispatch answered /api/v1/access/projects/PUB 403 with the code %q", projectaccess.ErrBrokerRefused, "ACCESS_ACCOUNT_REQUIRED"))
+	dispatch.fail(fmt.Errorf("%w: dispatch answered /api/v1/access/projects/PUB 403 with the code %q", dispatchread.ErrBrokerRefused, "ACCESS_ACCOUNT_REQUIRED"))
 	deps.held.refresh(t.Context())
 	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
 	requireRefused(t, err, labelAccessRefused, "Dispatch refuses the broker's own account token")
@@ -398,7 +400,7 @@ func TestDispatchRefusingTheBrokersTokenRefusesAHeldConnection(t *testing.T) {
 func TestTheServiceAsksDispatchAgainOnItsOwn(t *testing.T) {
 	withAccessRefresh(t, 100*time.Millisecond)
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}, private: map[string]bool{"PUB": true}}
 	log := &logtest.Buffer{}
@@ -431,7 +433,7 @@ func TestTheServiceAsksDispatchAgainOnItsOwn(t *testing.T) {
 // what its entry says.
 func TestAnAccountWithNoExchangeEntryIsRefused(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}, {Kind: config.NATSDaemon, Account: slowDaemonAccount}}
 	tokens := map[string]platformToken{"slow-daemon-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}}
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}}, dispatch, services)
@@ -444,7 +446,7 @@ func TestAnAccountWithNoExchangeEntryIsRefused(t *testing.T) {
 // no such project, refuses the connection naming the project.
 func TestAnUnknownProjectRefusesTheConnection(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}}
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB", "GONE"}}, dispatch, services)
@@ -460,7 +462,7 @@ func TestAnUnknownProjectRefusesTheConnection(t *testing.T) {
 // token. The control drops the person's check: the PRIV2 row is served.
 func TestAProjectItsPersonCannotSeeRefusesTheConnection(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}, {Kind: config.NATSDaemon, Account: slowDaemonAccount}}
 	tokens := map[string]platformToken{
 		"seen-token":   {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
 		"unseen-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
@@ -487,7 +489,7 @@ func TestAProjectItsPersonCannotSeeRefusesTheConnection(t *testing.T) {
 // grant's emptiness.
 func TestAnEntryNamingNoProjectIsRefusedByName(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}, {Kind: config.NATSDaemon, Account: slowDaemonAccount}}
 	tokens := map[string]platformToken{"empty-token": {account: slowDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{answers: map[string][]string{"PUB": {"acme/pub"}}}
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}, slowDaemonAccount: nil}, dispatch, services)
@@ -501,7 +503,7 @@ func TestAnEntryNamingNoProjectIsRefusedByName(t *testing.T) {
 // project key.
 func TestAGrantThatCannotBeHeldToItsProjectsIsRefusedByName(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}}
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{answers: map[string][]string{"pub": {"acme/pub"}}}
 	deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"pub"}}, dispatch, services)
@@ -598,7 +600,7 @@ func TestAWholeDaemonGrantTakesItsAccountsReplyPrefix(t *testing.T) {
 	tokens := map[string]platformToken{"daemon-token": {account: daemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
-	startServiceOf(t, url, keys, []ServiceEntry{{Kind: KindDaemon, Account: daemonAccount, AllProjects: true}}, Deps{ServiceToken: serviceTokens(tokens)})
+	startServiceOf(t, url, keys, []config.NATSService{{Kind: config.NATSDaemon, Account: daemonAccount, AllProjects: true}}, Deps{ServiceToken: serviceTokens(tokens)})
 	nc, err := nats.Connect(url, nats.UserInfo(natscred.ServiceUser, "daemon-token"), nats.NoReconnect(),
 		nats.CustomInboxPrefix(natsgrant.InboxPrefix(daemonAccount)))
 	require.NoError(t, err, "the hub did not admit the daemon")

@@ -1505,9 +1505,13 @@ func TestOpenConsumersRefusesAZeroRepository(t *testing.T) {
 // capturedRepositories is the repository every captured GitHub envelope names.
 var capturedRepositories = []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion")}
 
+// captureProject is the project consumerSpec names, whose selection store the fresh-name rows
+// read and write (selectionStore).
+const captureProject = "CAPTURE"
+
 func consumerSpec(logs *lockedBuffer) ConsumerSpec {
 	return ConsumerSpec{
-		Project:      "CAPTURE",
+		Project:      captureProject,
 		Repositories: capturedRepositories,
 		AckWait:      200 * time.Millisecond,
 		NakDelay:     25 * time.Millisecond,

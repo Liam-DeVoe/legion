@@ -648,7 +648,7 @@ func TestARetiredDaemonNameIsListedByStatusAndDeletedByCleanup(t *testing.T) {
 		t.Fatalf("the daemon sent deletes of %v, want none", deleted)
 	}
 
-	listed, err := consumernames.NewPGStore(pool).List(context.Background())
+	listed, err := selectionStore(t, pool).List(context.Background())
 	if err != nil {
 		t.Fatalf("status: list the daemon's records: %v", err)
 	}
@@ -656,7 +656,7 @@ func TestARetiredDaemonNameIsListedByStatusAndDeletedByCleanup(t *testing.T) {
 		t.Fatalf("status lists %s as %+v, want %s current and %s retired", wake, listed[wake], current, unanswered)
 	}
 	cleanup := consumernames.New(consumernames.Config{
-		Store: consumernames.NewPGStore(pool), Server: operatorServer{stream},
+		Store: selectionStore(t, pool), Server: operatorServer{stream},
 		Prefix: func(logical string) string { return logical }, Owner: "the operator's cleanup",
 		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: func(context.Context) (string, error) { return "", nil },

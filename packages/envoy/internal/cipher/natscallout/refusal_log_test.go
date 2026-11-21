@@ -13,6 +13,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -208,7 +210,7 @@ func requireLiveAdmittedAtOnce(t *testing.T, url string, live *session, behind s
 // daemon was refused. Here OPS's question is refused and PUB's fails.
 func TestARefusedPassLogsNoKeptPass(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}}
 	dispatch := &dispatchAnswers{answers: map[string][]string{"OPS": {"acme/ops"}, "PUB": {"acme/pub"}}}
 	tokens := map[string]platformToken{"token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	var logged bytes.Buffer
@@ -224,7 +226,7 @@ func TestARefusedPassLogsNoKeptPass(t *testing.T) {
 
 	deps.held.access = func(_ context.Context, project, _ string) (projectaccess.Answer, error) {
 		if project == "OPS" {
-			return projectaccess.Answer{}, projectaccess.ErrBrokerRefused
+			return projectaccess.Answer{}, dispatchread.ErrBrokerRefused
 		}
 		return projectaccess.Answer{}, errors.New("projectaccess: ask dispatch: EOF")
 	}

@@ -63,7 +63,7 @@ func TestFixedNamesNeverStartOnACutoverMarkerTheyDidNotRead(t *testing.T) {
 			reads := &failingReads{Pool: pool, err: tc.err, fails: tc.fails}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			err := refuseConvertedStore(ctx, reads)
+			err := refuseConvertedStore(ctx, reads, captureProject)
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("refuseConvertedStore = %v, want the fixed names opened", err)

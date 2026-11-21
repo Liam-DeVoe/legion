@@ -87,7 +87,10 @@ func newLiveStore(t *testing.T, uri string, state *StoreState) *liveStore {
 	return newLiveStoreAt(t, uri, state, 1)
 }
 
-// newLiveStoreAt is newLiveStore with testStream and the bucket at replicas copies.
+// newLiveStoreAt is newLiveStore with testStream and the bucket at replicas copies. A rig with a
+// sentinel makes the bucket through CreateSessionBucket, which writes the sentinel only once the
+// new bucket's stream answers: on a cluster a write right after the create can find no responder
+// (run 44901606033's 2.10.29 step failed the protocol row's R1 subtest so, before any hold).
 func newLiveStoreAt(t *testing.T, uri string, state *StoreState, replicas int) *liveStore {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
@@ -100,14 +103,15 @@ func newLiveStoreAt(t *testing.T, uri string, state *StoreState, replicas int) *
 	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: testStream, Subjects: []string{"names.>"}, Replicas: replicas}); err != nil {
 		t.Fatalf("create %s: %v", testStream, err)
 	}
-	if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(replicas)); err != nil {
-		t.Fatalf("create %s: %v", SessionBucket, err)
-	}
-	live := &liveStore{conn: conn, js: js, store: NewKVStore(SessionBucket, ConnRequester{conn}), family: jsFamily{js}}
-	if state != nil {
-		if _, err := live.store.WriteSentinel(ctx, *state, 0); err != nil {
-			t.Fatalf("write the sentinel: %v", err)
+	live := &liveStore{conn: conn, js: js, store: NewKVStore(ConnRequester{conn}), family: jsFamily{js}}
+	if state == nil {
+		if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(replicas)); err != nil {
+			t.Fatalf("create %s: %v", SessionBucket, err)
 		}
+		return live
+	}
+	if _, err := CreateSessionBucket(ctx, conn, replicas, *state); err != nil {
+		t.Fatalf("create %s and its sentinel: %v", SessionBucket, err)
 	}
 	return live
 }
@@ -127,7 +131,7 @@ func TestTheKVStoreRefusesAMissingBucketAndAMissingSentinel(t *testing.T) {
 	uri := testnats.URL(t)
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
-	store := NewKVStore(SessionBucket, ConnRequester{conn})
+	store := NewKVStore(ConnRequester{conn})
 	if _, err := store.State(context.Background()); !errors.Is(err, ErrNoStore) {
 		t.Fatalf("State with no bucket = %v, want ErrNoStore", err)
 	}
@@ -140,6 +144,28 @@ func TestTheKVStoreRefusesAMissingBucketAndAMissingSentinel(t *testing.T) {
 	}
 	if _, _, err := live.names("p1").Ensure(context.Background(), "ses-1", CreateRequest{Create: live.family.create("ses-1"), First: first(1)}); !IsSelectionStateLost(err) {
 		t.Fatalf("Ensure with no sentinel = %v, want a refusal", err)
+	}
+}
+
+// A read no server answers tells nothing of the bucket: on a server with no JetStream every API
+// request meets no responders, and the store's read is a failed read, never a missing store, so a
+// fixed-mode listener never reads it as no marker. The control is a JetStream server with no
+// bucket, whose stream-not-found answer is the missing store.
+func TestAReadNoServerAnswersIsNoMissingStore(t *testing.T) {
+	conn := testnats.Connect(t, testnats.URL(t))
+	t.Cleanup(conn.Close)
+	if _, err := NewKVStore(ConnRequester{conn}).State(context.Background()); !errors.Is(err, ErrNoStore) {
+		t.Fatalf("control: State with no bucket = %v, want ErrNoStore", err)
+	}
+	_, uri := testnats.StartConfig(t, "", nil, true)
+	silent, err := testnats.ConnectSeed(t, uri, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(silent.Close)
+	_, err = NewKVStore(ConnRequester{silent}).State(context.Background())
+	if !errors.Is(err, natsgo.ErrNoResponders) || errors.Is(err, ErrNoStore) || IsSelectionStateLost(err) {
+		t.Fatalf("State that no server answered = %v, want a failed read wrapping nats.ErrNoResponders, no missing store", err)
 	}
 }
 
@@ -381,7 +407,7 @@ func TestTheKVStoreRacesOnAGrantWithNoDirectGet(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(conn.Close)
-		return NewKVStore(SessionBucket, ConnRequester{conn})
+		return NewKVStore(ConnRequester{conn})
 	}
 	first, second := writer(), writer()
 	if _, err := first.Write(ctx, "ses-race", Record{Start: 1}, 0); err != nil {
@@ -476,7 +502,7 @@ func TestTheKVStoreReadsAReplicatedBucketsWrongLastSequenceAsAConflict(t *testin
 			if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(replicas)); err != nil {
 				t.Fatal(err)
 			}
-			store := NewKVStore(SessionBucket, ConnRequester{conn})
+			store := NewKVStore(ConnRequester{conn})
 			first, err := store.Write(ctx, "ses-1", Record{Start: 1}, 0)
 			if err != nil {
 				t.Fatal(err)
@@ -510,13 +536,13 @@ func (r answeringRequester) Request(context.Context, *natsgo.Msg) (*natsgo.Msg, 
 // reads the record again. The control is another refusal, which stays an error of its own.
 func TestTheKVStoreReadsEitherWrongLastSequenceAnswerAsAConflict(t *testing.T) {
 	for code, description := range map[int]string{10071: "wrong last sequence: 5", 10164: "wrong last sequence"} {
-		store := NewKVStore(SessionBucket, answeringRequester{fmt.Sprintf(`{"error":{"code":400,"err_code":%d,"description":%q}}`, code, description)})
+		store := NewKVStore(answeringRequester{fmt.Sprintf(`{"error":{"code":400,"err_code":%d,"description":%q}}`, code, description)})
 		if _, err := store.Write(context.Background(), "ses-1", Record{Start: 1}, 4); !errors.Is(err, ErrConflict) {
 			t.Errorf("a write answered %d = %v, want ErrConflict", code, err)
 		}
 	}
 	// Control: a refusal that is no wrong last sequence is no conflict.
-	store := NewKVStore(SessionBucket, answeringRequester{`{"error":{"code":503,"err_code":10008,"description":"jetstream temporarily unavailable"}}`})
+	store := NewKVStore(answeringRequester{`{"error":{"code":503,"err_code":10008,"description":"jetstream temporarily unavailable"}}`})
 	if _, err := store.Write(context.Background(), "ses-1", Record{Start: 1}, 4); err == nil || errors.Is(err, ErrConflict) {
 		t.Fatalf("a write answered 10008 = %v, want an error that is no conflict", err)
 	}
@@ -535,7 +561,7 @@ func TestTwoWritersRacingOnAThreeCopyBucketEndWithOneWriteAndOneConflict(t *test
 	writer := func() *KVStore {
 		conn := testnats.Connect(t, cluster.URL())
 		t.Cleanup(conn.Close)
-		return NewKVStore(SessionBucket, ConnRequester{conn})
+		return NewKVStore(ConnRequester{conn})
 	}
 	first, second := writer(), writer()
 	if _, err := first.Write(ctx, "ses-race", Record{Start: 1}, 0); err != nil {
@@ -620,7 +646,12 @@ func TestTheNativeOptionSavesTheStartTheServerReports(t *testing.T) {
 // three-server cluster, at one copy and at three, every create writes its sentinel. Each round
 // creates a bucket of its own (createBucket, the session bucket's create under another name)
 // through the next member, since one round wins the race most of the time; a bucket deleted and
-// created again under one name races the delete's own clean-up instead (10049).
+// created again under one name races the delete's own clean-up instead (10049). The round reads the
+// sentinel back as createBucket reads its stream (untilAnswered): a just-created stream that has
+// answered a read and taken the write can still be answered "stream not found" for a moment, by a
+// meta leader that has not yet applied the create (jetstream_api.go :3932-3944), as this test's
+// 3-copy rounds were under -race (one such answer, read on 2026-11-21, ended within 39 ms, while
+// the meta leader held no copy of the stream).
 func TestCreatingTheSessionBucketOnAClusterWritesItsSentinel(t *testing.T) {
 	for _, replicas := range []int{1, 3} {
 		t.Run(fmt.Sprintf("%d copies", replicas), func(t *testing.T) {
@@ -630,12 +661,17 @@ func TestCreatingTheSessionBucketOnAClusterWritesItsSentinel(t *testing.T) {
 				config := SessionBucketConfig(replicas)
 				config.Bucket = fmt.Sprintf("%s_round_%d", SessionBucket, round)
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-				store, err := createBucket(ctx, conn, config, StoreState{Cutover: CutoverDone, Boundary: 7})
+				store, err := createBucket(ctx, conn, config, StoreState{Family: SessionFamily, Cutover: CutoverDone, Boundary: 7})
 				if err != nil {
 					cancel()
 					t.Fatalf("round %d: the create on a three-server cluster at %d copies = %v", round, replicas, err)
 				}
-				state, err := store.State(ctx)
+				var state StoreState
+				_, _, err = untilAnswered(ctx, config.Bucket, func() ([]byte, uint64, error) {
+					var err error
+					state, err = store.State(ctx)
+					return nil, 0, err
+				})
 				cancel()
 				if err != nil || state.Cutover != CutoverDone || state.Boundary != 7 {
 					t.Fatalf("round %d: the sentinel read back as %+v, %v", round, state, err)

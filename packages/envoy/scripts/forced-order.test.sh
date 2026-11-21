@@ -74,16 +74,21 @@ refused server-empty "forced-order.sh: -server '' names no version" \
 # -timeout with an empty value is no duration, not go test's 10 minutes.
 refused timeout-empty "forced-order.sh: -timeout '' names no duration" \
   '^=== RUN' -timeout '' ./internal/testnats/hooktest/
+# -C with an empty value names no module, not the caller's directory.
+refused c-empty "forced-order.sh: -C '' names no module directory" \
+  '^=== RUN' -C '' ./internal/testnats/hooktest/
 # A module whose go.mod replaces nats-server requires one version and links another, and the
 # hooked copy would take the replacement's place: the script refuses it rather than hook the
 # version the requirement names. The fixture replaces it with a local module, so no go command
-# needs the network; its directory is not named for the case, whose log is $out/<case name>.
+# needs the network; its directory is not named for the case, whose log is $out/<case name>. It
+# is a module with no workspace, so the case runs with GOWORK=off: a go.work in a directory above
+# $TMPDIR would otherwise take it in, and the script would refuse that workspace instead.
 mkdir -p "$out/replacing-module/fork"
 printf 'module github.com/nats-io/nats-server/v2\n\ngo 1.21\n' >"$out/replacing-module/fork/go.mod"
 printf 'module example.com/replaced\n\ngo 1.21\n\nrequire github.com/nats-io/nats-server/v2 v2.15.1\n\nreplace github.com/nats-io/nats-server/v2 => ./fork\n' \
   >"$out/replacing-module/go.mod"
-refused replaced 'replaces github.com/nats-io/nats-server/v2 with ./fork' \
+GOWORK=off refused replaced 'replaces github.com/nats-io/nats-server/v2 with ./fork' \
   '^forced-order.sh: nats-server v[0-9]' -C "$out/replacing-module" .
 
-echo "forced-order.test.sh: $failed failed of 4"
+echo "forced-order.test.sh: $failed failed of 6"
 [ "$failed" -eq 0 ]

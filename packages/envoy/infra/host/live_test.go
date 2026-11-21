@@ -205,6 +205,7 @@ func TestLiveAdoptionPreviewsClean(t *testing.T) {
 					fmt.Sprintf("PORT=%d", port),
 					"ENVOY_MACHINE_ID=live-test",
 					"NATS_URLS=" + natsURL,
+					"ENVOY_LISTENER_ROLE=host",
 				},
 				"healthcheck": map[string]any{
 					"tests":       []string{"CMD", "curl", "-f", healthURL},
@@ -221,7 +222,9 @@ func TestLiveAdoptionPreviewsClean(t *testing.T) {
 	}})
 	s.Up()
 
-	// Program B: the same provider and values, as a listener that adopts both resources.
+	// Program B: the same provider and values, as a listener that adopts both resources. Program
+	// A's container renders the host role, so B is a host user's listener (hostUser), and the
+	// input reaches the container's environment through the plugin's schema.
 	s.SetProgram(map[string]any{"resources": map[string]any{
 		"docker": dockerProvider,
 		"live": listener(map[string]any{
@@ -230,6 +233,7 @@ func TestLiveAdoptionPreviewsClean(t *testing.T) {
 			"image":         image,
 			"port":          port,
 			"containerName": name,
+			"hostUser":      true,
 			"adopt":         map[string]any{"container": "listener-live", "image": "envoy-image-live"},
 		}),
 	}})

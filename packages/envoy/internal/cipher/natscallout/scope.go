@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -26,6 +28,9 @@ import (
 // and reads as no project being private, which is true there: a private project needs the auth
 // service.
 //
+// An edge listener's entry lists its projects, and natsgrant holds no grant of an edge listener's
+// to hold to them, so its connection is refused by name before anything else is read.
+//
 // An all-projects entry takes that grant whole; a daemon's gains its account's own reply prefix
 // (natsgrant.InboxPrefix) beside _INBOX.>, because a Legion daemon presenting its token always
 // takes that prefix (the daemon's natsauth.ConnectService), whatever its entry's scope. Any other
@@ -39,8 +44,9 @@ import (
 // refusals of any later pass. It is refused, naming why: an account no exchange entry lists, or
 // whose entry names no project; no complete pass held yet; Dispatch refusing the broker's own
 // account token in that pass; a project Dispatch does not hold, or whose answer says the entry's
-// person cannot see it; and a grant entry natsgrant.WithinProjects cannot hold. ParseServices
-// refuses a dispatch or listener entry with "-" at start, since their grants carry KV calls.
+// person cannot see it; and a grant entry natsgrant.WithinProjects cannot hold.
+// config.ParseNATSServices refuses a dispatch or listener entry with "-" at start, since their
+// grants carry KV calls.
 //
 // Dispatch is never asked inside a decision: a decision reads only the pass the service holds.
 //
@@ -55,21 +61,24 @@ import (
 // projects' wakes for the stream's 72-hour retention after the last listener moves. The change
 // that lists daemon entries with "-" waits on that gate, with both readings quoted in its pull
 // request.
-func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgrant.Permissions, connection string) (natsgrant.Permissions, error) {
+func scopeGrant(_ context.Context, deps Deps, entry config.NATSService, grant natsgrant.Permissions, connection string) (natsgrant.Permissions, error) {
+	if entry.Kind == config.NATSEdgeListener {
+		return natsgrant.Permissions{}, refuse(labelHeldToProjects, "held to the projects its entry lists, for which this broker has no edge listener's grant: service "+entry.Name())
+	}
 	switch entry.Kind {
-	case KindDispatch:
+	case config.NATSDispatch:
 		grant.Publish = append(slices.Clip(grant.Publish), natsgrant.KVWrite(bus.PrivateProjectsBucket)...)
-	case KindListener:
+	case config.NATSListener:
 		grant.Publish = append(slices.Clip(grant.Publish), natsgrant.KVRead(bus.PrivateProjectsBucket)...)
 	}
 	if entry.AllProjects {
-		if entry.Kind == KindDaemon {
+		if entry.Kind == config.NATSDaemon {
 			grant.Subscribe = append(slices.Clip(grant.Subscribe), natsgrant.InboxPrefix(entry.Account)+".>")
 		}
 		return grant, nil
 	}
 	if deps.Exchange == nil || deps.Access == nil {
-		return natsgrant.Permissions{}, refuse(labelHeldToProjects, "held to exchange projects, which this broker cannot read: service "+entry.name())
+		return natsgrant.Permissions{}, refuse(labelHeldToProjects, "held to exchange projects, which this broker cannot read: service "+entry.Name())
 	}
 	person, projects, listed := deps.Exchange(entry.Account)
 	switch {
@@ -80,13 +89,13 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 	}
 	pass := deps.held.latest()
 	if pass == nil {
-		return natsgrant.Permissions{}, refuse(labelNoCompletePass, "no complete read of Dispatch's project answers is held yet: service "+entry.name())
+		return natsgrant.Permissions{}, refuse(labelNoCompletePass, "no complete read of Dispatch's project answers is held yet: service "+entry.Name())
 	}
 	if pass.refused {
 		// The token exchange refuses every trade that asks Dispatch while it refuses the broker's
 		// token (oauth's refusedByDispatch), so every held connection is refused too, whichever
 		// question of the pass Dispatch refused.
-		return natsgrant.Permissions{}, refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so what the account's person may see is not known: service "+entry.name())
+		return natsgrant.Permissions{}, refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so what the account's person may see is not known: service "+entry.Name())
 	}
 	for _, project := range projects {
 		held, known := pass.answers[heldKey{project: project, person: person}]
@@ -105,7 +114,7 @@ func scopeGrant(_ context.Context, deps Deps, entry ServiceEntry, grant natsgran
 	}
 	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Identity: entry.Account, Connection: connection})
 	if err != nil {
-		return natsgrant.Permissions{}, refuse(labelGrantNotHoldable, "grant cannot be held to its projects: service "+entry.name()+": "+err.Error())
+		return natsgrant.Permissions{}, refuse(labelGrantNotHoldable, "grant cannot be held to its projects: service "+entry.Name()+": "+err.Error())
 	}
 	return scoped, nil
 }
@@ -127,7 +136,7 @@ const accessFetchTimeout = 10 * time.Second
 // answered questions yields applies at once (narrow), whatever else failed: a project it answers
 // not found or not visible is refused so, since the token exchange refuses a removed person's token
 // whatever else Dispatch answers; each failure is logged at warn. Dispatch refusing the broker's
-// own account token (a 401 or 403, projectaccess.ErrBrokerRefused) on any question of a pass is
+// own account token (a 401 or 403, dispatchread.ErrBrokerRefused) on any question of a pass is
 // the pass's outcome whatever its other questions did, failures included: the token exchange
 // refuses every trade that asks Dispatch then (oauth's refusedByDispatch), so that pass is held,
 // refuses every held connection until a later pass replaces it, and is logged at error once a
@@ -168,15 +177,17 @@ type heldPass struct {
 }
 
 // newHeldAccess holds the passes over every project deps.Exchange gives an entry of services that
-// is not an all-projects one, each asked for the person its exchange entry acts for; nil when the
-// broker cannot read them (no exchange list, or no Dispatch client) or no entry can name a project.
-func newHeldAccess(deps Deps, services []ServiceEntry) *heldAccess {
+// is held to its exchange projects, each asked for the person its exchange entry acts for; nil
+// when the broker cannot read them (no exchange list, or no Dispatch client) or no entry can name
+// a project. An all-projects entry is held to none, and an edge listener's entry is refused before
+// any pass is read (scopeGrant), so neither asks Dispatch anything.
+func newHeldAccess(deps Deps, services []config.NATSService) *heldAccess {
 	if deps.Exchange == nil || deps.Access == nil {
 		return nil
 	}
 	var asks []heldKey
 	for _, entry := range services {
-		if entry.AllProjects {
+		if entry.AllProjects || entry.Kind == config.NATSEdgeListener {
 			continue
 		}
 		person, projects, _ := deps.Exchange(entry.Account)
@@ -239,7 +250,7 @@ func (h *heldAccess) refresh(ctx context.Context) {
 		})
 	}
 	wait.Wait()
-	if i := slices.IndexFunc(errs, func(err error) bool { return errors.Is(err, projectaccess.ErrBrokerRefused) }); i >= 0 {
+	if i := slices.IndexFunc(errs, func(err error) bool { return errors.Is(err, dispatchread.ErrBrokerRefused) }); i >= 0 {
 		h.log.Error("natscallout: Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so every daemon held to its exchange projects is refused until a later pass is answered", "question", "project "+h.asks[i].project, "error", errs[i].Error())
 		h.hold(&heldPass{began: pass.began, refused: true})
 		return

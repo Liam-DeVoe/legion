@@ -86,16 +86,17 @@ jobs:
       # test of the packages named, built with -tags odatrace and -race against a nats-server whose
       # own code carries the hold points internal/testnats/hooks.go drives. The script's own test
       # runs first: scripts/forced-order.test.sh holds it to refusing a package whose every
-      # forced-order test skips, a -drop name that is no hook point, an empty -server and an empty
-      # -timeout. The first forced-order step names no version, so it hooks the nats-server the
-      # workspace links, which the hub runs; when go.mod moves to a version
-      # internal/testnats/testdata/hooked has no hooks for, the script refuses it and the step
-      # fails until the hooks are ported. It gives -timeout 25m, since every session row runs on one
-      # copy, an R1 cluster and R3. The second step hooks v2.10.29, over the hooks' own tests and
-      # the protocol's rows alone: the session consumers and the listener refuse 2.10.29, so their
-      # rows would all skip, which the script refuses. The script also fails a package that
-      # declares no such test. No step sets an environment variable: check-ci-filters.sh reduces
-      # no go command of a job one of whose steps sets a GO* name.
+      # forced-order test skips, a -drop name that is no hook point, an empty -server, an empty -C,
+      # an empty -timeout and a module whose go.mod replaces nats-server. The first forced-order
+      # step names no version, so it hooks the nats-server the workspace links, which the hub runs;
+      # when go.mod moves to a version internal/testnats/testdata/hooked has no hooks for, the
+      # script refuses it and the step fails until the hooks are ported. It gives -timeout 25m,
+      # since every session row runs on one copy, an R1 cluster and R3. The second step hooks
+      # v2.10.29, over the hooks' own tests and the protocol's rows alone: the session consumers
+      # and the listener refuse 2.10.29, so their rows would all skip, which the script refuses.
+      # The script also fails a package that declares no such test. No step sets an environment
+      # variable: check-ci-filters.sh reduces no go command of a job one of whose steps sets a GO*
+      # name.
       - name: Test forced-order.sh's refusals
         run: scripts/forced-order.test.sh
         working-directory: packages/envoy

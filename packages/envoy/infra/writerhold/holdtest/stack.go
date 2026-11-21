@@ -16,6 +16,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -158,7 +159,7 @@ func StartWith(t testing.TB, opts Options) *Stack {
 	tokens.accounts[daemonToken] = daemonAccount
 	entries = append(entries, "daemon/-/*="+daemonAccount)
 	sessions := &sessionTable{answers: map[string]oauthwire.Introspection{}}
-	services, err := natscallout.ParseServices(strings.Join(entries, " "))
+	services, err := config.ParseNATSServices(strings.Join(entries, " "))
 	if err != nil {
 		t.Fatalf("holdtest: the stack's services: %v", err)
 	}

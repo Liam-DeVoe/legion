@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/kvrecords"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -34,7 +35,7 @@ import (
 // startReplica runs one auth service replica against the servers at urls with keys' seeds,
 // admitting services, deciding with decide, stopped when the test ends, and returns once its
 // subscription has reached the hub.
-func startReplica(t *testing.T, urls []string, keys testnats.CalloutKeys, services []ServiceEntry, deps Deps, decide decideFunc) *Service {
+func startReplica(t *testing.T, urls []string, keys testnats.CalloutKeys, services []config.NATSService, deps Deps, decide decideFunc) *Service {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(name, seed string) string {
@@ -118,7 +119,7 @@ func newDecisionLog() *decisionLog { return &decisionLog{byName: map[string][]de
 
 // wrap is decide, keeping each decision it admits.
 func (l *decisionLog) wrap(decide decideFunc) decideFunc {
-	return func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	return func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 		decision, err := decide(ctx, deps, services, req)
 		if err == nil {
 			l.mu.Lock()
@@ -1306,7 +1307,7 @@ func tE3Deps(now time.Time, a *session) Deps {
 
 // requireAsBefore requires each of rows to be answered, under deps and services, as t-e-3's tests
 // require.
-func requireAsBefore(t *testing.T, deps Deps, services []ServiceEntry, rows []tE3Row) {
+func requireAsBefore(t *testing.T, deps Deps, services []config.NATSService, rows []tE3Row) {
 	t.Helper()
 	for _, row := range rows {
 		decision, err := Decide(t.Context(), deps, services, row.req)

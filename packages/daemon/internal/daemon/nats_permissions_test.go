@@ -178,7 +178,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				logs := &syncBuffer{}
 
 				first := grantWorkflow(t, logs)
-				store := consumernames.NewPGStore(first.pool)
+				store := grantSelectionStore(t, first.pool)
 				if _, err := store.WriteSentinel(t.Context(), consumernames.StoreState{Cutover: consumernames.CutoverDone}, 0); err != nil {
 					t.Fatalf("write the sentinel as the operator's convert does: %v", err)
 				}
@@ -256,7 +256,7 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 				cfg.ConsumerNames = consumernames.ModeFresh
 				logs := &syncBuffer{}
 				w := grantWorkflow(t, logs)
-				if _, err := consumernames.NewPGStore(w.pool).WriteSentinel(t.Context(), consumernames.StoreState{Cutover: consumernames.CutoverDone}, 0); err != nil {
+				if _, err := grantSelectionStore(t, w.pool).WriteSentinel(t.Context(), consumernames.StoreState{Cutover: consumernames.CutoverDone}, 0); err != nil {
 					t.Fatalf("write the sentinel as the operator's convert does: %v", err)
 				}
 				attempt, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -285,6 +285,21 @@ func TestDaemonPermissionsOnRealServers(t *testing.T) {
 
 func grantLogger(logs *syncBuffer) *slog.Logger {
 	return slog.New(slog.NewTextHandler(logs, nil))
+}
+
+// grantSelectionStore is the selection store of daemonGrantConfig's project in pool, the family
+// the daemon's rows of these runs are in. A store the library refuses to make fails t.
+func grantSelectionStore(t testing.TB, pool consumernames.PGQuerier) *consumernames.PGStore {
+	t.Helper()
+	family, err := consumernames.DaemonFamily(daemonGrantConfig("").Project)
+	if err != nil {
+		t.Fatalf("the daemon's selection family: %v", err)
+	}
+	store, err := consumernames.NewPGStore(family, pool)
+	if err != nil {
+		t.Fatalf("make the daemon's selection store: %v", err)
+	}
+	return store
 }
 
 func daemonGrantConfig(uri string) config.Config {

@@ -26,16 +26,17 @@ import (
 // physical name of its own, <logical>~<generation>, created once and never again: nats-server can
 // leave a deleted consumer's late state write in a consumer created next under the same name, which
 // then skips messages after a restart (internal/dispatch/delivery's take-over deletes and creates
-// its durable on every change of holder). The logical name's selection record, in the
-// intake_consumers table (consumernames.PGStore), says which physical name the intake delivers from
-// (its current), and the protocol that keeps it is consumernames.Names: Step 0 settles an operation
-// another process left open, a take-over replaces the current with a fresh generation at the
-// predecessor's ack floor + 1, saved before anything is deleted, and the check writes the current's
-// last ack floor and deletes the retired generations.
+// its durable on every change of holder). The logical name's selection record, Dispatch's
+// family's row dispatch/<logical> of the intake_consumers table (consumernames.PGStore of
+// DispatchFamily), says which physical name the intake delivers from (its current), and the
+// protocol that keeps it is consumernames.Names: Step 0 settles an operation another process left
+// open, a take-over replaces the current with a fresh generation at the predecessor's ack floor +
+// 1, saved before anything is deleted, and the check writes the current's last ack floor and
+// deletes the retired generations.
 //
-// Every call is refused until the table's sentinel row says the cutover is done
-// (consumernames.Admit), and a missing table, sentinel or row is a refusal too, never a create: the
-// intake then delivers nothing and says so at ERROR, naming the durable. The fixed mode, the
+// Every call is refused until Dispatch's sentinel row, envoy.sentinel/dispatch, says the cutover is
+// done (consumernames.Admit), and a missing table, sentinel or row is a refusal too, never a create:
+// the intake then delivers nothing and says so at ERROR, naming the durable. The fixed mode, the
 // default, runs the take-over of the fixed names unchanged and never reads the table.
 //
 // Each generation's calls go on a connection of its own, named for it, which the auth service
@@ -121,13 +122,20 @@ const markerReadWithin = 5 * time.Second
 // insufficientPrivilege is Postgres's SQLSTATE for a statement the role may not run.
 const insufficientPrivilege = "42501"
 
-// readFixedMarker reads whether the cutover converted the store: true for a sentinel reading done;
-// false for no marker -- no table, no sentinel row, a read Postgres refused -- and for any other
-// marker; an error for a read that did not answer what the row says.
+// readFixedMarker reads whether the cutover converted the store: true for Dispatch's sentinel
+// (consumernames.PGSentinelKey of DispatchFamily) reading done; false for no marker -- no table
+// (ErrNoStore), no sentinel row (ErrNoSentinel), a read Postgres refused -- and for any other
+// marker; an error for a read that did not answer what the row says, a row at Dispatch's key that
+// is no sentinel of Dispatch's among them (ErrMalformedSentinel: one naming another family or
+// none, under another key, or not decoding), which is not a missing row.
 func readFixedMarker(ctx context.Context, db consumernames.PGQuerier) (bool, error) {
 	read, cancel := context.WithTimeout(ctx, markerReadWithin)
 	defer cancel()
-	state, err := consumernames.NewPGStore(db).State(read)
+	records, err := consumernames.NewPGStore(consumernames.DispatchFamily, db)
+	if err != nil {
+		return false, err
+	}
+	state, err := records.State(read)
 	var pg *pgconn.PgError
 	switch {
 	case errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel),

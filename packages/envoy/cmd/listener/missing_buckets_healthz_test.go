@@ -53,7 +53,7 @@ func TestAMissingBucketDoesNotHideAnotherFailureFromHealthz(t *testing.T) {
 	missing := &missingBuckets{}
 	var state atomic.Pointer[listenerDeps]
 	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil, missing), consumer: consumer})
-	handler := healthzHandler(&state, missing)
+	handler := healthzHandler(&state, missing, nil)
 	get := func() (int, map[string]any) {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -110,7 +110,7 @@ func TestHealthzNamesOnlyTheBucketsAReadFindsMissing(t *testing.T) {
 		{name: "interest", cache: pingStreamGone{}, buckets: []string{bus.InterestBucket, bus.RoleClaimBucket}, missing: missing},
 	}})
 	recorder := httptest.NewRecorder()
-	healthzHandler(&state, missing).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	healthzHandler(&state, missing, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var body struct {
 		Status  string   `json:"status"`
 		Missing []string `json:"missing_buckets"`
@@ -157,7 +157,7 @@ func TestAWatcherEndedByADeletedBucketIsAnsweredAsTheMissingBucket(t *testing.T)
 			{name: "session", cache: watchEnded{err: ended}, buckets: []string{bucket}, missing: missing},
 		}})
 		recorder := httptest.NewRecorder()
-		healthzHandler(&state, missing).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		healthzHandler(&state, missing, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var body struct {
 			Status  string   `json:"status"`
 			Error   string   `json:"error"`

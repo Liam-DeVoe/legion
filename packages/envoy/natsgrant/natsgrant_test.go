@@ -219,7 +219,7 @@ func TestTheMeasurementGrantReadsASessionsRecordAndNothingElseOfTheBucket(t *tes
 
 			readCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
-			record, _, err := consumernames.NewKVStore(consumernames.SessionBucket, consumernames.ConnRequester{Conn: conn}).Read(readCtx, "ses-measured")
+			record, _, err := consumernames.NewKVStore(consumernames.ConnRequester{Conn: conn}).Read(readCtx, "ses-measured")
 			if !tc.reads {
 				require.Error(t, err, "the grant without the leader read read the record")
 				refused(leaderRead)

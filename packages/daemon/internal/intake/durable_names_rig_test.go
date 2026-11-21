@@ -68,10 +68,21 @@ func freshJetStream(t *testing.T) (jetstream.JetStream, jetstream.Stream, string
 	return js, stream, id
 }
 
+// selectionStore is the selection store of captureProject, the project consumerSpec names and the
+// family every row of the rig's is in (daemonStore). A store the library refuses to make fails t.
+func selectionStore(t testing.TB, pool Pool) *consumernames.PGStore {
+	t.Helper()
+	store, err := daemonStore(captureProject, pool)
+	if err != nil {
+		t.Fatalf("make the selection store of %s: %v", captureProject, err)
+	}
+	return store
+}
+
 // selectionOf is logical's selection record, failing t when there is none.
 func selectionOf(t testing.TB, pool *pgxpool.Pool, logical string) consumernames.Record {
 	t.Helper()
-	rec, _, err := consumernames.NewPGStore(pool).Read(context.Background(), logical)
+	rec, _, err := selectionStore(t, pool).Read(context.Background(), logical)
 	if err != nil {
 		t.Fatalf("read the selection record of %s: %v", logical, err)
 	}
@@ -82,7 +93,7 @@ func selectionOf(t testing.TB, pool *pgxpool.Pool, logical string) consumernames
 // leaves it.
 func putRecord(t testing.TB, pool *pgxpool.Pool, logical string, rec consumernames.Record) {
 	t.Helper()
-	store := consumernames.NewPGStore(pool)
+	store := selectionStore(t, pool)
 	_, revision, err := store.Read(context.Background(), logical)
 	if err != nil && !errors.Is(err, consumernames.ErrNoRecord) {
 		t.Fatalf("read the selection record of %s: %v", logical, err)

@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -34,12 +35,12 @@ func startService(t *testing.T, url string, keys testnats.CalloutKeys, deps Deps
 }
 
 // startServiceOf is startService admitting services, deciding as Decide does.
-func startServiceOf(t *testing.T, url string, keys testnats.CalloutKeys, services []ServiceEntry, deps Deps) *Service {
+func startServiceOf(t *testing.T, url string, keys testnats.CalloutKeys, services []config.NATSService, deps Deps) *Service {
 	t.Helper()
 	return startServiceAdmitting(t, url, keys, services, deps, Decide)
 }
 
-func startServiceAdmitting(t *testing.T, url string, keys testnats.CalloutKeys, services []ServiceEntry, deps Deps, decide decideFunc) *Service {
+func startServiceAdmitting(t *testing.T, url string, keys testnats.CalloutKeys, services []config.NATSService, deps Deps, decide decideFunc) *Service {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(name, seed string) string {

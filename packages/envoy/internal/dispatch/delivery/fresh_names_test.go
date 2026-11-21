@@ -74,7 +74,7 @@ func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
 		mode    consumernames.Mode
 		refused bool
 	}{
-		"fixed over a converted store": {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "done") }, consumernames.ModeFixed, true},
+		"fixed over a converted store":       {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "done") }, consumernames.ModeFixed, true},
 		"the default over a converted store": {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "done") }, "", true},
 		"fixed with no sentinel":             {func(*testing.T, *store.Pool) {}, consumernames.ModeFixed, false},
 		"fixed with no table": {func(t *testing.T, pool *store.Pool) {
@@ -82,9 +82,9 @@ func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
 				t.Fatalf("drop the table: %v", err)
 			}
 		}, consumernames.ModeFixed, false},
-		"fixed before the cutover":         {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "") }, consumernames.ModeFixed, false},
-		"fixed after a rollback":           {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "rolled_back") }, consumernames.ModeFixed, false},
-		"fresh over a converted store":     {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "done") }, consumernames.ModeFresh, false},
+		"fixed before the cutover":        {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "") }, consumernames.ModeFixed, false},
+		"fixed after a rollback":          {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "rolled_back") }, consumernames.ModeFixed, false},
+		"fresh over a converted store":    {func(t *testing.T, pool *store.Pool) { writeCutover(t, pool, "done") }, consumernames.ModeFresh, false},
 		"fresh over an unconverted store": {func(*testing.T, *store.Pool) {}, consumernames.ModeFresh, false},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -149,9 +149,11 @@ func (r scriptedRow) Scan(dest ...any) error {
 
 // A fixed process decides on the marker it read and on nothing else. A read Postgres refused
 // (42501), like a missing table, is no marker, and the process starts. A database it cannot reach,
-// one that does not answer, or a row it cannot read, it reads again until it can, and never starts
-// unread: the call returns only with the marker read, or when its context ends. The control is the
-// same unreachable database answering at last: done refuses, and no marker starts.
+// one that does not answer, or a row it cannot read -- a row at Dispatch's sentinel key that is no
+// sentinel of Dispatch's: another family's, one naming no family, or one under another key -- it
+// reads again until it can, and never starts unread: the call returns only with the marker read, or
+// when its context ends. The control is the same unreachable database answering at last: done
+// refuses, and no marker starts.
 func TestTheFixedModeReadsItsMarkerBeforeItRuns(t *testing.T) {
 	shrink := namingMarkerRetry
 	namingMarkerRetry = 10 * time.Millisecond
@@ -161,12 +163,16 @@ func TestTheFixedModeReadsItsMarkerBeforeItRuns(t *testing.T) {
 		answers []any
 		refused bool
 	}{
-		"a read Postgres refused":                        {[]any{&pgconn.PgError{Code: "42501", Message: "permission denied for table intake_consumers"}}, false},
-		"no table":                                       {[]any{&pgconn.PgError{Code: "42P01", Message: "relation does not exist"}}, false},
-		"no sentinel":                                    {[]any{pgx.ErrNoRows}, false},
-		"unreachable, then done":                         {[]any{unreachable, unreachable, `{"cutover":"done"}`}, true},
-		"not answering, then no marker":                  {[]any{errHangs, errHangs, pgx.ErrNoRows}, false},
-		"a row it cannot read, then one before cutover": {[]any{`{"cutover":`, `{}`}, false},
+		"a read Postgres refused":       {[]any{&pgconn.PgError{Code: "42501", Message: "permission denied for table intake_consumers"}}, false},
+		"no table":                      {[]any{&pgconn.PgError{Code: "42P01", Message: "relation does not exist"}}, false},
+		"no sentinel":                   {[]any{pgx.ErrNoRows}, false},
+		"unreachable, then done":        {[]any{unreachable, unreachable, `{"key":"envoy.sentinel/dispatch","family":"dispatch","cutover":"done"}`}, true},
+		"not answering, then no marker": {[]any{errHangs, errHangs, pgx.ErrNoRows}, false},
+		"a row it cannot read, then one before cutover": {[]any{`{"cutover":`, `{"key":"envoy.sentinel/dispatch","family":"dispatch"}`}, false},
+		"a daemon's sentinel, then no marker":           {[]any{`{"key":"envoy.sentinel/dispatch","family":"daemon/p","cutover":"done"}`, pgx.ErrNoRows}, false},
+		"the session's sentinel, then no marker":        {[]any{`{"key":"envoy.sentinel/dispatch","family":"session","cutover":"done"}`, pgx.ErrNoRows}, false},
+		"a sentinel of no family, then no marker":       {[]any{`{"key":"envoy.sentinel/dispatch","cutover":"done"}`, pgx.ErrNoRows}, false},
+		"another key's sentinel, then no marker":        {[]any{`{"key":"envoy.sentinel/session","family":"dispatch","cutover":"done"}`, pgx.ErrNoRows}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			db := &scriptedMarker{answers: row.answers}
@@ -348,7 +354,7 @@ func lostSelectionStateRefusesTheTakeOver(t *testing.T, topology hubTopology) {
 				}
 			}, "selection store is missing"},
 			"no sentinel": {func(t *testing.T, pool *store.Pool) {
-				if _, err := pool.Exec(t.Context(), `delete from intake_consumers where logical = 'envoy.sentinel'`); err != nil {
+				if _, err := pool.Exec(t.Context(), `delete from intake_consumers where logical = $1`, dispatchSentinelKey); err != nil {
 					t.Fatalf("delete the sentinel: %v", err)
 				}
 			}, "sentinel is missing"},
@@ -357,7 +363,7 @@ func lostSelectionStateRefusesTheTakeOver(t *testing.T, topology hubTopology) {
 				writeCutover(t, pool, "rolled_back")
 			}, "the cutover has not run"},
 			"no row of the durable": {func(t *testing.T, pool *store.Pool) {
-				if _, err := pool.Exec(t.Context(), `delete from intake_consumers where logical = $1`, kind.logical); err != nil {
+				if _, err := pool.Exec(t.Context(), `delete from intake_consumers where logical = $1`, consumernames.PGKey(consumernames.DispatchFamily, kind.logical)); err != nil {
 					t.Fatalf("delete the durable's row: %v", err)
 				}
 			}, "no selection row"},

@@ -42,7 +42,8 @@ type freshSessions struct {
 	key atomic.Pointer[keyRefusal]
 }
 
-// keyRefusal is a session whose key a call found lost, and what that call answered.
+// keyRefusal is a session whose key a call found lost or holding no record of its own, and what
+// that call answered.
 type keyRefusal struct {
 	sessionID string
 	err       error
@@ -80,6 +81,7 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 		Store:  fresh.store,
 		Server: sessionNamesServer{s},
 		Prefix: func(string) string { return SessionConsumerNamePrefix },
+		Fixed:  func(sessionID string) string { return sessionConsumerPrefix + sessionID },
 		Floor:  ackFloor,
 		StreamID: func(ctx context.Context) (string, error) {
 			state, err := s.streamState(ctx)
@@ -92,15 +94,31 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 				(*observe)(op, outcome)
 			}
 		},
+		Metadata: sessionConsumerMetadata,
+		// The candidate as the server answers it, against the whole configuration a session
+		// consumer's create gives (freshConfig, ConsumerAdoptable): one that differs in a setting no
+		// update changes is refused. Its start Names checks, and every setting an update changes is
+		// corrected in place by the call that adopted it (published, updated) before it delivers.
+		Adopt: func(ctx context.Context, sessionID string, info *jetstream.ConsumerInfo) error {
+			return s.client.ConsumerAdoptable(ctx, info.Name, s.freshConfig(info.Name, sessionID, info.Config.OptStartSeq, nil))
+		},
 	})
 	return fresh
 }
 
-// SelectionStore is the selection bucket (consumernames.SessionBucket) through c's confirmed
-// requests, so a read or write c's user may not make answers ErrPublishDenied at once. The session
-// consumers keep their records in it, and the listener its own durable's (consumernames.DurableKey).
+// sessionConsumerMetadata is the metadata every fresh-mode consumer of sessionID carries, which its
+// create writes (freshCreate) and the owner check requires (consumernames.Config.Metadata): both
+// read it here, so a key added to one is in the other.
+func sessionConsumerMetadata(sessionID string) map[string]string {
+	return map[string]string{consumernames.LogicalMetadataKey: sessionID, SessionIDMetadataKey: sessionID}
+}
+
+// SelectionStore is the session family's selection bucket (consumernames.SessionBucket) through c's
+// confirmed requests, so a read or write c's user may not make answers ErrPublishDenied at once.
+// The session consumers keep their records in it, and the listener its own durable's
+// (consumernames.DurableKey).
 func (c *Client) SelectionStore() *consumernames.KVStore {
-	return consumernames.NewKVStore(consumernames.SessionBucket, clientRequester{c})
+	return consumernames.NewKVStore(clientRequester{c})
 }
 
 // ConsumerNames is how c's session consumers are named (WithConsumerNames): consumernames.ModeFixed
@@ -112,58 +130,26 @@ func (c *Client) ConsumerNames() consumernames.Mode {
 	return consumernames.ModeFixed
 }
 
-// ErrConvertedStore is RefuseConvertedStore's answer for a selection bucket the cutover converted.
-var ErrConvertedStore = errors.New("bus: the selection bucket says the cutover converted every session consumer to a fresh name")
-
-// RefuseConvertedStore is, in the fixed mode, the refusal of a selection bucket the cutover
-// converted (ErrConvertedStore, naming ENVOY_CONSUMER_NAMES): a bucket whose sentinel says the
-// cutover is done holds the sessions' fresh names, and today's fixed names must not run over it. A
-// bucket that does not exist, a sentinel that is missing, and a marker that is not done (none, or
-// rolled back) are no marker, and so is a read the connection's user may not make, which answers
-// ErrConsumerNotGranted for its caller to log: a hub whose listener grant has no read of the bucket
-// was never given the window's grants, which come before the bucket's creation, and the listener
-// beside Dispatch holds no such read at all. Any other failed read (no connection, a timeout) is its
-// error, which tells nothing, and the caller reads again rather than run today's names unread. In
-// the fresh mode it answers nil: that mode refuses every call until the marker says done.
-func (s *SessionConsumers) RefuseConvertedStore(ctx context.Context) error {
+// ReadMarker is, in the fixed mode, the read of the selection bucket's cutover marker on the
+// session consumers' connection (Client.ReadMarker), which opens their marker gate (GateOnMarker)
+// for that connection when the cutover did not convert the store. In the fresh mode it answers nil:
+// that mode refuses every call until the marker says done.
+func (s *SessionConsumers) ReadMarker(ctx context.Context) error {
 	if s.fresh != nil {
 		return nil
 	}
-	state, err := s.client.SelectionStore().State(ctx)
-	switch {
-	case errors.Is(err, consumernames.ErrNoStore), errors.Is(err, consumernames.ErrNoSentinel):
-		return nil
-	case errors.Is(err, ErrPublishDenied):
-		return fmt.Errorf("%w: %w", ErrConsumerNotGranted, err)
-	case err != nil:
-		return fmt.Errorf("bus: read the session consumers' selection bucket %s before running fixed names: %w", consumernames.SessionBucket, err)
-	case state.Cutover == consumernames.CutoverDone:
-		return fmt.Errorf("%w: %s=%s runs today's fixed names, and the bucket %s holds fresh ones: set %s=%s", ErrConvertedStore, consumernames.ModeEnvVar, consumernames.ModeFixed, consumernames.SessionBucket, consumernames.ModeEnvVar, consumernames.ModeFresh)
-	}
-	return nil
+	return s.client.ReadMarker(ctx)
 }
 
-// WatchConversion has, in the fixed mode, every NATS connection of s read the selection bucket's
-// marker again (RefuseConvertedStore) once it is made, a reconnect in place or a connection dialled
-// to replace a closed one, and calls converted with the refusal when the marker says done: a
-// conversion run while this process was cut off must not have today's names run over it once it is
-// back. No marker and a read the grant refuses change nothing; any other failed read fails the
-// connection's hook run, which the client's recovery runs again. It does nothing in the fresh mode.
-func (s *SessionConsumers) WatchConversion(converted func(error)) {
-	if s.fresh != nil || converted == nil {
-		return
+// GateOnMarker gives the session consumers' connection, in the fixed mode, its gate on the
+// selection bucket's cutover marker (Client.GateOnMarker): every consumer call of theirs (Ensure,
+// UpdateFilter, RestartAtFloor, Delete, Info and the listing), and KeepListed, is refused with
+// ErrMarkerUnread until a read of the marker on the connection it would go out on answers that the
+// cutover did not convert the store. It does nothing in the fresh mode.
+func (s *SessionConsumers) GateOnMarker(converted func(error)) {
+	if s.fresh == nil {
+		s.client.GateOnMarker(converted)
 	}
-	s.client.AddReconnectHook(func(ctx context.Context, _ *nats.Conn) error {
-		err := s.RefuseConvertedStore(ctx)
-		switch {
-		case err == nil, errors.Is(err, ErrPublishDenied):
-			return nil
-		case errors.Is(err, ErrConvertedStore):
-			converted(err)
-			return nil
-		}
-		return err
-	})
 }
 
 // Fresh reports whether s runs in the fresh mode.
@@ -180,8 +166,9 @@ func (s *SessionConsumers) ObserveNames(observe func(consumernames.Operation, co
 // SelectionHealth is, in the fresh mode, why session-consumer calls are refused, naming what is
 // missing: the selection bucket, its sentinel, or the cutover marker, read again here while one
 // of them refused the last check or call, so a bucket the operator creates after the listener
-// starts clears it at the next probe; else the last session whose key was found deleted, until a
-// call for that session is admitted. nil when neither stands, and always nil in the fixed mode.
+// starts clears it at the next probe; else the last session whose key was found deleted or holding
+// no record of its own (consumernames.ErrMalformedRecord), until a call for that session is
+// admitted. nil when neither stands, and always nil in the fixed mode.
 // The listener's /healthz names it, within ctx.
 func (s *SessionConsumers) SelectionHealth(ctx context.Context) error {
 	if s.fresh == nil {
@@ -219,10 +206,10 @@ func (s *SessionConsumers) CheckSelection(ctx context.Context) error {
 
 // freshAnswer records err for SelectionHealth and returns it in this package's vocabulary. Only an
 // answer that proves the store admitted the call clears a refusal: a call that succeeded clears the
-// store's and its own session's key's, and a deleted key, which the store read to find, clears the
-// store's. Any other failure leaves both as they were, since it may never have reached the store (a
-// refused key, a lost connection), and SelectionHealth reads the sentinel again while the store's
-// refusal stands.
+// store's and its own session's key's, and a deleted key or one holding no record of its own,
+// which the store read to find, clears the store's and names that key. Any other failure leaves
+// both as they were, since it may never have reached the store (a refused key, a lost connection),
+// and SelectionHealth reads the sentinel again while the store's refusal stands.
 func (s *SessionConsumers) freshAnswer(sessionID string, err error) error {
 	switch {
 	case err == nil:
@@ -231,7 +218,7 @@ func (s *SessionConsumers) freshAnswer(sessionID string, err error) error {
 			s.fresh.key.CompareAndSwap(refusal, nil)
 		}
 		return nil
-	case errors.Is(err, consumernames.ErrRecordDeleted):
+	case errors.Is(err, consumernames.ErrRecordDeleted), errors.Is(err, consumernames.ErrMalformedRecord):
 		s.fresh.storeRefusal.Store(nil)
 		s.fresh.key.Store(&keyRefusal{sessionID: sessionID, err: err})
 	case errors.Is(err, consumernames.ErrCutoverNotRun), consumernames.IsSelectionStateLost(err):
@@ -282,13 +269,7 @@ func (s *SessionConsumers) freshCreate(sessionID string, filters []string, resul
 		if clamped {
 			startSeq = bound.firstStart()
 		}
-		config := jetstream.ConsumerConfig{
-			Durable:       name,
-			DeliverPolicy: jetstream.DeliverByStartSequencePolicy,
-			OptStartSeq:   startSeq,
-			Metadata:      map[string]string{consumernames.LogicalMetadataKey: sessionID, SessionIDMetadataKey: sessionID},
-		}
-		s.applySettings(&config, filters)
+		config := s.freshConfig(name, sessionID, startSeq, filters)
 		s.pendingMu.Lock()
 		fault := s.createFault
 		s.pendingMu.Unlock()
@@ -324,6 +305,22 @@ func (s *SessionConsumers) freshCreate(sessionID string, filters []string, resul
 		*result = SessionConsumerStart{Created: true, Name: name, StartSeq: startSeq, Gap: startSeq < bound.firstSeq, StreamID: bound.id, AckFloor: startSeq - 1}
 		return info, nil
 	}
+}
+
+// freshConfig is the whole configuration the fresh mode creates sessionID's consumer name with, at
+// stream sequence startSeq, filtering on filters: today's settings (applySettings), the session's
+// metadata (sessionConsumerMetadata), and its start. The create sends it (freshCreate), the
+// adoption check compares a candidate with it (ConsumerAdoptable), and the correction writes it
+// (updated, CorrectedConfig).
+func (s *SessionConsumers) freshConfig(name, sessionID string, startSeq uint64, filters []string) jetstream.ConsumerConfig {
+	config := jetstream.ConsumerConfig{
+		Durable:       name,
+		DeliverPolicy: jetstream.DeliverByStartSequencePolicy,
+		OptStartSeq:   startSeq,
+		Metadata:      sessionConsumerMetadata(sessionID),
+	}
+	s.applySettings(&config, filters)
+	return config
 }
 
 // loweredStart is what the first-create rule did to a caller's start, for create's INFO line.
@@ -362,18 +359,26 @@ func (s *SessionConsumers) freshFirst(sessionID string, startSeq uint64, lowered
 	}
 }
 
-// createdStart is what a call that published sel's current answers: the create's own result
-// when this call created it, else the current's info as Step 0 adopted it.
-func createdStart(sel consumernames.Selection, result SessionConsumerStart) SessionConsumerStart {
+// published is what a call that published sel's current answers: the create's own result when
+// this call created it; else the current as Names adopted it (Step 0, or a create whose outcome
+// was unknown), which is first brought to the whole configuration the family's create gives, this
+// call's filters among them (update, updated), so nothing is delivered from it under a filter or a
+// setting this call did not give it. Names adopted it only with its owner and start as the family
+// creates them, and every setting no update changes as the family's create gives it
+// (ConsumerAdoptable).
+func (s *SessionConsumers) published(ctx context.Context, sel consumernames.Selection, result SessionConsumerStart, filters []string) (SessionConsumerStart, error) {
 	if result.Name == sel.Record.Current {
-		return result
+		return result, nil
 	}
 	start := SessionConsumerStart{Created: true, Name: sel.Record.Current}
-	if sel.Info != nil {
-		start.StartSeq = sel.Info.Config.OptStartSeq
-		start.AckFloor = ackFloor(sel.Info)
+	if sel.Info == nil {
+		return start, nil
 	}
-	return start
+	start.StartSeq = sel.Info.Config.OptStartSeq
+	start.AckFloor = ackFloor(sel.Info)
+	changed, err := s.update(ctx, sel.Record.Current, sel.Info.Config, filters)
+	start.Updated = changed
+	return start, err
 }
 
 // freshEnsure is Ensure in the fresh mode: the session's current consumer, its filters and
@@ -396,7 +401,7 @@ func (s *SessionConsumers) freshEnsure(ctx context.Context, sessionID string, su
 		return SessionConsumerStart{}, err
 	}
 	if created {
-		return createdStart(sel, result), nil
+		return s.published(ctx, sel, result, filters)
 	}
 	changed, err := s.update(ctx, sel.Record.Current, sel.Info.Config, filters)
 	return SessionConsumerStart{Name: sel.Record.Current, StartSeq: sel.Info.Config.OptStartSeq, AckFloor: ackFloor(sel.Info), Updated: changed}, err
@@ -464,7 +469,7 @@ func (s *SessionConsumers) freshRestartAtFloor(ctx context.Context, sessionID st
 			return SessionConsumerStart{}, fmt.Errorf("%w: session %s", ErrSessionConsumerNotFound, sessionID)
 		}
 		if sel.Created {
-			return createdStart(sel, result), nil
+			return s.published(ctx, sel, result, filters)
 		}
 		name, info := sel.Record.Current, sel.Info
 		if info.NumAckPending == 0 {
@@ -476,14 +481,14 @@ func (s *SessionConsumers) freshRestartAtFloor(ctx context.Context, sessionID st
 		}
 		replaced, err := s.fresh.names.Replace(ctx, sel, ackFloor(info)+1, create)
 		if errors.Is(err, consumernames.ErrConflict) {
-			if conflicts++; conflicts <= 16 {
+			if conflicts++; conflicts <= consumernames.MaxConflicts {
 				continue
 			}
 		}
 		if err := s.freshAnswer(sessionID, err); err != nil {
 			return SessionConsumerStart{}, err
 		}
-		return createdStart(replaced, result), nil
+		return s.published(ctx, replaced, result, filters)
 	}
 }
 
@@ -506,6 +511,9 @@ func (s *SessionConsumers) freshKeepListed(ctx context.Context, sessionID string
 	}
 	if sel.Record.Current != info.Name {
 		return SessionConsumerStart{}, false, nil
+	}
+	if err := s.freshAnswer(sessionID, s.fresh.names.Owns(sessionID, info)); err != nil {
+		return SessionConsumerStart{}, false, err
 	}
 	state, err := s.streamState(ctx)
 	if err != nil {
@@ -562,7 +570,8 @@ func (s *SessionConsumers) EndReplay(ctx context.Context, held func(name string)
 
 // SessionConsumerSets lists every session consumer of the fresh mode the stream holds, by the
 // session its metadata names, current and retired alike, with the paged consumer list; in the
-// fixed mode each session's one consumer, as ListSessionConsumers reads it.
+// fixed mode each session's one consumer, as ListSessionConsumers reads it, so the listener's sweep
+// lists both modes through this one call.
 func (s *SessionConsumers) SessionConsumerSets(ctx context.Context) (map[string][]*jetstream.ConsumerInfo, error) {
 	if s.fresh == nil {
 		listed, err := s.ListSessionConsumers(ctx)

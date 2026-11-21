@@ -74,6 +74,8 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // both before it returns, and returns the error of a connect that fails with neither intake
 // started. Without the GitHub App neither intake reads anything, so neither connects. broker is the
 // server's event broker, through which Intake appends issue.deployed (RecordDeployedEvents).
+// pushes is what Intake hands a push of a branch to (PushImports): in the server, the
+// architecture importer, which imports nothing without the App either. nil hands pushes nowhere.
 //
 // leases is each intake's reservation of the lease pool (ReserveIntakeLeases), taken by the
 // caller while it wires itself rather than here, so that a configuration these intakes are idle
@@ -111,10 +113,16 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // existed, and reads nothing of intake_consumers. In the fresh mode each intake's client only reads
 // the stream, and each take-over connects its own generation's connection through connect
 // (fresh_names.go), with its selection records in pool's intake_consumers.
-func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, naming IntakeNaming) (stop func(), err error) {
+func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, naming IntakeNaming) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
+	}
+	var records *consumernames.PGStore
+	if naming.Mode == consumernames.ModeFresh {
+		if records, err = consumernames.NewPGStore(consumernames.DispatchFamily, pool); err != nil {
+			return nil, fmt.Errorf("the intakes' selection store: %w", err)
+		}
 	}
 	intakeClient, err := connect(intakeConnectionName)
 	if err != nil {
@@ -127,10 +135,10 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	}
 	settings := newSettingsCache(pool, settingsWake)
 	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings)
+	intake.pushes = pushes
 	job := newJobIntake(jobClient, pool, leases.jobs, github, realJobClock{}, settings)
 	var readers []*bus.Client
 	if naming.Mode == consumernames.ModeFresh {
-		records := consumernames.NewPGStore(pool)
 		for _, durable := range []*heldDurable{&intake.heldDurable, &job.heldDurable} {
 			readers = append(readers, durable.nats)
 			durable.nameFreshly(records, connect, durable.nats, naming.Steps)

@@ -22,14 +22,15 @@ import (
 // The daemon's durables on fresh names (ConsumerSpec.Names, consumernames.ModeFresh). Each of the
 // three durables keeps its fixed name, legion-go-<project>-<kind>, as its logical name, and every
 // creation of it is a physical name never made before, <logical>~<nuid>, which the logical name's
-// selection record in the daemon's own Postgres selects (intake_consumers, consumernames.PGStore).
+// selection record in the daemon's own Postgres selects (intake_consumers, consumernames.PGStore of
+// the project's consumernames.DaemonFamily, daemonStore).
 // A consumer state write that nats-server finishes after the consumer's delete then lands in a
 // directory no consumer reads, never in the state of the next consumer of that name: on fixed names
 // such a write can fail the next create (10012) or hand it the deleted consumer's state, and a
 // restart then skips messages.
 //
 // The protocol is consumernames.Names: every call is refused until the operator's convert has
-// written the cutover marker "done" into the database's sentinel, and a missing table, sentinel or
+// written the cutover marker "done" into the project's sentinel, and a missing table, sentinel or
 // record is a refusal, never a fall back to the fixed names. The daemon adds three rules of its
 // own. A logical name with a checkpoint (consumer_positions) and no record stops, since a lost
 // record is not a new project (missingRecord). A new project starts at the next message, DeliverNew
@@ -42,9 +43,9 @@ import (
 // physical name the step was on ("" when none was read), the step and the error. There is no
 // metric for it.
 //
-// On fixed names the daemon reads one thing of all this: the sentinel's cutover marker, at each
-// boot, and it refuses to start once the marker is "done" (refuseConvertedStore), since the fixed
-// names it would create are the ones the cutover converted away.
+// On fixed names the daemon reads one thing of all this: the project's sentinel's cutover marker,
+// at each boot, and it refuses to start once the marker is "done" (refuseConvertedStore), since the
+// fixed names it would create are the ones the cutover converted away.
 
 // nameNotSettledLine is the message of the ERROR line a failed name step writes (durableNames.failed).
 const nameNotSettledLine = "intake: a durable consumer's physical name could not be settled"
@@ -58,16 +59,21 @@ const operationUpdate consumernames.Operation = "update"
 var errCheckpointWithoutRecord = errors.New("intake: a durable consumer has a checkpoint and no selection record")
 
 // refuseConvertedStore refuses a boot on fixed names whose database the operator's convert has
-// marked converted (the sentinel's cutover "done"): its durables are fresh names now, and creating
-// the fixed ones again would run the race the cutover removed. What says there is no marker is
-// today's code, which opens the fixed names: no table, no sentinel, a read the database refuses
-// (insufficient_privilege: a login that may not read the table is a deployment that never ran the
-// cutover on it), a sentinel before any cutover, and one a rollback wrote ("rolled_back", which
-// restored the fixed names). A read that says nothing either way, no connection or a timeout, is
-// made again, from a quarter second doubling to five, until it answers or ctx ends, and then the
-// boot ends on its error: the fixed names never run on a marker the boot did not read.
-func refuseConvertedStore(ctx context.Context, pool Pool) error {
-	store := consumernames.NewPGStore(pool)
+// marked converted for project (its sentinel's cutover "done"): its durables are fresh names now,
+// and creating the fixed ones again would run the race the cutover removed. What says there is no
+// marker is today's code, which opens the fixed names: no table, no sentinel, a read the database
+// refuses (insufficient_privilege: a login that may not read the table is a deployment that never
+// ran the cutover on it), a sentinel before any cutover, and one a rollback wrote ("rolled_back",
+// which restored the fixed names). A read that says nothing either way, no connection or a
+// timeout, or a sentinel row that is no sentinel of the project's (ErrMalformedSentinel, never a
+// missing one), is made again, from a quarter second doubling to five, until it answers or ctx
+// ends, and then the boot ends on its error: the fixed names never run on a marker the boot did
+// not read. A project no store can be made for (daemonStore) ends the boot at once.
+func refuseConvertedStore(ctx context.Context, pool Pool, project string) error {
+	store, err := daemonStore(project, pool)
+	if err != nil {
+		return err
+	}
 	wait := markerReadWait
 	for {
 		state, err := store.State(ctx)
@@ -96,6 +102,18 @@ const (
 func readRefused(err error) bool {
 	var pg *pgconn.PgError
 	return errors.As(err, &pg) && pg.Code == "42501"
+}
+
+// daemonStore is project's selection store in pool: consumernames.PGStore of
+// consumernames.DaemonFamily(project), whose keys are that project's alone. A project the library
+// refuses as a family (empty, or holding a '/', white space or a control character) is refused,
+// naming the project and the family.
+func daemonStore(project string, pool Pool) (*consumernames.PGStore, error) {
+	family, err := consumernames.DaemonFamily(project)
+	if err != nil {
+		return nil, fmt.Errorf("the selection store of project %q: %w", project, err)
+	}
+	return consumernames.NewPGStore(family, pool)
 }
 
 // durableNames is the daemon's side of the protocol for its three durables on fresh names.
@@ -135,10 +153,14 @@ func GenerationConnection(physical string) string {
 	return logical + "/" + strings.TrimPrefix(physical, logical+"~")
 }
 
-func newDurableNames(stream jetstream.Stream, pool Pool, spec ConsumerSpec) *durableNames {
+func newDurableNames(stream jetstream.Stream, pool Pool, spec ConsumerSpec) (*durableNames, error) {
+	store, err := daemonStore(spec.Project, pool)
+	if err != nil {
+		return nil, err
+	}
 	d := &durableNames{stream: stream, pool: pool, logger: spec.Logger, connect: spec.Connect, generations: map[string]*generation{}}
 	d.names = consumernames.New(consumernames.Config{
-		Store:         consumernames.NewPGStore(pool),
+		Store:         store,
 		Server:        durableServer{d},
 		Prefix:        func(logical string) string { return logical },
 		Floor:         func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
@@ -151,7 +173,7 @@ func newDurableNames(stream jetstream.Stream, pool Pool, spec ConsumerSpec) *dur
 			return err
 		},
 	})
-	return d
+	return d, nil
 }
 
 // on is JetStream on physical's connection, opened now if it is not open. The dial runs outside

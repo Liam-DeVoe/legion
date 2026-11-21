@@ -300,7 +300,7 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	}
 	spec.Logger.Info("intake: the durable consumers' naming", "consumer_names", string(spec.Names))
 	if spec.Names == consumernames.ModeFixed {
-		if err := refuseConvertedStore(ctx, pool); err != nil {
+		if err := refuseConvertedStore(ctx, pool, spec.Project); err != nil {
 			return nil, err
 		}
 	}
@@ -310,7 +310,9 @@ func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec 
 	}
 	consumers := &Consumers{spec: spec, pool: pool, js: js, stream: stream, repos: slices.Clone(spec.Repositories)}
 	if spec.Names == consumernames.ModeFresh {
-		consumers.names = newDurableNames(stream, pool, spec)
+		if consumers.names, err = newDurableNames(stream, pool, spec); err != nil {
+			return nil, err
+		}
 	}
 	opened := false
 	defer func() {

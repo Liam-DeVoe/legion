@@ -79,7 +79,7 @@ func TestABucketDeletedBetweenTheStartsWaitAndItsOpenHoldsTheStart(t *testing.T)
 	}
 	var deps atomic.Pointer[listenerDeps]
 	recorder := httptest.NewRecorder()
-	healthzHandler(&deps, missing).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	healthzHandler(&deps, missing, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health struct {
 		Status  string   `json:"status"`
 		Missing []string `json:"missing_buckets"`

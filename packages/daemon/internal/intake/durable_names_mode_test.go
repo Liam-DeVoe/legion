@@ -39,11 +39,11 @@ func freshSpec(t testing.TB, logs *lockedBuffer, js jetstream.JetStream) Consume
 	return spec
 }
 
-// cutover writes the daemon database's sentinel with marker, as the operator's convert writes
-// "done" and its restore "rolled_back".
+// cutover writes the sentinel of the daemon database's store of captureProject with marker, as the
+// operator's convert writes "done" and its restore "rolled_back".
 func cutover(t testing.TB, pool *pgxpool.Pool, marker string) {
 	t.Helper()
-	if _, err := consumernames.NewPGStore(pool).WriteSentinel(context.Background(), consumernames.StoreState{Cutover: marker}, 0); err != nil {
+	if _, err := selectionStore(t, pool).WriteSentinel(context.Background(), consumernames.StoreState{Cutover: marker}, 0); err != nil {
 		t.Fatalf("write the sentinel %q: %v", marker, err)
 	}
 }

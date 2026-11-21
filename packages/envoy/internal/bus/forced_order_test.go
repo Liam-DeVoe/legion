@@ -45,6 +45,9 @@ const (
 	// consumers' 60 s ack wait, so a message the late state marked pending is not delivered again
 	// within it. A read that has every message it waits for ends before it (delivered).
 	forcedWindow = 8 * time.Second
+	// forcedLed bounds how long a read waits for its first pull to start, which waits for the
+	// consumer to be led (forcedPull), before the read's window begins (delivered).
+	forcedLed = 60 * time.Second
 )
 
 // forcedTopology is where a row's stream lives (forcedorder.Topology).
@@ -149,9 +152,17 @@ func (r *forcedRig) publish(t *testing.T, subject string, n int) []uint64 {
 
 // delivered reads what a pull of the consumer delivers, acking each, until it has every one of
 // until or forcedWindow passes, and answers the stream sequences, sorted and once each. pull starts
-// a pull; a pull that ends early (a connection the restart replaced) is started again.
+// a pull; a pull that ends early (a connection the restart replaced) is started again. The window
+// begins once the first pull has started, within forcedLed: a pull starts only on a consumer that
+// is led (forcedPull), which a registration can answer before it is.
 func delivered(t *testing.T, until []uint64, pull func(context.Context) (*SessionPull, error)) []uint64 {
 	t.Helper()
+	ledCtx, cancelLed := context.WithTimeout(context.Background(), forcedLed)
+	p, err := pull(ledCtx)
+	cancelLed()
+	if err != nil {
+		p = nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), forcedWindow)
 	defer cancel()
 	var seqs []uint64
@@ -164,10 +175,12 @@ func delivered(t *testing.T, until []uint64, pull func(context.Context) (*Sessio
 		return true
 	}
 	for ctx.Err() == nil && !complete() {
-		p, err := pull(ctx)
-		if err != nil {
-			time.Sleep(100 * time.Millisecond)
-			continue
+		if p == nil {
+			if p, err = pull(ctx); err != nil {
+				p = nil
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
 		}
 		for !complete() {
 			msg, err := p.Next(ctx)
@@ -177,6 +190,10 @@ func delivered(t *testing.T, until []uint64, pull func(context.Context) (*Sessio
 			seqs = append(seqs, msg.StreamSeq)
 			_ = msg.Ack()
 		}
+		p.Stop()
+		p = nil
+	}
+	if p != nil {
 		p.Stop()
 	}
 	slices.Sort(seqs)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 )
 
@@ -31,7 +32,7 @@ func TestAnIncompletePassStillAppliesItsRefusals(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			now := time.Now()
-			services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+			services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}, {Kind: config.NATSDaemon, Account: slowDaemonAccount}}
 			tokens := map[string]platformToken{"pub-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 			dispatch := &dispatchAnswers{
 				answers: map[string][]string{"PUB": {"acme/pub"}, "OTHER": {"acme/other"}},
@@ -63,7 +64,7 @@ func TestAnIncompletePassStillAppliesItsRefusals(t *testing.T) {
 // pass's visible answer replace the held refusal: the daemon is admitted on it.
 func TestAnIncompletePassGivesBackNoRefusal(t *testing.T) {
 	now := time.Now()
-	services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: slowDaemonAccount}}
+	services := []config.NATSService{{Kind: config.NATSDaemon, Account: pubDaemonAccount}, {Kind: config.NATSDaemon, Account: slowDaemonAccount}}
 	tokens := map[string]platformToken{"pub-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	dispatch := &dispatchAnswers{
 		answers: map[string][]string{"PUB": {"acme/pub"}, "OTHER": {"acme/other"}},

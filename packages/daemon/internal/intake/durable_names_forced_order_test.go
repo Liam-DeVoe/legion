@@ -456,7 +456,7 @@ func TestForcedOrderACreateNobodyAnsweredIsRetiredAndNeverSelected(t *testing.T)
 	}
 	calls.noNameCreatedTwice(t, spec.Project)
 
-	listed, err := consumernames.NewPGStore(pool).List(context.Background())
+	listed, err := selectionStore(t, pool).List(context.Background())
 	if err != nil {
 		t.Fatalf("status: list the daemon's records: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestForcedOrderACreateNobodyAnsweredIsRetiredAndNeverSelected(t *testing.T)
 		t.Fatalf("status lists %s as %+v, want %s retired", wake, listed[wake], candidate)
 	}
 	cleanup := consumernames.New(consumernames.Config{
-		Store: consumernames.NewPGStore(pool), Server: operatorServer{stream},
+		Store: selectionStore(t, pool), Server: operatorServer{stream},
 		Prefix: func(logical string) string { return logical }, Owner: "the operator's cleanup",
 		Floor:    func(info *jetstream.ConsumerInfo) uint64 { return info.AckFloor.Stream },
 		StreamID: func(context.Context) (string, error) { return "", nil },

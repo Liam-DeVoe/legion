@@ -73,6 +73,11 @@ type ListenerConfig struct {
 	// streams and makes none (the operator's envoy-infra streams update makes them). False leaves
 	// the variable unset, and the listener makes and reconciles its streams as before.
 	StreamsOperatorMade bool
+	// HostListener renders ENVOY_LISTENER_ROLE=host (bus.ListenerRoleEnvVar): the listener of a
+	// host, connecting as the NATS user that host's sessions share (HostPermissions), which runs
+	// fixed consumer names for good and reads no cutover marker its user may not read. host:Listener
+	// sets it only under its hostUser input; every other listener leaves it false and renders no role.
+	HostListener bool
 }
 
 // TailnetHostName is the address a client reaches the listener of the tailnet machine hostname by,
@@ -315,10 +320,11 @@ func (c ListenerConfig) Check() error {
 // bus.SenderMessagesPerMinuteEnvVar then bus.SenderMessageBurstEnvVar, each only when its field
 // is above 0 too. aws/rendering's ListenerEnv sets no NATSReplicas here and writes its own
 // ENVOY_NATS_REPLICAS after all of Env's variables, the sender limit's included. The broker check
-// comes last, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
-// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and only on a config that sets it, so
-// a listener without one renders what it always rendered, byte for byte; and after it
-// ENVOY_STREAMS_OPERATOR_MADE=1, only on a config that sets StreamsOperatorMade, for that reason too.
+// comes next, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
+// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and only on a config that sets it; after
+// it ENVOY_STREAMS_OPERATOR_MADE=1, only on a config that sets StreamsOperatorMade; and the host
+// role last, only on a host's listener, so a listener without any of them renders what it always
+// rendered, byte for byte.
 func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	if err := c.Check(); err != nil {
 		return nil, err
@@ -383,6 +389,9 @@ func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	}
 	if c.StreamsOperatorMade {
 		env = append(env, bus.StreamsOperatorMadeEnvVar+"=1")
+	}
+	if c.HostListener {
+		env = append(env, bus.ListenerRoleEnvVar+"="+bus.ListenerRoleHost)
 	}
 	return env, nil
 }

@@ -62,7 +62,7 @@ func TestAMissingRoleBucketLeavesTheInterestWatcherInEveryCheck(t *testing.T) {
 	var state atomic.Pointer[listenerDeps]
 	state.Store(&listenerDeps{client: client, consumer: consumer, caches: caches})
 	recorder := httptest.NewRecorder()
-	healthzHandler(&state, missing).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	healthzHandler(&state, missing, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var body map[string]any
 	_ = json.Unmarshal(recorder.Body.Bytes(), &body)
 	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(body["error"].(string), "interest KV watcher") {
