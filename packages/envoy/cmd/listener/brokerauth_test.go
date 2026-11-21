@@ -139,10 +139,10 @@ func readOnlyAnswer(session, service, jkt string) ciphertoken.Introspection {
 	}
 }
 
-// resultsAnswer is the broker's answer about a token a result entry minted for one CI run, the one
-// token Dispatch's results route takes: the one scope results, the project scope results, a
-// person, one project, and the whole run (internal/cipher/oauth,
-// TestAResultEntrysRunIntrospectsWithItsRun). The listener's verifier is built without the switch
+// resultsAnswer is the broker's answer about a results token it minted for one CI run's result
+// grant, the one token Dispatch's results route takes: the one scope results, the project scope
+// results, a person, one project, and the whole run (internal/cipher/oauth,
+// TestAResultGrantHoldsItsRun). The listener's verifier is built without the switch
 // that serves one (ciphertoken.Options.ServesResults), so such a token is no session's credential
 // here.
 func resultsAnswer(session, jkt string) ciphertoken.Introspection {
@@ -677,15 +677,16 @@ func TestAPIAuthReadsOnlyTheDPoPSchemeAsABrokerToken(t *testing.T) {
 }
 
 // R9, the whole of it for this credential: with none of the broker variables set the listener
-// is the listener it was before this credential existed, whatever a client presents. A client
-// sends `Authorization: DPoP` whenever it has a broker and an identity to trade and no Envoy
+// admits and refuses as it did before this credential existed, whatever a client presents. A
+// client sends `Authorization: DPoP` whenever it has a broker and an identity to trade and no Envoy
 // bearer is set (packages/envoy-client/src/envoy-settings.ts), so it presents one to every
 // listener it is pointed at — including the no-bearer listeners a GCP VM and the clustered hub
 // run, one on loopback and one off it behind its NetworkPolicy, which take no broker token. Such
 // a listener reads that header as it read every Authorization header it did not know: the open
 // one serves the request, the one that requires a bearer answers the 401 it always answered. It
 // asks the broker nothing, binds no caller, and writes no refusal of a credential kind it does
-// not take.
+// not take. The open one counts the admission as none_broker_token and warns once a minute
+// (TestEveryAdmittedRequestCountsItsCredential holds both), so the census sees it.
 func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	broker := ciphertokentest.NewStubBroker(t)
 	caller := ciphertokentest.NewCaller(t)
@@ -693,10 +694,7 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	broker.Says(token, sessionAnswer("ses_elsewhere", "ada@example.com", caller.JKT()))
 
 	issuer := oidctest.New(t)
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
-	}
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
 
 	bound := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -707,7 +705,7 @@ func TestAPIAuthWithNoBrokerSettingIsTheListenerItAlwaysWas(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		shared     string
-		verifier   *oidc.Verifier
+		verifier   *oidc.LazyVerifier
 		wantStatus int
 	}{
 		{

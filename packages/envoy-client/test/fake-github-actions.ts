@@ -107,6 +107,9 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
   // reads as a run's token until the broker checks the signature.
   const forger = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const installations = new Map(Object.entries(options.installations ?? {}));
+  const installationTokens = new Map(
+    [...installations.values()].map((id) => [id, fixtureSecret("install")])
+  );
   const runs = new Map<string, ActionsRun>();
   const checkRuns = new Map<string, ActionsRun>();
   // "<owner>/<name>@<sha>:<dir>" → file name → blob id, and blob id → content.
@@ -114,17 +117,6 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
   const blobs = new Map<string, string>();
   // "<owner>/<name>:<branch>" → the branch's head.
   const branches = new Map<string, string>();
-  // Installation id → the installation token minted for it, random as a real one is
-  // (`fixtureSecret`), so the clients that hold it scrub no word of the lines a test reads.
-  const installationTokens = new Map<string, string>();
-  const installationToken = (id: string | number): string => {
-    let minted = installationTokens.get(String(id));
-    if (minted === undefined) {
-      minted = fixtureSecret("ghs");
-      installationTokens.set(String(id), minted);
-    }
-    return minted;
-  };
 
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -211,7 +203,7 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
       if (request.method === "POST" && mint !== null) {
         return Response.json(
           {
-            token: installationToken(mint[1] ?? ""),
+            token: installationTokens.get(Number(mint[1])),
             expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
           },
           { status: 201 }
@@ -225,7 +217,7 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
         const rest = repositoryRead[3] ?? "";
         const id = installations.get(repository);
         if (id === undefined) return notFound(repository);
-        if (request.headers.get("Authorization") !== `Bearer ${installationToken(id)}`) {
+        if (request.headers.get("Authorization") !== `Bearer ${installationTokens.get(id)}`) {
           return Response.json({ message: "Requires authentication" }, { status: 401 });
         }
         if (rest === "") return Response.json({ full_name: repository, default_branch: "main" });

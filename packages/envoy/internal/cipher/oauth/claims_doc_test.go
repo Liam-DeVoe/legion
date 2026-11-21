@@ -156,10 +156,14 @@ func issuedClaims(t *testing.T) []string {
 
 	// session is the session name each request names: claimsSessionName, but for the run of the
 	// result entry's workflow, whose entry fixes the session it writes under and refuses another.
+	// requested is the token type the request asks for: none, which is an access token, but for
+	// that run, which is granted the airlock placeholder alone; its grant carries the claims a
+	// results token minted from it carries.
 	subjects := []struct {
 		tokenType    string
 		token, actor map[string]any
 		session      string
+		requested    string
 	}{{
 		tokenType: oauthwire.SubjectTokenTypeKubernetes,
 		token: map[string]any{
@@ -177,6 +181,7 @@ func issuedClaims(t *testing.T) []string {
 	}, {
 		tokenType: oauthwire.SubjectTokenTypeGitHub,
 		session:   exchange.ResultSession(claimsRepository, claimsResultsWorkflow),
+		requested: oauthwire.TokenTypeAirlockPlaceholder,
 		token: map[string]any{
 			"aud":                claimsGitHubAudience,
 			"repository":         claimsRepository,
@@ -232,6 +237,9 @@ func issuedClaims(t *testing.T) []string {
 				oauthwire.FormSession: {name},
 			},
 			Session: session,
+		}
+		if subject.requested != "" {
+			request.Form.Set(formRequestedTokenType, subject.requested)
 		}
 		if subject.actor != nil {
 			// Where the library puts an actor token it has validated, which decide reads a

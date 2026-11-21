@@ -1229,8 +1229,8 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 // notes.MaxFileSize is notes.ErrFileTooLarge (notes.CheckSize), each before
 // any blob is fetched, and so is a decoded blob over MaxFileSize; a blob that
 // vanished between the listing and the read fails the whole set. A path is
-// GitHub's text (Dir), so the errors of notes.CheckSet and notes.CheckSize name
-// it as ShownBody shows it.
+// GitHub's text (Dir), so the errors of notes.CheckSet and notes.CheckSize
+// name it as ShownBody shows it.
 func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listing Dir) (map[string][]byte, error) {
 	if c == nil {
 		return nil, ErrNoAppKey

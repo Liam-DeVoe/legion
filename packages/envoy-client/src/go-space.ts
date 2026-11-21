@@ -1,10 +1,24 @@
+import { goBlankPattern } from "@legion/contracts/go-blank";
+
 /**
- * Patterns of Go's white space, the set Dispatch trims a value by (`strings.TrimSpace`), for the
- * `dispatch` command's flags and URL paths. The set itself is `GO_SPACE` of
- * `@legion/contracts/go-blank`, written out once there beside `goBlankPattern`, whose comment says
- * what it holds, where JavaScript's `trim` differs from it, and which tests hold it to Go.
+ * Go's white space, the set Dispatch trims a value by (`strings.TrimSpace`), as the contents of a
+ * character class: the class `goBlankPattern` is written with (`@legion/contracts/go-blank`). Its
+ * comment names the characters, the two on which JavaScript's `trim` differs from Go, and the
+ * tests that hold the set to Go's own `unicode.IsSpace`. The set is read from that pattern, so it
+ * is written out in one place.
  */
-import { GO_SPACE } from "@legion/contracts/go-blank";
+const GO_SPACE = goSpaceClass();
+
+/** The character class of `goBlankPattern`, which is written `^[…]*$`. */
+function goSpaceClass(): string {
+  const set = /^\^\[(.+)\]\*\$$/u.exec(goBlankPattern.source)?.[1];
+  if (set === undefined) {
+    throw new Error(
+      `goBlankPattern (@legion/contracts/go-blank) is no longer one character class: ${goBlankPattern.source}`
+    );
+  }
+  return set;
+}
 
 /** Go's white space at either end of a text, which `strings.TrimSpace` takes away. */
 export const goSpaceAtEnds = new RegExp(`^[${GO_SPACE}]+|[${GO_SPACE}]+$`, "gu");

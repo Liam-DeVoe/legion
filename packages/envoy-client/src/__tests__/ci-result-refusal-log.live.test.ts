@@ -92,6 +92,9 @@ describe.skipIf(!dispatchStackEnabled)("a CI job's refusal, as its log holds it"
     });
     const child = Bun.spawn(
       [
+        stack.agentSecrets,
+        "result-grant",
+        "--",
         process.execPath,
         ENTRY,
         "result",

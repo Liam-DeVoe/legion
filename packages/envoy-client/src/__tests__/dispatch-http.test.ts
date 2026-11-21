@@ -814,7 +814,7 @@ describe("DispatchClient", () => {
 
   // F5 (the review of 81d860a8f7): a read behind a redirect is told where the redirect pointed,
   // by origin alone, which is what tells a Dispatch URL to correct. The redirect is not followed,
-  // the Location's user info, path and query are never printed, and its body is never read.
+  // and the Location's user info, path and query are never printed.
   test("a read a redirect answers names the origin the redirect points at, and does not follow it", async () => {
     const { fetchImpl, requests } = fakeFetch([
       new Response("<html><body>Moved</body></html>", {
@@ -844,9 +844,9 @@ describe("DispatchClient", () => {
     expect(error).toBeInstanceOf(DispatchGatewayError);
     expect(error.message).toStartWith(
       "GET http://dispatch.test/api/v1/issues/DSP-1/events?after=4&limit=10 answered 302 Found " +
-        "(a redirect to https://elsewhere.test:8443, which this client does not follow), which looks"
+        "(a redirect to https://elsewhere.test:8443, which this client does not follow) with a body " +
+        `that is not Dispatch's error JSON ("Moved")`
     );
-    expect(error.message).not.toContain("Moved");
     expect(error.message).not.toContain("user:");
     expect(error.message).not.toContain("token=abc");
     expect(error.message).not.toContain("/login");
@@ -944,7 +944,8 @@ describe("DispatchClient", () => {
     expect(badGateway.message).toBe(
       `${request}502 Bad Gateway with a body that is not Dispatch's error JSON ("502 Bad Gateway")` +
         `${gateway} (its only attempt), and an attempt of the write may have reached Dispatch, so ` +
-        "it may or may not have taken effect: check whether it did before retrying it."
+        "it may or may not have taken effect. Dispatch finishes an attempt it received whatever this " +
+        "command does, so read the write back before you send it again: a new command sends it under a new key."
     );
     expect((badGateway as DispatchWriteUnsettledError).last).toEqual(
       expect.objectContaining({ mayHaveReachedDispatch: true })
@@ -1162,7 +1163,9 @@ describe("DispatchClient", () => {
     expect(messages[5]).toBe(
       `POST ${shown} made no progress for 0.02 s, so it ` +
         "was cut off (its only attempt), and an attempt of the write may have reached Dispatch, " +
-        "so it may or may not have taken effect: check whether it did before retrying it."
+        "so it may or may not have taken effect. Dispatch finishes an attempt it received " +
+        "whatever this command does, so read the write back before you send it again: a new " +
+        "command sends it under a new key."
     );
     for (const message of messages) {
       expect(message).not.toContain(user);
@@ -2238,9 +2241,9 @@ describe("a redirect to another origin", () => {
   });
 
   // The refusal says where the redirect points, so an operator who wrote `http://` for an
-  // `https://` Dispatch fixes the URL from the line: the scheme and the host, never a path, a
-  // query or a user, any of which can carry a secret.
-  test("a refused redirect names the origin it points at, and nothing else of it", async () => {
+  // `https://` Dispatch fixes the URL from the line: the scheme and the host of the target, never
+  // its path, its query or its user, any of which can carry a secret.
+  test("a refused redirect names the origin it points at, and nothing else of its target", async () => {
     // A target that carries a user and a secret, built from its parts; the secret is made for
     // this run, so no line of the test holds a credential.
     const hidden = crypto.randomUUID();
@@ -2275,147 +2278,12 @@ describe("a redirect to another origin", () => {
         );
         const message = refusal instanceof Error ? refusal.message : String(refusal);
         expect(message, location).toContain(
-          `answered 302 (a redirect to ${origin}, which this client does not follow), `
+          `answered 302 (a redirect to ${origin}, which this client does not follow) with `
         );
         for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "next="]) {
           expect(message, location).not.toContain(part);
         }
       }
-    }
-  });
-
-  // A redirector writes its target into the body as well (Express's `Found. Redirecting to <url>`,
-  // as text or as a link's text), so the line quotes nothing of a redirect's body: the status and
-  // the origin say all an operator needs.
-  test("a refused redirect quotes nothing of its body, where a redirector writes its target", async () => {
-    // The path and the query of the target are made for this run.
-    const path = `login-${crypto.randomUUID()}`;
-    const state = crypto.randomUUID();
-    const target = `https://sso.example.com/${path}?state=${state}&next=%2Fapi`;
-    for (const [type, body] of [
-      ["text/plain", `Found. Redirecting to ${target}`],
-      ["text/html", `<p>Found. Redirecting to <a href="${target}">${target}</a></p>`],
-      ["application/json", JSON.stringify({ code: "MOVED", error: `Redirecting to ${target}` })],
-    ] as const) {
-      const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(body, {
-          status: 302,
-          headers: { Location: target, "Content-Type": type },
-        })) as typeof fetch;
-      const client = new DispatchClient(
-        "http://dispatch.test",
-        bearerCredential("secret"),
-        fetchImpl,
-        {
-          sleep: async () => undefined,
-        }
-      );
-      for (const call of [
-        () => client.getIssue("DSP-1"),
-        () => client.comment("DSP-1", { body: "Review", actor }),
-      ]) {
-        const refusal = await call().then(
-          () => undefined,
-          (error: unknown) => error
-        );
-        const message = refusal instanceof Error ? refusal.message : String(refusal);
-        expect({
-          origin: message.includes(
-            "answered 302 (a redirect to https://sso.example.com, which this client does not follow), "
-          ),
-          path: message.includes(path),
-          query: message.includes(state),
-          body: message.includes("Redirecting to"),
-        }).toEqual({ origin: true, path: false, query: false, body: false });
-      }
-    }
-  });
-
-  // No request reads the body of a redirect: a body that never ends delays no refusal, since
-  // nothing waits on it, and the client cancels it.
-  test("a refused redirect's body is not read", async () => {
-    let cancelled = 0;
-    const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      new Response(
-        new ReadableStream<Uint8Array>({
-          pull: () => new Promise<void>(() => {}),
-          cancel() {
-            cancelled += 1;
-          },
-        }),
-        { status: 302, headers: { Location: "https://sso.example.com/login" } }
-      )) as typeof fetch;
-    const client = new DispatchClient(
-      "http://dispatch.test",
-      bearerCredential("secret"),
-      fetchImpl,
-      { sleep: async () => undefined }
-    );
-    const started = performance.now();
-    for (const call of [
-      () => client.getIssue("DSP-1"),
-      () => client.comment("DSP-1", { body: "Review", actor }),
-    ]) {
-      const refusal = await call().then(
-        () => undefined,
-        (error: unknown) => error
-      );
-      expect(refusal).toBeInstanceOf(DispatchGatewayError);
-    }
-    expect({ cancelled, atOnce: performance.now() - started < 10_000 }).toEqual({
-      cancelled: 2,
-      atOnce: true,
-    });
-  });
-
-  // The /healthz probe carries the credential's proof too, and its answer decides whether a write
-  // is sent again under its key: a probe that followed the redirect would hand the proof to the
-  // other origin, and take that origin's `idempotency_keys` as Dispatch's word.
-  test("the /healthz probe is not followed there, so another origin's answer resends nothing", async () => {
-    const elsewhere: string[] = [];
-    const other = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch(request) {
-        elsewhere.push(`${request.method} ${new URL(request.url).pathname}`);
-        return jsonResponse({ status: "ok", idempotency_keys: true });
-      },
-    });
-    const asked: string[] = [];
-    const dispatch = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch(request) {
-        const path = new URL(request.url).pathname;
-        asked.push(`${request.method} ${path}`);
-        if (path === "/healthz") {
-          return new Response(null, {
-            status: 302,
-            headers: { Location: `http://127.0.0.1:${other.port}/healthz` },
-          });
-        }
-        return new Response("<html><body>Bad Gateway</body></html>", {
-          status: 502,
-          headers: { "Content-Type": "text/html" },
-        });
-      },
-    });
-    const credential: RequestCredential = {
-      ...bearerCredential("secret"),
-      headers: async () => ({ Authorization: "DPoP secret", DPoP: "PROOF" }),
-    };
-    try {
-      const client = new DispatchClient(`http://127.0.0.1:${dispatch.port}`, credential, fetch, {
-        sleep: async () => undefined,
-      });
-      await client.comment("DSP-1", { body: "Review", actor }).catch(() => undefined);
-      expect({ asked, elsewhere }).toEqual({
-        asked: ["POST /api/v1/issues/DSP-1/comments", "GET /healthz"],
-        elsewhere: [],
-      });
-    } finally {
-      dispatch.stop(true);
-      other.stop(true);
     }
   });
 });

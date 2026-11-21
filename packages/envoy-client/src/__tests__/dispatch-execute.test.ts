@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
@@ -34,6 +34,7 @@ import type { ExecFn } from "../dispatch-cwd";
 import {
   type DispatchToolResult,
   dispatchRefFromUrl,
+  dryRunAsksDispatch,
   executeDispatchTool as executeTool,
   formatOpenAsksSummary,
   linkBaseOf,
@@ -47,7 +48,6 @@ import {
   DispatchEmptyPathError,
   DispatchWriteLandedError,
   type DispatchWriteRetry,
-  forgetKeyedLayerMemory,
 } from "../dispatch-http";
 import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
@@ -55,11 +55,6 @@ import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
-
-// What one test's Dispatch showed of its keyed layer is that test's: the process memory of it
-// (`KEYED_LAYER_SEEN`) would otherwise tell the next test's fake, which answers without the key as
-// a Dispatch without the layer does, that its 2xx is no answer of Dispatch's.
-beforeEach(forgetKeyedLayerMemory);
 
 /**
  * The executor (`executeDispatchTool` of `dispatch-execute.ts`) against the stand-in of Dispatch
@@ -436,15 +431,18 @@ describe("executeDispatchTool", () => {
       "POST http://dispatch.test/api/v1/issues/DSP-1/messages answered 502 Bad Gateway with a body that is not Dispatch's error JSON"
     );
     expect(write).not.toContain("<");
-    // A 502 can come after Dispatch committed the write: with no ask left, the write ends
-    // unsettled (the transition table, write-outcome.ts) and says so.
+    // A 502 can come after Dispatch committed the write: the keyed retry reaches its attempt
+    // bound, then the write ends unsettled (the transition table, write-outcome.ts).
     expect(write).toEndWith(
-      "(its only attempt), and an attempt of the write may have reached Dispatch, so it may or may not have taken effect: check whether it did before retrying it."
+      "(the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it may or " +
+        "may not have taken effect. Dispatch finishes an attempt it received whatever this command " +
+        "does, so read the write back before you send it again: a new command sends it under a new key."
     );
     expect(write).not.toContain("a retry may succeed");
-    // Nothing here says this Dispatch runs the keyed layer: the gateway answers its /healthz too,
-    // so the write is asked once and reported, and the read goes once.
-    expect(requests).toEqual(["POST /api/v1/issues/DSP-1/messages", "GET /healthz"]);
+    // Every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every write route, so the
+    // write is asked again under its key until its five attempts are spent, with no /healthz read,
+    // and the read goes once.
+    expect(requests).toEqual(Array.from({ length: 5 }, () => "POST /api/v1/issues/DSP-1/messages"));
     requests.length = 0;
 
     const read = await run("dispatch_read", { issue: "DSP-1" });
@@ -471,7 +469,10 @@ describe("executeDispatchTool", () => {
       [
         502,
         "Bad Gateway",
-        " (its only attempt), and an attempt of the write may have reached Dispatch, so it may or may not have taken effect: check whether it did before retrying it.",
+        " (the last of 5 attempts), and an attempt of the write may have reached Dispatch, so it " +
+          "may or may not have taken effect. Dispatch finishes an attempt it received whatever " +
+          "this command does, so read the write back before you send it again: a new command sends " +
+          "it under a new key.",
       ],
     ] as const) {
       const fetchImpl = async () =>
@@ -5108,10 +5109,11 @@ describe("executeDispatchTool", () => {
         writeRetry,
       })
     ).rejects.toThrow(
-      "INTERNAL: internal server error (its only attempt), and an attempt of the write may have " +
-        "reached Dispatch, so it may or may not have taken effect: check whether it did before " +
-        `retrying it. One of ${pullRequest} may already be linked from another issue (a URL links ` +
-        "exactly one issue)"
+      "INTERNAL: internal server error (the last of 5 attempts), and an attempt of the write may " +
+        "have reached Dispatch, so it may or may not have taken effect. Dispatch finishes an attempt " +
+        "it received whatever this command does, so read the write back before you send it again: a " +
+        `new command sends it under a new key. One of ${pullRequest} may already be linked from another ` +
+        "issue (a URL links exactly one issue)"
     );
   });
 
@@ -5154,9 +5156,10 @@ describe("executeDispatchTool", () => {
     expect(failure).toBe(
       "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 500 Internal Server " +
         'Error with a body that is not Dispatch\'s error JSON ("500 Internal Server Error"), which ' +
-        "looks like a proxy or gateway page rather than Dispatch's own answer (its only attempt), " +
-        "and an attempt of the write may have reached Dispatch, so it may or may not have taken " +
-        "effect: check whether it did before retrying it."
+        "looks like a proxy or gateway page rather than Dispatch's own answer (the last of 5 attempts), " +
+        "and an attempt of the write may have reached Dispatch, so it may or may not have taken effect. " +
+        "Dispatch finishes an attempt it received whatever this command does, so read the write back " +
+        "before you send it again: a new command sends it under a new key."
     );
   });
 
@@ -5234,8 +5237,7 @@ describe("executeDispatchTool", () => {
   /**
    * Records every request; the messages route and the PATCH answer with the given responses, and
    * the issue read before the update answers `closedAt` (null: the issue is open). This
-   * Dispatch runs the keyed layer: its own answers (JSON) echo the request's key and its /healthz
-   * says `idempotency_keys`, so a write that fails without an answer of Dispatch's own is resent.
+   * Dispatch runs the keyed layer: its own answers (JSON) echo the request's key.
    */
   function closingServer(
     answers: { message: () => Response; patch: () => Response },
@@ -5245,7 +5247,6 @@ describe("executeDispatchTool", () => {
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const pathname = new URL(String(url)).pathname;
       const method = init?.method ?? "GET";
-      if (pathname === "/healthz") return response({ status: "ok", idempotency_keys: true });
       requests.push({
         method,
         pathname,
@@ -5396,7 +5397,8 @@ describe("executeDispatchTool", () => {
       (request: string) =>
         `${request} had no definitive answer when its deadline ended it (its only attempt), and ` +
         "an attempt of the write may have reached Dispatch, so it may or may not have taken " +
-        "effect: check whether it did before retrying it.",
+        "effect. Dispatch finishes an attempt it received whatever this command does, so read " +
+        "the write back before you send it again: a new command sends it under a new key.",
       1,
     ],
     [
@@ -5682,7 +5684,7 @@ describe("executeDispatchTool", () => {
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
       "done means it closed; otherwise retry with a reason that points at message message-7, " +
       "since retrying this call posts its reason again";
-    // This Dispatch runs the keyed layer, so each message also says that it finishes the close.
+    // This Dispatch runs the keyed layer.
     const keyedTail =
       ". Dispatch finishes an attempt it received whatever this command does, so read the write " +
       "back before you send it again: a new command sends it under a new key.";
@@ -5819,8 +5821,7 @@ describe("executeDispatchTool", () => {
   });
 
   // On the branch that wrote components the command reads the answer's `components` with no
-  // guard of its own, so a 2xx without them is a landing whose answer was lost, never a TypeError:
-  // asked again under its key on the file's fake pacing, then the landing.
+  // guard of its own, so a 2xx without them is a landing whose answer was lost, never a TypeError.
   test("dispatch_issue_update writing components reads a 2xx without them as a landing", async () => {
     const issue = {
       key: "ACME-175",
@@ -5848,7 +5849,6 @@ describe("executeDispatchTool", () => {
         env: {},
         exec: repoExec("owner/repo"),
         fetchImpl: fetchImpl as typeof fetch,
-        writeRetry,
       }).then(
         () => undefined,
         (caught: unknown) => caught
@@ -5871,7 +5871,6 @@ describe("executeDispatchTool", () => {
       exec: repoExec("owner/repo"),
       fetchImpl: answering({ key: "ACME-216", title: "Architecture work" }) as typeof fetch,
       sleep: async () => {},
-      writeRetry,
     }).then(
       () => undefined,
       (caught: unknown) => caught
@@ -5923,7 +5922,6 @@ describe("executeDispatchTool", () => {
       env: {},
       exec: repoExec("owner/repo"),
       fetchImpl: fetchImpl as typeof fetch,
-      writeRetry,
     }).then(
       () => undefined,
       (caught: unknown) => caught
@@ -8243,6 +8241,44 @@ describe("executeDispatchTool", () => {
       ).rejects.toThrow(`dispatch ${tool}'s dry run asks Dispatch nothing`);
     }
     expect(asked).toEqual([]);
+  });
+
+  // A CI job's record of a check of the spec files (`project`) has no dry run Dispatch answers: its
+  // route stores the result it is sent, so a session's dry run of it, run as the call, would store
+  // a real result. It prints the arguments and sends nothing, as a retraction's dry run does.
+  test("a session's dispatch_result dry run of a check of the spec files records nothing", async () => {
+    const asked: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      asked.push(`${init?.method ?? "GET"} ${new URL(String(url)).pathname}`);
+      return response({}, 500);
+    };
+    const args = { project: "ACME", check: "p-1", verdict: "pass", commit: "0".repeat(40) };
+
+    const refused = await executeDispatchTool({
+      tool: "dispatch_result",
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      sessionId: "session-one",
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      dryRun: true,
+    }).then(
+      () => "it ran",
+      (error: unknown) => (error instanceof Error ? error.message : String(error))
+    );
+
+    expect({
+      asked,
+      refused,
+      asksDispatch: dryRunAsksDispatch("dispatch_result", args),
+    }).toEqual({
+      asked: [],
+      refused: "dispatch dispatch_result's dry run asks Dispatch nothing",
+      asksDispatch: false,
+    });
   });
 
   // One check with the three shapes a reader must tell apart: a result that stands at the head
@@ -12305,6 +12341,7 @@ describe("executeDispatchTool", () => {
   // (goBlankPattern's comment in @legion/contracts/go-blank names the two characters they
   // differ on). The server empties U+0085, so this create writes no version, and reading `trim`
   // here would refuse it and name --force instead.
+
   test.each([
     ["empty", ""],
     ["spaces alone", "   "],
@@ -12723,7 +12760,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
         return response([]);
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       if (pathname === "/api/v1/markdown/round-trip") {
         trips += 1;
         return trips === 1
@@ -12734,15 +12770,12 @@ describe("executeDispatchTool", () => {
             );
       }
       posts.push(pathname);
-      // The upload's answer is Dispatch's own, whose keyed layer the 503's /healthz named, so it
-      // carries the request's key back.
-      const key = (init?.headers as Record<string, string> | undefined)?.["Idempotency-Key"] ?? "";
       return new Response(
         JSON.stringify({
           artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
           version: { number: 1 },
         }),
-        { headers: { "Content-Type": "application/json", "Idempotency-Key": key } }
+        { headers: { "Content-Type": "application/json" } }
       );
     };
 
@@ -12780,7 +12813,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/markdown/round-trip") {
         return new Response(page, { status, headers: { "content-type": "text/html" } });
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
@@ -12828,7 +12860,6 @@ describe("executeDispatchTool", () => {
       if (pathname === "/api/v1/markdown/round-trip") {
         return response({ error: "request body exceeds 6292480 bytes", code: "CAP_EXCEEDED" }, 413);
       }
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name, slug: "notes-md" },
@@ -12879,9 +12910,7 @@ describe("executeDispatchTool", () => {
         return response([]);
       }
       if (pathname === "/api/v1/markdown/round-trip") return response({ error, code }, status);
-      // A failed write asks /healthz whether the server keeps idempotency keys. Only the upload
-      // route is counted here.
-      if (pathname === "/healthz") return response({ idempotency_keys: true });
+      // Only the upload route is counted here.
       posts.push(pathname);
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
@@ -12980,8 +13009,7 @@ describe("executeDispatchTool", () => {
     const client = new DispatchClient(
       "http://dispatch.test",
       bearerCredential("secret"),
-      keyedLayer(answering({})) as typeof fetch,
-      { writeRetry }
+      keyedLayer(answering({})) as typeof fetch
     );
 
     const failure = await client.markdownRoundTrip("# Notes\n").then(

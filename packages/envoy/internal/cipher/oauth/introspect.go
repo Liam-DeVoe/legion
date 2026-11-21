@@ -32,6 +32,7 @@ import (
 // sound token and hide the outage; notLive is how the two are told apart, and brokerFailure makes
 // that error say which of the two it was. A row whose run (ClaimCI) does not decode as one is the
 // broker's failure too, for the same reason.
+// that error say which of the two it was.
 //
 // A token whose HMAC is not the broker's is answered not live before anything is read: the
 // provider's own HMAC strategy (codeStrategy, built in New) checks it, as ValidateAccessToken ends

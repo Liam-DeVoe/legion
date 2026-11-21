@@ -694,6 +694,42 @@ func TestEveryAddressConfigReadsIsReadWithoutItsZone(t *testing.T) {
 	}
 }
 
+// TestTheResolveSettingMayNameThePortItsDialReaches: an entry of BROKER_AIRLOCK_TEST_RESOLVE may
+// name a port beside its address, which the proxy dials in place of the CONNECT's own: a stand-in
+// on loopback needs no privileged port 443, as a test of the real broker's airlock does. An entry
+// with no port leaves the CONNECT's. An address given two ports, or the port 0, is refused, naming
+// it: a dial to the address could not tell which port it means.
+func TestTheResolveSettingMayNameThePortItsDialReaches(t *testing.T) {
+	e := validEnv()
+	e["BROKER_AIRLOCK_TEST_RESOLVE"] = "s.airlock.test=127.0.0.2:8443 t.airlock.test=[::1]:9443 u.airlock.test=127.0.0.3"
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load with ports in BROKER_AIRLOCK_TEST_RESOLVE: %v", err)
+	}
+	wantHosts := map[string]netip.Addr{
+		"s.airlock.test": netip.MustParseAddr("127.0.0.2"),
+		"t.airlock.test": netip.MustParseAddr("::1"),
+		"u.airlock.test": netip.MustParseAddr("127.0.0.3"),
+	}
+	if !maps.Equal(cfg.AirlockTestResolve, wantHosts) {
+		t.Errorf("the resolve map reads %v; want %v", cfg.AirlockTestResolve, wantHosts)
+	}
+	wantPorts := map[netip.Addr]uint16{netip.MustParseAddr("127.0.0.2"): 8443, netip.MustParseAddr("::1"): 9443}
+	if !maps.Equal(cfg.AirlockTestDialPorts, wantPorts) {
+		t.Errorf("the dial ports read %v; want %v, and none for an entry that names no port", cfg.AirlockTestDialPorts, wantPorts)
+	}
+	for value, want := range map[string]string{
+		"s.airlock.test=127.0.0.2:8443 t.airlock.test=127.0.0.2:9443": "127.0.0.2",
+		"s.airlock.test=127.0.0.2:0":                                  "127.0.0.2:0",
+	} {
+		e := validEnv()
+		e["BROKER_AIRLOCK_TEST_RESOLVE"] = value
+		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_AIRLOCK_TEST_RESOLVE") || !strings.Contains(err.Error(), want) {
+			t.Errorf("Load(BROKER_AIRLOCK_TEST_RESOLVE=%q) = %v; want a refusal naming the setting and %s", value, err, want)
+		}
+	}
+}
+
 // TestLoadReadsTheRegisteredServices pins BROKER_SERVICES: whitespace-separated
 // name=<service-account subject> entries keyed by subject, none when unset. A name is one a
 // machine login's service can take ([a-z0-9-]{1,64}) and not the owner tag's own "shared"; a
@@ -2298,7 +2334,7 @@ func TestLoadReadsTheExchangeResultWorkflows(t *testing.T) {
 		t.Fatalf("ExchangeResultWorkflows = %v, want nil when BROKER_EXCHANGE_RESULT_WORKFLOWS is unset", cfg.ExchangeResultWorkflows)
 	}
 	withGitHub := func() map[string]string {
-		e := validEnv()
+		e := withResultsAirlock(validEnv())
 		e["BROKER_EXCHANGE_GITHUB_ISSUER"] = "https://token.actions.githubusercontent.com"
 		e["BROKER_EXCHANGE_GITHUB_AUDIENCE"] = "dispatch-exchange"
 		return e
@@ -3006,6 +3042,111 @@ func TestProjectAccessSettingsComeTogether(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "BROKER_PROJECT_ACCESS_URL") || !strings.Contains(err.Error(), "absolute http(s) URL") {
 			t.Errorf("Load(BROKER_PROJECT_ACCESS_URL=%q) = %v; want a refusal naming the variable", bad, err)
 		}
+	}
+}
+
+// TestTheDirectoryURLIsGooglesUnlessSet pins BROKER_DIRECTORY_URL: unset, the broker reads no
+// address of its own, so the group reader calls Google's Directory API; set, it is read without
+// the slashes it ends in, as a test's stand-in is named; and a value that is no absolute https URL,
+// or http to a loopback host, refuses the start naming the setting: a group read sends the reader
+// account's token to it, which only a run on one machine may send in plain text.
+func TestTheDirectoryURLIsGooglesUnlessSet(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryURL != "" {
+		t.Fatalf("with BROKER_DIRECTORY_URL unset the broker reads %q; want nothing, so the reader calls Google's own address", cfg.DirectoryURL)
+	}
+
+	for value, want := range map[string]string{
+		" https://directory.internal.example:8443// ": "https://directory.internal.example:8443",
+		"http://127.0.0.1:8080/":                      "http://127.0.0.1:8080",
+		"http://localhost:8080":                       "http://localhost:8080",
+	} {
+		e := validEnv()
+		e["BROKER_DIRECTORY_URL"] = value
+		if cfg, err = Load(env(e)); err != nil {
+			t.Fatalf("Load(BROKER_DIRECTORY_URL=%q) = %v; want it taken", value, err)
+		}
+		if cfg.DirectoryURL != want {
+			t.Fatalf("BROKER_DIRECTORY_URL %q is read as %q; want %q, without its spaces and trailing slashes", value, cfg.DirectoryURL, want)
+		}
+	}
+
+	for _, bad := range []string{"directory.internal.example", "//directory.internal.example", "ftp://directory.internal.example", "http://", "http://%zz", "http://directory.internal.example:8080", "https://"} {
+		e := validEnv()
+		e["BROKER_DIRECTORY_URL"] = bad
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), "BROKER_DIRECTORY_URL") || !strings.Contains(err.Error(), "absolute https URL, or http to a loopback host") {
+			t.Errorf("Load(BROKER_DIRECTORY_URL=%q) = %v; want a refusal naming the variable and the rule", bad, err)
+		}
+	}
+}
+
+// groupReaderAccount is the reader account a deployment names in BROKER_DIRECTORY_ACCOUNT.
+const groupReaderAccount = "group-reader@example-project.iam.gserviceaccount.com"
+
+// TestTheDirectoryAccountIsAServiceAccount pins BROKER_DIRECTORY_ACCOUNT: unset, the broker loads
+// and names no reader account, so it reads no group; set, it is read as given, without spaces;
+// and an address that is no user-managed Google service account, the only kind generateAccessToken
+// mints for, refuses the start naming the setting: a person, a capitalised address, a list and a
+// Google-managed service agent, which Google's own services run as.
+func TestTheDirectoryAccountIsAServiceAccount(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryAccount != "" {
+		t.Fatalf("with BROKER_DIRECTORY_ACCOUNT unset the broker reads %q; want no reader account", cfg.DirectoryAccount)
+	}
+
+	e := validEnv()
+	e["BROKER_DIRECTORY_ACCOUNT"] = " " + groupReaderAccount + "\n"
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryAccount != groupReaderAccount {
+		t.Fatalf("BROKER_DIRECTORY_ACCOUNT is read as %q; want %q", cfg.DirectoryAccount, groupReaderAccount)
+	}
+
+	for _, c := range []struct{ name, account, want string }{
+		{"a person", "reader@example.com", "user-managed Google service account"},
+		{"an upper-case address", "Group-Reader@example-project.iam.gserviceaccount.com", "user-managed Google service account"},
+		{"a list", groupReaderAccount + " other-reader@example-project.iam.gserviceaccount.com", "user-managed Google service account"},
+		{"a service agent", "service-123456789012@gcp-sa-example.iam.gserviceaccount.com", "Google-managed service agent"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := validEnv()
+			e["BROKER_DIRECTORY_ACCOUNT"] = c.account
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), "BROKER_DIRECTORY_ACCOUNT") || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Load(BROKER_DIRECTORY_ACCOUNT=%q) = %v; want a refusal naming the setting and %q", c.account, err, c.want)
+			}
+		})
+	}
+}
+
+// TestADirectoryAccountThatASecretBindsIsRefused: a reader account that BROKER_SERVICE_ACCOUNT_SECRETS
+// binds to a secret refuses the start, naming the secret, since a grant of that secret would
+// release the token the group read uses; a reader account that no secret binds loads beside
+// those bindings.
+func TestADirectoryAccountThatASecretBindsIsRefused(t *testing.T) {
+	e := validEnv()
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com GROUP_READER=" + groupReaderAccount
+	e["BROKER_DIRECTORY_ACCOUNT"] = groupReaderAccount
+	_, err := Load(env(e))
+	if err == nil || !strings.Contains(err.Error(), "the directory account is bound to a secret") || !strings.Contains(err.Error(), "GROUP_READER") || !strings.Contains(err.Error(), "BROKER_DIRECTORY_ACCOUNT") {
+		t.Fatalf("Load with BROKER_DIRECTORY_ACCOUNT bound to GROUP_READER = %v; want a refusal saying the directory account is bound to a secret, naming it", err)
+	}
+
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com"
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load with a reader account no secret binds = %v; want it loaded", err)
+	}
+	if cfg.DirectoryAccount != groupReaderAccount {
+		t.Fatalf("BROKER_DIRECTORY_ACCOUNT is read as %q; want %q", cfg.DirectoryAccount, groupReaderAccount)
 	}
 }
 

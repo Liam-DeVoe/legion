@@ -534,9 +534,9 @@ describe("renderInbound dispatch events", () => {
   test("posts a delivery reply as one keyed write, asked again under its key", async () => {
     const keys: Array<string | null> = [];
     let answers = 0;
-    // Dispatch's keyed layer names the key back on every answer to a keyed request it judged,
-    // its refusals too, which is what tells the client a repeat is answered from the key rather
-    // than run again.
+    // The stand-in names the key back on every answer, its refusals too, as Dispatch's keyed layer
+    // does. The client asks again under the same key whatever the answer carries, and reads the
+    // echo only to settle: a 2xx or a refusal that names no key back settles nothing.
     const server = Bun.serve({
       port: 0,
       fetch: keyedLayer(

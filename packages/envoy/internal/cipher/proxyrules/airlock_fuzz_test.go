@@ -4,8 +4,8 @@ package proxyrules
 // functions (lean/Airlock/Model.lean, built as the airlock-model program AIRLOCK_MODEL
 // names). Every generated case goes to both sides and the two answers must be the same
 // value, so a change on one side that is not made on the other is a test failure here
-// rather than a surprise in production. This file is in package airlock, not package
-// airlock_test: the generator and the wire shapes sit beside the code they mirror, and
+// rather than a surprise in production. This file is in package proxyrules, not package
+// proxyrules_test: the generator and the wire shapes sit beside the code they mirror, and
 // the comparison reaches the three functions with nothing in between.
 
 import (
@@ -210,9 +210,9 @@ var (
 	prefixPool = []string{"/", "/repos", "", "/r", "/admin/"}
 	phPool     = []string{"PH_gh_1", "ph", "", "a", "=", "user"}
 	valuePool  = []string{"REAL", "ghp_secret", "", "PH_gh_1", "a:b", "\u00e9"}
-	// kindPool holds the three kinds Validate takes, a wrong one, and a right one in the
+	// kindPool holds the four kinds Validate takes, a wrong one, and two right ones in the
 	// wrong case, so validate's kind refusal is reached from both sides of the comparison.
-	kindPool   = []string{"", "aws", "azure", "gcp", "AWS"}
+	kindPool   = []string{"", "aws", "azure", "dpop", "gcp", "AWS", "DPoP"}
 	judgePool  = []uint32{0, 300, 900, 901, 65535}
 	piecePool  = []string{"user", "token ", " ", "\t", "x"}
 	schemePool = []string{"Basic ", "basic ", "BASIC ", "Basic  ", "Basic\t", "Basi "}

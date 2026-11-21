@@ -657,6 +657,17 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
   };
 }
 
+/** Whether the CLI's `--dry-run` of a call asks Dispatch what the call's write would answer: a
+ *  `dispatch result` record of an issue's check, whose dry run prints the pull-request body line
+ *  the record would print, since that line is Dispatch's to write and a copy written here would
+ *  be a second grammar. Every other dry run, a retraction's and a CI job's record of a check of
+ *  the spec files (`project`) included, prints the arguments and sends nothing. */
+export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
+  return (
+    tool === "dispatch_result" && args["retract"] === undefined && args["project"] === undefined
+  );
+}
+
 /**
  * `dispatch result --project`: a CI job's record of its result of one check of the spec files,
  * printed back as the stored result whole, as JSON: the in-toto statement of the run, which a
@@ -727,21 +738,13 @@ async function specCheckResultsCommand(
   return { text, details: { project, commit, results: results.length } };
 }
 
-/** Whether the CLI's `--dry-run` of a call asks Dispatch what the call's write would answer: a
- *  `dispatch result` record, whose dry run prints the pull-request body line the record would
- *  print, since that line is Dispatch's to write and a copy written here would be a second
- *  grammar. Every other dry run, a retraction's included, prints the arguments and sends nothing. */
-export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
-  return tool === "dispatch_result" && args["retract"] === undefined;
-}
-
 /** `dispatch result`: record one result of one check of an issue's Verification document, or,
- *  with `project`, a CI job's result of a check of the spec files, or, as the CLI's dry run, ask
- *  Dispatch for the pull-request body line the record would print. It prints the recorded result's
- *  id as `dispatch results` prints it, `Result <id>`, which `--retract` takes. What it prints back
- *  of the answer is text a session wrote (a retraction's reason, a check's words in the pull
- *  request line), so it prints by the runner log's one-line rule (runner-log.ts): no line break of
- *  it starts a line. */
+ *  with `project`, a CI job's result of a check of the spec files; or, as the CLI's dry run of
+ *  an issue's record, ask Dispatch for the pull-request body line the record would print. It
+ *  prints the recorded result's id as `dispatch results` prints it, `Result <id>`, which
+ *  `--retract` takes. What it prints back of the answer is text a session wrote (a retraction's
+ *  reason, a check's words in the pull request line), so it prints by the runner log's one-line
+ *  rule (runner-log.ts): no line break of it starts a line. */
 export async function resultCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor } = context;
   if (optionalString(args, "project") !== undefined) {

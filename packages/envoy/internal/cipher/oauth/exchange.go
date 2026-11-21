@@ -282,13 +282,14 @@ type PersonSignIns func(ctx context.Context, in PersonSignIn) error
 
 // subjectTokenTypes is every type in types a caller may present as a subject token, sorted: all
 // of them but the machine's actor token type, which the exchange registers beside the person's
-// own so that a person's trade can carry it, and which is no subject of its own. It is read off
-// the registered types rather than built from the configuration a second time, so what the
-// metadata document names is exactly what the library will accept.
+// own so that a person's trade can carry it, and which is no subject of its own, and the airlock
+// placeholder, which a result entry's run is answered and nobody presents. It is read off the
+// registered types rather than built from the configuration a second time, so what the metadata
+// document names is exactly what the library will accept.
 func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 	names := make([]string, 0, len(types))
 	for name := range types {
-		if name != oauthwire.ActorTokenTypeMachine {
+		if name != oauthwire.ActorTokenTypeMachine && name != oauthwire.TokenTypeAirlockPlaceholder {
 			names = append(names, name)
 		}
 	}
@@ -299,14 +300,18 @@ func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 // tokenTypes are the token types the library registers for the exchange, keyed by the exact
 // string a request names them with.
 //
-// The access token is always registered: it is the only kind this provider issues, so it is both
-// the default requested type and the type a dev box session presents its machine access token
-// under. Each JWT type is registered only where its issuer is configured, so a caller presenting
-// an issuer the broker was never told about is refused by the library rather than by a half-built
-// handler.
+// The access token is always registered: it is the kind this provider issues every caller but a
+// result entry's run, so it is both the default requested type and the type a dev box session
+// presents its machine access token under. So is the airlock placeholder, the one type a result
+// entry's run may ask for (decide): the library's own NewAccessRequest validates such a request,
+// spending the run token's jti, and exchangeGrant answers it with the grant it writes instead of
+// any token the library would mint. Each JWT type is registered only where its issuer is
+// configured, so a caller presenting an issuer the broker was never told about is refused by the
+// library rather than by a half-built handler.
 func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 	types := map[string]oauth2.RFC8693TokenType{
-		tokenTypeAccessToken: &rfc8693.DefaultTokenType{Name: tokenTypeAccessToken},
+		tokenTypeAccessToken:                  &rfc8693.DefaultTokenType{Name: tokenTypeAccessToken},
+		oauthwire.TokenTypeAirlockPlaceholder: &rfc8693.DefaultTokenType{Name: oauthwire.TokenTypeAirlockPlaceholder},
 	}
 	if c.Kubernetes.configured() {
 		types[oauthwire.SubjectTokenTypeKubernetes] = &rfc8693.JWTType{
@@ -417,7 +422,8 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 }
 
 // exchangeGrant is the token endpoint's RFC 8693 branch: a caller's platform identity for a
-// Dispatch access token, bound to the key its DPoP proof names.
+// Dispatch access token, bound to the key its DPoP proof names, or, for a result entry's run, for
+// an airlock placeholder and a result grant (grantPlaceholder) in place of any token.
 //
 // It runs in two halves. The first reads the request outside any transaction: the library
 // validates it, which writes nothing the token depends on — the DPoP proof's and a GitHub token's
@@ -446,7 +452,11 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // library builds anything
 // (registeredPodSession). The claim on the session name is made
 // for every type once the library has built the answer, because that is when the issued token's
-// expiry is set, and the claim must not end before the token it is made for.
+// expiry is set, and the claim must not end before the token it is made for. A request for the
+// airlock placeholder, which decide grants a result entry's run alone, leaves the library after
+// NewAccessRequest, which has spent the run token's jti: the library mints nothing, and
+// grantPlaceholder writes the grant and claims the session name until the grant's end, in the
+// same transaction.
 func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := p.reserveSessions(ctx); err != nil {
@@ -530,6 +540,13 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 		p.writeError(ctx, w, request, err)
 		return
 	}
+	if asksForPlaceholder(request.GetRequestForm()) {
+		// A result entry's run, the one decision decide grants the placeholder: NewAccessRequest
+		// has spent its run token's jti, and the library mints nothing for it. The grant is
+		// written, and its session name claimed, in this transaction, and the answer is C8's.
+		p.grantPlaceholder(ctx, txCtx, w, request, session, &committed)
+		return
+	}
 	resp, err := p.oauth.NewAccessResponse(txCtx, request)
 	if err != nil {
 		p.writeError(ctx, w, request, err)
@@ -611,7 +628,9 @@ func (p *Provider) reserveSessions(ctx context.Context) error {
 // the person or the service, the project scope, the projects and the principal; and then the
 // claims themselves, onto the session, where the row the token is stored in carries them and an
 // introspection answers from them, with the principal beside them for claimSession, and the one
-// OAuth scope a decision may carry granted on the request (writeProjectScope).
+// OAuth scope a decision may carry granted on the request (writeProjectScope); and last, what the
+// request asks for held to the decision (placeholderDecision): a result entry's run asks for the
+// airlock placeholder, and nothing else does.
 //
 // The subject the library asks for is the principal, which every decision names: a token that
 // names a service and no person has no person to be the subject of, and a subject that is
@@ -693,6 +712,9 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 		session.Extra[ClaimMachine] = claims.Actor
 	}
 	if err := writeProjectScope(request, session, claims); err != nil {
+		return "", err
+	}
+	if err := placeholderDecision(request.GetRequestForm(), claims); err != nil {
 		return "", err
 	}
 	return claims.Principal, nil

@@ -21,6 +21,7 @@ import {
   isFinalRefusal,
   SignInEndedError,
   TradeRetryingError,
+  TradeUnansweredError,
 } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
 import { accepted, refusalOf, stubBroker } from "./stub";
@@ -114,9 +115,10 @@ test("two callers that need a token at once make one trade", async () => {
   }
 });
 
-// A caller that joins a trade another caller started ends at its own signal, told that the trade
-// still out has not answered (`TradeUnansweredError`), and leaves that trade to the caller that
-// started it: the identity here answers only once the test lets it.
+// A caller that joins a trade another caller started ends at its own signal, and leaves that
+// trade to the caller that started it: the identity here answers only once the test lets it. The
+// caller is told the trade has not been answered yet, as the retry loop tells every caller whose
+// signal ends before a trade answers (retry-loop.test.ts, "never answers").
 test("a caller that joins a trade under way ends at its own signal", async () => {
   const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 600) }));
   const { promise: held, resolve: release } = Promise.withResolvers<void>();
@@ -133,7 +135,7 @@ test("a caller that joins a trade under way ends at its own signal", async () =>
     const ended = new AbortController();
     const joined = client.token(ended.signal);
     ended.abort(new DOMException("The operation timed out.", "TimeoutError"));
-    expect((await refusalOf(() => joined))?.name).toBe("TradeUnansweredError");
+    expect(await refusalOf(() => joined)).toBeInstanceOf(TradeUnansweredError);
     release();
     expect((await first).accessToken).toBe("token-1");
     expect(broker.trades.length).toBe(1);
@@ -144,9 +146,8 @@ test("a caller that joins a trade under way ends at its own signal", async () =>
 });
 
 // The trade runs under its own bound and under no caller's signal: the caller that started it
-// leaves at its own signal, told the trade has not answered yet, and the caller that joined it
-// still gets its token from that one trade. The broker here answers the trade only once the test
-// lets it, after the starter left.
+// leaves at its own signal, and the caller that joined it still gets its token from that one
+// trade. The broker here answers the trade only once the test lets it, after the starter left.
 test("the starter's signal ends its own wait, and never the trade another caller waits on", async () => {
   const { promise: arrived, resolve: arrive } = Promise.withResolvers<void>();
   const { promise: held, resolve: release } = Promise.withResolvers<void>();

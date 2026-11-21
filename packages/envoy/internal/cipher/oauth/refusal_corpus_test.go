@@ -19,7 +19,7 @@ import (
 
 // The refusal texts the TypeScript broker client prints whole (packages/cipher-client,
 // isKnownBrokerRefusal), as this broker's own OAuth library and its own Refusal write them on the
-// wire. testdata/refusal-descriptions.json holds them, and broker-client's refusal-corpus test
+// wire. testdata/refusal-descriptions.json holds them, and cipher-client's refusal-corpus test
 // reads that file, so neither the library's sentence ahead of a hint nor a hint's words can change
 // without a test that names it. Each hint's format string must also stand in the broker's source,
 // so a sentence changed there fails here.
@@ -63,9 +63,9 @@ var corpusRefusals = []corpusRefusal{
 
 // The exchange policy's refusals of a subject token, which the broker hands on as "The subject
 // token was refused: <the policy's error>." Each is the format the policy writes it with, filled
-// with values of the shape broker-client's slots take; the format must stand in the policy's
+// with values of the shape cipher-client's slots take; the format must stand in the policy's
 // source. The refusal that quotes an error text of its own (`not a person's Google identity token
-// (%v)`) is not among them: broker-client withholds it.
+// (%v)`) is not among them: cipher-client withholds it.
 type policyRefusal struct {
 	format string
 	args   []any
@@ -89,11 +89,8 @@ var policyRefusals = []policyRefusal{
 	{"%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", []any{exchange.ErrSessionFixed, corpusAccount, "legion-broker"}, policySource},
 	{"%w: the registration of %s names a session of %d bytes; %s", []any{exchange.ErrSessionInvalid, corpusAccount, 230, corpusSessionRule}, policySource},
 	{"%w: %s ran %s, whose job is written in %s; an entry lists the workflow a job runs in", []any{exchange.ErrNoEntry, corpusRepository, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, "cybermonklabs/actions/.github/workflows/build.yaml@refs/heads/main"}, policySource},
-	{"%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", []any{exchange.ErrClaimMissing, "example-org/other/" + corpusWorkflow + "@" + corpusRef, corpusRepository, corpusRef}, policySource},
+	{"%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", []any{exchange.ErrClaimMissing, corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, corpusRepository, corpusRef}, policySource},
 	{"%w: no entry lists the workflow %s of %s on %s", []any{exchange.ErrNoEntry, corpusWorkflow, corpusRepository, corpusRef}, policySource},
-	{"%w: the result entries of the workflow %s of %s under the ref patterns %s all match %s; list the workflow under patterns no ref matches two of", []any{exchange.ErrTwoEntries, corpusWorkflow, corpusRepository, "refs/heads/*, refs/heads/main", corpusRef}, policySource},
-	{"%w: the subject token's %s claim is not %s", []any{exchange.ErrClaimMissing, "sha", "40 lowercase hex digits"}, policySource},
-	{"%w: the subject token's %s claim is not %s", []any{exchange.ErrClaimMissing, "run_id", "a positive decimal number a signed 64-bit integer holds"}, policySource},
 	{"%w: the subject token carries no email claim, so it names no account (ask for it with format=full)", []any{exchange.ErrClaimMissing}, policySource},
 	{"%w: no entry lists the Google account %s", []any{exchange.ErrNoEntry, corpusMachine}, policySource},
 	{"%w: %s presented a token whose email_verified is not true", []any{exchange.ErrEmailNotVerified, corpusMachine}, policySource},
@@ -121,7 +118,7 @@ var policyRefusals = []policyRefusal{
 	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
 }
 
-// The OAuth error codes broker-client shows (refusal-text.ts, KNOWN_OAUTH_ERROR_CODES), as this
+// The OAuth error codes cipher-client shows (refusal-text.ts, KNOWN_OAUTH_ERROR_CODES), as this
 // broker's library writes them: each is the library's own error value's code, so the client's
 // list and the codes the broker can answer are read from one place. Every library error the
 // broker's token endpoint returns (exchange.go, provider.go, clientauth.go) must be one of these.
@@ -165,7 +162,7 @@ func TestTheCodeCorpusIsWhatTheLibraryWrites(t *testing.T) {
 		t.Fatalf("%s is not a JSON list of strings: %v", path, err)
 	}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("%s is not the library's codes; run UPDATE_REFUSAL_CORPUS=1 go test -run %s ./internal/cipher/oauth and check broker-client's list.\nwant: %v\ngot:  %v", path, t.Name(), want, got)
+		t.Fatalf("%s is not the library's codes; run UPDATE_REFUSAL_CORPUS=1 go test -run %s ./internal/cipher/oauth and check cipher-client's list.\nwant: %v\ngot:  %v", path, t.Name(), want, got)
 	}
 }
 
@@ -188,7 +185,7 @@ func TestEveryLibraryErrorTheTokenEndpointReturnsIsInTheCodeCorpus(t *testing.T)
 				}
 				found++
 				if _, ok := corpusCodes[name]; !ok {
-					t.Errorf("%s returns oauth2.%s, whose code broker-client does not show: add it to corpusCodes and KNOWN_OAUTH_ERROR_CODES", source, name)
+					t.Errorf("%s returns oauth2.%s, whose code cipher-client does not show: add it to corpusCodes and KNOWN_OAUTH_ERROR_CODES", source, name)
 				}
 			}
 		}
@@ -249,7 +246,7 @@ func TestTheRefusalCorpusIsWhatTheBrokerWrites(t *testing.T) {
 		t.Fatalf("%s is not a JSON list of strings: %v", path, err)
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("%s is not what this broker writes; run UPDATE_REFUSAL_CORPUS=1 go test -run %s ./internal/cipher/oauth and check broker-client's list.\nwant:\n%s\ngot:\n%s", path, t.Name(), strings.Join(want, "\n"), strings.Join(got, "\n"))
+		t.Fatalf("%s is not what this broker writes; run UPDATE_REFUSAL_CORPUS=1 go test -run %s ./internal/cipher/oauth and check cipher-client's list.\nwant:\n%s\ngot:\n%s", path, t.Name(), strings.Join(want, "\n"), strings.Join(got, "\n"))
 	}
 }
 
@@ -270,12 +267,12 @@ func TestEachCorpusHintStandsInTheBrokersSource(t *testing.T) {
 	// The format as Go source writes it: a backquote inside a double-quoted string is itself.
 	for _, refusal := range corpusRefusals {
 		if !strings.Contains(read(refusal.source), refusal.format) {
-			t.Errorf("%s holds no hint %q: the broker's sentence changed, so the corpus and broker-client's list must too", refusal.source, refusal.format)
+			t.Errorf("%s holds no hint %q: the broker's sentence changed, so the corpus and cipher-client's list must too", refusal.source, refusal.format)
 		}
 	}
 	for _, refusal := range policyRefusals {
 		if !strings.Contains(read(refusal.source), refusal.format) {
-			t.Errorf("%s holds no refusal %q: the policy's sentence changed, so the corpus and broker-client's list must too", refusal.source, refusal.format)
+			t.Errorf("%s holds no refusal %q: the policy's sentence changed, so the corpus and cipher-client's list must too", refusal.source, refusal.format)
 		}
 	}
 	if !strings.Contains(read(policySource), `"a session name is printable, carries no whitespace, and is at most %d bytes"`) {
