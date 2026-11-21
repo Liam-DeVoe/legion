@@ -157,7 +157,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		rejectedInsert = kind == "insert"
-		quoteIsBody = kind == "insert" || storedKind == "insert" ||
+		quoteIsBody = rejectedInsert || storedKind == "insert" ||
 			(markGone && storedKind == "" && comment.Anchor.Quote == comment.Suggestion.ReplaceWith)
 		if err := s.deps.Docs.RewriteTakenAnchors(documentCtx, comment.Anchor.ArtifactID, taken, actor); err != nil {
 			s.writeHandlerError(w, err)

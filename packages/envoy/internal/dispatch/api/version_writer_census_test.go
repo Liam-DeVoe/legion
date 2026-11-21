@@ -80,7 +80,7 @@ func TestEveryWriterOfADocumentVersionStoresItsInsertTree(t *testing.T) {
 	var unlisted, unfilled []string
 	answered := map[string]map[string]bool{}
 	account := func(path, function, write string, namesTree bool) {
-		file, writer, listed := versionWriterEntry(path, function)
+		file, writer, listed := censusEntryIn(versionRowWriters, path, function)
 		if !listed {
 			unlisted = append(unlisted, fmt.Sprintf("%s %s: %s", path, function, write))
 			return
@@ -131,21 +131,6 @@ func TestEveryWriterOfADocumentVersionStoresItsInsertTree(t *testing.T) {
 		t.Errorf("a census entry answers no writer of a document version, so it says nothing:\n\t%s\n"+
 			"Delete it, or name the function that writes the row now.", strings.Join(stale, "\n\t"))
 	}
-}
-
-// versionWriterEntry is the entry of versionRowWriters that covers function, declared in the file
-// at path, with the file key that found it; false when no entry does. A file is matched by its
-// suffix within the module, as the item-row census matches one (censusEntry).
-func versionWriterEntry(path, function string) (string, versionRowWriter, bool) {
-	for file, functions := range versionRowWriters {
-		if !strings.HasSuffix(path, "/"+file) {
-			continue
-		}
-		if writer, listed := functions[function]; listed {
-			return file, writer, true
-		}
-	}
-	return "", versionRowWriter{}, false
 }
 
 // copiedRows is one CopyFrom into artifact_versions: the top-level function it is in and the

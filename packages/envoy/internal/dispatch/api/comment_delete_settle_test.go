@@ -40,20 +40,7 @@ import (
 func TestTheLatestVersionsStoresHoldNoWordOfAPendingInsertOnceItsDeleteCommits(t *testing.T) {
 	f := newAnchorsOnAnInsert(t)
 	notes := createProjectDocument(t, f.handler, "TEST", "Design notes", "The "+insertedWords+" brown fox jumps\n")
-	writeBrowserMark(t, f.database, f.documentService, notes.ID, docs.MarkSpec{
-		Kind:  docs.MarkSuggestion,
-		ID:    "m-notes-insert",
-		Attrs: pmdoc.Attrs{"id": "m-notes-insert", "by": "user:alice", "kind": "insert"},
-	}, insertedWords+" ")
-	created := dispatchRequest(t, f.handler, http.MethodPost, "/api/v1/artifacts/"+notes.ID+"/comments", map[string]any{
-		"body":       "Add this word.",
-		"anchor":     map[string]any{"artifact": notes.Slug, "mark_id": "m-notes-insert"},
-		"suggestion": map[string]string{"replace_with": insertedWords + " "},
-	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("suggest the insert on the project document: status=%d body=%s", created.Code, created.Body.String())
-	}
-	notesInsert := decodeBody[model.Comment](t, created)
+	notesInsert := suggestProjectInsert(t, f.handler, f.database, f.documentService, notes, "m-notes-insert")
 	refreshTermStats(t, f.database, "TEST")
 
 	specRef := "dispatch://" + f.issueKey + "/spec"

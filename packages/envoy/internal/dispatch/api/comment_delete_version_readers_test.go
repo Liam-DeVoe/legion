@@ -160,11 +160,7 @@ func TestAPinnedShortBlockIDsCandidatesGiveNoWordOfAPendingInsertDeletedSince(t 
 // comment's (answerEndedByDelete).
 func TestAKeptRelatedCheckFromWhileAnInsertStoodIsNotReplayedAfterItsDelete(t *testing.T) {
 	documentService, handler, database := browserDocumentService(t)
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "CORE", "name": "Core",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
-	}
+	createTestProject(t, handler, "CORE")
 	notes := createProjectDocument(t, handler, "CORE", "Design notes", "The brown fox jumps\n")
 	refreshTermStats(t, database, "CORE")
 	check := func(key string) *httptest.ResponseRecorder {
@@ -185,20 +181,7 @@ func TestAKeptRelatedCheckFromWhileAnInsertStoodIsNotReplayedAfterItsDelete(t *t
 	// A browser inserts the words as alice's insert suggestion, which she suggests, and the version
 	// named after holds them under the suggestion's mark.
 	writeBrowserDocument(t, documentService, notes.ID, "The "+insertedWords+" brown fox jumps\n")
-	writeBrowserMark(t, database, documentService, notes.ID, docs.MarkSpec{
-		Kind:  docs.MarkSuggestion,
-		ID:    "m-insert",
-		Attrs: pmdoc.Attrs{"id": "m-insert", "by": "user:alice", "kind": "insert"},
-	}, insertedWords+" ")
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+notes.ID+"/comments", map[string]any{
-		"body":       "Add this word.",
-		"anchor":     map[string]any{"artifact": notes.Slug, "mark_id": "m-insert"},
-		"suggestion": map[string]string{"replace_with": insertedWords + " "},
-	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("suggest the insert on the project document: status=%d body=%s", created.Code, created.Body.String())
-	}
-	insert := decodeBody[model.Comment](t, created)
+	insert := suggestProjectInsert(t, handler, database, documentService, notes, "m-insert")
 	nameVersion(t, handler, notes.ID, "With the insert pending")
 	// The positive control: the check while the insert stands gives its words in the document's
 	// snippet, so its repeat after the delete can fail.
@@ -224,12 +207,68 @@ func TestAKeptRelatedCheckFromWhileAnInsertStoodIsNotReplayedAfterItsDelete(t *t
 	}
 }
 
-// V.13: an answer run given the spec while alice's insert suggestion stood in it reads the words
-// from the spec's version, whose insert tree holds the suggestion's mark, and quotes them. The
-// run is recorded with the suggestion's comment, whose own words they are (goingItemText,
-// recordGoingPosts), so the comment's delete withdraws the run as the delete of any post it read
-// does: the stream gives the withdrawal alone, under the id of the run's ending.
-func TestGoingStreamOverADocumentHoldingAPendingInsertIsWithdrawnByItsDelete(t *testing.T) {
+// The row beside V.22 and V.13 for a comment on a pending insert's words: bob's comment anchored on
+// the words alice's insert suggestion put in the document lies in the same text run as the insert,
+// so the run carries both marks. The rule that finds an insert in a stored tree
+// (docs.InsertMarkPath, docs.InsertMarkIDsPath) reads the type, the kind and the id of one mark at
+// a time, so bob's mark is no insert's: his comment's delete ends no kept answer, and withdraws no
+// answer run (the row after V.13), while the insert's own delete then does both, as V.22 and V.13
+// hold.
+func TestAKeptRelatedCheckIsNotEndedByTheDeleteOfACommentOnAPendingInsertsWords(t *testing.T) {
+	documentService, handler, database := browserDocumentService(t)
+	createTestProject(t, handler, "CORE")
+	notes := createProjectDocument(t, handler, "CORE", "Design notes", "The "+insertedWords+" brown fox jumps\n")
+	insert := suggestProjectInsert(t, handler, database, documentService, notes, "m-insert")
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+notes.ID+"/comments", map[string]any{
+		"body": "Why this word?", "anchor": map[string]any{"artifact": notes.Slug, "quote": insertedWords},
+	}, "bob")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("comment on the insert's words: status=%d body=%s", created.Code, created.Body.String())
+	}
+	onWords := decodeBody[model.Comment](t, created)
+	nameVersion(t, handler, notes.ID, "With the insert pending")
+	refreshTermStats(t, database, "CORE")
+	check := func() *httptest.ResponseRecorder {
+		t.Helper()
+		return keyedRequest(t, handler, http.MethodPost, "/api/v1/projects/CORE/related",
+			map[string]any{"title": "brown fox jumps", "keywords_only": true}, "alice", "while-the-insert-stood")
+	}
+	// The positive control: the check lists the document with the insert's words in its snippet,
+	// and not bob's comment, so only the rule can end it at his comment's delete.
+	during := check()
+	if body := during.Body.String(); during.Code != http.StatusOK || !strings.Contains(body, `"kind":"document"`) ||
+		!strings.Contains(body, notes.ID) || !strings.Contains(body, insertedWords) || strings.Contains(body, onWords.ID) {
+		t.Fatalf("the check while the insert stood: status=%d body=%s, want 200 listing the document %s with %q and not the comment %s",
+			during.Code, body, notes.ID, insertedWords, onWords.ID)
+	}
+
+	deleteThreadComment(t, handler, onWords.ID, "bob")
+	if kept := check(); kept.Code != during.Code || !replayed(kept) || kept.Body.String() != during.Body.String() {
+		t.Errorf("the repeat after the delete of bob's comment on the insert's words: status=%d replayed=%t body=%s, want it replayed as kept: %d %s",
+			kept.Code, replayed(kept), kept.Body.String(), during.Code, during.Body.String())
+	}
+	deleteThreadComment(t, handler, insert.ID, "alice")
+	again := check()
+	if code, _ := refusalOf(t, again); again.Code != during.Code || !replayed(again) || code != contracts.IdempotencyAnswerNotKept {
+		t.Errorf("the repeat after the insert's delete: status=%d replayed=%t body=%s, want %d %s, replayed",
+			again.Code, replayed(again), again.Body.String(), during.Code, contracts.IdempotencyAnswerNotKept)
+	}
+}
+
+// goingOverAnInsert is the rig of the answer-run rows below: an issue of project GWI whose spec
+// holds insertedWords under alice's pending insert suggestion, and that suggestion's comment.
+type goingOverAnInsert struct {
+	rig        goingRoutesRig
+	answerer   *fakeAnswerer
+	issueKey   string
+	artifactID string
+	insert     model.Comment
+}
+
+// newGoingOverAnInsert makes a goingOverAnInsert: a browser marks the spec's words as an insert
+// suggestion, which alice then suggests.
+func newGoingOverAnInsert(t *testing.T) goingOverAnInsert {
+	t.Helper()
 	answerer := &fakeAnswerer{}
 	rig := newGoingRoutesRig(t, answerer)
 	documentService, served := rig.server.deps.Docs.(*docs.Service)
@@ -242,27 +281,73 @@ func TestGoingStreamOverADocumentHoldingAPendingInsertIsWithdrawnByItsDelete(t *
 		ID:    "m-insert",
 		Attrs: pmdoc.Attrs{"id": "m-insert", "by": "user:alice", "kind": "insert"},
 	}, insertedWords+" ")
-	insert := createThreadComment(t, rig.handler, issue.Key, map[string]any{
-		"body":       "Add this word.",
-		"anchor":     map[string]any{"artifact": "spec", "mark_id": "m-insert"},
-		"suggestion": map[string]string{"replace_with": insertedWords + " "},
-	}, "alice")
-	nameVersion(t, rig.handler, issue.PrimaryArtifactID, "With the insert pending")
-	run := askQuotingPost(t, rig, answerer, "GWI", "document", issue.PrimaryArtifactID, insertedWords)
+	return goingOverAnInsert{
+		rig: rig, answerer: answerer, issueKey: issue.Key, artifactID: issue.PrimaryArtifactID,
+		insert: createThreadComment(t, rig.handler, issue.Key, map[string]any{
+			"body":       "Add this word.",
+			"anchor":     map[string]any{"artifact": "spec", "mark_id": "m-insert"},
+			"suggestion": map[string]string{"replace_with": insertedWords + " "},
+		}, "alice"),
+	}
+}
+
+// V.13: an answer run given the spec while alice's insert suggestion stood in it reads the words
+// from the spec's version, whose insert tree holds the suggestion's mark, and quotes them. The
+// run is recorded with the suggestion's comment, whose own words they are (goingItemText,
+// recordGoingPosts), so the comment's delete withdraws the run as the delete of any post it read
+// does: the stream gives the withdrawal alone, under the id of the run's ending.
+func TestGoingStreamOverADocumentHoldingAPendingInsertIsWithdrawnByItsDelete(t *testing.T) {
+	f := newGoingOverAnInsert(t)
+	nameVersion(t, f.rig.handler, f.artifactID, "With the insert pending")
+	run := askQuotingPost(t, f.rig, f.answerer, "GWI", "document", f.artifactID, insertedWords)
 
 	// The positive control: while the insert stands, the run streams its frames, the words among
 	// them.
-	want := quotingStream("document", issue.PrimaryArtifactID, insertedWords)
-	if before := rig.readStream(t, run.ID, ""); before != want {
+	want := quotingStream("document", f.artifactID, insertedWords)
+	if before := f.rig.readStream(t, run.ID, ""); before != want {
 		t.Fatalf("before the delete the stream wrote\n%q\nwant\n%q", before, want)
 	}
 
-	deleteThreadComment(t, rig.handler, insert.ID, "alice")
-	after := rig.readStream(t, run.ID, "")
+	deleteThreadComment(t, f.rig.handler, f.insert.ID, "alice")
+	after := f.rig.readStream(t, run.ID, "")
 	if after != withdrawnGoingStream(3) {
 		t.Errorf("after the insert's delete the stream wrote\n%q\nwant the withdrawal alone\n%q", after, withdrawnGoingStream(3))
 	}
 	if strings.Contains(after, insertedWords) {
 		t.Errorf("after the delete the stream carries the insert's words: %q", after)
+	}
+}
+
+// The answer-run half of the row after V.22: a run given the spec while bob's comment and alice's
+// insert stood in one text run of it is recorded with the insert's comment alone (goingItemText), so
+// bob's delete leaves the run's stream as it was, and the insert's delete then withdraws it.
+func TestGoingStreamIsNotWithdrawnByTheDeleteOfACommentOnAPendingInsertsWords(t *testing.T) {
+	f := newGoingOverAnInsert(t)
+	onWords := createThreadComment(t, f.rig.handler, f.issueKey, map[string]any{
+		"body": "Why this word?", "anchor": map[string]any{"artifact": "spec", "quote": insertedWords},
+	}, "bob")
+	nameVersion(t, f.rig.handler, f.artifactID, "With the insert pending")
+	run := askQuotingPost(t, f.rig, f.answerer, "GWI", "document", f.artifactID, insertedWords)
+
+	// The positive control: the run streams its frames, and bob's comment is none of the hits it
+	// was given, so only the rule can record the run with it.
+	want := quotingStream("document", f.artifactID, insertedWords)
+	if before := f.rig.readStream(t, run.ID, ""); before != want {
+		t.Fatalf("before the deletes the stream wrote\n%q\nwant\n%q", before, want)
+	}
+	_, hits, _ := f.answerer.read()
+	for _, hit := range hits {
+		if hit.ID == onWords.ID {
+			t.Fatalf("the run was given bob's comment as the hit %+v, so its delete withdraws the run whatever the rule reads", hit)
+		}
+	}
+
+	deleteThreadComment(t, f.rig.handler, onWords.ID, "bob")
+	if after := f.rig.readStream(t, run.ID, ""); after != want {
+		t.Errorf("after the delete of bob's comment on the insert's words the stream wrote\n%q\nwant it as before\n%q", after, want)
+	}
+	deleteThreadComment(t, f.rig.handler, f.insert.ID, "alice")
+	if after := f.rig.readStream(t, run.ID, ""); after != withdrawnGoingStream(3) {
+		t.Errorf("after the insert's delete the stream wrote\n%q\nwant the withdrawal alone\n%q", after, withdrawnGoingStream(3))
 	}
 }

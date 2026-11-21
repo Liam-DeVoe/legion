@@ -23,7 +23,16 @@ import (
 // artifact_versions.insert_tree, in the insert that stores the markdown tree renders to
 // (RenderStamp.InsertTree). MaskedVersionText reads it back.
 func InsertTree(tree *pmdoc.Node) ([]byte, error) {
-	if tree == nil || len(insertMarkIDs(tree)) == 0 {
+	holdsInsert := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		for _, mark := range node.Marks {
+			if _, holdsInsert = insertMarkID(mark); holdsInsert {
+				return false
+			}
+		}
+		return true
+	})
+	if !holdsInsert {
 		return nil, nil
 	}
 	return tree.JSON()
@@ -138,6 +147,9 @@ func versionMask(ctx context.Context, q Queryer, artifactID string, insertTree [
 // A mark no comment names keeps its words: no post claims them, so no delete withdrew them. They
 // are the document's own pending text, a browser's suggestion that nobody posted, which only a
 // reject of the mark takes out, and R3 masks the words of a deleted post alone.
+//
+// The accept is read only for a mark a deleted comment names: the having clause drops every other
+// mark all the same, so the where clause leaves it out before its comments' accepts are read.
 const deletedInsertMarksSQL = `
 	with marked as (
 		select c.anchor->>'mark_id' as mark_id, c.deleted_at is not null as deleted,
@@ -152,6 +164,11 @@ const deletedInsertMarksSQL = `
 				) as accepted
 		from comments c
 		where (c.anchor->>'artifact_id')::uuid = $1::uuid and c.anchor->>'mark_id' = any($2::text[])
+			and c.anchor->>'mark_id' in (
+				select d.anchor->>'mark_id' from comments d
+				where (d.anchor->>'artifact_id')::uuid = $1::uuid and d.anchor->>'mark_id' = any($2::text[])
+					and d.deleted_at is not null
+			)
 	)
 	select mark_id from marked group by mark_id having bool_or(deleted) and not bool_or(accepted)`
 
@@ -207,14 +224,25 @@ func insertMarkID(mark pmdoc.Mark) (string, bool) {
 	return id, ok && id != ""
 }
 
-// InsertMarkPath is the jsonpath that finds, in a stored insert tree (artifact_versions.insert_tree,
-// pmdoc's JSON, where a mark is {"type", "attrs"}), the mark insertMarkID reads in Go: a
-// suggestion's mark recording the kind insert, whose id is the path's variable id. A statement
-// that finds an insert among the stored trees, which reads no tree into Go, finds it by this rule
-// (jsonb_path_exists(insert_tree, InsertMarkPath, jsonb_build_object('id', <mark id>))): the
-// kept answers and the answer runs whose text held a deleted insert's words (api's
-// answerEndedByDelete and goingItemText).
-const InsertMarkPath = `$.** ? (@.type == "` + string(MarkSuggestion) + `" && @.attrs.kind == "insert" && @.attrs.id == $id)`
+// insertMarkFilter is the jsonpath filter that reads, in a stored insert tree
+// (artifact_versions.insert_tree, pmdoc's JSON, where a mark is {"type", "attrs"}), the mark
+// insertMarkID reads in Go: a suggestion's mark recording the kind insert. Lax mode gives the
+// filter the elements of an array one at a time, a node's marks included, so its tests read one
+// mark. A statement that finds an insert among the stored trees, which reads no tree into Go,
+// finds it by this rule, through one of the two paths below: the kept answers and the answer runs
+// whose text held a deleted insert's words (api's answerEndedByDelete and goingItemText).
+const insertMarkFilter = `@.type == "` + string(MarkSuggestion) + `" && @.attrs.kind == "insert"`
+
+// InsertMarkPath finds, in a stored insert tree, the insert suggestion's mark (insertMarkFilter)
+// whose id is the path's variable id: jsonb_path_exists(insert_tree, InsertMarkPath,
+// jsonb_build_object('id', <mark id>)), as answerEndedByDelete asks it of each comment.
+const InsertMarkPath = `$.** ? (` + insertMarkFilter + ` && @.attrs.id == $id)`
+
+// InsertMarkIDsPath is the id of every insert suggestion's mark (insertMarkFilter) a stored insert
+// tree holds, an id answered as often as the walk reaches its mark: jsonb_path_query(insert_tree,
+// InsertMarkIDsPath), which reads a tree once for all the comments of its document, as
+// goingItemText reads it.
+const InsertMarkIDsPath = `$.** ? (` + insertMarkFilter + `).attrs.id`
 
 // dropMarkedNodes takes out of node, in place, every node carrying the mark of an insert
 // suggestion masked names: its text runs, and an inline node such as a hard break the insert
@@ -251,7 +279,7 @@ func blocksHoldingMasked(node *pmdoc.Node, masked, holding map[string]bool) bool
 			holds = true
 		}
 	}
-	if id, named := node.Attrs[pmdoc.BlockIDAttr].(string); holds && named && id != "" {
+	if id := blockID(node); holds && id != "" {
 		holding[id] = true
 	}
 	return holds

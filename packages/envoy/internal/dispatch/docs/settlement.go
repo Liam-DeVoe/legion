@@ -892,7 +892,8 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 // notice a person's version opened before the close, due or held (holdEditNotice): neither a
 // reopen inside its quiet time nor the first notice after the reopen, which would start from that
 // row's from_version (openEditNotice), carries the edits this version saves. The version a joined
-// transaction writes as the settlement would (SettleVersion) does the same.
+// transaction writes as the settlement would (SettleVersion) does the same, and a snapshot's,
+// whose closedIssue is false.
 func (s *Service) settledEditNotice(ctx context.Context, tx pgx.Tx, room string, closedIssue bool, version int, authors []model.Actor, latest *model.Actor) error {
 	if closedIssue {
 		return writeExec(ctx, tx, "delete the closed issue's document's edit notice", dropEditNotice, room)
