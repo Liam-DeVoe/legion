@@ -2999,11 +2999,9 @@ package api
 // The same contract adds the claim route `POST /legion/v1/claims/owed` (`api.OwedRequest`, the
 // claim token, session and secret `claims/activity` carries), which answers `{"owes": bool,
 // "work": string, "architect"?: string}` (`api.OwedResponse`): whether the claim owes work now,
-// read from the issue's record — its phase, the role's own row of it, the entry that row names
-// against the entry the claim was given (94's two numbers: a claim behind its entry owes that
-// entry's work, which the daemon is sending, and one level with it owes the phase while the row
-// records no completion) and its production check — and what that work is called, "the testing
-// phase of LEGION-208" or "the production check of LEGION-208", empty when nothing is owed.
+// read from the issue's record as `owedBy` (`api/owed.go`) reads it, whose doc holds the rule,
+// and what that work is called, "the testing phase of LEGION-208" or "the production check of
+// LEGION-208", empty when nothing is owed.
 // `architect` is the architect claim that owns the claim now, the end of the owner walk the
 // daemon's own notices of the issue take (`record.OwnerWalk.Architect`): named for a phase worker
 // whose issue the workflow records, owed or not, and absent for an architect, the controller, a
