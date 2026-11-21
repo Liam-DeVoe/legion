@@ -573,7 +573,7 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 // keeper's own connection sends after them has reached the watch, so every update those passes
 // sent is in the count.
 func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
-	// Serial: its assertion is a quiet window: no stream update in six keeper periods (1.5 s).
+	t.Parallel()
 	const marker = "envoy.keeper.test.marker"
 	cluster, js := startClusterJetStream(t)
 	startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit))

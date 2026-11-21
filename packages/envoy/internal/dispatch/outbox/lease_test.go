@@ -579,16 +579,18 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // stays main's: those wakes ran past it under CI's eight concurrent go test calls (run
 // 42949344199) and with 111 test binaries at once (run 43716631673, job 132819560357), and
 // widening it to fit them (6 s) made it a reading of the machine, while dropping it left the row
-// no check of how soon. The event written after the cut is published by the process whose NATS
-// works, waited on as an event at eventWait, since that wait begins once the release is in.
+// no check of how soon. The event written after the cut must then be published by the process
+// whose NATS works within 10 s of the cut, main's bound (10*time.Second-time.Since(downAt)): it is
+// the row's check of how soon the other process takes the hold over and publishes, so it stays
+// main's too, and a wait counted from the write alone would let a take-over that comes late pass.
 //
-// Serial: its assertion is a time - the release must come within 500 ms of natsLossGrace after
-// the cut (main's bound, above) - so this package's parallel tests must not run beside it; it
-// reads publish's line through the default logger, which it swaps (logtest.SetDefault); and a
-// holder whose renewals a parallel batch starves for the 4 s from a confirmed renewal to the loss
-// deadline (publisherHoldOptions, TTL less Margin) reports the hold lost and ends its turn before
-// the grace runs out, and the row would then be reading that load rather than the product
-// (docs/testing.md).
+// Serial: its assertions are times - the release must come within 500 ms of natsLossGrace after
+// the cut, and the take-over's publish within 10 s of the cut (main's bounds, above) - so this
+// package's parallel tests must not run beside it; it reads publish's line through the default
+// logger, which it swaps (logtest.SetDefault); and a holder whose renewals a parallel batch
+// starves for the 4 s from a confirmed renewal to the loss deadline (publisherHoldOptions, TTL
+// less Margin) reports the hold lost and ends its turn before the grace runs out, and the row
+// would then be reading that load rather than the product (docs/testing.md).
 func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
@@ -627,7 +629,7 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 			stopped.Sub(downAt).Round(time.Millisecond), natsLossGrace)
 	}
 	event := writeMessage(t, working, "after the cut")
-	waitForPublished(t, eventWait, database, counter, event)
+	waitForPublished(t, 10*time.Second-time.Since(downAt), database, counter, event)
 	if !working.outbox.Publishing() || cut.outbox.Publishing() {
 		t.Fatalf("publishing %v after the cut, want only the process whose NATS works", publishing(cut, working))
 	}

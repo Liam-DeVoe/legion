@@ -391,7 +391,9 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 // It is the one request body in this package: Rig.Req and Client.Req differ in the broker they
 // name, the client they go out on, and at — the process a failure is about, " (at host:port)"
 // for a Client pinned to one of two processes serving one database, and empty for a Rig, which
-// has one broker and so nothing to tell apart.
+// has one broker and so nothing to tell apart. signing is the moment the caller began signing
+// what the request carries, zero for a request carrying no signature: a signed request is given
+// up brokerRequestWait after it (signedContext).
 func request(
 	t *testing.T,
 	client *http.Client,
@@ -399,6 +401,7 @@ func request(
 	headers map[string]string,
 	body any,
 	at string,
+	signing time.Time,
 ) (int, []byte) {
 	t.Helper()
 	var reader io.Reader
@@ -409,7 +412,9 @@ func request(
 		}
 		reader = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, baseURL+path, reader)
+	ctx, cancel := signedContext(signing)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -436,7 +441,7 @@ func request(
 // caller does that so a mismatch names the actual body.
 func (r *Rig) Req(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte) {
 	t.Helper()
-	return request(t, http.DefaultClient, r.URL, method, path, headers, body, "")
+	return request(t, http.DefaultClient, r.URL, method, path, headers, body, "", time.Time{})
 }
 
 // UI is Req as the listed caller of the routes Dispatch's server calls: it presents UIToken, the
@@ -494,7 +499,11 @@ const RereaderOperator = "rereader@example.com"
 // reread route answers once the reread is done: whether the broker now serves the name, why not,
 // and as which type. A caller with no proof is answered 202 at once, before the reread reads the
 // store, so a row that reads what the broker serves, or goes on to ask for the secret, rereads
-// this way.
+// this way. The Rig's broker takes a proof for a minute from its iat (NewRig's proof.Verifier) and
+// checks it when the request arrives, then holds the request open while the reread runs, behind
+// the policy's writer lock and a store read (handlers_secrets.go:167, policy/current.go:295), so
+// the request sets no deadline from the signing and goes out on heldClient. The Rig's httptest
+// server puts no deadline on a request, so that client is its only bound.
 func (r *Rig) Reread(t *testing.T, name string) (int, []byte) {
 	t.Helper()
 	enrollmentID, key := r.NewSession(t, RereaderOperator)
@@ -503,7 +512,7 @@ func (r *Rig) Reread(t *testing.T, name string) (int, []byte) {
 	if err != nil {
 		t.Fatalf("proof.Sign: %v", err)
 	}
-	return r.Req(t, http.MethodPost, path, map[string]string{"Proof": signed}, nil)
+	return request(t, heldClient, r.URL, http.MethodPost, path, map[string]string{"Proof": signed}, nil, "", time.Time{})
 }
 
 // uiCall is the UI-route caller a machine-login decision goes out through: Rig.UI or Client.UI,

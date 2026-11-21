@@ -475,7 +475,7 @@ func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
 	pause.let()
 	select {
 	case <-settled:
-	case <-time.After(recoveryBound):
+	case <-time.After(roomWait(t)):
 		endRoomLockHolders(t, service)
 		t.Fatal("deadlock: the settlement never returned once its room failed under its commit")
 	}

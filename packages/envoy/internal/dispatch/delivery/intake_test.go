@@ -180,8 +180,8 @@ func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
 
 // publishPullRequestEnvelope publishes one notifications.github.<owner>.<repo>.pr.<number>
 // envelope (the shape intake.go's handlePullRequestEnvelope reads), waits for the publish to be
-// acknowledged by JetStream, and answers the stream sequence the stream stored it at. The publish
-// has the 5 s bound Client.Publish gives one.
+// acknowledged by JetStream, and answers the stream sequence the stream stored it at. The wait for
+// that acknowledgement gives up at eventWait, the package's wait for an event.
 func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, repo string, number int, fields map[string]string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(fields)
@@ -197,7 +197,7 @@ func publishPullRequestEnvelope(t *testing.T, natsClient *bus.Client, owner, rep
 		TraceID:       "test-trace",
 		IssuedAt:      time.Now().Unix(),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), eventWait)
 	defer cancel()
 	stored, err := natsClient.PublishAckWithin(ctx, envelope)
 	if err != nil {

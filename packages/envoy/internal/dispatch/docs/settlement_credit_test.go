@@ -555,7 +555,9 @@ const (
 	// test's cleanups, so a teardown that spends its whole budget still leaves the package's
 	// later tests the deadline roomWait counts on. A test that is about the budget runs
 	// production's ShutdownDrainBudget through Shutdown, or passes a budget of its own, as
-	// TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted does (shutdownTestBudget).
+	// TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted does (shutdownTestBudget). It
+	// is a value the product enforces, not a give-up: shutdown cancels the rooms' drain once it
+	// passes (service.go, drainCtx), so it stays roomWaitMargin rather than roomWait.
 	teardownDrainBudget = roomWaitMargin
 )
 

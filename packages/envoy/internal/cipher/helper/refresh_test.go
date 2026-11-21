@@ -21,6 +21,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // keptLogin logs a Broker in against f and returns the machine file it kept, for a second Broker
@@ -513,7 +514,9 @@ func TestAStartWhoseRefreshFailsResumesTheLogin(t *testing.T) {
 // login at once; the broker refuses it (the machine was revoked), so the machine file is deleted
 // within seconds rather than at the next day's refresh.
 func TestALauncherRefusalSettlesTheMachineFileAtOnce(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time: the machine file must be gone within 5 s of the refusal,
+	// main's bound (waitFor's at main), which is the row's check that the refusal settles the file
+	// within seconds rather than at the next day's refresh.
 	f := newFakeBroker(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -533,10 +536,12 @@ func TestALauncherRefusalSettlesTheMachineFileAtOnce(t *testing.T) {
 	if _, _, err := b.EnrollSessionKey(ctx, "rt", "tp", nil, nil); !errors.Is(err, errNoCredential) {
 		t.Fatalf("an enroll the broker refused: %v; want errNoCredential", err)
 	}
-	waitFor(t, func() bool {
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, func() bool {
 		_, err := LoadMachineFile(b.MachineFile)
 		return errors.Is(err, os.ErrNotExist)
-	})
+	}) {
+		t.Fatalf("the machine file was still there 5 s after the broker refused the launcher credential; login-status: %+v", b.LoginStatus())
+	}
 	if ls := b.LoginStatus(); ls.CredentialHeld || ls.Dropped != dropRefused {
 		t.Fatalf("login-status: %+v; want no credential, dropped for %q", ls, dropRefused)
 	}
@@ -607,7 +612,9 @@ func fileHoldsTheHeldLogin(b *Broker, old string) bool {
 // rotated login and retries at the retry interval, not at the next day's refresh, so the file
 // holds a current refresh token soon after the disk takes writes again.
 func TestAStartWhoseSaveFailsRetriesWithinTheRetryInterval(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time: the file must name the held login within 5 s of the disk
+	// taking writes again, main's bound (waitFor's at main), which is the row's check that the
+	// helper retries the save at the retry interval, not at the next day's refresh.
 	f := newFakeBroker(t)
 	path, kept := keptLogin(t, f)
 	restore := unwritable(t, path)
@@ -635,8 +642,9 @@ func TestAStartWhoseSaveFailsRetriesWithinTheRetryInterval(t *testing.T) {
 			held, kept.CredentialID, account())
 	}
 	restore()
-	waitForAccounted(t, "the machine file naming the login the helper holds, once the disk takes writes again",
-		func() bool { return fileHoldsTheHeldLogin(b, kept.RefreshToken) }, account)
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, func() bool { return fileHoldsTheHeldLogin(b, kept.RefreshToken) }) {
+		t.Fatalf("the machine file did not name the login the helper holds within 5 s of the disk taking writes again; %s", account())
+	}
 }
 
 // TestALauncherRefusalWhoseSettlementSaveFailsIsRetried: the settlement refresh a 401

@@ -52,13 +52,14 @@ type requestReply struct {
 func (b podBroker) logIn(service, account string) launcher {
 	b.t.Helper()
 	key := proofKey(b.t)
+	signing := time.Now()
 	loginRequest, err := record.Sign(key, b.base, []record.AuthorizationDetail{
 		{Type: record.KindLauncherCredential, Identifier: "example-host-" + service, Service: service},
-	}, "", "", nil, time.Now())
+	}, "", "", nil, signing)
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	status, answer := b.post("/v1/launcher-credentials/token", nil, map[string]any{
+	status, answer := b.signedPost(signing, "/v1/launcher-credentials/token", nil, map[string]any{
 		"token":   b.issuer.Mint(b.t, b.key, b.issuer.Claims(account, b.audience)),
 		"request": loginRequest,
 	})
@@ -88,7 +89,8 @@ func (b podBroker) enrolPod(by launcher, runtimeID, account, sessionID string) (
 	}
 	claims := b.issuer.Claims(account, b.audience)
 	claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": runtimeID}}
-	signed, err := proof.SignLauncher(by.key, by.credentialID, http.MethodPost, b.base+"/v1/enrollments", time.Now())
+	signing := time.Now()
+	signed, err := proof.SignLauncher(by.key, by.credentialID, http.MethodPost, b.base+"/v1/enrollments", signing)
 	if err != nil {
 		b.t.Fatal(err)
 	}
@@ -98,7 +100,7 @@ func (b podBroker) enrolPod(by launcher, runtimeID, account, sessionID string) (
 	if sessionID != "" {
 		body["session_id"] = sessionID
 	}
-	status, answer := b.post("/v1/enrollments", map[string]string{"Proof": signed}, body)
+	status, answer := b.signedPost(signing, "/v1/enrollments", map[string]string{"Proof": signed}, body)
 	var enrolled struct {
 		EnrollmentID string `json:"enrollment_id"`
 	}
@@ -120,7 +122,9 @@ func (b podBroker) enroll(by launcher, runtimeID, account, sessionID string) pod
 }
 
 // askRaw has p request the agent secret secretName and answers the broker's status and body,
-// for a caller proving that a session whose enrollment has ended reaches no secret at all.
+// for a caller proving that a session whose enrollment has ended reaches no secret at all. POST
+// /v1/requests holds the request open after its proof check (heldRequestWait), so it goes out on
+// held, with no deadline from the signing.
 func (b podBroker) askRaw(p pod, secretName string) (int, []byte) {
 	b.t.Helper()
 	request, err := record.Sign(p.key, b.base, []record.AuthorizationDetail{
@@ -129,7 +133,7 @@ func (b podBroker) askRaw(p pod, secretName string) (int, []byte) {
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	return b.signed(p, "/v1/requests", map[string]any{"request": request, "session_id": nil})
+	return b.held(p, "/v1/requests", map[string]any{"request": request, "session_id": nil})
 }
 
 // ask has p request the agent secret secretName and returns the broker's reply.
@@ -158,19 +162,49 @@ func (b podBroker) values(p pod, grantID string) map[string]string {
 	return values.Values
 }
 
-// signed POSTs body to path with p's proof of its enrollment.
+// signed POSTs body to path with p's proof of its enrollment, for a route that answers at once
+// (POST /v1/grants/{id}/values, internal/cipher/api/handlers_requests.go:637; POST
+// /v1/enrollments/{id}/renew, handlers_enroll.go:423): the request is given up brokerRequestWait
+// after the proof's signing (signedPost).
 func (b podBroker) signed(p pod, path string, body any) (int, []byte) {
+	b.t.Helper()
+	signing := time.Now()
+	proofHeader, err := proof.Sign(p.key, p.enrollmentID, http.MethodPost, b.base+path, signing)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	return b.signedPost(signing, path, map[string]string{"Proof": proofHeader}, body)
+}
+
+// held is signed for a route that holds the request open after its proof check
+// (heldRequestWait): no deadline from the signing, on heldClient.
+func (b podBroker) held(p pod, path string, body any) (int, []byte) {
 	b.t.Helper()
 	proofHeader, err := proof.Sign(p.key, p.enrollmentID, http.MethodPost, b.base+path, time.Now())
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	return b.post(path, map[string]string{"Proof": proofHeader}, body)
+	return b.postOn(heldClient, time.Time{}, path, map[string]string{"Proof": proofHeader}, body)
 }
 
-// post POSTs body as JSON to path with the auth headers, logs the exchange and returns the
-// status and response body.
+// post is signedPost for a request carrying nothing the test signed.
 func (b podBroker) post(path string, auth map[string]string, body any) (int, []byte) {
+	b.t.Helper()
+	return b.signedPost(time.Time{}, path, auth, body)
+}
+
+// signedPost is postOn for a route that answers at once, on brokerClient: signing is the moment
+// the caller began signing what the request carries, zero for a request carrying no signature,
+// and the request is given up brokerRequestWait after it (signedContext).
+func (b podBroker) signedPost(signing time.Time, path string, auth map[string]string, body any) (int, []byte) {
+	b.t.Helper()
+	return b.postOn(brokerClient, signing, path, auth, body)
+}
+
+// postOn POSTs body as JSON to path with the auth headers on client, logs the exchange and
+// returns the status and response body. A non-zero signing gives the request up
+// brokerRequestWait after it (signedContext); a zero one sets no deadline but client's.
+func (b podBroker) postOn(client *http.Client, signing time.Time, path string, auth map[string]string, body any) (int, []byte) {
 	b.t.Helper()
 	var payload []byte
 	if body != nil {
@@ -179,7 +213,9 @@ func (b podBroker) post(path string, auth map[string]string, body any) (int, []b
 			b.t.Fatal(err)
 		}
 	}
-	request, err := http.NewRequest(http.MethodPost, b.base+path, bytes.NewReader(payload))
+	ctx, cancel := signedContext(signing)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, b.base+path, bytes.NewReader(payload))
 	if err != nil {
 		b.t.Fatal(err)
 	}
@@ -187,7 +223,7 @@ func (b podBroker) post(path string, auth map[string]string, body any) (int, []b
 	for name, value := range auth {
 		request.Header.Set(name, value)
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		b.t.Fatalf("POST %s: %v", path, err)
 	}
@@ -219,11 +255,12 @@ func (b podBroker) enrolSession(launcherKey *ecdsa.PrivateKey, credentialID, run
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	signed, err := proof.SignLauncher(launcherKey, credentialID, http.MethodPost, b.base+"/v1/enrollments", time.Now())
+	signing := time.Now()
+	signed, err := proof.SignLauncher(launcherKey, credentialID, http.MethodPost, b.base+"/v1/enrollments", signing)
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	status, answer := b.post("/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+	status, answer := b.signedPost(signing, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
 		"kind": "session", "runtime_id": runtimeID, "thumbprint": thumbprint,
 	})
 	return key, status, answer

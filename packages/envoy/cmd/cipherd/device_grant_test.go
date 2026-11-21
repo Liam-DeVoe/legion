@@ -84,7 +84,8 @@ func readMetadata(t *testing.T, addr string) wireMetadata {
 
 // startDeviceAuthorization posts one device authorization as agent-secrets-helper does: the
 // machine-login client, the machine's key thumbprint, and a request object signed by that key
-// naming the host and the person who approves it.
+// naming the host and the person who approves it. The post is given up brokerRequestWait after
+// that signing (signedContext).
 func startDeviceAuthorization(t *testing.T, addr string, key *ecdsa.PrivateKey) (int, []byte) {
 	t.Helper()
 	base := "http://" + addr
@@ -92,9 +93,10 @@ func startDeviceAuthorization(t *testing.T, addr string, key *ecdsa.PrivateKey) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	signing := time.Now()
 	request, err := record.Sign(key, base, []record.AuthorizationDetail{
 		{Type: record.KindLauncherCredential, Identifier: deviceHost},
-	}, "", devicePerson, nil, time.Now())
+	}, "", devicePerson, nil, signing)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +104,14 @@ func startDeviceAuthorization(t *testing.T, addr string, key *ecdsa.PrivateKey) 
 		"client_id": {oauthwire.ClientID}, "scope": {oauthwire.Scope},
 		"dpop_jkt": {thumbprint}, "request": {request},
 	}
-	response, err := http.Post(base+"/v1/oauth/device_authorization", "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	ctx, cancel := signedContext(signing)
+	defer cancel()
+	post, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/oauth/device_authorization", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := brokerClient.Do(post)
 	if err != nil {
 		t.Fatal(err)
 	}

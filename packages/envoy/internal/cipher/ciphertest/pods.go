@@ -2,6 +2,7 @@ package ciphertest
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"encoding/json"
 	"io"
@@ -33,6 +34,43 @@ type Pods struct {
 	// tokens for (BROKER_K8S_OIDC_AUDIENCE), bound to the pod podUID, or to no pod when podUID is
 	// empty: IssuerTokens for an issuer in the test's own process.
 	Token func(account, podUID string) string
+}
+
+// brokerRequestWait bounds one request this package sends a broker carrying something it signed
+// (a launcher proof, an enrollment's proof, a request object), from the moment it signed it to the
+// broker's answer: every request a Pods sends, and a Client's to the routes that answer at once
+// (signedContext; Client.Session says which do not). The binary takes what was signed for
+// BROKER_PROOF_SKEW_SECONDS after its iat, 60 s by default (internal/cipher/config/config.go), so a
+// request is given up well inside that window, failing its step with the route named: load on the
+// runner cannot carry a request past the skew and have the binary refuse what was good when it
+// was signed. It is cmd/cipherd's brokerRequestWait for the requests its own helpers sign. A
+// healthy request answers in milliseconds.
+const brokerRequestWait = 30 * time.Second
+
+// brokerClient is every Pods request's client: it gives up on a request brokerRequestWait after
+// sending it, and signedContext gives the request up brokerRequestWait after its signing.
+var brokerClient = &http.Client{Timeout: brokerRequestWait}
+
+// heldClient is the client of a request to a route that holds the request open after its proof
+// check: POST /v1/requests (internal/cipher/api/handlers_requests.go:113, which waits on an
+// advisory lock per requested name, requests/machine_state.go:770) and a session's POST
+// /v1/secrets/{name}/reread (handlers_secrets.go:167, which answers once the reread has run behind
+// the policy's writer lock, policy/current.go:295). The broker checks the proof when the request
+// arrives, so such a request sets no deadline from its signing; its give-up is clientTimeout, 90
+// s, past the binary's own 45 s requestDeadline (cmd/cipherd/main.go:877), so a handler that
+// spends that whole budget still answers. Every other route this package signs for answers at
+// once and keeps brokerRequestWait from the signing.
+var heldClient = &http.Client{Timeout: clientTimeout}
+
+// signedContext is the context of a request carrying something signed at signing, before the
+// request is sent: it ends brokerRequestWait after that moment, so the bound covers the span the
+// broker's skew counts from the signing and not only the send a client's Timeout counts from. A
+// zero signing is a request carrying no such signature, which its client's Timeout alone bounds.
+func signedContext(signing time.Time) (context.Context, context.CancelFunc) {
+	if signing.IsZero() {
+		return context.WithCancel(context.Background())
+	}
+	return context.WithDeadline(context.Background(), signing.Add(brokerRequestWait))
 }
 
 // IssuerTokens is a Pods' Token, minted by issuer with key for audience.
@@ -76,13 +114,14 @@ type RequestReply struct {
 func (b Pods) LogIn(service, account string) Launcher {
 	b.T.Helper()
 	key := b.newKey()
+	signing := time.Now()
 	loginRequest, err := record.Sign(key, b.Base, []record.AuthorizationDetail{
 		{Type: record.KindLauncherCredential, Identifier: "example-host-" + service, Service: service},
-	}, "", "", nil, time.Now())
+	}, "", "", nil, signing)
 	if err != nil {
 		b.T.Fatalf("sign %s's login request: %v", service, err)
 	}
-	status, answer := b.send(http.MethodPost, "/v1/launcher-credentials/token", nil, map[string]any{
+	status, answer := b.send(signing, http.MethodPost, "/v1/launcher-credentials/token", nil, map[string]any{
 		"token":   b.Token(account, ""),
 		"request": loginRequest,
 	})
@@ -105,11 +144,12 @@ func (b Pods) Enroll(by Launcher, runtimeID, account string) Pod {
 	if err != nil {
 		b.T.Fatalf("thumbprint %s's key: %v", runtimeID, err)
 	}
-	signed, err := proof.SignLauncher(by.Key, by.CredentialID, http.MethodPost, b.Base+"/v1/enrollments", time.Now())
+	signing := time.Now()
+	signed, err := proof.SignLauncher(by.Key, by.CredentialID, http.MethodPost, b.Base+"/v1/enrollments", signing)
 	if err != nil {
 		b.T.Fatalf("sign %s's enrollment: %v", runtimeID, err)
 	}
-	status, answer := b.send(http.MethodPost, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+	status, answer := b.send(signing, http.MethodPost, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
 		"kind": "pod", "runtime_id": runtimeID, "thumbprint": thumbprint, "pod_token": b.Token(account, runtimeID),
 	})
 	var enrolled struct {
@@ -131,11 +171,12 @@ func (b Pods) EnrollRefused(by Launcher, runtimeID, account string) (int, string
 	if err != nil {
 		b.T.Fatalf("thumbprint %s's key: %v", runtimeID, err)
 	}
-	signed, err := proof.SignLauncher(by.Key, by.CredentialID, http.MethodPost, b.Base+"/v1/enrollments", time.Now())
+	signing := time.Now()
+	signed, err := proof.SignLauncher(by.Key, by.CredentialID, http.MethodPost, b.Base+"/v1/enrollments", signing)
 	if err != nil {
 		b.T.Fatalf("sign %s's enrollment: %v", runtimeID, err)
 	}
-	status, answer := b.send(http.MethodPost, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+	status, answer := b.send(signing, http.MethodPost, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
 		"kind": "pod", "runtime_id": runtimeID, "thumbprint": thumbprint, "pod_token": b.Token(account, runtimeID),
 	})
 	if status == http.StatusCreated {
@@ -156,7 +197,9 @@ func (b Pods) Ask(p Pod, secretName string) RequestReply {
 }
 
 // AskWithReason has p request the agent secret secretName for reason, which is "" for a request
-// that names none, and returns the broker's reply.
+// that names none, and returns the broker's reply. POST /v1/requests holds the request open after
+// its proof check (handlers_requests.go:113, its advisory lock per name at
+// requests/machine_state.go:770), so it goes out on held, with no deadline from the signing.
 func (b Pods) AskWithReason(p Pod, secretName, reason string) RequestReply {
 	b.T.Helper()
 	request, err := record.Sign(p.Key, b.Base, []record.AuthorizationDetail{
@@ -165,7 +208,7 @@ func (b Pods) AskWithReason(p Pod, secretName, reason string) RequestReply {
 	if err != nil {
 		b.T.Fatalf("sign %s's request for %s: %v", p.RuntimeID, secretName, err)
 	}
-	status, answer := b.signed(p, http.MethodPost, "/v1/requests", map[string]any{"request": request, "session_id": nil})
+	status, answer := b.held(p, http.MethodPost, "/v1/requests", map[string]any{"request": request, "session_id": nil})
 	if status != http.StatusOK {
 		b.T.Fatalf("%s's POST /v1/requests for %s = %d %s, want 200", p.RuntimeID, secretName, status, answer)
 	}
@@ -220,20 +263,43 @@ func (b Pods) newKey() *ecdsa.PrivateKey {
 	return key
 }
 
-// signed sends body to path with p's proof of its enrollment.
+// signed sends body to path with p's proof of its enrollment, for a route that answers at once
+// (GET /v1/requests/{id}, handlers_requests.go:469; its cancel, :573; POST /v1/grants/{id}/values,
+// :637): the request is given up brokerRequestWait after the proof's signing (send).
 func (b Pods) signed(p Pod, method, path string, body any) (int, []byte) {
+	b.T.Helper()
+	signing := time.Now()
+	proofHeader, err := proof.Sign(p.Key, p.EnrollmentID, method, b.Base+path, signing)
+	if err != nil {
+		b.T.Fatalf("sign %s's proof for %s %s: %v", p.RuntimeID, method, path, err)
+	}
+	return b.send(signing, method, path, map[string]string{"Proof": proofHeader}, body)
+}
+
+// held is signed for a route that holds the request open after its proof check (heldClient): the
+// request sets no deadline from the signing and gives up at heldClient's timeout.
+func (b Pods) held(p Pod, method, path string, body any) (int, []byte) {
 	b.T.Helper()
 	proofHeader, err := proof.Sign(p.Key, p.EnrollmentID, method, b.Base+path, time.Now())
 	if err != nil {
 		b.T.Fatalf("sign %s's proof for %s %s: %v", p.RuntimeID, method, path, err)
 	}
-	return b.send(method, path, map[string]string{"Proof": proofHeader}, body)
+	return b.sendOn(heldClient, time.Time{}, method, path, map[string]string{"Proof": proofHeader}, body)
 }
 
-// send sends body as JSON to path with the auth headers, logs the exchange with neither the
-// headers nor the body, since each can carry a credential, and returns the status and the
-// response body.
-func (b Pods) send(method, path string, auth map[string]string, body any) (int, []byte) {
+// send is sendOn for a route that answers at once, on brokerClient: signing is the moment the
+// caller began signing what the request carries, and the request is given up brokerRequestWait
+// after it (signedContext).
+func (b Pods) send(signing time.Time, method, path string, auth map[string]string, body any) (int, []byte) {
+	b.T.Helper()
+	return b.sendOn(brokerClient, signing, method, path, auth, body)
+}
+
+// sendOn sends body as JSON to path with the auth headers on client, logs the exchange with
+// neither the headers nor the body, since each can carry a credential, and returns the status and
+// the response body. A non-zero signing gives the request up brokerRequestWait after it
+// (signedContext); a zero one sets no deadline but client's.
+func (b Pods) sendOn(client *http.Client, signing time.Time, method, path string, auth map[string]string, body any) (int, []byte) {
 	b.T.Helper()
 	var payload []byte
 	if body != nil {
@@ -242,7 +308,9 @@ func (b Pods) send(method, path string, auth map[string]string, body any) (int, 
 			b.T.Fatalf("encode the body of %s %s: %v", method, path, err)
 		}
 	}
-	request, err := http.NewRequest(method, b.Base+path, bytes.NewReader(payload))
+	ctx, cancel := signedContext(signing)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, method, b.Base+path, bytes.NewReader(payload))
 	if err != nil {
 		b.T.Fatalf("%s %s: %v", method, path, err)
 	}
@@ -250,7 +318,7 @@ func (b Pods) send(method, path string, auth map[string]string, body any) (int, 
 	for name, value := range auth {
 		request.Header.Set(name, value)
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		b.T.Fatalf("%s %s: %v", method, path, err)
 	}

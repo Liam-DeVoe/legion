@@ -487,7 +487,7 @@ func TestARoomWhoseHistoryDoesNotDecodeFailsFromTheRoomsOwnDecode(t *testing.T) 
 					if room != artifactID {
 						t.Fatalf("access %d: failed room %s, want %s", access, room, artifactID)
 					}
-				case <-time.After(recoveryBound):
+				case <-time.After(roomWait(t)):
 					t.Fatalf("access %d: the room that cannot load never failed", access)
 				}
 				// The eviction waits here, so the failure is the one this access recorded.
@@ -510,7 +510,7 @@ func TestARoomWhoseHistoryDoesNotDecodeFailsFromTheRoomsOwnDecode(t *testing.T) 
 					t.Fatalf("access %d: a room that did not load is served", access)
 				}
 				release <- struct{}{}
-				recovered, cancel := context.WithTimeout(ctx, recoveryBound)
+				recovered, cancel := context.WithTimeout(ctx, roomWait(t))
 				err = service.awaitRoomRecovery(recovered, artifactID)
 				cancel()
 				if err != nil {

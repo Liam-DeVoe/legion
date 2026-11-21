@@ -19,7 +19,9 @@ import (
 // session is one this helper writes straight into databaseURL, the broker's own database
 // (ciphertest.InsertSession), since nothing a row of this package holds can log a machine in to
 // enrol one, and the proof names the public URL the binary derives from the address it bound
-// (BROKER_PUBLIC_URL=http://127.0.0.1:0). It answers the status, the headers and the body as a
+// (BROKER_PUBLIC_URL=http://127.0.0.1:0). The reread route holds the request open after the
+// proof check, until the reread has run (heldRequestWait), so the request sets no deadline from
+// the signing and goes out on heldClient. It answers the status, the headers and the body as a
 // JSON object, as post does.
 func (p *brokerProcess) sessionReread(t *testing.T, databaseURL, name string) (int, http.Header, map[string]any) {
 	t.Helper()
@@ -39,7 +41,7 @@ func (p *brokerProcess) sessionReread(t *testing.T, databaseURL, name string) (i
 		t.Fatal(err)
 	}
 	request.Header.Set("Proof", signed)
-	resp, err := http.DefaultClient.Do(request)
+	resp, err := heldClient.Do(request)
 	if err != nil {
 		t.Fatalf("POST %s as a session: %v", url, err)
 	}

@@ -25,17 +25,23 @@ import (
 // A failed room's eviction flushes the document and compacts its rows older than the tail under
 // its advisory lock. An operation inside a database transaction that waited for that eviction
 // could be waiting on its own transaction, which Postgres cannot see, so these tests bound every
-// such wait. The bound is where a test gives up, never a measurement: each asserts that the
-// operation answered - ErrServiceUnavailable, or the recovery finishing - and never how soon, so
-// it allows for a loaded runner. Every package of this module now runs at once, four CI cores to
-// some 3,800 parallel tests and the race detector besides (dispatch://INFRA-1075). The one row
-// that asserts how soon, TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast, holds its write
-// to failFastBound instead, and is serial.
-const recoveryBound = 30 * time.Second
+// such wait, and every wait for the eviction itself, at roomWait, the package's give-up for a room
+// finishing an eviction. The bound is where a test gives up, never a measurement: each asserts
+// that the operation answered - ErrServiceUnavailable, or the recovery finishing - and never how
+// soon, and nothing in the product ends an operation that waits on its own transaction's lock
+// (awaitRoomRecovery), so a longer give-up lets no such operation pass. The one row that asserts
+// how soon, TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast, holds its write to
+// failFastBound instead, and is serial.
+
+// recoveryBound is a value the product enforces, not a give-up: it is the deadline a cleanup here
+// hands Service.Shutdown, which joins the failed room's eviction and returns once that deadline
+// passes, so it stays roomWaitMargin, what roomWait leaves of the binary's deadline for a failed
+// test's cleanups, rather than roomWait.
+const recoveryBound = roomWaitMargin
 
 // failFastBound is how soon a write on a failed room must answer ErrServiceUnavailable to be
 // failing fast, ten seconds: a write that waited for the room's recovery on a timer of its own
-// before answering would pass the give-up of recoveryBound.
+// before answering would pass the give-up of roomWait.
 const failFastBound = 10 * time.Second
 
 // seedFoldableText seeds the document as markdown in rows older than the tail, so a failed room's
@@ -50,10 +56,10 @@ func seedFoldableText(t *testing.T, service *Service, artifactID, markdown strin
 	ageUpdatesThrough(t, service.store, artifactID, everyVersion, time.Hour)
 }
 
-// failsFast runs op and requires ErrServiceUnavailable within recoveryBound.
+// failsFast runs op and requires ErrServiceUnavailable within roomWait.
 func failsFast(t *testing.T, what string, op func() error) {
 	t.Helper()
-	failsFastWithin(t, recoveryBound, what, op)
+	failsFastWithin(t, roomWait(t), what, op)
 }
 
 // failsFastWithin runs op and requires ErrServiceUnavailable within bound.
@@ -74,7 +80,7 @@ func failsFastWithin(t *testing.T, bound time.Duration, what string, op func() e
 // awaitRecovered waits, outside any transaction, for the failed room's eviction to finish.
 func awaitRecovered(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), recoveryBound)
+	ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
 	defer cancel()
 	if err := service.awaitRoomRecovery(ctx, artifactID); err != nil {
 		t.Fatalf("the failed room did not recover: %v", err)
@@ -169,7 +175,7 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 		if !errors.Is(err, ErrServiceUnavailable) {
 			t.Fatalf("a load that meets its own room's failure = %v, want ErrServiceUnavailable", err)
 		}
-	case <-time.After(recoveryBound):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the load never returned: it waited for the recovery that waits for it")
 	}
 	awaitRecovered(t, service, artifactID)
@@ -269,16 +275,17 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 		defer close(published)
 		ledger.publish()
 	}()
-	waitFor(t, recoveryBound, "the publish to reach the loading room", publishWaitsForALoadingRoom)
+	waitFor(t, roomWait(t), "the publish to reach the loading room", publishWaitsForALoadingRoom)
 	release()
 	// Nothing waits on persist.failed any more: the refusal is the event this row turns on, and
 	// the load that closes failed is the one that causes it, so the wait below orders everything
-	// failed could. The guard is twice the recovery bound - a publish and a recovery take
-	// milliseconds - so a recovery that hangs is reported by awaitRecovered above, which says
-	// more, and reaching this one means the publish was never refused at all.
+	// failed could. The guard is twice roomWait, or what roomWait leaves of the binary's deadline
+	// when that is sooner (testwait.Bounded) - a publish and a recovery take milliseconds - so a
+	// recovery that hangs is reported by awaitRecovered above, which says more, and reaching this
+	// one means the publish was never refused at all.
 	select {
 	case <-refused:
-	case <-time.After(2 * recoveryBound):
+	case <-time.After(testwait.Bounded(t, 2*roomWait(t), roomWaitMargin)):
 		t.Fatal("the publish was not refused by the room whose load failed, so nothing here is tested")
 	}
 	// The publish has let go of its write's room, as it had by this point when it ran on this
@@ -528,7 +535,7 @@ func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
 		if err != nil {
 			t.Fatalf("a block path read on the recovered room: %v", err)
 		}
-	case <-time.After(recoveryBound):
+	case <-time.After(roomWait(t)):
 		t.Fatal("a block path read without the mark never returned after the room recovered")
 	}
 }
@@ -658,13 +665,13 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 	}()
 	select {
 	case <-published:
-	case <-time.After(recoveryBound):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the first write's publish did not finish once its room could recover")
 	}
 	var secondErr error
 	select {
 	case secondErr = <-returned:
-	case <-time.After(recoveryBound):
+	case <-time.After(roomWait(t)):
 		t.Fatal("the second write waited for good behind a slot whose room failed")
 	}
 	switch {
@@ -728,7 +735,7 @@ func TestASettlementHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
 	}()
 	select {
 	case <-settled:
-	case <-time.After(recoveryBound):
+	case <-time.After(roomWait(t)):
 		t.Fatal("a settlement holding the document's lock waited for its failed room's recovery")
 	}
 	awaitRecovered(t, service, artifactID)

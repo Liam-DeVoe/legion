@@ -23,7 +23,10 @@ import (
 // clientTimeout bounds every request a Client makes. It sits past the broker's own request
 // deadline (cmd/cipherd's requestDeadline, 45 seconds) so a handler that takes its whole budget —
 // one waiting on a row another process holds, say — still answers this client rather than being
-// turned into a transport error that names nothing.
+// turned into a transport error that names nothing. A request to a route that answers at once,
+// carrying something the test signed, is also given up brokerRequestWait after that signing
+// (signedReq), inside the broker's proof skew; a route that holds the request open keeps
+// clientTimeout alone, since the broker checks the proof when the request arrives.
 const clientTimeout = 90 * time.Second
 
 // deviceTokenTimeout bounds a device-code exchange. x/oauth2's DeviceAccessToken polls until the
@@ -109,7 +112,15 @@ func NewClient(t *testing.T, publicURL, addr string) *Client {
 // asserts no status itself: a caller does that, so a mismatch names the actual body.
 func (c *Client) Req(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte) {
 	t.Helper()
-	return request(t, c.http, c.PublicURL, method, path, headers, body, " (at "+c.Addr+")")
+	return c.signedReq(t, time.Time{}, method, path, headers, body)
+}
+
+// signedReq is Req for a request carrying something the test began signing at signing, zero for
+// one carrying nothing: the request is given up brokerRequestWait after that signing
+// (signedContext), and clientTimeout still bounds it from the send.
+func (c *Client) signedReq(t *testing.T, signing time.Time, method, path string, headers map[string]string, body any) (int, []byte) {
+	t.Helper()
+	return request(t, c.http, c.PublicURL, method, path, headers, body, " (at "+c.Addr+")", signing)
 }
 
 // UI is Req as the listed caller of the routes Dispatch's server calls: it presents UIToken, the
@@ -120,7 +131,10 @@ func (c *Client) UI(t *testing.T, method, path string, body any) (int, []byte) {
 }
 
 // Session is Req carrying a session proof: key signing for enrollmentID over the method and the
-// public URL's own path, which is what the broker reconstructs and verifies against.
+// public URL's own path, which is what the broker reconstructs and verifies against. It sets no
+// deadline from the signing: the routes it reaches may hold the request open after verifying the
+// proof (POST /v1/requests behind its advisory lock per name, a reread behind the policy's writer
+// lock), so clientTimeout is its give-up. A route that answers at once takes signedSession.
 func (c *Client) Session(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, method, path string, body any) (int, []byte) {
 	t.Helper()
 	p, err := proof.Sign(key, enrollmentID, method, c.PublicURL+path, time.Now())
@@ -130,15 +144,30 @@ func (c *Client) Session(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, meth
 	return c.Req(t, method, path, map[string]string{"Proof": p}, body)
 }
 
+// signedSession is Session for a route that answers at once (GrantValues's): the request is also
+// given up brokerRequestWait after the proof's signing (signedReq).
+func (c *Client) signedSession(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, method, path string, body any) (int, []byte) {
+	t.Helper()
+	signing := time.Now()
+	p, err := proof.Sign(key, enrollmentID, method, c.PublicURL+path, signing)
+	if err != nil {
+		t.Fatalf("proof.Sign: %v", err)
+	}
+	return c.signedReq(t, signing, method, path, map[string]string{"Proof": p}, body)
+}
+
 // Launcher is Req carrying a launcher proof: the machine key that holds launcherID signing for it,
-// which is how a launcher credential authenticates an enrollment.
+// which is how a launcher credential authenticates an enrollment. Its one caller, EnrollSession,
+// enrols a session the broker answers at once, so the request is given up brokerRequestWait after
+// the proof's signing (signedReq).
 func (c *Client) Launcher(t *testing.T, key *ecdsa.PrivateKey, launcherID, method, path string, body any) (int, []byte) {
 	t.Helper()
-	p, err := proof.SignLauncher(key, launcherID, method, c.PublicURL+path, time.Now())
+	signing := time.Now()
+	p, err := proof.SignLauncher(key, launcherID, method, c.PublicURL+path, signing)
 	if err != nil {
 		t.Fatalf("proof.SignLauncher: %v", err)
 	}
-	return c.Req(t, method, path, map[string]string{"Proof": p}, body)
+	return c.signedReq(t, signing, method, path, map[string]string{"Proof": p}, body)
 }
 
 // NewSigningKey is a fresh P-256 key: what a machine, its launcher credential and each of its
@@ -182,13 +211,18 @@ func (c *Client) DeviceLogin(t *testing.T, key *ecdsa.PrivateKey, person, host s
 	if err != nil {
 		t.Fatalf("thumbprint: %v", err)
 	}
+	signing := time.Now()
 	request, err := record.Sign(key, c.PublicURL, []record.AuthorizationDetail{
 		{Type: "launcher_credential", Identifier: host},
-	}, "", person, nil, time.Now())
+	}, "", person, nil, signing)
 	if err != nil {
 		t.Fatalf("sign %s's machine-login request for %s: %v", person, host, err)
 	}
 	config, ctx := c.deviceClient(t, key)
+	// The request object is signed before the device authorization is sent, so the post is given
+	// up brokerRequestWait after that signing, not only clientTimeout after the send.
+	ctx, cancel := context.WithDeadline(ctx, signing.Add(brokerRequestWait))
+	defer cancel()
 	da, err := config.DeviceAuth(ctx, oauth2.SetAuthURLParam("request", request), oauth2.SetAuthURLParam("dpop_jkt", jkt))
 	if err != nil {
 		t.Fatalf("POST /v1/oauth/device_authorization (%s at %s): %v", person, c.Addr, err)
@@ -294,6 +328,8 @@ func (c *Client) AskForAgentSecret(t *testing.T, key *ecdsa.PrivateKey, enrollme
 	if err != nil {
 		t.Fatalf("sign the request for %s: %v", name, err)
 	}
+	// No deadline from the signing (Session): POST /v1/requests waits on its advisory lock per
+	// name before it answers, and the broker verifies both signatures when the request arrives.
 	status, body := c.Session(t, key, enrollmentID, http.MethodPost, "/v1/requests",
 		map[string]any{"request": request, "session_id": nil})
 	answer := AgentSecretAnswer{Status: status, Body: string(body)}
@@ -331,7 +367,7 @@ func (c *Client) RequestAgentSecret(t *testing.T, key *ecdsa.PrivateKey, enrollm
 // GrantValues reads the values the grant releases to the session that holds it.
 func (c *Client) GrantValues(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, grantID string) map[string]string {
 	t.Helper()
-	status, body := c.Session(t, key, enrollmentID, http.MethodPost, "/v1/grants/"+grantID+"/values", nil)
+	status, body := c.signedSession(t, key, enrollmentID, http.MethodPost, "/v1/grants/"+grantID+"/values", nil)
 	if status != http.StatusOK {
 		t.Fatalf("POST /v1/grants/%s/values (at %s) = %d, want 200: %s", grantID, c.Addr, status, body)
 	}

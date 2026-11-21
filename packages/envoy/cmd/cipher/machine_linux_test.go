@@ -42,7 +42,8 @@ func tableRows(t *testing.T, stdout string) (header []string, rows [][]string) {
 }
 
 // loggedInElsewhere logs another machine of the rig's operator in, with a key of its own, and
-// returns its helper.Broker and the launcher credential its approval minted.
+// returns its helper.Broker and the launcher credential its approval minted. It waits for the
+// login to be issued at promptJobWait, the bound machineLoginThen gives the same event.
 func loggedInElsewhere(t *testing.T, rig *ciphertest.Rig, host string) (*helper.Broker, string) {
 	t.Helper()
 	b := &helper.Broker{URL: cipheraddr.New(rig.URL), OperatorFile: rig.OperatorFile, MachineFile: filepath.Join(t.TempDir(), "machine.json"), HTTP: http.DefaultClient}
@@ -52,10 +53,10 @@ func loggedInElsewhere(t *testing.T, rig *ciphertest.Rig, host string) (*helper.
 		t.Fatalf("log %s in: %v", host, err)
 	}
 	id := rig.DecideMachineLogin(t, code, true)
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(promptJobWait)
 	for !b.HasCredential() {
 		if time.Now().After(deadline) {
-			t.Fatalf("%s's login never issued: %+v", host, b.LoginStatus())
+			t.Fatalf("%s's login never issued within promptJobWait (%s): %+v", host, promptJobWait, b.LoginStatus())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

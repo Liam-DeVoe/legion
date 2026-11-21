@@ -157,14 +157,15 @@ func enrolProjectSession(t *testing.T, cli, base string, by launcher, person, ru
 	keyDir := filepath.Join(t.TempDir(), runtimeID)
 	keygen := runKeygen(t, cli, base, keyDir)
 	b := podBroker{t: t, base: base}
-	signed, err := proof.SignLauncher(by.key, by.credentialID, http.MethodPost, base+"/v1/enrollments", time.Now())
+	signing := time.Now()
+	signed, err := proof.SignLauncher(by.key, by.credentialID, http.MethodPost, base+"/v1/enrollments", signing)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if projects == nil {
 		projects = []string{}
 	}
-	status, answer := b.post("/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+	status, answer := b.signedPost(signing, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
 		"kind": "session", "runtime_id": runtimeID, "operator": person,
 		"thumbprint": keygen, "session_id": sessionName, "projects": projects,
 	})

@@ -676,11 +676,12 @@ func enrolCLISession(t *testing.T, cli, base string, by launcher, person, runtim
 		t.Fatalf("agent-secrets keygen --out %s: %v", keyDir, err)
 	}
 	b := podBroker{t: t, base: base}
-	signed, err := proof.SignLauncher(by.key, by.credentialID, http.MethodPost, base+"/v1/enrollments", time.Now())
+	signing := time.Now()
+	signed, err := proof.SignLauncher(by.key, by.credentialID, http.MethodPost, base+"/v1/enrollments", signing)
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, answer := b.post("/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+	status, answer := b.signedPost(signing, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
 		"kind": "session", "runtime_id": runtimeID, "operator": person,
 		"thumbprint": strings.TrimSpace(string(thumbprint)), "session_id": sessionName,
 	})
@@ -733,9 +734,12 @@ func machineLoginFor(t *testing.T, live *liveBroker, base, person, host, dispatc
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The request object is signed here, before the request is sent, so the request is given up
+	// brokerRequestWait after this signing (brokerCall.signed), not only after the send.
+	signed := time.Now()
 	request, err := record.Sign(key, base, []record.AuthorizationDetail{
 		{Type: record.KindLauncherCredential, Identifier: host},
-	}, "", person, nil, time.Now())
+	}, "", person, nil, signed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -745,7 +749,7 @@ func machineLoginFor(t *testing.T, live *liveBroker, base, person, host, dispatc
 	}
 	status, answer := live.send(t, live.plain, brokerCall{
 		method: http.MethodPost, path: "/v1/oauth/device_authorization",
-		contentType: formContentType, body: form.Encode(), shown: shownForm(form),
+		contentType: formContentType, body: form.Encode(), shown: shownForm(form), signed: signed,
 	})
 	var started struct {
 		UserCode string `json:"user_code"`

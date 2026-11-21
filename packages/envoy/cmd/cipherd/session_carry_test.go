@@ -483,11 +483,12 @@ func (r carryRig) enrol(launcherKey *ecdsa.PrivateKey, credentialID, runtimeID, 
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	signed, err := proof.SignLauncher(launcherKey, credentialID, http.MethodPost, r.base+"/v1/enrollments", time.Now())
+	signing := time.Now()
+	signed, err := proof.SignLauncher(launcherKey, credentialID, http.MethodPost, r.base+"/v1/enrollments", signing)
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	status, answer := pods.post("/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+	status, answer := pods.signedPost(signing, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
 		"kind": "session", "runtime_id": runtimeID, "thumbprint": thumbprint, "session_id": sessionID,
 	})
 	var enrolled struct {
@@ -567,20 +568,24 @@ func (r carryRig) requireValue(p pod, grantID, secret, value, proves string) {
 
 // endSession ends p's enrollment as the launcher that made it does, DELETE /v1/enrollments/{id}
 // under a launcher proof. It is the step the incident turns on: ending an enrollment is what
-// revokes its grants and cancels its pending requests (enroll.endEnrollment).
+// revokes its grants and cancels its pending requests (enroll.endEnrollment). The request is given
+// up brokerRequestWait after its proof's signing (signedContext).
 func (r carryRig) endSession(launcherKey *ecdsa.PrivateKey, credentialID string, p pod) {
 	r.t.Helper()
 	path := "/v1/enrollments/" + p.enrollmentID
-	signed, err := proof.SignLauncher(launcherKey, credentialID, http.MethodDelete, r.base+path, time.Now())
+	signing := time.Now()
+	signed, err := proof.SignLauncher(launcherKey, credentialID, http.MethodDelete, r.base+path, signing)
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	request, err := http.NewRequest(http.MethodDelete, r.base+path, nil)
+	ctx, cancel := signedContext(signing)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, r.base+path, nil)
 	if err != nil {
 		r.t.Fatal(err)
 	}
 	request.Header.Set("Proof", signed)
-	response, err := http.DefaultClient.Do(request)
+	response, err := brokerClient.Do(request)
 	if err != nil {
 		r.t.Fatalf("DELETE %s: %v", path, err)
 	}

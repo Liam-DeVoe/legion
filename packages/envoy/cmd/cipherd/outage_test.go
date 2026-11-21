@@ -362,7 +362,8 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		status, answer := broker.signed(ended.pod, "/v1/requests", map[string]any{"request": request, "session_id": nil})
+		// POST /v1/requests holds the request open after its proof check (heldRequestWait).
+		status, answer := broker.held(ended.pod, "/v1/requests", map[string]any{"request": request, "session_id": nil})
 		if code, message := brokerRefusal(answer); status != http.StatusUnauthorized || code != "PROOF_INVALID" || !strings.Contains(message, "not live") {
 			t.Fatalf("the %s pod's fetch = %d %s, want 401 PROOF_INVALID not live", ended.name, status, answer)
 		}
@@ -442,11 +443,12 @@ func writeWhole(t *testing.T, path, content string) {
 // answers the enrollment's id.
 func enrollKey(b podBroker, by launcher, runtimeID, thumbprint, token string) string {
 	b.t.Helper()
-	signed, err := proof.SignLauncher(by.key, by.credentialID, http.MethodPost, b.base+"/v1/enrollments", time.Now())
+	signing := time.Now()
+	signed, err := proof.SignLauncher(by.key, by.credentialID, http.MethodPost, b.base+"/v1/enrollments", signing)
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	status, answer := b.post("/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+	status, answer := b.signedPost(signing, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
 		"kind": "pod", "runtime_id": runtimeID, "thumbprint": thumbprint, "pod_token": token,
 	})
 	var enrolled struct {
@@ -460,20 +462,24 @@ func enrollKey(b podBroker, by launcher, runtimeID, thumbprint, token string) st
 }
 
 // deleteEnrollment has by's credential end the enrollment enrollmentID at the broker at base, as a
-// launcher ends a pod it lets go, and answers the status.
+// launcher ends a pod it lets go, and answers the status. The request is given up
+// brokerRequestWait after its proof's signing (signedContext).
 func deleteEnrollment(t *testing.T, base string, by launcher, enrollmentID string) int {
 	t.Helper()
 	path := "/v1/enrollments/" + enrollmentID
-	signed, err := proof.SignLauncher(by.key, by.credentialID, http.MethodDelete, base+path, time.Now())
+	signing := time.Now()
+	signed, err := proof.SignLauncher(by.key, by.credentialID, http.MethodDelete, base+path, signing)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := http.NewRequest(http.MethodDelete, base+path, nil)
+	ctx, cancel := signedContext(signing)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, base+path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Proof", signed)
-	response, err := http.DefaultClient.Do(request)
+	response, err := brokerClient.Do(request)
 	if err != nil {
 		t.Fatalf("DELETE %s: %v", path, err)
 	}

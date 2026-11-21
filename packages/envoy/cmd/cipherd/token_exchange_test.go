@@ -1508,8 +1508,20 @@ type liveBroker struct {
 // seconds that is 59 to 61 s from the signing. So a request is given up on, failing its test
 // with the route named, well inside that window: load on the runner cannot carry a request past
 // the window and have the binary refuse what was good when it was signed. A healthy request
-// answers in milliseconds.
+// answers in milliseconds. It is the bound of a route that answers at once once the proof is
+// checked; a route that holds the request open after that check takes heldRequestWait instead.
 const brokerRequestWait = 30 * time.Second
+
+// heldRequestWait bounds one request to a route that holds the request open after its proof
+// check: POST /v1/requests (internal/cipher/api/handlers_requests.go:113, which waits on an
+// advisory lock per requested name, internal/cipher/requests/machine_state.go:770) and a session's
+// POST /v1/secrets/{name}/reread (handlers_secrets.go:167, which answers once the reread has run
+// behind the policy's writer lock, internal/cipher/policy/current.go:295). The binary checks the
+// proof when the request arrives, so such a request sets no deadline from its signing; its give-up
+// is 90 s, past the binary's own 45 s requestDeadline (main.go:877), so a handler that spends that
+// whole budget still answers rather than turning into a transport error. It is ciphertest's
+// clientTimeout for the same reason.
+const heldRequestWait = 90 * time.Second
 
 // newPlainBroker drives the broker listening at addr with no key: the routes a listed caller
 // reaches present that caller's ServiceAccount token and sign no proof. Its client gives up on a
@@ -1588,6 +1600,18 @@ func signedContext(signed time.Time) (context.Context, context.CancelFunc) {
 	}
 	return context.WithDeadline(context.Background(), signed.Add(brokerRequestWait))
 }
+
+// brokerClient is the client of every request a helper here sends the broker binary outside a
+// liveBroker to a route that answers at once (podBroker's, startDeviceAuthorization's,
+// deleteEnrollment's and carryRig.endSession's): it gives up on a request brokerRequestWait after
+// sending it, and signedContext gives a request carrying a signature up brokerRequestWait after
+// that signing.
+var brokerClient = &http.Client{Timeout: brokerRequestWait}
+
+// heldClient is the client of a request to a route that holds the request open after its proof
+// check (heldRequestWait): podBroker.held's and sessionReread's. It sets no deadline from the
+// signing.
+var heldClient = &http.Client{Timeout: heldRequestWait}
 
 // send sends one request to the broker, reads its answer and logs both halves as the live run's
 // transcript. The answer is handed back as the bytes the broker sent, because what a route's

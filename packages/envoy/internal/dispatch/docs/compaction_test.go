@@ -147,7 +147,7 @@ func TestAFailedRoomsEvictionCompactionWaitsForTheLockAndFoldsOnlyOldRows(t *tes
 	})
 	requireRowsAsStored(t, service.store, artifactID, before)
 	unlock()
-	recoveryCtx, cancel := context.WithTimeout(ctx, recoveryBound)
+	recoveryCtx, cancel := context.WithTimeout(ctx, roomWait(t))
 	defer cancel()
 	if err := service.awaitRoomRecovery(recoveryCtx, artifactID); err != nil {
 		t.Fatalf("wait for the failed room's recovery: %v", err)
