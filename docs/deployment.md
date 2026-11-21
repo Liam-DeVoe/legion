@@ -378,15 +378,23 @@ the push's own snapshot still resolves it, and with each empty part left out.
 The step has jj resolve the primary form once more and checks that it names the set; where it does
 not, where jj refuses one of those reads, or where the form would not be under 100,000 bytes and
 the step does not run the read, the push gets the set as ids joined by ` | `, `@` for the
-working-copy commit, while that word stays under 100,000 bytes, else the primary form while its
-word does, else the argument as the role wrote it, and the step prints one `legion jj:` line that
-says which.
-No word the step writes passes Linux's 131,072-byte limit on one argument, but for a role's own
-argument that is that long already: the primary form grows with the commits the step moved and the
-ones whose naming the rewrite changed, never with the whole set that, for example, `::C` names;
-the set as ids is given only under 100,000 bytes; and each of the step's reads of a list of commit
-or change ids runs once for each part of the list under 100,000 bytes, so a push of thousands of
-commits still runs.
+working-copy commit, and the step prints one `legion jj:` line that says so.
+Where that word would not be under 100,000 bytes either, a `--change` or `--revisions` argument
+becomes as many words of that same option as keep each under 100,000 bytes, each with a part of
+the ids, since `jj git push` pushes the union of a repeated option; `--named` names one commit.
+No word the step writes passes 100,000 bytes, but for a role's own argument that is that long
+already, so none passes Linux's 131,072-byte limit on one argument, and a word the role wrote and
+the step leaves alone goes as written.
+Only where the push would then pass Linux's 2,097,152-byte limit on a command's arguments and
+environment together, about 48,000 ids less what the environment takes, with each argument that
+has a commit the step would move counted as the ids of its whole set, does the step decide, before
+any rewrite other than the fill of an empty author that a dry run refused, to set no other author:
+it prints one `legion jj: could not set the author:` line that names the argument, the count and
+the limit, and the push runs as written, but for an argument with a commit that fill moved.
+The step's own `jj metaedit` runs in as many parts as keep each command under that limit, each
+naming its commits by the ids the step followed them to after the part before it.
+Each of the step's reads of a list of commit or change ids runs once for each part of the list
+under 100,000 bytes, so a push of thousands of commits still runs.
 It changes no commit that a remote bookmark holds and no immutable commit.
 It sets the author of no commit that has no `Legion-Role` trailer or whose role has no identity in
 the table.
