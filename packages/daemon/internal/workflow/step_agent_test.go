@@ -52,8 +52,8 @@ func keyedRun(t *testing.T) (*pgxpool.Pool, record.Issue) {
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "tester:a", "reviewer")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	return pool, root
 }
 
@@ -120,7 +120,7 @@ func TestAnEntryNeverFallsBelowItsRowsOwn(t *testing.T) {
 		}
 		return nil
 	})
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	role := phase.RoleFor(issueAt(t, pool, root.Key))
 	if got := storedPhaseRow(t, pool, root.Key, role).Entry; got != 4 {
 		t.Fatalf("the %s's row holds entry %d, want 4: one above its own 3", role, got)
@@ -133,7 +133,7 @@ func TestARunWithNoPlanRowsNamesNoAgent(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	role := phase.RoleFor(issueAt(t, pool, root.Key))
 	row := storedPhaseRow(t, pool, root.Key, role)
 	if own := claim.Token(token(t, root.Key, role)); row.Claim != own || row.Entry != 1 || row.StepTask != "" {

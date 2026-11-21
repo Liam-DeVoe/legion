@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,6 +37,16 @@ import (
 // where the publish goes through or finds no holder.
 var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_ask", "merge_queue_read", "merge_queue_removal",
 	"conflict_confirm", "merge_forward"}
+
+// startWaitsForPodRow is the predicate of a start row that waits because the issue's pod was
+// built before the deployment defined its role (the outbox's roleWaitsForItsPod writes its last
+// error with pods.StartWaitsForPodPrefix, the parameter %s names). Such a start is no delivery the
+// pod waits for: the pod cannot run it, and only its update round or its release lets it start.
+// So both reads of idleWaitingKinds leave it out, `and not` it after `kind = any(…)`: the view's
+// Waiting (readIdleView), which main's rule and the idle rule read, and the release's boundary
+// (IssueReleaseStop), so the rule that holds a pod and the rule that cancels its release still
+// never disagree.
+const startWaitsForPodRow = `(kind = 'supervise' and payload->>'op' = 'start' and starts_with(coalesce(last_error, ''), %s))`
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the save of the workspace's unpushed work,
@@ -648,17 +659,24 @@ func deleteIssueRelease(ctx context.Context, db execer, project, issue string) e
 // clear. The root is read through the issue's own tree and needs no check of its own: a record
 // takes its root's project when the workflow writes it, so the root of a record of this project
 // is this project's too.
+//
+// The view's StepRole is the subquery record.issueColumns ends with, written here a second time
+// over the alias i, since store and record import neither each other: the role of the step the
+// task of the issue's generation stands at, "" where its plan rows hold none or the task stands
+// at no step.
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
 	view := pods.IdleView{Issue: issue}
 	var issueGeneration, rootGeneration int64
-	var issuePhase, rootPhase string
+	var issuePhase, rootPhase, stepRole string
 	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
 		root.phase, root.status, root.generation, root.linger_until,
-		root.phase = 'awaiting_person', root.awaiting_answered_at is not null
+		root.phase = 'awaiting_person', root.awaiting_answered_at is not null,
+		coalesce((select s.role from plan_tasks t join plan_steps s on s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position
+			where t.issue = i.key and t.generation = i.generation and t.running_kind = 'step'), '')
 		from issues i join issues root on root.key = i.tree where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
 		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &view.LingerUntil,
 		&rootPhase, &view.Root.Status, &rootGeneration, &view.Root.LingerUntil,
-		&view.Root.AwaitingPerson, &view.Root.Answered)
+		&view.Root.AwaitingPerson, &view.Root.Answered, &stepRole)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return view, nil
@@ -667,6 +685,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	}
 	view.Found = true
 	view.Phase, view.Root.Phase = phase.Phase(issuePhase), phase.Phase(rootPhase)
+	view.StepRole = claim.Role(stepRole)
 	view.Generation, view.Root.Generation = uint64(issueGeneration), uint64(rootGeneration)
 
 	claims, err := tx.Query(ctx, `select c.token, c.role, c.state, c.plugin_contract, c.serving_generation,
@@ -702,9 +721,29 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 	}
 
-	if err := tx.QueryRow(ctx, `select exists (
-		select 1 from outbox where issue = $1 and kind = any($2))`, issue, idleWaitingKinds).Scan(&view.Waiting); err != nil {
+	if err := tx.QueryRow(ctx, fmt.Sprintf(`select exists (
+		select 1 from outbox where issue = $1 and kind = any($2) and not %s)`, fmt.Sprintf(startWaitsForPodRow, "$3")),
+		issue, idleWaitingKinds, pods.StartWaitsForPodPrefix).Scan(&view.Waiting); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the queued rows of %s for its idle view: %w", issue, err)
+	}
+	waitingForPod, err := tx.Query(ctx, fmt.Sprintf(`select payload->>'role' from outbox
+		where issue = $1 and %s order by id`, fmt.Sprintf(startWaitsForPodRow, "$2")), issue, pods.StartWaitsForPodPrefix)
+	if err != nil {
+		return pods.IdleView{}, fmt.Errorf("read the starts of %s that wait for its pod: %w", issue, err)
+	}
+	roles, err := pgx.CollectRows(waitingForPod, pgx.RowTo[string])
+	if err != nil {
+		return pods.IdleView{}, fmt.Errorf("read the starts of %s that wait for its pod: %w", issue, err)
+	}
+	for _, role := range roles {
+		if !slices.Contains(view.StartsWaitingForPod, claim.Role(role)) {
+			view.StartsWaitingForPod = append(view.StartsWaitingForPod, claim.Role(role))
+		}
+	}
+	if err := tx.QueryRow(ctx, `select coalesce((select reason from pod_holds
+		where project = $1 and issue = $2 and not ended order by id desc limit 1), '')`,
+		project, issue).Scan(&view.HeldFor); err != nil {
+		return pods.IdleView{}, fmt.Errorf("read the running hold streak of %s: %w", issue, err)
 	}
 	if err := tx.QueryRow(ctx, `select exists (select 1 from issue_releases where project = $1 and issue = $2)`,
 		project, issue).Scan(&view.Releasing); err != nil {

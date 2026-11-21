@@ -48,10 +48,10 @@ func TestAHookPromptNamesTheAgentOfItsRolesStep(t *testing.T) {
 		Roles: []claim.Role{claim.RoleImplementer, claim.RoleTester}, Prompt: "Say what you have done so far."}}
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "tester:a", "reviewer")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 
-	move(t, pool, engine, root.Key, TriggerTesterFailed, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerTesterFailed, record.TaskPlace{}, record.PhaseRow{})
 
 	keyed := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Claim
 	if keyed == claim.Token(token(t, root.Key, claim.RoleTester)) || keyed == "" {

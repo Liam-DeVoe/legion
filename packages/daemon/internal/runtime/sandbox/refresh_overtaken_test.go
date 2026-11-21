@@ -66,7 +66,11 @@ func TestARefreshALaunchOvertakesLeavesTheSlotOnTheLaunchesApp(t *testing.T) {
 					if owner == "" {
 						owner = "sjawhar"
 					}
-					app := string(appauth.AppRoleFor(role))
+					appRole, err := appauth.AppRoleFor(role, nil)
+					if err != nil {
+						return ghconfig.Bundle{}, err
+					}
+					app := string(appRole)
 					return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
 						"acme": ghconfig.Render("ghs_"+app+"_read", app, staticCredentialExpiry),
 						owner:  ghconfig.Render("ghs_"+app, app, staticCredentialExpiry),
@@ -110,7 +114,11 @@ func TestARefreshALaunchOvertakesLeavesTheSlotOnTheLaunchesApp(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the implementer slot's hosts.yml: %v", err)
 			}
-			if want := "ghs_" + string(appauth.AppRoleFor(claim.RoleTester)); token != want {
+			testerApp, err := appauth.AppRoleFor(claim.RoleTester, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := "ghs_" + string(testerApp); token != want {
 				t.Fatalf("after the refresh the implementer slot's hosts.yml holds %q, the App of the claim's old role %s; the launch's start frame waits for %q (digest %s), the App of its role now, %s",
 					token, claim.RoleImplementer, want, start.GitHubCredential.TokenDigest, claim.RoleTester)
 			}
@@ -144,7 +152,11 @@ func TestARefreshReadsTheLaunchRecordOnlyOfTheClaimsLatestGeneration(t *testing.
 					if owner == "" {
 						owner = "sjawhar"
 					}
-					app := string(appauth.AppRoleFor(role))
+					appRole, err := appauth.AppRoleFor(role, nil)
+					if err != nil {
+						return ghconfig.Bundle{}, err
+					}
+					app := string(appRole)
 					return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
 						"acme": ghconfig.Render("ghs_"+app+"_read", app, staticCredentialExpiry),
 						owner:  ghconfig.Render("ghs_"+app, app, staticCredentialExpiry),

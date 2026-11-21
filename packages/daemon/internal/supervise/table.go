@@ -396,6 +396,9 @@ type RequestSpawn struct {
 	// launches is the fault the pacing exists to fix, and a wake let through by default would
 	// put it back one caller at a time.
 	Exempt bool
+	// Start is the work a workflow start spawns the claim for, which the spawn judges again under
+	// the machine's lock before it launches (StartWork); the zero value is judged by nothing.
+	Start StartWork
 }
 
 // RequestRegister is the agent's registration, already authenticated by its boot token: the
@@ -485,6 +488,8 @@ type ResumePause struct {
 type RequestRuleResume struct {
 	Claim  claim.Token
 	Reason string
+	// Start is the work a workflow start resumes the claim for, judged as RequestSpawn's is.
+	Start StartWork
 }
 
 // RequestStop ends one claim. The tree's root claim is not one it can end: a root ends only with
@@ -529,6 +534,8 @@ type RequestOperatorClose struct{ Claim claim.Token }
 type RequestRetry struct {
 	Claim        claim.Token
 	FreshSession bool
+	// Start is the work a workflow start retries the claim for, judged as RequestSpawn's is.
+	Start StartWork
 }
 
 // RequestOperatorRetry is the operator relaunching a claim through the API: the retry RequestRetry
@@ -2446,7 +2453,11 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 }
 
 func spawn(m *Machine, ctx context.Context, ev Event) error {
-	return m.revive(ctx, exemptWake(ev), nil)
+	start := ev.(RequestSpawn).Start
+	if err := m.startHolds(ctx, start); err != nil {
+		return err
+	}
+	return m.revive(ctx, exemptWake(ev), start, nil)
 }
 
 // register records the session the agent became, once every name of it is held to this claim
@@ -2577,7 +2588,7 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.resumeRefusal(ctx, "resume"); err != nil {
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), StartWork{}, nil)
 }
 
 // resumeRefusal is a RefusedError when a suspended claim's recorded session is one it does not
@@ -2621,17 +2632,21 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // failed claim is never resumed by rule. A claim recording a session it does not hold is not
 // resumed by rule either (resumeRefusal): it stays suspended, and the line says why.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
-	rule := ev.(RequestRuleResume).Reason
+	resume := ev.(RequestRuleResume)
+	rule := resume.Reason
 	if !m.claim.RuleMayResume() {
 		m.log.Info("supervise: not resumed by rule: its suspension holds until the operator resumes it", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
 		return nil
+	}
+	if err := m.startHolds(ctx, resume.Start); err != nil {
+		return err
 	}
 	if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
 		m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
 		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
-	return m.revive(ctx, exemptWake(ev), nil)
+	return m.revive(ctx, exemptWake(ev), resume.Start, nil)
 }
 
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
@@ -2661,6 +2676,15 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
 // live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
 func retry(m *Machine, ctx context.Context, ev Event) error {
+	// The workflow's retry names the work it brings the claim back for, judged before anything of
+	// the claim changes; the operator's names none.
+	var start StartWork
+	if r, ok := ev.(RequestRetry); ok {
+		start = r.Start
+	}
+	if err := m.startHolds(ctx, start); err != nil {
+		return err
+	}
 	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh {
 		// A session the claim does not hold is left behind only once its role no longer leads
 		// to the process under it (mayForget); the retry is refused, and the claim left as it
@@ -2680,7 +2704,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		// (resumeRefusal), before the budgets start over.
 		return err
 	}
-	return m.revive(ctx, exemptWake(ev), func() {
+	return m.revive(ctx, exemptWake(ev), start, func() {
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
 		m.claim.LeakCheckCause = ""
@@ -2906,7 +2930,7 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.queue(ctx, d); err != nil {
 		return err
 	}
-	return m.revive(ctx, d.ID == "", nil)
+	return m.revive(ctx, d.ID == "", StartWork{}, nil)
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is

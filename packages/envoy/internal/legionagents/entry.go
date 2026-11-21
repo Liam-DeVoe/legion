@@ -25,8 +25,9 @@ import (
 )
 
 // Entry is one Legion session as the registry stores it, which the listener's wire package
-// declares (listenerwire.LegionAgentEntry). Readers ignore fields they do not know, so a later
-// writer may add some.
+// declares (listenerwire.LegionAgentEntry). Its role is one of Roles or a role the deployment
+// defines: a name of roleGrammar but controller (Validate). Readers ignore fields they do not
+// know, so a later writer may add some.
 type Entry = listenerwire.LegionAgentEntry
 
 // Agent is an entry with what a read derives from the other sessions of its role token, ordered by
@@ -35,7 +36,8 @@ type Entry = listenerwire.LegionAgentEntry
 type Agent = listenerwire.LegionAgent
 
 // Roles are the six Legion roles, in the order the workflow reaches them (claim.Roles,
-// LEGION_ROLES in packages/contracts). An issue's agents are listed in this order.
+// LEGION_ROLES in packages/contracts). An issue's agents are listed in this order, then the agents
+// of every other role, a role the deployment defines in its settings, by role name.
 var Roles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}
 
 // Harnesses are the agent harnesses a Legion session runs under.
@@ -46,13 +48,21 @@ const MaxBatch = 256
 
 // The longest each keyed field may be. They keep every key this package writes far inside the
 // subject bound bus.KeyValue holds a key to, so a validated entry is never refused by NATS halfway
-// through its writes: the longest key, role.<role_token>.<session_id>, stays under 260 bytes.
+// through its writes: the longest key, role.<role_token>.<session_id>, stays under 280 bytes.
 const (
 	maxSessionIDBytes = 128
 	maxProjectBytes   = 64
 	maxIssueBytes     = 32
-	maxTitleBytes     = 1024
+	// maxRoleBytes is the longest role the grammar takes (roleGrammar).
+	maxRoleBytes  = 32
+	maxTitleBytes = 1024
 )
+
+// roleGrammar is the grammar of an issue's role, one of Roles or a role the deployment defines:
+// the grammar the daemon's claim.IsRole and isStepRole in packages/contracts take, which Dispatch's
+// step write takes too (internal/dispatch/workflowstore). The controller's name is of the grammar
+// and is no role of an issue (isRole).
+const roleGrammar = `[a-z][a-z0-9-]{0,31}`
 
 var (
 	// sessionIDPattern is a session id that is one KV key token: nats.go's key alphabet without
@@ -63,9 +73,16 @@ var (
 	projectTokenPattern = regexp.MustCompile(`^[a-z0-9]+$`)
 	// issueKeyPattern is a Dispatch issue key (claim.IsIssueKey, DISPATCH_KEY_PATTERN).
 	issueKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
-	// roleTokenPattern is a workflow role's token: legion-<project>-<issue project>-<number>-<role>.
-	roleTokenPattern = regexp.MustCompile(`^legion-[a-z0-9]+-[a-z0-9]+-[0-9]+-(` + strings.Join(Roles, "|") + `)$`)
+	// rolePattern is a role of the grammar.
+	rolePattern = regexp.MustCompile(`^` + roleGrammar + `$`)
+	// roleTokenPattern is an issue role's token: legion-<project>-<issue project>-<number>-<role>.
+	roleTokenPattern = regexp.MustCompile(`^legion-[a-z0-9]+-[a-z0-9]+-[0-9]+-(` + roleGrammar + `)$`)
 )
+
+// isRole reports whether role is a role of an issue: a name of the grammar but the controller's.
+func isRole(role string) bool {
+	return role != "controller" && rolePattern.MatchString(role)
+}
 
 // ErrInvalid is a session id, issue key, role token or entry the registry refuses. Each refusal
 // wraps it with the field and the rule it breaks.
@@ -139,12 +156,12 @@ func ValidateIssue(issue string) error {
 	return nil
 }
 
-// ValidateRoleToken refuses a token that is not a workflow role's token.
+// ValidateRoleToken refuses a token that is not the token of an issue's role.
 func ValidateRoleToken(token string) error {
-	if limit := len("legion-") + maxProjectBytes + 1 + maxIssueBytes + 1 + len("implementer"); len(token) > limit {
+	if limit := len("legion-") + maxProjectBytes + 1 + maxIssueBytes + 1 + maxRoleBytes; len(token) > limit {
 		return invalid("role_token is %d bytes, past %d", len(token), limit)
 	}
-	if !roleTokenPattern.MatchString(token) {
+	if match := roleTokenPattern.FindStringSubmatch(token); match == nil || !isRole(match[1]) {
 		return invalid("role_token %q is not legion-<legion_project>-<issue>-<role>", token)
 	}
 	return nil
@@ -171,8 +188,8 @@ func Validate(entry Entry) error {
 	if err := ValidateIssue(entry.Issue); err != nil {
 		return err
 	}
-	if !slices.Contains(Roles, entry.Role) {
-		return invalid("role %q is not one of %s", entry.Role, strings.Join(Roles, ", "))
+	if !isRole(entry.Role) {
+		return invalid("role %q is not one of %s or a role of the grammar ^%s$ but controller", entry.Role, strings.Join(Roles, ", "), roleGrammar)
 	}
 	if want := RoleToken(entry.LegionProject, entry.Issue, entry.Role); entry.RoleToken != want {
 		return invalid("role_token %q is not legion-<legion_project>-<issue>-<role>, %q", entry.RoleToken, want)
@@ -231,8 +248,9 @@ func succession(entries []Entry) []Agent {
 	return agents
 }
 
-// issueOrder lists an issue's agents by role in workflow order, then by role token, then newest
-// first, each role token's replacements derived among its own sessions.
+// issueOrder lists an issue's agents by role, the six in workflow order and then every other role
+// by name, then by role token, then newest first, each role token's replacements derived among its
+// own sessions.
 func issueOrder(entries []Entry) []Agent {
 	byToken := map[string][]Entry{}
 	for _, entry := range entries {
@@ -242,9 +260,17 @@ func issueOrder(entries []Entry) []Agent {
 	for _, sessions := range byToken {
 		agents = append(agents, succession(sessions)...)
 	}
+	// rank is a role's place in Roles, and every role outside the six comes after them.
+	rank := func(role string) int {
+		if i := slices.Index(Roles, role); i >= 0 {
+			return i
+		}
+		return len(Roles)
+	}
 	slices.SortStableFunc(agents, func(a, b Agent) int {
 		return cmp.Or(
-			cmp.Compare(slices.Index(Roles, a.Role), slices.Index(Roles, b.Role)),
+			cmp.Compare(rank(a.Role), rank(b.Role)),
+			cmp.Compare(a.Role, b.Role),
 			cmp.Compare(a.RoleToken, b.RoleToken),
 			-oldestFirst(a.LegionAgentEntry, b.LegionAgentEntry),
 		)

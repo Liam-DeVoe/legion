@@ -38,7 +38,11 @@ func TestALaunchOfAReroledClaimWritesItsSlotsCredentialAtOnce(t *testing.T) {
 			if owner == "" {
 				owner = "sjawhar"
 			}
-			app := string(appauth.AppRoleFor(role))
+			appRole, err := appauth.AppRoleFor(role, nil)
+			if err != nil {
+				return ghconfig.Bundle{}, err
+			}
+			app := string(appRole)
 			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
 				"acme": ghconfig.Render("ghs_"+app+"_read", app, staticCredentialExpiry),
 				owner:  ghconfig.Render("ghs_"+app, app, staticCredentialExpiry),

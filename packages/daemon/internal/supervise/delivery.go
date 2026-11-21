@@ -1049,16 +1049,17 @@ func (m *Machine) relaunchAfterDrop(ctx context.Context) error {
 	return m.sendPending(ctx)
 }
 
-// phaseHolds asks whether the issue is still in the phase and run this task was queued for. A delivery
-// that names no phase is nobody's to drop — an operator's own, an architect's — and is never put
-// to the answer at all, so the exemption this package documents is this package's own rather
-// than a promise every implementation has to keep. A daemon with no workflow configured supplies
-// no answer, and every delivery holds.
+// phaseHolds asks whether the issue is still in the phase and run this task was queued for, and,
+// at the phase step, at the step of this claim's role. A delivery that names no phase is nobody's
+// to drop — an operator's own, an architect's — and is never put to the answer at all, so the
+// exemption this package documents is this package's own rather than a promise every
+// implementation has to keep. A daemon with no workflow configured supplies no answer, and every
+// delivery holds.
 func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 	if m.deps.PhaseHolds == nil || d.Phase == "" {
 		return true, nil
 	}
-	holds, err := m.deps.PhaseHolds(ctx, m.claim.Issue, d.Phase, d.Generation)
+	holds, err := m.deps.PhaseHolds(ctx, m.claim, d)
 	if err != nil {
 		return false, fmt.Errorf("read the phase of %s: %w", m.claim.Token, err)
 	}

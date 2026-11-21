@@ -48,6 +48,10 @@
         "since": 46
       },
       {
+        "value": "step",
+        "since": 217
+      },
+      {
         "value": "testing",
         "since": 46
       },
@@ -449,6 +453,24 @@
   },
   {
     "answer": "state",
+    "keyPath": "strandedClaims.*.state",
+    "values": [
+      {
+        "value": "failed",
+        "since": 46
+      },
+      {
+        "value": "retired",
+        "since": 56
+      },
+      {
+        "value": "suspended",
+        "since": 46
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "strandedClaims.*.role",
     "values": [
       {
@@ -475,25 +497,8 @@
         "value": "tester",
         "since": 46
       }
-    ]
-  },
-  {
-    "answer": "state",
-    "keyPath": "strandedClaims.*.state",
-    "values": [
-      {
-        "value": "failed",
-        "since": 46
-      },
-      {
-        "value": "retired",
-        "since": 56
-      },
-      {
-        "value": "suspended",
-        "since": 46
-      }
-    ]
+    ],
+    "until": 217
   },
   {
     "answer": "state",
@@ -523,7 +528,8 @@
         "value": "tester",
         "since": 53
       }
-    ]
+    ],
+    "until": 217
   },
   {
     "answer": "state",
@@ -553,7 +559,8 @@
         "value": "tester",
         "since": 178
       }
-    ]
+    ],
+    "until": 217
   },
   {
     "answer": "state",
@@ -734,6 +741,10 @@
       {
         "value": "reviewing",
         "since": 75
+      },
+      {
+        "value": "step",
+        "since": 217
       },
       {
         "value": "testing",
@@ -926,6 +937,10 @@
         "since": 75
       },
       {
+        "value": "step",
+        "since": 217
+      },
+      {
         "value": "testing",
         "since": 75
       }
@@ -978,6 +993,10 @@
       {
         "value": "reviewing",
         "since": 75
+      },
+      {
+        "value": "step",
+        "since": 217
       },
       {
         "value": "testing",
@@ -1188,6 +1207,10 @@
       {
         "value": "reviewing",
         "since": 46
+      },
+      {
+        "value": "step",
+        "since": 217
       },
       {
         "value": "testing",
@@ -1638,6 +1661,10 @@
         "since": 75
       },
       {
+        "value": "step",
+        "since": 217
+      },
+      {
         "value": "testing",
         "since": 75
       }
@@ -1828,6 +1855,10 @@
         "since": 75
       },
       {
+        "value": "step",
+        "since": 217
+      },
+      {
         "value": "testing",
         "since": 75
       }
@@ -1880,6 +1911,10 @@
       {
         "value": "reviewing",
         "since": 75
+      },
+      {
+        "value": "step",
+        "since": 217
       },
       {
         "value": "testing",
@@ -2013,6 +2048,7 @@
         "value": "tester",
         "since": 46
       }
-    ]
+    ],
+    "until": 217
   }
 ]

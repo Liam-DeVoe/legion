@@ -146,8 +146,9 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Both checks run, so a plan with two causes gets two reasons: what this release does not
-	// carry out yet, then what no release can.
-	refusals := append(plan.Supported(given), plan.Validate(given, plan.Deployment{Roles: plan.BuiltinRoles()})...)
+	// carry out yet, then what no release can. Each judges the plan against the deployment the
+	// daemon's settings define (Options.Deployment), so a role of `roles` is a role a step names.
+	refusals := append(plan.Supported(given, s.deployment), plan.Validate(given, s.deployment)...)
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return

@@ -127,6 +127,12 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
+	// The roles whose start waits because their issue's pod was built before the deployment
+	// defined them, by issue: a start waiting on its backoff, and a role with no claim to show.
+	waitingForPod, err := in.Store.StartsWaitingForPod(ctx, in.Tx, in.Project)
+	if err != nil {
+		return api.State{}, err
+	}
 	// The open production checks, by issue: the check is read once for the whole state, since a
 	// closed check shows nothing and the open ones are few.
 	openChecks, err := in.Store.OpenProductionChecks(ctx, in.Tx)
@@ -208,6 +214,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			Ancestry: issue.Ancestry,
 			Workers:  map[claim.Role]api.PhaseView{},
 		}
+		for _, role := range waitingForPod[issue.Key] {
+			view.StartWaitsForPod = append(view.StartWaitsForPod, string(role))
+		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
 		// experiment named `memory` spelled out for the readers that knew it before any
@@ -227,6 +236,12 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			if !lingering[issue.Tree] {
 				view.HoldReason = string(issue.Hold.Reason)
 			}
+		}
+		// The role of the running step, which no phase names, where the issue stands at step or its
+		// hold took it out of step, beside the phase that hold left (api.Issue.StepRole). At every
+		// other phase the phase names the role, so the view names none.
+		if issue.Phase == phase.Step || issue.Hold != nil && issue.Hold.From == phase.Step {
+			view.StepRole = string(issue.StepRole)
 		}
 		if slot, ok := slotViews[issue.Key]; ok {
 			view.Slot = &slot
@@ -282,14 +297,15 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// The entry the role of this issue's current phase stands on and the entry that role was
 		// given: what a reader tells a role holding the work its row names from one the daemon has
 		// still to send that work to (api.Issue.PhaseEntry and GivenEntry). A root carries them as
-		// a child does, since phase.RoleFor answers the architect for admitted and accepting and a
-		// phase role for each phase after; a phase no role works carries neither, where no row
-		// would be read and a difference written for one would never close. No row of a role the
-		// issue has moved past is read either, since that role keeps its entry and is sent nothing.
+		// a child does, since Issue.RoleAt answers the architect for admitted and accepting, a
+		// phase role for each phase of Legion's after, and at step the role of the running step; a
+		// phase no role works carries neither, where no row would be read and a difference written
+		// for one would never close. No row of a role the issue has moved past is read either,
+		// since that role keeps its entry and is sent nothing.
 		// The entry is 0 where the rows hold none of that role (record.PhaseRowOf), a role no
 		// transition has ever handed work on, which is the number admit's owedEntryRoles weighs
 		// the same role's claim against, so the state shows what the admission pass weighs.
-		role := phase.RoleFor(issue.Phase)
+		role := issue.RoleAt(issue.Phase)
 		if role != "" {
 			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
 		}

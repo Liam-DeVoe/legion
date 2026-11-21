@@ -125,7 +125,7 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			return givenVersion{}, refusalUnless(err, refusedLingering(*issue, fmt.Sprintf("version %d of the owner's plan", fact.Plan.Version)).Refusal), err
 		}
 	}
-	given.version, given.tasks, given.steps = givenRows(fact, given.stored, given.changed, e.cfg.DefaultSteps, e.now())
+	given.version, given.tasks, given.steps = givenRows(fact, given.stored, given.changed, e.cfg.DefaultSteps, e.cfg.Deployment, e.now())
 	earlier, err := e.store.PlanStepsOf(ctx, tx, fact.Issue)
 	if err != nil {
 		return givenVersion{}, nil, err
@@ -282,8 +282,9 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 // version's block, and a task new to the generation waits at no act (PutPlan keeps where a task
 // the generation holds stands). A task the version leaves as it was keeps its stored steps; any
 // other task takes the steps its block names (StepsOf), or, for a block that names none, defaults,
-// the project's default steps (Config.DefaultSteps), each with the type of its role (planSteps).
-func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
+// the project's default steps (Config.DefaultSteps), each with the type its role has in d, the
+// engine's deployment (planSteps).
+func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, d plan.Deployment, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: fact.Issue, Generation: fact.Generation, Version: fact.Plan.Version, ArtifactID: fact.Plan.ArtifactID,
 		Source: record.PlanSourceOwner, GivenBy: fact.GivenBy, GivenAt: now}
 	var tasks []record.PlanTask
@@ -296,7 +297,7 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []strin
 			steps = append(steps, stored.Steps[given.ID]...)
 			continue
 		}
-		steps = append(steps, planSteps(fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
+		steps = append(steps, planSteps(d, fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
 	}
 	return version, tasks, steps
 }

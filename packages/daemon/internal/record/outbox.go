@@ -848,13 +848,16 @@ type CatchUpGate struct {
 	Open         bool       `json:"open"`
 }
 
-// CatchUpIssue is one issue of the tree as a catch-up lists it.
+// CatchUpIssue is one issue of the tree as a catch-up lists it. StepRole is the role that runs the
+// issue's step where it stands at step (Issue.StepRole), a role the deployment defines, which the
+// phase alone does not name; it is absent at every other phase.
 type CatchUpIssue struct {
-	Key    string      `json:"key"`
-	Parent string      `json:"parent,omitempty"`
-	Title  string      `json:"title"`
-	Phase  phase.Phase `json:"phase"`
-	Status string      `json:"status"`
+	Key      string      `json:"key"`
+	Parent   string      `json:"parent,omitempty"`
+	Title    string      `json:"title"`
+	Phase    phase.Phase `json:"phase"`
+	StepRole claim.Role  `json:"stepRole,omitempty"`
+	Status   string      `json:"status"`
 }
 
 func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
@@ -934,6 +937,15 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // architect is the role that would be, and each arm is a reading that it did not take, cannot be
 // reached, or has not moved (dispatch://INFRA-2614).
 //
+// A pod-wait-held notice names an issue whose pod was built before the deployment defined a role
+// whose start waits for it (the outbox's roleWaitsForItsPod), where nothing ends that wait until
+// an operator acts: the idle rule keeps the pod because an operator's suspension holds a claim of
+// it (the daemon's releaseUnownedPod, told once per streak of that hold), or the deployment's idle
+// release is off and no claim records a process in the pod, so no update round opens over it
+// (told once per wait that finds no process there). Its Role is the waiting role, and its Reason
+// what the controller is told, in words built from structured fields alone. It tells nobody to
+// delete the pod: the pod's disk can hold work a role did not push.
+//
 // A project-paused notice tells the controller that the operator paused its project, and a
 // project-resumed notice that the operator resumed it (decision 24 of dispatch://INFRA-3759). Its
 // issue is the project key, and its Pause names who acted, when, and why: the pause's reason, or
@@ -951,6 +963,7 @@ const (
 	ProviderErrorsNotice   NoticeKind = "provider-errors"
 	TreeStalledNotice      NoticeKind = "tree-stalled"
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
+	PodWaitHeldNotice      NoticeKind = "pod-wait-held"
 	ProjectPausedNotice    NoticeKind = "project-paused"
 	ProjectResumedNotice   NoticeKind = "project-resumed"
 )
@@ -1614,7 +1627,7 @@ func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
 // starts with (`Legion hook `), which its role prompt and skill both name. The pull-request
 // sentence is left out for an issue with no pull request.
 //
-// The counts are listed in the order phase.BackwardPairs() gives rather than the map's own, so
+// The counts are listed in the order phase.MovePairs() gives rather than the map's own, so
 // two readings of one row read alike; a pair the map does not hold is left out. An empty map
 // reads `Counts by move: none.` rather than dropping the sentence: the firing counted the move
 // that fired it, so the map cannot normally be empty, and a sentence that says `none` tells a
@@ -1622,7 +1635,7 @@ func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
 // would leave it to guess.
 func (p HookPrompt) Message(issue string) string {
 	listed := make([]string, 0, len(p.Counts))
-	for _, pair := range phase.BackwardPairs() {
+	for _, pair := range phase.MovePairs() {
 		if count, ok := p.Counts[pair]; ok {
 			listed = append(listed, fmt.Sprintf("%s=%d", pair, count))
 		}
@@ -1790,7 +1803,7 @@ const (
 	MergeForwardReview MergeForwardStep = "review"
 )
 
-// mergeForwardRoles is the roles each step of a merge forward may go to: the ask to the
+// mergeForwardRoles is Legion's roles each step of a merge forward may go to: the ask to the
 // implementer, whose merge it is; the hold and the landed to a worker of the phase the issue
 // stays in that is neither the implementer, whom the ask tells, nor the architect, whom the
 // checks-red notice tells; and the review to the reviewer.
@@ -1803,8 +1816,13 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 
 // MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
 // one list the workflow addresses the hold and the landed by (workflow's mergeForward and
-// mergeForwardLanded) and a row is validated against (validateOutboxPayload).
+// mergeForwardLanded) and a row is validated against (validateOutboxPayload). The hold and the
+// landed also go to a role the deployment defines, the worker of a step that runs as step, which
+// reads the head as the tester and the reviewer do.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
+	if (step == MergeForwardHold || step == MergeForwardLanded) && claim.IsRole(role) && !claim.IsBuiltin(role) {
+		return true
+	}
 	return slices.Contains(mergeForwardRoles[step], role)
 }
 
@@ -2451,7 +2469,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {
 			return fmt.Errorf("a hook prompt goes to a phase worker of the issue, never to an architect, whose own wake the daemon writes as a notice; %q is neither", value.Role)
 		}
-		if !phase.MovesBack(value.From, value.To) {
+		// A move back is one by the order of the issue's task (workflow's Walk.MovesBack), which need
+		// not be today's, so the pair is any pair the daemon counts (phase.MovePairs): two different
+		// workflow phases, or step-step.
+		if !phase.IsMovePair(value.From, value.To) {
 			return fmt.Errorf("a hook prompt names the move back that fired it; %q to %q is no move back", value.From, value.To)
 		}
 		if value.Count <= 0 {
@@ -2687,7 +2708,8 @@ func validateNoticeStopper(kind NoticeKind, stoppedBy claim.Token) error {
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, ProjectPausedNotice, ProjectResumedNotice:
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, PodWaitHeldNotice, ProjectPausedNotice,
+		ProjectResumedNotice:
 		return true
 	default:
 		return false

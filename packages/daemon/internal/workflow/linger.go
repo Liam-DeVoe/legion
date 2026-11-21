@@ -211,7 +211,7 @@ func (e *Engine) endTaskWithLeave(ctx context.Context, tx pgx.Tx, issue *record.
 	if err != nil {
 		return err
 	}
-	if err := e.moveTask(ctx, tx, issue, &w, phase.Done, leaveState(w, status)); err != nil {
+	if err := e.moveTask(ctx, tx, issue, &w, phase.Done, w.Place, leaveState(w, status)); err != nil {
 		return err
 	}
 	issue.Hold, issue.Awaiting = nil, nil
@@ -439,8 +439,8 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 //
 // The non-done clause reads the member's phase itself rather than a predicate written over a
 // hold, because the phase is the spec's own rule and a hold from the merge phase is a state no
-// live daemon writes: a hold is written only where phase.RoleFor(issue.WorkingPhase()) is the
-// role whose claim died (claimFailed), and the merger holds that phase, so its own death leaves
+// live daemon writes: a hold is written only where the role that works issue.WorkingPhase() is
+// the role whose claim died (claimFailed), and the merger holds that phase, so its own death leaves
 // the issue held from merging with its claim failed rather than held from a phase nobody works.
 func (e *Engine) unfinishedHandOvers(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue) ([]record.Issue, error) {
 	done := root.Status == "done"

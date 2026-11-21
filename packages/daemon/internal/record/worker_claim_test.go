@@ -41,11 +41,12 @@ func TestWorkerClaimIsTheClaimOfTheRolesStep(t *testing.T) {
 	}
 }
 
-// A key that names no role of the six yields no claim, as claim.NewToken refuses it, so a caller
-// that reads that refusal as "no claim of this key" keeps reading it.
+// A key that names no role yields no claim, as claim.NewToken refuses it, so a caller that reads
+// that refusal as "no claim of this key" keeps reading it. A deployment's role is any name of the
+// role grammar, so the name here is outside it.
 func TestWorkerClaimRefusesARoleThatIsNoRole(t *testing.T) {
-	if got, err := WorkerClaim("legion", "INFRA-12", claim.Role("operator"), nil); err == nil {
-		t.Fatalf("WorkerClaim(operator) = %q, want the refusal of a role that is no role", got)
+	if got, err := WorkerClaim("legion", "INFRA-12", claim.Role("Operator"), nil); err == nil {
+		t.Fatalf("WorkerClaim(Operator) = %q, want the refusal of a role that is no role", got)
 	}
 }
 

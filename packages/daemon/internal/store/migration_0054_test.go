@@ -15,13 +15,13 @@ func TestIssuePodLocatorsStoredBefore0054NameTheRolesContainer(t *testing.T) {
 	migrateThrough(t, store, 53)
 	issue := `{"runtime":"sandbox","claim":"legion-legion-legion-209-implementer","incarnation":"pod-uid-3/3","sandbox":{"namespace":"legion","name":"legion-legion-209","podUid":"pod-uid-3","container":"implementer","generation":3}}`
 	controller := `{"runtime":"sandbox","claim":"legion-legion-controller","incarnation":"pod-uid-9/1","sandbox":{"namespace":"legion","name":"legion-legion-controller","podUid":"pod-uid-9","container":"controller","generation":1}}`
-	tmux := `{"runtime":"tmux","claim":"legion-LEGION-210-tester","incarnation":"4242:1","tmux":{"window":"@1","pane":"%1"}}`
+	tmux := `{"runtime":"tmux","claim":"legion-legion-legion-210-tester","incarnation":"4242:1","tmux":{"window":"@1","pane":"%1"}}`
 	if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, locator, state,
 		launch_failures, prompt_failures, prompt_retires, uncertain_streak)
 		values ('legion-legion-legion-209-implementer', 'legion', 'LEGION-208', 'LEGION-209', 'implementer', 3, 'ses_i', '', $1, 'ready', 0, 0, 0, 0),
 		('legion-legion-controller', 'legion', '', '', 'controller', 1, 'ses_c', '', $2, 'ready', 0, 0, 0, 0),
-		('legion-LEGION-210-tester', 'legion', 'LEGION-208', 'LEGION-210', 'tester', 1, 'ses_t', '', $3, 'ready', 0, 0, 0, 0),
-		('legion-LEGION-211-merger', 'legion', 'LEGION-208', 'LEGION-211', 'merger', 1, 'ses_m', '', null, 'queued', 0, 0, 0, 0)`,
+		('legion-legion-legion-210-tester', 'legion', 'LEGION-208', 'LEGION-210', 'tester', 1, 'ses_t', '', $3, 'ready', 0, 0, 0, 0),
+		('legion-legion-legion-211-merger', 'legion', 'LEGION-208', 'LEGION-211', 'merger', 1, 'ses_m', '', null, 'queued', 0, 0, 0, 0)`,
 		issue, controller, tmux); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestIssuePodLocatorsStoredBefore0054NameTheRolesContainer(t *testing.T) {
 		}
 	}
 	var unchanged bool
-	if err := store.Pool().QueryRow(ctx, `select locator = $1::jsonb from claims where token = 'legion-LEGION-210-tester'`, tmux).Scan(&unchanged); err != nil || !unchanged {
+	if err := store.Pool().QueryRow(ctx, `select locator = $1::jsonb from claims where token = 'legion-legion-legion-210-tester'`, tmux).Scan(&unchanged); err != nil || !unchanged {
 		t.Errorf("the tmux locator changed (%v): unchanged %t", err, unchanged)
 	}
 	claims, err := store.Claims(ctx)

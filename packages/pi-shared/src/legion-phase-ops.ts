@@ -1,4 +1,4 @@
-import { type LegionRole, zodSchemaApi } from "@legion/contracts";
+import { type LegionStepRole, zodSchemaApi } from "@legion/contracts";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PLAN_RATING_LEAST,
@@ -30,7 +30,8 @@ export interface ClaimCapability {
   readonly sessionID: string;
   readonly tree: string;
   readonly issue: string;
-  readonly role: LegionRole;
+  /** One of Legion's six or a role of the deployment (contract 217). */
+  readonly role: LegionStepRole;
   readonly secret: string;
   readonly claimToken: string;
   readonly generation: number;
@@ -131,17 +132,14 @@ const planReason = legionPlanReasonRules(z.string({ error: PLAN_REASON_REQUIRED 
   long: `handoff_complete's plan_reason holds at most ${PLAN_REASON_MOST} characters`,
 });
 
-/** The refusal of a `return_to` that is not the place of a step. */
-const RETURN_TO_REFUSAL =
-  "handoff_complete's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first";
-
-/** `handoff_complete`'s `return_to`: the step of the issue's running task that a step that failed
- * names for its task to return to, by its place in the task, 1 for its first
- * (`LegionHandoffCompleteRequest`'s `returnTo`, which goes on the wire). */
-const returnTo = z
-  .number({ error: RETURN_TO_REFUSAL })
-  .int({ error: RETURN_TO_REFUSAL })
-  .min(1, { error: RETURN_TO_REFUSAL });
+/** `op`'s `return_to`: the step of the issue's running task that a step that failed, or a move
+ * back, names for its task to return to, by its place in the task, 1 for its first (the
+ * `returnTo` of `LegionHandoffCompleteRequest` and of `LegionPhaseBackwardRequest`, which goes on
+ * the wire). Anything else is refused naming the operation. */
+function returnTo(op: "handoff_complete" | "request_backward_move") {
+  const error = `${op}'s return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first`;
+  return z.number({ error }).int({ error }).min(1, { error });
+}
 
 /** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
  * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
@@ -202,7 +200,7 @@ export const PhaseOpArguments = z.discriminatedUnion(
       wake_at: nextLook.optional(),
       plan_rating: planRating.optional(),
       plan_reason: planReason.optional(),
-      return_to: returnTo.optional(),
+      return_to: returnTo("handoff_complete").optional(),
     })
       // A rating of the plan carries its reason, and the daemon takes neither alone
       // (PLAN_RATING_INPUT, the contract's `legionPlanRatingLoneField`): one without the other is
@@ -235,6 +233,9 @@ export const PhaseOpArguments = z.discriminatedUnion(
             : "request_backward_move requires to",
       }),
       reason: requiredString("request_backward_move", "reason"),
+      // The step the move returns to, by its place in the task: the daemon takes the place and
+      // refuses a `to` that is not the phase that step runs as.
+      return_to: returnTo("request_backward_move").optional(),
     }),
     // The signal carries one field of the agent's: the round its update message named, which the
     // daemon takes the answer for and no other. The claim says who answers, and the plugin
@@ -332,8 +333,8 @@ export const PHASE_OP_SENTENCES = {
 
 /**
  * What a worker whose completion is refused HANDOFF_STALE_ENTRY does, word for word the text the
- * daemon ends that refusal with (`staleEntryInstruction` in
- * `packages/daemon/internal/api/handoff.go`), so the worker reads one instruction in its tool and
+ * daemon ends that refusal with (`StaleEntryInstruction` in
+ * `packages/daemon/internal/intake/facts.go`), so the worker reads one instruction in its tool and
  * in the refusal. The daemon's golden test writes its constant to
  * `packages/contracts/fixtures/daemon-api/stale-entry.json`, and `legion-phase-ops.test.ts` holds
  * the description below to that file.
@@ -363,7 +364,7 @@ export function legionToolDescription(host: {
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-    "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
+    "architect), `verdict` pass|fail from the tester or a role of the deployment on a phase completion (the daemon refuses a verdict from " +
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
     "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
@@ -448,7 +449,7 @@ export interface PhaseOpRuntime {
    * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
    * implementer's record names no head, the commit its workspace stands on is not pushed, or its
    * record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+  readonly handoffReport: (phase: LegionPhase, role: LegionStepRole) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A
    * throw leaves the head out of the signal, which is still sent, and the throw's message goes
@@ -663,6 +664,7 @@ export async function executePhaseOp(
         to: args.to,
         reason: args.reason,
         ...(issue === undefined ? {} : { issue }),
+        ...(args.return_to === undefined ? {} : { returnTo: args.return_to }),
       });
       return {};
     }

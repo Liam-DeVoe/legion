@@ -34,7 +34,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -72,6 +71,9 @@ type workflowRuntime struct {
 	// so its own code and its tests hold the narrower type.
 	tokens appauth.Tokens
 	apps   appauth.Source
+	// deployed is each role the deployment defines with the App it acts as (deploymentApps),
+	// which identity reads through appauth.AppRoleFor.
+	deployed appauth.DeploymentApps
 	// forget drops the token source's cached leases for an App and owner, a token GitHub refused
 	// (tokenRefused).
 	forget          appauth.Forgetter
@@ -654,7 +656,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
-		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
+		tokens: tokens, apps: tokens, deployed: deploymentApps(cfg.Roles), forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
@@ -974,7 +976,9 @@ func (w *workflowRuntime) agentText(token claim.Token, field, text string) strin
 // engineConfig is the workflow engine's configuration from the daemon's and the review App's bot
 // login from its boot lease: its own project's production_check is the role that works the checks
 // a merge opens (empty, it opens none), its own project's default steps are what an issue whose
-// owner gives no plan runs, and its own project's declared experiments are what each issue the
+// owner gives no plan runs, the file's deployment (config.Config.Deployment: Legion's own roles of
+// a step and each role of `roles`, with its type) is the engine's, which a stored step takes the
+// type of its role from, and its own project's declared experiments are what each issue the
 // engine records is drawn for. hookPrompts are the words boot read for the hooks that name a file
 // (readBoot), which engineHooks puts in the place of each such hook's path.
 func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[string]string) workflow.Config {
@@ -984,6 +988,7 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		Linger: cfg.Linger, ProductionCheckBound: cfg.ProductionCheckBound,
 		ProductionCheckRole: project.ProductionCheck,
 		DefaultSteps:        project.RunsByDefault(),
+		Deployment:          cfg.Deployment(),
 		ReviewAppLogin:      reviewAppLogin,
 		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
 		Experiments:  cfg.ExperimentsDeclared(),
@@ -1101,10 +1106,13 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 // phase is compared, not the role that works it: one role runs several phases — the implementer
 // runs implementing and retro, and the role the project's `production_check` named at the open
 // (record.ProductionCheck.Role) runs each look of the check — and a task written for the first is
-// not the work of the third. The run is compared because a re-admission can restart the issue in the phase
-// it stood in: an operator suspension keeps a claim's queued task (supervise's settle), so without
-// it the operator's resume would send the run that is over's task into the new run, ahead of the
-// new run's own. A task of no run (generation 0) is held to its phase alone.
+// not the work of the third. At the phase step the role is compared too: every role a deployment
+// defines runs as step, so a task written for the step of one role is not the work of the step of
+// another, whose phase reads the same (record.Issue.HoldsQueued). The run is compared because a
+// re-admission can restart the issue in the phase it stood in: an operator suspension keeps a
+// claim's queued task (supervise's settle), so without it the operator's resume would send the run
+// that is over's task into the new run, ahead of the new run's own. A task of no run (generation
+// 0) is held to its phase alone.
 //
 // A delivery of no phase holds here. Only the workflow names one, so an operator's delivery made
 // by hand through the API is not dropped for the phase its issue is in: the operator asked for
@@ -1115,18 +1123,18 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 //
 // Nothing else on the delivery would answer this: the id is rotated by a prompt retry, and the
 // task text is the workflow's prose. The phase is typed data, persisted with the delivery, and no
-// path rewrites it.
+// path rewrites it; the role is the claim's, fixed for its life.
 //
 // A claim on an issue the daemon does not record holds too. The workflow never deletes an issue,
 // so there is no record only for a claim the workflow never made — the operator's own spawn, whose
 // issue key need not be an issue key at all. The comparison itself is record.PhaseHolds, which a
 // test that wires this answer without a daemon calls too.
-func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
-	issue, err := w.recordedIssue(ctx, key)
+func (w *workflowRuntime) phaseHolds(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error) {
+	issue, err := w.recordedIssue(ctx, c.Issue)
 	if err != nil {
-		return false, fmt.Errorf("read %s for the phase of its task: %w", key, err)
+		return false, fmt.Errorf("read %s for the phase of its task: %w", c.Issue, err)
 	}
-	return record.PhaseHolds(issue, queuedFor, generation), nil
+	return record.PhaseHolds(issue, c.Role, d.Phase, d.Generation), nil
 }
 
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a
@@ -1478,9 +1486,27 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	return nil
 }
 
-// identity is the bot a role's commits are authored by: its App's, from the lease the token
-// source mints for the owner whose installation holds the repository the role works (the identity
-// is fetched once per App and cached).
+// deploymentApps is each role the deployment defines with the App its github_app names: the
+// implement App for `implement`, the review App otherwise, review being the setting's default.
+// It is the map every reader of a role's App hands appauth.AppRoleFor, which stays the one
+// decision.
+func deploymentApps(roles []config.Role) appauth.DeploymentApps {
+	apps := make(appauth.DeploymentApps, len(roles))
+	for _, role := range roles {
+		app := appauth.Review
+		if role.GitHubApp == config.RoleAppImplement {
+			app = appauth.Implement
+		}
+		apps[role.Name] = app
+	}
+	return apps
+}
+
+// identity is the bot a role's commits are authored by: its App's (appauth.AppRoleFor, over the
+// deployment's roles), from the lease the token source mints for the owner whose installation
+// holds the repository the role works (the identity is fetched once per App and cached). A role
+// that neither Legion nor the deployment defines is given no App by AppRoleFor, and its identity
+// is that error.
 //
 // recorded is the repository the issue's record names, and the mint is made for the owner GitHub
 // serves it under now (repositories.serving): the record keeps the name it was written under
@@ -1491,10 +1517,14 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 // adoption (adoptIdentity) — so neither can mint on an owner the repository has left and fail
 // every launch of a tree open at the transfer.
 func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
-	served := w.repositories.serving(recorded)
-	lease, err := w.tokens.Token(ctx, appauth.AppRoleFor(role), served.Owner())
+	app, err := appauth.AppRoleFor(role, w.deployed)
 	if err != nil {
-		return runtime.GitIdentity{}, fmt.Errorf("mint the %s App lease for %s on %s: %w", appauth.AppRoleFor(role), role, served, err)
+		return runtime.GitIdentity{}, err
+	}
+	served := w.repositories.serving(recorded)
+	lease, err := w.tokens.Token(ctx, app, served.Owner())
+	if err != nil {
+		return runtime.GitIdentity{}, fmt.Errorf("mint the %s App lease for %s on %s: %w", app, role, served, err)
 	}
 	return lease.Identity, nil
 }
@@ -1708,6 +1738,9 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	}
 	w.idlePeriod, w.idleStore, w.idleRuntime = release.Idle(), supervision.supervisor.store, podRuntime
 	w.outbox.backstop = releaseBackstop(supervision.cfg)
+	// The idle rule for a pod with no live claim runs, so it ends a start's wait for a pod built
+	// before the start's role (outbox.roleWaitsForItsPod tells the controller otherwise).
+	w.outbox.idleReleases = true
 }
 
 // replayTerminal applies the ready or failure fact of every stored claim in either state that no

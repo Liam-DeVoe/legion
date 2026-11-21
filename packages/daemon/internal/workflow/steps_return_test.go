@@ -33,6 +33,10 @@ func returnEngine() *Engine {
 	return engine
 }
 
+// builtinDeployment is Legion's own roles of a step (plan.BuiltinRoles), the deployment New gives
+// an engine whose Config sets none.
+var builtinDeployment = plan.Deployment{Roles: plan.BuiltinRoles()}
+
 // seedStepsPlan writes the plan key's owner gave for its run generation: version 2, one task a
 // whose steps are words, each `role` or `role:key`, with the type plan.BuiltinRoles gives its
 // role, each named as planGiven names a version's agents (record.NameAgents), waiting at no act.
@@ -70,7 +74,7 @@ func reviewRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, key
 		if err != nil {
 			return err
 		}
-		return engine.transition(ctx, tx, *issue, TriggerReviewRejected, "", reviewer, pr, changesBody)
+		return engine.transition(ctx, tx, *issue, TriggerReviewRejected, record.TaskPlace{}, reviewer, pr, changesBody)
 	})
 
 }
@@ -133,11 +137,16 @@ func roleStartsOf(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role)
 	return starts
 }
 
-// noticesOf is every notice of kind key's outbox holds, oldest first.
+// noticesOf is every notice of kind key's outbox holds, oldest first: the rows of key alone, so a
+// notice on another issue is not read as key's.
 func noticesOf(t *testing.T, pool *pgxpool.Pool, key string, kind record.NoticeKind) []record.Notice {
 	t.Helper()
 	var notices []record.Notice
-	for _, payload := range noticeRows(t, pool) {
+	for _, row := range issueOutboxOf(t, pool, key, string(record.OutboxKindNotice)) {
+		payload, err := record.DecodeOutboxPayload(record.OutboxRow{ID: row.id, Kind: record.OutboxKindNotice, Issue: key, Payload: row.payload})
+		if err != nil {
+			t.Fatalf("decode notice row %d of %s: %v", row.id, key, err)
+		}
 		if notice, ok := payload.(record.Notice); ok && notice.Kind == kind {
 			notices = append(notices, notice)
 		}
@@ -166,9 +175,9 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 		implementerBefore, reviewerBefore := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)), len(roleStartsOf(t, pool, root.Key, claim.RoleReviewer))
 
 		reviewRequestsChanges(t, pool, engine, root.Key)
@@ -191,18 +200,21 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		}
 
 		// The review of the next round approves, and the task walks on to Legion's own retro.
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
 	})
 
 	t.Run("a plan whose one step is the tester is refused: it has no implementer", func(t *testing.T) {
 		given := plan.Plan{ArtifactID: "plan-artifact", Version: 2, Tasks: []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "tester"}}, Text: "Test it."}}}
-		refusals := append(plan.Validate(given, builtinDeployment), plan.Supported(given)...)
-		want := plan.Refusal{Task: "a", Reason: "task a has no step implementer. This release of Legion does not carry it out yet."}
-		if len(refusals) != 1 || refusals[0] != want {
-			t.Fatalf("the plan `tester` is refused with %+v, want the one reason %+v", refusals, want)
+		refusals := append(plan.Validate(given, builtinDeployment), plan.Supported(given, builtinDeployment)...)
+		want := []plan.Refusal{
+			{Task: "a", Reason: "task a has no step implementer. This release of Legion does not carry it out yet."},
+			{Task: "a", Reason: "step 1 of task a names tester, and no step before it names the role implementer, whose pull request tester reads; a role of this deployment that reports pass or fail needs none. This release of Legion does not carry it out yet."},
+		}
+		if !reflect.DeepEqual(refusals, want) {
+			t.Fatalf("the plan `tester` is refused with %+v, want the two reasons %+v", refusals, want)
 		}
 	})
 
@@ -211,10 +223,10 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		for range 3 {
-			move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-			move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 			reviewRequestsChanges(t, pool, engine, root.Key)
 		}
 		if prompts := hookPrompts(t, pool); len(prompts) != 0 {
@@ -242,9 +254,9 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "acceptance:owner")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Accepting, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
 		entry := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Entry
 
@@ -279,9 +291,9 @@ func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 	// The type is forged: no plan of this release writes it. Each failed step a plan can hold comes
 	// after its implementer (plan.Supported), so only a stored type that no plan gives reaches the
 	// stop this test asserts (returnTarget).
@@ -382,9 +394,9 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "planner", "implementer", "tester")
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
-		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerPlannerCompleted, record.TaskPlace{}, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
 		return pool, engine, root
 	}
@@ -485,8 +497,8 @@ func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
 	// The claim the daemon started the tester under, which is what makes its fail the report of a
 	// run (record.Store.RoleRun).

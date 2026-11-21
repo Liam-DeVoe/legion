@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -239,6 +240,9 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	}
 	var decision workflow.IdleDecision
 	var quiet, holding bool
+	var waiting []claim.Role
+	var heldFor string
+	var suspended []string
 	marked, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
 		// The Sandbox is there: the read above is this conjunct's answer, and the rule takes it
 		// rather than reading the runtime again under the transaction's lock.
@@ -246,6 +250,7 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		since, found := view.QuietSince()
 		quiet = found && now.Sub(since) >= w.idlePeriod
 		holding = view.Holding
+		waiting, heldFor, suspended = view.StartsWaitingForPod, view.HeldFor, operatorSuspended(view)
 		if !decision.Release {
 			return store.IdleReleaseMark{}, nil
 		}
@@ -257,6 +262,17 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 	}
 	if !marked {
 		w.log.Debug("unowned release: the pod is kept", "issue", issue, "hold", decision.Hold.String())
+		// An operator's suspension keeps a pod a role's start waits for, a wait nothing ends
+		// until the operator acts: the controller is told once for each streak of the hold, at
+		// the pass that opens it (HeldFor names no streak of it yet), before it is recorded.
+		if decision.Hold == workflow.IdleHoldUnownedOperatorSuspended && quiet && len(waiting) > 0 &&
+			heldFor != workflow.IdleHoldUnownedOperatorSuspended.String() {
+			notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: waiting[0],
+				Reason: podWaitHeldWords(issue, waiting, suspended, w.idlePeriod)}
+			if _, err := w.enqueueOutbox(ctx, issue, notice); err != nil {
+				w.log.Warn("unowned release: could not tell the controller of a pod an operator's suspension holds", "issue", issue, "error", err)
+			}
+		}
 		// This rule names one reason per pass and no kinds beside it, so its holds carry no
 		// detail, as the teardown's do not.
 		w.recordKeptPod(ctx, issue, decision.Hold, "", quiet, holding, now)
@@ -268,6 +284,32 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		"issue", issue, "idle", w.idlePeriod.String())
 	w.wakeOutbox(issue, record.OutboxKindSupervise)
 	return workflow.IdleHoldNone, true
+}
+
+// operatorSuspended is each claim of view an operator suspended, as `<role> (<state>)`.
+func operatorSuspended(view pods.IdleView) []string {
+	var held []string
+	for _, c := range view.Claims {
+		if c.SuspendedBy == supervise.SuspendedByOperator {
+			held = append(held, fmt.Sprintf("%s (%s)", c.Role, c.State))
+		}
+	}
+	return held
+}
+
+// podWaitHeldWords is what the controller is told of the roles waiting, whose start waits for
+// the pod of issue that an operator's suspension of the claims suspended holds (ruling 18 point
+// 4), for the controller agent in plain words.
+func podWaitHeldWords(issue string, waiting []claim.Role, suspended []string, idle time.Duration) string {
+	names := make([]string, len(waiting))
+	for i, role := range waiting {
+		names[i] = string(role)
+	}
+	roles := strings.Join(names, ", ")
+	return fmt.Sprintf("%s of %s cannot start. The pod of %s was made before the deployment defined %s, and no role runs in it. "+
+		"The daemon removes such a pod when it has had no activity for %d minutes, but not while an operator holds a claim of it. "+
+		"The operator suspended %s. Resume or stop that claim. Then the daemon replaces or removes the pod, and %s start in a new pod.",
+		roles, issue, issue, roles, int(idle.Minutes()), strings.Join(suspended, ", "), roles)
 }
 
 // recordableHold is whether a hold is one a deployment reads as "release would have taken this

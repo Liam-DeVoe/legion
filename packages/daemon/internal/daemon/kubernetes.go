@@ -199,8 +199,8 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// (volumeTrimReports, daemon.Run). It hangs off the plan by pointer, so the plan's own copy
 	// carries the one holder the factory closed over, as plan.repositories does.
 	p.volumeReports = &volumeTrimReports{}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
-		p.memoryGuardKills, p.volumeReports)
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left,
+		reads.opts.DeploymentApps, o.githubAPI, p.memoryGuardKills, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -396,6 +396,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		ControllerSlackChannels: cfg.Projects[cfg.Project].SlackChannels,
 		Tools:                   workerImageTools,
 		Pod:                     sandbox.Pod(k.Pod),
+		DeploymentApps:          deploymentApps(cfg.Roles),
 		RoleConfigFiles:         cfg.RoleConfigFiles,
 		ProviderKeys:            providerSecretKeys(cfg.ProviderKeys),
 		LaunchSecrets:           launchSecretNames(cfg, lookup),
@@ -567,8 +568,9 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // sandboxRuntime builds the Agent Sandbox runtime, whose informers run for ctx (supervision's
 // lifetime), over the worker stream and with the workflow's App tokens as every pod's provisioning
 // token source (the implement App's, minted for the repository's owner) and every tree role's gh
-// bundle (gitHubCredential, a directory for each owner the role's App is installed on, read from
-// GitHub at every bundle, and one for each owner a configured rename moved a repository away
+// bundle (gitHubCredential, minted as the App the role acts as, deployed naming the App of each
+// role the deployment defines, a directory for each owner the role's App is installed on, read
+// from GitHub at every bundle, and one for each owner a configured rename moved a repository away
 // from while served answers the name it moved to is served), with the
 // controller's own bundle beside it
 // (appauth.ControllerCredential), which a controller's launch and its refresh both ask by owner,
@@ -603,8 +605,8 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // it has (plan.volumeReports). One that is never filled refuses every report it is given with
 // errVolumeReportsUnbound, which the launcher session logs.
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
-	reports *volumeTrimReports) runtimeFactory {
+	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut,
+	deployed appauth.DeploymentApps, githubAPI string, kills *memoryGuardKills, reports *volumeTrimReports) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
@@ -648,7 +650,7 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Re
 			// every launch's addressing reads its role's App's owners out of beside the drift
 			// check.
 			opts.Tokens = newImplementTokens(apps, serving)
-			opts.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, opts.Log)
+			opts.GitHubCredential = appauth.GitHubCredential(apps, served, renames, installed, left, deployed, opts.Log)
 			opts.ControllerCredential = appauth.ControllerCredential(apps, served, renames, installed, left, opts.Log)
 			opts.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 				return appauth.GitHubDirs(served, renames, installed, left, roles, repo)

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -371,7 +372,10 @@ func valueStripCases() map[string]valueStripCase {
 				every, _ := strandedServed(t, whole)
 				var kept []map[string]string
 				for _, entry := range every {
-					if entry["state"] != string(supervise.StateRetired) {
+					// The pod is below deploymentRolesContract too, so a claim of a role outside
+					// Legion's six is no entry of its body either (shaping.go's
+					// withoutDeploymentRoleClaims).
+					if entry["state"] != string(supervise.StateRetired) && claim.IsBuiltin(claim.Role(entry["role"])) {
 						kept = append(kept, entry)
 					}
 				}
@@ -518,6 +522,11 @@ func valueStripCases() map[string]valueStripCase {
 					want := hold
 					if hold[0] == string(record.HoldTaskStopped) || hold[0] == string(record.HoldForChildren) {
 						want[0] = ""
+					}
+					// The pod is below deploymentRolesContract too, so a hold from step is served as
+					// one from implementing (shaping.go's withoutDeploymentRoles).
+					if hold[1] == string(phase.Step) {
+						want[1] = string(phase.Implementing)
 					}
 					if served[key] != want {
 						t.Errorf("the {%d, %d} pod is served %s held %q, want %q: the strip takes the reason the pod's %d process refuses and nothing else",

@@ -13,7 +13,7 @@ import (
 // ClaimRequest is what either of the controller's two claim recoveries names: the claim on Role
 // of Issue, under the caller's controller grant. Role is a workflow role or `architect`; the
 // project controller is no role here, so the controller's own claim cannot be named at all
-// (claim.IsRole, whose six roles the controller is not one of). The fresh session and the
+// (claim.IsRole, which refuses the controller). The fresh session and the
 // compaction take the same three members, so they take one type (controllerClaim).
 type ClaimRequest struct {
 	GrantID string `json:"grantId"`
@@ -235,13 +235,14 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	s.writeAnswer(w, r, AnswerFreshSession, http.StatusOK, FreshSessionResponse{PhaseNotRestarted: notRestarted})
 }
 
-// roleList names the roles a claim can be on, in the order the workflow reaches them.
+// roleList names the roles a claim can be on: Legion's six, in the order the workflow reaches
+// them, and each role the deployment defines, which a claim of an issue's step is on.
 func roleList() string {
 	names := make([]string, 0, len(claim.Roles))
 	for _, role := range claim.Roles {
 		names = append(names, string(role))
 	}
-	return strings.Join(names, ", ")
+	return strings.Join(names, ", ") + ", or a role of this deployment"
 }
 
 // freshSession is the one fresh-session effect, which `legion claims retry --fresh-session`

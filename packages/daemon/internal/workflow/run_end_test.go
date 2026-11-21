@@ -23,7 +23,7 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 	engine := stepEngine(nil)
 	moved := 0
 	for i, row := range Table {
-		from, _, _, runs := placeOnWalk(todaysWalk(), row.From)
+		from, _, _, runs := placeOnWalk(todaysWalk(), standingIn(row.From))
 		if !runs {
 			continue
 		}
@@ -36,9 +36,9 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 		seedTreeLifecycle(t, pool, key)
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: 400 + i,
 			Branch: "legion/" + key, HeadSHA: "head", Failing: []string{}})
-		target := phase.Phase("")
+		target := record.TaskPlace{}
 		if row.Trigger == TriggerBackward {
-			target = row.To
+			target = row.ToPlace
 		}
 		var named StepEnd
 		var found bool
