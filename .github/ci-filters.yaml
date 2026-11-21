@@ -443,6 +443,7 @@ plugin_pack:
   - 'packages/envoy/internal/cipher/enroll/*'
   - 'packages/envoy/internal/cipher/exchange/*'
   - 'packages/envoy/internal/cipher/machine/*'
+  - 'packages/envoy/internal/cipher/netaddr/*'
   - 'packages/envoy/internal/cipher/oauth/*'
   - 'packages/envoy/internal/cipher/oauthstore/*'
   - 'packages/envoy/internal/cipher/oauthwire/*'
