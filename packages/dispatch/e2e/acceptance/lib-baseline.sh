@@ -9,7 +9,7 @@
 # Sourced, as the drivers here source lib.sh — which this file sources in turn, for `require_env`
 # and `require_commands`. It sets `set -euo pipefail`, as every driver here does. It reads the
 # caller's `usage` when the caller has one and defines its own otherwise, for its --selftest run
-# below. The three functions it gives the caller:
+# below. The four functions it gives the caller:
 #
 #   baseline_start
 #       Inputs. BASELINE_SHA or BASELINE_BINARY must be set; LEGION_WORKSPACE and
@@ -97,6 +97,21 @@
 #       and then the first two, so that a run's log names its baseline in full even when
 #       BASELINE_SHA named it by a branch or a short hash.
 #
+#   baseline_build NAME REVISION
+#       Builds a second commit, after baseline_start, exactly as baseline_start builds
+#       BASELINE_SHA: REVISION is any revision the checkout baseline_start read resolves to a
+#       commit, whose tree is taken out with `git archive` into the run's work directory and whose
+#       `./cmd/dispatch` is built from it, stamped with that commit. baseline_start builds
+#       BASELINE_SHA through it too. It is for a check that boots more than one older build over
+#       one database: `c-decisions-converted` boots the baseline, then a build of CONVERTER_SHA,
+#       then this branch's server. A revision that names no commit is refused with status 2, and
+#       a call before baseline_start made the work directory is refused too. It leaves the caller
+#           baseline_built_commit   the commit REVISION names, in full
+#           baseline_built_binary   the absolute path of the build, $baseline_work/bin/dispatch-NAME
+#       and prints `build NAME commit <commit>`. The caller boots the build with baseline_boot,
+#       which gives it the run's database, bearer, dev sign-in key and BASELINE_EXTRA_ENV pairs as
+#       it gives every server, and the work directory, with the build, goes in baseline_stop.
+#
 #   baseline_stop_server
 #       Stops the baseline server and KEEPS the database. This is the one a caller calls before it
 #       boots this branch's server over that database: the database outlives the server that made
@@ -175,7 +190,8 @@ Usage: {BASELINE_SHA=<commit> | BASELINE_BINARY=<path>} [BASELINE_EXTRA_ENV=$'NA
        only the caller knows which release that is. BASELINE_BINARY, set instead, boots that
        prebuilt server and builds none. BASELINE_EXTRA_ENV is one NAME=value per line, given to
        every server. LEGION_WORKSPACE names the checkout the commit is read from; unset, this
-       file's own. Sourced instead, it gives baseline_start, baseline_stop_server and baseline_stop)
+       file's own. Sourced instead, it gives baseline_start, baseline_build, baseline_stop_server
+       and baseline_stop)
 USAGE
   }
 fi
@@ -185,6 +201,9 @@ baseline_workspace=""
 baseline_commit=""
 # The server booted as the baseline: BASELINE_BINARY's, or the one built from baseline_commit.
 baseline_binary=""
+# What baseline_build leaves its caller: the commit it built and the build.
+baseline_built_commit=""
+baseline_built_binary=""
 # BASELINE_EXTRA_ENV's NAME=value pairs, each checked, which baseline_boot gives every server.
 baseline_extra_env=()
 baseline_work=""
@@ -505,6 +524,35 @@ baseline_stop() {
   baseline_signin_key=""
 }
 
+# baseline_build NAME REVISION: the build of REVISION's ./cmd/dispatch, stamped with its commit, at
+# $baseline_work/bin/dispatch-NAME. The head comment above is its contract; baseline_start builds
+# BASELINE_SHA through it.
+baseline_build() {
+  local name="$1" revision="$2" tree
+  [[ -n "$baseline_work" && -d "$baseline_work/bin" ]] ||
+    baseline_refuse "baseline_build builds into the run's work directory: call baseline_start first"
+  [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] || baseline_refuse "baseline_build names its build '$name', which is no name of [a-z0-9-]"
+  # A caller that booted BASELINE_BINARY never needed these, so they are asked for here.
+  require_commands git go tar
+  git -C "$baseline_workspace" rev-parse --git-dir >/dev/null 2>&1 ||
+    baseline_refuse "$baseline_workspace holds no git repository to read the commit out of"
+  baseline_built_commit="$(git -C "$baseline_workspace" rev-parse --verify --quiet "${revision}^{commit}")" ||
+    baseline_refuse "the revision '$revision' the build $name names no commit of $baseline_workspace"
+  tree="$baseline_work/tree/$name"
+  mkdir -p "$tree" || baseline_fail "could not make $tree"
+  # The commit's tree is taken out of the repository rather than checked out, so the working copy
+  # is never touched and no worktree is added.
+  git -C "$baseline_workspace" archive "$baseline_built_commit" | tar -x -C "$tree" ||
+    baseline_fail "could not take the tree of $baseline_built_commit out of $baseline_workspace"
+  # Stamped with its own commit, as the image build stamps it: unstamped, the server registers an
+  # empty commit, which no fleet agrees on and no reader can tell from another unstamped build's.
+  go -C "$tree/packages/envoy" build -ldflags "-X main.buildCommit=$baseline_built_commit" \
+    -o "$baseline_work/bin/dispatch-$name" ./cmd/dispatch ||
+    baseline_fail "the ./cmd/dispatch of $baseline_built_commit did not build"
+  baseline_built_binary="$baseline_work/bin/dispatch-$name"
+  printf 'build %s commit %s\n' "$name" "$baseline_built_commit"
+}
+
 # baseline_start: the baseline server of BASELINE_SHA or of BASELINE_BINARY, serving the run's
 # database or one of its own. The head comment above is its contract.
 baseline_start() {
@@ -564,16 +612,8 @@ baseline_start() {
   mkdir -p "$baseline_work/tree" "$baseline_work/bin" "$baseline_work/logs" "$baseline_work/web-dist" ||
     baseline_fail "could not make this run's directories under $baseline_work"
   if [[ -z "$given_binary" ]]; then
-    # The commit's tree is taken out of the repository rather than checked out, so the working
-    # copy is never touched and no worktree is added.
-    git -C "$baseline_workspace" archive "$baseline_commit" | tar -x -C "$baseline_work/tree" ||
-      baseline_fail "could not take the tree of $baseline_commit out of $baseline_workspace"
-    # Stamped with its own commit, as the image build stamps it: unstamped, the server registers an
-    # empty commit, which no fleet agrees on and no reader can tell from another unstamped build's.
-    go -C "$baseline_work/tree/packages/envoy" build -ldflags "-X main.buildCommit=$baseline_commit" \
-      -o "$baseline_work/bin/dispatch-baseline" ./cmd/dispatch ||
-      baseline_fail "the ./cmd/dispatch of $baseline_commit did not build"
-    baseline_binary="$baseline_work/bin/dispatch-baseline"
+    baseline_build baseline "$baseline_commit"
+    baseline_binary="$baseline_built_binary"
   fi
 
   if [[ -z "$given_database_url" ]]; then
