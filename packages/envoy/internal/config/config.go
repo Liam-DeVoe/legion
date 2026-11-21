@@ -42,9 +42,11 @@ type Service struct {
 	// unauthenticated listener serves /v1 to beside loopback.
 	AllowedHosts []string
 	// EdgeProjects is ENVOY_EDGE_PROJECTS (parseEdgeProjects): the project keys an edge listener
-	// serves, sorted, each once. Non-empty is edge mode, in which the listener runs under the edge
-	// listener's NATS grant for these projects (natsgrant.Edge; cmd/listener's edge_nats.go). Empty,
-	// the variable unset or blank, is every other listener, which reads nothing of it.
+	// serves, sorted, each once. Non-empty is edge mode, in which /v1 admits only a broker token
+	// whose projects are all among these (cmd/listener's EdgeAdmits), and the listener runs under
+	// the edge listener's NATS grant for these projects (natsgrant.Edge; cmd/listener's
+	// edge_nats.go). Empty, the variable unset or blank, is every other listener, which reads
+	// nothing of it.
 	EdgeProjects []string
 }
 

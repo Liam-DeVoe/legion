@@ -12,6 +12,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -64,9 +66,9 @@ func (c *relaySocketClock) advance(d time.Duration) {
 
 // relaySocketRig is two replicas of an edge deployment over the in-process server. The owner is
 // the replica that holds the session's consumer and relays it, as an edge listener's relay runs:
-// its receipts arrive under bus.RelayReplyPrefix (relayReplyInbox). The socket is the other
-// replica's: its /v1 behind apiAuth with broker tokens on, on a NATS connection of its own, the
-// broker the stub that answers what each row says each token is.
+// its receipts arrive under bus.RelayReplyPrefix. The socket is the other replica's: its /v1
+// behind apiAuth with broker tokens on, on a NATS connection of its own, the broker the stub that
+// answers what each row says each token is.
 type relaySocketRig struct {
 	owner   *relayRig
 	client  *bus.Client
@@ -86,25 +88,42 @@ type relaySocketRigConfig struct {
 	// testnats.Proxy with ProxyLatency), so a row can tell a subscribe that reached the server
 	// from one that has not yet; none by default.
 	natsLatency time.Duration
-	// edgeProjects is the replica's ENVOY_EDGE_PROJECTS: relaySocketProject alone by default.
-	edgeProjects []string
+	// checkEvery is the sockets' check interval, relaySocketTestCheck by default.
+	checkEvery time.Duration
+	// maxSockets is the replica's socket cap, relaySocketMaxPerListener by default.
+	maxSockets int
+	// pendingMsgs and pendingBytes are a socket subscription's pending limits, the replica's
+	// own by default.
+	pendingMsgs, pendingBytes int
 }
 
 func withSocketNATSLatency(rtt time.Duration) relaySocketRigOption {
 	return func(c *relaySocketRigConfig) { c.natsLatency = rtt }
 }
 
-func withEdgeProjects(projects ...string) relaySocketRigOption {
-	return func(c *relaySocketRigConfig) { c.edgeProjects = projects }
+func withCheckEvery(every time.Duration) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.checkEvery = every }
+}
+
+func withMaxSockets(n int) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.maxSockets = n }
+}
+
+func withPendingLimits(msgs, bytes int) relaySocketRigOption {
+	return func(c *relaySocketRigConfig) { c.pendingMsgs, c.pendingBytes = msgs, bytes }
 }
 
 func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySocketRig {
 	t.Helper()
-	config := relaySocketRigConfig{edgeProjects: []string{relaySocketProject}}
+	config := relaySocketRigConfig{checkEvery: relaySocketTestCheck}
 	for _, option := range options {
 		option(&config)
 	}
-	owner := newRelayRigUnownedAs(t, relayPauseFirst, relayPauseMax, true)
+	grant, err := newEdgeGrant("edge-a", []string{relaySocketProject}, metrics.New())
+	if err != nil {
+		t.Fatalf("the owner's edge grant: %v", err)
+	}
+	owner := newRelayRigUnownedAs(t, relayPauseFirst, relayPauseMax, grant)
 	owner.relays.setOwned(true)
 
 	url := owner.url
@@ -144,8 +163,14 @@ func newRelaySocketRig(t *testing.T, options ...relaySocketRigOption) *relaySock
 		}
 	})
 	logger := logging.NewWithWriter("edge-b", logs)
-	sockets := newRelaySockets(client, tokens, config.edgeProjects, logger)
-	sockets.relaySocketCheckEvery = relaySocketTestCheck
+	sockets := newRelaySockets(client, tokens, logger)
+	sockets.relaySocketCheckEvery = config.checkEvery
+	if config.maxSockets > 0 {
+		sockets.maxSockets = config.maxSockets
+	}
+	if config.pendingMsgs > 0 {
+		sockets.pendingMsgs, sockets.pendingBytes = config.pendingMsgs, config.pendingBytes
+	}
 	sockets.now = clock.now
 	routes := http.NewServeMux()
 	registerV1Routes(routes, &listenerDeps{client: client, relaySockets: sockets}, "edge-b", logger)
@@ -453,13 +478,49 @@ func publishRelayFrame(t *testing.T, url, session string, header natsgo.Header) 
 	return msg
 }
 
-// setupPublishTestClientOn is a bus client of its own on the server at url.
-func setupPublishTestClientOn(t *testing.T, url string) *bus.Client {
+// dialStalled opens session's socket with token on a client that reads nothing, subscribes the
+// session's relay subject as sid 1, and answers the client's connection, the replica's socket and
+// its subscription once the replica holds it.
+func (rig *relaySocketRig) dialStalled(t *testing.T, session, token string) (*websocket.Conn, *relaySocket, *natsgo.Subscription) {
 	t.Helper()
-	client, err := bus.Connect([]string{url})
+	dialer := websocket.Dialer{Subprotocols: []string{relaySubprotocol}, HandshakeTimeout: 5 * time.Second}
+	conn, response, err := dialer.Dial("ws"+strings.TrimPrefix(rig.server.URL, "http")+relaySocketPath(session), rig.upgradeHeader(t, session, token))
 	if err != nil {
-		t.Fatalf("connect a client: %v", err)
+		t.Fatalf("open the socket of %s: %v (%s)", session, err, describeUpgrade(response))
 	}
-	t.Cleanup(client.Close)
-	return client
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.WriteJSON(map[string]any{"op": "sub", "sid": 1, "subject": bus.DeliverSubject(session)}); err != nil {
+		t.Fatalf("send the sub: %v", err)
+	}
+	socket := rig.openSocket(t, session)
+	return conn, socket, socket.awaitSubscription(t)
+}
+
+// flood publishes n relay frames of 512 KiB on session's relay subject, far more than a
+// connection's buffers hold when n is in the tens, and returns once the server holds them.
+func flood(t *testing.T, url, session string, n int) {
+	t.Helper()
+	publisher := testnats.Connect(t, url)
+	data := bytes.Repeat([]byte("x"), 512<<10)
+	for i := range n {
+		if err := publisher.PublishMsg(&natsgo.Msg{Subject: bus.DeliverSubject(session), Reply: bus.RelayReplyPrefix + "unread." + strconv.Itoa(i), Data: data}); err != nil {
+			t.Fatalf("publish frame %d: %v", i, err)
+		}
+	}
+	if err := publisher.Flush(); err != nil {
+		t.Fatalf("flush the frames: %v", err)
+	}
+}
+
+// awaitBlockedWrite returns once sub holds a frame behind the one the socket is writing, failing
+// the test when it never does within 10 s.
+func awaitBlockedWrite(t *testing.T, sub *natsgo.Subscription) {
+	t.Helper()
+	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+		pending, _, _ := sub.Pending()
+		delivered, _ := sub.Delivered()
+		return pending > 0 && delivered > 0
+	}) {
+		t.Fatal("the socket's subscription never held a frame behind the one it was writing")
+	}
 }

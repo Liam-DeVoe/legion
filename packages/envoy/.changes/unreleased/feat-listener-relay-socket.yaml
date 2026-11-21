@@ -4,19 +4,24 @@ body: |-
   WebSocket of subprotocol `envoy-relay.v1` on which a session with no NATS connection of its own
   receives its relay frames and publishes their receipts. A path session that is not one NATS
   subject token (a `.`, `*`, `>`, white space or a control character) is refused 400 before the
-  upgrade; the token's session must be the path's (else 403); a sub takes only the session's own
-  relay subject (else `subject_not_granted`), a pub only the receipt subject of a frame the socket
-  forwarded in the last 10 minutes (else `publish_not_granted`); a frame it cannot read is answered
-  `bad_frame` and closes the socket 1008, and a fifth sub is answered `subscription_limit`; frames
-  are handled one at a time, in order, so a ping is answered only after every frame before it.
-  Every 20 s the socket asks the broker about its token again and closes 4401 once it has
-  expired, 4403 once it or the device login it was traded from was revoked, or it names another
-  caller or a project the edge does not serve, and 1013 while the broker cannot be asked; the
-  listener's stop closes every socket 1012. A close and the stop take at most one second, also for
-  a client that reads nothing. An edge listener's relay takes its receipts under
-  `notifications.envoy.relayreply.`, which the edge's grant publishes, instead of a reply inbox.
-  Every other listener answers the path 404. `brokertoken.Verifier.LiveUntil` answers the
-  instant the broker says a token stops being live beside its caller.
+  upgrade; the token's session must be the path's (else 403); an `Origin` of another host is
+  refused 403; a replica holds at most 256 sockets (else 503) and a session 4 on one replica (else
+  429). A socket holds one sub, of the session's own relay subject (else `subject_not_granted`; a
+  second is answered `subscription_limit`), and a pub only a reply word (`received`, `progress`,
+  `done`, `nak`) on the receipt subject of a frame the socket forwarded in the last 10 minutes
+  (else `publish_not_granted`); a frame it cannot read is answered `bad_frame` and closes the
+  socket 1008, and a binary frame closes it 1003; frames are handled one at a time, in order, so a
+  ping is answered only after every frame before it. Every 20 s, and at its token's expiry, the
+  socket asks the broker about its token again and closes 4401 once it has expired, 4403 once it
+  or the device login it was traded from was revoked or it names another caller, and 1013 while
+  the broker cannot be asked, once its subscription is lost, or once its client reads slower than
+  16 frames or 2 MiB held for it (`slow_consumer`); the listener's stop closes every socket 1012.
+  A close and the stop take at most one second, also for a client that reads nothing, and a
+  write that fails drops the connection at once. The sockets use a NATS connection of their own.
+  An edge listener's relay takes its receipts under `notifications.envoy.relayreply.`, which the
+  edge's grant publishes, instead of a reply inbox. Every other listener answers the path 404.
+  `brokertoken.Verifier.LiveUntil` answers the instant the broker says a token stops being live
+  beside its caller, and spends nothing of the source address's introspection bucket.
 time: 2026-11-20T17:42:32Z
 custom:
     Issue: feat-listener-relay-socket
