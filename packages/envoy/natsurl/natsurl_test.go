@@ -62,6 +62,28 @@ func TestCheck(t *testing.T) {
 	}
 }
 
+// CheckEntries is Check without the tail rule: a later entry with a user name and another scheme,
+// or none, is dialled; the pool's scheme and the per-URL rules still hold.
+func TestCheckEntries(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		urls     []string
+		position int
+		reason   string
+	}{
+		{"a later entry with a user name and another scheme", []string{"nats://head", "x://tail@host:4222"}, 0, ""},
+		{"a later entry with a user name and no scheme", []string{"nats://user:8472", "tail@host:4222"}, 0, ""},
+		{"a ws list's later scheme-less entry whose path stops parsing", []string{"", "ws://host:4222", "host:4223/%25zz?x=1"}, 3, HandshakeReason},
+		{"an @ after the host", []string{"nats://head/tail@host:4222"}, 1, UserinfoPastHostReason},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, position, reason := CheckEntries(tc.urls); position != tc.position || reason != tc.reason {
+				t.Fatalf("CheckEntries = %d, %q; want %d, %q", position, reason, tc.position, tc.reason)
+			}
+		})
+	}
+}
+
 // EntryRefusal refuses a comma, which nats.go reads as a list of servers once its caller joins
 // the entries, before Refusal's rules, and is Refusal otherwise.
 func TestEntryRefusal(t *testing.T) {

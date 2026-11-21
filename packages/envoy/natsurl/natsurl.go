@@ -101,7 +101,19 @@ func EntryRefusal(server string) string {
 // nats.go:2296-2298), so a ws or wss list's later scheme-less URL goes through the websocket
 // handshake rule too, and nats:// otherwise. url.Parse, not the text before "://": a first URL
 // such as `ws:<opaque>://…` is a ws URL to nats.go.
-func Check(urls []string) (dialled []string, position int, reason string) {
+func Check(urls []string) (dialled []string, position int, reason string) { return check(urls, true) }
+
+// CheckEntries is Check for a list whose entries are whole, none split from a credential: the
+// Legion daemon's nats_urls, whose loader and natsauth.Connect refuse a comma in any entry first.
+// It runs the per-URL rules and the pool's scheme, but not the tail rule, which guards only a
+// comma-split credential; a later entry with a user name and any scheme connects, as nats.go
+// dials it.
+func CheckEntries(urls []string) (dialled []string, position int, reason string) {
+	return check(urls, false)
+}
+
+// check is Check, with the tail rule when tail is set.
+func check(urls []string, tail bool) (dialled []string, position int, reason string) {
 	pool := "nats"
 	for index, raw := range urls {
 		server := strings.TrimSpace(raw)
@@ -115,7 +127,7 @@ func Check(urls []string) (dialled []string, position int, reason string) {
 		}
 		scheme, _, named := strings.Cut(server, "://")
 		scheme = strings.ToLower(scheme)
-		if !first && strings.Contains(server, "@") && (!named || !slices.Contains(schemes, scheme)) {
+		if tail && !first && strings.Contains(server, "@") && (!named || !slices.Contains(schemes, scheme)) {
 			return dialled, index + 1, TailReason
 		}
 		if why := refusal(server, pool); why != "" {

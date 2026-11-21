@@ -31,6 +31,31 @@ func listening(t *testing.T) string {
 	return listener.Addr().String()
 }
 
+// A nats_urls list whose later entry carries a user name and a scheme no NATS server is written
+// with is dialled, not refused: readNatsURLs loads it, nats.go dials such an entry as plain NATS,
+// and the tail rule natsurl.Check runs guards only a credential a comma split, which Connect
+// refuses first. Both addresses are closed ports, so the dial fails, and the failure is nats.go's,
+// not a refusal of the list.
+func TestConnectDialsALaterEntryWithAUserNameAndAnotherScheme(t *testing.T) {
+	closed := func() string {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		address := listener.Addr().String()
+		_ = listener.Close()
+		return address
+	}
+	conn, err := natsauth.Connect([]string{"nats://" + closed(), "x://legion@" + closed()}, "", t.Name(), nats.Timeout(time.Second), nats.NoReconnect())
+	if err == nil {
+		conn.Close()
+		t.Fatal("Connect reached a server at a closed port")
+	}
+	if strings.Contains(err.Error(), "cannot be read") {
+		t.Fatalf("Connect refused a list nats.go dials: %v", err)
+	}
+}
+
 // printedRun is the shortest run of a credential's characters no printed text may hold: the run
 // the TypeScript clients' scrub withholds (@legion/contracts/held-secrets, SCRUB_RUN).
 const printedRun = 10
@@ -226,7 +251,7 @@ func TestTheDaemonsNATSAuthPrintsNoSeedOrToken(t *testing.T) {
 				printed: connectTo("ws://" + listening(t) + "/%25zz?token=" + token),
 				names:   []string{"the NATS server URL 1 of 1 cannot be read", "does not parse once decoded", "%2525"}},
 			// A ws list's later URL with no scheme: nats.go dials it as ws, so the handshake rule
-			// runs on it too, as natsurl.Check runs it for the list.
+			// runs on it too, as natsurl.CheckEntries runs it for the list.
 			{name: "Connect handed a ws list whose later URL has no scheme, the token in its query, and a path that stops parsing",
 				printed: func() error {
 					conn, err := natsauth.Connect([]string{"ws://127.0.0.1:1", listening(t) + "/%25zz?token=" + token}, "", t.Name())
