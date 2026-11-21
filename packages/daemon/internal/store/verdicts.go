@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/verdict"
 )
 
 // The records the daemon's writer of the required check legion-verdict keeps, in the five tables of
@@ -80,12 +81,12 @@ type SideReviewer struct {
 	RecordedAt time.Time
 }
 
-// VerdictWord is a reviewer's verdict on a head.
-type VerdictWord string
+// VerdictWord is a reviewer's verdict on a head, as verdict.Decide reads it.
+type VerdictWord = verdict.Word
 
 const (
-	VerdictApprove VerdictWord = "approve"
-	VerdictChanges VerdictWord = "changes"
+	VerdictApprove = verdict.ReviewerApprove
+	VerdictChanges = verdict.ReviewerChanges
 )
 
 // Verdict is one verdict a reviewer session gave on a pull request at a head: a Legion issue's
@@ -117,13 +118,13 @@ const (
 	VerdictWriteStatus   VerdictWriteKind = "status"
 )
 
-// VerdictConclusion is the conclusion a write gave legion-verdict: a check run's conclusion, or a
-// commit status's state.
-type VerdictConclusion string
+// VerdictConclusion is the conclusion a write gave legion-verdict, as verdict.Decide answers it: a
+// check run's conclusion, or a commit status's state. A write never records verdict.None.
+type VerdictConclusion = verdict.Conclusion
 
 const (
-	VerdictConclusionSuccess VerdictConclusion = "success"
-	VerdictConclusionFailure VerdictConclusion = "failure"
+	VerdictConclusionSuccess = verdict.Success
+	VerdictConclusionFailure = verdict.Failure
 )
 
 // VerdictWrite is one check run or commit status named legion-verdict that the daemon wrote on a

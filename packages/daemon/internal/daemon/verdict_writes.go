@@ -422,7 +422,7 @@ func (w *workflowRuntime) legionInputs(ctx context.Context, tx pgx.Tx, issue rec
 		return verdict.Inputs{}, err
 	}
 	if found && given.Issue == issue.Key {
-		in.Reviewer = verdict.Reviewer{Verdict: string(given.Verdict), Commit: given.Head, TestedCommit: given.TestedCommit}
+		in.Reviewer = verdict.Reviewer{Verdict: given.Verdict, Commit: given.Head, TestedCommit: given.TestedCommit}
 	}
 	in.Reviews, err = reviewsOf(ctx, tx, repository, pr.Number)
 	return in, err
@@ -439,7 +439,7 @@ func outsideInputs(ctx context.Context, tx pgx.Tx, entry config.VerdictRepositor
 			return verdict.Inputs{}, err
 		}
 		if found && given.Issue == "" {
-			in.Side = string(given.Verdict)
+			in.Side = given.Verdict
 		}
 	}
 	var err error
@@ -687,7 +687,7 @@ func (w *workflowRuntime) createVerdictStatus(ctx context.Context, client github
 func (w *workflowRuntime) recordVerdictWrite(ctx context.Context, target verdictTarget, kind string, written store.VerdictWriteKind, id int64, conclusion verdict.Conclusion, foreign int64) error {
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		_, err := store.RecordVerdictWriteTx(ctx, tx, store.VerdictWrite{Repository: target.repository, Head: target.head, Kind: written,
-			GitHubID: id, Conclusion: store.VerdictConclusion(conclusion), ForeignID: foreign, WrittenAt: w.clockNow().UTC()})
+			GitHubID: id, Conclusion: conclusion, ForeignID: foreign, WrittenAt: w.clockNow().UTC()})
 		return err
 	}); err != nil {
 		return fmt.Errorf("record the write of legion-verdict %s %d on %s at %s: %w", written, id, target.repository, target.head, err)

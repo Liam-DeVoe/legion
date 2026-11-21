@@ -51,11 +51,13 @@ const (
 	TesterFail = "fail"
 )
 
-// The words of a reviewer's verdict: a Legion issue's reviewer, or the side reviewer a controller
-// named.
+// Word is a reviewer's verdict on a head: a Legion issue's reviewer's, or the side reviewer's a
+// controller named. The store records it as it is (store.VerdictWord).
+type Word string
+
 const (
-	ReviewerApprove = "approve"
-	ReviewerChanges = "changes"
+	ReviewerApprove Word = "approve"
+	ReviewerChanges Word = "changes"
 )
 
 // Tester is the tester's recorded completion of a Legion issue: its verdict and the commit it
@@ -68,7 +70,7 @@ type Tester struct {
 // Reviewer is a Legion issue's reviewer's verdict: its word, the commit it reviewed, and the commit
 // of the tester's pass it carries to that commit ("" for none).
 type Reviewer struct {
-	Verdict      string
+	Verdict      Word
 	Commit       string
 	TestedCommit string
 }
@@ -100,7 +102,7 @@ type Inputs struct {
 	// SideReviews is whether the entry takes side reviews, and Side the side reviewer's verdict at
 	// the head ("" for none).
 	SideReviews bool
-	Side        string
+	Side        Word
 	// Reviews is every review of the pull request the daemon recorded, in the order it recorded
 	// them, which can differ from GitHub's when a delivery comes again later; only those at Head
 	// are read, and each author's last is taken by GitHub's order (later).
