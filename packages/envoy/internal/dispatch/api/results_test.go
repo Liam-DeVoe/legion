@@ -3976,14 +3976,15 @@ func TestCIResultIsCurrentAtTheHeadAndOlderOnceTheHeadMoves(t *testing.T) {
 
 // TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter: a read-only caller's read of an
 // issue's results reads GitHub as a writer's read does, answers what a writer's read answers on
-// the same stored rows, and stores nothing — no pull_request_heads row, no branch_commits row and
-// no event. GitHub's answer is kept in memory under a claim of the read-only reads' own, so a
-// second read-only read inside the span asks GitHub nothing, and the writers' claim is left alone,
-// so a writer's read after both still asks GitHub and stores exactly what it stores at the base.
+// the same stored rows, stores nothing — no pull_request_heads row, no branch_commits row and no
+// event — and keeps nothing after its request (plan D32). So a second read-only read asks GitHub
+// all over again, as a writer's read with no row of its own would, and a writer's read after both
+// still asks GitHub and stores exactly what it stores at the base.
 //
 // Each row reads one issue three times on one state (readOnlyThenWriter). Since the read-only
-// reads store nothing, the writer's read reads the very state they read, which is what lets its
-// answer stand as the one theirs must equal.
+// reads store nothing and keep nothing, the second reads the state the first read, and the
+// writer's read reads the very state they read, which is what lets its answer stand as the one
+// theirs must equal.
 func TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter(t *testing.T) {
 	t.Run("a before_merge result at the head of a pull request no row holds", func(t *testing.T) {
 		rig, github := readOnlyResultsRig(t)
@@ -4078,26 +4079,6 @@ func TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter(t *testing.T) {
 					t.Fatalf("%s stands %s at %+v, want the branch %s", answered.who, branched.what, stands.Basis, branched.branch)
 				}
 			}
-		}
-	})
-
-	t.Run("the read-only reads' memory keeps its bound", func(t *testing.T) {
-		var answers delivery.CommitPullAnswers
-		start := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
-		commit := func(n int) string { return fmt.Sprintf("%040x", n) }
-		// One answer more than the bound, each read a millisecond after the one before, so the
-		// first is the one learned longest ago.
-		for n := 0; n <= delivery.ReadOnlyAnswerBound; n++ {
-			answers.Keep("acme/widgets", commit(n), delivery.CommitPulls{}, start.Add(time.Duration(n)*time.Millisecond))
-		}
-		at := start.Add(time.Duration(delivery.ReadOnlyAnswerBound) * time.Millisecond)
-		for _, n := range []int{delivery.ReadOnlyAnswerBound, 1} {
-			if recall := answers.Claim("acme/widgets", commit(n), at); recall != delivery.CommitPullRecalled {
-				t.Fatalf("the answer for commit %d = %v, want it kept", n, recall)
-			}
-		}
-		if recall := answers.Claim("acme/widgets", commit(0), at); recall != delivery.CommitPullAsk {
-			t.Fatalf("the answer learned longest ago = %v past the bound, want it dropped and the commit asked again", recall)
 		}
 	})
 }
@@ -4247,12 +4228,12 @@ func readResultsTimed(t *testing.T, what string, serve func() *httptest.Response
 
 // readOnlyThenWriter reads issueKey's results three times on one state: with a read-only token,
 // with it again, and as a writer (alice), once every document has settled so nothing else writes
-// meanwhile. The first read-only read must make the GitHub reads drive names and store nothing;
-// the second must make none, store nothing and answer the first's body byte for byte. The
-// writer's read must still make the GitHub reads drive names and store the rows it names, as at
-// the base. It reads the state the read-only reads read, since they stored nothing, so its
-// answer must be the first read-only answer, but for the moment each read learned a pull
-// request's head, which is each read's own clock (answerButReadTimes). It answers the first
+// meanwhile. Each read-only read must make the GitHub reads drive names and store nothing: the
+// first keeps nothing after its request, so the second asks GitHub all over again. The writer's
+// read must still make the GitHub reads drive names and store the rows it names, as at the base.
+// Each read reads the state the first read-only read read, since the read-only reads stored
+// nothing, so each answer must be the first read-only answer, but for the moment each read learned
+// a pull request's head, which is each read's own clock (answerButReadTimes). It answers the first
 // read-only read and the writer's.
 func readOnlyThenWriter(
 	t *testing.T, rig *brokerTokenRig, github *readOnlyResultsGitHub, issueKey string, drive readOnlyDrive,
@@ -4274,7 +4255,7 @@ func readOnlyThenWriter(
 		}, readOnlyDrive{pullAsks: drive.pullAsks, compareAsks: drive.compareAsks}},
 		{"the second read-only read", func() *httptest.ResponseRecorder {
 			return rig.serve(caller.presenting(t, http.MethodGet, path, token, nil))
-		}, readOnlyDrive{}},
+		}, readOnlyDrive{pullAsks: drive.pullAsks, compareAsks: drive.compareAsks}},
 		{"the writer's read", func() *httptest.ResponseRecorder {
 			return dispatchRequest(t, rig.handler, http.MethodGet, path, nil, "alice")
 		}, drive},
@@ -4296,11 +4277,12 @@ func readOnlyThenWriter(
 				step.drive.stored.heads, step.drive.stored.branches, step.drive.stored.events)
 		}
 	}
-	if reads[1].body != reads[0].body {
-		t.Fatalf("the second read-only read answered\n%s\nwant the first's answer, from memory\n%s", reads[1].body, reads[0].body)
+	first := answerButReadTimes(t, "the first read-only read", reads[0])
+	if second := answerButReadTimes(t, "the second read-only read", reads[1]); second != first {
+		t.Fatalf("the second read-only read answered\n%s\nwant the first's answer on the same state\n%s", second, first)
 	}
-	if got, want := answerButReadTimes(t, "the read-only read", reads[0]), answerButReadTimes(t, "the writer's read", reads[2]); got != want {
-		t.Fatalf("the read-only read answered\n%s\nwant the writer's answer on the same state\n%s", got, want)
+	if writer := answerButReadTimes(t, "the writer's read", reads[2]); writer != first {
+		t.Fatalf("the read-only read answered\n%s\nwant the writer's answer on the same state\n%s", first, writer)
 	}
 	return reads[0], reads[2]
 }

@@ -582,7 +582,9 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	// that Dispatch holds no head while it names the head it learned as another check's basis. A
 	// derived result is at that newest head, which the learned heads already hold, so it leaves
 	// nothing to learn. Every head GitHub has to be asked for is learned before the first check is
-	// answered, so two `before_merge` checks of one issue name one list of bases and not two
+	// answered, and where the learn stored or learned any head every check's bases are read again,
+	// so each check of the answer is answered on the heads as they stand after this read's
+	// read-throughs, and two `before_merge` checks of one issue name one list of bases and not two
 	// (comparisonReader.learn).
 	reader := newComparisonReader(r.Context(), s, at)
 	reader.learn(r.Context(), checks)

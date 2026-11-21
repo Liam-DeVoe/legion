@@ -50,7 +50,7 @@ import (
 // linked_pulls is materialized: it is the handful of pull requests one issue links, read once,
 // so a join of it to the heads compares each head with a stored name and number, rather than
 // evaluating the link's pattern and the canonical name's subquery again for every head it meets,
-// as it would for the laid heads of a read-only caller's read (keptHeadsRelation).
+// as it would for the laid heads of a read-only caller's read (answeredHeadsRelation).
 var linkedPullRequestTerms = `subjects as (select $1::text as key), ` + refs.IssueRepoTerms + `,
 	linked_pulls as materialized (
 		select ` + refs.CanonicalRepoSQL("link.repo") + ` as repo, link.number, link.url
@@ -72,7 +72,7 @@ var linkedPullRequestTerms = `subjects as (select $1::text as key), ` + refs.Iss
 // from a `pull_request` envelope carries GitHub's own spelling of the repository and a link is
 // read lowercased. Every read of the linked heads joins them so. In a read of the results path,
 // pull_request_heads is the relation its WITH list names (headsStatement), so the linked rows a
-// read-only caller reads carry its kept heads as the attributed rows do.
+// read-only caller reads carry its request's answers as the attributed rows do.
 const linkedHeadJoin = `join pull_request_heads h on lower(h.repo) = lower(l.repo) and h.number = l.number`
 
 // LinkedPullRequest is one pull request an issue's external links name in a repository the
@@ -168,24 +168,12 @@ var baseBranchMergedInRead = newHeadsStatement(baseBranchMergedInQuery, true, 2)
 // a repository here is.
 //
 // The linked rows are read through pull_request_heads_repo_head's leading column, one
-// repository's rows for each linked pull request, as HeadsAttributedTo's are.
-func BaseBranchMergedIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) (string, error) {
-	return baseBranchMergedIn(ctx, pool, baseBranchMergedInRead.writer, issueKey, repoFull)
-}
-
-// ReadOnlyBaseBranchMergedIn is BaseBranchMergedIn for a read-only caller's read of the results,
-// which stores nothing (api/results_linked.go, comparisonReader.baseBranchMergedIn): the same
-// statement over the stored rows with the heads that caller's memory keeps laid on
-// (keptHeadsRelation).
-func ReadOnlyBaseBranchMergedIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string, kept KeptHeads) (string, error) {
-	return baseBranchMergedIn(ctx, pool, baseBranchMergedInRead.readOnly, issueKey, repoFull, kept.columns.args()...)
-}
-
-// baseBranchMergedIn runs query, one form of baseBranchMergedInRead, for issueKey in repoFull, kept
-// the kept heads' parameters of the read-only form.
-func baseBranchMergedIn(ctx context.Context, q refs.Queryer, query, issueKey, repoFull string, kept ...any) (string, error) {
+// repository's rows for each linked pull request, as HeadsAttributedTo's are. answers is the
+// caller's request's, as HeadsAttributedTo takes them.
+func BaseBranchMergedIn(ctx context.Context, q refs.Queryer, issueKey, repoFull string, answers HeadAnswers) (string, error) {
+	query, args := baseBranchMergedInRead.query(answers, issueKey, repoFull)
 	var branch string
-	err := q.QueryRow(ctx, query, append([]any{issueKey, repoFull}, kept...)...).Scan(&branch)
+	err := q.QueryRow(ctx, query, args...).Scan(&branch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}

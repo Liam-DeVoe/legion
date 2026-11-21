@@ -201,9 +201,7 @@ type Deps struct {
 	// that runs no outbox.
 	OutboxPublishes bool
 	// Metrics is the process's registry, which register adds the gauges of the mention sends held
-	// behind an earlier event to (registerHeldGauges), and the count of the answers a read-only
-	// results read drops from its memory (registerReadOnlyAnswerDrops); nil adds none, as this
-	// package's tests run.
+	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
 	Metrics *metrics.Registry
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
@@ -612,15 +610,10 @@ type server struct {
 	// comparisonReader.readThroughHead), held across requests so one commit costs at most one such
 	// read per delivery.CommitPullReadStaleAfter however often the tab refetches, and one per
 	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. The
-	// policy is delivery's; the server holds the one cache the process shares.
+	// policy is delivery's; the server holds the one cache the process shares. A read-only
+	// caller's results read takes no claim here and only reads the writers' (Refuses), so it asks
+	// GitHub where a writer's read at that moment would and leaves the claims as it found them.
 	commitPulls delivery.CommitPullReads
-	// readOnlyCommitPulls is commitPulls' twin for a read-only caller's results read, which stores
-	// nothing: a claim of its own and what GitHub last named for each commit's pull requests, kept
-	// in memory in place of the rows a writer's read stores, so a read-only read inside the span
-	// asks GitHub no more (delivery.CommitPullAnswers, comparisonReader.learnCommitPulls). A
-	// read-only read never touches commitPulls, so a writer's read of the same commit still reads
-	// through and stores as it always did.
-	readOnlyCommitPulls delivery.CommitPullAnswers
 }
 
 // warnedProductionRun keys server.warnedUnmatchedRuns: one deploy run under one configured set of
@@ -806,7 +799,6 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
 	s.registerHeldGauges(deps.Metrics)
-	s.registerReadOnlyAnswerDrops(deps.Metrics)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -866,22 +858,6 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	}
 	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
-}
-
-// registerReadOnlyAnswerDrops adds to registry envoy_dispatch_read_only_answers_dropped_total, with
-// no label: the answers this server's two memories of a read-only caller's results reads
-// (readOnlyCommitPulls, and branches' own) dropped at delivery.ReadOnlyAnswerBound, each one a
-// GitHub read a later read-only read of that commit makes again. Each memory logs one WARN when
-// it first drops one, so the count is where every later drop is seen. A nil registry adds none,
-// and the memories count nothing.
-func (s *server) registerReadOnlyAnswerDrops(registry *metrics.Registry) {
-	if registry == nil {
-		return
-	}
-	dropped := registry.NewCounter("envoy_dispatch_read_only_answers_dropped_total",
-		"Answers a read-only caller's results read dropped from its memory at the memory's bound, each one a GitHub read it makes again if that commit is read again")
-	s.readOnlyCommitPulls.CountDrops(dropped)
-	s.branches.CountReadOnlyDrops(dropped)
 }
 
 // routeHandler is the chain register mounts one row of the table behind: the row's own handler

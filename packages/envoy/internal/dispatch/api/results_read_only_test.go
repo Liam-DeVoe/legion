@@ -156,6 +156,13 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 	})
 
 	t.Run("5 a writer's settle for the commit stands", func(t *testing.T) {
+		// The read below comes delivery.CommitPullReadStaleAfter after the settle and expects the
+		// default-branch cache entry, held for delivery.BranchCommitStaleAfter, to have lapsed with
+		// the claim's span, so its one GET /repos/{owner}/{repo} holds only while the two are equal.
+		if delivery.CommitPullReadStaleAfter != delivery.BranchCommitStaleAfter {
+			t.Fatalf("delivery.CommitPullReadStaleAfter is %v and delivery.BranchCommitStaleAfter is %v: this row reads at the first and holds the default-branch read to the second, so it cannot stand while they differ",
+				delivery.CommitPullReadStaleAfter, delivery.BranchCommitStaleAfter)
+		}
 		pair, issue := pushedPast(t)
 		// The settle is made by a writer's read, on every stack: it reads behindHeadCommit
 		// through, stores pull request 61, whose head is another commit, and settles

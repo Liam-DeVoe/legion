@@ -26,21 +26,12 @@ import (
 
 // newestPullRequestHead is the newest pull request head of issueKey that a check CI proves is
 // derived at (delivery.NewestPullRequestHead). It is read after learn, so a writer's read finds
-// the row its own read-through stored. A read-only caller's read runs the same statement over
-// the stored rows with learned laid on (delivery.ReadOnlyNewestPullRequestHead), as every other
-// read of the heads here does: the heads the memory keeps, this read's own among them. A reader
-// that named a commit learns nothing and takes no heads when it is made (newComparisonReader),
-// so its read takes the memory's heads here, as the read-only reads before it left them.
+// the row its own read-through stored, and a read-only caller's read finds the head its own
+// read-through learned, through the request's answers it passes as every other read of the heads
+// here does. A reader that named a commit learns nothing, so its answers are empty and it reads
+// the stored rows alone, whoever reads.
 func (c *comparisonReader) newestPullRequestHead(ctx context.Context, issueKey string) (delivery.NewestHead, bool, error) {
-	pool := c.server.deps.Store.Pool
-	if !c.readOnly {
-		return delivery.NewestPullRequestHead(ctx, pool, issueKey)
-	}
-	kept := c.learned
-	if c.at != noCommitNamed {
-		kept = c.server.readOnlyCommitPulls.Learned()
-	}
-	return delivery.ReadOnlyNewestPullRequestHead(ctx, pool, issueKey, kept)
+	return delivery.NewestPullRequestHead(ctx, c.server.deps.Store.Pool, issueKey, c.answers)
 }
 
 // ciReadDeadline bounds the whole read of one head's check runs, the token mint and every page
