@@ -19,12 +19,12 @@ import {
   inboundUnavailableNoticeText,
   RelayHeader,
   type RelayReply,
-  registerWithRelay,
 } from "../consumer-delivery";
 import { DedupeIdentitySchema, renderInbound } from "../delivery";
 import { createDeliveryLedger, type FailureNotice } from "../delivery-ledger";
 import { subscriptionRemovedTopics } from "../dispatch-subscribe";
 import { machineID } from "../machine";
+import { registerWithRelay } from "../relay-registration";
 import type { TmuxPlace } from "../tmux-place";
 import {
   publishConfirmationText,
@@ -1563,9 +1563,13 @@ describe("EnvoyClient", () => {
         },
         register: () =>
           registerWithRelay({
-            relay: { setFollowed: () => undefined, registration: () => DELIVERY_REQUEST },
+            relay: {
+              setFollowed: () => undefined,
+              unfollow: () => undefined,
+              registration: () => DELIVERY_REQUEST,
+            },
             ownAgentSubject: "notifications.agent.ses_sender",
-            followed: [],
+            followed: () => [],
             outage,
             send: (topics, delivery) =>
               client.subscribe({
@@ -1579,6 +1583,8 @@ describe("EnvoyClient", () => {
                 plugin: PLUGIN,
               }),
             answered: () => undefined,
+            drop: () => undefined,
+            log: () => undefined,
           }),
       };
     }

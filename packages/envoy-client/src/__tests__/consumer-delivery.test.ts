@@ -14,14 +14,13 @@ import {
   inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
-  NoRelaySubjectError,
   RELAY_PROGRESS_INTERVAL_MS,
   RelayHeader,
   type RelayMessage,
   type RelayReply,
-  registerWithRelay,
 } from "../consumer-delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
+import { registerWithRelay } from "../relay-registration";
 import { type DeliveryAnswer, EnvoyApiError } from "../transport";
 
 const SESSION = "ses_a";
@@ -1143,46 +1142,21 @@ describe("persisting the snapshot", () => {
   });
 });
 
+// The outage report a registration tells (`inboundUnavailable`), through `registerWithRelay`.
 describe("one registration", () => {
-  const UNCAPTURED = "notifications.team";
   const TEAM = "notifications.team.deploys";
 
-  /** A relay that records what a registration stamped on it. */
+  /** A relay that takes what a registration stamps on it. */
   function fakeRelay() {
-    const followed: string[][] = [];
     return {
-      followed,
-      setFollowed: (topics: Iterable<string>) => followed.push([...topics]),
+      setFollowed: () => undefined,
+      unfollow: () => undefined,
       registration: () => ({ consumer: true, epoch: "epoch-1" }) as const,
     };
   }
 
-  test("carries the topics the listener will store, and takes the answer", async () => {
-    const relay = fakeRelay();
-    const told: string[] = [];
-    const answers: string[] = [];
-    const sent: { topics: readonly string[]; epoch: string }[] = [];
-
-    const result = await registerWithRelay({
-      relay,
-      ownAgentSubject: AGENT,
-      // The bare base a stored row or a transcript brings back: the listener stores it for no
-      // session and warns about it, so it never goes out (INFRA-771 review).
-      followed: [TEAM, UNCAPTURED, "notifications.agent.ses_b"],
-      outage: inboundUnavailable((why) => told.push(why), {
-        restored: () => told.push("restored"),
-      }),
-      send: (topics, delivery) => {
-        sent.push({ topics, epoch: delivery.epoch });
-        return Promise.resolve("registered");
-      },
-      answered: (answer) => answers.push(answer),
-    });
-
-    expect(sent).toEqual([{ topics: [AGENT, TEAM], epoch: "epoch-1" }]);
-    expect(relay.followed).toEqual([[AGENT, TEAM]]);
-    expect([result, answers, told]).toEqual(["registered", ["registered"], []]);
-  });
+  /** What a registration hands its host besides the topics: nothing a row below reads. */
+  const quiet = { drop: () => undefined, log: () => undefined } as const;
 
   /** The start race's bound in these rows; production's is `INBOUND_FIRST_OPEN_BOUND_MS`. */
   const BOUND = 60_000;
@@ -1225,25 +1199,27 @@ describe("one registration", () => {
           relay: undefined,
           relayMissing,
           ownAgentSubject: AGENT,
-          followed: [TEAM],
+          followed: () => [TEAM],
           outage,
           send: (topics) => {
             sent.push(topics);
             return Promise.resolve("registered");
           },
           answered: () => undefined,
+          ...quiet,
         }),
       withRelay: (answer: Promise<string>) =>
         registerWithRelay({
           relay: fakeRelay(),
           ownAgentSubject: AGENT,
-          followed: [TEAM],
+          followed: () => [TEAM],
           outage,
           send: (topics) => {
             sent.push(topics);
             return answer;
           },
           answered: () => undefined,
+          ...quiet,
         }),
     };
   }
@@ -1310,13 +1286,14 @@ describe("one registration", () => {
       registerWithRelay({
         relay: undefined,
         ownAgentSubject: AGENT,
-        followed: [TEAM],
+        followed: () => [TEAM],
         outage: inboundUnavailable((why) => told.push(why), {
           firstOpenBoundMs: 0,
           held: (relayMissing) => held.push(relayMissing),
         }),
         send: () => Promise.resolve("registered"),
         answered: () => undefined,
+        ...quiet,
       })
     ).rejects.toThrow("holds no relay subject");
     expect([held, told]).toEqual([[], [NO_RELAY]]);
@@ -1427,51 +1404,8 @@ describe("one registration", () => {
     expect([report.told, report.restored]).toEqual([[NO_RELAY], []]);
   });
 
-  test("a session whose relay could not be opened says why in the refusal and in the one outage notice", async () => {
-    const told: string[] = [];
-    const refusal = await registerWithRelay({
-      relay: undefined,
-      relayMissing: "Authentication Timeout",
-      ownAgentSubject: AGENT,
-      followed: [TEAM],
-      // With no bound the start race is told at once, so this row reads the one notice it tells.
-      outage: inboundUnavailable((why) => told.push(why), {
-        firstOpenBoundMs: 0,
-        restored: () => told.push("restored"),
-      }),
-      send: () => Promise.resolve("registered"),
-      answered: () => undefined,
-    }).catch((error: unknown) => error);
-
-    const expected =
-      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing, because its relay subject could not be opened: Authentication Timeout";
-    if (!(refusal instanceof NoRelaySubjectError))
-      throw new Error(`no refusal: ${String(refusal)}`);
-    expect(refusal.message).toBe(expected);
-    expect(told).toEqual([expected]);
-  });
-
-  test("a refused registration tells the session once and takes no answer", async () => {
-    const relay = fakeRelay();
-    const told: string[] = [];
-    const answers: string[] = [];
-
-    await expect(
-      registerWithRelay({
-        relay,
-        ownAgentSubject: AGENT,
-        followed: [TEAM],
-        outage: inboundUnavailable((why) => told.push(why), {
-          restored: () => told.push("restored"),
-        }),
-        send: () => Promise.reject(new Error("no_grant")),
-        answered: (answer: string) => answers.push(answer),
-      })
-    ).rejects.toThrow("no_grant");
-
-    expect(relay.followed).toEqual([[AGENT, TEAM]]);
-    expect([answers, told]).toEqual([[], ["no_grant"]]);
-  });
+  // The rows of the topics a registration carries, of a refused registration, of one whose relay
+  // could not be opened and of one accepted after an outage are in `relay-registration.test.ts`.
 
   // Row (e) of check l23 (R24 of dispatch://INFRA-3589, against R26): the listener answers its
   // bus-outage 503 to a registration whose known-session record did not land, after it made the
@@ -1672,38 +1606,5 @@ describe("one registration", () => {
     report.outage.accepted();
     expect(report.restored).toEqual([NO_RELAY]);
     expect(report.notices[0]).toContain("so the session receives Envoy messages again");
-  });
-
-  test("a registration accepted after an outage tells the session once that it receives again", async () => {
-    const told: string[] = [];
-    const outage = inboundUnavailable((why) => told.push(why), {
-      restored: () => told.push("restored"),
-    });
-    let refuse = true;
-    const register = () =>
-      registerWithRelay({
-        relay: fakeRelay(),
-        ownAgentSubject: AGENT,
-        followed: [TEAM],
-        outage,
-        send: () =>
-          refuse ? Promise.reject(new Error("no_grant")) : Promise.resolve("registered"),
-        answered: () => undefined,
-      }).catch(() => undefined);
-
-    await register();
-    await register();
-    refuse = false;
-    await register();
-    // A heartbeat that is accepted again says nothing: the session already knows.
-    await register();
-    expect(told).toEqual(["no_grant", "restored"]);
-    // A second outage is told again, and its end too.
-    refuse = true;
-    await register();
-    refuse = false;
-    await register();
-    expect(told).toEqual(["no_grant", "restored", "no_grant", "restored"]);
-    expect(inboundRestoredNoticeText("no_grant")).toContain("Envoy inbound restored");
   });
 });

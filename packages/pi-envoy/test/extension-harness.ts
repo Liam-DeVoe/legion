@@ -18,7 +18,6 @@ import type {
   DeliveryLedgerOptions,
 } from "@legion/envoy-client/delivery-ledger";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
-import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { subjectsOverlap } from "@legion/envoy-client/stream-topics";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
@@ -647,9 +646,6 @@ async function tearDownRow(): Promise<void> {
   if (originalEnvoyUrl === undefined) delete process.env.ENVOY_URL;
   else process.env.ENVOY_URL = originalEnvoyUrl;
   globalThis.fetch = originalFetch;
-  // What a test's Dispatch answers taught the process about its keyed layer is per process, so a
-  // later suite in the same run (envoy-client's) would read it for the same origin.
-  forgetKeyedLayerMemory();
   // A broker client's retry loop trades on for the process's life, so each row's clients are
   // closed with it: one whose trades were failing would go on trading, and logging, into the
   // rows after it.
