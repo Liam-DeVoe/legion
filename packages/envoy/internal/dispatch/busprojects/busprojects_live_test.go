@@ -265,6 +265,23 @@ func TestAHubWithNoAuthenticationRefusesTheProof(t *testing.T) {
 	require.Equal(t, busprojects.AdmissionRefused, a.Report().Hubs[0].Admission)
 }
 
+// TestAHubClientNamingNoServerFailsTheProof: a hub client that names no server, which bus.Connect
+// builds without complaint, fails the proof: no server was asked, so nothing decided, and the
+// report reads the hub refused.
+//
+// Control: drop bus.Client.ProveAdmission's guard on a client with no server; its loop over the
+// servers runs no time, the proof passes with nothing dialed, and the test fails.
+func TestAHubClientNamingNoServerFailsTheProof(t *testing.T) {
+	a, _ := admissionOverURLs(t, "")
+	a.SetListeners(busprojectstest.ReadyListener(t))
+
+	err := a.Prove(t.Context())
+	require.Error(t, err, "the proof passed for a hub client that names no server")
+	require.ErrorContains(t, err, "the client names no server, so no server was asked")
+	require.False(t, a.Ready())
+	require.Equal(t, busprojects.AdmissionRefused, a.Report().Hubs[0].Admission)
+}
+
 // TestEveryServerOfAHubClientAdmitsTheProof: a hub client that names two servers, one of them
 // rendered without the server tag, fails the proof naming that server, whichever comes first:
 // each server is proven on a connection of its own, so the tagged server's admission never stands

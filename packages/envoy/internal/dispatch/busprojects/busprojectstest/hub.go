@@ -269,10 +269,11 @@ func ProofToken(account, audience string) string {
 }
 
 // ProofClient is the hub-admission client of the hub at url, its client URL or several
-// comma-separated as nats.go takes a server list, as cmd/dispatch is to build one per hub of
-// DISPATCH_PRIVATE_HUBS (it builds none at this head): a bus client that connects as a service
-// presenting token, which it reads from a file at each connect, and that connects in the
-// background, so a hub that refuses it leaves it retrying rather than failing its construction.
+// comma-separated as nats.go takes a server list, or no server at all for an empty url, as
+// cmd/dispatch is to build one per hub of DISPATCH_PRIVATE_HUBS (it builds none at this head): a
+// bus client that connects as a service presenting token, which it reads from a file at each
+// connect, and that connects in the background, so a hub that refuses it leaves it retrying rather
+// than failing its construction.
 // It stays inside the proof's grant, so the hub refuses it nothing and it logs no permissions
 // violation: its reply inboxes are under ProofInboxPrefix (bus.WithInboxPrefix), and it never
 // reads the stream's subjects, a publish the grant refuses (bus.WithoutStreamSubjects). It closes
@@ -284,7 +285,11 @@ func ProofClient(t testing.TB, url, token string) *bus.Client {
 		t.Fatalf("write the hub-admission token: %v", err)
 	}
 	environment := map[string]string{bus.ServiceTokenFileEnvVar: file}
-	client, err := bus.Connect(strings.Split(url, ","),
+	var servers []string
+	if url != "" {
+		servers = strings.Split(url, ",")
+	}
+	client, err := bus.Connect(servers,
 		bus.WithName("envoy-dispatch-hub-admission"),
 		bus.WithEnvironment(func(name string) (string, bool) { value, ok := environment[name]; return value, ok }),
 		bus.WithInboxPrefix(ProofInboxPrefix),

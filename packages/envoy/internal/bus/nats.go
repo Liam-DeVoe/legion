@@ -2432,7 +2432,8 @@ func (c *Client) Servers() string {
 // answered the round trip, within ctx; otherwise why not for the first server that did not, which
 // it names without its userinfo, the server's refusal among them. It never reads or tests c.Conn:
 // a hub whose auth service admitted that connection keeps it after the service stops answering,
-// so only a new connection is a decision made now.
+// so only a new connection is a decision made now. A client that names no server fails the proof:
+// with no server asked, nothing decided, and a proof that dialed nothing has not passed.
 //
 // A connection reaches only the server it was dialled for, never one that server's INFO names
 // (IgnoreDiscoveredServers), so no server's refusal is passed by another server's admission. A
@@ -2450,6 +2451,9 @@ func (c *Client) ProveAdmission(ctx context.Context) error {
 	settings, err := c.proofSettings()
 	if err != nil {
 		return fmt.Errorf("bus: admission proof: %w", err)
+	}
+	if len(c.urls) == 0 {
+		return errors.New("bus: admission proof: the client names no server, so no server was asked")
 	}
 	for _, url := range c.urls {
 		if err := c.proveServer(ctx, url, settings); err != nil {
