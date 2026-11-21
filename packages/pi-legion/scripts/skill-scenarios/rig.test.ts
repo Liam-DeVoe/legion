@@ -11074,22 +11074,25 @@ sleep() { command sleep 0.05; }`;
   // `var SPEC_WRITING_POINTER` in @sjawhar/pi-envoy/dist/dispatch.js, which folds to the scenario
   // spec-writing; read whole, that HOME took the guard to 1170 MiB, and the pod's memory guard
   // killed it twice before it could refuse.
-  test("a word in the label's installed plugins, which the run's HOME holds, refuses no launch", () => {
-    const work = freshDir("launch-installed-plugin");
-    const name = "threads-closed-correct-head-1";
-    const ran = path.join(runDirOf(work, name), "agent-ran");
-    const { result } = launched(work, name, `: >${ran}`, [], {
-      files: {
-        "home/.omp/profiles/legion/plugins/node_modules/@sjawhar/pi-envoy/dist/dispatch.js":
-          'var SPEC_WRITING_POINTER = "Write a spec as skill://dispatch-writing-specs says.";\n',
-      },
-    });
-    expect({ code: result.code, stderr: result.stderr, ran: existsSync(ran) }).toEqual({
-      code: 0,
-      stderr: "",
-      ran: true,
-    });
-  });
+  test.skipIf(withoutNamespace)(
+    "a word in the label's installed plugins, which the run's HOME holds, refuses no launch",
+    () => {
+      const work = freshDir("launch-installed-plugin");
+      const name = "threads-closed-correct-head-1";
+      const ran = path.join(runDirOf(work, name), "agent-ran");
+      const { result } = launched(work, name, `: >${ran}`, [], {
+        files: {
+          "home/.omp/profiles/legion/plugins/node_modules/@sjawhar/pi-envoy/dist/dispatch.js":
+            'var SPEC_WRITING_POINTER = "Write a spec as skill://dispatch-writing-specs says.";\n',
+        },
+      });
+      expect({ code: result.code, stderr: result.stderr, ran: existsSync(ran) }).toEqual({
+        code: 0,
+        stderr: "",
+        ran: true,
+      });
+    }
+  );
 
   // Catches: a guard that passes over a link of the run to a path outside it and outside the trees
   // the label and the host provide (the architect's ruling of 2026-11-21T17:22:22Z). The walker
