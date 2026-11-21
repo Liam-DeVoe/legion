@@ -107,16 +107,24 @@ import {
   configDirectory,
   contextTimers,
   createPi,
+  currentRow,
+  followedTopics,
+  fromEndedRow,
   hostBuiltins,
+  listenCountingDials,
+  NATS_DEFAULT_PORT,
   natsStandInConnect,
   natsState,
+  onTestClock,
   originalFetch,
   pushNatsStatus,
   realReadTmuxPlace,
   response,
   responseWithRegistration,
   rowFetch,
+  rowScope,
   sessionContext,
+  sessionRoleLines,
   setNatsConnectForTests,
   settle,
   TEST_STREAM_ID,
@@ -126,6 +134,7 @@ import {
   topLevelSession,
   until,
   useExtensionHarness,
+  withEnvoyTimings,
 } from "../test/extension-harness";
 import { runSessionPod } from "../test/session-pod-report";
 import type { BranchEntry, CommandContext, SessionContext, TestPi } from "../test/stand-in-host";
@@ -171,39 +180,6 @@ const targetedDispatchPayload = readFileSync(
 // Reads the host package, so it loads only after the harness has mocked it: the static import of
 // `../test/extension-harness` above runs first.
 const { recordBootstrappedSession } = await import("@legion/pi-shared/subagent-session");
-
-/** nats.js's own default server, the one it dials when a connect is handed none. */
-const NATS_DEFAULT_PORT = 4222;
-
-/**
- * A listener on `127.0.0.1:<port>` that counts the connections made to it and closes each, or
- * null when something already listens there. `Bun.listen` binds synchronously and throws
- * `EADDRINUSE`, so a `describe` body can read the answer and hand it to `test.skipIf`, and the
- * listener it returns holds the port from that moment: no second bind, so no race with whatever
- * else on the machine might take the port between the question and the row that asks it.
- */
-function listenCountingDials(
-  port: number
-): { readonly dialed: () => number; readonly stop: () => void } | null {
-  let dialed = 0;
-  try {
-    const listener = Bun.listen({
-      hostname: "127.0.0.1",
-      port,
-      socket: {
-        open(socket) {
-          dialed += 1;
-          socket.end();
-        },
-        data() {},
-      },
-    });
-    return { dialed: () => dialed, stop: () => listener.stop(true) };
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") return null;
-    throw error;
-  }
-}
 
 function commandContext(notifications: string[]): CommandContext {
   return {
@@ -511,7 +487,10 @@ async function bootDirectSession(
       // The session asks Dispatch nothing else about a direct message but its reply and, where
       // the event carried the body in part, the read of the message whole: a row that expects
       // that read answers it itself, and every other call is recorded and refused, so a
-      // read-back would keep the card.
+      // read-back would keep the card. Such a call from a session whose row has ended
+      // (`fromEndedRow`), its reply to a command that ran on past the row, is answered as Dispatch
+      // answers a reply and recorded nowhere: it is that row's, not this one's.
+      if (fromEndedRow()) return new Response(JSON.stringify({}), { status: 201 });
       posts.push(`${init?.method ?? "GET"} ${url.pathname}`);
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/reply")) {
         replies.push({ body: JSON.parse(init?.body?.toString() ?? "null"), path: url.pathname });
@@ -596,7 +575,10 @@ async function bootDirectSession(
       ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
     },
   };
-  await fixture.handlers.get("session_start")?.({}, context);
+  // Inside the row's scope, so the session's work carries this row (`rowScope`).
+  await rowScope.run(currentRow, async () => {
+    await fixture.handlers.get("session_start")?.({}, context);
+  });
   const agent = natsState.controls.get("notifications.agent.ses_delivery");
   if (agent === undefined) throw new Error("agent subject was not subscribed");
   const delivered = (count: number): Promise<void> => {
@@ -721,28 +703,6 @@ function stubBroker(label: string) {
       rmSync(secrets, { force: true, recursive: true });
     },
   };
-}
-
-/**
- * Settles `pending` on the test's clock (`jest.useFakeTimers`, on for the call), moving it a
- * second at a time: a write Dispatch keeps failing is asked again under its key until the
- * accept's 10 s bound, and those pauses and that bound pass at once rather than in real time.
- */
-async function onTestClock<T>(pending: () => Promise<T>): Promise<T> {
-  jest.useFakeTimers();
-  try {
-    let settled = false;
-    const watched = pending().finally(() => {
-      settled = true;
-    });
-    for (let second = 0; second < 60 && !settled; second++) {
-      for (let flush = 0; flush < 50 && !settled; flush++) await Promise.resolve();
-      jest.advanceTimersByTime(1_000);
-    }
-    return await watched;
-  } finally {
-    jest.useRealTimers();
-  }
 }
 
 /**
@@ -1002,76 +962,6 @@ async function bootSessionPod(
     },
     shutdown: () => fixture.handlers.get("session_shutdown")?.({}, context),
   };
-}
-
-/**
- * Every `envoy: ENVOY_SESSION_ROLE …` line the extension logs from now on, which is the line a
- * process logs once when a session it decides for is not the one the launch named; `stop` ends
- * the collecting.
- */
-function sessionRoleLines(): { readonly lines: string[]; readonly stop: () => void } {
-  const lines: string[] = [];
-  const stop = logger.registerLogSink((entry) => {
-    if (entry.level === "warn" && entry.message.startsWith("envoy: ENVOY_SESSION_ROLE ")) {
-      lines.push(entry.message);
-    }
-  });
-  return { lines, stop };
-}
-
-/**
- * Every subject the session follows now, as `envoy_whoami` reports them (`followed` in
- * `extensions/envoy.ts`). The session holds no NATS subscription on a topic it follows — its
- * consumer relays them all — and a role-bound notice subject is never registered with the
- * listener either, so what the session follows is the one place such a subject shows.
- */
-async function followedTopics(
-  tools: readonly RegisteredTool[],
-  context: SessionContext
-): Promise<readonly string[]> {
-  const whoami = tools.find((tool) => tool.name === "envoy_whoami");
-  if (whoami === undefined) throw new Error("envoy_whoami was not registered");
-  const { details } = await whoami.execute("follows", {}, undefined, undefined, context);
-  const topics = details.topics;
-  if (!Array.isArray(topics)) throw new Error("envoy_whoami reported no topics");
-  return topics.filter((topic): topic is string => typeof topic === "string");
-}
-
-/**
- * Runs `body` with the Envoy timings it names, and restores whatever the process had. The
- * extension factory reads them when it runs (`envoySettings`), so a test sets them before its
- * own `envoyExtension(...)` call; every test in this file shares one process, so none may leak.
- */
-async function withEnvoyTimings<T>(
-  timings: {
-    readonly heartbeatMs?: number;
-    readonly passDeadlineMs?: number;
-    readonly tmuxPlaceCacheMs?: number;
-  },
-  body: () => Promise<T>
-): Promise<T> {
-  const before = [
-    ["ENVOY_HEARTBEAT_MS", process.env.ENVOY_HEARTBEAT_MS],
-    ["ENVOY_PASS_DEADLINE_MS", process.env.ENVOY_PASS_DEADLINE_MS],
-    ["ENVOY_TMUX_PLACE_CACHE_MS", process.env.ENVOY_TMUX_PLACE_CACHE_MS],
-  ] as const;
-  if (timings.heartbeatMs !== undefined) {
-    process.env.ENVOY_HEARTBEAT_MS = String(timings.heartbeatMs);
-  }
-  if (timings.passDeadlineMs !== undefined) {
-    process.env.ENVOY_PASS_DEADLINE_MS = String(timings.passDeadlineMs);
-  }
-  if (timings.tmuxPlaceCacheMs !== undefined) {
-    process.env.ENVOY_TMUX_PLACE_CACHE_MS = String(timings.tmuxPlaceCacheMs);
-  }
-  try {
-    return await body();
-  } finally {
-    for (const [name, value] of before) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
-    }
-  }
 }
 
 const UNASKED_WAIT_NUDGE =
@@ -14333,11 +14223,43 @@ console.log(JSON.stringify(args));
     describe("a person's shell command", () => {
       /** The working directories these rows ran their commands in. */
       const workDirectories: string[] = [];
+      /** Each row's end, which its waits take (`until`'s `ended`). The teardown aborts it, whether
+       *  the row returned or bun failed it at its timeout with a wait still parked. */
+      const rowEnds: AbortController[] = [];
       afterEach(() => {
+        for (const ended of rowEnds.splice(0)) ended.abort();
         for (const directory of workDirectories.splice(0)) {
           rmSync(directory, { recursive: true, force: true });
         }
       });
+
+      /** The timeout bun holds each row that waits on its command to, and how long before it the
+       *  row's wait gives up (`rowWait`). */
+      const SHELL_ROW_TIMEOUT_MS = 20_000;
+      const SHELL_ROW_MARGIN_MS = 1_000;
+      /**
+       * Starts the waits of a row on its command, measured from this call, which is the row's
+       * first line. The row's one clock is its own timeout: a wait gives up `SHELL_ROW_MARGIN_MS`
+       * before `SHELL_ROW_TIMEOUT_MS`, so a command that never does what the row waits for fails by
+       * the wait's own name rather than by bun's timeout line. A wait held past both (a turn of
+       * the event loop that came back late) is still parked when bun fails the row and runs the
+       * teardown, which aborts the row's end (`rowEnds`): the wait then returns without reading
+       * and answers false, and the row returns, so nothing of it polls or throws after it ended.
+       */
+      const rowWait = () => {
+        const started = performance.now();
+        const ended = new AbortController();
+        rowEnds.push(ended);
+        return async (condition: () => boolean, what: string): Promise<boolean> => {
+          await until(
+            condition,
+            what,
+            SHELL_ROW_TIMEOUT_MS - SHELL_ROW_MARGIN_MS - (performance.now() - started),
+            ended.signal
+          );
+          return !ended.signal.aborted;
+        };
+      };
 
       /** The user messages this session's live stream carried. */
       const streamFrames = () =>
@@ -14640,53 +14562,60 @@ console.log(JSON.stringify(args));
       // report is that first session's - its line, its working directory, its output - and the
       // session the host moved to must not be handed it as its own, while the person is answered
       // and the live view of the session that ran it still shows the report.
-      test("hands the agent no copy when the session moved on while the command ran", async () => {
-        const { agent, fixture, replied, replies, work } = await bootShellSession(
-          "shell-command-switched",
-          {
-            accept: () => ({
-              accepted: true,
-              body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
-            }),
+      test(
+        "hands the agent no copy when the session moved on while the command ran",
+        async () => {
+          const wait = rowWait();
+          const { agent, fixture, replied, replies, work } = await bootShellSession(
+            "shell-command-switched",
+            {
+              accept: () => ({
+                accepted: true,
+                body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
+              }),
+            }
+          );
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-switched"));
+          if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+            return;
           }
-        );
 
-        agent.push(directDispatchEnvelope("steer", "shell-command-switched"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+          // A `/new` while the command runs. The viewer follows the session the host moved to, as
+          // the relay's watch does, so the publisher is armed again and the frame this command
+          // still records on the session it was asked of goes out.
+          await fixture.handlers.get("session_switch")?.(
+            { reason: "new" },
+            sessionContext("ses_after_shell")
+          );
+          natsState.controls
+            .get("agentstream.ses_after_shell.control")
+            ?.push(JSON.stringify({ type: "watch", v: 1 }));
+          for (let index = 0; index < 10; index += 1) await Promise.resolve();
 
-        // A `/new` while the command runs. The viewer follows the session the host moved to, as
-        // the relay's watch does, so the publisher is armed again and the frame this command
-        // still records on the session it was asked of goes out.
-        await fixture.handlers.get("session_switch")?.(
-          { reason: "new" },
-          sessionContext("ses_after_shell")
-        );
-        natsState.controls
-          .get("agentstream.ses_after_shell.control")
-          ?.push(JSON.stringify({ type: "watch", v: 1 }));
-        for (let index = 0; index < 10; index += 1) await Promise.resolve();
+          writeFileSync(join(work, "go"), "");
+          await replied(1);
 
-        writeFileSync(join(work, "go"), "");
-        await replied(1);
-
-        // The person is answered, and the live view of the session that ran the command carries
-        // the report, keyed on the Dispatch message it answers.
-        expect(replies[0]?.body).toMatchObject({
-          body: expect.stringContaining("```\nhi\n```"),
-        });
-        const frames = streamFrames();
-        expect(frames).toHaveLength(1);
-        expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
-        expect(frames[0]?.message.parts).toEqual([
-          { text: expect.stringContaining("```\nhi\n```"), type: "text" },
-        ]);
-        // The session the host moved to reads nothing of a command it was never asked for.
-        expect(
-          fixture.deliveries.filter((delivery) =>
-            delivery.content.includes("A person ran this shell command")
-          )
-        ).toEqual([]);
-      }, 20_000);
+          // The person is answered, and the live view of the session that ran the command carries
+          // the report, keyed on the Dispatch message it answers.
+          expect(replies[0]?.body).toMatchObject({
+            body: expect.stringContaining("```\nhi\n```"),
+          });
+          const frames = streamFrames();
+          expect(frames).toHaveLength(1);
+          expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
+          expect(frames[0]?.message.parts).toEqual([
+            { text: expect.stringContaining("```\nhi\n```"), type: "text" },
+          ]);
+          // The session the host moved to reads nothing of a command it was never asked for.
+          expect(
+            fixture.deliveries.filter((delivery) =>
+              delivery.content.includes("A person ran this shell command")
+            )
+          ).toEqual([]);
+        },
+        SHELL_ROW_TIMEOUT_MS
+      );
 
       // The same move, with no session event for it: the host moves its session manager first
       // and emits `session_switch` after its resets, and a move the host makes without an event
@@ -14694,48 +14623,55 @@ console.log(JSON.stringify(args));
       // plugin's own `sessionID` still reads the session the command was asked of while the host
       // is already on another conversation. The agent's copy follows the host's live id, so the
       // conversation the host is on is handed nothing here either.
-      test("hands the agent no copy when the host moved on with no session event", async () => {
-        let live = "ses_delivery";
-        const { agent, fixture, replied, replies, work } = await bootShellSession(
-          "shell-command-host-moved",
-          {
-            accept: () => ({
-              accepted: true,
-              body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
-            }),
-            hostSessionID: () => live,
+      test(
+        "hands the agent no copy when the host moved on with no session event",
+        async () => {
+          const wait = rowWait();
+          let live = "ses_delivery";
+          const { agent, fixture, replied, replies, work } = await bootShellSession(
+            "shell-command-host-moved",
+            {
+              accept: () => ({
+                accepted: true,
+                body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
+              }),
+              hostSessionID: () => live,
+            }
+          );
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-host-moved"));
+          if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+            return;
           }
-        );
 
-        agent.push(directDispatchEnvelope("steer", "shell-command-host-moved"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+          // The host is on another conversation now. No handler is fired for it, so the plugin's
+          // own `sessionID` still reads ses_delivery.
+          live = "ses_after_shell";
+          for (let index = 0; index < 10; index += 1) await Promise.resolve();
 
-        // The host is on another conversation now. No handler is fired for it, so the plugin's
-        // own `sessionID` still reads ses_delivery.
-        live = "ses_after_shell";
-        for (let index = 0; index < 10; index += 1) await Promise.resolve();
+          writeFileSync(join(work, "go"), "");
+          await replied(1);
 
-        writeFileSync(join(work, "go"), "");
-        await replied(1);
-
-        // The person is answered, and the live view of the session that ran the command carries
-        // the report, keyed on the Dispatch message it answers.
-        expect(replies[0]?.body).toMatchObject({
-          body: expect.stringContaining("```\nhi\n```"),
-        });
-        const frames = streamFrames();
-        expect(frames).toHaveLength(1);
-        expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
-        expect(frames[0]?.message.parts).toEqual([
-          { text: expect.stringContaining("```\nhi\n```"), type: "text" },
-        ]);
-        // The conversation the host moved to reads nothing of a command it was never asked for.
-        expect(
-          fixture.deliveries.filter((delivery) =>
-            delivery.content.includes("A person ran this shell command")
-          )
-        ).toEqual([]);
-      }, 20_000);
+          // The person is answered, and the live view of the session that ran the command carries
+          // the report, keyed on the Dispatch message it answers.
+          expect(replies[0]?.body).toMatchObject({
+            body: expect.stringContaining("```\nhi\n```"),
+          });
+          const frames = streamFrames();
+          expect(frames).toHaveLength(1);
+          expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
+          expect(frames[0]?.message.parts).toEqual([
+            { text: expect.stringContaining("```\nhi\n```"), type: "text" },
+          ]);
+          // The conversation the host moved to reads nothing of a command it was never asked for.
+          expect(
+            fixture.deliveries.filter((delivery) =>
+              delivery.content.includes("A person ran this shell command")
+            )
+          ).toEqual([]);
+        },
+        SHELL_ROW_TIMEOUT_MS
+      );
 
       // The same move, made before the command is asked for: the delivery awaits the whole body
       // and then the Dispatch accept, and a host that leaves inside that window is already on
@@ -15383,102 +15319,117 @@ console.log(JSON.stringify(args));
       // and is answered as that session. A single slot for the whole instance answered this
       // second message with the first session's command, which was neither this session's
       // command nor a command this session was running.
-      test("runs a command for the session the host moved to while another session's still runs", async () => {
-        const other = otherSessionDirectory();
-        const { agent, fixture, replied, replies, work } = await bootShellSession(
-          "shell-command-busy-other-session",
-          {
-            accept: (count) => ({
-              accepted: true,
-              body:
-                count === 1
-                  ? "!touch running; until [ -f go ]; do sleep 0.05; done; printf first"
-                  : "!touch ran; printf second",
-            }),
+      test(
+        "runs a command for the session the host moved to while another session's still runs",
+        async () => {
+          const wait = rowWait();
+          const other = otherSessionDirectory();
+          const { agent, fixture, replied, replies, work } = await bootShellSession(
+            "shell-command-busy-other-session",
+            {
+              accept: (count) => ({
+                accepted: true,
+                body:
+                  count === 1
+                    ? "!touch running; until [ -f go ]; do sleep 0.05; done; printf first"
+                    : "!touch ran; printf second",
+              }),
+            }
+          );
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-busy-other-1"));
+          if (
+            !(await wait(
+              () => existsSync(join(work, "running")),
+              "the first session's command to be running"
+            ))
+          ) {
+            return;
           }
-        );
 
-        agent.push(directDispatchEnvelope("steer", "shell-command-busy-other-1"));
-        await until(
-          () => existsSync(join(work, "running")),
-          "the first session's command to be running",
-          10_000
-        );
+          // A `/new` to a conversation of its own, with ses_delivery's command still running.
+          await moveHost(fixture, other);
+          const moved = natsState.controls.get("notifications.agent.ses_after_shell");
+          if (moved === undefined) throw new Error("the new agent subject was not subscribed");
+          moved.push(
+            directDispatchEnvelope("steer", "shell-command-busy-other-2", {
+              messageID: NEXT_MESSAGE_ID,
+            })
+          );
+          await replied(1);
 
-        // A `/new` to a conversation of its own, with ses_delivery's command still running.
-        await moveHost(fixture, other);
-        const moved = natsState.controls.get("notifications.agent.ses_after_shell");
-        if (moved === undefined) throw new Error("the new agent subject was not subscribed");
-        moved.push(
-          directDispatchEnvelope("steer", "shell-command-busy-other-2", {
-            messageID: NEXT_MESSAGE_ID,
-          })
-        );
-        await replied(1);
+          // The second command is this conversation's own: it ran, in this conversation's
+          // directory, and its answer names this session and nothing of the other's command.
+          expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toEqual({
+            actor: { id: "ses_after_shell", kind: "session" },
+            attempt: 1,
+            body: "!touch ran; printf second\n\n```\nsecond\n```",
+          });
+          expect(existsSync(join(other, "ran"))).toBe(true);
+          expect(existsSync(join(work, "ran"))).toBe(false);
 
-        // The second command is this conversation's own: it ran, in this conversation's
-        // directory, and its answer names this session and nothing of the other's command.
-        expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toEqual({
-          actor: { id: "ses_after_shell", kind: "session" },
-          attempt: 1,
-          body: "!touch ran; printf second\n\n```\nsecond\n```",
-        });
-        expect(existsSync(join(other, "ran"))).toBe(true);
-        expect(existsSync(join(work, "ran"))).toBe(false);
-
-        // The first command ends on its own and answers its own message, as the session it was
-        // addressed to, naming nothing of the second command. Its agent was handed no copy: the
-        // host left ses_delivery while it ran, which the report says.
-        writeFileSync(join(work, "go"), "");
-        await replied(2);
-        expect(replies.find((reply) => reply.path.includes(DIRECT_MESSAGE_ID))?.body).toEqual({
-          actor: { id: "ses_delivery", kind: "session" },
-          attempt: 1,
-          body: `!touch running; until [ -f go ]; do sleep 0.05; done; printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
-        });
-      }, 20_000);
+          // The first command ends on its own and answers its own message, as the session it was
+          // addressed to, naming nothing of the second command. Its agent was handed no copy: the
+          // host left ses_delivery while it ran, which the report says.
+          writeFileSync(join(work, "go"), "");
+          await replied(2);
+          expect(replies.find((reply) => reply.path.includes(DIRECT_MESSAGE_ID))?.body).toEqual({
+            actor: { id: "ses_delivery", kind: "session" },
+            attempt: 1,
+            body: `!touch running; until [ -f go ]; do sleep 0.05; done; printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
+          });
+        },
+        SHELL_ROW_TIMEOUT_MS
+      );
 
       // The agent's copy is withheld where the session the command was asked of is not the one
       // open here by the time the report is ready, and the person is told so: the reply and the
       // live view's frame carry the sentence, so neither reads as output the agent went on to
       // act on.
-      test("says the agent was handed no output when the session moved on while the command ran", async () => {
-        const other = otherSessionDirectory();
-        const { agent, fixture, replied, replies, sends, work } = await bootShellSession(
-          "shell-command-withheld-copy",
-          {
-            accept: () => ({
-              accepted: true,
-              body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
-            }),
+      test(
+        "says the agent was handed no output when the session moved on while the command ran",
+        async () => {
+          const wait = rowWait();
+          const other = otherSessionDirectory();
+          const { agent, fixture, replied, replies, sends, work } = await bootShellSession(
+            "shell-command-withheld-copy",
+            {
+              accept: () => ({
+                accepted: true,
+                body: "!touch running; until [ -f go ]; do sleep 0.05; done; printf hi",
+              }),
+            }
+          );
+
+          agent.push(directDispatchEnvelope("steer", "shell-command-withheld-copy"));
+          if (!(await wait(() => existsSync(join(work, "running")), "the command to be running"))) {
+            return;
           }
-        );
 
-        agent.push(directDispatchEnvelope("steer", "shell-command-withheld-copy"));
-        await until(() => existsSync(join(work, "running")), "the command to be running", 10_000);
+          await moveHost(fixture, other);
+          writeFileSync(join(work, "go"), "");
+          await replied(1);
 
-        await moveHost(fixture, other);
-        writeFileSync(join(work, "go"), "");
-        await replied(1);
-
-        const report = `!touch running; until [ -f go ]; do sleep 0.05; done; printf hi\n\n\`\`\`\nhi\n\`\`\`\n\n${withheldOutput}`;
-        expect(replies[0]?.body).toMatchObject({ body: report });
-        const frames = streamFrames();
-        expect(frames).toHaveLength(1);
-        expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
-        expect(frames[0]?.message.parts).toEqual([{ text: report, type: "text" }]);
-        // What the sentence says: no agent read the output, here or in the conversation the
-        // host moved to.
-        expect(
-          sends.filter((send) => String(send.content).includes("A person ran this shell command"))
-        ).toEqual([]);
-        expect(
-          fixture.deliveries.filter((delivery) =>
-            delivery.content.includes("A person ran this shell command")
-          )
-        ).toEqual([]);
-        expect(movedSessionFrames()).toEqual([]);
-      }, 20_000);
+          const report = `!touch running; until [ -f go ]; do sleep 0.05; done; printf hi\n\n\`\`\`\nhi\n\`\`\`\n\n${withheldOutput}`;
+          expect(replies[0]?.body).toMatchObject({ body: report });
+          const frames = streamFrames();
+          expect(frames).toHaveLength(1);
+          expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
+          expect(frames[0]?.message.parts).toEqual([{ text: report, type: "text" }]);
+          // What the sentence says: no agent read the output, here or in the conversation the
+          // host moved to.
+          expect(
+            sends.filter((send) => String(send.content).includes("A person ran this shell command"))
+          ).toEqual([]);
+          expect(
+            fixture.deliveries.filter((delivery) =>
+              delivery.content.includes("A person ran this shell command")
+            )
+          ).toEqual([]);
+          expect(movedSessionFrames()).toEqual([]);
+        },
+        SHELL_ROW_TIMEOUT_MS
+      );
 
       // A command runs in a process group of its own, and the session that was asked for it is
       // going, so the plugin hands that group's kill to the shutdown rather than letting the
@@ -15486,33 +15437,48 @@ console.log(JSON.stringify(args));
       // shutdown ends the running command, which the person's reply says in its own words. That
       // the kill ends the group is `src/typed-shell.ts`'s own contract, proven in its own rows,
       // one of which starts a real shell in a process that exits and shows nothing survives it.
-      test("ends a running command when the session shuts down", async () => {
-        const { agent, context, fixture, replied, replies, work } = await bootShellSession(
-          "shell-command-shutdown-kill",
-          // Written in the session's own working directory, which the command runs in: the pid
-          // is the group's leader, and `exec` leaves the shell's own pid to `sleep`.
-          { accept: () => ({ accepted: true, body: "!echo $$ > pid; exec sleep 600" }) }
-        );
-        const pidFile = join(work, "pid");
+      test(
+        "ends a running command when the session shuts down",
+        async () => {
+          const wait = rowWait();
+          const { agent, context, fixture, replied, replies, work } = await bootShellSession(
+            "shell-command-shutdown-kill",
+            // Written in the session's own working directory, which the command runs in: the pid
+            // is the group's leader, and `exec` leaves the shell's own pid to `sleep`.
+            { accept: () => ({ accepted: true, body: "!echo $$ > pid; exec sleep 600" }) }
+          );
+          const pidFile = join(work, "pid");
 
-        agent.push(directDispatchEnvelope("steer", "shell-command-shutdown-kill"));
-        // The command itself, not the agent's copy of its report: nothing is sent until the
-        // command ends, and this one would run for ten minutes.
-        await until(() => existsSync(pidFile), "the command to be running", 10_000);
-        const pid = Number(readFileSync(pidFile, "utf8").trim());
-        expect(Number.isInteger(pid)).toBe(true);
-        // The command is still running: nothing but the shutdown below ends it.
-        expect(alive(pid)).toBe(true);
+          agent.push(directDispatchEnvelope("steer", "shell-command-shutdown-kill"));
+          // The command itself, not the agent's copy of its report: nothing is sent until the
+          // command ends, and this one would run for ten minutes. The shell creates `pid` when it
+          // opens it for `echo`, before `echo` writes to it, so the file can be there and empty; the
+          // pid is read once the file holds it as one whole line, as `echo` writes it. An empty read
+          // is pid 0, and `alive(0)` asks about this process's own group, not the command: Linux
+          // answers that it is there, and gVisor, which answers kill(0, 0) with the last answer of
+          // the group, can answer EPERM.
+          let written = "";
+          const read = await wait(() => {
+            written = existsSync(pidFile) ? readFileSync(pidFile, "utf8") : "";
+            return /^\d+\n$/u.test(written);
+          }, "the command to write its pid");
+          if (!read) return;
+          const pid = Number(written);
+          expect(pid).toBeGreaterThan(0);
+          // The command is still running: nothing but the shutdown below ends it.
+          expect(alive(pid)).toBe(true);
 
-        await fixture.handlers.get("session_shutdown")?.({}, context);
+          await fixture.handlers.get("session_shutdown")?.({}, context);
 
-        // The reply is posted only once the command's own promise has settled, so its arrival
-        // is the end of the command, and its words are the stop rather than an exit status.
-        await replied(1);
-        expect(replies[0]?.body).toMatchObject({
-          body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
-        });
-      }, 20_000);
+          // The reply is posted only once the command's own promise has settled, so its arrival
+          // is the end of the command, and its words are the stop rather than an exit status.
+          await replied(1);
+          expect(replies[0]?.body).toMatchObject({
+            body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
+          });
+        },
+        SHELL_ROW_TIMEOUT_MS
+      );
 
       // A session shutting down runs no command: one started now would outlive the session it
       // was asked of. The message is answered saying so rather than left with no answer. The

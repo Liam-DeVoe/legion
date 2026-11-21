@@ -6,7 +6,7 @@
 // For the same reason this module registers no hook in its body: a hook here would take the scope
 // of whichever test file imported it first. Each file calls `useExtensionHarness()` at its own
 // module scope instead.
-import { afterAll, afterEach, beforeAll, beforeEach, mock } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, jest, mock } from "bun:test";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,12 +26,12 @@ import { resetEnvoyPluginInterfaceForTests } from "@legion/pi-shared/interface";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
-import { procmgr } from "@oh-my-pi/pi-utils";
+import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { ErrorCode, NatsError, connect as realConnect } from "nats";
 import type { z } from "zod";
 import type * as EnvoyEntry from "../extensions/envoy";
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
-import { createStandInHost, type SessionContext } from "./stand-in-host";
+import { createStandInHost, type RegisteredTool, type SessionContext } from "./stand-in-host";
 
 /** A message's headers, as nats.js's `MsgHdrs` reads them: a missing one reads `""`. */
 type MessageHeaders = { readonly get: (name: string) => string };
@@ -124,6 +124,23 @@ Object.defineProperty(globalThis, "fetch", {
     if (next !== recordingFetch) installedFetch = next;
   },
 });
+
+/**
+ * The row a session's own work runs for. `bootDirectSession` (`extensions/envoy.test.ts`) starts
+ * its session inside this scope, so what the session goes on to do (a delivery, a person's
+ * `!command` and its answer) carries the row that booted it; `setUpRow` makes each row a new one.
+ * Bun fails a row at its timeout and starts the next while that row's session still runs (bun
+ * kills the row's dangling child, and the command it was running then answers), so what such a
+ * session writes afterwards, a reply on Dispatch or a frame on NATS, is dropped rather than read
+ * as the next row's.
+ */
+export const rowScope = new AsyncLocalStorage<symbol>();
+export let currentRow = Symbol("row");
+/** Whether the code running now is the work of a session whose row has ended. */
+export function fromEndedRow(): boolean {
+  const row = rowScope.getStore();
+  return row !== undefined && row !== currentRow;
+}
 
 /**
  * Hands the session a frame published on `subject`, as the listener's relay of the session's
@@ -359,6 +376,7 @@ export const natsStandInConnect = async (options: {
         natsState.failPublishes -= 1;
         throw new Error("PUBLISH_FAILED");
       }
+      if (fromEndedRow()) return;
       natsState.published.push({ subject, data });
       natsState.onPublish?.(subject);
     },
@@ -590,6 +608,7 @@ restoreEntryLoad();
 export { setNatsConnectForTests };
 
 function setUpRow(): void {
+  currentRow = Symbol("row");
   // `bun test` runs every file in one process: a Legion suite's bootstrapped-session record on
   // the process-wide interface would otherwise make every transcript here look like a
   // subagent's, the top-level session one test publishes would be the reply address the next
@@ -910,14 +929,147 @@ export async function settle(): Promise<void> {
 // clock, which `setSystemTime` leaves alone. A caller waiting on a real child process rather
 // than on this process's own work passes a longer bound: starting a shell and killing its group
 // is the operating system's work, and two seconds of it is a wait a loaded machine can lose.
+// A row whose wait can still be parked when the row ends (bun fails a row at its timeout and
+// goes on to the next while the row's own code waits on a turn of `settle`) passes `ended`, which
+// its teardown aborts: once it is aborted the wait reads the condition no more and returns, so it
+// neither polls on after the row nor throws into a later one.
 export async function until(
   condition: () => boolean,
   what: string,
-  timeoutMs = 2_000
+  timeoutMs = 2_000,
+  ended?: AbortSignal
 ): Promise<void> {
   const deadline = performance.now() + timeoutMs;
-  while (!condition()) {
+  for (;;) {
+    if (ended?.aborted === true) return;
+    if (condition()) return;
     if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await settle();
   }
+}
+
+/** nats.js's own default server, the one it dials when a connect is handed none. */
+export const NATS_DEFAULT_PORT = 4222;
+
+/**
+ * A listener on `127.0.0.1:<port>` that counts the connections made to it and closes each, or
+ * null when something already listens there. `Bun.listen` binds synchronously and throws
+ * `EADDRINUSE`, so a `describe` body can read the answer and hand it to `test.skipIf`, and the
+ * listener it returns holds the port from that moment: no second bind, so no race with whatever
+ * else on the machine might take the port between the question and the row that asks it.
+ */
+export function listenCountingDials(
+  port: number
+): { readonly dialed: () => number; readonly stop: () => void } | null {
+  let dialed = 0;
+  try {
+    const listener = Bun.listen({
+      hostname: "127.0.0.1",
+      port,
+      socket: {
+        open(socket) {
+          dialed += 1;
+          socket.end();
+        },
+        data() {},
+      },
+    });
+    return { dialed: () => dialed, stop: () => listener.stop(true) };
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") return null;
+    throw error;
+  }
+}
+
+/**
+ * Settles `pending` on the test's clock (`jest.useFakeTimers`, on for the call), moving it a
+ * second at a time: a write Dispatch keeps failing is asked again under its key until the
+ * accept's 10 s bound, and those pauses and that bound pass at once rather than in real time.
+ */
+export async function onTestClock<T>(pending: () => Promise<T>): Promise<T> {
+  jest.useFakeTimers();
+  try {
+    let settled = false;
+    const watched = pending().finally(() => {
+      settled = true;
+    });
+    for (let second = 0; second < 60 && !settled; second++) {
+      for (let flush = 0; flush < 50 && !settled; flush++) await Promise.resolve();
+      jest.advanceTimersByTime(1_000);
+    }
+    return await watched;
+  } finally {
+    jest.useRealTimers();
+  }
+}
+
+/**
+ * Runs `body` with the Envoy timings it names, and restores whatever the process had. The
+ * extension factory reads them when it runs (`envoySettings`), so a test sets them before its
+ * own `envoyExtension(...)` call; every test of the files that share this harness runs in one
+ * process, so none may leak.
+ */
+export async function withEnvoyTimings<T>(
+  timings: {
+    readonly heartbeatMs?: number;
+    readonly passDeadlineMs?: number;
+    readonly tmuxPlaceCacheMs?: number;
+  },
+  body: () => Promise<T>
+): Promise<T> {
+  const before = [
+    ["ENVOY_HEARTBEAT_MS", process.env.ENVOY_HEARTBEAT_MS],
+    ["ENVOY_PASS_DEADLINE_MS", process.env.ENVOY_PASS_DEADLINE_MS],
+    ["ENVOY_TMUX_PLACE_CACHE_MS", process.env.ENVOY_TMUX_PLACE_CACHE_MS],
+  ] as const;
+  if (timings.heartbeatMs !== undefined) {
+    process.env.ENVOY_HEARTBEAT_MS = String(timings.heartbeatMs);
+  }
+  if (timings.passDeadlineMs !== undefined) {
+    process.env.ENVOY_PASS_DEADLINE_MS = String(timings.passDeadlineMs);
+  }
+  if (timings.tmuxPlaceCacheMs !== undefined) {
+    process.env.ENVOY_TMUX_PLACE_CACHE_MS = String(timings.tmuxPlaceCacheMs);
+  }
+  try {
+    return await body();
+  } finally {
+    for (const [name, value] of before) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
+/**
+ * Every `envoy: ENVOY_SESSION_ROLE …` line the extension logs from now on, which is the line a
+ * process logs once when a session it decides for is not the one the launch named; `stop` ends
+ * the collecting.
+ */
+export function sessionRoleLines(): { readonly lines: string[]; readonly stop: () => void } {
+  const lines: string[] = [];
+  const stop = logger.registerLogSink((entry) => {
+    if (entry.level === "warn" && entry.message.startsWith("envoy: ENVOY_SESSION_ROLE ")) {
+      lines.push(entry.message);
+    }
+  });
+  return { lines, stop };
+}
+
+/**
+ * Every subject the session follows now, as `envoy_whoami` reports them (`followed` in
+ * `extensions/envoy.ts`). The session holds no NATS subscription on a topic it follows — its
+ * consumer relays them all — and a role-bound notice subject is never registered with the
+ * listener either, so what the session follows is the one place such a subject shows.
+ */
+export async function followedTopics(
+  tools: readonly RegisteredTool[],
+  context: SessionContext
+): Promise<readonly string[]> {
+  const whoami = tools.find((tool) => tool.name === "envoy_whoami");
+  if (whoami === undefined) throw new Error("envoy_whoami was not registered");
+  const { details } = await whoami.execute("follows", {}, undefined, undefined, context);
+  const topics = details.topics;
+  if (!Array.isArray(topics)) throw new Error("envoy_whoami reported no topics");
+  return topics.filter((topic): topic is string => typeof topic === "string");
 }
