@@ -502,9 +502,9 @@ func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
 // event. What each batch reads the test measures itself, from the rows the batch wrote and the
 // events between its first event and its cursor as its batch line names them (batchText): their
 // payloads, the markdown of the primary document version each issue row names and the body of
-// each post row whose event cut it. Each batch of more than one event reads at most 2 MB of it,
-// each commits under its statement_timeout (a batch that runs past it fails the fill), and every
-// event has its rows.
+// each post row whose event cut it. Each log has a batch of more than one event, and each such
+// batch reads at most 2 MB of it; each batch commits under its statement_timeout (a batch that
+// runs past it fails the fill), and every event has its rows.
 //
 //   - 24 issues created with a primary document of about 1 MiB, each then retitled, which
 //     carries that version forward, and 4 of them given a new version of about 1 MiB: each of
@@ -644,7 +644,8 @@ func TestTheCursorKeepsTheLowestRulesVersionThatWroteUpToIt(t *testing.T) {
 // fillWithinTheBound fills database from its first event with the production bounds and holds
 // what it wrote: the fill returns no error, so every batch committed under its statement_timeout;
 // every event of want has its rows and no other event has one; and each batch of more than one
-// event reads at most batchBytes (batchText). It answers the batches' lines, in order.
+// event reads at most batchBytes (batchText). It fails t when no batch holds more than one event,
+// since then it checked no batch's bound. It answers the batches' lines, in order.
 func fillWithinTheBound(t *testing.T, database *store.Store, want []textversionstest.Written) []logLine {
 	t.Helper()
 	var logs logtest.Buffer
@@ -656,14 +657,19 @@ func fillWithinTheBound(t *testing.T, database *store.Store, want []textversions
 	batches := batchLines(t, &logs)
 	t.Logf("the fill wrote %d events in %d batches in %s", len(want), len(batches), time.Since(started).Round(time.Millisecond))
 	textversionstest.RequireOnlyRowsOf(t, database, want)
+	var measured int
 	for _, b := range batches {
 		if b.Events < 2 {
 			continue
 		}
+		measured++
 		if read := batchText(t, database, b.First, b.Cursor); read > batchBytes {
 			t.Errorf("the batch of the %d events %d to %d reads %d bytes of text into its vectors and its payloads; want at most %d",
 				b.Events, b.First, b.Cursor, read, batchBytes)
 		}
+	}
+	if measured == 0 {
+		t.Errorf("the fill wrote no batch of two or more events in its %d batches, so no batch's bound was checked", len(batches))
 	}
 	return batches
 }
@@ -878,29 +884,53 @@ type logLine struct {
 	Events int
 }
 
-// logLines reads every line of logs, a JSON handler's output, in order: its msg, first_event,
-// cursor and events. JSONLines decodes a number to a float64, which holds an event id exactly.
+// logLines reads every line of logs, a JSON handler's output, in order (logLineOf).
 func logLines(t *testing.T, logs *logtest.Buffer) []logLine {
 	t.Helper()
 	var lines []logLine
 	for _, record := range logtest.JSONLines(t, logs.String()) {
-		msg, _ := record["msg"].(string)
-		first, _ := record["first_event"].(float64)
-		cursor, _ := record["cursor"].(float64)
-		batched, _ := record["events"].(float64)
-		lines = append(lines, logLine{Msg: msg, First: int64(first), Cursor: int64(cursor), Events: int(batched)})
+		lines = append(lines, logLineOf(record))
 	}
 	return lines
 }
 
-// batchLines is the batch lines of logs, in order.
+// batchLines is the batch lines of logs, in order. Each must hold a JSON number at events,
+// first_event and cursor, and one that does not fails t, naming its line, the keys it lacks and
+// the line itself: logLineOf reads a number a line lacks as 0, and fillWithinTheBound skips a
+// batch of fewer than 2 events, so a batch line that dropped or renamed its count would pass the
+// bound with no batch checked.
 func batchLines(t *testing.T, logs *logtest.Buffer) []logLine {
 	t.Helper()
+	written := logs.String()
 	var batches []logLine
-	for _, line := range logLines(t, logs) {
-		if line.Msg == batchMessage {
-			batches = append(batches, line)
+	for i, record := range logtest.JSONLines(t, written) {
+		line := logLineOf(record)
+		if line.Msg != batchMessage {
+			continue
 		}
+		var missing []string
+		for _, key := range []string{"events", "first_event", "cursor"} {
+			if _, ok := record[key].(float64); !ok {
+				missing = append(missing, key)
+			}
+		}
+		if len(missing) > 0 {
+			// JSONLines answers one record for each line of written, so record i is line i.
+			t.Fatalf("line %d of the log, a batch line, holds no number at %s:\n%s",
+				i+1, strings.Join(missing, ", "), strings.TrimSuffix(slices.Collect(strings.Lines(written))[i], "\n"))
+		}
+		batches = append(batches, line)
 	}
 	return batches
+}
+
+// logLineOf is what the tests read of record, one line of a fill's log as JSONLines decodes it:
+// its msg, first_event, cursor and events, each zero where the line holds no string or no JSON
+// number there. JSONLines decodes a number to a float64, which holds an event id exactly.
+func logLineOf(record map[string]any) logLine {
+	msg, _ := record["msg"].(string)
+	first, _ := record["first_event"].(float64)
+	cursor, _ := record["cursor"].(float64)
+	batched, _ := record["events"].(float64)
+	return logLine{Msg: msg, First: int64(first), Cursor: int64(cursor), Events: int(batched)}
 }
