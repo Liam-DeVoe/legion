@@ -255,6 +255,8 @@ func (r *edgeLiveRig) violations(t *testing.T) [][]string {
 // The edge listener connects as its user, rendered from natsgrant.Edge, starts, registers a
 // session under a broker token of its project, gives it a consumer and relays a send to it on the
 // session's relay subject, whose frame the observer answers on the reply subject the frame names.
+// The session sends to itself and names itself the sender (source_session), as a send made under
+// its token names it.
 // The server refuses the edge nothing: a publish the edge's own user is refused, made last, is the
 // one violation the server logs, which shows the log is read. Without the edge's own inbox prefix
 // in its grant the start ends, naming the prefix, since every reply the listener asks for comes
@@ -269,7 +271,7 @@ func TestTheEdgeStartsAndServesUnderItsRenderedGrant(t *testing.T) {
 			t.Fatalf("the observer reads the relay subject: %v", err)
 		}
 		rig.register(t, edge)
-		rig.mustCall(t, edge, http.MethodPost, "/v1/messages/send", `{"target_session":"`+edgeLiveSession+`","message":"example message to the edge"}`)
+		rig.mustCall(t, edge, http.MethodPost, "/v1/messages/send", `{"target_session":"`+edgeLiveSession+`","source_session":"`+edgeLiveSession+`","message":"example message to the edge"}`)
 		envelope, ok := nextRelayFrame(t, frames, 15*time.Second)
 		if !ok {
 			t.Fatalf("no relay frame reached the edge session within 15s:\n%s", edge.Output.String())
