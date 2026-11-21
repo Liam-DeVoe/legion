@@ -43,6 +43,12 @@ type snapshots struct {
 	// firstStartHeld says a pass found an issue not yet started held by a hold other than the cap
 	// (assumption 7): a link, a design gate, an ancestor, a tree.
 	firstStartHeld bool
+	// keys, working and byIssue are what a settle gathers of the instant, kept from one settle
+	// to the next so a settle makes none of them anew: byIssue keeps a holder's slice of claims,
+	// emptied, for as long as it holds its slot.
+	keys    map[string]struct{}
+	working map[string]bool
+	byIssue map[string][]supervise.Claim
 }
 
 // standingWait is a wait of an issue on other issues that stands: when it began, and the blockers
@@ -61,7 +67,8 @@ var firstStartHolds = []record.HeldReason{record.HeldTreeClosed, record.HeldTree
 // newSnapshots is the snapshot timeline of a replay of [from, to), its ranks read by ranks.
 func newSnapshots(from, to time.Time, ranks rankFunc) *snapshots {
 	return &snapshots{timeline: Timeline{From: from, To: to, Issues: map[string]*Course{}}, ranks: ranks,
-		waits: map[string]*standingWait{}, live: map[string]bool{}}
+		waits: map[string]*standingWait{}, live: map[string]bool{}, keys: map[string]struct{}{}, working: map[string]bool{},
+		byIssue: map[string][]supervise.Claim{}}
 }
 
 // pass is the admission pass's observer (admit.Admission.UsePassObserver): the view of a pass
@@ -142,8 +149,16 @@ func (s *snapshots) settle(at time.Time, claims map[claim.Token]supervise.Claim,
 		s.fresh = false
 	}
 	v := s.view
-	working := map[string]bool{}
-	byIssue := map[string][]supervise.Claim{}
+	clear(s.keys)
+	clear(s.working)
+	for key, held := range s.byIssue {
+		if _, holds := s.slotOf[key]; holds {
+			s.byIssue[key] = held[:0]
+		} else {
+			delete(s.byIssue, key)
+		}
+	}
+	keys, working, byIssue := s.keys, s.working, s.byIssue
 	for _, c := range claims {
 		if c.State == supervise.StateWorking {
 			working[c.Issue] = true
@@ -152,7 +167,6 @@ func (s *snapshots) settle(at time.Time, claims map[claim.Token]supervise.Claim,
 			byIssue[c.Issue] = append(byIssue[c.Issue], c)
 		}
 	}
-	keys := make(map[string]struct{}, len(inFlight)+len(s.slotOf)+len(s.line)+len(s.waits)+len(s.live))
 	for _, set := range []map[string]bool{inFlight, s.live} {
 		for key := range set {
 			keys[key] = struct{}{}

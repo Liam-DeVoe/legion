@@ -114,22 +114,13 @@ type envelope struct {
 	payload map[string]json.RawMessage
 }
 
-// readEnvelope reads one recorded event.
-func readEnvelope(raw json.RawMessage) (envelope, error) {
-	var e envelope
+// readEnvelope reads one recorded event, raw, whose envelope parsed already holds
+// (ParseDispatchEvent): its top-level fields and its payload, each by name.
+func readEnvelope(raw json.RawMessage, parsed DispatchEvent) (envelope, error) {
+	e := envelope{key: parsed.Key, project: parsed.Project, kind: parsed.Type, actor: parsed.Actor}
 	if err := json.Unmarshal(raw, &e.fields); err != nil {
 		return envelope{}, fmt.Errorf("replay: read a recorded Dispatch event: %w", err)
 	}
-	var head struct {
-		IssueKey string         `json:"issue_key"`
-		Project  string         `json:"project"`
-		Type     string         `json:"type"`
-		Actor    dispatch.Actor `json:"actor"`
-	}
-	if err := json.Unmarshal(raw, &head); err != nil {
-		return envelope{}, fmt.Errorf("replay: read a recorded Dispatch event: %w", err)
-	}
-	e.key, e.project, e.kind, e.actor = head.IssueKey, head.Project, head.Type, head.Actor
 	if payload, ok := e.fields["payload"]; ok && !bytes.Equal(bytes.TrimSpace(payload), []byte("null")) {
 		if err := json.Unmarshal(payload, &e.payload); err != nil {
 			return envelope{}, fmt.Errorf("replay: read the payload of a recorded %s event of %s: %w", e.kind, e.key, err)

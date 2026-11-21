@@ -172,8 +172,11 @@ type act struct {
 type script struct {
 	pieces map[string][]*piece
 	events []scriptEvent
-	// flight is each issue's stretches in flight in the record (IssueTrace.inFlight).
-	flight map[string][][2]time.Time
+	// flight is each issue's stretches in flight in the record (IssueTrace.inFlight), and inFlight
+	// the count of them at any moment, each issue's own joined first (joinedStretches), so an
+	// issue counts once.
+	flight   map[string][][2]time.Time
+	inFlight stretchCount
 }
 
 // anchorKind is what places an event of the record in a replay.
@@ -192,9 +195,10 @@ const (
 	anchorWait
 )
 
-// scriptEvent is one recorded Dispatch event and how the replay places it.
+// scriptEvent is one recorded Dispatch event, read once (ParseDispatchEvent, and its envelope as
+// the replay rewrites it), and how the replay places it.
 type scriptEvent struct {
-	raw    []byte
+	parsed DispatchEvent
 	env    envelope
 	at     time.Time
 	order  int
@@ -224,13 +228,32 @@ type waitAnchor struct {
 
 // inFlightAt is how many issues the record holds in flight at at.
 func (s *script) inFlightAt(at time.Time) int {
-	n := 0
-	for _, stretches := range s.flight {
-		if withinStretches(stretches, at) {
-			n++
+	return s.inFlight.at(at)
+}
+
+// joinedStretches is the moments stretches hold, as withinStretches reads them, as stretches that
+// neither meet nor overlap, in order: a stretch that holds no moment is left out, and stretches
+// that meet or overlap are joined into one.
+func joinedStretches(stretches [][2]time.Time) [][2]time.Time {
+	var held [][2]time.Time
+	for _, stretch := range stretches {
+		if stretch[1].IsZero() || stretch[0].Before(stretch[1]) {
+			held = append(held, stretch)
 		}
 	}
-	return n
+	slices.SortFunc(held, func(x, y [2]time.Time) int { return x[0].Compare(y[0]) })
+	var joined [][2]time.Time
+	for _, stretch := range held {
+		n := len(joined)
+		if n == 0 || !joined[n-1][1].IsZero() && stretch[0].After(joined[n-1][1]) {
+			joined = append(joined, stretch)
+			continue
+		}
+		if end := joined[n-1][1]; !end.IsZero() && (stretch[1].IsZero() || stretch[1].After(end)) {
+			joined[n-1][1] = stretch[1]
+		}
+	}
+	return joined
 }
 
 // buildScript reads t into the pieces of its issues' work and the placement of its events, from
@@ -238,14 +261,17 @@ func (s *script) inFlightAt(at time.Time) int {
 // come from, so acts of one instant run in the record's order.
 func buildScript(t Trace, w Window, lines recordLines) (script, error) {
 	s := script{pieces: map[string][]*piece{}, flight: map[string][][2]time.Time{}}
+	var flying [][2]time.Time
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		iss := t.Issues[key]
 		s.flight[key] = iss.inFlight()
+		flying = append(flying, joinedStretches(s.flight[key])...)
 		if iss.Project != t.Project {
 			continue
 		}
 		s.pieces[key] = issuePieces(t, iss)
 	}
+	s.inFlight = countStretches(flying)
 	for _, pieces := range s.pieces {
 		for _, p := range pieces {
 			p.m = s.inFlightAt(p.start)
@@ -481,19 +507,20 @@ func closedByArchitect(iss *IssueTrace, leave Leave) bool {
 func (s *script) placeEvents(t Trace, w Window) error {
 	for _, key := range slices.Sorted(maps.Keys(w.Events)) {
 		for _, raw := range w.Events[key] {
-			env, err := readEnvelope(raw)
-			if err != nil {
-				return err
-			}
 			parsed, err := ParseDispatchEvent(raw)
 			if err != nil {
 				return err
 			}
-			s.events = append(s.events, scriptEvent{raw: raw, env: env, at: parsed.At, order: int(parsed.ID), on: -1})
+			env, err := readEnvelope(raw, parsed)
+			if err != nil {
+				return err
+			}
+			s.events = append(s.events, scriptEvent{parsed: parsed, env: env, at: parsed.At, order: int(parsed.ID), on: -1})
 		}
 	}
 	slices.SortStableFunc(s.events, func(x, y scriptEvent) int { return cmp.Or(x.at.Compare(y.at), cmp.Compare(x.order, y.order)) })
 	ended := s.waitEnders(t)
+	questions := s.questions()
 	for i := range s.events {
 		event := &s.events[i]
 		if event.at.Before(t.From) {
@@ -506,7 +533,7 @@ func (s *script) placeEvents(t Trace, w Window) error {
 				continue
 			}
 		}
-		if question, ok := s.question(i); ok && !s.events[question].at.Before(t.From) {
+		if question, ok := questions[i]; ok && !s.events[question].at.Before(t.From) {
 			event.anchor, event.on, event.offset = anchorEvent, question, event.at.Sub(s.events[question].at)
 			s.events[question].dependents = append(s.events[question].dependents, i)
 			continue
@@ -526,66 +553,81 @@ func claimTokenOf(actor dispatch.Actor) claim.Token {
 	return claim.Token(actor.ID)
 }
 
-// question is the event the answer at events[i] answers, where it is a person's: the opening of
-// the ask an ask's close, hand-back or comment is of, or the newest version event of the document
-// a person's verdict is on, at or before the verdict — the event that stands for the registration
-// of the version the person reviews, since the registration itself is a line of the record.
-func (s *script) question(i int) (int, bool) {
-	answer := s.events[i]
-	if answer.env.actor.Kind != "user" {
-		return 0, false
+// questions is, by the index of each person's answer among the events, the event it answers: the
+// opening of the ask an ask's close, hand-back or comment is of, or the newest version event of
+// the document a person's verdict is on, at or before the verdict — the event that stands for the
+// registration of the version the person reviews, since the registration itself is a line of the
+// record. It reads the events once, in order, keeping for each issue the newest opening of each
+// ask and the newest version event of each version of each document.
+func (s *script) questions() map[int]int {
+	type askOf struct{ issue, ask string }
+	type versionOf struct {
+		issue, artifact string
+		number          int
 	}
-	var ask, artifact string
-	var version int
-	parsed, err := ParseDispatchEvent(answer.raw)
-	if err != nil {
-		return 0, false
+	opened := map[askOf]int{}
+	written := map[versionOf]int{}
+	found := map[int]int{}
+	for i := range s.events {
+		event := &s.events[i]
+		key := event.parsed.Key
+		if ask, artifact, version := answerOf(event); ask != "" {
+			if j, ok := opened[askOf{key, ask}]; ok {
+				found[i] = j
+			}
+		} else if artifact != "" {
+			if j, ok := written[versionOf{key, artifact, version}]; ok {
+				found[i] = j
+			}
+		}
+		switch event.parsed.Type {
+		case "ask.opened":
+			opened[askOf{key, event.parsed.Ask.ID}] = i
+		case "artifact.version":
+			if artifact, number := versionWritten(event); artifact != "" {
+				written[versionOf{key, artifact, number}] = i
+			}
+		}
+	}
+	return found
+}
+
+// answerOf is what event answers where it is a person's: the ask an ask's close or hand-back or a
+// comment is of, or the document and version a verdict is on; all empty for any other event.
+func answerOf(event *scriptEvent) (ask, artifact string, version int) {
+	parsed := event.parsed
+	if parsed.Actor.Kind != "user" {
+		return "", "", 0
 	}
 	switch {
 	case parsed.Ask != nil && parsed.Type != "ask.opened":
-		ask = parsed.Ask.ID
+		return parsed.Ask.ID, "", 0
 	case parsed.Verdict != nil:
-		artifact, version = parsed.Verdict.Artifact, parsed.Verdict.Version
+		return "", parsed.Verdict.Artifact, parsed.Verdict.Version
 	case parsed.Type == "comment.created" || parsed.Type == "comment.answered":
 		var payload struct {
 			AskID string `json:"ask_id"`
 		}
-		if decodeField(answer.env.payload, &payload) && payload.AskID != "" {
-			ask = payload.AskID
+		if decodeField(event.env.payload, &payload) {
+			return payload.AskID, "", 0
 		}
 	}
-	if ask == "" && artifact == "" {
-		return 0, false
-	}
-	found := -1
-	for j := range i {
-		candidate, err := ParseDispatchEvent(s.events[j].raw)
-		if err != nil || candidate.Key != parsed.Key {
-			continue
-		}
-		switch {
-		case ask != "" && candidate.Type == "ask.opened" && candidate.Ask != nil && candidate.Ask.ID == ask:
-			found = j
-		case artifact != "" && candidate.Type == "artifact.version" && s.versionOf(j, artifact) == version:
-			found = j
-		}
-	}
-	return found, found >= 0
+	return "", "", 0
 }
 
-// versionOf is the version events[j], an artifact.version event, writes of artifact, 0 for
-// another document's.
-func (s *script) versionOf(j int, artifact string) int {
+// versionWritten is the document event, an artifact.version event, writes a version of and the
+// version's number; "" for a payload that names no document.
+func versionWritten(event *scriptEvent) (string, int) {
 	var payload struct {
 		ArtifactID string `json:"artifact_id"`
 		Version    struct {
 			Number int `json:"number"`
 		} `json:"version"`
 	}
-	if !decodeField(s.events[j].env.payload, &payload) || payload.ArtifactID != artifact {
-		return 0
+	if !decodeField(event.env.payload, &payload) {
+		return "", 0
 	}
-	return payload.Version.Number
+	return payload.ArtifactID, payload.Version.Number
 }
 
 // waitEnders is, by the index of the event, each event that ended a wait in the record: the last
@@ -594,13 +636,20 @@ func (s *script) versionOf(j int, artifact string) int {
 // under its parent (child_moved_out, the child's event), each with the wait it ended.
 func (s *script) waitEnders(t Trace) map[int]waitAnchor {
 	ended := map[int]waitAnchor{}
-	find := func(key string, at time.Time) int {
-		for i := range s.events {
-			if s.events[i].env.key == key && s.events[i].at.Equal(at) && issueEvent(s.events[i].env.kind) {
-				return i
-			}
+	// own is each issue's issue events, by their index, in order.
+	own := map[string][]int{}
+	for i := range s.events {
+		if event := &s.events[i]; issueEvent(event.env.kind) {
+			own[event.env.key] = append(own[event.env.key], i)
 		}
-		return -1
+	}
+	find := func(key string, at time.Time) int {
+		events := own[key]
+		j, found := slices.BinarySearchFunc(events, at, func(i int, at time.Time) int { return s.events[i].at.Compare(at) })
+		if !found {
+			return -1
+		}
+		return events[j]
 	}
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		iss := t.Issues[key]
@@ -611,7 +660,7 @@ func (s *script) waitEnders(t Trace) map[int]waitAnchor {
 			switch {
 			case wait.Kind == WaitLink && wait.EndedBy == WaitLinkRemoved:
 				if i := find(key, wait.End); i >= 0 {
-					ended[i] = s.linkAnchor(iss, wait)
+					ended[i] = s.linkAnchor(own[key], iss, wait)
 				}
 			case wait.Kind == WaitLink && wait.EndedBy == WaitBlockerDone:
 				for _, blocker := range wait.On {
@@ -620,7 +669,7 @@ func (s *script) waitEnders(t Trace) map[int]waitAnchor {
 						continue
 					}
 					if i := find(blocker, wait.End); i >= 0 {
-						anchor := s.linkAnchor(iss, wait)
+						anchor := s.linkAnchor(own[key], iss, wait)
 						anchor.blocker = blocker
 						ended[i] = anchor
 					}
@@ -640,19 +689,16 @@ func (s *script) waitEnders(t Trace) map[int]waitAnchor {
 // linkAnchor is the anchor of an event that ended wait, a link wait of iss: the wait's start, and
 // the event of iss that added the link it began on: the first of the issue events of iss, up to
 // the wait's start, that each name a blocker the wait is on, with no event between them that
-// names none.
-func (s *script) linkAnchor(iss *IssueTrace, wait Wait) waitAnchor {
+// names none. own is the issue events of iss, by their index, in order.
+func (s *script) linkAnchor(own []int, iss *IssueTrace, wait Wait) waitAnchor {
 	anchor := waitAnchor{issue: iss.Key, kind: WaitLink, start: wait.Start, added: -1}
-	for i := range s.events {
-		event := s.events[i]
-		if event.env.key != iss.Key || event.at.After(wait.Start) || !issueEvent(event.env.kind) {
-			continue
+	for _, i := range own {
+		event := &s.events[i]
+		if event.at.After(wait.Start) {
+			break
 		}
-		var payload struct {
-			BlockedBy []string `json:"blocked_by"`
-		}
-		names := decodeField(event.env.payload, &payload) &&
-			slices.ContainsFunc(wait.On, func(key string) bool { return slices.Contains(payload.BlockedBy, key) })
+		blockedBy := event.parsed.Issue.BlockedBy
+		names := slices.ContainsFunc(wait.On, func(key string) bool { return slices.Contains(blockedBy, key) })
 		switch {
 		case !names:
 			anchor.added = -1

@@ -698,7 +698,7 @@ func (d *driver) placeEvent(i int, at time.Time) {
 func (d *driver) placeAnchored() error {
 	kept := d.anchored[:0]
 	for _, i := range d.anchored {
-		event := d.script.events[i]
+		event := &d.script.events[i]
 		if event.placed {
 			continue
 		}
@@ -757,7 +757,7 @@ func later(a, b time.Time) time.Time {
 // answers the event as the replay applies it; nil for an event of the daemon's own, which the
 // replay makes again from its own outbox, and which the shadow only notes.
 func (d *driver) dispatchEvent(i int) ([]byte, error) {
-	event := d.script.events[i]
+	event := &d.script.events[i]
 	if daemonWrote(event.env.actor, event.env.key) && !d.keepsDaemonEvent(event) {
 		d.shadow.note(event.env)
 		return nil, nil
@@ -771,41 +771,38 @@ func (d *driver) dispatchEvent(i int) ([]byte, error) {
 // into its tree (release_children), which the daemon's API writes from the architect's call, a
 // backlog, icebox or triage child set to todo with no label added. Every other write of the
 // daemon's own is its outbox's status write, which the replay's own rows make.
-func (d *driver) keepsDaemonEvent(event scriptEvent) bool {
-	if !issueEvent(event.env.kind) || event.env.payload == nil {
+func (d *driver) keepsDaemonEvent(event *scriptEvent) bool {
+	after := event.parsed.Issue
+	if after == nil {
 		return false
 	}
 	iss, ok := d.shadow.issues[event.env.key]
 	if !ok || iss.recorded == nil {
 		return false
 	}
-	var after, before struct {
+	var before struct {
 		Status string   `json:"status"`
-		Parent *string  `json:"parent"`
 		Labels []string `json:"labels"`
 	}
-	if !decodeField(event.env.payload, &after) || !decodeField(iss.recorded, &before) {
+	if !decodeField(iss.recorded, &before) {
 		return false
 	}
 	released := before.Status == "backlog" || before.Status == "icebox" || before.Status == "triage"
-	return released && after.Status == "todo" && after.Parent != nil && *after.Parent != "" && slices.Equal(after.Labels, before.Labels)
+	return released && after.Status == "todo" && after.Parent != "" && slices.Equal(after.Labels, before.Labels)
 }
 
 // namesLinkOrChild says whether event shows an issue with a link or a parent (assumption 10).
-func (d *driver) namesLinkOrChild(event scriptEvent) bool {
-	var payload struct {
-		BlockedBy []string `json:"blocked_by"`
-		Parent    *string  `json:"parent"`
-	}
-	if !issueEvent(event.env.kind) || !decodeField(event.env.payload, &payload) {
+func (d *driver) namesLinkOrChild(event *scriptEvent) bool {
+	shown := event.parsed.Issue
+	if shown == nil {
 		return false
 	}
-	for _, blocker := range payload.BlockedBy {
+	for _, blocker := range shown.BlockedBy {
 		if project, _, _ := cutKey(blocker); project != d.window.Project {
 			d.used[25] = true
 		}
 	}
-	return len(payload.BlockedBy) > 0 || payload.Parent != nil && *payload.Parent != ""
+	return len(shown.BlockedBy) > 0 || shown.Parent != ""
 }
 
 // cutKey splits an issue key into its project and number.
@@ -824,7 +821,7 @@ func (d *driver) applyEvent(i int, applied []byte) error {
 	if applied == nil {
 		return nil
 	}
-	event := d.script.events[i]
+	event := &d.script.events[i]
 	fact, _, err := intake.DecodeDispatchEvent(d.window.Project, event.env.key, applied)
 	if err != nil {
 		return fmt.Errorf("replay: decode the %s event of %s at %s: %w", event.env.kind, event.env.key, stamp(event.at), err)
