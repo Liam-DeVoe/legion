@@ -1,7 +1,7 @@
 import {
   type LegionActivityRequest,
-  LegionChildRequest,
   LegionAgentActionResponse,
+  LegionChildRequest,
   LegionClaimRequest,
   LegionCompactResponse,
   LegionControllerGrantRequest,
@@ -268,9 +268,6 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly rootClose: (
     input: z.input<typeof LegionRootCloseRequest>
-  ) => Promise<z.output<typeof LegionEmptyResponse>>;
-  readonly childPark: (
-    input: z.input<typeof LegionChildRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>
@@ -785,8 +782,6 @@ export function createLegionDaemonClient(
       post("/legion/v1/signoff", LegionSignOffRequest, LegionEmptyResponse, input),
     rootClose: (input) =>
       post("/legion/v1/roots/close", LegionRootCloseRequest, LegionEmptyResponse, input),
-    childPark: (input) =>
-      post("/legion/v1/children/park", LegionChildRequest, LegionEmptyResponse, input),
     childRerun: (input) =>
       post("/legion/v1/children/rerun", LegionChildRequest, LegionEmptyResponse, input),
   };
