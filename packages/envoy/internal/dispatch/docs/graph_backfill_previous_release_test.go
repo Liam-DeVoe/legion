@@ -362,9 +362,14 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // (refs.CommentsNamingNoNode, graphcensus.BlockRowsStatement, the node write of
 // refs.CommentWrite.Queue). Those columns move no row in or out of what a pass owes, and no build
 // of rule 1 has shipped with the statements before them, so the rule stays 1 and its digest is
-// re-recorded rather than raised.
+// re-recorded rather than raised. It was re-recorded again when the store's write path
+// (graphstore.QueueWrite) began reading the types of the nodes it writes (queueSupertagCheck),
+// which refs.CommentWrite.Queue now sends first, renumbering the statements after it, while its
+// node move and its append changed in whitespace alone: that read writes nothing and refuses a
+// comment write only where the store holds no live supertag row of comment, person or session,
+// rows migration 20261109051232 seeds, so it too moves no row in or out of what a pass owes.
 var markingStatementDigests = map[int]string{
-	1: "e87bbdc7816050c1285eacf35c762de95b3fd58b6b8b93e0b427208609e988d1",
+	1: "564582f5e8fbc53950324c8c77ee2d10f4665daad8ad3ebb15e71192b7b2cc9f",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks

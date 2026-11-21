@@ -93,11 +93,11 @@ func TestTheClosureAnswersADocumentReservedForItsAuthorTwoHopsAwayToThatAuthorAl
 	insertReference(t, tx, "artifact", publicDocument, "artifact", privateDocumentKey)
 	reserveForAuthor(t, tx, "artifact", privateDocumentKey)
 
-	firstHop := Member{RefKey: publicDocumentKey, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}
+	firstHop := documentMember(t, tx, publicDocumentKey, 1, model.ReferenceVia{Kind: "comment", ID: comment})
 	if got, want := closureOf(t, tx, privateReader), []Member{firstHop}; !reflect.DeepEqual(got, want) {
 		t.Errorf("another person's closure = %#v; want %#v, without the private document %s", got, want, privateDocumentKey)
 	}
-	want := []Member{firstHop, {RefKey: privateDocumentKey, Depth: 2, Via: model.ReferenceVia{Kind: "artifact", ID: publicDocument}}}
+	want := []Member{firstHop, documentMember(t, tx, privateDocumentKey, 2, model.ReferenceVia{Kind: "artifact", ID: publicDocument})}
 	if got := closureOf(t, tx, privateAuthor); !reflect.DeepEqual(got, want) {
 		t.Errorf("the author's closure = %#v; want %#v", got, want)
 	}

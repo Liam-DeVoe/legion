@@ -65,6 +65,21 @@ const BlockRefKindsSQL = `select 'mentions'
 		union select attribute.attributes->>'name' from graph_nodes attribute
 		where attribute.kind = 'attribute' and attribute.attributes->>'kind' = '` + string(pmdoc.BlockAttributeBlockList) + `'`
 
+// BlockRefKinds reads the kinds BlockRefKindsSQL selects through q, by a statement of their own.
+// A read whose plan may reach graph_nodes only by its key reads them here first, in its own
+// transaction, and binds them as a text[] parameter (`t.kind = any($N::text[])`), so the read of
+// the store's attribute nodes is no part of its plan: the store's held statement of a document
+// (heldDocumentBlocks) and the erase's read of the nodes stating a tuple into the node it erases
+// (grapherase's readBlockers). An attribute node that names no attribute is no kind.
+func BlockRefKinds(ctx context.Context, q Queryer) ([]string, error) {
+	var kinds []string
+	if err := q.QueryRow(ctx, `select array_agg(linked.kind) from (`+BlockRefKindsSQL+`) linked (kind)
+		where linked.kind is not null`).Scan(&kinds); err != nil {
+		return nil, fmt.Errorf("read the kinds block_refs projects: %w", err)
+	}
+	return kinds, nil
+}
+
 // BlockIndex is what a document's block index holds: each block's row - the sha256 of its text,
 // when the row was written and whether it names the block's node - by block id; the links its
 // blocks hold, each with the block types it points at, when its row was written, the source

@@ -982,11 +982,12 @@ func projectionRows(reference referencingColumn, table string) string {
 // in a subquery behind an offset 0 the planner cannot flatten, so no plan reads graph_nodes
 // again for each such tuple. The kinds block_refs projects, which the store's attribute nodes
 // declare (refs.BlockRefKindsSQL), are read first by a statement of their own in the same
-// transaction and bound to the read of the tuples as a parameter (graphcensus.DigestedTuple), so
-// its plan reads no graph_nodes row but by that key. The tuples are read through
-// graph_tuples_as_of_in, whose predicate the read proves by naming `to_kind <> 'value'` (a value
-// is no node, so nothing points into one), so a plan cached without the node's kind still reaches
-// that index (TestTheBlockersReadProbesEachStatingNodeOnce).
+// transaction (refs.BlockRefKinds) and bound to the read of the tuples as a parameter
+// (graphcensus.DigestedTuple), so its plan reads no graph_nodes row but by that key. The tuples
+// are read through graph_tuples_as_of_in, whose predicate the read proves by naming
+// `to_kind <> 'value'` (a value is no node, so nothing points into one), so a plan cached
+// without the node's kind still reaches that index
+// (TestTheBlockersReadProbesEachStatingNodeOnce).
 func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	for _, held := range graphstore.ProjectedTables {
 		references, err := referencesTo(ctx, tx, held.Table)
@@ -1016,10 +1017,9 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead)
 	into := graphstore.NodeTuplesIntoSQL("t.", "$1", "$2", "$3") + ` and t.to_kind <> '` + graphstore.KindValue + `'
 			and not (t.from_kind = $1 and t.from_id = $2)`
 	addressed := graphstore.AddressKind(e.Kind, e.ID)
-	var blockRefKinds []string
-	if err := tx.QueryRow(ctx, `select array_agg(linked.kind) from (`+refs.BlockRefKindsSQL+`) linked (kind)
-		where linked.kind is not null`).Scan(&blockRefKinds); err != nil {
-		return fmt.Errorf("read the kinds block_refs projects: %w", err)
+	blockRefKinds, err := refs.BlockRefKinds(ctx, tx)
+	if err != nil {
+		return err
 	}
 	if err := e.readStating(ctx, tx, `
 		select distinct t.from_kind, t.from_id, t.kind from (

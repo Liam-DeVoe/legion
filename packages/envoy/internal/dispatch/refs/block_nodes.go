@@ -898,10 +898,13 @@ type heldLink struct{ kind, toKind, toID string }
 
 // heldLinkKinds is true of a tuple t of a kind a pair of a version writes into block_refs, the
 // kinds whose links the release before this one drops by deleting their rows: a mention and a
-// pointer of each `block[]` attribute the store's type nodes declare (BlockRefKindsSQL), and a
+// pointer of each `block[]` attribute the store's type nodes declare, which blockRefKinds, a
+// text[] parameter bound to what BlockRefKinds read in the same transaction, holds, and a
 // decision's ties, its decided_by, from_ask and shaped (typedKinds, TypedFacts.pairs). It is the
 // census's own reading of the tuples a block_refs row states (graphcensus's DigestedTuple).
-var heldLinkKinds = `(t.kind in (` + BlockRefKindsSQL + `) or t.kind in (` + quotedKinds(typedKinds) + `))`
+func heldLinkKinds(blockRefKinds string) string {
+	return `(t.kind = any(` + blockRefKinds + `) or t.kind in (` + quotedKinds(typedKinds) + `))`
+}
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
 // block id: each block node that states itself a member of the document (an in_document tuple
@@ -918,18 +921,25 @@ var heldLinkKinds = `(t.kind in (` + BlockRefKindsSQL + `) or t.kind in (` + quo
 // the version's render: this read is what the store would otherwise go on asserting against it,
 // as heldBlockParentDifferences is for the parents. The members come through
 // graph_tuples_as_of_in in one probe and each member's links through graph_tuples_as_of_out in
-// one probe a block, in one statement: the links are every kind but two, which proves nothing of
-// graph_tuples_current's predicate, and that index leaves delivered_to out. The kinds and the
-// value kind are written into the text so the planner can prove each index's partial predicate
-// whatever plan it caches.
+// one probe a block, in one statement: the links are the kinds a version's pairs write
+// (heldLinkKinds), a list that proves nothing of graph_tuples_current's predicate, and that index
+// leaves delivered_to out. The typed kinds and the value kind are written into the text, and the
+// block-reference kinds bound as one parameter, so the planner can prove each index's partial
+// predicate whatever plan it caches.
 //
 // Each member probes its own node through graph_nodes' primary key, in a subquery behind an
 // offset 0 the planner cannot flatten. Joined plainly, the planner took `kind = 'block'` alone
 // for the index's condition wherever the table's statistics counted few blocks, and read every
 // block node again for each member, its id left to a join filter: on a document of 1,000 blocks
 // that removed 499,500 rows, and a document of 150,000 blocks is the read this pass makes
-// (TestTheHeldDocumentReadProbesEachMembersNodeOnce).
+// (TestTheHeldDocumentReadProbesEachMembersNodeOnce). The kinds of the store's `block[]`
+// attributes are read first by a statement of their own (BlockRefKinds) and bound as a
+// parameter, so the statement reads no attribute node of graph_nodes, and none but by its key.
 func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[string][]heldLink, error) {
+	blockRefKinds, err := BlockRefKinds(ctx, q)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := q.Query(ctx, `
 		select member.id, held.kind, held.to_kind, held.to_id
 		from (
@@ -947,13 +957,13 @@ func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[stri
 			from (
 				`+graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
 		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = member.id
-				  and t.to_kind <> '`+graphstore.KindValue+`' and `+heldLinkKinds)+`
+				  and t.to_kind <> '`+graphstore.KindValue+`' and `+heldLinkKinds(`$2::text[]`))+`
 			) current
 			where current.asserted
 		) held on true
 		where node.state <> '`+graphstore.StateGone+`'
 		order by member.id, held.kind, held.to_kind, held.to_id
-	`, refKey)
+	`, refKey, blockRefKinds)
 	if err != nil {
 		return nil, fmt.Errorf("read what the store states of the blocks of %s: %w", refKey, err)
 	}
