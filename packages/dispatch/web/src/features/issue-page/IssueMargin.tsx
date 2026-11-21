@@ -1,20 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
-import {
-  type ReactNode,
-  type Ref,
-  type RefCallback,
-  type RefObject,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-} from "react";
-import { flushSync } from "react-dom";
+import { type QueryClient, type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { projectsQuery, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
-import type { Artifact, IssueDetails, UserState } from "../../api/types";
+import type { Artifact, IssueDetails, ReferenceTargets, UserState } from "../../api/types";
 import {
   pageAvatar,
   pageFailedText,
@@ -22,7 +12,6 @@ import {
   pageInkText,
   pageLabelChip,
   pageQuietText,
-  pageRowBorder,
   pageRowHoverBg,
 } from "../../theme/classes";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
@@ -31,22 +20,46 @@ import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
 import { IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
-import { RepoControl } from "../issue/RepoControl";
-import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
+import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
+import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { listedEdges, ReferencedBy } from "../refs/ReferencedBy";
-import { referencesQuery } from "../refs/reference-target";
+import { EVENT_FRESH, referencesQuery, standsFailed } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { BlockedByControl } from "./BlockedByControl";
 import {
-  BLOCKED_BY_INPUT_ID,
-  BlockedByControl,
-  blockedByControlName,
-  IssueLine,
-} from "./BlockedByControl";
-import { DetailsErrorLine, useFocusHandOff, useSaidFailure } from "./details-error";
+  DetailsErrorLine,
+  retryRead,
+  useRetryHandOff,
+  useSaidFailure,
+  useTitlesRetry,
+} from "./details-error";
+import {
+  CIRCLED_DOT,
+  FLAG,
+  GRID_SQUARE,
+  HOUSE,
+  LINED_SQUARE,
+  RIGHT_OVER_LEFT_ARROWS,
+  SMILING_FACE,
+  SQUARE_IN_SQUARE,
+  TICKED_BOX,
+  UPRIGHT_BAR,
+} from "./details-icons";
+import {
+  FOLD_AFTER,
+  IssueList,
+  PropertySection,
+  Row,
+  ShowAll,
+  SMALL_GLYPH,
+  STATUS_ROW_SHAPE,
+} from "./details-leaves";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
-import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
+import { blockedByControlName, referencedByControlName } from "./details-names";
+import { detailsEditor, detailsOpener } from "./details-rows";
 import { IssueAddMenu } from "./IssueAddMenu";
 import { IssueClaimControl } from "./IssueClaimControl";
 import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
@@ -55,33 +68,60 @@ import { IssueRouteControl } from "./IssueRouteControl";
 import { statusGlyph, statusTone } from "./issue-status";
 import { useMarginDrawer, useMarginDrawsSlot } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
-import {
-  authorText,
-  MARGIN_SECTION_NAMES,
-  type MarginSection,
-  PROPERTY_LABELS,
-  pageChrome,
-} from "./page-structure";
+import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./page-words";
 import { ROW_LINK } from "./row-references";
-import { usableControl } from "./usable-control";
+import { StatusGlyph } from "./StatusGlyph";
+import { firstUsable } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { type MarginSections, useMarginSections } from "./useMarginSections";
+import { useMarginSections } from "./useMarginSections";
+import { usePriorityHandOffs } from "./usePriorityHandOffs";
 import { waitingOnReader } from "./waiting";
 
-/** How many entries a list of unbounded length draws before it folds behind a count that opens
- *  the rest. */
-const FOLD_AFTER = 10;
+/** The id of the Parent row's line that says why Dispatch refused a parent. */
+export const PARENT_ERROR_ID = "issue-parent-error";
 
-/** The rows of each section that a control elsewhere on the page opens Details at
- *  (`DetailsRow`), each where it is drawn: the section opens for a request of one of them.
- *  People holds the issue's collaborators, whose place there is `DetailsPeople`. */
-const SECTION_ROWS: Readonly<Record<MarginSection, readonly DetailsRow[]>> = {
-  development: ["labels", "parent", "route"],
-  people: ["collaborators"],
-  references: [],
-};
+/** What the line of a write the reader stopped says on a closed issue, whose row of Details draws
+ *  no Retry and no control that would save `field` again, since Dispatch refuses that field of a
+ *  closed issue (`ISSUE_CLOSED`); `undefined` where the issue is open or the write was not
+ *  stopped, so the line says its own words instead. `what` is what Dispatch has not confirmed. */
+function closedStoppedNote(
+  write: { readonly isClosed: boolean; readonly stopped: boolean },
+  what: string,
+  field: string
+): string | undefined {
+  return write.isClosed && write.stopped
+    ? stoppedWriteNote(what, "saved", {
+        anew: `The issue is closed, so the ${field} cannot be saved again.`,
+      })
+    : undefined;
+}
+
+/** What a row of Details says where a names read of the issues it lists failed, as it draws those
+ *  issues by their keys alone: Blocked by's and Blocks' alike. */
+export const TITLES_READ_FAILED = "Could not read the titles of these issues.";
+
+/** The title a names read (`referenceTargetsQuery`) answered for the issue `key`. While that read
+ *  has not answered, an issue the read's last answer named keeps the title that answer gave
+ *  (`keptUntilFailed`: the last answer that held data, of an earlier set), and any other is
+ *  undefined; undefined too where the read failed holding no answer, and where it names nothing
+ *  at the issue's address. */
+function issueTitleIn(read: ReferenceTargets | undefined, key: string): string | undefined {
+  const reference = buildDispatchReference({ key, kind: "issue" });
+  return read?.targets?.find((target) => target.ref === reference)?.name;
+}
+
+/** What a names read under `queryKey` draws while it holds no answer (`placeholderData`): the
+ *  answer of the set of issues before (`before`), as a change to the set gives the read a new key,
+ *  so a title drawn stays drawn while the new read is out - until that read first fails. A read
+ *  that failed holding no answer stands failed (`standsFailed`) and draws the keys with its
+ *  failure line, which stays while the read its Retry sent is out; the old answer drawn then would
+ *  be an answer held, which would take the line, and its Retry with a reader's focus, away. */
+function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
+  return <T,>(before: T | undefined): T | undefined =>
+    (queryClient.getQueryState(queryKey)?.errorUpdateCount ?? 0) > 0 ? undefined : before;
+}
 
 /**
  * The margin's own side of the issue page's panel: the margin's cards, and - where the margin
@@ -147,10 +187,23 @@ export function IssueMarginCards({
  * conversation: the outline is the conversation. The people, the facts of the focused row and
  * the history each have one of the three places `details-more.tsx` exports.
  *
+ * A focus Details loses goes on only where the reader's own press took its element away: a save
+ * of theirs that lands, a Retry whose request answers, an editor they close, an Unpin, a Show
+ * all. A Retry's line, the claim row's Release and the priority's line moved by the reader's own
+ * write hand the focus on in their row as they go (`useFocusHandOff`); an editor hands it on as
+ * it closes, and an Unpin and a Show all move it at their press. A change the reader did not
+ * make - another session's write, an event, a read that answers on its own, the issue closed
+ * elsewhere - leaves the focus on the page's body, as on every page of Dispatch, and nothing in
+ * Details takes it; but one that reaches what the reader's press asked for while that press is
+ * still out - the route set to the reader's draft, the claim released, the read answered - is
+ * taken for the press's answer, and hands the focus on as that answer would.
+ *
  * The details slot draws it once and appends it to the shell's drawer, so nothing in it is
- * thrown away as the reader closes and opens Details. What it reads that the header does not -
- * the titles of the issues around this one, and its links on GitHub - it reads only while
- * Details is open, so a load that leaves Details shut costs no request for it.
+ * thrown away as the reader closes and opens Details. The titles of the issues this one waits
+ * on, what waits on it and the titles of those, and its links on GitHub it reads only while
+ * Details and its Development are open, and what references the issue only while Details and its
+ * References are open with its Referenced by list, so a load that leaves Details shut costs no
+ * request for any of them.
  */
 export function IssueMarginPanel({
   documentArtifact,
@@ -185,18 +238,25 @@ export function IssueMarginPanel({
   // The panel's own element, under which every control of Details that Add reaches is drawn.
   const panel = useRef<HTMLDivElement>(null);
   const referencesPanelId = useId();
-  // The blocked-by editor's state is the panel's and not its row's, because a closed section
-  // unmounts its rows and the panel stays drawn for the life of the page (`slots/details.tsx`):
-  // a list typed before the reader closed Development, and a refusal that lands after, are
-  // still there when it opens again (`BlockedByControl`).
+  // The blocked-by editor's state is the panel's, which stays drawn for the life of the page
+  // (`slots/details.tsx`), as a closed section keeps its rows: a list typed before the reader
+  // closed Development, and a refusal that lands after, are still there when it opens again
+  // (`BlockedByControl`).
   const [blockedByEditing, setBlockedByEditing] = useState(false);
   const [blockedByDraft, setBlockedByDraft] = useState("");
   const blockedByWrite = useIssueBlockedBy(issue.key, () => setBlockedByEditing(false));
   // The row's own control takes the focus back as the reader leaves its editor - by a save, by
   // Cancel or by Escape - since the box that held it goes with the editor; only where the focus
   // fell to the document, the one focus the page takes back for the reader (`shell/roving.ts`).
+  // It passes over a control that takes no press (`usableControl`). On a closed issue the Parent
+  // row draws no control, so the focus goes to the parent's link where the issue has a parent,
+  // and the route's control is disabled; where the row holds nothing that takes the focus, it
+  // goes to Development's heading, the button that opens and closes the section these rows are in.
   const parentControl = useRef<HTMLButtonElement>(null);
+  const parentValue = useRef<HTMLDivElement>(null);
   const routeControl = useRef<HTMLButtonElement>(null);
+  const routeValue = useRef<HTMLDivElement>(null);
+  const developmentHeading = useRef<HTMLButtonElement>(null);
   const leftEditor = useRef<IssueField | null>(null);
   const closeEditor = () => {
     leftEditor.current = editingField;
@@ -206,40 +266,87 @@ export function IssueMarginPanel({
     const left = leftEditor.current;
     leftEditor.current = null;
     if (left === null || editingField !== null || !focusOnDocument()) return;
-    (left === "parent" ? parentControl : routeControl).current?.focus();
+    const rowControls =
+      left === "parent"
+        ? [parentControl.current, parentValue.current?.querySelector<HTMLElement>("a[href]")]
+        : [routeControl.current];
+    firstUsable(...rowControls, developmentHeading.current)?.focus();
   }, [editingField]);
-  // The failure of Details' last field save, which the route's row says when it is a route's,
-  // and the row's own control, which takes the focus of that line's Retry as the line goes.
+  // The failure of Details' last field save, which the route's row says when it is a route's.
+  // The line goes once the save lands, or once the draft holds the issue's own route. Where the
+  // reader pressed its Retry and the line went, the focus Retry held goes on in the row: to the
+  // row's control, and where that takes no press - not drawn while the route's editor is open,
+  // disabled on a closed issue - to the editor's box, the one box of the row; and where that takes
+  // none either, to Development's heading. The line going while the route Retry sent is still out,
+  // as another session sets the issue's route to the draft, reached what the press asked for, so
+  // the row takes it for the press's answer. Retry going while its line stays answers no press: a
+  // close made in another session takes it, as a closed issue's line offers none, and the focus
+  // stays on the page's body.
   const fieldFailure = useSaidFailure(writes.updateIssue);
-  const routeRetryLeft = useFocusHandOff(() => routeControl.current);
+  const routeStopped = fieldFailure?.error instanceof SendStoppedError;
+  const routeFailureShown =
+    fieldFailure !== null &&
+    fieldFailure.variables?.input.route !== undefined &&
+    writes.drafts.route !== (issue.route ?? "");
+  const routeRetry = useRetryHandOff(() =>
+    routeFailureShown
+      ? null
+      : firstUsable(
+          routeControl.current,
+          routeValue.current?.querySelector<HTMLElement>("input"),
+          developmentHeading.current
+        )
+  );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
-  // What Details reads beyond the issue - the titles of the issues around this one, and its
-  // links on GitHub - only while the drawer is open, so a load that leaves it shut costs no
-  // request for it.
+  // The reads Details makes beyond the issue - the titles of the issues this one waits on, what
+  // waits on it and the titles of those, its links on GitHub, and what references it - are made
+  // only while the drawer is open, so a load that leaves it shut costs no request for them.
   const reading = useMarginDrawer()?.open === true;
+  // A closed section keeps its rows, hidden (`PropertySection`), so each of those reads is made
+  // only while its own section is open too - all but the last are of rows in Development, where a
+  // link reads GitHub as it is drawn, and the last is the References row's list: a reader who
+  // keeps a section closed costs none of its reads, nor any of them again on an event. Each
+  // section's other rows make their own reads, as they do while Details itself is closed.
+  const readingDevelopment = reading && sections.isOpen("development");
+  const readingReferences = reading && sections.isOpen("references");
   const blockers = issue.blocked_by ?? [];
+  // The titles of the issues this one waits on, and below them those of the issues that wait on
+  // it, are each a names read of the issues' addresses. The event of an issue whose title changes
+  // (`issue.updated` naming `title` among its changes, or naming none, as an older server sends
+  // it) reads again every names read whose key holds that issue's address
+  // (`api/event-refresh.ts`'s `namesReadsNaming`), so neither is read again by its age, and a
+  // window focus reads one again only while its last read failed (`EVENT_FRESH`). Each draws the
+  // answer of the set before while the read of a changed set is out (`keptUntilFailed`).
+  const queryClient = useQueryClient();
+  const blockerRead = referenceTargetsQuery(
+    blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))
+  );
   const blockerTitles = useQuery({
-    ...referenceTargetsQuery(blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))),
-    enabled: reading && blockers.length > 0,
+    ...blockerRead,
+    ...EVENT_FRESH,
+    enabled: readingDevelopment && blockers.length > 0,
+    placeholderData: keptUntilFailed(queryClient, blockerRead.queryKey),
   });
-  const titleOf = (key: string) => {
-    const reference = buildDispatchReference({ key, kind: "issue" });
-    return blockerTitles.data?.targets.find((target) => target.ref === reference)?.name;
-  };
-  // What waits on this issue is the other direction of `blocked_by`: the references of that
-  // kind that point at it, each issue's title the head of its text that the edge carries as its
-  // excerpt (the issue's node itself carries no text). It is kept under the backlink panels'
-  // `["references", "to", <reference>]`, so the event that starts or stops an issue waiting on
-  // this one reads it again (`api/event-refresh.ts`'s rule for `blocked_by`).
+  const titleOf = (key: string) => issueTitleIn(blockerTitles.data, key);
+  // What waits on this issue is the other direction of `blocked_by`: the references of that kind
+  // that point at it. It is kept under the backlink panels' `["references", "to", <reference>]`,
+  // so the event that starts or stops an issue waiting on this one reads it again
+  // (`api/event-refresh.ts`'s rule for a moved `child_of` or `blocked_by`, which reads again each
+  // panel under that prefix whose read passes its test: those of the new parent and of each new
+  // blocker the event names, this one where an issue starts waiting on it, and those that list an
+  // edge from the issue, this one where it stops). Its age never reads it again, and a window
+  // focus does only while its last read failed (`EVENT_FRESH`). It says which issues wait and not
+  // what they are called: the rename of one of them moves no `blocked_by`, and the panel the
+  // server names for it (`references_changed`) is read again by its exact key, which is not this
+  // one, so the title an edge carries here would stay the old one.
   const blocking = useQuery({
-    enabled: reading,
+    enabled: readingDevelopment,
     queryFn: () => api.getReferences(issueReference, { kind: "blocked_by" }),
     queryKey: ["references", "to", issueReference, "blocked_by"],
+    ...EVENT_FRESH,
   });
-  const blocks = (blocking.data?.edges ?? []).flatMap((edge) =>
-    edge.kind !== "blocked_by" || edge.node.issue_key === undefined
-      ? []
-      : [{ key: edge.node.issue_key, title: edge.excerpt?.text ?? "" }]
+  const waiting = (blocking.data?.edges ?? []).flatMap((edge) =>
+    edge.kind !== "blocked_by" || edge.node.issue_key === undefined ? [] : [edge.node.issue_key]
   );
   // The list Referenced by opens, as the cache holds it: this never reads it itself, so the
   // control has a number only once the list has been read, and then it is the rows the list
@@ -247,55 +354,117 @@ export function IssueMarginPanel({
   // leaves out (`listedEdges`).
   const referencesRead = useQuery({ ...referencesQuery(issueReference), enabled: false });
   const referencesListed = listedEdges(referencesRead.data?.edges, issueReference, true)?.length;
-  // The line of a read that failed goes once the read answers, and the focus its Retry held goes
-  // on in the row rather than to the page. In Blocked by it goes to the row's control, found by
-  // its name as the add menu finds it (`blockedByControlName`); where the row draws none - on a
-  // closed issue, or while its editor is open - to the first issue the row waits on; and where
-  // it waits on none while the editor is open, as another session's write can leave it, to the
-  // editor's box. In Blocks, which has no control, it goes to the first issue the answer drew,
-  // or else to the None it says.
+  const waitingRead = referenceTargetsQuery(
+    waiting.map((key) => buildDispatchReference({ key, kind: "issue" }))
+  );
+  const waitingTitles = useQuery({
+    ...waitingRead,
+    ...EVENT_FRESH,
+    enabled: readingDevelopment && waiting.length > 0,
+    placeholderData: keptUntilFailed(queryClient, waitingRead.queryKey),
+  });
+  // A waiting issue whose title is not read is drawn by its key alone, as Blocked by draws one.
+  const blocks = waiting.map((key) => ({ key, title: issueTitleIn(waitingTitles.data, key) }));
+  // The line of a read that stands failed (`standsFailed`) goes once the read answers; a refresh
+  // that fails over an answer the read holds draws no line, and the row keeps what that answer
+  // drew. Each titles' Retry notes its own press and the read it was pressed for
+  // (`useTitlesRetry`), and hands the focus it held on in the row only once the read the row
+  // draws now is that read and has answered after it failed: the read the press sent, or a read
+  // of the same issues an event sent while it was out, which reached what the press asked for, so
+  // the row takes it for the press's answer. The answer of another set is not: one changed in
+  // another session to a set not read yet, whose read is out while the row draws the titles of
+  // the set before, or emptied, whose read is not sent, or back to one already read, whose answer
+  // is cached, even where that read failed before it answered. A line that goes with no press of
+  // its Retry - a read answering on an event or a window focus - or before that answer - the set
+  // changed or emptied in another session while the read is out - leaves the focus on the page's
+  // body. In Blocked by the focus goes to the row's control, found by its name as the add menu
+  // finds it (`blockedByControlName`), and where the row draws none - on a closed issue, or while
+  // its editor is open - to the first issue the row waits on, each passing over a control that
+  // takes no press (`usableControl`). The row draws that issue whenever the read has answered,
+  // since the titles are read only for a set that holds one. In Blocks, which has no control, the
+  // focus of the Retry of what waits on the issue goes to the first issue the row draws, or else
+  // to the None it says, which the row draws only once that read has answered; and that of the
+  // Retry of their titles goes to the first issue the row draws.
   const blockedByValue = useRef<HTMLDivElement>(null);
-  const titlesRetryLeft = useFocusHandOff(
-    () =>
+  const titlesRetry = useTitlesRetry(blockerTitles, blockerRead.queryKey, () =>
+    firstUsable(
       blockedByValue.current?.querySelector<HTMLElement>(
         `[aria-label="${CSS.escape(blockedByControlName(issue.key, blockers.length))}"]`
-      ) ??
-      blockedByValue.current?.querySelector<HTMLElement>("a[href]") ??
-      blockedByValue.current?.querySelector<HTMLElement>(`#${BLOCKED_BY_INPUT_ID}`)
+      ),
+      blockedByValue.current?.querySelector<HTMLElement>("a[href]")
+    )
   );
   const blocksValue = useRef<HTMLDivElement>(null);
   const blocksNone = useRef<HTMLSpanElement>(null);
-  const blocksRetryLeft = useFocusHandOff(
-    () => blocksValue.current?.querySelector<HTMLElement>("a[href]") ?? blocksNone.current
-  );
-  // Details draws the priority's line in one of two places: beside Add while the issue advances
-  // none, and in the Advances row once it advances one. The first priority added and the last one
-  // removed take the line out of the place that held the focus, and the focus goes on to the line
-  // in its other place rather than to the page. Out of the place beside Add it goes to the
-  // Advances row's add control: the add control beside Add is where the focus is once an add
-  // lands, so the reader stays on the control of that name, whose next press adds another, with
-  // Remove of what they added just before it; a line at the cap draws no add control, and there
-  // it goes to the row's first priority. Out of the Advances row it goes to the add control
-  // beside Add, the one control the line draws there. Each passes over a control that takes no
-  // press (`usableControl`), and where none is left the focus goes to Development's heading, the
-  // button that opens and closes the section these rows are in. On a closed issue each add
-  // control is disabled and holds no focus, so out of the place beside Add the focus goes to the
-  // row's first priority, and out of the Advances row to that heading.
-  const advancesValue = useRef<HTMLDivElement>(null);
-  const addRow = useRef<HTMLDivElement>(null);
-  const developmentHeading = useRef<HTMLButtonElement>(null);
-  const priorityAddSelector = `[aria-label="${CSS.escape(addPriorityControlName(issue.key))}"]`;
-  const priorityBesideAddLeft = useFocusHandOff(() =>
+  const firstWaiting = () => blocksValue.current?.querySelector<HTMLElement>("a[href]");
+  const blockingRetry = useRetryHandOff(() => firstWaiting() ?? blocksNone.current);
+  const waitingRetry = useTitlesRetry(waitingTitles, waitingRead.queryKey, firstWaiting);
+  const priority = usePriorityHandOffs(issue, developmentHeading);
+  // The Repository row's control draws its own failed read of the mappings and its own refused
+  // write, and hands each to the row to say (`sayFailure`), as Details says its own. A read's
+  // line stands while the mappings stand failed (`standsFailed`), so a refresh that fails over
+  // mappings the control holds draws none, and the box still suggests them. The line keeps its
+  // words while its Retry reads again, as Details' own read lines do: the read that is out holds
+  // no error, so words taken from the error would change as Retry is pressed. A press of a
+  // write's Retry clears the refusal as it sends the pick again, taking the line with it, so that
+  // Retry never waits on the write it sent and reads no busy. Each line notes the press of its
+  // own Retry. As a line goes with a reader's focus on its Retry after their press of that Retry
+  // - a write's at that press, a read's once the mappings answer - the focus goes on to the row's
+  // own control: the box, drawn while a write is out, else the text or None the row draws in its
+  // place; and where the row holds nothing that takes it, on a closed issue, to Development's
+  // heading. A line that goes with no press of its own Retry - the mappings read again on an
+  // event, or a write's Retry taken away by a close made in another session, after a press of the
+  // read's Retry or of none - hands nothing on. On a closed issue a write's line has no Retry:
+  // Dispatch refuses every repository of a closed issue (`ISSUE_CLOSED`), so the pick sent again
+  // would be refused again, and a pick the reader stopped says the issue is closed in place of the
+  // Retry its line would offer; the control says which pick the reader stopped
+  // (`RepoControlFailure`'s `stopped`).
+  const repoValue = useRef<HTMLDivElement>(null);
+  const repoControlLeft = () =>
     firstUsable(
-      advancesValue.current?.querySelector<HTMLElement>(priorityAddSelector),
-      advancesValue.current?.querySelector<HTMLElement>("a[href]"),
+      repoValue.current?.querySelector<HTMLElement>("input"),
+      ...(repoValue.current?.querySelectorAll<HTMLElement>("button") ?? []),
       developmentHeading.current
-    )
-  );
-  const priorityRowLeft = useFocusHandOff(() =>
+    );
+  const repoReadRetry = useRetryHandOff(repoControlLeft);
+  const repoWriteRetry = useRetryHandOff(repoControlLeft);
+  const repoWhat = `the repository of ${issue.key}`;
+  const sayRepoFailure = (failure: RepoControlFailure): ReactNode =>
+    failure.kind === "write" ? (
+      <DetailsErrorLine
+        message={
+          closedStoppedNote({ isClosed, stopped: failure.stopped }, repoWhat, "repository") ??
+          failure.message
+        }
+        onRetry={isClosed ? undefined : failure.retry}
+        {...repoWriteRetry}
+      />
+    ) : standsFailed(failure.read) ? (
+      <DetailsErrorLine
+        failure={failure.read.errorUpdateCount}
+        message={failure.message}
+        onRetry={retryRead(failure.read)}
+        {...repoReadRetry}
+        retrying={failure.read.isFetching}
+      />
+    ) : null;
+  // Referenced by's line stands while its read stands failed (`standsFailed`), as each line of
+  // Details' own does - `ReferencedBy` draws it so where it is handed `retried` - so its Retry
+  // goes with it once the read the press sent answers. Where the reader's press of Retry took it
+  // away, the focus it held goes on to the list's first link; where the list draws none, with
+  // nothing to list, to Referenced by's own control, which opens and closes the list; and where
+  // that is not drawn - at a count of 0, while a list opened before stays open - to References'
+  // heading, the button that opens and closes the section. Each passes over a control that takes
+  // no press (`usableControl`). A line that goes with no press of its Retry - the list read again
+  // on an event, or after a press whose read failed - leaves the focus on the page's body.
+  const referencesValue = useRef<HTMLDivElement>(null);
+  const referencesControl = useRef<HTMLButtonElement>(null);
+  const referencesHeading = useRef<HTMLButtonElement>(null);
+  const referencesRetry = useRetryHandOff(() =>
     firstUsable(
-      addRow.current?.querySelector<HTMLElement>(priorityAddSelector),
-      developmentHeading.current
+      referencesValue.current?.querySelector<HTMLElement>("a[href]"),
+      referencesControl.current,
+      referencesHeading.current
     )
   );
   // Approve and Request changes are here wherever no approval request waits on the reader,
@@ -308,7 +477,14 @@ export function IssueMarginPanel({
   // The status as the header draws it: the one being saved while any caller's write of it is
   // in flight, so the page never says two statuses at once.
   const status = writes.pendingStatus ?? issue.status;
-  const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
+  // The project's gated steps, for a top-level issue. The events that change a project refresh
+  // its read (`api/event-refresh.ts`), so a window focus past the app's staleness reads it again
+  // only while its last read failed.
+  const projects = useQuery({
+    ...projectsQuery(),
+    ...EVENT_FRESH,
+    enabled: issue.parent === null,
+  });
   const gated = gatedStepEntries(
     projects.data?.find((candidate) => candidate.key === issue.project),
     issue
@@ -336,16 +512,16 @@ export function IssueMarginPanel({
         name="development"
         sections={sections}
       >
-        <Row glyph="◐" label={PROPERTY_LABELS.status}>
+        <Row glyph={<StatusGlyph glyph={STATUS_ROW_SHAPE} />} label={PROPERTY_LABELS.status}>
           <span
             className={`inline-flex items-center gap-1 rounded-full border border-current px-2 text-xs leading-[18px] font-semibold ${statusTone(status)}`}
             {...pageChrome}
           >
-            <span aria-hidden="true">{statusGlyph(status)}</span>
+            <StatusGlyph glyph={statusGlyph(status)} />
             {issueStatusWord(status)}
           </span>
         </Row>
-        <Row glyph="▮" label={PROPERTY_LABELS.priority}>
+        <Row glyph={UPRIGHT_BAR} label={PROPERTY_LABELS.priority}>
           {issue.priority === null ? (
             none
           ) : (
@@ -377,7 +553,7 @@ export function IssueMarginPanel({
             disabled={isClosed}
             issueKey={issue.key}
             labels={labels}
-            onSave={(next) => writes.labels.mutateAsync(next)}
+            onSave={(next) => writes.labels.mutateAsync({ issueKey: issue.key, labels: next })}
             project={issue.project}
             saving={writes.labels.isPending}
             variant="rail"
@@ -385,24 +561,26 @@ export function IssueMarginPanel({
         </Row>
         {/* The priorities the issue advances, with the control that adds and removes one: an
             issue that advances none draws no such row, and its control stands beside the add
-            control below, where a focus in the row moves on as the last one goes
-            (`useFocusHandOff`). */}
+            control below, where a focus in the row moves on as the reader's own removal of the
+            last one lands (`usePriorityHandOffs`). */}
         {advances.length === 0 ? null : (
           <Row
             glyph="↗"
             label={PROPERTY_LABELS.advances}
             testId="issue-advances"
-            valueRef={advancesValue}
+            valueRef={priority.advancesValue}
           >
-            <div className="contents" ref={priorityRowLeft}>
+            <div className="contents" ref={priority.rowLeft}>
               <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
             </div>
           </Row>
         )}
-        {/* The parent's own control first, which opens its editor in this row: the header's Set
-            parent issue presses it (`useOpenDetailsAt`, `details-rows.ts`), as the add menu's
-            Parent does. */}
-        <Row glyph="↑" label={PROPERTY_LABELS.parent} row="parent">
+        {/* The parent's own control first, which opens its editor in this row and is marked as
+            the row's opener: the header's Set parent issue presses it (`useOpenDetailsAt`,
+            `details-rows.ts`), and, while the editor stands in its place, puts the focus in the
+            editor, also marked, rather than press the parent's link. The add menu's Parent opens
+            the editor by its state (`onEditingField`), and presses nothing. */}
+        <Row glyph="↑" label={PROPERTY_LABELS.parent} row="parent" valueRef={parentValue}>
           {isClosed || editingField === "parent" ? null : (
             <button
               className={pageHeaderControl}
@@ -410,6 +588,7 @@ export function IssueMarginPanel({
               ref={parentControl}
               type="button"
               {...pageChrome}
+              {...detailsOpener}
             >
               {issue.parent === null ? CONTROL_LABELS.set_parent : CONTROL_LABELS.edit_parent}
             </button>
@@ -425,23 +604,34 @@ export function IssueMarginPanel({
               {issue.parent}
             </Link>
           )}
-          <IssueFieldForms
-            field={editingField === "parent" ? "parent" : null}
-            isClosed={isClosed}
-            issue={issue}
-            onClose={closeEditor}
-            writes={writes}
-          />
+          {editingField === "parent" ? (
+            <div className="contents" {...detailsEditor}>
+              <IssueFieldForms
+                field="parent"
+                isClosed={isClosed}
+                issue={issue}
+                onClose={closeEditor}
+                writes={writes}
+              />
+            </div>
+          ) : null}
+          {/* A parent save the reader stopped offers to be saved again, for which a closed
+              issue's row draws no control, so there its line says the issue is closed instead. */}
           {writes.parentSaveFailed ? (
-            <p className={`w-full text-sm ${pageFailedText}`} id="issue-parent-error" role="alert">
-              {writes.parentError}
+            <p className={`w-full text-sm ${pageFailedText}`} id={PARENT_ERROR_ID} role="alert">
+              {closedStoppedNote(
+                { isClosed, stopped: writes.updateIssue.error instanceof SendStoppedError },
+                "the new parent",
+                "parent"
+              ) ?? writes.parentError}
             </p>
           ) : null}
         </Row>
-        <Row glyph="⊘" label={PROPERTY_LABELS.blocked_by} valueRef={blockedByValue}>
+        <Row glyph={SMALL_GLYPH} label={PROPERTY_LABELS.blocked_by} valueRef={blockedByValue}>
           <BlockedByControl
             draft={blockedByDraft}
             editing={blockedByEditing}
+            focusFallback={developmentHeading}
             issue={issue}
             onDraft={setBlockedByDraft}
             onEditing={setBlockedByEditing}
@@ -450,29 +640,31 @@ export function IssueMarginPanel({
           />
           {/* The blockers are drawn by their keys where their titles could not be read, and the
               row says so rather than drawing keys alone as though they had none. */}
-          {readFailed(blockerTitles) ? (
+          {standsFailed(blockerTitles) ? (
             <DetailsErrorLine
               error={blockerTitles.error}
               failure={blockerTitles.errorUpdateCount}
-              message="Could not read the titles of these issues."
-              onRetry={retryRead(blockerTitles)}
-              retryRef={titlesRetryLeft}
+              message={TITLES_READ_FAILED}
+              {...titlesRetry}
               retrying={blockerTitles.isFetching}
             />
           ) : null}
         </Row>
         {/* What this issue blocks: drawn whenever the panel is, with None where the answer holds
             nothing that waits on it, nothing while that answer is still out, and the failure
-            where the read failed, as every other row of the panel says what it holds. This
-            row's None takes the focus of the failure's Retry when it replaces that line. */}
-        <Row glyph="⊙" label={PROPERTY_LABELS.blocks} valueRef={blocksValue}>
-          {readFailed(blocking) ? (
+            where the read stands failed (`standsFailed`), as every other row of the panel says
+            what it holds. The issues are drawn by their keys where their titles could not be
+            read, and the row says so, as Blocked by does. This row's None takes the focus of the
+            failure's Retry when it replaces that line once the read the reader's press of Retry
+            sent answers. */}
+        <Row glyph={CIRCLED_DOT} label={PROPERTY_LABELS.blocks} valueRef={blocksValue}>
+          {standsFailed(blocking) ? (
             <DetailsErrorLine
               error={blocking.error}
               failure={blocking.errorUpdateCount}
               message="Could not read what this issue blocks."
               onRetry={retryRead(blocking)}
-              retryRef={blocksRetryLeft}
+              {...blockingRetry}
               retrying={blocking.isFetching}
             />
           ) : blocking.isPending ? null : blocks.length === 0 ? (
@@ -485,34 +677,51 @@ export function IssueMarginPanel({
               {CONTROL_LABELS.none}
             </span>
           ) : (
-            <IssueList issues={blocks} />
+            <>
+              <IssueList issues={blocks} />
+              {standsFailed(waitingTitles) ? (
+                <DetailsErrorLine
+                  error={waitingTitles.error}
+                  failure={waitingTitles.errorUpdateCount}
+                  message={TITLES_READ_FAILED}
+                  {...waitingRetry}
+                  retrying={waitingTitles.isFetching}
+                />
+              ) : null}
+            </>
           )}
         </Row>
-        <Row glyph="⌂" label={PROPERTY_LABELS.repository}>
+        <Row glyph={HOUSE} label={PROPERTY_LABELS.repository} valueRef={repoValue}>
           <RepoControl
             disabled={isClosed}
             inRow
             issueKey={issue.key}
+            mappingsFreshness={EVENT_FRESH}
             project={issue.project}
             repo={issue.repo}
             resolvedRepo={issue.resolved_repo}
+            sayFailure={sayRepoFailure}
           />
         </Row>
         {/* Each link reads GitHub as it is drawn (`GitHubLink`), so the links are drawn only
-            while Details is open, as the panel's other reads are made. */}
-        <Row glyph="⇄" label={PROPERTY_LABELS.pull_request}>
+            while the reader can see them: Details open, and Development with it. */}
+        <Row glyph={RIGHT_OVER_LEFT_ARROWS} label={PROPERTY_LABELS.pull_request}>
           {pullRequests.length === 0 ? none : null}
-          {reading ? pullRequests.map((link) => <GitHubLink key={link.url} link={link} />) : null}
+          {readingDevelopment
+            ? pullRequests.map((link) => <GitHubLink key={link.url} link={link} />)
+            : null}
         </Row>
         {otherLinks.length === 0 ? null : (
           <Row glyph="↗" label={PROPERTY_LABELS.external_links}>
-            {reading ? otherLinks.map((link) => <GitHubLink key={link.url} link={link} />) : null}
+            {readingDevelopment
+              ? otherLinks.map((link) => <GitHubLink key={link.url} link={link} />)
+              : null}
           </Row>
         )}
-        <Row glyph="⚑" label={PROPERTY_LABELS.claim}>
+        <Row glyph={FLAG} label={PROPERTY_LABELS.claim}>
           <IssueClaimControl issue={issue} writes={writes} />
         </Row>
-        <Row glyph="→" label={PROPERTY_LABELS.route} row="route">
+        <Row glyph="→" label={PROPERTY_LABELS.route} row="route" valueRef={routeValue}>
           <IssueRouteControl
             controlRef={routeControl}
             editing={editingField === "route"}
@@ -521,13 +730,17 @@ export function IssueMarginPanel({
             onEdit={() => onEditingField("route")}
             writes={writes}
           />
-          <IssueFieldForms
-            field={editingField === "route" ? "route" : null}
-            isClosed={isClosed}
-            issue={issue}
-            onClose={closeEditor}
-            writes={writes}
-          />
+          {editingField === "route" ? (
+            <div className="contents" {...detailsEditor}>
+              <IssueFieldForms
+                field="route"
+                isClosed={isClosed}
+                issue={issue}
+                onClose={closeEditor}
+                writes={writes}
+              />
+            </div>
+          ) : null}
           {/* A route Dispatch refused, said in the row it was saved from with Dispatch's reason
               and Retry, as the Parent row says a refused parent, for as long as the draft still
               holds a route the issue does not: a reader who leaves the editor puts the saved
@@ -539,27 +752,40 @@ export function IssueMarginPanel({
               page's other refusals, never sees it. The line stays while the save its Retry sent
               again is out (`useSaidFailure`), and says Dispatch's new reason if that is refused
               too; its Retry takes no press while that save is out (`refused`), since the drafts
-              send nothing while a save is out (`useSubmitGuard`), and is never disabled. Once the
-              route lands the line goes, and the row's control takes the focus Retry held
-              (`useFocusHandOff`). */}
-          {fieldFailure !== null &&
-          fieldFailure.variables?.route !== undefined &&
-          writes.drafts.route !== (issue.route ?? "") ? (
+              send nothing while a save is out (`useSubmitGuard`), and is never disabled. A
+              save the reader stopped is no refusal: it may have been saved, and the line says so
+              in the header's words for a title or a route save, whose Retry is this one, a press
+              of its own; on a closed issue, whose line draws no Retry, it says so in Details' own
+              sentence, that the route cannot be saved again. Once the route the reader's Retry sent
+              lands, or the issue is drawn holding it while that save is out, the line goes, and
+              the row's control takes the focus Retry held (`useRetryHandOff`). */}
+          {routeFailureShown ? (
             <DetailsErrorLine
               error={fieldFailure.error}
               failure={fieldFailure.count}
-              message={apiErrorMessage(fieldFailure.error, "Could not update this issue.")}
+              message={
+                closedStoppedNote(
+                  { isClosed, stopped: routeStopped },
+                  "this change to the issue",
+                  "route"
+                ) ??
+                (routeStopped
+                  ? stoppedWriteNote("this change to the issue", "saved", {
+                      anew: "Retry sends what the field holds now as a new write.",
+                    })
+                  : apiErrorMessage(fieldFailure.error, "Could not update this issue."))
+              }
               onRetry={isClosed ? undefined : writes.drafts.retry}
               refused={writes.updateIssue.isPending}
-              retryRef={routeRetryLeft}
+              {...routeRetry}
             />
           ) : null}
         </Row>
-        <Row glyph="▦" label={PROPERTY_LABELS.components}>
+        <Row glyph={GRID_SQUARE} label={PROPERTY_LABELS.components}>
           <IssueComponentsLine inRow issue={issue} />
         </Row>
         {issue.progress?.tasks === null || issue.progress?.tasks === undefined ? null : (
-          <Row glyph="☑" label={PROPERTY_LABELS.tasks}>
+          <Row glyph={TICKED_BOX} label={PROPERTY_LABELS.tasks}>
             <span data-testid="issue-progress-tasks" {...pageChrome}>
               <span {...authorText}>
                 {issue.progress.tasks.done}/{issue.progress.tasks.total}
@@ -571,9 +797,9 @@ export function IssueMarginPanel({
         {/* The one add control, which lists every field this issue has no value for and opens
             its control; and, while the issue advances no priority, the control that adds one,
             which is the priority row (`IssuePriorityLine`) with nothing in it yet. The focus it
-            holds as the first priority moves the line goes on to the Advances row
-            (`useFocusHandOff`). */}
-        <div className="flex min-w-0 flex-wrap items-center gap-2 py-2" ref={addRow}>
+            holds as the reader's own first priority lands and moves the line goes on to the
+            Advances row (`usePriorityHandOffs`). */}
+        <div className="flex min-w-0 flex-wrap items-center gap-2 py-2" ref={priority.addRow}>
           <IssueAddMenu
             drawerBox={drawerBox}
             isClosed={isClosed}
@@ -582,14 +808,14 @@ export function IssueMarginPanel({
             panel={panel}
           />
           {advances.length === 0 ? (
-            <div className="contents" data-testid="issue-advances" ref={priorityBesideAddLeft}>
+            <div className="contents" data-testid="issue-advances" ref={priority.besideAddLeft}>
               <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
             </div>
           ) : null}
         </div>
       </PropertySection>
       <PropertySection drawerBox={drawerBox} name="people" sections={sections}>
-        <Row glyph="☺" label={PROPERTY_LABELS.opened_by}>
+        <Row glyph={SMILING_FACE} label={PROPERTY_LABELS.opened_by}>
           {issue.created_by == null ? (
             none
           ) : (
@@ -600,10 +826,15 @@ export function IssueMarginPanel({
         </Row>
         <DetailsPeople issue={issue} state={state} />
       </PropertySection>
-      <PropertySection drawerBox={drawerBox} name="references" sections={sections}>
+      <PropertySection
+        drawerBox={drawerBox}
+        headingRef={referencesHeading}
+        name="references"
+        sections={sections}
+      >
         {/* The approval steps with the reasons a reviewer gave, and Approve and Request changes
             wherever no approval request waits on the reader. */}
-        <Row glyph="▤" label={PROPERTY_LABELS.approval}>
+        <Row glyph={LINED_SQUARE} label={PROPERTY_LABELS.approval}>
           <ApprovalSteps
             actions={!approvalWaits}
             entries={approvalEntries}
@@ -614,7 +845,7 @@ export function IssueMarginPanel({
             versions={{ asks: issue.open_asks ?? [], issueKey: issue.key }}
           />
         </Row>
-        <Row wide>
+        <Row valueRef={referencesValue} wide>
           {/* Details' own control of the list, with the name, the role and the states of the
               application's `ReferencedByToggle`, in the page's ink rather than its link blue. A
               count of zero is a fact and not a control, as there: opening it would only say
@@ -624,7 +855,7 @@ export function IssueMarginPanel({
             <span
               className={`inline-flex min-h-11 items-center text-sm md:min-h-0 ${pageQuietText}`}
             >
-              Referenced by (0)
+              {referencedByControlName(0)}
             </span>
           ) : (
             <button
@@ -632,18 +863,21 @@ export function IssueMarginPanel({
               aria-expanded={referencesOpen}
               className={`inline-flex min-h-11 items-center text-left text-sm font-medium md:min-h-0 ${ROW_LINK} ${pageInkText}`}
               onClick={() => setReferencesOpen((open) => !open)}
+              ref={referencesControl}
               type="button"
             >
-              {referencesListed === undefined
-                ? PROPERTY_LABELS.referenced_by
-                : `${PROPERTY_LABELS.referenced_by} (${referencesListed})`}
+              {referencedByControlName(referencesListed)}
             </button>
           )}
-          {referencesOpen ? (
+          {/* The list reads what references the issue, and reads it again on each event about
+              those references, so it is drawn only while the reader can see it: open, in an open
+              References of an open Details. */}
+          {referencesOpen && readingReferences ? (
             <ReferencedBy
               className="w-full"
               page
               reference={issueReference}
+              {...referencesRetry}
               toggle={{ id: referencesPanelId }}
             />
           ) : null}
@@ -651,7 +885,7 @@ export function IssueMarginPanel({
         {/* Every document and file of the issue, each opening its own address, folded after ten
             behind a count that opens the rest. */}
         <Row
-          glyph="▤"
+          glyph={LINED_SQUARE}
           label={
             <>
               {PROPERTY_LABELS.files} · <span {...authorText}>{artifacts.length}</span>
@@ -670,7 +904,7 @@ export function IssueMarginPanel({
                     to={buildIssuePath({ key: issue.key, kind: "artifact", slug: artifact.slug })}
                   >
                     <span aria-hidden="true" className={pageQuietText}>
-                      {artifact.kind === "image" ? "▣" : "▤"}
+                      {artifact.kind === "image" ? SQUARE_IN_SQUARE : LINED_SQUARE}
                     </span>
                     <span className="min-w-0 [overflow-wrap:anywhere]" {...authorText}>
                       {artifact.name}
@@ -701,218 +935,13 @@ export function IssueMarginPanel({
         </Row>
       </PropertySection>
       <DetailsFocusedNode issue={issue} state={state} />
-      <IssuePins dismissed={stateForIssue(state, issue.key).dismissed ?? []} issueKey={issue.key} />
+      <IssuePins
+        dismissed={
+          state === undefined ? undefined : (stateForIssue(state, issue.key).dismissed ?? [])
+        }
+        issueKey={issue.key}
+      />
       <DetailsHistory issue={issue} state={state} />
-    </div>
-  );
-}
-
-/** The Retry of a read of Details that failed: it sends the read again, and a press while that
- *  read is still out joins it (`cancelRefetch: false`) rather than ending it and sending another,
- *  as the app's other refetches do (`DispatchQueryClient` in `api/query-client.ts`, `drive` in
- *  `api/query-refresh.ts`). The query itself decides that as the press lands. A gate on the
- *  render's `isFetching` would not hold: a second press can arrive before React draws the
- *  first one's fetch (`hooks/useSubmitGuard.ts`). Retry reads busy while the read is out (the
- *  query's `isFetching`) but stays enabled, because Chromium moves the focus of a control that
- *  turns disabled to the page's body, which would lose a reader who pressed Retry by keyboard. A
- *  read that fails again is drawn afresh (`errorUpdateCount`), so a screen reader says it again
- *  even in the same words. */
-function retryRead(read: {
-  readonly refetch: (options: { cancelRefetch: boolean }) => Promise<unknown>;
-}): () => void {
-  return () => void read.refetch({ cancelRefetch: false });
-}
-
-/** Whether a read of Details is said as failed, with its Retry: while it stands failed, and while
- *  it is read again after it failed holding no answer. A fetch of a read that holds no answer
- *  clears its error and puts it back to pending (`fetchState` in `@tanstack/query-core`), which
- *  would take the line, and its Retry with a reader's focus, away while the read Retry sent is
- *  out. Such a read has answered nothing since its last failure, so a failure it counts
- *  (`errorUpdateCount`) is one it still stands in; `failureCount` would not tell, since the
- *  fetch sets it back to 0 as it starts. */
-function readFailed(read: {
-  readonly errorUpdateCount: number;
-  readonly isError: boolean;
-  readonly isPending: boolean;
-}): boolean {
-  return read.isError || (read.isPending && read.errorUpdateCount > 0);
-}
-
-/** The first of `candidates` that takes a press (`usableControl`), to hand a focus to. */
-function firstUsable(...candidates: (HTMLElement | null | undefined)[]): HTMLElement | undefined {
-  return candidates.find(
-    (candidate): candidate is HTMLElement => candidate != null && usableControl(candidate)
-  );
-}
-
-/** The issues of a list of them, each its key as a link and its title beside it, folded after
- *  ten behind a count that opens the rest. */
-function IssueList({
-  issues,
-}: {
-  issues: readonly { readonly key: string; readonly title: string }[];
-}): ReactNode {
-  const [open, setOpen] = useState(false);
-  const list = useRef<HTMLDivElement>(null);
-  const shown = open ? issues : issues.slice(0, FOLD_AFTER);
-  return (
-    <div className="flex w-full min-w-0 flex-col gap-1" ref={list}>
-      {shown.map((one) => (
-        <IssueLine issueKey={one.key} key={one.key} title={one.title} />
-      ))}
-      {issues.length > FOLD_AFTER && !open ? (
-        <ShowAll
-          className="self-start"
-          count={issues.length}
-          list={list}
-          onShow={() => setOpen(true)}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-/** The count a folded list is drawn behind, which opens the rest of it. `className` places it
- *  in the list that draws it, and `list` is that list, each of its children one entry. The
- *  count goes with its press, so the focus goes on to the link of the first entry it opened,
- *  the list's entry `FOLD_AFTER`, rather than falling to the page. */
-function ShowAll({
-  className,
-  count,
-  list,
-  onShow,
-}: {
-  className: string;
-  count: number;
-  list: RefObject<HTMLElement | null>;
-  onShow: () => void;
-}): ReactNode {
-  return (
-    <button
-      className={`${className} text-xs font-semibold underline underline-offset-[3px] ${pageInkText}`}
-      onClick={() => {
-        flushSync(onShow);
-        list.current?.children[FOLD_AFTER]?.querySelector<HTMLElement>("a[href]")?.focus();
-      }}
-      type="button"
-      {...pageChrome}
-    >
-      {/* One child, so the space before the count holds where every button is a flex box
-          (`styles.css`, below 1280 px), which drops a space between two of its children. */}
-      <span>
-        {CONTROL_LABELS.show_all} <span {...authorText}>{count}</span>
-      </span>
-    </button>
-  );
-}
-
-/** One named section of the panel's properties, open or closed by its own one control. A closed
- *  section draws none of its values, so what a reader sees is what the page holds. */
-function PropertySection({
-  children,
-  drawerBox,
-  headingRef,
-  name,
-  sections,
-}: {
-  children: ReactNode;
-  /** The drawer's `aside` the panel is placed in, which a request for a row is sent to. */
-  drawerBox: HTMLElement | null;
-  /** Takes the section's heading, its own control, so a focus can be handed to it. */
-  headingRef?: Ref<HTMLButtonElement>;
-  name: MarginSection;
-  sections: MarginSections;
-}): ReactNode {
-  const open = sections.isOpen(name);
-  // A control elsewhere on the page that opens Details at one of this section's rows asks the
-  // drawer for that row before it looks for it (`useOpenDetailsAt` sends
-  // `DETAILS_ROW_REQUEST_EVENT`). A closed section opens for it as its heading opens it, so the
-  // reader's kept choice follows, and in the same task, so the row is on the page when the
-  // control looks for it.
-  const latest = useRef(sections);
-  latest.current = sections;
-  useEffect(() => {
-    if (drawerBox === null) return;
-    const openForRow = (event: Event) => {
-      if (
-        !(event instanceof CustomEvent) ||
-        !SECTION_ROWS[name].includes(event.detail) ||
-        latest.current.isOpen(name)
-      ) {
-        return;
-      }
-      flushSync(() => latest.current.toggle(name));
-    };
-    drawerBox.addEventListener(DETAILS_ROW_REQUEST_EVENT, openForRow);
-    return () => drawerBox.removeEventListener(DETAILS_ROW_REQUEST_EVENT, openForRow);
-  }, [drawerBox, name]);
-  return (
-    <section data-margin-section={name}>
-      <h2>
-        <button
-          aria-expanded={open}
-          className={`flex min-h-11 w-full items-center justify-between gap-2 text-xs leading-4 font-semibold tracking-[0.08em] uppercase md:min-h-8 ${pageQuietText}`}
-          onClick={() => sections.toggle(name)}
-          ref={headingRef}
-          type="button"
-          {...pageChrome}
-        >
-          <span>{MARGIN_SECTION_NAMES[name]}</span>
-          <span aria-hidden="true">{open ? "−" : "+"}</span>
-        </button>
-      </h2>
-      {open ? <div className="flex min-w-0 flex-col">{children}</div> : null}
-    </section>
-  );
-}
-
-/**
- * One row of Details (the prototype's `.frow`): a column of 112 px with the property's shape
- * and its name, and the value beside it; a `wide` row is one column, for a property whose own
- * control names it. `row` names the row a control elsewhere opens Details at
- * (`details-rows.ts`), and `valueRef` takes the box of the row's value.
- */
-function Row({
-  children,
-  glyph,
-  label,
-  row,
-  testId,
-  valueRef,
-  wide = false,
-}: {
-  children: ReactNode;
-  glyph?: string;
-  label?: ReactNode;
-  row?: DetailsRow;
-  testId?: string;
-  valueRef?: Ref<HTMLDivElement>;
-  wide?: boolean;
-}): ReactNode {
-  return (
-    <div
-      className={`grid min-w-0 gap-2.5 border-b py-2 text-sm leading-5 ${
-        wide ? "grid-cols-1" : "grid-cols-[112px_minmax(0,1fr)]"
-      } ${pageRowBorder}`}
-      data-testid={testId}
-      {...(row === undefined ? {} : { [DETAILS_ROW_ATTRIBUTE]: row })}
-    >
-      {label === undefined ? null : (
-        <div className={`flex min-w-0 items-start gap-[7px] ${pageQuietText}`}>
-          <span aria-hidden="true" className="w-3.5 shrink-0 text-center">
-            {glyph}
-          </span>
-          <span className="min-w-0" {...pageChrome}>
-            {label}
-          </span>
-        </div>
-      )}
-      <div
-        className={`flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 [overflow-wrap:break-word] ${pageInkText}`}
-        ref={valueRef}
-      >
-        {children}
-      </div>
     </div>
   );
 }

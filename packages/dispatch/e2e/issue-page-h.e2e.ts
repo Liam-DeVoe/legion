@@ -1,6 +1,11 @@
 import AxeBuilder from "@axe-core/playwright";
+import { assigneeControlName } from "../web/src/features/issue/AssigneeControl";
 import { labelsControlName } from "../web/src/features/issue/IssueLabels";
-import { repoControlName } from "../web/src/features/issue/RepoControl";
+import { repoControlName, repoTextControlName } from "../web/src/features/issue/RepoControl";
+import {
+  blockedByControlName,
+  referencedByControlName,
+} from "../web/src/features/issue-page/details-names";
 import { DETAILS_ROW_REQUEST_EVENT } from "../web/src/features/issue-page/details-rows";
 import {
   MARGIN_SECTION_ORDER,
@@ -11,6 +16,7 @@ import {
   CONTROL_LABELS,
   PROGRESS_NOUNS,
 } from "../web/src/features/issue-page/page-words";
+import { addPriorityControlName } from "../web/src/features/priorities/IssuePriorityLine";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
 import { createPriority, getIssue, patchIssue, putRepoProject } from "./api";
@@ -25,6 +31,7 @@ import {
   openDetails,
   openMenu,
   phase,
+  viewportAt,
 } from "./issue-page";
 import {
   addControl,
@@ -84,8 +91,8 @@ const ONE_DEVELOPMENT_ROWS = [
 /** The tags `e2e/accessibility.e2e.ts` holds the dashboard to. */
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
 
-/** The page's words the labels control is named from inside `NoTooltips`
- *  (`labelsControlName`). */
+/** The page's words the labels control and the Repository row's text control are named from
+ *  inside `NoTooltips` (`labelsControlName`, `repoTextControlName`). */
 const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
 
 /** The page's ink, the grey of a link's underline, as the prototype's `.lnk` draws them, and
@@ -93,11 +100,6 @@ const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
 const INK = "rgb(28, 25, 23)";
 const UNDERLINE = "rgb(168, 162, 158)";
 const QUIET = "rgb(120, 113, 108)";
-
-/** A viewport of `width`: the desktop height from 768 px up, a phone's below. */
-function viewportAt(width: number): { height: number; width: number } {
-  return { height: width >= 768 ? 900 : 844, width };
-}
 
 /** The page's reads of Dispatch from now on: every URL it asked for, decoded, and whether none
  *  is still out. Only `fetch` and `xhr` count, so the live socket never holds a read open. */
@@ -129,6 +131,145 @@ async function expectInsideSideways(page: Page, locator: Locator, what: string):
     (box?.x ?? 0) + (box?.width ?? 0),
     `${what} ends right of the viewport`
   ).toBeLessThanOrEqual(width + 1);
+}
+
+/** Each row's glyph in Details, the column before the row's name (`details-leaves.tsx`'s
+ *  `Row`). */
+const ROW_GLYPHS = '[data-margin-section] > div > div > div:first-child > span[aria-hidden="true"]';
+/** Each document's and file's mark of its kind, in Details' list of them. */
+const FILE_MARKS = '[data-testid="issue-files"] a > span[aria-hidden="true"]';
+/** The status's own mark, in the pill of the Status row, Development's first row. */
+const STATUS_MARK =
+  '[data-margin-section="development"] > div > div:first-child > div:last-child > span > svg[data-status-glyph]';
+
+/** A font Chromium says it drew a text in (`CSS.getPlatformFontsForNode`). */
+interface DrawnFont {
+  readonly familyName: string;
+  readonly glyphCount: number;
+  readonly isCustomFont: boolean;
+  readonly postScriptName: string;
+}
+
+/** A glyph of Details: the row it is drawn in, what it holds, and the fonts its text is drawn
+ *  in. An icon holds no text, and so no font. */
+interface GlyphFonts {
+  readonly fonts: readonly DrawnFont[];
+  readonly icon: boolean;
+  readonly row: string;
+  readonly text: string;
+}
+
+/** What `drawnFonts` reads of a glyph in the page: the name of the row it is drawn in, followed
+ *  for a file's mark by the file's name, and what it holds. */
+function describeGlyph(this: Element): Omit<GlyphFonts, "fonts"> {
+  const label =
+    this.closest("[data-margin-section] > div > div")?.querySelector(
+      ":scope > div:first-child > span[data-page-chrome]"
+    )?.textContent ?? "";
+  const file = this.closest("a")?.querySelector("[data-author-text]")?.textContent;
+  return {
+    icon: this.querySelector("svg") !== null,
+    row: file === undefined || file === null ? label : `${label}, ${file}`,
+    text: this.textContent ?? "",
+  };
+}
+
+/** The glyphs of Details that `selectors` find, each with the fonts Chromium drew its text in, as
+ *  Chromium reports them (`CSS.getPlatformFontsForNode`), once the page's typeface has loaded. */
+async function drawnFonts(
+  page: Page,
+  selectors: readonly string[],
+  describe: (this: Element) => Omit<GlyphFonts, "fonts"> | null = describeGlyph
+): Promise<GlyphFonts[]> {
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("DOM.enable");
+    await cdp.send("CSS.enable");
+    const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+    const glyphs: GlyphFonts[] = [];
+    for (const selector of selectors) {
+      // Inside Details' panel (`marginSlot`).
+      const { nodeIds } = await cdp.send("DOM.querySelectorAll", {
+        nodeId: root.nodeId,
+        selector: `[data-testid="issue-margin"] ${selector}`,
+      });
+      for (const nodeId of nodeIds) {
+        const { object } = await cdp.send("DOM.resolveNode", { nodeId });
+        const { result } = await cdp.send("Runtime.callFunctionOn", {
+          functionDeclaration: describe.toString(),
+          objectId: object.objectId,
+          returnByValue: true,
+        });
+        const described = result.value as Omit<GlyphFonts, "fonts"> | null;
+        if (described === null) continue;
+        const { fonts } = await cdp.send("CSS.getPlatformFontsForNode", { nodeId });
+        glyphs.push({ ...described, fonts });
+      }
+    }
+    return glyphs;
+  } finally {
+    await cdp.detach();
+  }
+}
+
+/** What `drawnFonts` reads of a text of Details' own chrome (`data-page-chrome`) that holds a
+ *  symbol outside ASCII, a control's mark such as a priority's Remove, or `null` for any other:
+ *  one without such a symbol in its own text, or one inside a reader's own text
+ *  (`data-author-text`), which is the author's and drawn in whatever face holds it. It names the
+ *  row it stands in and the control's name, where it has one. */
+function describeChromeSymbol(this: Element): Omit<GlyphFonts, "fonts"> | null {
+  if (this.closest("[data-author-text]") !== null) return null;
+  const own = [...this.childNodes]
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => node.textContent ?? "")
+    .join("");
+  const symbol = [...own].some(
+    (character) => (character.codePointAt(0) ?? 0) > 0x7f && /[\p{So}\p{Sm}]/u.test(character)
+  );
+  if (!symbol) return null;
+  const label =
+    this.closest("[data-margin-section] > div > div")?.querySelector(
+      ":scope > div:first-child > span[data-page-chrome]"
+    )?.textContent ?? "";
+  // This runs in the page on an element already drawn, so one read of its name is all it needs.
+  const name = this.getAttribute("aria-label");
+  return { icon: false, row: name === null ? label : `${label} (${name})`, text: own };
+}
+
+/** Whether a glyph's text is drawn in a font other than the page's own typeface, or in none: a
+ *  face of the reader's machine draws it at that face's width, which no column holds on every
+ *  machine. Chromium names a font by the names in its file, so the page's cut of Inter
+ *  (`Dispatch Inter`, `styles.css`) is reported as a web font whose PostScript name is Inter's,
+ *  `InterVariable`. */
+function drawnOutsideThePagesTypeface({ fonts }: GlyphFonts): boolean {
+  return (
+    fonts.length === 0 ||
+    fonts.some((font) => !font.isCustomFont || !font.postScriptName.startsWith("Inter"))
+  );
+}
+
+/** A glyph's reading as a message says it: its row, its text with its code points, and each
+ *  font Chromium drew it in. */
+function glyphReading({ fonts, row, text }: GlyphFonts): string {
+  const points = [...text]
+    .map(
+      (character) =>
+        `U+${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`
+    )
+    .join(" ");
+  const drawn =
+    fonts.length === 0
+      ? "no font"
+      : fonts
+          .map(
+            (font) =>
+              `${font.familyName} (${font.postScriptName}, ${
+                font.isCustomFont ? "the page's" : "the machine's"
+              }, ${font.glyphCount} glyphs)`
+          )
+          .join(", ");
+  return `${row}: ${text} (${points}) in ${drawn}`;
 }
 
 /**
@@ -312,7 +453,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
     await openDetails(page);
     // Escape in the blocked-by box leaves the box's editor and goes no further: the sheet stays.
     const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
-    await blockedBy.getByRole("button", { name: `Edit issues ${one} waits on` }).click();
+    await blockedBy.getByRole("button", { name: blockedByControlName(one, 1) }).click();
     const blockersBox = blockedBy.getByLabel(`Issues ${one} waits on`, { exact: true });
     await expect(blockersBox).toBeFocused();
     await blockersBox.press("Escape");
@@ -374,13 +515,91 @@ test("every property with a value is visible in Details at every width @phone", 
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${one}`);
       await openDetails(page);
-      // The labels of Development's rows, in the order they stand (`IssueMargin.tsx`'s `Row`).
+      // The labels of Development's rows, in the order they stand (`details-leaves.tsx`'s `Row`).
       await expect(
         marginSection(page, "development").locator(
           ":scope > div > div > div:first-child > span[data-page-chrome]"
         ),
         `Development's rows are out of order at ${width} px`
       ).toHaveText(ONE_DEVELOPMENT_ROWS);
+      // Each row's glyph is drawn inside its own column, before the row's name (`Row`'s
+      // `w-3.5`): the page's typeface drew Blocked by's ⊘ 19 px wide in that 14 px column, to
+      // 2 px from the name, and a face of the machine drew Opened by's ☺ 15.3 px wide in it. An
+      // icon is measured by its own box and a text glyph by its text, since the span around
+      // either is the column itself, once the page's typeface has loaded, since that is what
+      // draws ⊘. Soft, so that a width it fails at does not stop the widths after it.
+      await page.evaluate(() => document.fonts.ready.then(() => undefined));
+      const glyphs = await marginSlot(page)
+        .locator(ROW_GLYPHS)
+        .evaluateAll((spans) =>
+          spans.map((span) => {
+            const icon = span.querySelector("svg");
+            const text = document.createRange();
+            text.selectNodeContents(span);
+            return {
+              column: span.getBoundingClientRect().width,
+              drawn: (icon ?? text).getBoundingClientRect().width,
+              glyph: icon === null ? (span.textContent ?? "") : "icon",
+              row: span.nextElementSibling?.textContent ?? "",
+            };
+          })
+        );
+      expect(
+        glyphs.map(({ row }) => row),
+        `Details measures no Blocked by glyph at ${width} px`
+      ).toContain(PROPERTY_LABELS.blocked_by);
+      expect
+        .soft(
+          glyphs
+            .filter(({ column, drawn }) => drawn > column)
+            .map(
+              ({ column, drawn, glyph, row }) =>
+                `${row}'s ${glyph}: ${drawn} px in a column of ${column} px`
+            ),
+          `a row's glyph is drawn wider than its column at ${width} px`
+        )
+        .toEqual([]);
+      // Each glyph of Details that is text is drawn in the page's own typeface, as Chromium
+      // reports the fonts it drew it in, whatever fonts the machine holds: a character that face
+      // does not hold is drawn in one of the machine's faces, at that face's width, or in an
+      // emoji face, and a `unicode-range` that takes it in does not say the face holds it (Inter
+      // has no ⇄, which DejaVu Sans drew here). Each row's glyph that is text and each file's
+      // mark that is. Soft, as above.
+      const textGlyphs = (await drawnFonts(page, [ROW_GLYPHS, FILE_MARKS])).filter(
+        ({ icon }) => !icon
+      );
+      expect(
+        textGlyphs.map(({ row }) => row),
+        `Details reads the fonts of no Blocked by glyph at ${width} px`
+      ).toContain(PROPERTY_LABELS.blocked_by);
+      expect
+        .soft(
+          textGlyphs.filter(drawnOutsideThePagesTypeface).map(glyphReading),
+          `a glyph of Details is drawn in a font the page does not ship at ${width} px`
+        )
+        .toEqual([]);
+      // So is every symbol in the text of Details' own chrome, whichever control draws it: a
+      // priority's Remove, a section's toggle, a control's mark. A reader's own text is left out.
+      const chromeSymbols = await drawnFonts(page, ["[data-page-chrome]"], describeChromeSymbol);
+      expect(
+        chromeSymbols.filter(drawnOutsideThePagesTypeface).map(glyphReading),
+        `a mark of Details' controls is drawn in a font the page does not ship at ${width} px`
+      ).toEqual([]);
+      // The status's own mark in the Status row's pill is a shape, as the page's other status
+      // marks are (`StatusGlyph`), so no font of the machine draws it.
+      await expect(
+        marginSlot(page).locator(STATUS_MARK),
+        `the Status row's pill draws its status mark other than as one shape at ${width} px`
+      ).toHaveCount(1);
+      // The readings, printed so that what each machine drew is on the record when the row
+      // passes too.
+      console.log(
+        `Details' glyphs at ${width} px: ${glyphs
+          .map(({ column, drawn, glyph, row }) => `${row} ${glyph} ${drawn} px in ${column} px`)
+          .join("; ")}\nDetails' glyph fonts at ${width} px: ${[...textGlyphs, ...chromeSymbols]
+          .map(glyphReading)
+          .join("; ")}`
+      );
       const labels = detailsRow(page, PROPERTY_LABELS.labels).locator("[data-author-text]");
       await expect
         .poll(async () =>
@@ -425,7 +644,7 @@ test("every property with a value is visible in Details at every width @phone", 
       // button whose press opens the box, named by the repository it shows and what it sets.
       const repository = detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
         exact: true,
-        name: `${REPOSITORY}, ${repoControlName(one)}`,
+        name: repoTextControlName(one, { resolvedRepo: REPOSITORY, words: CONTROL_NAME_WORDS }),
       });
       const values: readonly (readonly [string, Locator])[] = [
         ["the repository", repository],
@@ -474,7 +693,7 @@ test("every property with a value is visible in Details at every width @phone", 
           "Referenced by's control",
           marginSection(page, "references").getByRole("button", {
             exact: true,
-            name: PROPERTY_LABELS.referenced_by,
+            name: referencedByControlName(undefined),
           }),
         ],
         [
@@ -511,6 +730,44 @@ test("every property with a value is visible in Details at every width @phone", 
         repositoryBox,
         `the repository's box does not hold ${REPOSITORY} at ${width} px`
       ).toHaveValue(REPOSITORY);
+      // The open box is the row's value: as wide as the row's value column, the second of the
+      // row's two columns (`details-leaves.tsx`'s `Row`), and wide enough to show the repository
+      // whole. The box fills its list of suggestions from a read it starts when it takes the
+      // focus, and Chromium draws the list's arrow inside the box once the list holds an option,
+      // so both are measured once the list holds the repository, as the reader sees the box.
+      // Both are soft, so that a width the box fails at does not stop the widths after it.
+      await expect(
+        detailsRow(page, PROPERTY_LABELS.repository).locator(
+          `datalist > option[value="${REPOSITORY}"]`
+        ),
+        `the repository's box does not suggest ${REPOSITORY} at ${width} px`
+      ).toHaveCount(1);
+      const valueColumn = detailsRow(page, PROPERTY_LABELS.repository).locator(
+        ":scope > div:last-child"
+      );
+      const [fieldBox, columnBox] = [
+        await repositoryBox.boundingBox(),
+        await valueColumn.boundingBox(),
+      ];
+      expect(fieldBox, `the repository's box has no box at ${width} px`).not.toBeNull();
+      expect(columnBox, `the Repository row's value has no box at ${width} px`).not.toBeNull();
+      const [fieldWidth, columnWidth] = [fieldBox?.width ?? 0, columnBox?.width ?? 0];
+      const { clientWidth, scrollWidth } = await repositoryBox.evaluate((box) => ({
+        clientWidth: box.clientWidth,
+        scrollWidth: box.scrollWidth,
+      }));
+      expect
+        .soft(
+          Math.abs(fieldWidth - columnWidth),
+          `the repository's box is ${fieldWidth} px wide in a value column of ${columnWidth} px at ${width} px`
+        )
+        .toBeLessThanOrEqual(1);
+      expect
+        .soft(
+          scrollWidth,
+          `the repository's box cuts ${REPOSITORY}: its text takes ${scrollWidth} px and the box shows ${clientWidth} px of it at ${width} px`
+        )
+        .toBeLessThanOrEqual(clientWidth);
       await page.keyboard.press("Escape");
       await expect(
         repository,
@@ -746,9 +1003,9 @@ test("every property with a value is visible in Details at every width @phone", 
  *  break it at. */
 const LONGEST_LABEL = "a-label-of-forty-characters-and-no-space";
 
-// Step (5) above, for the longest label: the Labels row lists every label, none cut. Found by the
-// tester on the preview of d4344116: on an issue there a 40-character label ran 39 px past
-// Details' edge at 1440 px and was cut, at 390 px as well.
+// Step (5) above, for the longest label: the Labels row lists every label, none cut. A
+// 40-character label with no space ran 39 px past Details' edge at 1440 px and was cut, at 390 px
+// as well.
 test("a label of the most characters Dispatch takes is whole in Details at every width @phone", async ({
   browser,
 }) => {
@@ -782,9 +1039,9 @@ test("a label of the most characters Dispatch takes is whole in Details at every
  *  already runs 14 px past the row at 1440 px. */
 const LONG_REPOSITORY = "acme/a-repository-name-of-exactly-forty-chars";
 
-// Step (5) above, for a long repository: the repository is visible in its row, whole. Found by
-// the tester on the preview of 962ec632: on an issue there a repository of 44 characters ran
-// 101 px past Details' Repository row at 1440 px and was cut at Details' edge, at 390 px as well.
+// Step (5) above, for a long repository: the repository is visible in its row, whole. A
+// repository of 44 characters ran 101 px past Details' Repository row at 1440 px and was cut at
+// Details' edge, at 390 px as well.
 test("a repository of a long name is whole in Details at every width @phone", async ({
   browser,
 }) => {
@@ -826,8 +1083,7 @@ function detailsHeadBottom(page: Page): Promise<number> {
 // Add opens the control of the property it lists. In a short window the Labels row has
 // scrolled up under Details' head by the time Add, at the end of Development, is in view; Add
 // brings the control into view before it presses it, since the control's popover is placed from
-// where the control is on the screen. Found by the implementer's c-use at cf4dd251 (the popover
-// opened over the head at 390 px), fixed in 29c83c9b; the tester pins it here.
+// where the control is on the screen; without that the popover opened over the head at 390 px.
 test("Add brings a control it reaches into view, so its popover opens under Details' head @phone", async ({
   browser,
 }) => {
@@ -946,13 +1202,13 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await expect(
       detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
         exact: true,
-        name: `${CONTROL_LABELS.none}, ${repoControlName(two)}`,
+        name: repoTextControlName(two, { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
       }),
       "TWO resolves to no repository, but its Repository row does not read None"
     ).toHaveText(CONTROL_LABELS.none);
     await addControl(page).click();
     // Add lists Assignee only where the header draws the assignee's control, which the menu
-    // presses, and only while TWO has no assignee: an issue someone is assigned to has a value for
+    // focuses, and only while TWO has no assignee: an issue someone is assigned to has a value for
     // it, and Add lists no property that has one. The header is read once it is drawn.
     const twoStored = await getIssue(two);
     await expect(
@@ -960,7 +1216,9 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     ).toBeVisible();
     // One read is the header's answer here: the assignee's control waits on no read, so a header
     // that draws it draws it in the commit that drew the heading awaited above.
-    const assigneeControls = await page.locator(`[aria-label="Assignee of ${two}"]`).count();
+    const assigneeControls = await page
+      .locator(`[aria-label="${assigneeControlName(two)}"]`)
+      .count();
     const listsAssignee = assigneeControls > 0 && twoStored.assignee === null;
     await expect(
       openMenu(page).getByRole("menuitem"),
@@ -1058,7 +1316,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
 
     // (11) TWO's blockers: a refused key keeps the editor open, then THREE.
     const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
-    await blockedBy.getByRole("button", { name: `Add issues ${two} waits on` }).click();
+    await blockedBy.getByRole("button", { name: blockedByControlName(two, 0) }).click();
     const keys = blockedBy.getByLabel(`Issues ${two} waits on`, { exact: true });
     await keys.fill(`${PROJECT}-9999`);
     await blockedBy.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }).click();
@@ -1082,7 +1340,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await reopen(three);
     await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
     await marginSlot(page)
-      .getByRole("button", { name: `${CONTROL_LABELS.add_priority} to ${three}` })
+      .getByRole("button", { name: addPriorityControlName(three) })
       .click();
     await marginSlot(page)
       .getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance })
@@ -1137,7 +1395,8 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       "true"
     );
     await marginSectionDisclosure(page, "development").click();
-    await expect(detailsRow(page, PROPERTY_LABELS.repository)).toHaveCount(0);
+    // A closed section keeps its rows on the page and hides them, so the reader sees none.
+    await expect(detailsRow(page, PROPERTY_LABELS.repository)).toBeHidden();
     expect(
       await page.evaluate(() => localStorage.getItem("dispatch.issue.margin-sections:alice"))
     ).toBe("development");
@@ -1383,9 +1642,7 @@ test.describe("the shared controls of Details keep the focus while their write l
       await gotoIssue(page, `/issues/${one}`);
       await openDetails(page);
       const advances = detailsRow(page, PROPERTY_LABELS.advances);
-      const addPriority = advances.getByRole("button", {
-        name: `${CONTROL_LABELS.add_priority} to ${one}`,
-      });
+      const addPriority = advances.getByRole("button", { name: addPriorityControlName(one) });
       await addPriority.focus();
       await expect(addPriority).toBeFocused();
       await page.keyboard.press("Enter");
@@ -1449,7 +1706,7 @@ test.describe("the shared controls of Details keep the focus while their write l
       await gotoIssue(page, `/issues/${two}`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
-      const open = row.getByRole("button", { name: `Add issues ${two} waits on` });
+      const open = row.getByRole("button", { name: blockedByControlName(two, 0) });
       await open.focus();
       await page.keyboard.press("Enter");
       await expect(row.getByLabel(`Issues ${two} waits on`, { exact: true })).toBeFocused();
@@ -1489,7 +1746,7 @@ test.describe("the shared controls of Details keep the focus while their write l
       await gotoIssue(page, `/issues/${two}`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
-      const open = row.getByRole("button", { name: `Add issues ${two} waits on` });
+      const open = row.getByRole("button", { name: blockedByControlName(two, 0) });
       await open.focus();
       await page.keyboard.press("Enter");
       await expect(row.getByLabel(`Issues ${two} waits on`, { exact: true })).toBeFocused();
@@ -1539,7 +1796,7 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
     await gotoIssue(page, `/issues/${three}`);
     await openDetails(page);
     const addPriority = priorityLine(page).getByRole("button", {
-      name: `${CONTROL_LABELS.add_priority} to ${three}`,
+      name: addPriorityControlName(three),
     });
     await addPriority.focus();
     await expect(addPriority).toBeFocused();
@@ -1579,7 +1836,7 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
     );
     await expect(
       detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
-        name: `${CONTROL_LABELS.add_priority} to ${three}`,
+        name: addPriorityControlName(three),
       }),
       "once the new read moved the line into the Advances row, the focus is not on its add control"
     ).toBeFocused();
@@ -1615,7 +1872,7 @@ test("Details' priority Remove of an issue's last priority keeps the focus in De
     // ONE advances nothing now, so its line is the control beside Add.
     await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
     const addPriority = priorityLine(page).getByRole("button", {
-      name: `${CONTROL_LABELS.add_priority} to ${one}`,
+      name: addPriorityControlName(one),
     });
     await expect(addPriority).toBeVisible();
     await expectFocusKept(

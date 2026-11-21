@@ -13,10 +13,10 @@ import { pageHeaderControl, pageMenu, pageMenuItem } from "../../theme/classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
 import { componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
-import { repoControlName } from "../issue/RepoControl";
+import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
 import { roveFocus } from "../shell/roving";
-import { blockedByControlName } from "./BlockedByControl";
+import { blockedByControlName } from "./details-names";
 import type { IssueField } from "./IssueFieldForms";
 import { useMarginDrawer } from "./margin-slot";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
@@ -32,14 +32,14 @@ import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
  * Six of the fields it lists are edited by a control drawn elsewhere on the page (the assignee,
  * the labels, the issues this one waits on, the repository, the components and the priorities
  * it advances), so the menu presses those rather than holding a second copy of them. It finds
- * each by the name that control exports - `assigneeControlName`, `labelsControlName`,
- * `blockedByControlName`, `repoControlName`, `componentsControlName`, `addPriorityControlName` -
- * so the two sides cannot drift apart, and lists one only while that control takes a press
- * (`usableControl`). A press on an entry opens that property's control, and a control that
- * takes no press opens nothing: while the priorities' save was out, Add listed Advances beside
- * the disabled "Add a priority to CORE-1", and a press on it left the form shut and the focus on
- * the body (the tester, on 8a8f3f6b). A control of Details still takes a press while Details is
- * closed, since the reach opens Details first.
+ * each by the name exported for that control - `assigneeControlName`, `labelsControlName`,
+ * `blockedByControlName`, `repoControlName` and `repoTextControlName`, `componentsControlName`,
+ * `addPriorityControlName` - so the two sides cannot drift apart, and lists one only while that
+ * control takes a press (`usableControl`). A press on an entry opens that property's control, and
+ * a control that takes no press opens nothing: while the priorities' save is out, "Add a priority
+ * to CORE-1" takes no press, and an Advances listed then would leave the form shut and the focus
+ * on the body when pressed. A control of Details still takes a press while Details is closed,
+ * since the reach opens Details first.
  *
  * Which entries can be reached - which decides whether Add is drawn at all, and what its open
  * menu lists - is read from the page, never while the menu renders: during a render the page
@@ -54,9 +54,8 @@ import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
  * own commits only, Add went when it opened the priorities' form, which replaces "Add a
  * priority to CORE-1", and stayed gone once Cancel drew that control again in a commit of
  * `IssuePriorityLine` alone; the repository's select and the components' picker, each drawn
- * then once its own read answered, were never seen either (the review of 5906c38b). The
- * repository's row still swaps its text - "None" or the repository - and its box in commits of
- * its own control alone.
+ * then once its own read answered, were never seen either. The repository's row still swaps its
+ * text - "None" or the repository - and its box in commits of its own control alone.
  */
 export function IssueAddMenu({
   drawerBox,
@@ -143,12 +142,17 @@ export function IssueAddMenu({
   // hidden by another component's own commit draws the menu no further time: a refused save of
   // the priorities gives their control back in a commit of `IssuePriorityLine` alone. Every
   // control an entry reaches is under the panel or the header (the assignee's), so those two are
-  // watched, for each attribute `usableControl` reads. `usableControl` also reads every element
-  // from a control of Details up to Details' own `aside`, and the `aside` itself, which is hidden
-  // while Details is closed; an element between them can be hidden too, as the phone's sheet hides
-  // the box that holds the panel while a margin thread is open (`features/margin/MarginSheet.tsx`).
-  // So where an `aside` holds the panel (`drawerBox`), the whole `aside` is watched in the panel's
-  // place.
+  // watched, for each attribute `usableControl` reads. `usableControl` reads `hidden` and `inert`
+  // on every element around a control (`canHoldFocus`), and `aria-hidden` from a control of
+  // Details up to Details' own `aside`, and the `aside` itself, which is hidden while Details is
+  // closed; an element between them can be hidden too, as the phone's sheet hides the box that
+  // holds the panel while a margin thread is open (`features/margin/MarginSheet.tsx`). So where an
+  // `aside` holds the panel (`drawerBox`), the whole `aside` is watched in the panel's place. An
+  // element above the watched box is not watched: a hide or an inert set there is read at Add's
+  // next commit. Nothing above Details' `aside` sets either today: in the shell (`app.tsx`,
+  // `features/shell`) and the margin (`features/margin`), `hidden` is set on that `aside`, on
+  // elements inside it and on the margin's column, which is drawn only where Details is not, and
+  // `inert` on nothing.
   useLayoutEffect(() => {
     committed.current = fields;
     read();
@@ -187,7 +191,23 @@ export function IssueAddMenu({
   // value in this render is gone from them at once; one that lost it joins once the commit is read.
   const entries = fields.filter((field) => reachable.includes(field.label));
 
-  if (isClosed || entries.length === 0) return null;
+  // Add is drawn nowhere on a closed issue or with no entry to list, and the menu shuts with it,
+  // set during the render as React has a prop's change reset state. Left open, it would come back
+  // drawn open when the issue reopens or a property loses its value again, with the focus not in
+  // it, since the effect above puts the focus on its first entry only as it opens, and its
+  // listeners on the document would stay on meanwhile. A focus on Add or in its open menu goes
+  // with it to the page's body, and stays there, whatever took Add away: another session setting
+  // the last property it lists or closing the issue, a read taking its last entry's control away,
+  // the command palette's Close issue, and a save of the reader's own that lands while they have
+  // tabbed onto Add and sets the last property it lists. None of these is a press live on Add or
+  // its menu; a press in its menu closes the menu with Add still drawn, and the control it opens
+  // takes the focus. An entry a change made elsewhere takes out of the open menu leaves the focus
+  // on the body alike.
+  const drawn = !isClosed && entries.length > 0;
+  if (!drawn) {
+    if (open) setOpen(false);
+    return null;
+  }
   return (
     <div className="relative flex shrink-0" ref={wrapper}>
       <button
@@ -334,10 +354,15 @@ export function IssueAddMenu({
       // no repository, else the repository it inherits. Outside it, and inside it while the box
       // is open or holds a draft or a write that is out, the row draws the box itself. The text
       // is tried first, so the entry presses it rather than finding no box.
-      const text = details.resolved_repo ?? CONTROL_LABELS.none;
       fields.push({
         label: PROPERTY_LABELS.repository,
-        ...atControl(`${text}, ${repoControlName(details.key)}`, repoControlName(details.key)),
+        ...atControl(
+          repoTextControlName(details.key, {
+            resolvedRepo: details.resolved_repo,
+            words: { CONTROL_LABELS },
+          }),
+          repoControlName(details.key)
+        ),
       });
     }
     if ((details.components.ids ?? []).length === 0) {

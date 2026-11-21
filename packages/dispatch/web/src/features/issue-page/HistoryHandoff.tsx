@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useId, useMemo, useRef, useState } from "react";
 
 import { api } from "../../api/client";
+import { useFocusHandOff } from "../../hooks/useFocusHandOff";
 import {
   pageInkText,
   pageMarkBg,
@@ -10,7 +11,7 @@ import {
   pageRowAct,
 } from "../../theme/classes";
 import { type HandoffField, handoffFields } from "../conversation/conversation-model";
-import { DetailsErrorLine, useFocusHandOff } from "./details-error";
+import { DetailsErrorLine } from "./details-error";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, sentenceCase } from "./page-words";
 
