@@ -116,10 +116,10 @@ func reusedNameCarriesOnlyItsPodsProjects(t *testing.T, entryProject string, wan
 		t.Fatalf("the hold on %s is %q's until %s; want %q's until SessionRetention past its token's expiry, %s", reusedSession, holder, deadline, want, retained)
 	}
 
-	// 3. The hold runs out. Its deadline is moved a minute into the past, which is the binding
-	// once SessionRetention has passed since the token's expiry: a claim compares expires_at with
-	// now() (oauthstore.Store.BindSession), and the trade below reads nothing else that would have
-	// aged in that time.
+	// 3. The hold runs out. Its deadline is moved a minute into the past, as it stands once
+	// SessionRetention has passed since the token's expiry: a claim compares expires_at with now()
+	// (oauthstore.Store.BindSession). This exercises BindSession's expired-binding branch alone;
+	// the pod registrations and the first token stay fresh.
 	if _, err := f.pool.Exec(ctx, `update oauth_session_bindings set expires_at = now() - interval '1 minute' where session = $1`, reusedSession); err != nil {
 		t.Fatalf("expire the hold on %s: %v", reusedSession, err)
 	}
