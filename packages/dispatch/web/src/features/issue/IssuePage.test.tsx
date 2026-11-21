@@ -1882,7 +1882,9 @@ test("IssuePage explains when an artifact slug does not exist", async () => {
       "href",
       "/issues/CORE-1/artifacts"
     );
-    expect(screen.getByRole("tablist", { name: "Issue detail" })).not.toBeNull();
+    // The tab strip is a lazy part of the page (`IssuePage.tsx`'s `IssueTabs`), drawn after the
+    // panel's words when its chunk has not loaded yet, as when this row runs alone: read it once it has.
+    expect(await screen.findByRole("tablist", { name: "Issue detail" })).not.toBeNull();
   } finally {
     view.unmount();
     restore();
