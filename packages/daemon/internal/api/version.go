@@ -2979,7 +2979,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 207: dispatch://INFRA-1117 -- the test database's own disk. Where
+// 212: dispatch://INFRA-1117 -- the test database's own disk. Where
 // `runtime.kubernetes.test_postgres_disk` sets a size, an issue pod that runs the test database
 // keeps its cluster on a generic ephemeral volume of that size in place of the `testpg` emptyDir,
 // and the launcher's command line gains `--test-postgres-disk` after `--test-postgres`
@@ -2996,10 +2996,16 @@ package api
 // paired only with an image of this release. An older daemon renders no such flag, and a
 // launcher of this release given none behaves as before: it reads no free bytes and resets
 // nothing. No frame between the daemon and the launcher moves, and no shape the plugin parses.
+// A registration on another plugin contract made while a stop is held over the claim and its last
+// turn's end is still being copied is refused with StalePluginContractUnderStop
+// (internal/claim/wire.go): the same 409 and opening sentence as StalePluginContract, with a
+// remedy that names the held stop rather than a relaunch. A plugin of any release stops on that
+// 409 as on the other, so the second remedy raises nothing.
 // (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over every open pull request of
-// this repository, taken between 2026-11-21T03:12:45Z and 03:30:29Z, read main's 202, which
-// INFRA-4401 (#4493) took, and above it 203, 205 and 206 declared by other open heads and 204 by
-// #4030 as well as this branch. So 207 is the lowest number above main's that no other open head
-// declared. Read main's own number and every open pull request's again at the next forward merge
-// rather than from this line.)
-const DaemonAPIVersion = 207
+// this repository, taken between 2026-11-21T11:53:34Z and 12:05:10Z, read main's 202, which
+// INFRA-4401 (#4493) took, and above it 203, 204, 205, 206, 208, 209, 210 and 211 declared by
+// other open heads and 207 by twelve others as well as this branch. So 212 is the lowest number
+// above main's that no other open head declared. This entry stood at 204 and 207 before, each the
+// number it took at an earlier census. Read main's own number and every open pull request's
+// again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 212
