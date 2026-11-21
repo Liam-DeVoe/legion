@@ -9,7 +9,7 @@ import { issueAddress } from "../issue-address";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
-import { BodySlot } from "./body";
+import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
 import { useFollowing } from "./following";
 import { ViewDecisionsSlot } from "./view-decisions";
@@ -84,13 +84,19 @@ export function StageSlot({
     },
     [beside, following]
   );
+  // The reader's acts since the address was followed (`ReaderActsWatch`), watched from the
+  // following's drawing whichever slot is drawn and handed to the body, so a body drawn in the
+  // view's place reads an act made while the view was drawn, as one made before its row drew
+  // (`IssueTree`'s `addressActs`, `BodySlot`'s `takesFocus`).
+  const acts = useRef<AbortController | undefined>(undefined);
   const outline = beside && (!filled[preset] || undrawn === following);
   const View = outline ? undefined : views[preset];
   return (
     <DocumentStages>
+      <ReaderActsWatch into={acts} key={following} />
       {View === undefined ? (
         <StageBox>
-          <BodySlot {...props} />
+          <BodySlot {...props} acts={acts} />
         </StageBox>
       ) : (
         <ViewStage key={preset}>

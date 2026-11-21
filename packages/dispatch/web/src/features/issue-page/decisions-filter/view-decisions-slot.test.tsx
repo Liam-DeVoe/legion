@@ -373,6 +373,97 @@ test("a write-up's address under words its question does not hold draws the outl
   }
 });
 
+/** Holds every frame asked for from here on until `run` runs the ones asked so far, as the next
+ *  frame would; a frame cancelled first is not run. `restore` gives the frames back to happy-dom. */
+function framesByHand(): { readonly restore: () => void; readonly run: () => Promise<void> } {
+  const asked = new Map<number, FrameRequestCallback>();
+  let last = 0;
+  const request = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    last += 1;
+    asked.set(last, callback);
+    return last;
+  });
+  const cancel = spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
+    asked.delete(frame);
+  });
+  return {
+    restore: () => {
+      request.mockRestore();
+      cancel.mockRestore();
+    },
+    run: () =>
+      act(async () => {
+        for (const frame of [...asked.keys()]) {
+          const callback = asked.get(frame);
+          asked.delete(frame);
+          callback?.(performance.now());
+        }
+      }),
+  };
+}
+
+/** The outline's row of the write-up, drawn in the Decisions view's place at the write-up's
+ *  address under words its question does not hold: the decisions read is held until the view is
+ *  drawn, `press` is done then where it is given, and once the outline draws the row every frame
+ *  asked for till then is run (`frames`). */
+async function writeUpRowAfter(
+  frames: { readonly run: () => Promise<void> },
+  press?: () => void
+): Promise<HTMLElement> {
+  const decisionsOut = Promise.withResolvers<typeof WRITE_UP>();
+  spyOn(api, "getIssueDecisions").mockReturnValue(decisionsOut.promise);
+  const view = drawStage("?q=flag#b-writeup");
+  await waitFor(() =>
+    expect(drawnSlot(view), "the stage drew no view while the decisions read is out").toBe(
+      "the view"
+    )
+  );
+  if (press !== undefined) act(press);
+  await act(async () => decisionsOut.resolve(WRITE_UP));
+  const row = await waitFor(() => {
+    const drawn = view.container.querySelector<HTMLElement>(
+      `[data-issue-body] [data-node-row][data-node-id="${WRITE_UP_NODE}"]`
+    );
+    expect(
+      drawn,
+      `the outline drew no row of the write-up; the stage drew ${drawnSlot(view)}`
+    ).not.toBeNull();
+    return drawn as HTMLElement;
+  });
+  await frames.run();
+  return row;
+}
+
+// The outline lands on the address's node until the reader's first act since they followed the
+// address (`IssueTree`'s `addressActs`), which the stage watches from the following's drawing
+// whichever slot it draws. With the decisions read out the view stays drawn, and a press then on
+// a control outside the stage is an act of that following: once the read answers, the outline
+// drawn in the view's place leaves the focus on the control. With no act, the same address lands
+// on the outline's row of the write-up.
+test("a press while the view is drawn keeps the focus on the control pressed, where the outline drawn in the view's place lands on its row with no act", async () => {
+  spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
+  const frames = framesByHand();
+  try {
+    const landed = await writeUpRowAfter(frames);
+    expect(landed, `with no act the outline left the focus on ${focusedRow()}`).toHaveFocus();
+    cleanup();
+    const control = render(<button type="button">A control outside the stage</button>).getByRole(
+      "button"
+    );
+    const row = await writeUpRowAfter(frames, () => {
+      control.dispatchEvent(new window.PointerEvent("pointerdown", { bubbles: true }));
+      control.focus();
+    });
+    expect(
+      control,
+      `a press while the view was drawn lost the focus to ${focusedRow() ?? document.activeElement?.tagName}`
+    ).toHaveFocus();
+    expect(row, "the outline's row of the write-up took the focus").not.toHaveFocus();
+  } finally {
+    frames.restore();
+  }
+});
+
 /** The reader's unread set on the issue as its read answers it: nothing unread. */
 const NOTHING_UNREAD = { as_of: "2026-11-05T02:00:00Z", limit: 200, offset: 0, rows: [], total: 0 };
 
