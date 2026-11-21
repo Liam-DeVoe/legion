@@ -847,15 +847,17 @@ What each part is for:
   its USD per million tokens (`input`, `output`, `cache_write`, `cache_read`, all required), and a
   model with none is never answered on; `conversation_store` is the daemon's connection to the
   session database (`dsn_file` under `session_store: postgres`, `user`, its IAM login, under
-  `cloudsql-iam`), and without it the loop is off, as without `answers`: the daemon boots, logs one
-  line saying so, which `legion config check` prints right after `Config OK`, and a message to a
-  stopped agent is refused and dropped as it is without the block; and `bounds` defaults to 180
-  seconds, 8 model calls of at most 4,000 output tokens, 20 `gh` calls of at most 30 seconds and
-  60,000 characters each, 4 conversations at once and $50 a UTC day per project. Its one tool is
-  `gh`, run on the daemon's host with an allow list and the agent's own GitHub access, so with the
-  loop on the daemon needs the real gh (`LEGION_GH_PATH`, else `PATH`, never a script; in the
-  worker image, `LEGION_GH_PATH=/usr/local/bin/gh`) and refuses to boot without one. Unset, the
-  daemon answers nothing. The
+  `cloudsql-iam`); and `bounds` defaults to 180 seconds, 8 model calls of at most 4,000 output
+  tokens, 20 `gh` calls of at most 30 seconds and 60,000 characters each, 4 conversations at once
+  and $50 a UTC day per project. A block whose `providers` is absent, null or empty, or, under
+  Kubernetes, that names no `conversation_store` connection, leaves the loop off, as without
+  `answers`: the daemon boots, logs one line saying why (the provider line when both are missing),
+  which `legion config check` prints right after `Config OK`, and a message to a stopped agent is
+  refused and dropped as it is without the block. Its one tool is `gh`, run on the daemon's host
+  with an allow list and the agent's own GitHub access, so with the loop on the daemon needs the
+  real gh (`LEGION_GH_PATH`, else `PATH`, never a script; in the worker image,
+  `LEGION_GH_PATH=/usr/local/bin/gh`) and refuses to boot without one. Unset, the daemon answers
+  nothing. The
   Envoy listener's and Dispatch's halves, which hand the daemon a message for a stopped agent, land
   with their own changes. The repository's `docs/kubernetes.md` ("The answer loop") covers the
   rest.

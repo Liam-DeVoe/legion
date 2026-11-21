@@ -542,14 +542,16 @@ runtime:
 #                                      # name. Unset (as here), the daemon answers nothing, as before. It
 #                                      # reads conversations from the session database
 #                                      # (runtime.kubernetes.session_store, above) through its own
-#                                      # conversation_store below, and is off without that connection.
+#                                      # conversation_store below. The loop is off, as without answers,
+#                                      # without that connection or with no provider below, and boot
+#                                      # then logs one line saying which.
 #                                      # With the loop on, boot needs the real gh on the daemon's own
 #                                      # host for the loop's gh tool (LEGION_GH_PATH, else the first gh on
 #                                      # PATH), and the shared public leak check that tool's guard runs:
 #                                      # the deployment's leak_check (above, or its two variables), which
 #                                      # the daemon reads at the pin in its environment
 #                                      # (LEGION_LEAK_CHECK_TAG, which the worker image sets) and holds to
-#                                      # that manifest digest. Boot refuses to start without either.
+#                                      # that manifest digest. Boot refuses to start without any of them.
 #   providers:                         # anthropic and/or openai: the endpoint the loop calls, and exactly
 #     anthropic: { base_url: "https://<gateway>.internal.example/anthropic", api_key_file: ./anthropic-key }
 #     openai: { base_url: "https://<gateway>.internal.example/openai", api_key_command: "<a command that prints the key>" }

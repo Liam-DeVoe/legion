@@ -479,7 +479,7 @@ consumer per project for each: `legion-go-<project>-dispatch` (filtering
 `notifications.dispatch.issue.>` alone), `legion-go-<project>-github` (filtering each repository
 the project works in) and
 `legion-go-<project>-wake` (filtering `notifications.legion.wake`, the listener's own wake); and,
-with `answers` set, a fourth, `legion-go-<project>-answers` (filtering
+with the daemon's answer loop on, a fourth, `legion-go-<project>-answers` (filtering
 `notifications.legion.<project>.agents.>`, `<project>` the Legion project token), which reads the
 messages handed to it for its stopped agents.
 It sends its own notices to roles and to the

@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -214,9 +213,9 @@ func TestADaemonWithoutAnswersSaysAtBootItDoesNotAnswer(t *testing.T) {
 	}
 }
 
-// answersOffKubernetesFile is a Kubernetes legion.yaml whose `answers` names no connection to the
-// conversation store, with its state directory, its kubeconfig and its session store lines left
-// to the caller; the token files it names sit beside it.
+// answersOffKubernetesFile is a Kubernetes legion.yaml whose `answers` block the caller gives, with
+// its state directory, its kubeconfig and its session store lines left to the caller too; the
+// token files it names sit beside it.
 const answersOffKubernetesFile = `project: DEMO
 postgres_dsn: postgres://legion@127.0.0.1:1/legion
 state_dir: %s
@@ -240,30 +239,37 @@ runtime:
     storage_class: gp2
     kubeconfig: %s
     context: test
-%sanswers:
-  providers:
-    anthropic: {base_url: https://gateway.internal.example/anthropic, api_key_command: "exit 1"}
-  prices:
-    anthropic/claude-opus-5-5: {input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}
-`
+%s%s`
 
-// A Kubernetes daemon whose `answers` names no connection to the conversation store, under either
-// database store, runs as one without `answers`: the real loader leaves the loop off with its one
-// warning, boot reads no gh and no leak check for it, and the heartbeat the boot's history writes
-// says at once that it does not answer, so the listener refuses and drops a message to one of its
-// stopped agents as it does for a daemon without the block. The heartbeat's answering is the
-// daemon's own: run's, with the workflow open, where the loop runs only on a settled `answers`.
-func TestADaemonWhoseAnswersNameNoConversationStoreSaysAtBootItDoesNotAnswer(t *testing.T) {
-	for _, tc := range []struct{ name, store string }{
-		{"postgres", "    session_store: postgres\n    session_dsn_secret: SESSION_DSN\n"},
-		{"cloudsql-iam", "    session_store: cloudsql-iam\n" +
-			"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam}\n"},
+// A Kubernetes daemon whose `answers` the loop cannot run on, for want of a connection to the
+// conversation store under either database store or of a model provider, runs as one without
+// `answers`. The real loader leaves the loop off with its one warning, and boot's reads of that
+// configuration resolve no gh and no leak check for it. The boot is the one
+// TestADaemonWhoseAnswerLoopRunsSaysItAnswers makes, the workflow open, with the loaded `answers`
+// in place of a settled one, so only daemon.go's own rule decides its heartbeat: it says at once
+// that it does not answer, and the listener refuses and drops a message to one of its stopped
+// agents as it does for a daemon without the block.
+func TestADaemonWhoseAnswersLeaveTheLoopOffSaysAtBootItDoesNotAnswer(t *testing.T) {
+	const postgres = "    session_store: postgres\n    session_dsn_secret: SESSION_DSN\n"
+	const cloudSQL = "    session_store: cloudsql-iam\n" +
+		"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam}\n"
+	const withProvider = "answers:\n  providers:\n" +
+		"    anthropic: {base_url: https://gateway.internal.example/anthropic, api_key_command: \"exit 1\"}\n" +
+		"  prices:\n    anthropic/claude-opus-5-5: {input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}\n"
+	const noProvider = "answers:\n  bounds: {concurrent: 2}\n"
+	for _, tc := range []struct{ name, store, answers, warning string }{
+		{"postgres, no conversation store", postgres, withProvider,
+			"answers is set, but the answer loop is off: under runtime.kubernetes.session_store postgres, answers.conversation_store.dsn_file names"},
+		{"cloudsql-iam, no conversation store", cloudSQL, withProvider,
+			"answers is set, but the answer loop is off: under runtime.kubernetes.session_store cloudsql-iam, answers.conversation_store.user names"},
+		{"postgres, no provider", postgres, noProvider,
+			"answers is set, but the answer loop is off: answers.providers names no model provider"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "legion.yaml")
 			body := fmt.Sprintf(answersOffKubernetesFile, filepath.Join(dir, "state"),
-				writeKubeconfig(t, "https://192.0.2.20:6443", "test"), tc.store)
+				writeKubeconfig(t, "https://192.0.2.20:6443", "test"), tc.store, tc.answers)
 			for name, contents := range map[string]string{
 				path: body, "envoy-token": "envoy\n", "operator-token": "operator\n", "dispatch-token": "dispatch\n",
 			} {
@@ -274,42 +280,29 @@ func TestADaemonWhoseAnswersNameNoConversationStoreSaysAtBootItDoesNotAnswer(t *
 					t.Fatal(err)
 				}
 			}
-			cfg, err := config.LoadForValidation(path, func(string) string { return "" })
+			loaded, err := config.LoadForValidation(path, func(string) string { return "" })
 			if err != nil {
 				t.Fatalf("LoadForValidation: %v", err)
 			}
-			if cfg.Answers != nil || len(cfg.Warnings) != 1 || !strings.HasPrefix(cfg.Warnings[0], "answers is set, but the answer loop is off: ") {
-				t.Fatalf("the loader settled answers %+v with warnings %q, want no loop and the one line saying so", cfg.Answers, cfg.Warnings)
+			if loaded.Answers != nil || len(loaded.Warnings) != 1 || !strings.HasPrefix(loaded.Warnings[0], tc.warning) {
+				t.Errorf("the loader settled answers %+v with warnings %q, want no loop and the one line %q…", loaded.Answers, loaded.Warnings, tc.warning)
 			}
-			writes := registryListener(t, &cfg)
+			// The Kubernetes boot's own reads of the file, which the tmux boot below does not make:
+			// with the loop off they ask for no gh and no leak check.
 			environ := []string{"PATH=" + t.TempDir(), "HOME=" + t.TempDir()}
-			reads, err := readBoot(cfg, environLookup(environ), func(string) string { return "" }, true, quietLogger())
-			if err != nil {
-				t.Fatalf("readBoot with no gh and no leak check: %v", err)
+			if _, err := readBoot(loaded, environLookup(environ), func(string) string { return "" }, true, quietLogger()); err != nil {
+				t.Errorf("readBoot with no gh and no leak check: %v", err)
 			}
-			p := plan{project: reads.project, secrets: reads.secrets, answers: reads.answers, clock: supervise.RealClock{}}
-			// As run computes it once the workflow is open (daemon.go): the loop is attached only
-			// where the loader settled `answers`.
-			workflow := &workflowRuntime{}
-			if cfg.Answers != nil {
-				workflow.answers = &answering{project: p.project}
-			}
-			history := newConversationHistory(cfg, p, nil, environ, workflow.answers != nil, quietLogger())
-			if history.backfill != nil {
-				t.Errorf("the history backfills a conversation store; want none, as without answers")
-			}
-			stop := history.start(context.Background())
-			defer stop()
+
+			cfg := workflowConfig(t, workflowNATS(t))
+			writes := registryListener(t, &cfg)
+			cfg.Answers, cfg.Warnings = loaded.Answers, loaded.Warnings
+			o := fakeRuntime(fake.NewRuntime(), &built{})
+			o.workflowTokens = &workflowTokenRecorder{}
+			startDaemon(t, cfg, o)
 
 			if bootHeartbeat(t, writes, cfg) {
-				t.Errorf("a daemon whose answers names no conversation store says it answers")
-			}
-			project, err := claim.ProjectToken(cfg.Project)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if paths := writes.paths(); !slices.Equal(paths, []string{"/v1/legion/projects/" + project}) {
-				t.Errorf("the listener took writes on %v, want the heartbeat's alone", paths)
+				t.Errorf("a daemon whose answers the loop cannot run on says it answers")
 			}
 		})
 	}

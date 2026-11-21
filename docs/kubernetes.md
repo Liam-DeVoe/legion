@@ -1696,17 +1696,18 @@ each harness's conversation read as it rebuilds it on resume, and appended to in
 
 ```yaml
 answers:
-  providers:                         # required: anthropic and/or openai
+  providers:                         # anthropic and/or openai; with none, the loop is off
     anthropic: { base_url: "https://<gateway>.example/anthropic", api_key_file: ./anthropic-key }
     openai: { base_url: "https://<gateway>.example/openai", api_key_command: "<a command that prints the key>" }
-  prices:                            # required: USD per million tokens, by the model id a conversation names
+  prices:                            # with a provider, required: USD per million tokens, by the model id a conversation names
     anthropic/claude-opus-5-5: { input: 5, output: 25, cache_write: 6.25, cache_read: 0.5 }
   conversation_store:                # runtime: kubernetes only
     dsn_file: ./conversations-dsn    # under session_store postgres; under cloudsql-iam, user: <the daemon's IAM login>
   bounds: { answer_seconds: 180, model_calls: 8, output_tokens: 4000, gh_seconds: 30, gh_output_chars: 60000, gh_calls: 20, concurrent: 4, daily_usd: 50 }
 ```
 
-- `providers` (required): At least one of `anthropic` (Anthropic's Messages API) and `openai` (OpenAI's Responses API); no other key.
+- `providers` (without it, the loop is off): At least one of `anthropic` (Anthropic's Messages API) and `openai` (OpenAI's Responses API); no other key.
+  Absent, null or empty, it names no model the loop may call, and the loop is off (below).
 
 - `providers.<provider>.base_url` (required): The provider's API endpoint, an `http` or `https` URL.
   The loop takes every base URL from here, never from its environment.
@@ -1714,8 +1715,9 @@ answers:
 - `providers.<provider>.api_key_file`, `api_key_command` (exactly one): The provider's key: a file (relative to `legion.yaml`'s directory), or a command run under `sh` with the daemon's environment less its NATS seeds that prints it, as `github_apps`' `private_key_command` is.
   Read again for every model call, so a rotated key or a short-lived token is the one each call carries; neither boot nor `legion config check` reads it, and no refusal or log line carries the key.
 
-- `prices` (required): At least one model, keyed `<provider>/<model>` as the conversation names it (`anthropic/claude-opus-5-5`), each with all four of `input`, `output`, `cache_write` and `cache_read`, non-negative USD per million tokens (0 where the provider charges nothing).
+- `prices` (required with a provider): At least one model, keyed `<provider>/<model>` as the conversation names it (`anthropic/claude-opus-5-5`), each with all four of `input`, `output`, `cache_write` and `cache_read`, non-negative USD per million tokens (0 where the provider charges nothing).
   A model of a provider `providers` does not name is refused.
+  A block that names no provider has nothing to price, so it may leave `prices` out or empty, but every model it prices is refused.
   A conversation on a model with no price is never answered on (`no_price`).
 
 - `conversation_store.dsn_file` (under `runtime.kubernetes.session_store: postgres`): The daemon's connection to the conversation store, a file holding the `postgres://` URL of the session database, which boot reads and refuses unless it holds one.
@@ -1752,11 +1754,14 @@ answers:
 Each count is a positive integer, each `_seconds` a positive whole number of seconds, and `daily_usd` a positive number;
 a key the block does not model is refused by name.
 Each store refuses the `conversation_store` key it does not use, as `runtime.kubernetes`' session keys do.
-Under `runtime: kubernetes`, a block that names no connection to the conversation store, its `conversation_store` left out or empty, leaves the loop off, as without `answers`:
-the daemon boots, resolving no `gh` and no leak check for the loop, and logs one line, `answers is set, but the answer loop is off: …`, naming the key that turns the loop on and what to set it to;
+The loop is off, as without `answers`, in two ways.
+A block that names no model provider, its `providers` absent, null or empty, leaves the loop off under either runtime.
+Under `runtime: kubernetes`, a block that names a provider and no connection to the conversation store, its `conversation_store` left out or empty, leaves it off too.
+Either way the daemon boots, resolving no `gh` and no leak check for the loop, and logs one line, `answers is set, but the answer loop is off: …`, naming the key that turns the loop on and what to set it to;
+a block that names neither gets the provider line alone.
 `legion config check` prints the same line right after `Config OK` and exits 0;
 and every message to a stopped agent is refused and dropped as it is without `answers`.
-The rest of the block is still read first and held to its rules, so a malformed provider, price or bound is refused, never turned off.
+The rest of the block is still read first and held to its rules, so a malformed provider, price or bound, an unknown key and a `conversation_store` key the runtime does not use are refused, never turned off.
 Under `runtime: tmux` the block names no `conversation_store` at all, and one is refused:
 the daemon reads each conversation where its panes keep it ([The conversation stores](#the-conversation-stores)).
 With the loop on, either runtime resolves at boot the real `gh` the loop's tool runs, `LEGION_GH_PATH` or else the first `gh` on `PATH`, never a script (a tmux daemon reuses the one it resolves for its panes), and refuses to start without one.
@@ -1765,7 +1770,7 @@ Beside that `gh`, boot needs the shared public leak check the loop's tool runs b
 a tmux daemon resolves the machine's check as it resolves a pane's (`PUBLIC_LEAK_CHECK`, then `public-leak-check.sh` on `PATH`, then the pointer file under the configuration home), and a Kubernetes daemon needs the deployment's leak check setting, `LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256` or the `leak_check` block ([Worker image](#worker-image)), and reads the tag it installs that check at, its own environment's `LEGION_LEAK_CHECK_TAG`, which the worker image sets.
 A Kubernetes daemon runs no other tool of its host but that check, which it installs and runs itself, since its pods run the image's.
 `legion config check` and `legion probe-boot` make the same refusals.
-`legion state --json` shows the block under `settings.answers`:
+While the loop is on, `legion state --json` shows the block under `settings.answers`, and while it is off it shows none, as without `answers`:
 each provider's `base_url` and `api_key_source` (which key names it), the prices and the settled bounds, never a key, a key's command or file, or the conversation store's connection.
 `deploy/kubernetes/daemon/legion.yaml.example` carries the block, commented out.
 

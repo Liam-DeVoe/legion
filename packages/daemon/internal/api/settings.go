@@ -115,7 +115,8 @@ type Settings struct {
 	// WorkerBackends is `worker_backends`, the roles that run on a backend other than Oh My Pi by
 	// role, `{}` while the file names none.
 	WorkerBackends map[string]string `json:"worker_backends"`
-	// Answers is absent while the file sets no `answers` block, the loop then off.
+	// Answers is absent while the loop is off: the file sets no `answers` block, or sets one
+	// that names no model provider or no connection to the conversation store.
 	Answers *AnswersSettings `json:"answers,omitempty"`
 	// RoleConfigFiles is `role_config_files`, the Oh My Pi overlays one role names and no other
 	// does, by role, `{}` while the file names none.

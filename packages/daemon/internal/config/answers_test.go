@@ -14,7 +14,8 @@ import (
 
 // The answers block's pieces a table row assembles: one provider of each credential source, a
 // price for each provider's model, the two database stores' runtime.kubernetes lines, and the
-// warning each of those stores gets for a block that names no connection to it.
+// warning each of those stores gets for a block that names no connection to it, and the one a
+// block that names no model provider gets under any runtime.
 const (
 	anthropicByFile   = "    anthropic: {base_url: \"https://gateway.internal.example/anthropic/\", api_key_file: keys/anthropic}\n"
 	openaiByCommand   = "    openai: {base_url: https://gateway.internal.example/openai, api_key_command: printf openai-key}\n"
@@ -26,6 +27,7 @@ const (
 	noStoreKey        = "  conversation_store: {}\n"
 	answersOffDSN     = "answers is set, but the answer loop is off: under runtime.kubernetes.session_store postgres, answers.conversation_store.dsn_file names the daemon's connection to the conversation store, and the file sets none, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.conversation_store.dsn_file to the file holding the postgres:// URL of the database the conversations live in"
 	answersOffUser    = "answers is set, but the answer loop is off: under runtime.kubernetes.session_store cloudsql-iam, answers.conversation_store.user names the daemon's connection to the conversation store, and the file sets none, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.conversation_store.user to the IAM login the daemon signs in to runtime.kubernetes.session_database's instance as"
+	answersOffNoModel = "answers is set, but the answer loop is off: answers.providers names no model provider the loop may call, so a message to a stopped agent is refused and dropped as it is without answers; to turn the loop on, set answers.providers to at least one provider (anthropic, openai) with its base_url and its key, and answers.prices to the price of each model the loop may answer on"
 	tmuxPostgresStore = "runtime: {tmux: {session_store: postgres, session_dsn_file: session-dsn}}\n"
 )
 
@@ -299,14 +301,108 @@ func TestAnswersUnderAFileSessionStoreIsRefusedAsWithoutTheBlock(t *testing.T) {
 	}
 }
 
+// A block whose `providers` is absent, null or empty names no model the loop may call, so it loads
+// with the loop off, as with no block, under either runtime and either database store, with or
+// without its conversation store: one warning, the provider line, which is decided before the
+// store, so a block that names neither gets that line alone. With no provider, `prices` may be
+// absent, null or empty, since there is nothing to price.
+func TestAnswersThatNameNoProviderLeaveTheLoopOff(t *testing.T) {
+	type runtimeFile struct{ name, file, store string }
+	runtimes := []runtimeFile{
+		{"tmux", minimalFile, ""},
+		{"postgres, no conversation_store", kubernetesFile, ""},
+		{"postgres, an empty conversation_store", kubernetesFile, noStoreKey},
+		{"postgres, dsn_file", kubernetesFile, daemonDSNFile},
+		{"cloudsql-iam, no conversation_store", withSessionStore(cloudSQLStore), ""},
+		{"cloudsql-iam, user", withSessionStore(cloudSQLStore), daemonIAMLogin},
+	}
+	blocks := map[string]string{
+		"providers absent":                 "answers:\n  bounds: {concurrent: 2}\n",
+		"providers null":                   "answers:\n  providers: null\n",
+		"providers empty":                  "answers:\n  providers: {}\n",
+		"providers absent, prices empty":   "answers:\n  prices: {}\n",
+		"providers empty, prices null":     "answers:\n  providers: {}\n  prices: null\n",
+		"providers null, every bound read": "answers:\n  providers: null\n  bounds: {answer_seconds: 60, daily_usd: 0.5}\n",
+	}
+	for _, rt := range runtimes {
+		for name, block := range blocks {
+			t.Run(rt.name+", "+name, func(t *testing.T) {
+				cfg, err := LoadForValidation(writeConfigFile(t, rt.file+block+rt.store), noEnv)
+				if err != nil {
+					t.Fatalf("LoadForValidation: %v", err)
+				}
+				if cfg.Answers != nil {
+					t.Errorf("Answers = %+v, want nil: no model provider, no loop", cfg.Answers)
+				}
+				if !reflect.DeepEqual(cfg.Warnings, []string{answersOffNoModel}) {
+					t.Errorf("Warnings = %#v, want the one line %q", cfg.Warnings, answersOffNoModel)
+				}
+			})
+		}
+	}
+	for name, body := range map[string]string{
+		"tmux, an empty block":     minimalFile + "answers: {}\n",
+		"postgres, an empty block": kubernetesFile + "answers: {}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := LoadForValidation(writeConfigFile(t, body), noEnv)
+			if err != nil || cfg.Answers != nil || !reflect.DeepEqual(cfg.Warnings, []string{answersOffNoModel}) {
+				t.Fatalf("LoadForValidation = answers %+v, warnings %#v, %v; want no loop and the one line %q", cfg.Answers, cfg.Warnings, err, answersOffNoModel)
+			}
+		})
+	}
+}
+
+// A block that names no model provider is still read whole and held to every rule that does not
+// need a provider: `providers` that is no mapping or whose providers are written with no value,
+// an unknown key anywhere in it, any model `prices` names (its provider is then one the block
+// does not name), a `prices` that is no mapping, a bad bound, and a conversation_store key the
+// runtime's store does not use are each refused as they are with a provider, never turned off.
+func TestAnswersThatNameNoProviderStillRefuseAMalformedBlock(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"providers not a mapping", minimalFile + "answers:\n  providers: [anthropic]\n",
+			"answers.providers must be a mapping of provider (anthropic, openai) to its base_url and key"},
+		{"a provider written with no value", kubernetesFile + "answers:\n  providers: {anthropic: null}\n",
+			"answers.providers must name at least one provider: anthropic or openai"},
+		{"an unknown provider written with no value", minimalFile + "answers:\n  providers: {gemini: null}\n",
+			"unknown key answers.providers.gemini"},
+		{"an unknown key", kubernetesFile + "answers:\n  model: anthropic/claude-opus-5-5\n", "unknown key answers.model"},
+		{"a model priced", kubernetesFile + "answers:\n  prices:\n" + opusPrice,
+			"answers.prices.anthropic/claude-opus-5-5 prices a model of anthropic, which answers.providers does not name, so the loop never calls it; remove it or configure the provider"},
+		{"a model priced under an empty providers", minimalFile + "answers:\n  providers: {}\n  prices:\n" + gptPrice,
+			"answers.prices.openai/gpt-6.1 prices a model of openai, which answers.providers does not name, so the loop never calls it; remove it or configure the provider"},
+		{"a price for no model id", minimalFile + "answers:\n  prices:\n    claude-opus-5-5: {input: 5, output: 25, cache_write: 6.25, cache_read: 0.5}\n",
+			`answers.prices names "claude-opus-5-5", which is no model id: <provider>/<model>, its provider anthropic or openai`},
+		{"prices not a mapping", kubernetesFile + "answers:\n  prices: [anthropic/claude-opus-5-5]\n",
+			"answers.prices must be a mapping of model id (<provider>/<model>) to its prices"},
+		{"a zero daily limit", kubernetesFile + "answers:\n  bounds: {daily_usd: 0}\n", "answers.bounds.daily_usd must be a positive number"},
+		{"an unknown bound", minimalFile + "answers:\n  providers: null\n  bounds: {retries: 2}\n", "unknown key answers.bounds.retries"},
+		{"an unknown conversation_store key", kubernetesFile + "answers:\n  conversation_store: {password: hunter2}\n",
+			"unknown key answers.conversation_store.password"},
+		{"tmux, a conversation_store", minimalFile + "answers:\n  providers: {}\n" + daemonDSNFile,
+			"answers.conversation_store is not used under runtime tmux: every conversation is a file on the daemon's own host, which it reads where the pane wrote it; remove it"},
+		{"postgres, user", kubernetesFile + "answers:\n  providers: {}\n" + daemonIAMLogin,
+			"answers.conversation_store.user is not used when runtime.kubernetes.session_store is postgres; remove it"},
+		{"cloudsql-iam, dsn_file", withSessionStore(cloudSQLStore) + "answers:\n" + daemonDSNFile,
+			"answers.conversation_store.dsn_file is not used when runtime.kubernetes.session_store is cloudsql-iam; remove it"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("LoadForValidation = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // Every shape the block may not take is refused naming the key, an unknown key by its full dotted
 // name.
 func TestAnswersRefusesEachMalformedShapeByName(t *testing.T) {
 	for _, tc := range []struct{ name, block, want string }{
 		{"not a mapping", "answers: on\n", "answers must be a mapping"},
 		{"an unknown key", answersBlock(anthropicByFile, opusPrice, "  model: anthropic/claude-opus-5-5\n"), "unknown key answers.model"},
-		{"no providers", "answers:\n  prices:\n" + opusPrice, "answers.providers is required: each model provider the loop may call (anthropic, openai), its base_url and its key"},
-		{"no provider named", answersBlock("    anthropic: null\n", opusPrice, ""), "answers.providers must name at least one provider: anthropic or openai"},
+		{"no providers, a model priced", "answers:\n  prices:\n" + opusPrice, "answers.prices.anthropic/claude-opus-5-5 prices a model of anthropic, which answers.providers does not name, so the loop never calls it; remove it or configure the provider"},
+		{"a provider written with no value", answersBlock("    anthropic: null\n", opusPrice, ""), "answers.providers must name at least one provider: anthropic or openai"},
 		{"providers not a mapping", "answers:\n  providers: [anthropic]\n  prices:\n" + opusPrice, "answers.providers must be a mapping of provider (anthropic, openai) to its base_url and key"},
 		{"an unknown provider", answersBlock(anthropicByFile+"    gemini: {base_url: https://gateway.internal.example/gemini, api_key_file: gemini}\n", opusPrice, ""), "unknown key answers.providers.gemini"},
 		{"an unknown provider key", answersBlock("    anthropic: {base_url: https://gateway.internal.example/anthropic, api_key: sk-fixture}\n", opusPrice, ""), "unknown key answers.providers.anthropic.api_key"},

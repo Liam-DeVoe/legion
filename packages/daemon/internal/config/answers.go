@@ -37,8 +37,9 @@ var answerModelID = regexp.MustCompile(`^(anthropic|openai)/\S+$`)
 
 // Answers is the settled `answers` block: what the daemon's model loop needs to answer a question
 // to an agent that is not running, from that agent's own conversation. Config.Answers is nil when
-// the file sets none, or sets one that names no connection to the conversation store its
-// runtime.kubernetes.session_store reads through (answersOff), and the loop is then off.
+// the file sets none, or sets one that names no model provider (answersOffWithNoProvider) or no
+// connection to the conversation store its runtime.kubernetes.session_store reads through
+// (answersOff), and the loop is then off.
 type Answers struct {
 	// Providers are the model providers the loop may call, each its endpoint and its key.
 	Providers map[AnswerProvider]AnswerEndpoint
@@ -132,7 +133,8 @@ func defaultAnswerBounds() AnswerBounds {
 }
 
 // answersFile is `answers` as the file wrote it: everything but what needs the runtime (which
-// conversation_store key applies) and the file's directory (where api_key_file is).
+// conversation_store key applies) and the file's directory (where api_key_file is). providers is
+// empty for a block that names no provider, which leaves the loop off (resolveAnswers).
 type answersFile struct {
 	providers map[AnswerProvider]AnswerEndpoint
 	prices    map[string]AnswerPrice
@@ -174,13 +176,19 @@ func readAnswers(value *yaml.Node, key string) (*answersFile, error) {
 	return read, nil
 }
 
-// readAnswerProviders reads `answers.providers`: at least one of anthropic and openai.
+// readAnswerProviders reads `answers.providers`: anthropic, openai or both. An absent or null key
+// and an empty mapping name none, which answers an empty map and leaves the loop off
+// (resolveAnswers); a mapping whose every provider is written with no value is refused, as a
+// provider with no endpoint is.
 func readAnswerProviders(value *yaml.Node, key string) (map[AnswerProvider]AnswerEndpoint, error) {
 	if value == nil {
-		return nil, fmt.Errorf("%s is required: each model provider the loop may call (anthropic, openai), its base_url and its key", key)
+		return nil, nil
 	}
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping of provider (anthropic, openai) to its base_url and key", key)
+	}
+	if len(value.Content) == 0 {
+		return nil, nil
 	}
 	named, err := describedMembers(value, key, answersKey+".providers")
 	if err != nil {
@@ -236,15 +244,23 @@ func readAnswerEndpoint(value *yaml.Node, key string) (AnswerEndpoint, error) {
 }
 
 // readAnswerPrices reads `answers.prices`: at least one model, each a model of a provider
-// `answers.providers` names, priced in full.
+// `answers.providers` names, priced in full. A block that names no provider has nothing to price,
+// so the key may then be absent, null or empty; a model it does price is refused, its provider
+// being one the block does not name.
 func readAnswerPrices(value *yaml.Node, key string, providers map[AnswerProvider]AnswerEndpoint) (map[string]AnswerPrice, error) {
 	if value == nil {
+		if len(providers) == 0 {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("%s is required: the USD price per million tokens of each model the loop may answer on, by the id its conversation names (<provider>/<model>)", key)
 	}
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping of model id (<provider>/<model>) to its prices", key)
 	}
 	if len(value.Content) == 0 {
+		if len(providers) == 0 {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("%s must price at least one model", key)
 	}
 	prices := make(map[string]AnswerPrice, len(value.Content)/2)
@@ -385,9 +401,11 @@ func readNumber(value *yaml.Node, key string) (*float64, error) {
 
 // resolveAnswers settles `answers` once the runtime is: each api_key_file against the file's
 // directory, and the conversation store the runtime's own store needs (conversationStoreOf). A
-// block that names no such store leaves cfg.Answers nil, the loop off as with no block, and adds
-// one line to cfg.Warnings saying so; every other key of the block was already read and held to
-// its rules, so a malformed block is refused, never turned off.
+// block that names no model provider, or no such store, leaves cfg.Answers nil, the loop off as
+// with no block, and adds one line to cfg.Warnings saying why: the provider line when both are
+// missing, since without a provider no store would turn the loop on. Every other key of the block
+// was already read and held to its rules, and a conversation_store key the runtime does not use is
+// refused before either line, so a malformed block is refused, never turned off.
 func resolveAnswers(file fileConfig, configDir string, cfg *Config) error {
 	read := file.Answers
 	if read == nil {
@@ -396,6 +414,9 @@ func resolveAnswers(file fileConfig, configDir string, cfg *Config) error {
 	store, off, err := conversationStoreOf(read, configDir, cfg.Runtime)
 	if err != nil {
 		return err
+	}
+	if len(read.providers) == 0 {
+		off = answersOffWithNoProvider
 	}
 	if off != "" {
 		cfg.Warnings = append(cfg.Warnings, off)
@@ -474,3 +495,12 @@ func answersOff(key string, kind ompsessions.StoreKind, what string) string {
 	return fmt.Sprintf("%s is set, but the answer loop is off: under %s %s, %s names the daemon's connection to the conversation store, and the file sets none, so a message to a stopped agent is refused and dropped as it is without %s; to turn the loop on, set %s to %s",
 		answersKey, sessionStoreKey, kind, key, answersKey, key, what)
 }
+
+// answersOffWithNoProvider is the warning for a file that sets `answers` and names no model
+// provider, its `providers` absent, null or empty: the loop is off, a message to a stopped agent is
+// refused and dropped as with no block, and what turns the loop on. A warning, not a refusal, for
+// the reason answersOff gives: such a deployment boots as it does without the block.
+const answersOffWithNoProvider = answersKey + " is set, but the answer loop is off: " + answersKey +
+	".providers names no model provider the loop may call, so a message to a stopped agent is refused and dropped as it is without " +
+	answersKey + "; to turn the loop on, set " + answersKey + ".providers to at least one provider (anthropic, openai) with its base_url and its key, and " +
+	answersKey + ".prices to the price of each model the loop may answer on"
