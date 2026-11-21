@@ -4030,18 +4030,31 @@ hold's row in the secrets broker's Postgres holds and the auth service reads at 
 phase holds the one before it, and every phase subscribes `_INBOX_envoy_operator.>` alone, so an
 operator connects with that inbox prefix:
 
-- `released`, no hold, and the grant whenever the auth service cannot read the row, which is reads
-  only: `$JS.API.INFO`; the infos of `ENVOY_NOTIFICATIONS`, `KV_envoy_session_consumers` and each
-  copied bucket (`envoy_interests`, `envoy_roles`, `envoy_sessions`, `envoy_known_sessions`,
-  `envoy_ci_state`); the stored-message get of `KV_envoy_session_consumers`, the consumer names and
-  infos of `ENVOY_NOTIFICATIONS`, and the info of `ENVOY_MEASURE`. Its one backup is a records-only
-  copy of `KV_envoy_session_consumers`, its messages read one by one with that get
-  (`internal/bus/kvrecords`, format `envoy-kv-records-v1`), each with its sequence, subject,
-  headers, time and data. A restore from it writes each message again, so it cannot reproduce the
-  stream's `last_seq`. No snapshot and no stream create is in `released`: nats-server checks a
-  snapshot's deliver subject for its syntax alone and sends every chunk there from the stream's own
-  sender, and a create carries a republish or a source of the caller's choosing, so either writes
-  any subject, a protected bucket's key among them;
+- `released`, no hold, and the grant whenever the auth service cannot read the row, which names no
+  subject that writes: `$JS.API.INFO`; the infos of `ENVOY_NOTIFICATIONS`,
+  `KV_envoy_session_consumers` and each copied bucket (`envoy_interests`, `envoy_roles`,
+  `envoy_sessions`, `envoy_known_sessions`, `envoy_ci_state`); the stored-message get of
+  `KV_envoy_session_consumers`, the consumer names and infos of `ENVOY_NOTIFICATIONS`, and the info
+  of `ENVOY_MEASURE`. Its one backup is a records-only copy of `KV_envoy_session_consumers`, its
+  messages read one by one with that get (`internal/bus/kvrecords`, format `envoy-kv-records-v1`),
+  each with its sequence, subject, headers, time and data, signed with the operator's hold key. A
+  restore from it writes each message again, so it cannot reproduce the stream's `last_seq`. No
+  snapshot and no stream create is in `released`: nats-server checks a snapshot's deliver subject
+  for its syntax alone and sends every chunk there from the stream's own sender, and a create
+  carries a republish or a source of the caller's choosing, so either writes any subject, a
+  protected bucket's key among them. Naming no write subject does not keep a grant from writing:
+  the boundary is one bus, a grant per connection, and every client in `$G`, and any grant that
+  holds a JetStream API request can have the server store a JetStream answer on any subject a
+  stream in `$G` captures, by naming it as the request's reply. The writers of a bucket by design
+  (today Listener, ListenerHost, Dispatch, and Host, which retires) can choose those bytes, by
+  writing a key of a bucket they write and direct-getting it with that reply; Measure can copy a
+  listener lease message, with its headers, onto any captured subject; Daemon can have a
+  notification it may pull stored, under the notification's own subject, in any stream that
+  captures the pull's reply subject; every other principal can store only a server JSON document,
+  and the held operator writes keys by design. Session grants hold no `$JS.API.` publish. So no
+  record the hold trusts for completion is in NATS (the broker's cutover record in Postgres
+  decides), and every reader of a bucket value decodes strictly and fails closed on a value that is
+  not an exact record of its key's kind;
 - `prepare`, a hold being prepared while every client is still admitted: also
   `$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.*`, which raises the consumers' inactive thresholds
   (one subject serves a consumer's create and its update, so it admits a named create too), and the
