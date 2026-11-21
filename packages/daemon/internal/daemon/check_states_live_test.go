@@ -896,12 +896,17 @@ var statesResultID = regexp.MustCompile(`Result ([0-9a-f-]{36})`)
 
 // writeTestRecord writes issue's test record with the real `dispatch handoff-write` as the tester's
 // session, its body naming the head the tester tested under `head`, and prints the check states
-// serial Dispatch stored with it, "none" where it stores none.
+// serial Dispatch stored with it, "none" where it stores none. A write Dispatch does not take fails
+// the case at test-record: a test record waits for the states the tester's results owe, so a
+// Dispatch that never settles them shows here.
 func (r *statesProof) writeTestRecord(issue *statesIssue) {
 	r.t.Helper()
 	path := filepath.Join(r.cliHome, issue.key+"-test.json")
 	writeProofFile(r.t, path, string(headBody(issue.key, "test", issue.head)))
 	out, code := r.cli(issue.tester, "handoff-write", "--issue", issue.key, "--phase", "test", "--body-file", path)
+	if code != 0 {
+		r.fail("test-record", "dispatch handoff-write of %s's test record as the tester exited %d: %s", issue.key, code, strings.TrimSpace(out))
+	}
 	written := parseWritten(r.t, out, code)
 	var read struct {
 		CheckStatesSerial *int64 `json:"check_states_serial"`
