@@ -310,6 +310,36 @@ value_of() {
     "select coalesce((select t.to_id from graph_tuples t where t.from_kind = '$1' and t.from_id = '$2' and t.kind = '$3' and t.to_kind = 'value' and t.asserted order by t.seq desc limit 1), '')"
 }
 
+# room_of_sql DOCUMENT: the room the document DOCUMENT is edited in, as SQL answering a uuid
+# (refs.DocumentRoomSQL): its document_rooms row's room, for a document converted into its issue's
+# room, else the document itself. An issue room keys its documents' asks rows and document_blocks
+# rows by its tree artifact, and a block id is unique across the room, so the room and a block's
+# id name the block's row for a converted and an unconverted document alike
+# (refs.AsksOfFragmentBlocksSQL).
+room_of_sql() {
+  printf "coalesce((select moved.room from document_rooms moved where moved.artifact_id = '%s'::uuid), '%s'::uuid)" "$1" "$1"
+}
+
+# ask_document_sql ALIAS: the document holding the block of the asks row aliased ALIAS, as SQL
+# answering a uuid (refs.AskBlockDocumentSQL): for an ask of an issue room, keyed by the room's
+# tree artifact, the document whose fragment the room records its block in (issue_room_blocks),
+# or, for a block gone from the room, the document its block node's newest asserted in_document
+# names; for every other ask, its block_artifact_id.
+ask_document_sql() {
+  printf '%s' "coalesce(
+      (select room_block.document_id from issue_room_blocks room_block
+       where room_block.tree_artifact_id = $1.block_artifact_id and room_block.block_id = $1.block_id),
+      (select stood.id from artifacts room_tree
+       cross join lateral (
+         select stood_in.to_id from graph_tuples stood_in
+         where stood_in.from_kind = 'block' and stood_in.from_id = room_tree.ref_key || '#' || $1.block_id
+           and stood_in.kind = 'in_document' and stood_in.asserted
+         order by stood_in.seq desc limit 1) stood_in
+       join artifacts stood on stood.ref_key = stood_in.to_id
+       where room_tree.id = $1.block_artifact_id and room_tree.kind = 'tree'),
+      $1.block_artifact_id)"
+}
+
 # ask_block ID FILE: the markdown of the ask block ID in FILE, its fence and attributes included,
 # on stdout; nothing where FILE holds no such block.
 ask_block() {
@@ -338,15 +368,15 @@ attribute_of() {
 # kept_form SECTION DOCUMENT NUMBER WHAT: every ask block of version NUMBER of DOCUMENT (WHAT says
 # whose version it is), read through the versions route, holds the form R10 keeps
 # (docs.keptAskState), each value equal to its ask's node as the store states it now: the ask whose
-# row names the block of DOCUMENT under its id, or, for a block no row names whose block node
-# holds a standing copied_from (settlement's claimCopies), the ask it copies. Such a block holds
-# `state` where that node's answer_state is answered or resolved and none where it is open or
-# absent, `answered_by` and `answered_at` as the node holds them where it is answered, and, on a
-# copy, `copied_from`, the ask, and `copied_from_document`, the address of the document that ask's
-# row names (refs.ArtifactRef). A block that has no ask row and is no copy of an ask holds none of
-# the eight server-owned attributes, and no block holds `selected`, `answer` or `invalid`. It prints
-# each block's attributes; a block that differs fails the run, which prints the block, the
-# attributes it holds and the ones its ask's node gives.
+# row names the block under its id in the room DOCUMENT is edited in (room_of_sql), or, for a block
+# no row names whose block node holds a standing copied_from (settlement's claimCopies), the ask it
+# copies. Such a block holds `state` where that node's answer_state is answered or resolved and
+# none where it is open or absent, `answered_by` and `answered_at` as the node holds them where it
+# is answered, and, on a copy, `copied_from`, the ask, and `copied_from_document`, the address of
+# the document holding that ask's block (ask_document_sql, refs.ArtifactRef). A block that has no
+# ask row and is no copy of an ask holds none of the eight server-owned attributes, and no block
+# holds `selected`, `answer` or `invalid`. It prints each block's attributes; a block that differs
+# fails the run, which prints the block, the attributes it holds and the ones its ask's node gives.
 kept_form() {
   local section="$1" document="$2" number="$3" what="$4" id own source copied state by at name whose
   local opening got held wants differs blocks=0
@@ -361,17 +391,19 @@ kept_form() {
     return 0
   fi
   env -u PGHOSTADDR psql "$database_url" -XAtq -F '|' -c "
-    with block (block_id, position) as (
+    with room (id) as (
+      select $(room_of_sql "$document")
+    ), block (block_id, position) as (
       select b, p from unnest(string_to_array('${ids[*]}', ' ')) with ordinality as u (b, p)
     ), owned as (
       select block.block_id, block.position,
-        (select a.id::text from asks a where a.block_artifact_id = '$document' and a.block_id = block.block_id) as own,
+        (select a.id::text from asks a where a.block_artifact_id = (select id from room) and a.block_id = block.block_id) as own,
         (select c.to_id from document_blocks d
            cross join lateral (
              select distinct on (t.to_kind, t.to_id) t.to_id, t.asserted from graph_tuples t
              where t.from_kind = d.node_kind and t.from_id = d.node_address and t.kind = 'copied_from' and t.to_kind = 'ask'
              order by t.to_kind, t.to_id, t.seq desc) c
-           where d.artifact_id = '$document' and d.block_id = block.block_id and d.node_address is not null and c.asserted
+           where d.artifact_id = (select id from room) and d.block_id = block.block_id and d.node_address is not null and c.asserted
            limit 1) as copied
       from block
     ), asked as (
@@ -384,7 +416,7 @@ kept_form() {
                             when sa.issue_key is null then 'dispatch://' || sa.project_key || '/artifact/' || sa.slug
                             when sa.is_primary and sa.kind = 'doc' then 'dispatch://' || sa.issue_key || '/spec'
                             else 'dispatch://' || sa.issue_key || '/artifact/' || sa.slug end
-                from asks s join artifacts sa on sa.id = s.block_artifact_id where s.id::text = k.source), ''),
+                from asks s join artifacts sa on sa.id = $(ask_document_sql s) where s.id::text = k.source), ''),
       coalesce(n.state, ''), coalesce(n.answered_by, ''), coalesce(n.answered_at, '')
     from asked k
     left join lateral (
@@ -1065,7 +1097,7 @@ moved_from "$issue_a/decisions-md#q-shelf"
 grep -qF ':::ask{#q-shelf ' "$work/converted-a.md" ||
   fail kinds "the spec's newest version holds the moved ask block q-shelf" "$(grep -F 'q-shelf' "$work/converted-a.md" || echo 'no line names q-shelf')"
 query kinds "read the rows naming a block of the decisions document of $issue_a" \
-  "select count(*) from asks where block_artifact_id = '$decisions_a'"
+  "select count(*) from asks a where a.block_artifact_id = $(room_of_sql "$decisions_a") and $(ask_document_sql a) = '$decisions_a'::uuid"
 [[ "$answer" == 0 ]] || fail kinds "no row names a block of the retired decisions document" "$answer rows do"
 held_decision="$issue_a/spec#$held_heading"
 moved_from "$issue_a/decisions-md#$held_heading"
